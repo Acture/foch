@@ -1,5 +1,5 @@
+use crate::model::GamePath;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::path::Path;
 
 /// The only verified game identity in Foch's product API.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -59,22 +59,20 @@ impl Eu4 {
 		])
 	}
 
-	pub fn is_loadable_content_path(&self, relative: &Path) -> bool {
-		let normalized = relative.to_string_lossy().replace('\\', "/");
-		let trimmed = normalized.trim_start_matches("./");
-		if trimmed.is_empty() {
+	/// Whether the game loads `relative`: a file below one of the
+	/// [`loadable_content_roots`](Self::loadable_content_roots). The top-level
+	/// directory is matched ignoring ASCII case.
+	pub fn is_loadable_content_path(&self, relative: &GamePath) -> bool {
+		if relative.parent().is_none() {
 			return false;
 		}
-		let Some((top, rest)) = trimmed.split_once('/') else {
+		let Some(top) = relative.iter().next() else {
 			return false;
 		};
-		if rest.is_empty() {
-			return false;
-		}
-		let top = top.to_ascii_lowercase();
 		self.loadable_content_roots()
 			.expect("EU4 loadable roots are static")
-			.contains(&top.as_str())
+			.iter()
+			.any(|root| top.eq_ignore_ascii_case(root))
 	}
 }
 

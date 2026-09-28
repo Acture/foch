@@ -11,11 +11,12 @@ use crate::game::eu4::base::analysis_rules_version;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::documents::{
 	DiscoveredTextDocument, ParsedTextDocument, build_semantic_index_from_documents,
-	discover_text_documents, parse_discovered_text_documents,
+	discover_text_documents_from_paths, parse_discovered_text_documents,
 };
 use crate::input::config::Config;
+use crate::input::{InventoryOwner, collect_relative_files, dedup_candidates};
 use crate::model::{
-	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
+	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, GamePathBuf, JsonProperty, KeyUsage,
 	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
 	ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
 	ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
@@ -41,7 +42,6 @@ use std::sync::Condvar;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use walkdir::WalkDir;
 
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
@@ -502,7 +502,7 @@ pub struct BaseAnalysisSnapshot {
 	pub game_version: String,
 	pub analysis_rules_version: String,
 	pub generated_by_cli_version: String,
-	pub inventory_paths: Vec<String>,
+	pub inventory_paths: Vec<GamePathBuf>,
 	pub documents: Vec<BaseDocumentRecord>,
 	pub parse_error_count: usize,
 	pub parsed_files: usize,
@@ -526,7 +526,7 @@ impl BaseAnalysisSnapshot {
 	pub fn from_semantic_index(
 		game: &Eu4,
 		game_version: &str,
-		inventory_paths: Vec<String>,
+		inventory_paths: Vec<GamePathBuf>,
 		index: &SemanticIndex,
 		parse_stats: ParseFamilyStats,
 	) -> Self {
@@ -543,7 +543,7 @@ impl BaseAnalysisSnapshot {
 	pub fn from_semantic_index_with_parsed_scripts(
 		game: &Eu4,
 		game_version: &str,
-		inventory_paths: Vec<String>,
+		inventory_paths: Vec<GamePathBuf>,
 		index: &SemanticIndex,
 		parse_stats: ParseFamilyStats,
 		parsed_scripts: Vec<u8>,
@@ -2115,10 +2115,13 @@ pub fn build_base_snapshot_with_observer(
 	observer.set_game_version(&resolved_version);
 
 	let inventory_paths = observer.run_stage("collect_inventory", |counts| {
-		let paths: Vec<String> = collect_relative_files(game_root, filter)
-			.into_iter()
-			.map(|path| normalize_path(&path))
-			.collect();
+		let mut paths: Vec<GamePathBuf> =
+			collect_relative_files(game_root, filter, InventoryOwner::BaseGame)
+				.map_err(|error| format!("failed to inventory {}: {error}", game_root.display()))?;
+		// The persisted inventory keeps the component order released
+		// snapshots were built in. It differs from the walker's byte order
+		// only when a name sorts below `/`, and no reader depends on it.
+		paths.sort_by(|left, right| left.as_relative_path().cmp(right.as_relative_path()));
 		counts.insert("file_count".to_string(), paths.len() as u64);
 		Ok(paths)
 	})?;
@@ -2126,10 +2129,15 @@ pub fn build_base_snapshot_with_observer(
 
 	let discovered_documents: Vec<DiscoveredTextDocument> =
 		observer.run_stage("discover_documents", |counts| {
-			let docs: Vec<DiscoveredTextDocument> = discover_text_documents(game_root)
-				.into_iter()
-				.filter(|doc| filter.accepts(&doc.relative_path))
+			// Documents come from the inventory, as for a mod, so the game root
+			// is walked once. Discovery still takes host-relative paths, which
+			// is how `to_path("")` spells a game path.
+			let inventory_files: Vec<PathBuf> = inventory_paths
+				.iter()
+				.map(|path| path.to_path(""))
 				.collect();
+			let docs: Vec<DiscoveredTextDocument> =
+				discover_text_documents_from_paths(game_root, &inventory_files);
 			counts.insert("document_count".to_string(), docs.len() as u64);
 			for (key, value) in discover_family_counts(&docs) {
 				counts.insert(key, value);
@@ -2746,6 +2754,27 @@ fn encode_snapshot_to_bytes(
 	})
 }
 
+/// Restores the persisted inventory. Every entry must be a game path and
+/// appear once: two entries with one path would give two base contributors a
+/// single identity. Order is not checked, since released snapshots are in
+/// component order.
+fn decode_inventory_paths(paths: Vec<String>) -> Result<Vec<GamePathBuf>, String> {
+	let paths = paths
+		.into_iter()
+		.map(|path| {
+			GamePathBuf::try_from(path)
+				.map_err(|error| format!("base data snapshot inventory is invalid: {error}"))
+		})
+		.collect::<Result<Vec<_>, _>>()?;
+	let mut seen: HashSet<&GamePathBuf> = HashSet::with_capacity(paths.len());
+	if let Some(repeated) = paths.iter().find(|path| !seen.insert(*path)) {
+		return Err(format!(
+			"base data snapshot inventory is invalid: `{repeated}` is listed more than once"
+		));
+	}
+	Ok(paths)
+}
+
 fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, String> {
 	let bundle: SnapshotWireBundle = bincode::deserialize(bytes)
 		.map_err(|err| format!("failed to parse base data snapshot bundle: {err}"))?;
@@ -2821,7 +2850,7 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 		game_version: metadata.game_version,
 		analysis_rules_version: metadata.analysis_rules_version,
 		generated_by_cli_version: metadata.generated_by_cli_version,
-		inventory_paths: inventory.inventory_paths,
+		inventory_paths: decode_inventory_paths(inventory.inventory_paths)?,
 		documents: inventory.documents,
 		parse_error_count: inventory.parse_error_count,
 		parsed_files: inventory.parsed_files,
@@ -2884,12 +2913,8 @@ fn sanitize_component(value: &str) -> String {
 	}
 }
 
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
 fn normalize_path_str(path: &Path) -> String {
-	normalize_path(path)
+	path.to_string_lossy().replace('\\', "/")
 }
 
 fn discover_family_counts(docs: &[DiscoveredTextDocument]) -> BTreeMap<String, u64> {
@@ -2982,7 +3007,11 @@ fn encode_inventory_documents_section(
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<SectionEncodeResult, String> {
 	let section = SnapshotInventoryDocumentsSection {
-		inventory_paths: snapshot.inventory_paths.clone(),
+		inventory_paths: snapshot
+			.inventory_paths
+			.iter()
+			.map(|path| path.as_str().to_owned())
+			.collect(),
 		documents: snapshot.documents.clone(),
 		parse_error_count: snapshot.parse_error_count,
 		parsed_files: snapshot.parsed_files,
@@ -3152,44 +3181,6 @@ fn snapshot_section_display_name(name: SnapshotWireSectionName) -> &'static str 
 		SnapshotWireSectionName::StructuredData => "structured_data",
 		SnapshotWireSectionName::ParsedScripts => "parsed_scripts",
 	}
-}
-
-fn collect_relative_files(root: &Path, filter: &crate::input::FileFilter) -> Vec<PathBuf> {
-	let mut files = Vec::new();
-
-	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-		if !entry.file_type().is_file() {
-			continue;
-		}
-
-		let path = entry.path();
-		if path.file_name() == Some(OsStr::new("descriptor.mod")) {
-			continue;
-		}
-
-		if let Ok(relative) = path.strip_prefix(root) {
-			if !filter.accepts(relative) {
-				continue;
-			}
-			files.push(relative.to_path_buf());
-		}
-	}
-
-	files.sort();
-	files
-}
-
-fn dedup_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
-	let mut seen = HashSet::new();
-	let mut result = Vec::new();
-	for candidate in candidates {
-		let key = candidate.to_string_lossy().replace('\\', "/");
-		if !seen.insert(key) {
-			continue;
-		}
-		result.push(candidate);
-	}
-	result
 }
 
 #[cfg(test)]

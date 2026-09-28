@@ -187,7 +187,7 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 	let mut file_owners: HashMap<String, Vec<String>> = HashMap::new();
 	for mod_item in &ctx.mods {
 		for file in &mod_item.files {
-			let key = file.to_string_lossy().to_string();
+			let key = file.as_str().to_owned();
 			file_owners
 				.entry(key)
 				.or_default()
@@ -527,7 +527,7 @@ fn replace_path_covers_dependency_content(mod_item: &ModCandidate, dep_mod: &Mod
 	}
 
 	dep_mod.files.iter().any(|file| {
-		let normalized = normalize_path_prefix(&normalize_relative_path(file));
+		let normalized = normalize_path_prefix(file.as_str());
 		prefixes
 			.iter()
 			.any(|prefix| path_is_under_prefix(&normalized, prefix))
@@ -536,10 +536,6 @@ fn replace_path_covers_dependency_content(mod_item: &ModCandidate, dep_mod: &Mod
 
 fn normalize_path_prefix(raw: &str) -> String {
 	raw.trim().trim_matches('/').replace('\\', "/")
-}
-
-fn normalize_relative_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
 }
 
 fn path_is_under_prefix(normalized_file: &str, prefix: &str) -> bool {
@@ -836,7 +832,7 @@ mod tests {
 	use super::*;
 	use crate::game::eu4::script::{build_semantic_index, parse_script_file};
 	use crate::model::{
-		LocalisationDefinition, MaybeScope, ModCandidate, ScopeSet, SemanticIndex,
+		GamePathBuf, LocalisationDefinition, MaybeScope, ModCandidate, ScopeSet, SemanticIndex,
 		SymbolDefinition, SymbolReference, test_support,
 	};
 	use crate::playset::descriptor::ModDescriptor;
@@ -933,7 +929,10 @@ mod tests {
 
 	fn with_files(mut mod_item: ModCandidate, root: PathBuf, files: &[&str]) -> ModCandidate {
 		mod_item.root_path = Some(root);
-		mod_item.files = files.iter().map(PathBuf::from).collect();
+		mod_item.files = files
+			.iter()
+			.map(|file| GamePathBuf::parse(file).expect("valid game path"))
+			.collect();
 		mod_item
 	}
 
@@ -1132,7 +1131,8 @@ mod tests {
 		let mut main = candidate("100", "Main Mod", "main", &["Dependency Mod"]);
 		main.descriptor.as_mut().unwrap().replace_path = vec!["common/missions".to_string()];
 		let mut dep = candidate("200", "Dependency Mod", "Dependency Mod", &[]);
-		dep.files = vec![PathBuf::from("common/missions/dep_missions.txt")];
+		dep.files =
+			vec![GamePathBuf::parse("common/missions/dep_missions.txt").expect("valid game path")];
 		let ctx = context(vec![main, dep], SemanticIndex::default());
 
 		let findings = detect_dependency_misuse(&ctx);

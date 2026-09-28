@@ -7,10 +7,11 @@ use crate::game::eu4::script::documents::{
 };
 use crate::game::eu4::script::parser::AstStatement;
 use crate::model::{
-	DocumentFamily, FamilyParseStats, ModCandidate, ParseFamilyStats, SemanticIndex,
+	DocumentFamily, DocumentRecord, FamilyParseStats, GamePathBuf, ModCandidate, ParseFamilyStats,
+	SemanticIndex,
 };
 pub use crate::platform::cache_store::CacheError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -21,7 +22,7 @@ pub(crate) use store::{CachedDocumentInputIdentity, CachedModData, ModSnapshotCa
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
 	pub semantic_index: SemanticIndex,
-	pub inventory_paths: Vec<PathBuf>,
+	pub inventory_paths: Vec<GamePathBuf>,
 	pub mod_hash: Option<String>,
 	pub parsed_files: usize,
 	pub parse_error_count: usize,
@@ -30,9 +31,9 @@ pub(crate) struct LoadedModSnapshot {
 	pub clausewitz_parse_cache_hits: usize,
 	#[cfg(test)]
 	pub clausewitz_parse_cache_misses: usize,
-	pub document_parse_hints: HashMap<String, bool>,
-	pub document_noop_hints: HashMap<String, bool>,
-	pub document_input_identities: HashMap<String, CachedDocumentInputIdentity>,
+	pub document_parse_hints: HashMap<GamePathBuf, bool>,
+	pub document_noop_hints: HashMap<GamePathBuf, bool>,
+	pub document_input_identities: HashMap<GamePathBuf, CachedDocumentInputIdentity>,
 	pub cache_hit: bool,
 }
 
@@ -103,28 +104,46 @@ fn load_or_build_mod_snapshot_with_cache(
 		&& let Some(cached) =
 			cache.lookup(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key)
 	{
-		let profile =
-			cache.entry_profile(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key);
-		let snapshot = to_loaded_snapshot(cached, true, owned_mod_hash.clone());
-		store_process_snapshot(process_cache_key.as_ref(), &snapshot);
-		eprintln!(
-			"[merge] mod_snapshot: cache_hit mod_id={} source=disk lookup_ms={} elapsed_ms={} compressed_bytes={} uncompressed_bytes={} documents={} scopes={} definitions={} references={}",
-			mod_item.mod_id,
-			cache_lookup_started.elapsed().as_millis(),
-			snapshot_started.elapsed().as_millis(),
-			profile.map_or(0, |item| item.compressed_bytes),
-			profile.map_or(0, |item| item.uncompressed_bytes),
-			snapshot.semantic_index.documents.len(),
-			snapshot.semantic_index.scopes.len(),
-			snapshot.semantic_index.definitions.len(),
-			snapshot.semantic_index.references.len()
-		);
-		return Ok(Some(snapshot));
+		// A disk entry whose documents have no distinct game paths is corrupt,
+		// like one whose inventory fails validation in `lookup`: it is a miss,
+		// and the rebuild below replaces it.
+		match to_loaded_snapshot(cached, true, owned_mod_hash.clone()) {
+			Ok(snapshot) => {
+				let profile =
+					cache.entry_profile(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key);
+				store_process_snapshot(process_cache_key.as_ref(), &snapshot);
+				eprintln!(
+					"[merge] mod_snapshot: cache_hit mod_id={} source=disk lookup_ms={} elapsed_ms={} compressed_bytes={} uncompressed_bytes={} documents={} scopes={} definitions={} references={}",
+					mod_item.mod_id,
+					cache_lookup_started.elapsed().as_millis(),
+					snapshot_started.elapsed().as_millis(),
+					profile.map_or(0, |item| item.compressed_bytes),
+					profile.map_or(0, |item| item.uncompressed_bytes),
+					snapshot.semantic_index.documents.len(),
+					snapshot.semantic_index.scopes.len(),
+					snapshot.semantic_index.definitions.len(),
+					snapshot.semantic_index.references.len()
+				);
+				return Ok(Some(snapshot));
+			}
+			Err(error) => {
+				tracing::warn!(
+					target: "crate::input::resolve",
+					mod_id = %mod_item.mod_id,
+					error = %error,
+					"discarding corrupt mod parse cache entry"
+				);
+			}
+		}
 	}
 
-	let inventory_paths = super::resolve::collect_relative_files(root, filter)?;
+	let inventory_paths = super::resolve::collect_relative_files(
+		root,
+		filter,
+		super::InventoryOwner::Mod(&mod_item.mod_id),
+	)?;
 	let parse_started = Instant::now();
-	let parsed_snapshot = parse_mod_snapshot(mod_item, root, &inventory_paths, filter);
+	let parsed_snapshot = parse_mod_snapshot(mod_item, root, inventory_paths, filter);
 	eprintln!(
 		"[merge] mod_snapshot: parse_done mod_id={} elapsed_ms={} cache_hits={} cache_misses={}",
 		mod_item.mod_id,
@@ -187,7 +206,7 @@ fn load_or_build_mod_snapshot_with_cache(
 		parsed_snapshot.clausewitz_parse_cache_misses,
 		false,
 		owned_mod_hash,
-	);
+	)?;
 	store_process_snapshot(process_cache_key.as_ref(), &snapshot);
 	Ok(Some(snapshot))
 }
@@ -219,7 +238,7 @@ fn to_loaded_snapshot(
 	data: CachedModData,
 	cache_hit: bool,
 	mod_hash: Option<String>,
-) -> LoadedModSnapshot {
+) -> io::Result<LoadedModSnapshot> {
 	let parse_stats = parse_stats_from_index(&data.semantic_index);
 	let parse_error_count = parse_stats.clausewitz_mainline.parse_issue_count;
 	to_loaded_snapshot_with_stats(
@@ -241,7 +260,7 @@ fn to_loaded_snapshot_with_stats(
 	_clausewitz_parse_cache_misses: usize,
 	cache_hit: bool,
 	mod_hash: Option<String>,
-) -> LoadedModSnapshot {
+) -> io::Result<LoadedModSnapshot> {
 	let CachedModData {
 		mut semantic_index,
 		inventory_paths,
@@ -249,29 +268,26 @@ fn to_loaded_snapshot_with_stats(
 		document_input_identities,
 	} = data;
 	apply_registered_param_contracts(&mut semantic_index);
-	let document_parse_hints = semantic_index
-		.documents
+	let document_paths = document_game_paths(&semantic_index.documents)?;
+	let document_parse_hints = document_paths
 		.iter()
-		.map(|item| (normalize_relative_path(&item.path), item.parse_ok))
+		.cloned()
+		.zip(semantic_index.documents.iter().map(|item| item.parse_ok))
 		.collect();
-	let document_noop_hints = semantic_index
-		.documents
+	let document_noop_hints = document_paths
 		.iter()
+		.cloned()
 		.zip(document_noop_hints)
-		.map(|(item, is_noop)| (normalize_relative_path(&item.path), is_noop))
 		.collect();
-	let document_input_identities = semantic_index
-		.documents
-		.iter()
+	let document_input_identities = document_paths
+		.into_iter()
 		.zip(document_input_identities)
-		.filter_map(|(item, identity)| {
-			identity.map(|identity| (normalize_relative_path(&item.path), identity))
-		})
+		.filter_map(|(path, identity)| identity.map(|identity| (path, identity)))
 		.collect();
-	LoadedModSnapshot {
+	Ok(LoadedModSnapshot {
 		parsed_files: semantic_index.documents.len(),
 		semantic_index,
-		inventory_paths: inventory_paths.into_iter().map(PathBuf::from).collect(),
+		inventory_paths,
 		mod_hash,
 		parse_error_count,
 		parse_stats,
@@ -283,7 +299,33 @@ fn to_loaded_snapshot_with_stats(
 		document_noop_hints,
 		document_input_identities,
 		cache_hit,
+	})
+}
+
+/// The game path of each semantic-index document, whose model still spells
+/// it as a host-relative path. Documents are discovered from a validated
+/// inventory, so a document without a game path, or two documents sharing
+/// one, can only come from a corrupt snapshot; either would make one hint
+/// silently replace another, so both are errors.
+fn document_game_paths(documents: &[DocumentRecord]) -> io::Result<Vec<GamePathBuf>> {
+	let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+	let paths = documents
+		.iter()
+		.map(|document| {
+			GamePathBuf::from_native_relative(&document.path).map_err(|error| {
+				invalid(format!(
+					"mod snapshot document has no valid game path: {error}"
+				))
+			})
+		})
+		.collect::<io::Result<Vec<_>>>()?;
+	let mut seen: HashSet<&GamePathBuf> = HashSet::with_capacity(paths.len());
+	if let Some(repeated) = paths.iter().find(|path| !seen.insert(*path)) {
+		return Err(invalid(format!(
+			"mod snapshot lists more than one document at game path `{repeated}`"
+		)));
 	}
+	Ok(paths)
 }
 
 struct ParsedModSnapshot {
@@ -295,32 +337,40 @@ struct ParsedModSnapshot {
 	semantic_elapsed_ms: u128,
 }
 
+/// Parses the documents of a mod whose inventory is `inventory_paths`, a
+/// walker result or a subset of one: sorted and unique by construction.
 fn parse_mod_snapshot(
 	mod_item: &ModCandidate,
 	root: &Path,
-	inventory_paths: &[PathBuf],
+	inventory_paths: Vec<GamePathBuf>,
 	filter: &super::FileFilter,
 ) -> ParsedModSnapshot {
-	let documents = discover_text_documents_from_paths(root, inventory_paths)
-		.into_iter()
-		.filter(|document| filter.accepts(&document.relative_path))
+	// Document discovery still takes host-relative paths; `to_path("")` spells
+	// a game path that way exactly.
+	let document_paths = inventory_paths
+		.iter()
+		.filter(|path| filter.accepts(path))
+		.map(|path| path.to_path(""))
 		.collect::<Vec<_>>();
+	let documents = discover_text_documents_from_paths(root, &document_paths);
 	let mut parsed = parse_discovered_text_documents(&mod_item.mod_id, root, &documents);
 	let semantic_started = Instant::now();
 	let document_noop_hints_by_path = collect_document_noop_hints(&parsed.documents);
+	// Parser output and the index built from it spell each document path the
+	// same way, so these joins compare the host paths directly.
 	let mut document_input_identities_by_path = parsed
 		.document_input_identities
 		.drain(..)
 		.map(|identity| {
 			(
-				normalize_relative_path(&identity.relative_path),
+				identity.relative_path,
 				CachedDocumentInputIdentity {
 					size_bytes: identity.size_bytes,
 					content_digest: identity.content_digest,
 				},
 			)
 		})
-		.collect::<HashMap<_, _>>();
+		.collect::<HashMap<PathBuf, _>>();
 	let semantic_index =
 		build_semantic_index_from_owned_documents(std::mem::take(&mut parsed.documents));
 	let document_noop_hints =
@@ -328,22 +378,14 @@ fn parse_mod_snapshot(
 	let document_input_identities = semantic_index
 		.documents
 		.iter()
-		.map(|document| {
-			document_input_identities_by_path.remove(&normalize_relative_path(&document.path))
-		})
+		.map(|document| document_input_identities_by_path.remove(&document.path))
 		.collect();
-	let mut normalized_inventory_paths = inventory_paths
-		.iter()
-		.map(|path| normalize_relative_path(path))
-		.collect::<Vec<_>>();
-	normalized_inventory_paths.sort();
-	normalized_inventory_paths.dedup();
 	let parse_stats = parsed.parse_stats;
 	let parse_error_count = parse_stats.clausewitz_mainline.parse_issue_count;
 	ParsedModSnapshot {
 		data: CachedModData {
 			semantic_index,
-			inventory_paths: normalized_inventory_paths,
+			inventory_paths,
 			document_noop_hints,
 			document_input_identities,
 		},
@@ -363,8 +405,8 @@ pub(crate) fn build_transient_mod_snapshot(
 	let Some(root) = mod_item.root_path.as_ref() else {
 		return Ok(None);
 	};
-	let parsed = parse_mod_snapshot(mod_item, root, &mod_item.files, filter);
-	Ok(Some(to_loaded_snapshot_with_stats(
+	let parsed = parse_mod_snapshot(mod_item, root, mod_item.files.clone(), filter);
+	to_loaded_snapshot_with_stats(
 		parsed.data,
 		parsed.parse_stats,
 		parsed.parse_error_count,
@@ -372,15 +414,16 @@ pub(crate) fn build_transient_mod_snapshot(
 		parsed.clausewitz_parse_cache_misses,
 		full_snapshot.cache_hit,
 		full_snapshot.mod_hash.clone(),
-	)))
+	)
+	.map(Some)
 }
 
-fn collect_document_noop_hints(documents: &[ParsedTextDocument]) -> HashMap<String, bool> {
+fn collect_document_noop_hints(documents: &[ParsedTextDocument]) -> HashMap<PathBuf, bool> {
 	documents
 		.iter()
 		.filter_map(|document| match document {
 			ParsedTextDocument::Clausewitz(file) => Some((
-				normalize_relative_path(&file.relative_path),
+				file.relative_path.clone(),
 				file.parse_issues.is_empty()
 					&& !ast_statement_list_has_real_content(&file.ast.statements),
 			)),
@@ -393,14 +436,14 @@ fn collect_document_noop_hints(documents: &[ParsedTextDocument]) -> HashMap<Stri
 
 fn document_noop_hints_for_index(
 	semantic_index: &SemanticIndex,
-	by_path: &HashMap<String, bool>,
+	by_path: &HashMap<PathBuf, bool>,
 ) -> Vec<bool> {
 	semantic_index
 		.documents
 		.iter()
 		.map(|document| {
 			by_path
-				.get(&normalize_relative_path(&document.path))
+				.get(document.path.as_path())
 				.copied()
 				.unwrap_or(false)
 		})
@@ -419,10 +462,7 @@ fn parse_stats_from_index(index: &SemanticIndex) -> ParseFamilyStats {
 		.iter()
 		.map(|document| {
 			(
-				(
-					document.mod_id.clone(),
-					normalize_relative_path(&document.path),
-				),
+				(document.mod_id.as_str(), document.path.as_path()),
 				document.family,
 			)
 		})
@@ -436,7 +476,7 @@ fn parse_stats_from_index(index: &SemanticIndex) -> ParseFamilyStats {
 		}
 	}
 	for issue in &index.parse_issues {
-		let key = (issue.mod_id.clone(), normalize_relative_path(&issue.path));
+		let key = (issue.mod_id.as_str(), issue.path.as_path());
 		let family = family_lookup
 			.get(&key)
 			.copied()
@@ -455,10 +495,6 @@ fn family_stats_mut(stats: &mut ParseFamilyStats, family: DocumentFamily) -> &mu
 	}
 }
 
-fn normalize_relative_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -467,6 +503,10 @@ mod tests {
 	use crate::playset::descriptor::ModDescriptor;
 	use std::fs;
 	use tempfile::TempDir;
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
 
 	#[test]
 	fn acf_snapshot_is_warm_before_walk_and_retained_subset_does_not_poison_full_cache() {
@@ -576,11 +616,11 @@ mod tests {
 
 		let mut retained_mod = mod_item.clone();
 		retained_mod.files = vec![
-			PathBuf::from("common/defines/cache_test.lua"),
-			PathBuf::from("common/scripted_effects/comment_block.txt"),
-			PathBuf::from("common/scripted_effects/comments.txt"),
-			PathBuf::from("common/scripted_effects/effects.txt"),
-			PathBuf::from("common/scripted_effects/empty_block.txt"),
+			game_path("common/defines/cache_test.lua"),
+			game_path("common/scripted_effects/comment_block.txt"),
+			game_path("common/scripted_effects/comments.txt"),
+			game_path("common/scripted_effects/effects.txt"),
+			game_path("common/scripted_effects/empty_block.txt"),
 		];
 		let entries_before_subset = fs::read_dir(&cache_dir)
 			.expect("list semantic cache before subset")
@@ -650,7 +690,7 @@ mod tests {
 		.expect("read scripted effect identity input");
 		assert_eq!(
 			warm.document_input_identities
-				.get("common/scripted_effects/effects.txt"),
+				.get(&game_path("common/scripted_effects/effects.txt")),
 			Some(&CachedDocumentInputIdentity {
 				size_bytes: effects_bytes.len() as u64,
 				content_digest: blake3::hash(&effects_bytes).to_hex().to_string(),
@@ -658,24 +698,24 @@ mod tests {
 		);
 		assert_eq!(
 			warm.document_noop_hints
-				.get("common/scripted_effects/comments.txt"),
+				.get(&game_path("common/scripted_effects/comments.txt")),
 			Some(&true)
 		);
 		assert_eq!(
 			warm.document_noop_hints
-				.get("common/scripted_effects/empty_block.txt"),
+				.get(&game_path("common/scripted_effects/empty_block.txt")),
 			Some(&false),
 			"an empty assignment block can clear or override prior content"
 		);
 		assert_eq!(
 			warm.document_noop_hints
-				.get("common/scripted_effects/comment_block.txt"),
+				.get(&game_path("common/scripted_effects/comment_block.txt")),
 			Some(&false),
 			"comments inside an assigned block do not make the assignment a no-op"
 		);
 		assert_eq!(
 			warm.document_noop_hints
-				.get("common/scripted_effects/effects.txt"),
+				.get(&game_path("common/scripted_effects/effects.txt")),
 			Some(&false)
 		);
 		let semantic_entry = fs::read_dir(&cache_dir)
@@ -705,5 +745,104 @@ mod tests {
 		assert!(!rebuilt.cache_hit);
 		assert_eq!(rebuilt.clausewitz_parse_cache_hits, 6);
 		assert_eq!(rebuilt.clausewitz_parse_cache_misses, 0);
+	}
+
+	#[test]
+	fn a_disk_entry_whose_documents_lack_distinct_game_paths_is_rebuilt() {
+		let relative = "common/scripted_effects/effects.txt";
+		// The inventory is valid in both entries; only the document paths are
+		// corrupt, in spellings the store's text encoding keeps: one leaves
+		// the mod root, and `./` collapses onto the plain path when converted.
+		for (case, document_paths) in [
+			("escaping", vec!["../scripted_effects/effects.txt"]),
+			(
+				"colliding",
+				vec![relative, "./common/scripted_effects/effects.txt"],
+			),
+		] {
+			let temp = TempDir::new().expect("temp dir");
+			let cache = ModSnapshotCache::open(&temp.path().join("cache"));
+			let mod_root = temp.path().join("9002");
+			fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+				.expect("create mod root");
+			fs::write(
+				mod_root.join(relative),
+				"ME_effect = { add_prestige = 1 }\n",
+			)
+			.expect("write scripted effect");
+			let mod_item = ModCandidate {
+				entry: PlaysetEntry {
+					enabled: true,
+					steam_id: Some("9002".to_string()),
+					..PlaysetEntry::default()
+				},
+				mod_id: "9002".to_string(),
+				root_path: Some(mod_root.clone()),
+				descriptor_path: None,
+				descriptor: None,
+				workshop_identity: None,
+				descriptor_error: None,
+				files: Vec::new(),
+			};
+			let mod_hash = format!("acf-key-9002-{case}");
+			let documents = document_paths
+				.iter()
+				.map(|path| DocumentRecord {
+					mod_id: mod_item.mod_id.clone(),
+					path: PathBuf::from(path),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				})
+				.collect::<Vec<_>>();
+			let corrupt = CachedModData {
+				document_noop_hints: vec![false; documents.len()],
+				document_input_identities: vec![None; documents.len()],
+				semantic_index: SemanticIndex {
+					documents,
+					..SemanticIndex::default()
+				},
+				inventory_paths: vec![game_path(relative)],
+			};
+			cache
+				.store_owned(&mod_hash, env!("CARGO_PKG_VERSION"), "eu4", corrupt)
+				.1
+				.expect("store corrupt entry");
+
+			let snapshot = load_or_build_mod_snapshot_with_cache(
+				"eu4",
+				&mod_item,
+				&super::super::FileFilter::for_game(Eu4),
+				Some(&mod_hash),
+				Some(&cache),
+			)
+			.expect(case)
+			.expect("rebuilt snapshot");
+
+			assert!(!snapshot.cache_hit, "{case}");
+			assert_eq!(
+				snapshot
+					.semantic_index
+					.documents
+					.iter()
+					.map(|document| document.path.clone())
+					.collect::<Vec<_>>(),
+				vec![PathBuf::from(relative)],
+				"{case}"
+			);
+			assert!(
+				snapshot
+					.document_input_identities
+					.contains_key(&game_path(relative)),
+				"{case}"
+			);
+			let replaced = cache
+				.lookup(&mod_hash, env!("CARGO_PKG_VERSION"), "eu4")
+				.expect("the rebuild replaces the corrupt entry");
+			assert_eq!(
+				document_game_paths(&replaced.semantic_index.documents).expect(case),
+				vec![game_path(relative)],
+				"{case}"
+			);
+		}
 	}
 }

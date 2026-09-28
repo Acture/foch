@@ -1,20 +1,21 @@
 use crate::game::eu4::base::snapshot::InstalledBaseSnapshot;
 use crate::game::eu4::script::{ParsedScriptFile, parse_script_bytes_cached};
-use crate::model::ModCandidate;
+use crate::model::{GamePath, GamePathBuf, ModCandidate};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use super::LoadedModSnapshot;
 
-type ScriptCacheKey = (String, String);
+type ScriptCacheKey = (String, GamePathBuf);
 
 #[derive(Debug)]
 struct LazyScriptFile {
 	mod_id: String,
 	root_path: PathBuf,
 	absolute_path: PathBuf,
-	relative_path: PathBuf,
+	relative_path: GamePathBuf,
 	expected_size_bytes: u64,
 	expected_content_digest: String,
 	expected_parse_ok: Option<bool>,
@@ -37,12 +38,12 @@ impl InputScriptCache {
 	) -> Result<Self, String> {
 		let mut loaded = HashMap::new();
 		if let (Some(installed), Some(root)) = (installed_base_snapshot, base_game_root) {
-			match installed.snapshot.parsed_script_files(root) {
-				Ok(documents) => {
-					for document in documents {
-						insert_loaded(&mut loaded, document);
-					}
-				}
+			match installed
+				.snapshot
+				.parsed_script_files(root)
+				.and_then(index_base_scripts)
+			{
+				Ok(files) => loaded = files,
 				Err(err) => {
 					tracing::warn!(
 						target: "crate::input::scripts",
@@ -57,10 +58,7 @@ impl InputScriptCache {
 		for (mod_item, snapshot) in mods.iter().zip(mod_snapshots.iter()) {
 			if let Some(snapshot) = snapshot {
 				for (path, is_noop) in &snapshot.document_noop_hints {
-					noop_hints.insert(
-						(mod_item.mod_id.clone(), normalize_path(Path::new(path))),
-						*is_noop,
-					);
+					noop_hints.insert((mod_item.mod_id.clone(), path.clone()), *is_noop);
 				}
 			} else {
 				tracing::debug!(
@@ -79,21 +77,14 @@ impl InputScriptCache {
 			let Some(root_path) = mod_item.root_path.as_ref() else {
 				continue;
 			};
-			for (path, identity) in &snapshot.document_input_identities {
-				let relative_path = PathBuf::from(path);
-				if !is_safe_relative_path(&relative_path) {
-					return Err(format!(
-						"semantic snapshot contains unsafe path {path} for {}",
-						mod_item.mod_id
-					));
-				}
-				let key = (mod_item.mod_id.clone(), normalize_path(&relative_path));
-				let expected_parse_ok = snapshot.document_parse_hints.get(&key.1).copied();
+			for (relative_path, identity) in &snapshot.document_input_identities {
+				let key = (mod_item.mod_id.clone(), relative_path.clone());
+				let expected_parse_ok = snapshot.document_parse_hints.get(relative_path).copied();
 				let entry = Arc::new(LazyScriptFile {
 					mod_id: mod_item.mod_id.clone(),
 					root_path: root_path.clone(),
-					absolute_path: root_path.join(&relative_path),
-					relative_path,
+					absolute_path: relative_path.to_path(root_path),
+					relative_path: relative_path.clone(),
 					expected_size_bytes: identity.size_bytes,
 					expected_content_digest: identity.content_digest.clone(),
 					expected_parse_ok,
@@ -118,9 +109,9 @@ impl InputScriptCache {
 	pub(crate) fn get(
 		&self,
 		mod_id: &str,
-		relative_path: &Path,
+		relative_path: &GamePath,
 	) -> Result<Option<Arc<ParsedScriptFile>>, String> {
-		let key = (mod_id.to_string(), normalize_path(relative_path));
+		let key = (mod_id.to_string(), relative_path.to_owned());
 		if let Some(parsed) = self.loaded.get(&key) {
 			return Ok(Some(parsed.clone()));
 		}
@@ -135,13 +126,13 @@ impl InputScriptCache {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn is_loaded(&self, mod_id: &str, relative_path: &Path) -> bool {
+	pub(crate) fn is_loaded(&self, mod_id: &str, relative_path: &GamePath) -> bool {
 		matches!(self.get(mod_id, relative_path), Ok(Some(_)))
 	}
 
-	pub(crate) fn is_noop_hint(&self, mod_id: &str, relative_path: &Path) -> Option<bool> {
+	pub(crate) fn is_noop_hint(&self, mod_id: &str, relative_path: &GamePath) -> Option<bool> {
 		self.noop_hints
-			.get(&(mod_id.to_string(), normalize_path(relative_path)))
+			.get(&(mod_id.to_string(), relative_path.to_owned()))
 			.copied()
 	}
 
@@ -181,20 +172,19 @@ impl InputScriptCache {
 		&self,
 		contributor: &super::ResolvedInputContributor,
 	) -> Result<Arc<ParsedScriptFile>, String> {
-		let relative_path = contributor
-			.absolute_path
-			.strip_prefix(&contributor.root_path)
-			.map_err(|_| {
-				format!(
-					"{} is outside contributor root {}",
-					contributor.absolute_path.display(),
-					contributor.root_path.display()
-				)
-			})?;
-		if let Some(parsed) = self.get(&contributor.mod_id, relative_path)? {
+		let relative_path =
+			GamePathBuf::from_physical(&contributor.root_path, &contributor.absolute_path)
+				.map_err(|error| {
+					format!(
+						"{} has no game path under contributor root {}: {error}",
+						contributor.absolute_path.display(),
+						contributor.root_path.display()
+					)
+				})?;
+		if let Some(parsed) = self.get(&contributor.mod_id, &relative_path)? {
 			return Ok(parsed);
 		}
-		let key = (contributor.mod_id.clone(), normalize_path(relative_path));
+		let key = (contributor.mod_id.clone(), relative_path);
 		let entry = self
 			.lazy
 			.get(&key)
@@ -215,24 +205,19 @@ impl LazyScriptFile {
 		{
 			return Err(format!(
 				"lazy AST contributor identity does not match semantic snapshot for {}:{}",
-				self.mod_id,
-				normalize_path(&self.relative_path)
+				self.mod_id, self.relative_path
 			));
 		}
 		if contributor.parse_ok_hint != self.expected_parse_ok {
 			return Err(format!(
 				"lazy AST parse-status hint changed for {}:{}: snapshot={:?}, contributor={:?}",
-				self.mod_id,
-				normalize_path(&self.relative_path),
-				self.expected_parse_ok,
-				contributor.parse_ok_hint
+				self.mod_id, self.relative_path, self.expected_parse_ok, contributor.parse_ok_hint
 			));
 		}
 		if self.expected_parse_ok.is_none() {
 			return Err(format!(
 				"lazy AST has no semantic parse-status hint for {}:{}",
-				self.mod_id,
-				normalize_path(&self.relative_path)
+				self.mod_id, self.relative_path
 			));
 		}
 		Ok(())
@@ -242,15 +227,14 @@ impl LazyScriptFile {
 		let bytes = std::fs::read(&self.absolute_path).map_err(|error| {
 			format!(
 				"failed to read snapshot-bound script {}:{}: {error}",
-				self.mod_id,
-				normalize_path(&self.relative_path)
+				self.mod_id, self.relative_path
 			)
 		})?;
 		if bytes.len() as u64 != self.expected_size_bytes {
 			return Err(format!(
 				"snapshot-bound script size changed for {}:{}: expected {}, observed {}",
 				self.mod_id,
-				normalize_path(&self.relative_path),
+				self.relative_path,
 				self.expected_size_bytes,
 				bytes.len()
 			));
@@ -259,10 +243,7 @@ impl LazyScriptFile {
 		if observed_digest != self.expected_content_digest {
 			return Err(format!(
 				"snapshot-bound script digest changed for {}:{}: expected {}, observed {}",
-				self.mod_id,
-				normalize_path(&self.relative_path),
-				self.expected_content_digest,
-				observed_digest
+				self.mod_id, self.relative_path, self.expected_content_digest, observed_digest
 			));
 		}
 		let parsed =
@@ -270,45 +251,51 @@ impl LazyScriptFile {
 				.ok_or_else(|| {
 				format!(
 					"failed to parse snapshot-bound script {}:{}",
-					self.mod_id,
-					normalize_path(&self.relative_path)
+					self.mod_id, self.relative_path
 				)
 			})?;
 		let observed_parse_ok = parsed.parse_issues.is_empty();
 		if Some(observed_parse_ok) != self.expected_parse_ok {
 			return Err(format!(
 				"snapshot-bound script parse status changed for {}:{}: expected {:?}, observed {observed_parse_ok}",
-				self.mod_id,
-				normalize_path(&self.relative_path),
-				self.expected_parse_ok
+				self.mod_id, self.relative_path, self.expected_parse_ok
 			));
 		}
 		Ok(Arc::new(parsed))
 	}
 }
 
-fn insert_loaded(
-	files: &mut HashMap<ScriptCacheKey, Arc<ParsedScriptFile>>,
-	mut document: ParsedScriptFile,
-) {
-	document.source.clear();
-	let key = (
-		document.mod_id.clone(),
-		normalize_path(&document.relative_path),
-	);
-	files.insert(key, Arc::new(document));
-}
-
-fn is_safe_relative_path(path: &Path) -> bool {
-	!path.as_os_str().is_empty()
-		&& !path.is_absolute()
-		&& path
-			.components()
-			.all(|component| matches!(component, Component::Normal(_)))
-}
-
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
+/// Keys decoded base scripts by game path. Decoded documents still spell
+/// their path as a host-relative path. A document without a game path, or two
+/// documents sharing one, can only come from a corrupt section, so either is
+/// reported like a section that fails to decode rather than letting one
+/// document stand in for another.
+fn index_base_scripts(
+	documents: Vec<ParsedScriptFile>,
+) -> Result<HashMap<ScriptCacheKey, Arc<ParsedScriptFile>>, String> {
+	let mut files = HashMap::with_capacity(documents.len());
+	for mut document in documents {
+		document.source.clear();
+		let relative_path =
+			GamePathBuf::from_native_relative(&document.relative_path).map_err(|error| {
+				format!(
+					"base parsed script for {} has no valid game path: {error}",
+					document.mod_id
+				)
+			})?;
+		match files.entry((document.mod_id.clone(), relative_path)) {
+			Entry::Occupied(entry) => {
+				let (mod_id, relative_path) = entry.key();
+				return Err(format!(
+					"base parsed scripts list {mod_id}:{relative_path} more than once"
+				));
+			}
+			Entry::Vacant(entry) => {
+				entry.insert(Arc::new(document));
+			}
+		}
+	}
+	Ok(files)
 }
 
 #[cfg(test)]
@@ -319,6 +306,10 @@ mod tests {
 	use crate::playset::PlaysetEntry;
 	use std::fs;
 	use tempfile::TempDir;
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
 
 	fn contributor(root: &Path, relative: &str) -> super::super::ResolvedInputContributor {
 		super::super::ResolvedInputContributor {
@@ -344,7 +335,7 @@ mod tests {
 			.map(|relative| {
 				let bytes = fs::read(root.join(relative)).expect("read semantic input");
 				(
-					(*relative).to_string(),
+					game_path(relative),
 					CachedDocumentInputIdentity {
 						size_bytes: bytes.len() as u64,
 						content_digest: blake3::hash(&bytes).to_hex().to_string(),
@@ -365,11 +356,11 @@ mod tests {
 			descriptor: None,
 			workshop_identity: None,
 			descriptor_error: None,
-			files: files.iter().map(PathBuf::from).collect(),
+			files: files.iter().copied().map(game_path).collect(),
 		};
 		let snapshot = LoadedModSnapshot {
 			semantic_index: SemanticIndex::default(),
-			inventory_paths: files.iter().map(PathBuf::from).collect(),
+			inventory_paths: files.iter().copied().map(game_path).collect(),
 			mod_hash: Some("hash-a".to_string()),
 			parsed_files: files.len(),
 			parse_error_count: 0,
@@ -378,11 +369,11 @@ mod tests {
 			clausewitz_parse_cache_misses: 0,
 			document_parse_hints: files
 				.iter()
-				.map(|relative| ((*relative).to_string(), parse_ok))
+				.map(|relative| (game_path(relative), parse_ok))
 				.collect(),
 			document_noop_hints: noop_hints
 				.iter()
-				.map(|(relative, hint)| ((*relative).to_string(), *hint))
+				.map(|(relative, hint)| (game_path(relative), *hint))
 				.collect(),
 			document_input_identities,
 			cache_hit: true,
@@ -437,7 +428,7 @@ mod tests {
 		);
 		assert!(
 			cache
-				.get("mod-a", Path::new(relative_b))
+				.get("mod-a", &game_path(relative_b))
 				.expect("query B")
 				.is_none(),
 			"an unrelated file must remain unloaded"
@@ -505,7 +496,63 @@ mod tests {
 		fs::write(temp.path().join(relative), "# comment only\n").expect("write source");
 		let cache = cache_for_files(temp.path(), &[relative], true, &[(relative, true)]);
 
-		assert_eq!(cache.is_noop_hint("mod-a", Path::new(relative)), Some(true));
-		assert!(!cache.is_loaded("mod-a", Path::new(relative)));
+		assert_eq!(
+			cache.is_noop_hint("mod-a", &game_path(relative)),
+			Some(true)
+		);
+		assert!(!cache.is_loaded("mod-a", &game_path(relative)));
+	}
+
+	fn base_script(root: &Path, relative: &Path) -> ParsedScriptFile {
+		let mut parsed = parse_script_bytes_cached(
+			"__game__eu4",
+			root,
+			&root.join("events").join("a.txt"),
+			b"a = 1\n",
+		)
+		.expect("parse base script");
+		parsed.path = root.join(relative);
+		parsed.relative_path = relative.to_path_buf();
+		parsed
+	}
+
+	#[test]
+	fn decoded_base_scripts_are_keyed_by_game_path() {
+		let root = Path::new("/base-game");
+		let files = index_base_scripts(vec![base_script(root, Path::new("events/a.txt"))])
+			.expect("index base scripts");
+		let parsed = files
+			.get(&("__game__eu4".to_string(), game_path("events/a.txt")))
+			.expect("keyed by game path");
+		assert!(parsed.source.is_empty(), "preloaded sources are dropped");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_decoded_base_script_without_a_game_path_fails_the_section() {
+		let root = Path::new("/base-game");
+		let error = index_base_scripts(vec![base_script(root, Path::new(r"events\a.txt"))])
+			.expect_err("a literal backslash has no game path");
+		assert!(
+			error.contains("base parsed script for __game__eu4"),
+			"{error}"
+		);
+		assert!(error.contains(r"`events\a.txt`"), "{error}");
+	}
+
+	#[test]
+	fn decoded_base_scripts_sharing_a_game_path_fail_the_section() {
+		// `./` collapses when converted, so these two decoded spellings would
+		// otherwise leave only the last document under `events/a.txt`.
+		let root = Path::new("/base-game");
+		let error = index_base_scripts(vec![
+			base_script(root, Path::new("events/a.txt")),
+			base_script(root, Path::new("./events/a.txt")),
+		])
+		.expect_err("two documents cannot share one game path");
+		assert!(
+			error.contains("__game__eu4:events/a.txt more than once"),
+			"{error}"
+		);
 	}
 }

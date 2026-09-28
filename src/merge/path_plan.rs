@@ -12,8 +12,9 @@ use crate::input::{
 	ResolvedInputContributor,
 };
 use crate::model::{
-	DocumentFamily, MergeModuleOutput, MergePlanContributor, MergePlanEntry, MergePlanResult,
-	MergePlanStrategies, MergePlanStrategy, MergePlanTarget, MergeUnitId, path_is_within_namespace,
+	DocumentFamily, GamePath, MergeModuleOutput, MergePlanContributor, MergePlanEntry,
+	MergePlanResult, MergePlanStrategies, MergePlanStrategy, MergePlanTarget, MergeUnitId,
+	path_is_within_namespace,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -593,9 +594,13 @@ fn validate_structural_snapshot(
 	Ok(())
 }
 
-pub(crate) fn prune_noop_script_contributors(input: &mut ResolvedInput, profile: &Eu4) {
+pub(crate) fn prune_noop_script_contributors(
+	input: &mut ResolvedInput,
+	profile: &Eu4,
+) -> Result<(), InputResolveError> {
 	let script_cache = &input.script_cache;
-	input.file_inventory.retain(|relative_path, contributors| {
+	let mut emptied = Vec::new();
+	for (relative_path, contributors) in &mut input.file_inventory {
 		let descriptor = profile.classify_content_family(Path::new(relative_path));
 		if descriptor.is_some_and(|descriptor| {
 			matches!(
@@ -603,22 +608,34 @@ pub(crate) fn prune_noop_script_contributors(input: &mut ResolvedInput, profile:
 				ContentLoadPolicy::DefinitionModule(_)
 			)
 		}) {
-			return true;
+			continue;
 		}
 		if !is_structural_merge_path(relative_path, descriptor) {
-			return true;
+			continue;
 		}
 		if contributors.len() < 2 {
-			return true;
+			continue;
 		}
+		// Inventory keys are written from game paths, so this parse restores
+		// the typed key rather than interpreting new text.
+		let game_path = GamePath::new(relative_path).map_err(|error| InputResolveError {
+			kind: InputResolveErrorKind::Io,
+			path: input.playlist_path.clone(),
+			message: format!("inventory key is not a game path: {error}"),
+		})?;
 		contributors.retain(|contributor| {
 			contributor.is_base_game
 				|| contributor.is_synthetic_base
-				|| script_cache.is_noop_hint(&contributor.mod_id, Path::new(relative_path))
-					!= Some(true)
+				|| script_cache.is_noop_hint(&contributor.mod_id, game_path) != Some(true)
 		});
-		!contributors.is_empty()
-	});
+		if contributors.is_empty() {
+			emptied.push(relative_path.clone());
+		}
+	}
+	for relative_path in emptied {
+		input.file_inventory.remove(&relative_path);
+	}
+	Ok(())
 }
 
 fn is_text_like_overlay_path(path: &str) -> bool {
@@ -655,11 +672,11 @@ mod tests {
 	use super::build_merge_plan_from_input;
 	use crate::game::eu4::Eu4;
 	use crate::input::{ResolvedInput, ResolvedInputContributor};
-	use crate::model::{MergePlanStrategy, MergePlanTarget, ModCandidate};
+	use crate::model::{GamePath, MergePlanStrategy, MergePlanTarget, ModCandidate};
 	use crate::playset::descriptor::ModDescriptor;
 	use crate::playset::{Playset, PlaysetEntry};
 	use std::collections::{BTreeMap, BTreeSet};
-	use std::path::{Path, PathBuf};
+	use std::path::PathBuf;
 
 	fn input_with_snapshot_gap(
 		mod_id: &str,
@@ -954,11 +971,10 @@ mod tests {
 
 		assert!(!result.has_fatal_errors());
 		assert_eq!(result.paths.len(), 1);
-		assert!(
-			!input
-				.script_cache
-				.is_loaded("mod-a", Path::new("events/test.txt"))
-		);
+		assert!(!input.script_cache.is_loaded(
+			"mod-a",
+			GamePath::new("events/test.txt").expect("valid game path")
+		));
 	}
 
 	#[test]

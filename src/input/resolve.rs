@@ -17,7 +17,8 @@ use crate::game::eu4::script::documents::classify_document_family;
 use crate::input::config::Config;
 use crate::input::request::{InputRequest, InputSource};
 use crate::model::{
-	DocumentFamily, MergeUnitId, ModCandidate, ProductInputManifest, ProductInputMod,
+	DocumentFamily, GamePathBuf, GamePathError, MergeUnitId, ModCandidate, ProductInputManifest,
+	ProductInputMod,
 };
 use crate::playset::ParseErrorKind;
 use crate::playset::descriptor::load_descriptor;
@@ -350,20 +351,28 @@ fn remove_duplicate_entries(entries: &mut Vec<PlaysetEntry>, explicit: &PlaysetE
 	});
 }
 
-fn playlist_entry_identity_keys(entry: &PlaysetEntry) -> HashSet<String> {
+/// One way a playset entry names its mod. Roots compare as host paths.
+#[derive(Debug, Eq, Hash, PartialEq)]
+enum PlaylistEntryIdentity<'a> {
+	Steam(&'a str),
+	Id(&'a str),
+	Root(&'a Path),
+}
+
+fn playlist_entry_identity_keys(entry: &PlaysetEntry) -> HashSet<PlaylistEntryIdentity<'_>> {
 	let mut keys = HashSet::new();
 	if let Some(steam_id) = entry
 		.steam_id
-		.as_ref()
+		.as_deref()
 		.filter(|value| !value.trim().is_empty())
 	{
-		keys.insert(format!("steam:{steam_id}"));
+		keys.insert(PlaylistEntryIdentity::Steam(steam_id));
 	}
-	if let Some(id) = entry.id.as_ref().filter(|value| !value.trim().is_empty()) {
-		keys.insert(format!("id:{id}"));
+	if let Some(id) = entry.id.as_deref().filter(|value| !value.trim().is_empty()) {
+		keys.insert(PlaylistEntryIdentity::Id(id));
 	}
-	if let Some(root) = entry.root_path.as_ref() {
-		keys.insert(format!("path:{}", normalize_relative_path(root)));
+	if let Some(root) = entry.root_path.as_deref() {
+		keys.insert(PlaylistEntryIdentity::Root(root));
 	}
 	keys
 }
@@ -861,16 +870,22 @@ pub(crate) fn resolve_input_from_inventory(
 	let mut available_paths = mods
 		.iter()
 		.flat_map(|mod_item| mod_item.files.iter())
-		.map(|path| normalize_relative_path(path))
+		.map(|path| path.as_str())
 		.collect::<Vec<_>>();
 	if let Some(base_snapshot) = installed_base_snapshot.as_ref() {
-		available_paths.extend(base_snapshot.snapshot.inventory_paths.iter().cloned());
+		available_paths.extend(
+			base_snapshot
+				.snapshot
+				.inventory_paths
+				.iter()
+				.map(|path| path.as_str()),
+		);
 	}
 	let effective_retained_paths = expand_retained_paths_for_game(
 		&playlist.game,
 		mod_cache_game_version.as_deref(),
 		requested_retained_paths.as_ref(),
-		available_paths.iter().map(String::as_str),
+		available_paths,
 	)
 	.map_err(|message| InputResolveError {
 		kind: InputResolveErrorKind::Io,
@@ -879,9 +894,9 @@ pub(crate) fn resolve_input_from_inventory(
 	})?;
 	if let Some(effective_retained_paths) = effective_retained_paths.as_ref() {
 		for mod_item in &mut mods {
-			mod_item.files.retain(|relative| {
-				effective_retained_paths.contains(&normalize_relative_path(relative))
-			});
+			mod_item
+				.files
+				.retain(|relative| effective_retained_paths.contains(relative.as_str()));
 		}
 		for (mod_item, snapshot) in mods.iter().zip(mod_snapshots.iter_mut()) {
 			let Some(full_snapshot) = snapshot.as_ref() else {
@@ -1251,17 +1266,15 @@ fn resolve_mod_root(
 		.find(|candidate| candidate.is_dir())
 }
 
-fn dedup_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+/// Drops repeated physical candidates, keeping the first. Candidates compare
+/// as host paths: two spellings are the same candidate only when the host
+/// parses them into the same components.
+pub(crate) fn dedup_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 	let mut seen = HashSet::new();
-	let mut result = Vec::new();
-	for candidate in candidates {
-		let key = candidate.to_string_lossy().replace('\\', "/");
-		if !seen.insert(key) {
-			continue;
-		}
-		result.push(candidate);
-	}
-	result
+	candidates
+		.into_iter()
+		.filter(|candidate| seen.insert(candidate.clone()))
+		.collect()
 }
 
 fn paradox_game_data_dirs(base: &Path, game: &Eu4) -> Vec<PathBuf> {
@@ -1287,29 +1300,75 @@ fn resolve_mod_from_ugc_descriptor(game_data_dir: &Path, steam_id: &str) -> Opti
 		.find(|candidate| candidate.is_dir())
 }
 
+/// Where a launcher descriptor's `path` may point. The launcher writes `path`
+/// for the host it runs on, so it is read with host syntax only: a separator
+/// the host does not use stays part of a name rather than being guessed into
+/// a directory boundary. A relative `path` is tried under the game data
+/// directory and under its `mod` directory.
 fn descriptor_path_candidates(game_data_dir: &Path, raw: &str) -> Vec<PathBuf> {
-	let mut fragments = vec![raw.to_string()];
-	if raw.contains('\\') {
-		fragments.push(raw.replace('\\', "/"));
-	}
-	if raw.contains('/') {
-		fragments.push(raw.replace('/', "\\"));
-	}
-
+	let path = PathBuf::from(raw);
 	let mut candidates = Vec::new();
-	for fragment in fragments {
-		let path = PathBuf::from(&fragment);
-		if path.is_absolute() {
-			candidates.push(path.clone());
-		}
-		candidates.push(game_data_dir.join(&path));
-		candidates.push(game_data_dir.join("mod").join(&path));
+	if path.is_absolute() {
+		candidates.push(path.clone());
 	}
-
+	candidates.push(game_data_dir.join(&path));
+	candidates.push(game_data_dir.join("mod").join(&path));
 	dedup_candidates(candidates)
 }
 
-pub(crate) fn collect_relative_files(root: &Path, filter: &FileFilter) -> io::Result<Vec<PathBuf>> {
+/// Whose tree an inventory walk reads, for diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InventoryOwner<'a> {
+	BaseGame,
+	Mod(&'a str),
+}
+
+/// A file under a walked root whose name has no portable game path. It is
+/// reported instead of rewritten: any rewrite could give it the identity of
+/// another file (`a\b.txt` next to `a/b.txt`, or two non-UTF-8 names that
+/// render alike) or place it outside the root.
+#[derive(Debug)]
+pub(crate) struct UnportableInventoryPath {
+	/// `None` for the base game.
+	pub mod_id: Option<String>,
+	pub root: PathBuf,
+	pub physical: PathBuf,
+	pub source: GamePathError,
+}
+
+impl fmt::Display for UnportableInventoryPath {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match &self.mod_id {
+			Some(mod_id) => write!(f, "mod {mod_id}")?,
+			None => f.write_str("base game")?,
+		}
+		write!(
+			f,
+			": {} under root {} has no portable game path: {}",
+			self.physical.display(),
+			self.root.display(),
+			self.source.kind
+		)
+	}
+}
+
+impl Error for UnportableInventoryPath {
+	fn source(&self) -> Option<&(dyn Error + 'static)> {
+		Some(&self.source)
+	}
+}
+
+/// Lists every file the game would load under `root` as game paths in byte
+/// order. This is the one place a walked physical file enters the game's
+/// namespace: a name without a portable game path, and any walk error, fails
+/// the whole inventory. Top-level directories that are not loadable roots are
+/// pruned by name before descent; a top-level name that is not UTF-8 is not a
+/// loadable root.
+pub(crate) fn collect_relative_files(
+	root: &Path,
+	filter: &FileFilter,
+	owner: InventoryOwner<'_>,
+) -> io::Result<Vec<GamePathBuf>> {
 	let loadable_roots = filter.game().loadable_content_roots();
 	let entries = WalkDir::new(root)
 		.follow_links(false)
@@ -1321,10 +1380,11 @@ pub(crate) fn collect_relative_files(root: &Path, filter: &FileFilter) -> io::Re
 			let Some(loadable_roots) = loadable_roots else {
 				return true;
 			};
-			let name = entry.file_name().to_string_lossy();
-			loadable_roots
-				.iter()
-				.any(|root_name| name.eq_ignore_ascii_case(root_name))
+			entry.file_name().to_str().is_some_and(|name| {
+				loadable_roots
+					.iter()
+					.any(|root_name| name.eq_ignore_ascii_case(root_name))
+			})
 		})
 		.map(|entry| {
 			entry.map_err(|error| {
@@ -1334,14 +1394,15 @@ pub(crate) fn collect_relative_files(root: &Path, filter: &FileFilter) -> io::Re
 				io::Error::new(kind, error.to_string())
 			})
 		});
-	collect_relative_files_from_entries(root, filter, entries)
+	collect_relative_files_from_entries(root, filter, owner, entries)
 }
 
 fn collect_relative_files_from_entries(
 	root: &Path,
 	filter: &FileFilter,
+	owner: InventoryOwner<'_>,
 	entries: impl IntoIterator<Item = io::Result<walkdir::DirEntry>>,
-) -> io::Result<Vec<PathBuf>> {
+) -> io::Result<Vec<GamePathBuf>> {
 	let mut files = Vec::new();
 
 	for entry in entries {
@@ -1355,24 +1416,36 @@ fn collect_relative_files_from_entries(
 			continue;
 		}
 
-		let relative = path.strip_prefix(root).map_err(|error| {
-			io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!(
-					"walked path {} escaped root {}: {error}",
-					path.display(),
-					root.display()
-				),
-			)
-		})?;
-		if !filter.accepts(relative) {
-			continue;
+		let relative = inventory_path(owner, root, path)?;
+		if filter.accepts(&relative) {
+			files.push(relative);
 		}
-		files.push(relative.to_path_buf());
 	}
 
 	files.sort();
 	Ok(files)
+}
+
+/// The game path of `physical`, a file walked under `root`.
+fn inventory_path(
+	owner: InventoryOwner<'_>,
+	root: &Path,
+	physical: &Path,
+) -> io::Result<GamePathBuf> {
+	GamePathBuf::from_physical(root, physical).map_err(|source| {
+		io::Error::new(
+			io::ErrorKind::InvalidData,
+			UnportableInventoryPath {
+				mod_id: match owner {
+					InventoryOwner::BaseGame => None,
+					InventoryOwner::Mod(mod_id) => Some(mod_id.to_string()),
+				},
+				root: root.to_path_buf(),
+				physical: physical.to_path_buf(),
+				source,
+			},
+		)
+	})
 }
 
 pub(crate) fn build_file_inventory(
@@ -1391,17 +1464,17 @@ pub(crate) fn build_file_inventory(
 		let mod_id = base_game_mod_id(playlist.game.key());
 		let document_lookup = snapshot.snapshot.document_lookup();
 		for relative in &snapshot.snapshot.inventory_paths {
-			if retained_paths.is_some_and(|paths| !paths.contains(relative)) {
+			if retained_paths.is_some_and(|paths| !paths.contains(relative.as_str())) {
 				continue;
 			}
 			let document = document_lookup.get(relative.as_str());
 			inventory
-				.entry(relative.clone())
+				.entry(relative.as_str().to_owned())
 				.or_insert_with(Vec::new)
 				.push(ResolvedInputContributor {
 					mod_id: mod_id.clone(),
 					root_path: root.clone(),
-					absolute_path: root.join(relative),
+					absolute_path: relative.to_path(root),
 					precedence,
 					is_base_game: true,
 					is_synthetic_base: false,
@@ -1426,15 +1499,14 @@ pub(crate) fn build_file_inventory(
 			.and_then(|snapshot| snapshot.mod_hash.clone())
 			.or_else(|| mod_hashes.get(idx).cloned().flatten());
 		for relative in &mod_item.files {
-			let key = normalize_relative_path(relative);
-			let parse_ok_hint = parse_hints.and_then(|hints| hints.get(&key).copied());
+			let parse_ok_hint = parse_hints.and_then(|hints| hints.get(relative).copied());
 			inventory
-				.entry(key)
+				.entry(relative.as_str().to_owned())
 				.or_insert_with(Vec::new)
 				.push(ResolvedInputContributor {
 					mod_id: mod_item.mod_id.clone(),
 					root_path: root.clone(),
-					absolute_path: root.join(relative),
+					absolute_path: relative.to_path(root),
 					precedence,
 					is_base_game: false,
 					is_synthetic_base: false,
@@ -1491,6 +1563,7 @@ pub(crate) fn inject_synthetic_bases(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::model::GamePathErrorKind;
 	use crate::playset::steam::SteamId;
 	use std::fs;
 	use tempfile::TempDir;
@@ -1542,6 +1615,191 @@ mod tests {
 		InputRequest::from_manifest_path(path.to_path_buf(), Config::default())
 	}
 
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn unportable(error: &io::Error) -> &UnportableInventoryPath {
+		error
+			.get_ref()
+			.and_then(|source| source.downcast_ref::<UnportableInventoryPath>())
+			.unwrap_or_else(|| panic!("expected an unportable inventory path, got {error}"))
+	}
+
+	/// A mod holding both `common/a/b.txt` and a file literally named
+	/// `common/a\b.txt`. Only a Unix host can create the second name.
+	#[cfg(unix)]
+	fn write_backslash_alias_mod(root: &Path) -> PathBuf {
+		fs::create_dir_all(root.join("common").join("a")).expect("create nested directory");
+		fs::write(
+			root.join("common").join("a").join("b.txt"),
+			"nested = yes\n",
+		)
+		.expect("write nested file");
+		let literal = root.join("common").join(r"a\b.txt");
+		fs::write(&literal, "literal = yes\n").expect("write literal-backslash file");
+		literal
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_literal_backslash_name_fails_the_inventory_instead_of_aliasing_a_nested_file() {
+		let temp = TempDir::new().expect("tempdir");
+		let root = temp.path().join("mod");
+		let literal = write_backslash_alias_mod(&root);
+
+		let error = collect_relative_files(
+			&root,
+			&FileFilter::for_game(Eu4),
+			InventoryOwner::Mod("1001"),
+		)
+		.expect_err("a literal backslash has no portable game path");
+
+		assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+		let diagnostic = unportable(&error);
+		assert_eq!(diagnostic.mod_id.as_deref(), Some("1001"));
+		assert_eq!(diagnostic.root, root);
+		assert_eq!(diagnostic.physical, literal);
+		assert_eq!(
+			diagnostic.source.kind,
+			GamePathErrorKind::ReservedCharacter {
+				component: r"a\b.txt".to_string(),
+				character: '\\',
+			}
+		);
+		let message = error.to_string();
+		assert!(message.starts_with("mod 1001: "), "{message}");
+		assert!(
+			message.contains(&literal.display().to_string()),
+			"{message}"
+		);
+		assert!(message.contains(&root.display().to_string()), "{message}");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_literal_backslash_name_reaches_the_user_as_an_input_error_for_its_mod() {
+		let temp = TempDir::new().expect("tempdir");
+		let mod_root = temp.path().join("alias_mod");
+		write_descriptor(&mod_root, "Alias Mod", None);
+		write_backslash_alias_mod(&mod_root);
+		let manifest_path = temp.path().join("foch.toml");
+		fs::write(
+			&manifest_path,
+			r#"
+[project]
+game = "eu4"
+
+[[project.mods]]
+id = "alias_id"
+path = "alias_mod"
+"#,
+		)
+		.expect("write manifest");
+
+		let error = resolve_input(&request_for_manifest(&manifest_path), false)
+			.expect_err("an unportable mod file must fail input resolution");
+
+		assert_eq!(error.kind, InputResolveErrorKind::Io);
+		assert_eq!(error.path, mod_root);
+		// The id differs from the directory name, so only the walker's own
+		// diagnostic can supply `mod alias_id: `.
+		assert!(error.message.contains("mod alias_id: "), "{error}");
+		assert!(
+			error
+				.message
+				.contains(&format!("under root {} has", mod_root.display())),
+			"{error}"
+		);
+		assert!(error.message.contains(r"a\b.txt"), "{error}");
+		assert!(error.message.contains("no portable game path"), "{error}");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn distinct_non_utf8_names_are_rejected_instead_of_sharing_one_game_path() {
+		// In-memory paths: some filesystems (APFS among them) refuse to create
+		// names that are not valid UTF-8, so the walker's conversion step is
+		// exercised directly.
+		use std::ffi::OsString;
+		use std::os::unix::ffi::OsStringExt;
+
+		let root = Path::new("/base-game");
+		let diagnostics = [b"\xff.txt".to_vec(), b"\xfe.txt".to_vec()].map(|name| {
+			let physical = root.join("common").join(OsString::from_vec(name));
+			let error = inventory_path(InventoryOwner::BaseGame, root, &physical)
+				.expect_err("a non-UTF-8 name has no portable game path");
+			let diagnostic = unportable(&error);
+			assert_eq!(diagnostic.mod_id, None);
+			assert_eq!(diagnostic.root, root);
+			assert_eq!(diagnostic.source.kind, GamePathErrorKind::NonUtf8);
+			assert!(error.to_string().starts_with("base game: "), "{error}");
+			diagnostic.physical.clone()
+		});
+		assert_ne!(diagnostics[0], diagnostics[1]);
+	}
+
+	#[test]
+	fn descriptor_path_is_read_with_host_syntax_only() {
+		let game_data_dir = Path::new("/paradox/Europa Universalis IV");
+		assert_eq!(
+			descriptor_path_candidates(game_data_dir, "mod/local_mod"),
+			vec![
+				game_data_dir.join("mod/local_mod"),
+				game_data_dir.join("mod").join("mod/local_mod"),
+			]
+		);
+
+		let absolute = std::env::temp_dir().join("workshop").join("1001");
+		let absolute_text = absolute.to_str().expect("UTF-8 temp dir");
+		assert_eq!(
+			descriptor_path_candidates(game_data_dir, absolute_text),
+			vec![absolute],
+			"an absolute path is one candidate, not re-read under the data directory"
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_foreign_separator_in_a_descriptor_path_stays_part_of_the_name() {
+		let game_data_dir = Path::new("/paradox/Europa Universalis IV");
+		let candidates = descriptor_path_candidates(game_data_dir, r"mod\local_mod");
+		assert_eq!(
+			candidates,
+			vec![
+				game_data_dir.join(r"mod\local_mod"),
+				game_data_dir.join("mod").join(r"mod\local_mod"),
+			]
+		);
+		assert!(!candidates.contains(&game_data_dir.join("mod").join("local_mod")));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn physical_candidates_are_distinct_unless_the_host_parses_them_alike() {
+		let nested = PathBuf::from("/mods/a/b");
+		let literal = PathBuf::from(r"/mods/a\b");
+		assert_eq!(
+			dedup_candidates(vec![
+				nested.clone(),
+				literal.clone(),
+				nested.clone(),
+				PathBuf::from("/mods//a/b"),
+			]),
+			vec![nested.clone(), literal.clone()]
+		);
+
+		let entry = |root: &Path| PlaysetEntry {
+			root_path: Some(root.to_path_buf()),
+			..PlaysetEntry::default()
+		};
+		let mut entries = vec![entry(&literal)];
+		remove_duplicate_entries(&mut entries, &entry(&nested));
+		assert_eq!(entries.len(), 1, "distinct roots are distinct mods");
+		remove_duplicate_entries(&mut entries, &entry(&literal));
+		assert!(entries.is_empty(), "the same root is the same mod");
+	}
+
 	#[test]
 	fn relative_file_inventory_propagates_walk_errors() {
 		let filter = FileFilter::for_game(Eu4);
@@ -1552,6 +1810,7 @@ mod tests {
 		let error = collect_relative_files_from_entries(
 			Path::new("/synthetic-mod-root"),
 			&filter,
+			InventoryOwner::Mod("mod-a"),
 			[Err(injected_error)],
 		)
 		.expect_err("directory traversal errors must fail the inventory");
@@ -1575,7 +1834,7 @@ mod tests {
 			descriptor: None,
 			workshop_identity: Some(identity.clone()),
 			descriptor_error: None,
-			files: files.into_iter().map(PathBuf::from).collect(),
+			files: files.into_iter().map(game_path).collect(),
 		};
 		let first = candidate(
 			"mod-a",
@@ -1639,13 +1898,91 @@ mod tests {
 		fs::set_permissions(root.join("irrelevant"), fs::Permissions::from_mode(0o000))
 			.expect("poison irrelevant subtree");
 
-		let result = collect_relative_files(&root, &FileFilter::for_game(Eu4));
+		let result = collect_relative_files(
+			&root,
+			&FileFilter::for_game(Eu4),
+			InventoryOwner::Mod("mod-a"),
+		);
 		fs::set_permissions(root.join("irrelevant"), fs::Permissions::from_mode(0o700))
 			.expect("restore irrelevant subtree");
 
 		assert_eq!(
 			result.expect("non-loadable subtree must be pruned"),
-			vec![PathBuf::from("common/countries/A.txt")]
+			vec![game_path("common/countries/A.txt")]
+		);
+	}
+
+	#[test]
+	fn relative_file_inventory_is_in_byte_order_not_component_order() {
+		// The mod snapshot store accepts only a strictly byte-ordered
+		// inventory, and nothing re-sorts the walker's result before it is
+		// stored, so this order is what keeps the disk cache usable.
+		let temp = TempDir::new().expect("tempdir");
+		let root = temp.path().join("mod");
+		fs::create_dir_all(root.join("common").join("a")).expect("create nested directory");
+		fs::write(root.join("common").join("a").join("b.txt"), "b = { }\n")
+			.expect("write nested file");
+		fs::write(root.join("common").join("a-b.txt"), "a = { }\n").expect("write dashed file");
+
+		let files = collect_relative_files(
+			&root,
+			&FileFilter::for_game(Eu4),
+			InventoryOwner::Mod("mod-a"),
+		)
+		.expect("collect relative files");
+
+		assert_eq!(
+			files,
+			vec![game_path("common/a-b.txt"), game_path("common/a/b.txt")]
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn unportable_names_outside_loadable_roots_are_pruned_before_conversion() {
+		let temp = TempDir::new().expect("tempdir");
+		let root = temp.path().join("mod");
+		fs::create_dir_all(root.join("common")).expect("create loadable root");
+		fs::create_dir_all(root.join("irrelevant")).expect("create non-loadable root");
+		fs::write(root.join("common").join("kept.txt"), "k = { }\n").expect("write kept file");
+		// A root-level file whose name only looks like `common/foo.txt`, and a
+		// backslash name below a folder the game never loads.
+		fs::write(root.join(r"common\foo.txt"), "f = { }\n").expect("write root-level name");
+		fs::write(root.join("irrelevant").join(r"x\y.txt"), "x = { }\n")
+			.expect("write non-loadable name");
+
+		let files = collect_relative_files(
+			&root,
+			&FileFilter::for_game(Eu4),
+			InventoryOwner::Mod("mod-a"),
+		)
+		.expect("pruned names are never converted");
+
+		assert_eq!(files, vec![game_path("common/kept.txt")]);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn an_unportable_name_under_a_loadable_root_fails_even_when_a_glob_would_ignore_it() {
+		// Conversion precedes the extra-ignore globs: a glob matches portable
+		// text, and an unportable name has none to match.
+		let temp = TempDir::new().expect("tempdir");
+		let root = temp.path().join("mod");
+		fs::create_dir_all(root.join("common")).expect("create loadable root");
+		fs::write(root.join("common").join(r"a\b.bak"), "b = { }\n").expect("write ignored name");
+		let filter = FileFilter::new(Eu4, &["*.bak".to_string()]).expect("valid glob");
+
+		let error = collect_relative_files(&root, &filter, InventoryOwner::Mod("mod-a"))
+			.expect_err("an unportable name has no portable game path");
+
+		let diagnostic = unportable(&error);
+		assert_eq!(diagnostic.physical, root.join("common").join(r"a\b.bak"));
+		assert_eq!(
+			diagnostic.source.kind,
+			GamePathErrorKind::ReservedCharacter {
+				component: r"a\b.bak".to_string(),
+				character: '\\',
+			}
 		);
 	}
 
@@ -1960,7 +2297,7 @@ path = "governments_mod"
 		let retained_files = input.mods[0]
 			.files
 			.iter()
-			.map(|path| normalize_relative_path(path))
+			.map(|path| path.as_str().to_owned())
 			.collect::<BTreeSet<_>>();
 		assert_eq!(
 			retained_files,

@@ -21,7 +21,7 @@ use foch::game::eu4::script::definition_module::{DefinitionModuleInput, load_def
 use foch::game::eu4::script::documents::classify_document_family;
 use foch::game::eu4::script::parse_script_file;
 use foch::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
-use foch::model::{DeferredUnitReason, DocumentFamily, MergeReport};
+use foch::model::{DeferredUnitReason, DocumentFamily, GamePath, GamePathBuf, MergeReport};
 use foch::playset::descriptor::load_descriptor;
 use regex::Regex;
 
@@ -158,12 +158,10 @@ pub fn reference_output_files(compatch_dir: &Path) -> io::Result<Vec<String>> {
 		if !entry.file_type().is_file() {
 			continue;
 		}
-		let relative = entry
-			.path()
-			.strip_prefix(compatch_dir)
+		let relative = GamePathBuf::from_physical(compatch_dir, entry.path())
 			.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-		if is_supported_text_document(relative) {
-			out.push(relative.to_string_lossy().replace('\\', "/"));
+		if is_supported_game_document(&relative) {
+			out.push(relative.into_string());
 		}
 	}
 	out.sort();
@@ -190,10 +188,19 @@ fn walk_entry_is_under_loadable_root(
 		.any(|candidate| top_level.eq_ignore_ascii_case(candidate))
 }
 
-fn is_supported_text_document(relative: &Path) -> bool {
+/// Whether scorer text in the portable `/` syntax names a supported document.
+/// This is a text-level predicate: text that is not a game path names no
+/// document, and every caller either rejects it or received it from a
+/// validating walk. Walked files are converted with
+/// [`GamePathBuf::from_physical`] instead, so an unportable name fails the walk.
+fn is_supported_text_document(relative: &str) -> bool {
+	GamePath::new(relative).is_ok_and(is_supported_game_document)
+}
+
+fn is_supported_game_document(relative: &GamePath) -> bool {
 	Eu4.is_loadable_content_path(relative)
 		&& matches!(
-			classify_document_family(relative),
+			classify_document_family(&relative.to_path("")),
 			Some(
 				DocumentFamily::Clausewitz
 					| DocumentFamily::Localisation
@@ -217,7 +224,7 @@ pub fn scoring_reference_units(reference_paths: &[String]) -> Vec<String> {
 	let mut units = BTreeSet::new();
 	let mut module_units = BTreeMap::new();
 	for rel in reference_paths {
-		if !is_supported_text_document(Path::new(rel)) {
+		if !is_supported_text_document(rel) {
 			continue;
 		}
 		if let Some(policy) = definition_module_policy_for_path(rel) {
@@ -253,7 +260,7 @@ pub fn scoring_evidence_files(root: &Path, scoring_unit: &str) -> io::Result<Vec
 			format!("unsafe scoring unit path {scoring_unit:?}"),
 		));
 	}
-	if !is_supported_text_document(relative) {
+	if !is_supported_text_document(scoring_unit) {
 		return Err(io::Error::new(
 			io::ErrorKind::InvalidInput,
 			format!("unsupported scoring unit document {scoring_unit:?}"),
@@ -271,12 +278,10 @@ pub fn scoring_evidence_files(root: &Path, scoring_unit: &str) -> io::Result<Vec
 					if !entry.file_type().is_file() {
 						continue;
 					}
-					let relative = entry
-						.path()
-						.strip_prefix(root)
+					let relative = GamePathBuf::from_physical(root, entry.path())
 						.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-					if is_supported_text_document(relative) {
-						paths.insert(relative.to_string_lossy().replace('\\', "/"));
+					if is_supported_game_document(&relative) {
+						paths.insert(relative.into_string());
 					}
 				}
 			}
@@ -302,11 +307,11 @@ pub fn scoring_evidence_files(root: &Path, scoring_unit: &str) -> io::Result<Vec
 /// Path-scoped units admit only their exact path; definition-module units admit
 /// only files inside the policy-owned namespace. The descriptor is shared by
 /// every unit because it controls replace-path visibility.
-pub fn scoring_evidence_path_belongs_to_unit(scoring_unit: &str, relative_path: &str) -> bool {
+pub fn scoring_evidence_path_belongs_to_unit(scoring_unit: &str, relative_text: &str) -> bool {
 	let scoring_path = Path::new(scoring_unit);
-	let relative_path = Path::new(relative_path);
+	let relative_path = Path::new(relative_text);
 	if scoring_unit.is_empty()
-		|| !is_supported_text_document(scoring_path)
+		|| !is_supported_text_document(scoring_unit)
 		|| relative_path.is_absolute()
 		|| relative_path.components().any(|component| {
 			matches!(
@@ -322,7 +327,7 @@ pub fn scoring_evidence_path_belongs_to_unit(scoring_unit: &str, relative_path: 
 	if relative_path == Path::new("descriptor.mod") {
 		return true;
 	}
-	if !is_supported_text_document(relative_path) {
+	if !is_supported_text_document(relative_text) {
 		return false;
 	}
 	definition_module_policy_for_path(scoring_unit).map_or_else(
@@ -1197,11 +1202,13 @@ fn collect_module_files(
 			continue;
 		}
 		let path = entry.into_path();
-		let relative = path.strip_prefix(root).ok()?;
-		if !is_supported_text_document(relative) {
+		// An unportable name fails the walk like an I/O error: the module view
+		// must not silently omit a file the game may load.
+		let relative = GamePathBuf::from_physical(root, &path).ok()?;
+		if !is_supported_game_document(&relative) {
 			continue;
 		}
-		files.push((relative_module_path(root, &path), path));
+		files.push((relative.into_string(), path));
 	}
 	files.sort_by(|left, right| left.0.cmp(&right.0));
 	Some(files)
@@ -1210,13 +1217,6 @@ fn collect_module_files(
 fn hash_module_component(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 	hasher.update(&(bytes.len() as u64).to_le_bytes());
 	hasher.update(bytes);
-}
-
-fn relative_module_path(root: &Path, path: &Path) -> String {
-	path.strip_prefix(root)
-		.unwrap_or(path)
-		.to_string_lossy()
-		.replace('\\', "/")
 }
 
 fn canonical_module_assignment(
@@ -3083,6 +3083,33 @@ mod classify_tests {
 		assert_eq!(view.len(), 2);
 		assert!(view.contains_key("modifier:estate_balance"));
 		assert!(view.contains_key("modifier:estate_support"));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn walked_evidence_with_an_unportable_name_fails_instead_of_being_skipped() {
+		let root = tempfile::tempdir().unwrap();
+		write_file(root.path(), "common/governments/a.txt", "monarchy = {}\n");
+		// On a Unix host a backslash is part of one name, which has no
+		// portable game path; the product inventory rejects it the same way.
+		write_file(
+			root.path(),
+			r"common/governments/a\b.txt",
+			"republic = {}\n",
+		);
+
+		let error = scoring_evidence_files(root.path(), GOVERNMENTS_OUTPUT)
+			.expect_err("an unportable module file must fail the evidence walk");
+		assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+		assert!(error.to_string().contains(r"a\b.txt"), "{error}");
+		assert!(
+			collect_module_files(
+				root.path(),
+				walkdir::WalkDir::new(root.path().join("common/governments"))
+			)
+			.is_none(),
+			"an unportable module file must not become an incomplete module view"
+		);
 	}
 
 	#[test]

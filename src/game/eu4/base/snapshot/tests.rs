@@ -19,7 +19,7 @@ use crate::game::eu4::content::ScriptFileKind;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::parse_clausewitz_content;
 use crate::model::{
-	DocumentFamily, DocumentRecord, LocalisationDefinition, MaybeScope, ParamContract,
+	DocumentFamily, DocumentRecord, GamePathBuf, LocalisationDefinition, MaybeScope, ParamContract,
 	ResourceReference, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind, base_scope,
 	test_support,
 };
@@ -27,6 +27,10 @@ use filetime::{FileTime, set_file_mtime};
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
+
+fn game_path(text: &str) -> GamePathBuf {
+	GamePathBuf::parse(text).expect("valid game path")
+}
 
 fn tamper_snapshot_preserving_len_and_mtime(path: &std::path::Path) {
 	let metadata = std::fs::metadata(path).expect("snapshot metadata");
@@ -93,7 +97,7 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 	BaseAnalysisSnapshot::from_semantic_index(
 		&Eu4,
 		"schema-test",
-		vec!["common/scripted_effects/test.txt".to_string()],
+		vec![game_path("common/scripted_effects/test.txt")],
 		&index,
 		Default::default(),
 	)
@@ -103,7 +107,7 @@ fn alternate_valid_snapshot() -> BaseAnalysisSnapshot {
 	let mut snapshot = sample_snapshot_with_contract();
 	snapshot
 		.inventory_paths
-		.push("common/scripted_effects/alternate.txt".to_string());
+		.push(game_path("common/scripted_effects/alternate.txt"));
 	snapshot
 }
 
@@ -157,7 +161,7 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 	let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
 		&Eu4,
 		"parsed-script-test",
-		vec![relative_path.to_string_lossy().to_string()],
+		vec![GamePathBuf::from_native_relative(&relative_path).expect("valid game path")],
 		&index,
 		Default::default(),
 		parsed_scripts,
@@ -225,7 +229,7 @@ fn decoding_a_foreign_snapshot_restores_the_relative_ast_path() {
 	let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
 		&Eu4,
 		"foreign-snapshot-test",
-		vec![relative_path.to_string_lossy().to_string()],
+		vec![GamePathBuf::from_native_relative(&relative_path).expect("valid game path")],
 		&index,
 		Default::default(),
 		parsed_scripts,
@@ -1560,69 +1564,202 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		&Eu4,
 		"coverage-test",
 		vec![
-			"common/country_tags/00_countries.txt".to_string(),
-			"common/countries/Sweden.txt".to_string(),
-			"common/units/swedish_tercio.txt".to_string(),
-			"common/religions/00_religion.txt".to_string(),
-			"common/subject_types/00_subject_types.txt".to_string(),
-			"common/rebel_types/independence_rebels.txt".to_string(),
-			"common/disasters/civil_war.txt".to_string(),
-			"common/government_mechanics/18_parliament_vs_monarchy.txt".to_string(),
-			"common/peace_treaties/00_peace_treaties.txt".to_string(),
-			"common/bookmarks/a_new_world.txt".to_string(),
-			"common/policies/00_adm.txt".to_string(),
-			"common/mercenary_companies/00_mercenaries.txt".to_string(),
-			"common/fervor/00_fervor.txt".to_string(),
-			"common/decrees/00_china.txt".to_string(),
-			"common/federation_advancements/00_default.txt".to_string(),
-			"common/golden_bulls/00_golden_bulls.txt".to_string(),
-			"common/flagship_modifications/00_flagship_modifications.txt".to_string(),
-			"common/holy_orders/00_holy_orders.txt".to_string(),
-			"common/naval_doctrines/00_naval_doctrines.txt".to_string(),
-			"common/defender_of_faith/00_defender_of_faith.txt".to_string(),
-			"common/isolationism/00_shinto.txt".to_string(),
-			"common/professionalism/00_modifiers.txt".to_string(),
-			"common/powerprojection/00_static.txt".to_string(),
-			"common/subject_type_upgrades/00_subject_type_upgrades.txt".to_string(),
-			"common/ages/00_ages.txt".to_string(),
-			"common/scripted_triggers/00_triggers.txt".to_string(),
-			"common/diplomatic_actions/00_actions.txt".to_string(),
-			"common/new_diplomatic_actions/00_actions.txt".to_string(),
-			"common/buildings/buildings.txt".to_string(),
-			"common/institutions/institutions.txt".to_string(),
-			"common/great_projects/00_coverage_projects.txt".to_string(),
-			"common/technologies/adm.txt".to_string(),
-			"common/technology.txt".to_string(),
-			"common/estate_agendas/00_generic_agendas.txt".to_string(),
-			"common/estate_privileges/01_church_privileges.txt".to_string(),
-			"common/estates/01_church.txt".to_string(),
-			"common/parliament_bribes/administrative_support.txt".to_string(),
-			"common/parliament_issues/00_adm_parliament_issues.txt".to_string(),
-			"common/state_edicts/edict_of_governance.txt".to_string(),
-			"common/achievements.txt".to_string(),
-			"common/church_aspects/00_church_aspects.txt".to_string(),
-			"common/factions/00_factions.txt".to_string(),
-			"common/hegemons/0_economic_hegemon.txt".to_string(),
-			"common/personal_deities/00_hindu_deities.txt".to_string(),
-			"common/fetishist_cults/00_fetishist_cults.txt".to_string(),
-			"common/scripted_effects/test.txt".to_string(),
-			"history/countries/SWE - Sweden.txt".to_string(),
-			"history/provinces/1 - Stockholm.txt".to_string(),
-			"common/province_names/sorbian.txt".to_string(),
-			"map/random/tiles/tile0.txt".to_string(),
-			"map/random/RandomLandNames.txt".to_string(),
-			"map/random/RNWScenarios.txt".to_string(),
-			"history/diplomacy/hre.txt".to_string(),
-			"history/advisors/00_england.txt".to_string(),
-			"history/wars/sample.txt".to_string(),
-			"localisation/english/test_l_english.yml".to_string(),
-			"patchnotes/1_36.txt".to_string(),
-			"builtin_dlc/builtin_dlc.txt".to_string(),
-			"checksum_manifest.txt".to_string(),
+			game_path("common/country_tags/00_countries.txt"),
+			game_path("common/countries/Sweden.txt"),
+			game_path("common/units/swedish_tercio.txt"),
+			game_path("common/religions/00_religion.txt"),
+			game_path("common/subject_types/00_subject_types.txt"),
+			game_path("common/rebel_types/independence_rebels.txt"),
+			game_path("common/disasters/civil_war.txt"),
+			game_path("common/government_mechanics/18_parliament_vs_monarchy.txt"),
+			game_path("common/peace_treaties/00_peace_treaties.txt"),
+			game_path("common/bookmarks/a_new_world.txt"),
+			game_path("common/policies/00_adm.txt"),
+			game_path("common/mercenary_companies/00_mercenaries.txt"),
+			game_path("common/fervor/00_fervor.txt"),
+			game_path("common/decrees/00_china.txt"),
+			game_path("common/federation_advancements/00_default.txt"),
+			game_path("common/golden_bulls/00_golden_bulls.txt"),
+			game_path("common/flagship_modifications/00_flagship_modifications.txt"),
+			game_path("common/holy_orders/00_holy_orders.txt"),
+			game_path("common/naval_doctrines/00_naval_doctrines.txt"),
+			game_path("common/defender_of_faith/00_defender_of_faith.txt"),
+			game_path("common/isolationism/00_shinto.txt"),
+			game_path("common/professionalism/00_modifiers.txt"),
+			game_path("common/powerprojection/00_static.txt"),
+			game_path("common/subject_type_upgrades/00_subject_type_upgrades.txt"),
+			game_path("common/ages/00_ages.txt"),
+			game_path("common/scripted_triggers/00_triggers.txt"),
+			game_path("common/diplomatic_actions/00_actions.txt"),
+			game_path("common/new_diplomatic_actions/00_actions.txt"),
+			game_path("common/buildings/buildings.txt"),
+			game_path("common/institutions/institutions.txt"),
+			game_path("common/great_projects/00_coverage_projects.txt"),
+			game_path("common/technologies/adm.txt"),
+			game_path("common/technology.txt"),
+			game_path("common/estate_agendas/00_generic_agendas.txt"),
+			game_path("common/estate_privileges/01_church_privileges.txt"),
+			game_path("common/estates/01_church.txt"),
+			game_path("common/parliament_bribes/administrative_support.txt"),
+			game_path("common/parliament_issues/00_adm_parliament_issues.txt"),
+			game_path("common/state_edicts/edict_of_governance.txt"),
+			game_path("common/achievements.txt"),
+			game_path("common/church_aspects/00_church_aspects.txt"),
+			game_path("common/factions/00_factions.txt"),
+			game_path("common/hegemons/0_economic_hegemon.txt"),
+			game_path("common/personal_deities/00_hindu_deities.txt"),
+			game_path("common/fetishist_cults/00_fetishist_cults.txt"),
+			game_path("common/scripted_effects/test.txt"),
+			game_path("history/countries/SWE - Sweden.txt"),
+			game_path("history/provinces/1 - Stockholm.txt"),
+			game_path("common/province_names/sorbian.txt"),
+			game_path("map/random/tiles/tile0.txt"),
+			game_path("map/random/RandomLandNames.txt"),
+			game_path("map/random/RNWScenarios.txt"),
+			game_path("history/diplomacy/hre.txt"),
+			game_path("history/advisors/00_england.txt"),
+			game_path("history/wars/sample.txt"),
+			game_path("localisation/english/test_l_english.yml"),
+			game_path("patchnotes/1_36.txt"),
+			game_path("builtin_dlc/builtin_dlc.txt"),
+			game_path("checksum_manifest.txt"),
 		],
 		&index,
 		Default::default(),
 	)
+}
+
+#[cfg(unix)]
+#[test]
+fn base_snapshot_build_fails_on_a_game_file_without_a_portable_game_path() {
+	let temp = TempDir::new().expect("temp dir");
+	let game_root = temp.path().join("game");
+	std::fs::create_dir_all(game_root.join("common").join("a")).expect("create game tree");
+	std::fs::write(
+		game_root.join("common").join("a").join("b.txt"),
+		"a = { }\n",
+	)
+	.expect("write nested file");
+	let literal = game_root.join("common").join(r"a\b.txt");
+	std::fs::write(&literal, "b = { }\n").expect("write literal-backslash file");
+
+	// The inventory walk fails before any document is parsed or cached.
+	let error = super::build_base_snapshot(
+		&Eu4,
+		&game_root,
+		Some("1.37.5"),
+		&crate::input::FileFilter::for_game(Eu4),
+	)
+	.expect_err("a literal backslash has no portable game path");
+
+	assert!(error.contains("base game: "), "{error}");
+	assert!(error.contains(&literal.display().to_string()), "{error}");
+	assert!(error.contains("no portable game path"), "{error}");
+}
+
+#[test]
+fn base_snapshot_build_persists_the_inventory_in_component_order() {
+	let temp = TempDir::new().expect("temp dir");
+	let game_root = temp.path().join("game");
+	std::fs::create_dir_all(game_root.join("common").join("a")).expect("create game tree");
+	std::fs::create_dir_all(game_root.join("irrelevant")).expect("create non-loadable root");
+	std::fs::write(
+		game_root.join("common").join("a").join("b.txt"),
+		"a = { }\n",
+	)
+	.expect("write nested file");
+	std::fs::write(game_root.join("common").join("a-b.txt"), "b = { }\n")
+		.expect("write dashed file");
+	std::fs::write(game_root.join("irrelevant").join("x.txt"), "x = { }\n")
+		.expect("write file outside loadable roots");
+
+	let built = super::build_base_snapshot(
+		&Eu4,
+		&game_root,
+		Some("1.37.5"),
+		&crate::input::FileFilter::for_game(Eu4),
+	)
+	.expect("build base snapshot");
+	let decoded = decode_snapshot_from_bytes(&built.encoded_snapshot).expect("decode snapshot");
+
+	// Released snapshots were written in component order, where `a/b.txt`
+	// precedes `a-b.txt`; byte order would swap them and change the bytes.
+	assert_eq!(
+		decoded.inventory_paths,
+		vec![game_path("common/a/b.txt"), game_path("common/a-b.txt")]
+	);
+	let mut documents = decoded
+		.documents
+		.iter()
+		.map(|document| document.path.as_str())
+		.collect::<Vec<_>>();
+	documents.sort_unstable();
+	assert_eq!(
+		documents,
+		vec!["common/a-b.txt", "common/a/b.txt"],
+		"documents are discovered from the inventory alone"
+	);
+}
+
+#[test]
+fn base_snapshot_decode_rejects_inventory_entries_that_are_invalid_or_repeated() {
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let decoded = decode_snapshot_from_bytes(&encoded.bytes).expect("decode valid snapshot");
+	assert_eq!(decoded.inventory_paths, snapshot.inventory_paths);
+
+	let repeated = "common/scripted_effects/test.txt";
+	for (invalid, inventory_paths, reason) in [
+		(
+			r"common\scripted_effects\test.txt",
+			vec![r"common\scripted_effects\test.txt"],
+			"invalid game path",
+		),
+		(
+			"../outside.txt",
+			vec!["../outside.txt"],
+			"invalid game path",
+		),
+		("", vec![""], "invalid game path"),
+		(
+			repeated,
+			vec![repeated, "common/other.txt", repeated],
+			"is listed more than once",
+		),
+	] {
+		let mut bundle: super::SnapshotWireBundle =
+			bincode::deserialize(&encoded.bytes).expect("parse bundle");
+		let section = bundle
+			.sections
+			.iter_mut()
+			.find(|section| section.name == super::SnapshotWireSectionName::InventoryDocuments)
+			.expect("inventory section");
+		*section = super::encode_section_payload(
+			super::SnapshotWireSectionName::InventoryDocuments,
+			"inventory_documents",
+			&super::SnapshotInventoryDocumentsSection {
+				inventory_paths: inventory_paths.into_iter().map(str::to_string).collect(),
+				documents: snapshot.documents.clone(),
+				parse_error_count: snapshot.parse_error_count,
+				parsed_files: snapshot.parsed_files,
+				parse_stats: snapshot.parse_stats.clone(),
+			},
+		)
+		.expect("encode inventory section")
+		.wire;
+		let bytes = bincode::serialize(&bundle).expect("serialize bundle");
+
+		let error = decode_snapshot_from_bytes(&bytes).expect_err(invalid);
+		assert!(
+			error.contains("base data snapshot inventory is invalid"),
+			"{invalid}: {error}"
+		);
+		assert!(
+			error.contains(&format!("`{invalid}`")),
+			"{invalid}: {error}"
+		);
+		assert!(error.contains(reason), "{invalid}: {error}");
+	}
 }
 
 #[test]

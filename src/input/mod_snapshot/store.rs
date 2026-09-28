@@ -1,8 +1,9 @@
 use crate::model::{
-	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
-	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
-	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex,
-	SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
+	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf, GamePathError,
+	JsonProperty, KeyUsage, LocalisationDefinition, LocalisationDuplicate, MaybeScope,
+	ParamBinding, ParamContract, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind,
+	ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
+	UiDefinition,
 };
 use crate::platform::cache_store::{CacheError, default_foch_cache_dir};
 use flate2::Compression;
@@ -20,7 +21,7 @@ use std::time::SystemTime;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "10.0.0";
+pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "11.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const MOD_SNAPSHOT_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
 const MOD_SNAPSHOT_CACHE_HEADER_BYTES: usize = MOD_SNAPSHOT_CACHE_MAGIC.len() + size_of::<u64>();
@@ -73,9 +74,9 @@ impl<W: Write> Write for SizeLimitedWriter<W> {
 #[derive(Clone, Debug)]
 pub struct CachedModData {
 	pub semantic_index: SemanticIndex,
-	/// Strictly sorted, unique, normalized relative paths for every file in the
-	/// source mod inventory, including files outside semantic analysis.
-	pub inventory_paths: Vec<String>,
+	/// Game paths for every file in the source mod inventory, including files
+	/// outside semantic analysis, strictly increasing in byte order.
+	pub inventory_paths: Vec<GamePathBuf>,
 	/// One compact flag per `semantic_index.documents` entry. `true` means the
 	/// document parsed cleanly and contains no non-comment AST content.
 	pub document_noop_hints: Vec<bool>,
@@ -393,8 +394,7 @@ impl ModSnapshotCache {
 		{
 			return None;
 		}
-		stored.validate_document_metadata().ok()?;
-		let data = stored.into_cached_mod_data();
+		let data = stored.into_cached_mod_data().ok()?;
 		touch_cache_file(&path);
 		Some(data)
 	}
@@ -416,7 +416,7 @@ impl ModSnapshotCache {
 		if let Err(error) = fs::create_dir_all(&self.root).map_err(CacheError::Io) {
 			return (data, Err(error));
 		}
-		let payload = StoredCachedModData::from_cached_mod_data_owned(
+		let (payload, inventory_paths) = StoredCachedModData::from_cached_mod_data_owned(
 			cache_version,
 			mod_hash,
 			foch_version,
@@ -425,7 +425,7 @@ impl ModSnapshotCache {
 		);
 		let path = self.cache_file(cache_version, mod_hash, foch_version, game_key);
 		let result = store_payload_streaming(&path, &payload);
-		let data = payload.into_cached_mod_data();
+		let data = payload.into_cached_mod_data_with_inventory(inventory_paths);
 		(data, result)
 	}
 
@@ -454,25 +454,40 @@ fn is_mod_snapshot_cache_tmp(name: &str) -> bool {
 }
 
 impl StoredCachedModData {
+	/// Moves `data` into its wire form. The inventory is written as text and
+	/// the typed paths are handed back, so the caller can restore `data`
+	/// without parsing them again.
 	fn from_cached_mod_data_owned(
 		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
 		game_key: &str,
 		data: CachedModData,
-	) -> Self {
-		Self {
+	) -> (Self, Vec<GamePathBuf>) {
+		let CachedModData {
+			semantic_index,
+			inventory_paths,
+			document_noop_hints,
+			document_input_identities,
+		} = data;
+		let stored = Self {
 			cache_version: cache_version.to_string(),
 			mod_hash: mod_hash.to_string(),
 			foch_version: foch_version.to_string(),
 			game_key: game_key.to_string(),
-			semantic_index: StoredSemanticIndex::from_semantic_index_owned(data.semantic_index),
-			inventory_paths: data.inventory_paths,
-			document_noop_hints: data.document_noop_hints,
-			document_input_identities: data.document_input_identities,
-		}
+			semantic_index: StoredSemanticIndex::from_semantic_index_owned(semantic_index),
+			inventory_paths: inventory_paths
+				.iter()
+				.map(|path| path.as_str().to_owned())
+				.collect(),
+			document_noop_hints,
+			document_input_identities,
+		};
+		(stored, inventory_paths)
 	}
 
+	/// Checks the per-document metadata lengths. The inventory is validated
+	/// once, when [`Self::into_cached_mod_data`] restores its typed paths.
 	fn validate_document_metadata(&self) -> Result<(), CacheError> {
 		let document_count = self.semantic_index.documents.len();
 		if self.document_noop_hints.len() != document_count {
@@ -487,15 +502,27 @@ impl StoredCachedModData {
 				self.document_input_identities.len(),
 			)));
 		}
-		validate_inventory_paths(&self.inventory_paths)?;
 		Ok(())
 	}
 
-	fn into_cached_mod_data(self) -> CachedModData {
-		let semantic_index = self.semantic_index.into_semantic_index();
+	/// Restores the in-memory form of a decoded entry, validating each
+	/// inventory entry as a game path and the inventory's strict byte order.
+	fn into_cached_mod_data(mut self) -> Result<CachedModData, CacheError> {
+		let inventory_paths = std::mem::take(&mut self.inventory_paths)
+			.into_iter()
+			.map(|path| GamePathBuf::try_from(path).map_err(invalid_inventory_path))
+			.collect::<Result<Vec<_>, _>>()?;
+		validate_inventory_order(inventory_paths.iter().map(GamePathBuf::as_game_path))?;
+		Ok(self.into_cached_mod_data_with_inventory(inventory_paths))
+	}
+
+	fn into_cached_mod_data_with_inventory(
+		self,
+		inventory_paths: Vec<GamePathBuf>,
+	) -> CachedModData {
 		CachedModData {
-			semantic_index,
-			inventory_paths: self.inventory_paths,
+			semantic_index: self.semantic_index.into_semantic_index(),
+			inventory_paths,
 			document_noop_hints: self.document_noop_hints,
 			document_input_identities: self.document_input_identities,
 		}
@@ -516,39 +543,28 @@ fn validate_cached_document_metadata(data: &CachedModData) -> Result<(), CacheEr
 			data.document_input_identities.len(),
 		)));
 	}
-	validate_inventory_paths(&data.inventory_paths)?;
-	Ok(())
+	validate_inventory_order(data.inventory_paths.iter().map(GamePathBuf::as_game_path))
 }
 
-fn validate_inventory_paths(inventory_paths: &[String]) -> Result<(), CacheError> {
+fn invalid_inventory_path(error: GamePathError) -> CacheError {
+	CacheError::encode(format!("mod snapshot inventory path is invalid: {error}"))
+}
+
+/// A stored inventory is strictly increasing in byte order, which also makes
+/// it unique: a repeated path would mean two files were given one identity.
+fn validate_inventory_order<'a>(
+	inventory_paths: impl IntoIterator<Item = &'a GamePath>,
+) -> Result<(), CacheError> {
+	let mut previous: Option<&GamePath> = None;
 	for path in inventory_paths {
-		if !is_normalized_relative_inventory_path(path) {
+		if let Some(previous) = previous.filter(|previous| *previous >= path) {
 			return Err(CacheError::encode(format!(
-				"mod snapshot inventory path {path:?} is not a normalized forward-slash relative path"
+				"mod snapshot inventory paths must be strictly sorted and unique: `{path}` follows `{previous}`"
 			)));
 		}
-	}
-	for pair in inventory_paths.windows(2) {
-		if pair[0] >= pair[1] {
-			return Err(CacheError::encode(
-				"mod snapshot inventory paths must be strictly sorted and unique",
-			));
-		}
+		previous = Some(path);
 	}
 	Ok(())
-}
-
-fn is_normalized_relative_inventory_path(path: &str) -> bool {
-	let bytes = path.as_bytes();
-	if path.is_empty()
-		|| path.starts_with('/')
-		|| path.contains('\\')
-		|| (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
-	{
-		return false;
-	}
-	path.split('/')
-		.all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 impl StoredSemanticIndex {
@@ -1253,6 +1269,19 @@ mod tests {
 	use std::time::Duration;
 	use tempfile::TempDir;
 
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn empty_data() -> CachedModData {
+		CachedModData {
+			semantic_index: SemanticIndex::default(),
+			inventory_paths: Vec::new(),
+			document_noop_hints: Vec::new(),
+			document_input_identities: Vec::new(),
+		}
+	}
+
 	#[test]
 	fn cache_lookup_miss_then_store_then_hit() {
 		let tmp = TempDir::new().expect("temp dir");
@@ -1267,8 +1296,8 @@ mod tests {
 		let data = CachedModData {
 			semantic_index: index,
 			inventory_paths: vec![
-				"common/countries/A.txt".to_string(),
-				"gfx/flags/A.tga".to_string(),
+				game_path("common/countries/A.txt"),
+				game_path("gfx/flags/A.tga"),
 			],
 			document_noop_hints: vec![true],
 			document_input_identities: vec![Some(CachedDocumentInputIdentity {
@@ -1290,8 +1319,8 @@ mod tests {
 		assert_eq!(
 			hit.inventory_paths,
 			vec![
-				"common/countries/A.txt".to_string(),
-				"gfx/flags/A.tga".to_string(),
+				game_path("common/countries/A.txt"),
+				game_path("gfx/flags/A.tga"),
 			]
 		);
 		assert_eq!(hit.document_noop_hints, vec![true]);
@@ -1347,7 +1376,7 @@ mod tests {
 	}
 
 	#[test]
-	fn store_rejects_invalid_inventory_paths() {
+	fn store_rejects_unsorted_or_repeated_inventory_paths() {
 		let tmp = TempDir::new().expect("temp dir");
 		let cache = ModSnapshotCache::open(tmp.path());
 		let invalid_cases = [
@@ -1359,22 +1388,15 @@ mod tests {
 				"duplicate",
 				vec!["common/countries/A.txt", "common/countries/A.txt"],
 			),
-			("empty", vec![""]),
-			("absolute", vec!["/common/countries/A.txt"]),
-			("drive-absolute", vec!["C:/common/countries/A.txt"]),
-			("empty-component", vec!["common//countries/A.txt"]),
-			("dot-component", vec!["common/./countries/A.txt"]),
-			("parent-component", vec!["common/../countries/A.txt"]),
-			("backslash", vec![r"common\countries\A.txt"]),
+			// Byte order, not component order: `a-b` sorts before `a/b`.
+			("component-order", vec!["common/a/b.txt", "common/a-b.txt"]),
 		];
 
 		for (case, paths) in invalid_cases {
-			let inventory_paths = paths.into_iter().map(str::to_string).collect::<Vec<_>>();
+			let inventory_paths = paths.into_iter().map(game_path).collect::<Vec<_>>();
 			let data = CachedModData {
-				semantic_index: SemanticIndex::default(),
 				inventory_paths: inventory_paths.clone(),
-				document_noop_hints: Vec::new(),
-				document_input_identities: Vec::new(),
+				..empty_data()
 			};
 
 			let (returned, result) = cache.store_owned(case, "0.1.0", "eu4 1.37.4", data);
@@ -1395,39 +1417,91 @@ mod tests {
 	}
 
 	#[test]
-	fn decode_rejects_invalid_inventory_paths() {
+	fn decoded_inventory_text_must_be_strictly_ordered_game_paths() {
 		let tmp = TempDir::new().expect("temp dir");
 		let cache = ModSnapshotCache::open(tmp.path());
-		let path = cache.cache_file(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			"invalid-inventory",
-			"0.1.0",
-			"eu4 1.37.4",
-		);
-		let payload = StoredCachedModData::from_cached_mod_data_owned(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			"invalid-inventory",
-			"0.1.0",
-			"eu4 1.37.4",
-			CachedModData {
-				semantic_index: SemanticIndex::default(),
-				inventory_paths: vec!["common/../countries/A.txt".to_string()],
-				document_noop_hints: Vec::new(),
-				document_input_identities: Vec::new(),
-			},
-		);
-		store_payload_streaming(&path, &payload).expect("encode invalid payload");
+		let invalid = "mod snapshot inventory path is invalid";
+		let unordered = "must be strictly sorted and unique";
+		let invalid_cases = [
+			("empty", vec![""], invalid, "``"),
+			(
+				"absolute",
+				vec!["/common/countries/A.txt"],
+				invalid,
+				"`/common/countries/A.txt`",
+			),
+			(
+				"drive-absolute",
+				vec!["C:/common/countries/A.txt"],
+				invalid,
+				"`C:/common/countries/A.txt`",
+			),
+			(
+				"empty-component",
+				vec!["common//countries/A.txt"],
+				invalid,
+				"`common//countries/A.txt`",
+			),
+			(
+				"dot-component",
+				vec!["common/./countries/A.txt"],
+				invalid,
+				"`common/./countries/A.txt`",
+			),
+			(
+				"parent-component",
+				vec!["common/../countries/A.txt"],
+				invalid,
+				"`common/../countries/A.txt`",
+			),
+			(
+				"backslash",
+				vec![r"common\countries\A.txt"],
+				invalid,
+				r"`common\countries\A.txt`",
+			),
+			(
+				"unsorted",
+				vec!["gfx/flags/A.tga", "common/countries/A.txt"],
+				unordered,
+				"`common/countries/A.txt` follows `gfx/flags/A.tga`",
+			),
+			(
+				"duplicate",
+				vec!["common/countries/A.txt", "common/countries/A.txt"],
+				unordered,
+				"`common/countries/A.txt` follows `common/countries/A.txt`",
+			),
+		];
 
-		let error = decode_payload_from_file(&path).expect_err("reject invalid inventory");
-		assert!(matches!(
-			error,
-			CacheError::Encode(message) if message.contains("inventory path")
-		));
-		assert!(
-			cache
-				.lookup("invalid-inventory", "0.1.0", "eu4 1.37.4")
-				.is_none()
-		);
+		for (case, paths, reason, named) in invalid_cases {
+			let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, case, "0.1.0", "eu4 1.37.4");
+			let (mut payload, _) = StoredCachedModData::from_cached_mod_data_owned(
+				MOD_SNAPSHOT_CACHE_VERSION,
+				case,
+				"0.1.0",
+				"eu4 1.37.4",
+				empty_data(),
+			);
+			payload.inventory_paths = paths.into_iter().map(str::to_string).collect();
+			store_payload_streaming(&path, &payload).expect("encode invalid payload");
+
+			// The wire decode checks structure only; restoring the typed
+			// inventory is the single validation of its paths.
+			let stored = decode_payload_from_file(&path).expect(case);
+			let error = stored.into_cached_mod_data().expect_err(case);
+			assert!(
+				matches!(
+					&error,
+					CacheError::Encode(message) if message.contains(reason) && message.contains(named)
+				),
+				"{case}: {error}"
+			);
+			assert!(
+				cache.lookup(case, "0.1.0", "eu4 1.37.4").is_none(),
+				"{case}"
+			);
+		}
 	}
 
 	#[test]

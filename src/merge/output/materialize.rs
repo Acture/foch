@@ -175,7 +175,9 @@ pub(crate) fn freeze_path_plan(
 ) -> MergePlanResult {
 	if let Ok(input) = input_result {
 		apply_mod_priority_boosts(input, &resolution_map.mod_priority_boost);
-		prune_noop_script_contributors(input, eu4());
+		if let Err(error) = prune_noop_script_contributors(input, eu4()) {
+			*input_result = Err(error);
+		}
 	}
 
 	stage_log_with("build_merge_plan", || {

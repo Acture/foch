@@ -108,7 +108,7 @@ impl CoverageAccumulator {
 pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageReport {
 	let mut roots: BTreeMap<String, CoverageAccumulator> = BTreeMap::new();
 	for path in &snapshot.inventory_paths {
-		let Some(root_family) = coverage_root_family(path) else {
+		let Some(root_family) = coverage_root_family(path.as_str()) else {
 			continue;
 		};
 		roots.entry(root_family).or_default().inventory_file_count += 1;
