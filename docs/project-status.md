@@ -41,6 +41,27 @@ This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
 
+## VFS dependency evaluation (2026-09-26)
+
+P-735 completed a source review and isolated behavior comparison of the current
+file-walk/path-key helpers, Rust `vfs`, and PhysicsFS. The recommendation is to
+keep `std::fs` / `walkdir` for installed-directory inputs; the generic libraries
+still need adapters for Foch's input contracts and do not replace its source
+inventory or EU4 semantics. No product dependency or implementation changed.
+
+The comparison reproduced a physical-filename-to-semantic-key collision in the
+current helper. P-736 tracks its repair separately. Scope, pinned versions,
+observations, skipped cases, and reproduction artifacts are in the
+[VFS evaluation](vfs-evaluation.md). This helper-level evaluation adds no full
+Workshop, acceptance-cohort, cross-platform, or performance result.
+
+A 2026-09-28 path-type follow-up established P-736's type boundary: keep native
+`Path/PathBuf` for physical I/O and adopt `relative-path` for portable
+game-relative identities; use `typed-path` as needed for foreign descriptor
+parsing. The evaluation records tested API behavior and the validation required
+at construction, deserialization, and host-path conversion. P-736 remains the
+unimplemented repair; no dependency or production code has changed.
+
 ## Numeric equivalence under the game's field coercion (2026-09-22)
 
 P-695. EU4 reads a script number through a reader far coarser than byte
