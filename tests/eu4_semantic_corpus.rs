@@ -1,11 +1,24 @@
 use foch::game::eu4::analysis::{AnalyzeOptions, analyze_visibility};
-use foch::game::eu4::script::{
-	build_semantic_index, collect_localisation_definitions, parse_script_file,
+use foch::game::eu4::script::{ParsedScriptFile, build_semantic_index};
+use foch::model::{
+	AnalysisMode, Finding, GamePathBuf, LocalisationDefinition, MaybeScope, SymbolKind, base_scope,
 };
-use foch::model::{AnalysisMode, Finding, MaybeScope, SymbolKind, base_scope};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+/// Parses the file at physical `file` under `root`, as a mod file is loaded.
+fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<ParsedScriptFile> {
+	let relative = GamePathBuf::from_physical(root, file).expect("file under its mod root");
+	Some(foch::game::eu4::script::parse_script_file(
+		mod_id, root, &relative,
+	))
+}
+
+fn collect_localisation_definitions(mod_id: &str, root: &Path) -> Vec<LocalisationDefinition> {
+	foch::game::eu4::script::collect_localisation_definitions(mod_id, root)
+		.expect("collect localisation definitions")
+}
 
 fn corpus_root(mod_name: &str) -> PathBuf {
 	Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -904,7 +917,7 @@ fn corpus_real_minimized_ages_reformed_patterns_stay_clean() {
 	assert!(index.resource_references.iter().any(|reference| {
 		reference.key == "age_definition"
 			&& reference.value == "age_of_discovery"
-			&& reference.path == std::path::Path::new("common/ages/00_ages_reformed_ages.txt")
+			&& reference.path.as_str() == "common/ages/00_ages_reformed_ages.txt"
 	}));
 }
 
@@ -987,17 +1000,14 @@ fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
 		"advisory targeted noise: {advisory_noise:#?}"
 	);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path
-			== std::path::Path::new(
-				"common/new_diplomatic_actions/00_more_favor_actions_actions.txt",
-			) && reference.key == "new_diplomatic_action_definition"
+		reference.path.as_str() == "common/new_diplomatic_actions/00_more_favor_actions_actions.txt"
+			&& reference.key == "new_diplomatic_action_definition"
 			&& reference.value == "more_favors_action_request_adm_power"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path
-			== std::path::Path::new(
-				"common/diplomatic_actions/000_more_favor_actions_diplomatic_actions.txt",
-			) && reference.key == "diplomatic_action_definition"
+		reference.path.as_str()
+			== "common/diplomatic_actions/000_more_favor_actions_diplomatic_actions.txt"
+			&& reference.key == "diplomatic_action_definition"
 			&& reference.value == "more_favor_actions_remove_guarantee"
 	}));
 	assert!(!index.references.iter().any(|reference| {

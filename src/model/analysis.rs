@@ -1,3 +1,4 @@
+use super::GamePathBuf;
 use super::candidate::ModCandidate;
 use super::document::DocumentFamily;
 use super::semantic::{SemanticIndex, SymbolKind};
@@ -169,7 +170,7 @@ impl CheckResult {
 pub struct ParseIssueReportItem {
 	pub family: DocumentFamily,
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub message: String,

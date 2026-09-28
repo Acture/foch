@@ -155,8 +155,11 @@ fn workshop_static_modifiers_product_probe() {
 		.expect("commit bounded analyzed result");
 	let mut definitions: BTreeMap<String, Vec<BTreeMap<String, String>>> = BTreeMap::new();
 	if disposition == MergeDisposition::Safe {
-		let parsed: ParsedScriptFile =
-			parse_script_file("probe", &out, &out.join(OUTPUT)).expect("reparse generated module");
+		let parsed: ParsedScriptFile = parse_script_file(
+			"probe",
+			&out,
+			foch::model::GamePath::new(OUTPUT).expect("valid game path"),
+		);
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		for statement in &parsed.ast.statements {
 			if let AstStatement::Assignment {

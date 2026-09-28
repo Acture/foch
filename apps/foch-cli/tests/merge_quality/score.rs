@@ -200,7 +200,7 @@ fn is_supported_text_document(relative: &str) -> bool {
 fn is_supported_game_document(relative: &GamePath) -> bool {
 	Eu4.is_loadable_content_path(relative)
 		&& matches!(
-			classify_document_family(&relative.to_path("")),
+			classify_document_family(relative),
 			Some(
 				DocumentFamily::Clausewitz
 					| DocumentFamily::Localisation
@@ -1077,14 +1077,16 @@ fn canonical_layered_module_view_uncached(
 	// answer as canonicalizing every input first — and skips the definitions
 	// composition discards.
 	let mut parsed_files = Vec::with_capacity(visible_files.len());
-	for (relative, (layer_ordinal, root, path)) in visible_files {
-		let parsed = parse_script_file("__score__", &root, &path)?;
+	for (relative, (layer_ordinal, root, _path)) in visible_files {
+		// Keys were written from game paths by `collect_module_files`.
+		let relative = GamePathBuf::parse(&relative).ok()?;
+		let parsed = parse_script_file("__score__", &root, &relative);
 		parsed_files.push((layer_ordinal, relative, parsed));
 	}
 	let inputs = parsed_files
 		.iter()
 		.map(|(layer_ordinal, path, file)| {
-			DefinitionModuleInput::new(Path::new(path), file).with_layer_ordinal(*layer_ordinal)
+			DefinitionModuleInput::new(path, file).with_layer_ordinal(*layer_ordinal)
 		})
 		.collect::<Vec<_>>();
 	let module = load_definition_module(&inputs, policy).ok()?;

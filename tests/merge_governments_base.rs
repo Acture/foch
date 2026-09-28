@@ -42,7 +42,9 @@ fn write_mod(playset_root: &Path, id: &str, name: &str, relative: &str, content:
 }
 
 fn government_reforms(path: &Path, root: &Path) -> BTreeMap<String, String> {
-	let parsed = parse_script_file("generated", root, path).expect("parse generated module");
+	let relative =
+		foch::model::GamePathBuf::from_physical(root, path).expect("file under the output root");
+	let parsed = parse_script_file("generated", root, &relative);
 	parsed
 		.ast
 		.statements

@@ -43,7 +43,7 @@ pub fn project_symbol_graph(index: &SemanticIndex) -> SymbolGraph {
 	for def in &index.definitions {
 		let id = node_id(def.kind, &def.name);
 		graph.add_node(&id);
-		graph.set_seed(&id, &seed_for_path(&def.path));
+		graph.set_seed(&id, &seed_for_path(&def.path.to_path("")));
 		let mod_id = if def.mod_id.is_empty() {
 			"__base__"
 		} else {
@@ -111,7 +111,7 @@ mod tests {
 			module: String::new(),
 			local_name: name.to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id,
@@ -133,7 +133,7 @@ mod tests {
 			name: name.to_string(),
 			module: String::new(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			line: 2,
 			column: 1,
 			scope_id,
@@ -150,7 +150,7 @@ mod tests {
 			this_type: MaybeScope::Unknown,
 			aliases: Default::default(),
 			mod_id: String::new(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			span: SourceSpan { line: 1, column: 1 },
 			key: String::new(),
 		}

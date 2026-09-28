@@ -223,7 +223,7 @@ fn collect_input_scripts(
 		.map(|definition| {
 			(
 				definition.mod_id.clone(),
-				normalize_path(Path::new(&definition.path)),
+				definition.path.as_str().to_string(),
 			)
 		})
 		.collect::<HashSet<_>>();
@@ -233,18 +233,12 @@ fn collect_input_scripts(
 	parsed.retain(|document| {
 		required.contains(&(
 			document.mod_id.clone(),
-			normalize_path(&document.relative_path),
+			document.relative_path.as_str().to_string(),
 		))
 	});
 	let mut seen = parsed
 		.iter()
-		.map(|document| {
-			format!(
-				"{}::{}",
-				document.mod_id,
-				normalize_path(document.relative_path.as_path())
-			)
-		})
+		.map(|document| format!("{}::{}", document.mod_id, document.relative_path))
 		.collect::<HashSet<_>>();
 
 	let mut contributors_by_key = HashMap::new();
@@ -286,8 +280,7 @@ fn collect_input_scripts(
 		parsed.push(input.script_cache.load(contributor)?);
 	}
 	parsed.sort_by(|lhs, rhs| {
-		(lhs.mod_id.as_str(), lhs.relative_path.as_os_str())
-			.cmp(&(rhs.mod_id.as_str(), rhs.relative_path.as_os_str()))
+		(lhs.mod_id.as_str(), &lhs.relative_path).cmp(&(rhs.mod_id.as_str(), &rhs.relative_path))
 	});
 	Ok(parsed)
 }
@@ -368,7 +361,7 @@ fn collect_definition_records(
 		by_path.insert(
 			(
 				parsed.mod_id.clone(),
-				normalize_path(parsed.relative_path.as_path()),
+				parsed.relative_path.as_str().to_string(),
 			),
 			parsed.as_ref(),
 		);
@@ -378,14 +371,12 @@ fn collect_definition_records(
 	for (idx, definition) in index.definitions.iter().enumerate() {
 		let key = (
 			definition.mod_id.clone(),
-			normalize_path(Path::new(&definition.path)),
+			definition.path.as_str().to_string(),
 		);
 		let parsed = by_path.get(&key).ok_or_else(|| {
 			format!(
 				"missing verified AST for runtime definition {} {}:{}",
-				definition.mod_id,
-				definition.path.display(),
-				definition.line
+				definition.mod_id, definition.path, definition.line
 			)
 		})?;
 		let Some(statement) =
@@ -393,19 +384,14 @@ fn collect_definition_records(
 		else {
 			return Err(format!(
 				"runtime definition position is absent from verified AST for {} {}:{}:{}",
-				definition.mod_id,
-				definition.path.display(),
-				definition.line,
-				definition.column
+				definition.mod_id, definition.path, definition.line, definition.column
 			));
 		};
 		let normalized_statement = emit_clausewitz_statements(std::slice::from_ref(&statement))
 			.map_err(|err| {
 				format!(
 					"failed to normalize {} {}:{}: {err}",
-					definition.mod_id,
-					definition.path.display(),
-					definition.line
+					definition.mod_id, definition.path, definition.line
 				)
 			})?;
 		definitions.push(DefinitionRecord {
@@ -414,14 +400,14 @@ fn collect_definition_records(
 			name: definition.name.clone(),
 			local_name: definition.local_name.clone(),
 			mod_id: definition.mod_id.clone(),
-			path: normalize_path(Path::new(&definition.path)),
+			path: definition.path.as_str().to_string(),
 			line: definition.line,
 			column: definition.column,
 			precedence: precedence_by_mod
 				.get(&definition.mod_id)
 				.copied()
 				.unwrap_or_default(),
-			root_mergeable: is_merge_candidate_path(Path::new(&definition.path)),
+			root_mergeable: is_merge_candidate_path(&definition.path.to_path("")),
 			normalized_statement,
 		});
 	}

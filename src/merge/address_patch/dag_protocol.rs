@@ -1,12 +1,12 @@
 //! Address-patch implementation of the neutral DAG execution protocols.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::game::eu4::content::{MergeKeySource, MergePolicies, ScriptFileKind};
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
-use crate::model::HandlerResolutionRecord;
+use crate::model::{GamePath, GamePathBuf, HandlerResolutionRecord};
 
 use crate::merge::address_patch::cache::{DagBaseCache, ModDiffCache};
 use crate::merge::planning::dag::{FileDag, ModId};
@@ -103,6 +103,8 @@ struct PatchBaselineDagState {
 
 struct PatchBaselineDagProtocol<'a> {
 	file_dag: &'a FileDag,
+	/// The game path of `file_dag`'s file, which the DAG names by text.
+	file_game_path: GamePathBuf,
 	base_statements: &'a [AstStatement],
 	template: Option<&'a ParsedScriptFile>,
 	merge_key_source: MergeKeySource,
@@ -196,8 +198,11 @@ pub(crate) fn execute_reference_dag_with_caches(
 		intent_only_patches: Vec::new(),
 		pending_conflicts: Vec::new(),
 	};
+	let file_game_path = GamePathBuf::parse(file_dag.file_path())
+		.map_err(|error| format!("merge DAG file is not a game path: {error}"))?;
 	let mut protocol = PatchBaselineDagProtocol {
 		file_dag,
+		file_game_path,
 		base_statements,
 		template,
 		merge_key_source,
@@ -640,7 +645,7 @@ fn append_unique_patch(target: &mut Vec<ClausewitzPatch>, patch: &ClausewitzPatc
 }
 
 fn build_branch_patches(
-	file_path: &str,
+	file_path: &GamePath,
 	template: Option<&ParsedScriptFile>,
 	base_statements: &[AstStatement],
 	effective_statements: &[AstStatement],
@@ -706,7 +711,7 @@ impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'
 			&request.parent.pending_conflicts,
 		);
 		let current_base = synthesized_parsed_file(
-			self.file_dag.file_path(),
+			&self.file_game_path,
 			self.template,
 			request.parent.statements.clone(),
 		);
@@ -741,7 +746,7 @@ impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'
 			game_version: &self.dag_base_cache_context,
 		});
 		let (_, intent_only_patches) = build_branch_patches(
-			self.file_dag.file_path(),
+			&self.file_game_path,
 			self.template,
 			self.base_statements,
 			&effective_statements,
@@ -784,7 +789,7 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 				.cloned()
 				.collect::<Vec<_>>();
 			let (branch_patches, branch_intent_only) = build_branch_patches(
-				request.file_dag.file_path(),
+				&self.file_game_path,
 				self.template,
 				&request.base.statements,
 				&revision.state.statements,
@@ -977,30 +982,30 @@ pub(crate) fn extend_merge_result(target: &mut PatchMergeResult, source: PatchMe
 }
 
 fn synthesized_parsed_file(
-	file_path: &str,
+	file_path: &GamePath,
 	template: Option<&ParsedScriptFile>,
 	statements: Vec<AstStatement>,
 ) -> ParsedScriptFile {
-	let path = PathBuf::from(file_path);
 	let mut parsed = template.cloned().unwrap_or_else(|| ParsedScriptFile {
 		mod_id: "__foch_running_base__".to_string(),
-		path: path.clone(),
-		relative_path: path.clone(),
+		path: None,
+		relative_path: file_path.to_owned(),
 		content_family: None,
 		file_kind: ScriptFileKind::new("other"),
 		module_name: "running_base".to_string(),
 		ast: AstFile {
-			path: path.clone(),
+			path: file_path.to_owned(),
 			statements: Vec::new(),
 		},
 		source: String::new(),
 		parse_issues: Vec::new(),
 		parse_cache_hit: false,
 	});
+	// A synthesized running base exists only in memory.
 	parsed.mod_id = "__foch_running_base__".to_string();
-	parsed.path = path.clone();
-	parsed.relative_path = path.clone();
-	parsed.ast.path = path;
+	parsed.path = None;
+	parsed.relative_path = file_path.to_owned();
+	parsed.ast.path = file_path.to_owned();
 	parsed.ast.statements = statements;
 	parsed.source.clear();
 	parsed.parse_issues.clear();

@@ -438,7 +438,6 @@ fn trace_decision(
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use super::*;
 	use crate::game::eu4::content::{MergeKeySource, MergePolicies};
@@ -455,7 +454,10 @@ mod tests {
 	}
 
 	fn parse(source: &str) -> AstFile {
-		let parsed = parse_clausewitz_content(PathBuf::from("common/test.txt"), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
 	}

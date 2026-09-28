@@ -269,7 +269,7 @@ fn vanilla_corpus_matches_cwt_helpers() {
 		if !parsed.diagnostics.is_empty() {
 			files_with_parse_diagnostics += 1;
 		}
-		walk_keys(entry.path(), &parsed.ast.statements, &mut |key, line| {
+		walk_keys(entry.path(), &parsed.statements, &mut |key, line| {
 			keys_checked += 1;
 
 			let legacy_iterator = legacy_iterator_scope_type(key);

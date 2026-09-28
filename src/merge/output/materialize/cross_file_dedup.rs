@@ -6,6 +6,7 @@ use crate::game::eu4::content::MergeKeySource;
 use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use crate::game::eu4::script::{ParsedScriptFile, is_decision_container_key, parse_script_file};
 use crate::input::{ResolvedInput, ResolvedInputContributor};
+use crate::model::GamePathBuf;
 use crate::model::{HandlerResolutionRecord, MergeReport};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -192,11 +193,13 @@ fn build_family_value_fingerprint_index(
 	let mut index = FamilyValueFingerprintIndex::default();
 	for (rel_path, contributors) in paths_by_file {
 		for contributor in contributors {
-			let extraction = if let Some(parsed) = parse_script_file(
-				&contributor.mod_id,
-				&contributor.root_path,
-				&contributor.absolute_path,
-			) {
+			// A contributor does not carry its game path yet; one outside its
+			// root stays untracked, as before.
+			let extraction = if let Ok(relative) =
+				GamePathBuf::from_physical(&contributor.root_path, &contributor.absolute_path)
+			{
+				let parsed =
+					parse_script_file(&contributor.mod_id, &contributor.root_path, &relative);
 				extract_key_value_fingerprints(&parsed, merge_key_source)
 			} else {
 				CrossFileValueExtraction {
@@ -579,12 +582,12 @@ mod tests {
 	use crate::game::eu4::content::ScriptFileKind;
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
 	use crate::playset::Playset;
-	use std::path::{Path, PathBuf};
+	use std::path::Path;
 	use tempfile::TempDir;
 
 	fn parsed(content: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("test.txt");
-		let parse_result = parse_clausewitz_content(path.clone(), content);
+		let path = crate::model::GamePathBuf::parse("test.txt").expect("valid game path");
+		let parse_result = parse_clausewitz_content(&path, content);
 		assert!(
 			parse_result.diagnostics.is_empty(),
 			"fixture must parse cleanly: {:?}",
@@ -592,7 +595,7 @@ mod tests {
 		);
 		ParsedScriptFile {
 			mod_id: "test_mod".to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("test"),

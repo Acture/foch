@@ -808,7 +808,10 @@ mod tests {
 	}
 
 	fn parse_test_file(target_path: &str, source: &str) -> AstFile {
-		let parsed = parse_clausewitz_content(PathBuf::from(target_path), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse(target_path).expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
 	}

@@ -1,7 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
+use crate::game::eu4::script::parser::{
+	AstStatement, AstValue, ScriptSyntax, parse_clausewitz_statements,
+};
 use crate::game::schema::CwtQuery;
 use crate::game::schema::query::{CompiledComplexEnum, CompiledRuleField, CompiledRuleValue};
 
@@ -31,10 +33,13 @@ pub(super) fn build(engine: &CwtQuery, documents: &[SchemaDocument<'_>]) -> Sche
 	let files = documents
 		.iter()
 		.map(|document| {
-			let parsed = parse_clausewitz_content(document.path.to_path_buf(), document.text);
+			let parsed = parse_clausewitz_statements(
+				ScriptSyntax::for_physical_path(document.path),
+				document.text,
+			);
 			ParsedSchemaDocument {
 				relative_path: document.path.to_path_buf(),
-				statements: parsed.ast.statements,
+				statements: parsed.statements,
 			}
 		})
 		.collect::<Vec<_>>();

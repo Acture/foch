@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::game::eu4::content::EU4_LOCALISATION_LANGUAGE_HEADERS;
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
 use crate::merge::kernel::NodeId;
+use crate::model::GamePathBuf;
 
 use crate::merge::error::MergeError;
 use crate::merge::model::{
@@ -60,7 +61,7 @@ impl FinalSemanticProjection {
 	) -> Result<Self, String> {
 		let adapter = DefinitionModuleAdapter;
 		let final_file = AstFile {
-			path: PathBuf::from(target_path),
+			path: GamePathBuf::parse(target_path).map_err(|error| error.to_string())?,
 			statements: statements.to_vec(),
 		};
 		let prepared = adapter.prepare(&final_file);
@@ -541,7 +542,6 @@ fn render_localisation_file(entries: &BTreeMap<String, String>) -> Vec<u8> {
 mod tests {
 	use super::*;
 	use std::collections::{BTreeMap, BTreeSet};
-	use std::path::PathBuf;
 
 	use crate::game::eu4::content::{MergePolicies, ScriptFileKind};
 	use crate::game::eu4::script::ParsedScriptFile;
@@ -555,12 +555,13 @@ mod tests {
 	use crate::merge::structured::DefinitionModuleAdapter;
 
 	fn parsed(source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/diplomatic_actions/00_actions.txt");
-		let parsed = parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse("common/diplomatic_actions/00_actions.txt")
+			.expect("valid game path");
+		let parsed = parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: "fixture".to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("diplomatic_actions"),

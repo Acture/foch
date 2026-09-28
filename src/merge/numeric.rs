@@ -27,7 +27,7 @@ use std::path::Path;
 
 use crate::game::eu4::coercion::{canonical_float_text, canonical_int_text};
 use crate::game::eu4::script::parser::{
-	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
+	AstFile, AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_statements,
 };
 use crate::game::schema::query::{CwtQuery, RuleContext, SchemaScalarType};
 
@@ -54,7 +54,7 @@ pub fn canonicalize_numeric_values_with_active_schema(
 /// A file whose path binds no root type, or a build with no schema installed,
 /// comes back unchanged.
 pub(crate) fn canonicalize_numeric_values(file: &AstFile, schema: Option<&CwtQuery>) -> AstFile {
-	canonicalize_numeric_values_at(&file.path.clone(), file, schema)
+	canonicalize_numeric_values_at(&file.path.to_path(""), file, schema)
 }
 
 fn canonicalize_numeric_values_at(
@@ -95,18 +95,23 @@ fn canonicalize_numeric_text_with(
 	let Some(schema) = schema else {
 		return source.to_string();
 	};
-	let parsed = parse_clausewitz_content(relative_path.to_path_buf(), source);
+	let syntax = ScriptSyntax::from_extension(
+		relative_path
+			.extension()
+			.and_then(|extension| extension.to_str()),
+	);
+	let parsed = parse_clausewitz_statements(syntax, source);
 	if !parsed.diagnostics.is_empty() {
 		return source.to_string();
 	}
-	let mut file = parsed.ast;
+	let mut statements = parsed.statements;
 	let mut walker = NumericWalker {
 		schema,
 		file_path: relative_path,
 		contexts: HashMap::new(),
 		edits: Vec::new(),
 	};
-	walker.visit(&mut file.statements, &mut Vec::new());
+	walker.visit(&mut statements, &mut Vec::new());
 	let mut edits = walker.edits;
 	// Apply from the end so earlier offsets stay valid.
 	edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
@@ -231,7 +236,6 @@ impl<'a> NumericWalker<'a> {
 #[cfg(test)]
 mod tests {
 	use std::fs;
-	use std::path::PathBuf;
 
 	use tempfile::TempDir;
 
@@ -270,7 +274,10 @@ mod tests {
 	}
 
 	fn canonicalize(path: &str, source: &str, schema: Option<&CwtQuery>) -> String {
-		let parsed = parse_clausewitz_content(PathBuf::from(path), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse(path).expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		let canonical = canonicalize_numeric_values(&parsed.ast, schema);
 		emit_clausewitz_statements(&canonical.statements).expect("emit")
@@ -547,8 +554,9 @@ mod coverage_probe {
 			let Ok(source) = std::fs::read_to_string(file) else {
 				continue;
 			};
-			let relative = file.strip_prefix(&root).unwrap().to_path_buf();
-			let parsed = parse_clausewitz_content(relative, &source);
+			let relative = crate::model::GamePathBuf::from_physical(&root, file)
+				.expect("vanilla file has a game path");
+			let parsed = parse_clausewitz_content(&relative, &source);
 			if !parsed.diagnostics.is_empty() {
 				continue;
 			}

@@ -16,11 +16,11 @@ use crate::game::eu4::script::documents::{
 use crate::input::config::Config;
 use crate::input::{InventoryOwner, collect_relative_files, dedup_candidates};
 use crate::model::{
-	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, GamePathBuf, JsonProperty, KeyUsage,
-	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
-	ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
-	ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
-	UiDefinition,
+	AliasUsage, AsGamePathText, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf,
+	JsonProperty, KeyUsage, LocalisationDefinition, LocalisationDuplicate, MaybeScope,
+	ParamBinding, ParamContract, ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment,
+	ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
+	SymbolReference, UiDefinition,
 };
 use crate::playset::steam::steam_game_install_path;
 use flate2::Compression;
@@ -92,7 +92,8 @@ pub struct InstalledBaseDataEntry {
 	pub analysis_rules_version: String,
 	pub generated_by_cli_version: String,
 	pub source: BaseDataSource,
-	pub install_path: String,
+	/// The installed version directory, a host path.
+	pub install_path: PathBuf,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub asset_name: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -559,7 +560,7 @@ impl BaseAnalysisSnapshot {
 				.documents
 				.iter()
 				.map(|item| BaseDocumentRecord {
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					family: item.family,
 					parse_ok: item.parse_ok,
 				})
@@ -576,7 +577,7 @@ impl BaseAnalysisSnapshot {
 					parent: item.parent,
 					this_type: item.this_type,
 					aliases: item.aliases.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					span: item.span.clone(),
 					key: item.key.clone(),
 				})
@@ -589,7 +590,7 @@ impl BaseAnalysisSnapshot {
 					name: item.name.clone(),
 					module: item.module.clone(),
 					local_name: item.local_name.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -611,7 +612,7 @@ impl BaseAnalysisSnapshot {
 					kind: item.kind,
 					name: item.name.clone(),
 					module: item.module.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -624,7 +625,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| BaseAliasUsage {
 					alias: item.alias.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -635,7 +636,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| BaseKeyUsage {
 					key: item.key.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -648,7 +649,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| BaseScalarAssignment {
 					key: item.key.clone(),
 					value: item.value.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -659,7 +660,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| BaseLocalisationDefinition {
 					key: item.key.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -669,7 +670,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| BaseLocalisationDuplicate {
 					key: item.key.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					first_line: item.first_line,
 					duplicate_line: item.duplicate_line,
 				})
@@ -679,7 +680,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| BaseUiDefinition {
 					name: item.name.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -690,7 +691,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| BaseResourceReference {
 					key: item.key.clone(),
 					value: item.value.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -700,7 +701,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| BaseCsvRow {
 					identity: item.identity.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -710,7 +711,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| BaseJsonProperty {
 					key_path: item.key_path.clone(),
-					path: normalize_path_str(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -726,7 +727,7 @@ impl BaseAnalysisSnapshot {
 				.iter()
 				.map(|item| DocumentRecord {
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					family: item.family,
 					parse_ok: item.parse_ok,
 				})
@@ -742,7 +743,7 @@ impl BaseAnalysisSnapshot {
 					this_type: item.this_type,
 					aliases: item.aliases.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					span: item.span.clone(),
 					key: item.key.clone(),
 				})
@@ -756,7 +757,7 @@ impl BaseAnalysisSnapshot {
 					module: item.module.clone(),
 					local_name: item.local_name.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -783,7 +784,7 @@ impl BaseAnalysisSnapshot {
 					name: item.name.clone(),
 					module: item.module.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -797,7 +798,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| AliasUsage {
 					alias: item.alias.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -809,7 +810,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| KeyUsage {
 					key: item.key.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -823,7 +824,7 @@ impl BaseAnalysisSnapshot {
 					key: item.key.clone(),
 					value: item.value.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 					scope_id: item.scope_id,
@@ -835,7 +836,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| LocalisationDefinition {
 					key: item.key.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -846,7 +847,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| LocalisationDuplicate {
 					key: item.key.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					first_line: item.first_line,
 					duplicate_line: item.duplicate_line,
 				})
@@ -857,7 +858,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| UiDefinition {
 					name: item.name.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -869,7 +870,7 @@ impl BaseAnalysisSnapshot {
 					key: item.key.clone(),
 					value: item.value.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -880,7 +881,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| CsvRow {
 					identity: item.identity.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -891,7 +892,7 @@ impl BaseAnalysisSnapshot {
 				.map(|item| JsonProperty {
 					key_path: item.key_path.clone(),
 					mod_id: mod_id.clone(),
-					path: PathBuf::from(&item.path),
+					path: item.path.clone(),
 					line: item.line,
 					column: item.column,
 				})
@@ -909,15 +910,13 @@ impl BaseAnalysisSnapshot {
 		if self.parsed_scripts.is_empty() {
 			return Ok(Vec::new());
 		}
-		let mut parsed = parsed_scripts::decode_parsed_documents(&self.parsed_scripts)?;
-		parsed_scripts::rebase_parsed_documents(game_root, &mut parsed);
-		Ok(parsed)
+		parsed_scripts::decode_parsed_documents(&self.parsed_scripts, game_root)
 	}
 
-	pub fn document_lookup(&self) -> HashMap<&str, (&DocumentFamily, bool)> {
+	pub fn document_lookup(&self) -> HashMap<&GamePath, (&DocumentFamily, bool)> {
 		self.documents
 			.iter()
-			.map(|item| (item.path.as_str(), (&item.family, item.parse_ok)))
+			.map(|item| (item.path.as_game_path(), (&item.family, item.parse_ok)))
 			.collect()
 	}
 
@@ -962,7 +961,8 @@ impl BaseAnalysisSnapshot {
 	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 pub struct BaseDocumentRecord {
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub family: DocumentFamily,
 	pub parse_ok: bool,
 }
@@ -975,7 +975,8 @@ pub struct BaseScopeNode {
 	pub parent: Option<usize>,
 	pub this_type: MaybeScope,
 	pub aliases: HashMap<String, MaybeScope>,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub span: SourceSpan,
 	#[serde(default)]
 	pub key: String,
@@ -989,7 +990,8 @@ pub struct BaseSymbolDefinition {
 	pub name: String,
 	pub module: String,
 	pub local_name: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -1021,7 +1023,8 @@ pub struct BaseSymbolReference {
 	pub kind: SymbolKind,
 	pub name: String,
 	pub module: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -1034,7 +1037,8 @@ pub struct BaseSymbolReference {
 )]
 pub struct BaseAliasUsage {
 	pub alias: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -1045,7 +1049,8 @@ pub struct BaseAliasUsage {
 )]
 pub struct BaseKeyUsage {
 	pub key: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -1058,7 +1063,8 @@ pub struct BaseKeyUsage {
 pub struct BaseScalarAssignment {
 	pub key: String,
 	pub value: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -1069,7 +1075,8 @@ pub struct BaseScalarAssignment {
 )]
 pub struct BaseLocalisationDefinition {
 	pub key: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 }
@@ -1079,7 +1086,8 @@ pub struct BaseLocalisationDefinition {
 )]
 pub struct BaseLocalisationDuplicate {
 	pub key: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub first_line: usize,
 	pub duplicate_line: usize,
 }
@@ -1089,7 +1097,8 @@ pub struct BaseLocalisationDuplicate {
 )]
 pub struct BaseUiDefinition {
 	pub name: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 }
@@ -1100,7 +1109,8 @@ pub struct BaseUiDefinition {
 pub struct BaseResourceReference {
 	pub key: String,
 	pub value: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 }
@@ -1110,7 +1120,8 @@ pub struct BaseResourceReference {
 )]
 pub struct BaseCsvRow {
 	pub identity: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 }
@@ -1120,7 +1131,8 @@ pub struct BaseCsvRow {
 )]
 pub struct BaseJsonProperty {
 	pub key_path: String,
-	pub path: String,
+	#[rkyv(with = AsGamePathText)]
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 }
@@ -2067,7 +2079,7 @@ pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String>
 				analysis_rules_version: metadata.analysis_rules_version,
 				generated_by_cli_version: metadata.generated_by_cli_version,
 				source: metadata.source,
-				install_path: version_dir.path().to_string_lossy().replace('\\', "/"),
+				install_path: version_dir.path(),
 				asset_name: metadata.asset_name,
 				sha256: metadata.sha256,
 			});
@@ -2130,14 +2142,9 @@ pub fn build_base_snapshot_with_observer(
 	let discovered_documents: Vec<DiscoveredTextDocument> =
 		observer.run_stage("discover_documents", |counts| {
 			// Documents come from the inventory, as for a mod, so the game root
-			// is walked once. Discovery still takes host-relative paths, which
-			// is how `to_path("")` spells a game path.
-			let inventory_files: Vec<PathBuf> = inventory_paths
-				.iter()
-				.map(|path| path.to_path(""))
-				.collect();
+			// is walked once.
 			let docs: Vec<DiscoveredTextDocument> =
-				discover_text_documents_from_paths(game_root, &inventory_files);
+				discover_text_documents_from_paths(game_root, &inventory_paths);
 			counts.insert("document_count".to_string(), docs.len() as u64);
 			for (key, value) in discover_family_counts(&docs) {
 				counts.insert(key, value);
@@ -2911,10 +2918,6 @@ fn sanitize_component(value: &str) -> String {
 	} else {
 		out
 	}
-}
-
-fn normalize_path_str(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
 }
 
 fn discover_family_counts(docs: &[DiscoveredTextDocument]) -> BTreeMap<String, u64> {

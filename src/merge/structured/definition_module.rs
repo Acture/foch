@@ -198,7 +198,7 @@ fn merge_clausewitz_definition_module_n_way_inner(
 			let eta_ms = elapsed_ms.saturating_mul((total - completed) as u64) / completed as u64;
 			eprintln!(
 				"[structured-module] {} definitions {completed}/{total} active={active_definitions} copy_through={copy_through_definitions} structured={structured_definitions} elapsed_ms={elapsed_ms} eta_ms={eta_ms}",
-				base.path.display(),
+				base.path,
 			);
 		}
 	}
@@ -307,7 +307,7 @@ fn merge_clausewitz_definition_module_inner(
 			let eta_ms = elapsed_ms.saturating_mul((total - completed) as u64) / completed as u64;
 			eprintln!(
 				"[structured-module] {} definitions {completed}/{total} active={active_definitions} copy_through={copy_through_definitions} structured={structured_definitions} elapsed_ms={elapsed_ms} eta_ms={eta_ms}",
-				base.path.display(),
+				base.path,
 			);
 		}
 	}
@@ -515,7 +515,6 @@ fn compare_top_level_statements(left: &AstStatement, right: &AstStatement) -> st
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use crate::game::eu4::content::{MergePolicies, OneSidedRemovalPolicy};
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
@@ -523,7 +522,10 @@ mod tests {
 	use super::merge_clausewitz_definition_module;
 
 	fn parse(source: &str) -> crate::game::eu4::script::parser::AstFile {
-		let parsed = parse_clausewitz_content(PathBuf::from("common/test/test.txt"), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("common/test/test.txt").expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
 	}

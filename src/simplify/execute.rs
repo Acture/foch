@@ -7,7 +7,7 @@ use crate::game::eu4::script::parse_script_file;
 use crate::game::eu4::script::parser::{AstStatement, AstValue};
 use crate::input::request::InputRequest;
 use crate::input::resolve_input;
-use crate::model::SymbolKind;
+use crate::model::{GamePathBuf, SymbolKind};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -98,15 +98,13 @@ pub fn run_simplify_with_options(
 
 	let mut removed_file_count = 0usize;
 	for (path, positions) in removals_by_path {
-		let absolute = destination_root.join(&path);
+		// Definition records name their file by game-path text.
+		let relative = GamePathBuf::parse(&path)?;
+		let absolute = relative.to_path(&destination_root);
 		if !absolute.exists() {
 			continue;
 		}
-		let Some(mut parsed) =
-			parse_script_file(&options.target_mod_id, &destination_root, &absolute)
-		else {
-			continue;
-		};
+		let mut parsed = parse_script_file(&options.target_mod_id, &destination_root, &relative);
 		let positions = positions.into_iter().collect::<HashSet<_>>();
 		remove_matching_statements(&mut parsed.ast.statements, &positions);
 		if parsed.ast.statements.is_empty() {

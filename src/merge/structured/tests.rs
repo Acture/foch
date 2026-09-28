@@ -19,13 +19,19 @@ use super::{
 };
 
 fn parse(source: &str) -> AstFile {
-	let parsed = parse_clausewitz_content(PathBuf::from("events/test.txt"), source);
+	let parsed = parse_clausewitz_content(
+		&crate::model::GamePathBuf::parse("events/test.txt").expect("valid game path"),
+		source,
+	);
 	assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 	parsed.ast
 }
 
 fn parse_at(path: &str, source: &str) -> AstFile {
-	let parsed = parse_clausewitz_content(PathBuf::from(path), source);
+	let parsed = parse_clausewitz_content(
+		&crate::model::GamePathBuf::parse(path).expect("valid game path"),
+		source,
+	);
 	assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 	parsed.ast
 }
@@ -2163,10 +2169,10 @@ fn structured_merge_preserves_distinct_comments_without_semantic_conflicts() {
 /// through `hand_container_scope_fallback`, which is keyed on the content family
 /// that the path classifies into. Under `common/scripted_triggers/`, the family's
 /// `BooleanMergePolicy::Or` canonicalizes that body, so a mod that ships the
-/// explicit `OR`/`AND` shape is recognized as the vanilla definition. Under the
-/// empty path the same statements classify as `ScriptFileKind("other")`, the
-/// canonicalization does not run, and the two shapes compare as different
-/// content. The second assertion is what pins the path as a semantic input: drop
+/// explicit `OR`/`AND` shape is recognized as the vanilla definition. Under a
+/// path no content family claims, the same statements classify as
+/// `ScriptFileKind("other")`, the canonicalization does not run, and the two
+/// shapes compare as different content. The second assertion is what pins the path as a semantic input: drop
 /// it and this equivalence silently stops depending on the content family.
 #[test]
 fn statement_equivalence_resolves_containers_from_its_content_family_path() {
@@ -2192,7 +2198,7 @@ fn statement_equivalence_resolves_containers_from_its_content_family_path() {
 
 	assert!(
 		super::clausewitz_statements_semantically_equivalent(
-			Path::new(path),
+			crate::model::GamePath::new(path).expect("valid game path"),
 			vanilla_statement,
 			merged_statement,
 			policies,
@@ -2201,21 +2207,24 @@ fn statement_equivalence_resolves_containers_from_its_content_family_path() {
 		"the family's boolean canonicalization must recognize the rewritten trigger"
 	);
 
-	let empty_path_verdict = super::clausewitz_files_semantically_equivalent(
+	let unclassified =
+		crate::model::GamePathBuf::parse("foch_unclassified/00_scripted_triggers.txt")
+			.expect("valid game path");
+	let unclassified_verdict = super::clausewitz_files_semantically_equivalent(
 		&AstFile {
-			path: PathBuf::new(),
+			path: unclassified.clone(),
 			statements: vec![vanilla_statement.clone()],
 		},
 		&AstFile {
-			path: PathBuf::new(),
+			path: unclassified,
 			statements: vec![merged_statement.clone()],
 		},
 		policies,
 	)
-	.expect("compare under an empty path");
+	.expect("compare under an unclassified path");
 	assert!(
-		!empty_path_verdict,
-		"an empty path classifies as `other`, so this comparison must not be family-aware"
+		!unclassified_verdict,
+		"an unclassified path is `other`, so this comparison must not be family-aware"
 	);
 }
 

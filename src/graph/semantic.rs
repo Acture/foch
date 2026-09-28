@@ -4,9 +4,9 @@ use crate::check::runtime::{
 };
 use crate::game::eu4::content::eu4;
 use crate::input::request::InputRequest;
-use crate::input::{ResolvedInput, normalize_relative_path, resolve_input};
+use crate::input::{ResolvedInput, resolve_input};
 use crate::model::{
-	AliasUsage, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
+	AliasUsage, GamePath, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
 	SymbolReference,
 };
 use serde::Serialize;
@@ -705,7 +705,7 @@ fn collect_definition_seeds(
 ) -> Vec<DefinitionSeed> {
 	let mut seeds = BTreeMap::<String, DefinitionSeed>::new();
 	for definition in &state.semantic_index.definitions {
-		let relative_path = normalize_relative_path(&definition.path);
+		let relative_path = definition.path.as_str().to_string();
 		if !contributor_lookup.contains_key(&(definition.mod_id.clone(), relative_path.clone())) {
 			continue;
 		}
@@ -735,7 +735,7 @@ fn collect_definition_seeds(
 	}
 
 	for reference in &state.semantic_index.resource_references {
-		let relative_path = normalize_relative_path(&reference.path);
+		let relative_path = reference.path.as_str().to_string();
 		if !contributor_lookup.contains_key(&(reference.mod_id.clone(), relative_path.clone())) {
 			continue;
 		}
@@ -782,7 +782,7 @@ fn build_block_nodes(
 		if scope.kind == ScopeKind::File {
 			continue;
 		}
-		let relative_path = normalize_relative_path(&scope.path);
+		let relative_path = scope.path.as_str().to_string();
 		let profile = eu4();
 		let Some(fid) = profile.family_id_for(Path::new(&relative_path)) else {
 			continue;
@@ -852,7 +852,7 @@ fn definition_parent_for_scope(
 	if let Some(def_idx) = nearest_enclosing_definition(state, scope.id)
 		&& let Some(definition) = state.semantic_index.definitions.get(def_idx)
 	{
-		let relative_path = normalize_relative_path(&definition.path);
+		let relative_path = definition.path.as_str().to_string();
 		let node_id = format!(
 			"definition:symbol:{}:{}:{}:{}:{}",
 			symbol_kind_text(definition.kind),
@@ -866,7 +866,7 @@ fn definition_parent_for_scope(
 		}
 	}
 
-	let relative_path = normalize_relative_path(&scope.path);
+	let relative_path = scope.path.as_str().to_string();
 	resource_definition_lines
 		.get(&(scope.mod_id.clone(), relative_path))
 		.and_then(|items| {
@@ -964,15 +964,15 @@ fn attach_symbol_references(
 
 fn attachment_node_for_scoped_item(
 	mod_id: &str,
-	path: &Path,
+	path: &GamePath,
 	scope_id: usize,
 	family_id: &str,
 	contributor_ids: &HashMap<(String, String), String>,
 	block_attachments: &HashMap<usize, String>,
 ) -> Option<String> {
-	let relative_path = normalize_relative_path(path);
+	let relative_path = path.as_str().to_string();
 	let profile = eu4();
-	let fid = profile.family_id_for(Path::new(&relative_path))?;
+	let fid = profile.family_id_for(&path.to_path(""))?;
 	if fid != family_id {
 		return None;
 	}
@@ -993,7 +993,7 @@ fn attach_resource_references(
 	let mut aggregate_edges =
 		HashMap::<(SemanticGraphEdgeKind, String, String), (usize, String)>::new();
 	for item in &state.semantic_index.resource_references {
-		let relative_path = normalize_relative_path(&item.path);
+		let relative_path = item.path.as_str().to_string();
 		let Some(file_node_id) = ctx
 			.contributor_ids
 			.get(&(item.mod_id.clone(), relative_path.clone()))
@@ -1104,7 +1104,7 @@ fn resource_reference_source_node(
 	file_node_id: &str,
 	resource_definition_lines: &HashMap<(String, String), Vec<&DefinitionSeed>>,
 ) -> String {
-	let relative_path = normalize_relative_path(&item.path);
+	let relative_path = item.path.as_str().to_string();
 	resource_definition_lines
 		.get(&(item.mod_id.clone(), relative_path))
 		.and_then(|items| {
@@ -2151,7 +2151,8 @@ mod tests {
 				this_type: MaybeScope::Known(base_scope::country()),
 				aliases: HashMap::new(),
 				mod_id: "mod:test".to_string(),
-				path: PathBuf::from("common/holy_orders/orders.txt"),
+				path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+					.expect("valid game path"),
 				span: SourceSpan { line: 1, column: 1 },
 				key: String::new(),
 			},
@@ -2162,7 +2163,8 @@ mod tests {
 				this_type: MaybeScope::Known(base_scope::country()),
 				aliases: HashMap::new(),
 				mod_id: "mod:test".to_string(),
-				path: PathBuf::from("common/holy_orders/orders.txt"),
+				path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+					.expect("valid game path"),
 				span: SourceSpan { line: 2, column: 1 },
 				key: String::new(),
 			},
@@ -2171,7 +2173,8 @@ mod tests {
 			semantic_index: SemanticIndex {
 				documents: vec![DocumentRecord {
 					mod_id: "mod:test".to_string(),
-					path: PathBuf::from("common/holy_orders/orders.txt"),
+					path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+						.expect("valid game path"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
 				}],
@@ -2182,7 +2185,8 @@ mod tests {
 				key_usages: vec![KeyUsage {
 					key: "modifier".to_string(),
 					mod_id: "mod:test".to_string(),
-					path: PathBuf::from("common/holy_orders/orders.txt"),
+					path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+						.expect("valid game path"),
 					line: 3,
 					column: 2,
 					scope_id: 1,
@@ -2192,7 +2196,8 @@ mod tests {
 					key: "cost".to_string(),
 					value: "50".to_string(),
 					mod_id: "mod:test".to_string(),
-					path: PathBuf::from("common/holy_orders/orders.txt"),
+					path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+						.expect("valid game path"),
 					line: 4,
 					column: 2,
 					scope_id: 1,
@@ -2205,7 +2210,8 @@ mod tests {
 						key: "holy_order_definition".to_string(),
 						value: "order_alpha".to_string(),
 						mod_id: "base:eu4".to_string(),
-						path: PathBuf::from("common/holy_orders/orders.txt"),
+						path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+							.expect("valid game path"),
 						line: 1,
 						column: 1,
 					},
@@ -2213,7 +2219,8 @@ mod tests {
 						key: "holy_order_definition".to_string(),
 						value: "order_alpha".to_string(),
 						mod_id: "mod:test".to_string(),
-						path: PathBuf::from("common/holy_orders/orders.txt"),
+						path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+							.expect("valid game path"),
 						line: 1,
 						column: 1,
 					},
@@ -2221,7 +2228,8 @@ mod tests {
 						key: "region".to_string(),
 						value: "europe_region".to_string(),
 						mod_id: "mod:test".to_string(),
-						path: PathBuf::from("common/holy_orders/orders.txt"),
+						path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+							.expect("valid game path"),
 						line: 5,
 						column: 2,
 					},
@@ -2229,7 +2237,8 @@ mod tests {
 						key: "custom_tooltip".to_string(),
 						value: "HOLY_ORDER_TOOLTIP".to_string(),
 						mod_id: "mod:test".to_string(),
-						path: PathBuf::from("common/holy_orders/orders.txt"),
+						path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
+							.expect("valid game path"),
 						line: 6,
 						column: 2,
 					},

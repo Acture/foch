@@ -95,9 +95,11 @@ fn vanilla_corpus_container_scope_matches_cwt_helper() {
 	{
 		files_checked += 1;
 		let relative = entry.path().strip_prefix(&eu4_root).unwrap_or(entry.path());
-		let file_kind = classify_script_file(relative);
+		let game_path = crate::model::GamePathBuf::from_native_relative(relative)
+			.expect("vanilla file has a game path");
+		let file_kind = classify_script_file(&game_path);
 		let parsed = parse_clausewitz_file(entry.path());
-		walk_keys(&parsed.ast.statements, &mut |key, line| {
+		walk_keys(&parsed.statements, &mut |key, line| {
 			keys_checked += 1;
 			let legacy = legacy_container_scope_kind(file_kind.as_str(), key);
 			let cwt = schema_file_kind_container_scope_kind(engine, file_kind.clone(), key);

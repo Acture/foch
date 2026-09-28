@@ -10,7 +10,7 @@ use foch::game::eu4::editor::schema::{
 };
 use foch::game::eu4::editor::workspace::WorkspaceSession;
 use foch::game::eu4::script::parser::{
-	AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
+	AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_statements,
 };
 use foch::game::eu4::script::{
 	ParsedScriptFile, build_semantic_index, collect_localisation_definitions, parse_script_file,
@@ -20,8 +20,8 @@ use foch::input::{
 	Config, InputRequest, InputSource, InputTargetRole, load_or_init_config, resolve_input_targets,
 };
 use foch::model::{
-	AnalysisMode, DocumentFamily, DocumentRecord, Finding, LocalisationDefinition, SemanticIndex,
-	Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
+	AnalysisMode, DocumentFamily, DocumentRecord, Finding, GamePathBuf, LocalisationDefinition,
+	SemanticIndex, Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -779,22 +779,39 @@ fn build_workspace_snapshot_with_schema(
 		let files = collect_semantic_script_files(&target.path);
 		let mod_id = scan_target_mod_id(target);
 		for file in files {
-			if let Some(item) = parse_script_file(&mod_id, &target.path, &file) {
-				file_paths.push(item.path.clone());
-				path_lookup.insert(
-					path_lookup_key(&item.mod_id, &item.relative_path),
-					item.path.clone(),
-				);
-				parsed.push(item);
-			}
+			// A file without a game path under its root cannot be indexed; it
+			// is reported the way unreadable localisation is.
+			let relative = match GamePathBuf::from_physical(&target.path, &file) {
+				Ok(relative) => relative,
+				Err(err) => {
+					eprintln!("foch lsp: skipping {}: {err}", file.display());
+					continue;
+				}
+			};
+			let item = parse_script_file(&mod_id, &target.path, &relative);
+			file_paths.push(file.clone());
+			path_lookup.insert(
+				path_lookup_key(&item.mod_id, &item.relative_path.to_path("")),
+				file,
+			);
+			parsed.push(item);
 		}
-		let definitions = collect_localisation_definitions(&mod_id, &target.path);
+		let definitions = match collect_localisation_definitions(&mod_id, &target.path) {
+			Ok(definitions) => definitions,
+			Err(err) => {
+				eprintln!(
+					"foch lsp: skipping localisation under {}: {err}",
+					target.path.display()
+				);
+				Vec::new()
+			}
+		};
 		for definition in &definitions {
-			let path = target.path.join(&definition.path);
+			let path = definition.path.to_path(&target.path);
 			file_paths.push(path.clone());
 			path_lookup.insert(
-				path_lookup_key(&definition.mod_id, &definition.path),
-				path.clone(),
+				path_lookup_key(&definition.mod_id, &definition.path.to_path("")),
+				path,
 			);
 		}
 		localisation_definitions.extend(definitions);
@@ -803,7 +820,10 @@ fn build_workspace_snapshot_with_schema(
 	let mut index = build_semantic_index(&parsed);
 	let mut localisation_documents = HashSet::new();
 	for definition in &localisation_definitions {
-		if localisation_documents.insert(path_lookup_key(&definition.mod_id, &definition.path)) {
+		if localisation_documents.insert(path_lookup_key(
+			&definition.mod_id,
+			&definition.path.to_path(""),
+		)) {
 			index.documents.push(DocumentRecord {
 				mod_id: definition.mod_id.clone(),
 				path: definition.path.clone(),
@@ -882,28 +902,38 @@ fn build_workspace_snapshot_with_schema(
 		.into_iter()
 		.chain(diagnostics.advisory)
 		.collect();
+	// The editor schema still takes each game path spelled as a host path.
+	let schema_paths = parsed
+		.iter()
+		.map(|file| file.relative_path.to_path(""))
+		.collect::<Vec<_>>();
 	let schema_workspace = schema
 		.as_ref()
 		.map(|schema| {
 			let documents = parsed
 				.iter()
-				.map(|file| SchemaDocument::new(&file.relative_path, &file.source))
+				.zip(&schema_paths)
+				.map(|(file, path)| SchemaDocument::new(path, &file.source))
 				.collect::<Vec<_>>();
 			schema.workspace(&documents)
 		})
 		.unwrap_or_default();
 	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
 	if let Some(schema) = schema.as_ref() {
-		for file in &parsed {
+		for (file, schema_path) in parsed.iter().zip(&schema_paths) {
+			// Every workspace script was read from disk.
+			let Some(physical) = file.path.as_deref() else {
+				continue;
+			};
 			let schema_diagnostics = schema_diagnostics_for_text_with_index(
 				schema,
-				&file.relative_path,
+				schema_path,
 				&file.source,
 				Some(&schema_workspace),
 			);
 			let localisation_diagnostics = schema_localisation_diagnostics_for_text(
 				schema,
-				&file.relative_path,
+				schema_path,
 				&file.source,
 				&index.localisation_definitions,
 			);
@@ -915,7 +945,7 @@ fn build_workspace_snapshot_with_schema(
 				.chain(localisation_diagnostics)
 				.collect::<Vec<_>>();
 			diagnostics_by_path
-				.entry(normalize_path(&file.path))
+				.entry(normalize_path(physical))
 				.or_default()
 				.extend(diagnostics);
 		}
@@ -942,7 +972,8 @@ fn build_workspace_diagnostics(
 	let mut diagnostics_by_path = HashMap::<String, Vec<Diagnostic>>::new();
 
 	for issue in &index.parse_issues {
-		let Some(path) = path_lookup.get(&path_lookup_key(&issue.mod_id, &issue.path)) else {
+		let Some(path) = path_lookup.get(&path_lookup_key(&issue.mod_id, &issue.path.to_path("")))
+		else {
 			continue;
 		};
 		diagnostics_by_path
@@ -1111,7 +1142,7 @@ fn is_workspace_scalar_candidate(value: &str) -> bool {
 }
 
 fn parse_diagnostics_for_text(path: &Path, text: &str) -> Vec<Diagnostic> {
-	let parsed = parse_clausewitz_content(path.to_path_buf(), text);
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(path), text);
 	parsed
 		.diagnostics
 		.into_iter()
@@ -1194,7 +1225,7 @@ fn resolve_definition_locations(
 	if !on_value_side && cursor >= key_start && cursor <= key_end {
 		let current_column = key_start + 1;
 		for reference in &session.index.references {
-			if reference.path != relative_path
+			if reference.path.to_path("") != relative_path
 				|| reference.line != position.line as usize + 1
 				|| reference.column != current_column
 				|| reference.name != assignment_key
@@ -1206,7 +1237,7 @@ fn resolve_definition_locations(
 					&& let Some(location) = definition_location(
 						session,
 						&definition.mod_id,
-						&definition.path,
+						&definition.path.to_path(""),
 						definition.line,
 						definition.column,
 					) {
@@ -1220,7 +1251,7 @@ fn resolve_definition_locations(
 				if let Some(location) = definition_location(
 					session,
 					&definition.mod_id,
-					&definition.path,
+					&definition.path.to_path(""),
 					definition.line,
 					definition.column,
 				) {
@@ -1235,7 +1266,7 @@ fn resolve_definition_locations(
 				if let Some(location) = definition_location(
 					session,
 					&definition.mod_id,
-					&definition.path,
+					&definition.path.to_path(""),
 					definition.line,
 					definition.column,
 				) {
@@ -1253,7 +1284,7 @@ fn resolve_definition_locations(
 					if let Some(location) = definition_location(
 						session,
 						&usage.mod_id,
-						&usage.path,
+						&usage.path.to_path(""),
 						usage.line,
 						usage.column,
 					) {
@@ -1271,7 +1302,7 @@ fn resolve_definition_locations(
 					if let Some(location) = definition_location(
 						session,
 						&usage.mod_id,
-						&usage.path,
+						&usage.path.to_path(""),
 						usage.line,
 						usage.column,
 					) {
@@ -1332,7 +1363,7 @@ fn resolve_reference_locations(
 			if let Some(location) = definition_location(
 				session,
 				&definition.mod_id,
-				&definition.path,
+				&definition.path.to_path(""),
 				definition.line,
 				definition.column,
 			) {
@@ -1348,7 +1379,7 @@ fn resolve_reference_locations(
 			&& let Some(location) = definition_location(
 				session,
 				&reference.mod_id,
-				&reference.path,
+				&reference.path.to_path(""),
 				reference.line,
 				reference.column,
 			) {
@@ -1396,7 +1427,7 @@ fn symbol_target_indices_at_cursor(
 	};
 	let current_column = key_start + 1;
 	for reference in &session.index.references {
-		if reference.path != relative_path
+		if reference.path.to_path("") != relative_path
 			|| reference.line != line_number
 			|| reference.column != current_column
 			|| reference.name != *assignment_key
@@ -1428,7 +1459,7 @@ fn definition_matches_cursor(
 	let Some(location) = definition_location(
 		session,
 		&definition.mod_id,
-		&definition.path,
+		&definition.path.to_path(""),
 		definition.line,
 		definition.column,
 	) else {
@@ -1506,7 +1537,7 @@ fn flag_reference_locations(
 		if let Some(location) = definition_location(
 			session,
 			&usage.mod_id,
-			&usage.path,
+			&usage.path.to_path(""),
 			usage.line,
 			usage.column,
 		) {
@@ -1538,7 +1569,7 @@ fn localisation_reference_locations(
 			if let Some(location) = definition_location(
 				session,
 				&definition.mod_id,
-				&definition.path,
+				&definition.path.to_path(""),
 				definition.line,
 				definition.column,
 			) {
@@ -1553,7 +1584,7 @@ fn localisation_reference_locations(
 		if let Some(location) = definition_location(
 			session,
 			&usage.mod_id,
-			&usage.path,
+			&usage.path.to_path(""),
 			usage.line,
 			usage.column,
 		) {
@@ -1567,7 +1598,7 @@ fn localisation_reference_locations(
 		if let Some(location) = definition_location(
 			session,
 			&reference.mod_id,
-			&reference.path,
+			&reference.path.to_path(""),
 			reference.line,
 			reference.column,
 		) {
@@ -1684,7 +1715,7 @@ fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformati
 		let Some(location) = definition_location(
 			session,
 			&definition.mod_id,
-			&definition.path,
+			&definition.path.to_path(""),
 			definition.line,
 			definition.column,
 		) else {
@@ -1701,7 +1732,7 @@ fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformati
 		let Some(location) = definition_location(
 			session,
 			&definition.mod_id,
-			&definition.path,
+			&definition.path.to_path(""),
 			definition.line,
 			definition.column,
 		) else {
@@ -1718,7 +1749,7 @@ fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformati
 		let Some(location) = definition_location(
 			session,
 			&definition.mod_id,
-			&definition.path,
+			&definition.path.to_path(""),
 			definition.line,
 			definition.column,
 		) else {

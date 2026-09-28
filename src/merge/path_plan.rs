@@ -484,7 +484,14 @@ fn validate_structural_merge_inputs(
 	script_cache: &InputScriptCache,
 ) -> Result<(), MergeError> {
 	let mut failures = Vec::new();
-	let is_defines_path = is_clausewitz_defines_path(Path::new(path));
+	// Inventory keys are written from game paths, so only a corrupt key fails
+	// to parse.
+	let is_defines_path = is_clausewitz_defines_path(GamePath::new(path).map_err(|error| {
+		MergeError::Validation {
+			path: Some(path.to_string()),
+			message: format!("inventory key is not a game path: {error}"),
+		}
+	})?);
 
 	for contributor in contributors {
 		let Some(parse_ok) = contributor.parse_ok_hint else {
@@ -537,7 +544,11 @@ fn validate_structural_merge_inputs(
 }
 
 fn is_structural_merge_path(path: &str, descriptor: Option<&ContentFamilyDescriptor>) -> bool {
-	if classify_document_family(Path::new(path)) != Some(DocumentFamily::Clausewitz) {
+	// Inventory keys are written from game paths, so the parse fails only on a
+	// corrupt key, which is then not treated as a structural merge input.
+	if !GamePath::new(path)
+		.is_ok_and(|path| classify_document_family(path) == Some(DocumentFamily::Clausewitz))
+	{
 		return false;
 	}
 	descriptor

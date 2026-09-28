@@ -12,7 +12,7 @@ use crate::game::eu4::content::eu4;
 use crate::input::request::{CheckOptions, InputRequest};
 use crate::input::{
 	InputResolveErrorKind, LoadedModSnapshot, ResolvedInput, ResolvedInputContributor,
-	normalize_relative_path, resolve_input,
+	resolve_input,
 };
 use crate::merge::dag::{ModDag, ModId, build_mod_dag};
 use crate::merge::namespace::{
@@ -397,7 +397,7 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 		.iter()
 		.map(|item| {
 			(
-				(item.mod_id.clone(), normalize_relative_path(&item.path)),
+				(item.mod_id.as_str(), item.path.as_game_path()),
 				item.family,
 			)
 		})
@@ -405,26 +405,23 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 	let mut items: Vec<ParseIssueReportItem> = index
 		.parse_issues
 		.iter()
-		.map(|issue| {
-			let normalized_path = normalize_relative_path(&issue.path);
-			ParseIssueReportItem {
-				family: family_lookup
-					.get(&(issue.mod_id.clone(), normalized_path.clone()))
-					.copied()
-					.unwrap_or(DocumentFamily::Clausewitz),
-				mod_id: issue.mod_id.clone(),
-				path: normalized_path.into(),
-				line: issue.line,
-				column: issue.column,
-				message: issue.message.clone(),
-			}
+		.map(|issue| ParseIssueReportItem {
+			family: family_lookup
+				.get(&(issue.mod_id.as_str(), issue.path.as_game_path()))
+				.copied()
+				.unwrap_or(DocumentFamily::Clausewitz),
+			mod_id: issue.mod_id.clone(),
+			path: issue.path.clone(),
+			line: issue.line,
+			column: issue.column,
+			message: issue.message.clone(),
 		})
 		.collect();
 	items.sort_by(|lhs, rhs| {
 		(
 			format!("{:?}", lhs.family),
 			lhs.mod_id.as_str(),
-			lhs.path.as_os_str(),
+			&lhs.path,
 			lhs.line,
 			lhs.column,
 			lhs.message.as_str(),
@@ -432,7 +429,7 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 			.cmp(&(
 				format!("{:?}", rhs.family),
 				rhs.mod_id.as_str(),
-				rhs.path.as_os_str(),
+				&rhs.path,
 				rhs.line,
 				rhs.column,
 				rhs.message.as_str(),

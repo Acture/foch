@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
@@ -7,7 +7,7 @@ use crate::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
-use crate::model::HandlerResolutionRecord;
+use crate::model::{GamePathBuf, HandlerResolutionRecord};
 
 use crate::game::eu4::script::emit::emit_clausewitz_statements;
 use crate::merge::conflict_handler::{
@@ -247,7 +247,7 @@ impl TreeJoinProtocol for DefinitionModuleJoin {
 		.map_err(|error| format!("definition-module join failed: {error}"))?;
 		eprintln!(
 			"[tree-module] join {} base_definitions={} active_definitions={} copy_through_definitions={} tree_definitions={}",
-			base.path.display(),
+			base.path,
 			outcome.base_definitions(),
 			outcome.active_definitions(),
 			outcome.copy_through_definitions(),
@@ -297,8 +297,7 @@ impl<'a> TreeMergeKernel<'a> {
 		if !outcome.conflicts.is_empty() {
 			return Err(format!(
 				"tree merge conflict for {}: {:?}",
-				input.base.path.display(),
-				outcome.conflicts,
+				input.base.path, outcome.conflicts,
 			));
 		}
 		Ok(outcome.statements)
@@ -319,7 +318,7 @@ impl<'a> TreeMergeKernel<'a> {
 		input.revisions.first().ok_or_else(|| {
 			format!(
 				"tree merge requires at least one revision for {}",
-				input.base.path.display(),
+				input.base.path,
 			)
 		})?;
 		let revision_asts = input
@@ -592,7 +591,7 @@ fn resolve_tree_conflicts(
 	handler.set_conflict_progress(0, conflict_count);
 	for (index, conflict) in conflicts.iter().enumerate() {
 		handler.set_conflict_progress(index + 1, conflict_count);
-		let conflict_id = semantic_conflict_id(&builder.input.base.path, conflict.id);
+		let conflict_id = semantic_conflict_id(&builder.input.base.path.to_path(""), conflict.id);
 		let mut prebuilt_record = None;
 		let decision = match view_requirement {
 			ConflictViewRequirement::DeferWithoutView => ConflictDecision::Defer { record: None },
@@ -610,7 +609,8 @@ fn resolve_tree_conflicts(
 							resolution.full_view_build_count += 1;
 						}
 						let record = builder.record(conflict)?;
-						let view = semantic_conflict_view(&builder.input.base.path, &record)?;
+						let view =
+							semantic_conflict_view(&builder.input.base.path.to_path(""), &record)?;
 						let decision = handler.on_conflict(&view);
 						prebuilt_record = Some(record);
 						decision
@@ -623,7 +623,7 @@ fn resolve_tree_conflicts(
 					resolution.full_view_build_count += 1;
 				}
 				let record = builder.record(conflict)?;
-				let view = semantic_conflict_view(&builder.input.base.path, &record)?;
+				let view = semantic_conflict_view(&builder.input.base.path.to_path(""), &record)?;
 				let decision = handler.on_conflict(&view);
 				prebuilt_record = Some(record);
 				decision
@@ -698,7 +698,7 @@ fn resolve_tree_conflicts(
 			ConflictDecision::Abort => {
 				return Err(format!(
 					"conflict handler aborted tree merge for {} at {}",
-					builder.input.base.path.display(),
+					builder.input.base.path,
 					conflict.semantic_path.join("/"),
 				));
 			}
@@ -738,10 +738,10 @@ fn tree_conflict_metadata(
 		})
 		.collect::<Result<Vec<_>, String>>()?;
 	Ok(ConflictMetadataView {
-		file_path: input.base.path.clone(),
+		file_path: input.base.path.to_path(""),
 		address_path,
 		address_key,
-		conflict_id: semantic_conflict_id(&input.base.path, conflict.id),
+		conflict_id: semantic_conflict_id(&input.base.path.to_path(""), conflict.id),
 		reason: format!("{}: {}", conflict.kind, conflict.detail),
 		candidates,
 	})
@@ -783,7 +783,7 @@ fn input_revision(
 		format!(
 			"conflict references unknown revision {} for {}",
 			revision.get(),
-			input.base.path.display(),
+			input.base.path,
 		)
 	})
 }
@@ -1213,7 +1213,9 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				},
 			));
 		}
-		let path = PathBuf::from(request.file_dag.file_path());
+		// The DAG names its file by inventory text, written from a game path.
+		let path = GamePathBuf::parse(request.file_dag.file_path())
+			.map_err(|error| format!("merge DAG file is not a game path: {error}"))?;
 		let adjusted_states = if self.kernel.join.supports_sparse_reset_layers()
 			&& request.file_dag.has_replace_path_owner()
 		{
@@ -2330,7 +2332,7 @@ mod tests {
 				.get(&partition)
 				.unwrap_or_else(|| panic!("missing lineage for {definition}"));
 			let output = AstFile {
-				path: PathBuf::from(path),
+				path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 				statements: state.statements.clone(),
 			};
 			let normalized = DefinitionModuleAdapter
@@ -2419,7 +2421,7 @@ mod tests {
 			.get(&SemanticPartitionId::File)
 			.expect("file fallback lineage");
 		let output = AstFile {
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			statements: state.statements,
 		};
 		let normalized = DefinitionModuleAdapter
@@ -2697,7 +2699,7 @@ mod tests {
 		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
 
 		let record = builder.record(&conflict).expect("build guarded record");
-		let view = super::semantic_conflict_view(&input.base.path, &record)
+		let view = super::semantic_conflict_view(&input.base.path.to_path(""), &record)
 			.expect("render guarded conflict");
 		let candidate_index = conflict.candidates[..source_index]
 			.iter()
@@ -2723,7 +2725,7 @@ mod tests {
 		);
 		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
 		assert!(probe.conflicts.len() >= 3, "expected three conflicts");
-		let selected_id = semantic_conflict_id(&input.base.path, probe.conflicts[1].id);
+		let selected_id = semantic_conflict_id(&input.base.path.to_path(""), probe.conflicts[1].id);
 		let map = ResolutionMap {
 			by_conflict_id: BTreeMap::from([(
 				selected_id,
@@ -2732,7 +2734,7 @@ mod tests {
 			..ResolutionMap::default()
 		};
 		let mut handler = ChainHandler {
-			first: LookupHandler::new(&map, input.base.path.clone()),
+			first: LookupHandler::new(&map, input.base.path.to_path("")),
 			second: DeferHandler,
 		};
 		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
@@ -2761,7 +2763,7 @@ mod tests {
 		let expected_conflict_ids = probe
 			.conflicts
 			.iter()
-			.map(|conflict| semantic_conflict_id(&input.base.path, conflict.id))
+			.map(|conflict| semantic_conflict_id(&input.base.path.to_path(""), conflict.id))
 			.collect::<Vec<_>>();
 		let mut handler = PickCandidateHandler {
 			candidate: 1,
@@ -2907,7 +2909,10 @@ mod tests {
 	}
 
 	fn parsed_file(source: &str) -> AstFile {
-		let parsed = parse_clausewitz_content(PathBuf::from("common/test.txt"), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
 	}
@@ -2917,12 +2922,12 @@ mod tests {
 	}
 
 	fn parsed_script_file_at(path: &str, mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from(path);
-		let parsed = parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse(path).expect("valid game path");
+		let parsed = parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("other"),
@@ -3033,8 +3038,8 @@ mod tests {
 		std::fs::create_dir_all(absolute.parent().expect("parent")).expect("create dirs");
 		std::fs::write(&absolute, source).expect("write source");
 		assert!(root.is_absolute(), "the parse root must be absolute");
-		crate::game::eu4::script::parse_script_file(mod_id, root, &absolute)
-			.expect("parse from absolute root")
+		let relative = crate::model::GamePath::new(relative).expect("valid game path");
+		crate::game::eu4::script::parse_script_file(mod_id, root, relative)
 	}
 
 	/// A real merge parses its inputs from absolute installation and Workshop
@@ -3069,7 +3074,11 @@ mod tests {
 		// The fixture is only meaningful while the two roots really are
 		// different absolute locations and the content family is path-sensitive.
 		assert_ne!(vanilla.path, contributor.path);
-		assert!(vanilla.path.is_absolute() && contributor.path.is_absolute());
+		assert!(
+			[&vanilla.path, &contributor.path]
+				.iter()
+				.all(|path| path.as_deref().is_some_and(Path::is_absolute))
+		);
 
 		let base = vanilla_state_from_parsed(&vanilla, policies);
 		let mod_id = ModId::from("mod-a");
@@ -3124,17 +3133,27 @@ mod tests {
 		);
 	}
 
-	/// On Windows the two sides of a join describe the same file with different
-	/// separators: `ParsedScriptFile.relative_path` comes from `strip_prefix`
-	/// and keeps backslashes, while `FileDag::file_path()` is normalized to
-	/// forward slashes by `normalize_relative_path`. Content classification and
-	/// the CWT path queries both fold separators, so the two must still
-	/// normalize to the same tree. Pinned on every platform because CI runs
-	/// Windows and this worktree does not.
+	/// On Windows the two sides of a join used to describe the same file with
+	/// different separators, and classification folded `\\` into `/` to make
+	/// them agree. Both sides are game paths now: a parsed file's AST path is
+	/// converted from its host path component by component, so it always uses
+	/// `/`, and text that spells the file with `\\` is not a game path at all.
+	/// The join therefore rejects such a DAG file path instead of folding it.
 	#[test]
-	fn dag_join_accepts_a_backslash_separated_observed_path() {
+	fn dag_join_rejects_a_backslash_separated_file_path_instead_of_folding_it() {
 		crate::model::test_support::install_defaults();
 		let relative = "decisions/Regression.txt";
+		let backslashed = relative.replace('/', "\\");
+		assert_eq!(
+			crate::model::GamePathBuf::parse(&backslashed)
+				.expect_err("`\\` is not a game path separator")
+				.kind,
+			crate::model::GamePathErrorKind::ReservedCharacter {
+				component: backslashed.clone(),
+				character: '\\',
+			}
+		);
+
 		let policies = &crate::game::eu4::content::eu4()
 			.classify_content_family(Path::new(relative))
 			.expect("decisions content family")
@@ -3146,23 +3165,15 @@ mod tests {
 			relative,
 			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 5 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
 		);
-		let mut contributor = parse_from_absolute_root(
+		let contributor = parse_from_absolute_root(
 			&temp.path().join("workshop/content/236850/900000001"),
 			"mod-a",
 			relative,
 			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 7 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
 		);
+		assert_eq!(contributor.ast.path.as_str(), relative);
 
-		// Reproduce the Windows shape on every platform: the observed side
-		// carries backslashes, the join side carries the normalized DAG path.
-		let mut base = vanilla_state_from_parsed(&vanilla, policies);
-		let backslash_path = PathBuf::from(relative.replace('/', "\\"));
-		let mut vanilla_backslash = vanilla.clone();
-		vanilla_backslash.ast.path = backslash_path.clone();
-		contributor.ast.path = backslash_path;
-		base.partition_lineage =
-			vanilla_state_from_parsed(&vanilla_backslash, policies).partition_lineage;
-
+		let base = vanilla_state_from_parsed(&vanilla, policies);
 		let mod_id = ModId::from("mod-a");
 		let mut handler = DeferHandler;
 		let mut protocol = TreeDagProtocol::new(
@@ -3181,17 +3192,17 @@ mod tests {
 				parent: &base,
 				source: &contributor,
 			})
-			.expect("observe a backslash-separated contributor");
+			.expect("observe the contributor");
 
 		let mut file_dag = FileDag::default();
-		file_dag.file_path = relative.to_string();
+		file_dag.file_path = backslashed.clone();
 		let plan = plan_dag_join(
 			std::slice::from_ref(&mod_id),
 			&file_dag,
 			DagJoinScope::Final,
 		)
 		.expect("plan the final join");
-		let joined = protocol
+		let error = protocol
 			.join(DagJoinRequest {
 				plan: &plan,
 				file_dag: &file_dag,
@@ -3202,12 +3213,9 @@ mod tests {
 					state: &revision,
 				}],
 			})
-			.expect("separators must not change the normalized tree");
-
-		assert_eq!(
-			emit_clausewitz_statements(&joined.statements).expect("emit joined"),
-			emit_clausewitz_statements(&contributor.ast.statements).expect("emit contributor"),
-		);
+			.expect_err("a backslash-separated DAG path is not folded into a game path");
+		assert!(error.contains("is not a game path"), "{error}");
+		assert!(error.contains(&backslashed), "{error}");
 	}
 
 	/// The repair must not weaken the check: an input whose lineage really does
@@ -3329,7 +3337,7 @@ mod tests {
 
 	fn file(value: &str) -> AstFile {
 		AstFile {
-			path: PathBuf::from("common/test.txt"),
+			path: crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
 			statements: vec![AstStatement::Assignment {
 				key: "value".to_string(),
 				key_span: span(),

@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use crate::game::eu4::content::load_rules::load_rules_for_version;
 use crate::game::eu4::content::{
@@ -9,7 +8,9 @@ use crate::game::eu4::content::{
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
 use crate::game::eu4::script::parser::AstStatement;
-use crate::model::{MergeModuleOutput, MergePlanEntry, MergePlanTarget, path_is_within_namespace};
+use crate::model::{
+	GamePath, MergeModuleOutput, MergePlanEntry, MergePlanTarget, path_is_within_namespace,
+};
 use crate::project::DepOverride;
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
@@ -531,23 +532,31 @@ fn fold_visible_module_files(
 	let inputs = visible_files
 		.iter()
 		.map(|(path, file)| {
-			DefinitionModuleInput::new(Path::new(path), &file.parsed)
-				.with_layer_ordinal(file.layer_ordinal)
+			// Keys are inventory text written from game paths, so only a
+			// corrupt key fails to parse.
+			let path = GamePath::new(path).map_err(|error| {
+				CrossFileModuleViewError::unsupported_input(format!(
+					"module input is not a game path: {error}"
+				))
+			})?;
+			Ok(DefinitionModuleInput::new(path, &file.parsed)
+				.with_layer_ordinal(file.layer_ordinal))
 		})
-		.collect::<Vec<_>>();
+		.collect::<Result<Vec<_>, CrossFileModuleViewError>>()?;
 	let canonical = load_definition_module(&inputs, policy).map_err(|error| {
 		CrossFileModuleViewError::unsupported_input(format!(
 			"failed to load definition module: {error:?}"
 		))
 	})?;
-	let output_path = PathBuf::from(policy.output_path);
+	// The folded module exists only in memory, at the policy's output path.
+	let output_path = canonical.ast.path.clone();
 	let mut parsed = visible_files
 		.values()
 		.next()
 		.map(|file| file.parsed.clone())
 		.unwrap_or_else(|| ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: output_path.clone(),
+			path: None,
 			relative_path: output_path.clone(),
 			content_family: None,
 			file_kind: crate::game::eu4::content::ScriptFileKind::new("other"),
@@ -558,8 +567,8 @@ fn fold_visible_module_files(
 			parse_cache_hit: false,
 		});
 	parsed.mod_id = mod_id.to_string();
-	parsed.path = output_path.clone();
-	parsed.relative_path = output_path.clone();
+	parsed.path = None;
+	parsed.relative_path = output_path;
 	parsed.module_name = module_name.to_string();
 	parsed.ast = canonical.ast;
 	parsed.source.clear();
@@ -866,9 +875,11 @@ mod tests {
 		fs::write(&late, "shared = new\nlate_only = yes\n").expect("write late");
 		let mut files = BTreeMap::new();
 		for path in [&early, &late] {
-			let parsed = parse_script_file("mod", temp.path(), path).expect("parse");
+			let relative = crate::model::GamePathBuf::from_physical(temp.path(), path)
+				.expect("file under the mod root");
+			let parsed = parse_script_file("mod", temp.path(), &relative);
 			files.insert(
-				parsed.relative_path.to_string_lossy().replace('\\', "/"),
+				parsed.relative_path.as_str().to_string(),
 				VisibleModuleFile {
 					layer_ordinal: 1,
 					parsed,
@@ -924,18 +935,22 @@ mod tests {
 		fs::create_dir_all(earlier.parent().expect("parent")).expect("create parent");
 		fs::write(&earlier, "shared = source\n").expect("write source");
 		fs::write(&later, "shared = compatch\n").expect("write compatch");
-		let earlier = parse_script_file("source", temp.path(), &earlier).expect("parse source");
-		let later = parse_script_file("compatch", temp.path(), &later).expect("parse compatch");
+		let game_path = |physical: &std::path::Path| {
+			crate::model::GamePathBuf::from_physical(temp.path(), physical)
+				.expect("file under the mod root")
+		};
+		let earlier = parse_script_file("source", temp.path(), &game_path(&earlier));
+		let later = parse_script_file("compatch", temp.path(), &game_path(&later));
 		let mut files = BTreeMap::new();
 		files.insert(
-			earlier.relative_path.to_string_lossy().replace('\\', "/"),
+			earlier.relative_path.as_str().to_string(),
 			VisibleModuleFile {
 				layer_ordinal: 1,
 				parsed: earlier,
 			},
 		);
 		files.insert(
-			later.relative_path.to_string_lossy().replace('\\', "/"),
+			later.relative_path.as_str().to_string(),
 			VisibleModuleFile {
 				layer_ordinal: 2,
 				parsed: later,

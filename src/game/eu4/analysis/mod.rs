@@ -206,10 +206,7 @@ fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
 			.map(|item| {
 				format!(
 					"{}:{}:{}:{}",
-					item.mod_id,
-					item.path.display(),
-					item.line,
-					item.column
+					item.mod_id, item.path, item.line, item.column
 				)
 			})
 			.collect::<Vec<_>>()
@@ -223,7 +220,7 @@ fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
 			channel: FindingChannel::Strict,
 			message: format!("duplicate definition: {} {}", symbol_kind_text(kind), name),
 			mod_id: Some(last.mod_id.clone()),
-			path: Some(last.path.clone()),
+			path: Some(last.path.to_path("")),
 			evidence: Some(evidence),
 			line: Some(last.line),
 			column: Some(last.column),
@@ -315,11 +312,7 @@ fn check_unresolved_call_targets(
 
 		let dedup_key = format!(
 			"{:?}:{}:{}:{}:{}",
-			reference.kind,
-			reference.path.display(),
-			reference.line,
-			reference.column,
-			reference.name
+			reference.kind, reference.path, reference.line, reference.column, reference.name
 		);
 		if !seen.insert(dedup_key) {
 			continue;
@@ -330,7 +323,7 @@ fn check_unresolved_call_targets(
 		{
 			findings.push(Finding::stale_vanilla_fallback(
 				reference.mod_id.clone(),
-				reference.path.clone(),
+				reference.path.to_path(""),
 				reference.kind,
 				reference.name.clone(),
 				reference.line,
@@ -350,7 +343,7 @@ fn check_unresolved_call_targets(
 				reference.name
 			),
 			mod_id: Some(reference.mod_id.clone()),
-			path: Some(reference.path.clone()),
+			path: Some(reference.path.to_path("")),
 			evidence: None,
 			line: Some(reference.line),
 			column: Some(reference.column),
@@ -377,17 +370,14 @@ fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Fi
 		// noise. The same skip is applied by `unknown-scope-type` and
 		// `scope-type-mismatch`.
 		if profile
-			.classify_content_family(usage.path.as_path())
+			.classify_content_family(&usage.path.to_path(""))
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
 		{
 			continue;
 		}
 		let dedup_key = format!(
 			"{}:{}:{}:{}",
-			usage.path.display(),
-			usage.line,
-			usage.column,
-			usage.alias
+			usage.path, usage.line, usage.column, usage.alias
 		);
 		if !seen.insert(dedup_key) {
 			continue;
@@ -414,7 +404,7 @@ fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Fi
 			channel,
 			message: format!("invisible alias reference: {}", usage.alias),
 			mod_id: Some(usage.mod_id.clone()),
-			path: Some(usage.path.clone()),
+			path: Some(usage.path.to_path("")),
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -466,10 +456,7 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 		for message in missing_messages {
 			let dedup_key = format!(
 				"{}:{}:{}:{}",
-				reference.path.display(),
-				reference.line,
-				reference.column,
-				message
+				reference.path, reference.line, reference.column, message
 			);
 			if !seen.insert(dedup_key) {
 				continue;
@@ -480,12 +467,8 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 				channel: FindingChannel::Strict,
 				message,
 				mod_id: Some(reference.mod_id.clone()),
-				path: Some(reference.path.clone()),
-				evidence: Some(format!(
-					"definition location {}:{}",
-					def.path.display(),
-					def.line
-				)),
+				path: Some(reference.path.to_path("")),
+				evidence: Some(format!("definition location {}:{}", def.path, def.line)),
 				line: Some(reference.line),
 				column: Some(reference.column),
 				confidence: Some(0.88),
@@ -521,7 +504,7 @@ fn check_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 		// implicit scope (callables, UI, customizable_localization,
 		// on_actions, scripted_functions). Unknown is by-design there.
 		if profile
-			.classify_content_family(usage.path.as_path())
+			.classify_content_family(&usage.path.to_path(""))
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
 		{
 			continue;
@@ -550,7 +533,7 @@ fn check_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 			channel: FindingChannel::Advisory,
 			message: format!("unknown-scope path: key={} in Unknown scope", usage.key),
 			mod_id: Some(usage.mod_id.clone()),
-			path: Some(usage.path.clone()),
+			path: Some(usage.path.to_path("")),
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -585,7 +568,7 @@ fn check_scope_type_mismatch(index: &SemanticIndex) -> Vec<Finding> {
 		// unknown there, so flagging Province usage of country effects is
 		// noise — same skip applied by unknown-scope-type.
 		if profile
-			.classify_content_family(usage.path.as_path())
+			.classify_content_family(&usage.path.to_path(""))
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
 		{
 			continue;
@@ -608,7 +591,7 @@ fn check_scope_type_mismatch(index: &SemanticIndex) -> Vec<Finding> {
 				usage.key
 			),
 			mod_id: Some(usage.mod_id.clone()),
-			path: Some(usage.path.clone()),
+			path: Some(usage.path.to_path("")),
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -654,7 +637,7 @@ fn check_cross_mod_overlap_advisories(index: &SemanticIndex) -> Vec<Finding> {
 				name
 			),
 			mod_id: Some(last.mod_id.clone()),
-			path: Some(last.path.clone()),
+			path: Some(last.path.to_path("")),
 			evidence: Some(evidence),
 			line: Some(last.line),
 			column: Some(last.column),
@@ -798,7 +781,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 			param_name: param_name.to_string(),
 			prefix,
 			suffix,
-			path: usage.path.clone(),
+			path: usage.path.to_path(""),
 			line: usage.line,
 			column: usage.column,
 		};
@@ -873,11 +856,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 						};
 						let dedup_key = format!(
 							"{}:{}:{}:{}:{}",
-							reference.path.display(),
-							reference.line,
-							reference.column,
-							template.kind,
-							flag
+							reference.path, reference.line, reference.column, template.kind, flag
 						);
 						if defined_flags.contains(&(template.kind.to_string(), flag.clone())) {
 							continue;
@@ -902,7 +881,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 								template.op_key, template.kind, flag
 							),
 							mod_id: Some(reference.mod_id.clone()),
-							path: Some(reference.path.clone()),
+							path: Some(reference.path.to_path("")),
 							evidence: Some(format!(
 								"call {} binds {}={}; template {}:{}:{} has {} = {}${}${}; inferred value {}",
 								def_name,
@@ -950,11 +929,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 					}
 					let dedup_key = format!(
 						"{}:{}:{}:{}:{}",
-						reference.path.display(),
-						reference.line,
-						reference.column,
-						template.kind,
-						flag
+						reference.path, reference.line, reference.column, template.kind, flag
 					);
 					if !seen.insert(dedup_key) {
 						continue;
@@ -973,7 +948,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 							template.op_key, template.kind, flag
 						),
 						mod_id: Some(reference.mod_id.clone()),
-						path: Some(reference.path.clone()),
+						path: Some(reference.path.to_path("")),
 						evidence: Some(format!(
 							"call {} binds {}={}; template {}:{}:{} has {} = {}${}${}; inferred value {}",
 							def_name,
@@ -1021,7 +996,7 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for usage in &index.scalar_assignments {
-		if path_disables_localisation_reference_check(usage.path.as_path()) {
+		if path_disables_localisation_reference_check(&usage.path.to_path("")) {
 			continue;
 		}
 		let Some(key) = normalized_static_symbol(usage.value.as_str()) else {
@@ -1039,13 +1014,7 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 		if defined_keys.contains(key.as_str()) {
 			continue;
 		}
-		let dedup_key = format!(
-			"{}:{}:{}:{}",
-			usage.path.display(),
-			usage.line,
-			usage.column,
-			key
-		);
+		let dedup_key = format!("{}:{}:{}:{}", usage.path, usage.line, usage.column, key);
 		if !seen.insert(dedup_key) {
 			continue;
 		}
@@ -1055,7 +1024,7 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 			channel: FindingChannel::Advisory,
 			message: format!("localisation key not found: {}", key),
 			mod_id: Some(usage.mod_id.clone()),
-			path: Some(usage.path.clone()),
+			path: Some(usage.path.to_path("")),
 			evidence: Some(format!("reference field {} = {}", usage.key, key)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -1071,9 +1040,7 @@ fn check_duplicate_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 	for duplicate in &index.localisation_duplicates {
 		let dedup_key = format!(
 			"{}:{}:{}",
-			duplicate.path.display(),
-			duplicate.key,
-			duplicate.duplicate_line
+			duplicate.path, duplicate.key, duplicate.duplicate_line
 		);
 		if !seen.insert(dedup_key) {
 			continue;
@@ -1084,7 +1051,7 @@ fn check_duplicate_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 			channel: FindingChannel::Advisory,
 			message: format!("duplicate localisation key: {}", duplicate.key),
 			mod_id: Some(duplicate.mod_id.clone()),
-			path: Some(duplicate.path.clone()),
+			path: Some(duplicate.path.to_path("")),
 			evidence: Some(format!(
 				"first defined at line {}, duplicate at line {}",
 				duplicate.first_line, duplicate.duplicate_line

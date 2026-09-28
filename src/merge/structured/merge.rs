@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 
 use crate::game::eu4::content::{
 	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
@@ -13,7 +12,7 @@ use crate::merge::kernel::{
 	SourceSet, StructuralConflict, StructuralConflictDraft, n_way_merge_with_policy,
 	n_way_merge_with_policy_and_resolutions,
 };
-use crate::model::ScopeKind;
+use crate::model::{GamePath, ScopeKind};
 
 use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body};
 use crate::merge::model::SemanticPartitionId;
@@ -322,18 +321,18 @@ pub(crate) fn clausewitz_files_semantically_equivalent(
 /// `ScriptFileKind("other")` and skips the family's boolean canonicalization.
 /// Callers must pass the game-relative path the statements belong to.
 pub(crate) fn clausewitz_statements_semantically_equivalent(
-	relative_path: &Path,
+	relative_path: &GamePath,
 	left: &AstStatement,
 	right: &AstStatement,
 	policies: &MergePolicies,
 ) -> Result<bool, AstAdapterError> {
 	clausewitz_files_semantically_equivalent(
 		&AstFile {
-			path: relative_path.to_path_buf(),
+			path: relative_path.to_owned(),
 			statements: vec![left.clone()],
 		},
 		&AstFile {
-			path: relative_path.to_path_buf(),
+			path: relative_path.to_owned(),
 			statements: vec![right.clone()],
 		},
 		policies,
@@ -413,7 +412,7 @@ enum BooleanTransform {
 }
 
 struct BooleanConditionTransformer<'a> {
-	file_path: &'a Path,
+	file_path: &'a GamePath,
 	file_kind: &'a ScriptFileKind,
 	policies: &'a MergePolicies,
 	transform: BooleanTransform,

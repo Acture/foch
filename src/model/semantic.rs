@@ -2,10 +2,9 @@ use super::document::{
 	CsvRow, DocumentRecord, JsonProperty, LocalisationDefinition, LocalisationDuplicate,
 	ParseIssue, ResourceReference, UiDefinition,
 };
-use super::{MaybeScope, ScopeSet};
+use super::{GamePathBuf, MaybeScope, ScopeSet};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[derive(
 	Clone,
@@ -90,7 +89,7 @@ pub struct ScopeNode {
 	pub this_type: MaybeScope,
 	pub aliases: HashMap<String, MaybeScope>,
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub span: SourceSpan,
 	/// The block key that created this scope (e.g. "multiply_variable", "OR").
 	/// Empty for file-level scopes.
@@ -105,7 +104,7 @@ pub struct SymbolDefinition {
 	pub module: String,
 	pub local_name: String,
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -192,7 +191,7 @@ pub struct SymbolReference {
 	pub name: String,
 	pub module: String,
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -204,7 +203,7 @@ pub struct SymbolReference {
 pub struct AliasUsage {
 	pub alias: String,
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -214,7 +213,7 @@ pub struct AliasUsage {
 pub struct KeyUsage {
 	pub key: String,
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -226,7 +225,7 @@ pub struct ScalarAssignment {
 	pub key: String,
 	pub value: String,
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
@@ -248,4 +247,159 @@ pub struct SemanticIndex {
 	pub csv_rows: Vec<CsvRow>,
 	pub json_properties: Vec<JsonProperty>,
 	pub parse_issues: Vec<ParseIssue>,
+}
+
+/// Record kinds of a [`SemanticIndex`], in the order
+/// [`index_with_one_record_of_each_kind`] places them.
+#[cfg(test)]
+pub const SEMANTIC_RECORD_KINDS: [&str; 14] = [
+	"document",
+	"scope",
+	"definition",
+	"reference",
+	"alias usage",
+	"key usage",
+	"scalar assignment",
+	"localisation definition",
+	"localisation duplicate",
+	"ui definition",
+	"resource reference",
+	"csv row",
+	"json property",
+	"parse issue",
+];
+
+/// An index holding one record of each kind in [`SEMANTIC_RECORD_KINDS`], the
+/// record of kind `n` at `path(n)`. Codec tests corrupt one persisted path at
+/// a time with it, to show that every record's path is validated when read.
+#[cfg(test)]
+pub fn index_with_one_record_of_each_kind(path: impl Fn(usize) -> GamePathBuf) -> SemanticIndex {
+	let mod_id = || "mod-a".to_string();
+	SemanticIndex {
+		documents: vec![DocumentRecord {
+			mod_id: mod_id(),
+			path: path(0),
+			family: super::DocumentFamily::Clausewitz,
+			parse_ok: true,
+		}],
+		scopes: vec![ScopeNode {
+			id: 0,
+			kind: ScopeKind::File,
+			parent: None,
+			this_type: MaybeScope::Unknown,
+			aliases: HashMap::new(),
+			mod_id: mod_id(),
+			path: path(1),
+			span: SourceSpan { line: 1, column: 1 },
+			key: String::new(),
+		}],
+		definitions: vec![SymbolDefinition {
+			kind: SymbolKind::ScriptedEffect,
+			name: "eu4::m::defined".to_string(),
+			module: "m".to_string(),
+			local_name: "defined".to_string(),
+			mod_id: mod_id(),
+			path: path(2),
+			line: 1,
+			column: 1,
+			scope_id: 0,
+			declared_this_type: MaybeScope::Unknown,
+			inferred_this_type: MaybeScope::Unknown,
+			inferred_this_mask: ScopeSet::default(),
+			inferred_from_mask: ScopeSet::default(),
+			inferred_root_mask: ScopeSet::default(),
+			required_params: Vec::new(),
+			optional_params: Vec::new(),
+			param_contract: None,
+			scope_param_names: Vec::new(),
+		}],
+		references: vec![SymbolReference {
+			kind: SymbolKind::ScriptedEffect,
+			name: "eu4::m::referenced".to_string(),
+			module: "m".to_string(),
+			mod_id: mod_id(),
+			path: path(3),
+			line: 1,
+			column: 1,
+			scope_id: 0,
+			provided_params: Vec::new(),
+			param_bindings: Vec::new(),
+		}],
+		alias_usages: vec![AliasUsage {
+			alias: "ROOT".to_string(),
+			mod_id: mod_id(),
+			path: path(4),
+			line: 1,
+			column: 1,
+			scope_id: 0,
+		}],
+		key_usages: vec![KeyUsage {
+			key: "used_key".to_string(),
+			mod_id: mod_id(),
+			path: path(5),
+			line: 1,
+			column: 1,
+			scope_id: 0,
+			this_type: MaybeScope::Unknown,
+		}],
+		scalar_assignments: vec![ScalarAssignment {
+			key: "assigned".to_string(),
+			value: "1".to_string(),
+			mod_id: mod_id(),
+			path: path(6),
+			line: 1,
+			column: 1,
+			scope_id: 0,
+		}],
+		localisation_definitions: vec![LocalisationDefinition {
+			key: "LOC_KEY".to_string(),
+			mod_id: mod_id(),
+			path: path(7),
+			line: 1,
+			column: 1,
+		}],
+		localisation_duplicates: vec![LocalisationDuplicate {
+			key: "LOC_DUP".to_string(),
+			mod_id: mod_id(),
+			path: path(8),
+			first_line: 1,
+			duplicate_line: 2,
+		}],
+		ui_definitions: vec![UiDefinition {
+			name: "ui_name".to_string(),
+			mod_id: mod_id(),
+			path: path(9),
+			line: 1,
+			column: 1,
+		}],
+		resource_references: vec![ResourceReference {
+			key: "texturefile".to_string(),
+			value: "gfx/a.dds".to_string(),
+			mod_id: mod_id(),
+			path: path(10),
+			line: 1,
+			column: 1,
+		}],
+		csv_rows: vec![CsvRow {
+			identity: "row".to_string(),
+			mod_id: mod_id(),
+			path: path(11),
+			line: 1,
+			column: 1,
+		}],
+		json_properties: vec![JsonProperty {
+			key_path: "a.b".to_string(),
+			mod_id: mod_id(),
+			path: path(12),
+			line: 1,
+			column: 1,
+		}],
+		parse_issues: vec![ParseIssue {
+			mod_id: mod_id(),
+			path: path(13),
+			line: 1,
+			column: 1,
+			message: "issue".to_string(),
+		}],
+	}
 }

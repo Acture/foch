@@ -310,12 +310,12 @@ fn build_input_calls_graph(state: &crate::check::runtime::RuntimeState) -> Calls
 			if let Some(def_idx) = nearest_enclosing_definition(state, reference.scope_id) {
 				definition_node_id(def_idx)
 			} else {
-				let node = file_node(reference.mod_id.as_str(), &reference.path);
+				let node = file_node(reference.mod_id.as_str(), &reference.path.to_path(""));
 				nodes.entry(node.id.clone()).or_insert(node.clone());
 				node.id
 			};
 		let callsite = CallsiteRecord {
-			path: normalize_path(&reference.path),
+			path: reference.path.as_str().to_string(),
 			line: reference.line,
 			column: reference.column,
 			reference_kind: symbol_kind_text(reference.kind).to_string(),
@@ -585,7 +585,7 @@ fn build_input_definition_deps_artifact(
 				mod_id: provider.mod_id.clone(),
 				symbol_kind: symbol_kind_text(provider.kind).to_string(),
 				name: provider.name.clone(),
-				path: provider.path.to_string_lossy().replace('\\', "/"),
+				path: provider.path.as_str().to_string(),
 				line: provider.line,
 			});
 
@@ -600,7 +600,7 @@ fn build_input_definition_deps_artifact(
 				sites: Vec::new(),
 			});
 		let site = DefinitionDepsRefSite {
-			path: reference.path.to_string_lossy().replace('\\', "/"),
+			path: reference.path.as_str().to_string(),
 			line: reference.line,
 			column: reference.column,
 		};
@@ -1009,7 +1009,6 @@ mod definition_deps_tests {
 		MaybeScope, ScopeSet, SymbolDefinition, SymbolKind, SymbolReference, test_support,
 	};
 	use std::collections::{HashMap, HashSet};
-	use std::path::PathBuf;
 
 	fn definition(
 		mod_id: &str,
@@ -1025,7 +1024,7 @@ mod definition_deps_tests {
 			module: "test".to_string(),
 			local_name: name.to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			line,
 			column: 1,
 			scope_id: 0,
@@ -1053,7 +1052,7 @@ mod definition_deps_tests {
 			name: name.to_string(),
 			module: "test".to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			line,
 			column: 1,
 			scope_id: 0,

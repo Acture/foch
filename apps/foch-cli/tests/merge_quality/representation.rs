@@ -22,12 +22,13 @@
 //!   must not.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use foch::game::eu4::script::parser::{AstFile, parse_clausewitz_content};
 use foch::merge::numeric::{
 	canonicalize_numeric_text, canonicalize_numeric_values_with_active_schema,
 };
+use foch::model::GamePath;
 
 /// Parse a file into the representation foch writes.
 ///
@@ -44,7 +45,8 @@ pub fn parse(rel: &str, path: &Path) -> Option<AstFile> {
 
 /// Parse in-memory source into the representation foch writes.
 pub fn parse_text(rel: &str, source: &str) -> Option<AstFile> {
-	let parsed = parse_clausewitz_content(PathBuf::from(rel), source);
+	let rel_path = GamePath::new(rel).expect("the harness names files by game path");
+	let parsed = parse_clausewitz_content(rel_path, source);
 	parsed
 		.diagnostics
 		.is_empty()

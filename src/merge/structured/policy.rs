@@ -499,7 +499,6 @@ fn descendant_scalar_field(value: &AstValue, field: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use crate::game::eu4::content::{MergeKeySource, MergePolicies, NestedInsertionPolicy};
 	use crate::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
@@ -642,7 +641,10 @@ mod tests {
 	}
 
 	fn assignment(source: &str) -> (String, AstValue) {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("test.txt").expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		let [AstStatement::Assignment { key, value, .. }] = parsed.ast.statements.as_slice() else {
 			panic!("expected one assignment")

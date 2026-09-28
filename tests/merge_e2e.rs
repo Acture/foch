@@ -10,7 +10,8 @@ use foch::merge::{
 	analyze_merge, run_merge_for_evaluation, run_merge_with_options,
 };
 use foch::model::{
-	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
+	ConflictKind, GamePath, MergeReportStatus, MergeTraceDecision, MergeTraceEntry,
+	MergeTracePolicy,
 };
 use foch::playset::descriptor::load_descriptor;
 use foch::project::compute_conflict_id;
@@ -1198,11 +1199,12 @@ fn eu4_governments_cross_file_module_emits_union_once() {
 		vec!["common/governments".to_string()]
 	);
 
-	let parsed_output = parse_script_file("generated", &out_dir, &merged_path)
-		.expect("parse generated governments module");
-	let relative = Path::new("common/governments/zzz_foch_governments.txt");
+	let relative =
+		GamePath::new("common/governments/zzz_foch_governments.txt").expect("valid game path");
+	assert_eq!(relative.to_path(&out_dir), merged_path);
+	let parsed_output = parse_script_file("generated", &out_dir, relative);
 	let descriptor = eu4()
-		.classify_content_family(relative)
+		.classify_content_family(&relative.to_path(""))
 		.expect("governments descriptor");
 	let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
 		panic!("governments must use definition-module loading");

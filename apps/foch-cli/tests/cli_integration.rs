@@ -628,7 +628,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.11.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v11.0.0")
+			.join("v12.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),

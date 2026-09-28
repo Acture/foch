@@ -678,7 +678,6 @@ mod tests {
 	use super::*;
 	use crate::game::eu4::content::ScriptFileKind;
 	use crate::game::eu4::script::parser::{AstFile, ScalarValue, Span, SpanRange};
-	use std::path::PathBuf;
 
 	fn test_span() -> SpanRange {
 		SpanRange {
@@ -733,14 +732,14 @@ mod tests {
 	fn make_parsed(statements: Vec<AstStatement>) -> ParsedScriptFile {
 		ParsedScriptFile {
 			mod_id: "test".to_string(),
-			path: PathBuf::from("test.txt"),
-			relative_path: PathBuf::from("test.txt"),
+			path: None,
+			relative_path: crate::model::GamePathBuf::parse("test.txt").expect("valid game path"),
 			content_family: None,
 			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			source: String::new(),
 			ast: AstFile {
-				path: PathBuf::from("test.txt"),
+				path: crate::model::GamePathBuf::parse("test.txt").expect("valid game path"),
 				statements,
 			},
 			parse_issues: Vec::new(),

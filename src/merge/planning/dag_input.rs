@@ -8,6 +8,7 @@ use crate::project::DepOverride;
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
 use crate::input::{InputScriptCache, ResolvedInputContributor};
+use crate::model::GamePathBuf;
 
 pub(crate) struct DagMergeInputRequest<'a> {
 	pub file_path: &'a str,
@@ -148,12 +149,21 @@ fn parse_contributor(
 			.load(contributor)
 			.map(|parsed| (*parsed).clone());
 	}
-	parse_script_file(
+	// A contributor does not carry its game path yet; recover it from the
+	// physical path under its root.
+	let relative = GamePathBuf::from_physical(&contributor.root_path, &contributor.absolute_path)
+		.map_err(|error| {
+		format!(
+			"{} has no game path under contributor root {}: {error}",
+			contributor.absolute_path.display(),
+			contributor.root_path.display()
+		)
+	})?;
+	Ok(parse_script_file(
 		&contributor.mod_id,
 		&contributor.root_path,
-		&contributor.absolute_path,
-	)
-	.ok_or_else(|| format!("failed to parse {}", contributor.absolute_path.display()))
+		&relative,
+	))
 }
 
 #[cfg(test)]

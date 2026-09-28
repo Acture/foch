@@ -475,12 +475,11 @@ mod tests {
 	}
 
 	fn parsed_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/foo.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse("common/foo.txt").expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("other"),
@@ -493,13 +492,12 @@ mod tests {
 	}
 
 	fn parsed_event_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("events/test.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse("events/test.txt").expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("events"),
@@ -512,13 +510,14 @@ mod tests {
 	}
 
 	fn parsed_definition_module_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/institutions/zzz_foch_institutions.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path =
+			crate::model::GamePathBuf::parse("common/institutions/zzz_foch_institutions.txt")
+				.expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("institutions"),
@@ -531,13 +530,15 @@ mod tests {
 	}
 
 	fn parsed_diplomatic_actions_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/diplomatic_actions/zzz_foch_diplomatic_actions.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse(
+			"common/diplomatic_actions/zzz_foch_diplomatic_actions.txt",
+		)
+		.expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("diplomatic_actions"),

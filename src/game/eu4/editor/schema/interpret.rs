@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::game::eu4::script::parser::{
-	AstStatement, AstValue, ScalarValue, SpanRange, parse_clausewitz_content,
+	AstStatement, AstValue, ScalarValue, ScriptSyntax, SpanRange, parse_clausewitz_statements,
 };
 use crate::game::schema::query::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
@@ -30,8 +30,8 @@ pub(super) fn schema_hover(
 	position: EditorPosition,
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Option<SchemaHover> {
-	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	let target = find_hover_target(&parsed.ast.statements, position, &[])?;
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	let target = find_hover_target(&parsed.statements, position, &[])?;
 	let parent_path = target
 		.parent_path
 		.iter()
@@ -41,11 +41,11 @@ pub(super) fn schema_hover(
 		engine,
 		dynamic_values,
 		file_path,
-		&parsed.ast.statements,
+		&parsed.statements,
 		&parent_path,
 	)?;
 	let active_subtypes =
-		schema_active_subtypes_for_path(engine, file_path, &parsed.ast.statements, &parent_path);
+		schema_active_subtypes_for_path(engine, file_path, &parsed.statements, &parent_path);
 	let field_match = schema_bind_field_match(
 		engine,
 		dynamic_values,
@@ -311,36 +311,36 @@ pub(super) fn schema_completion_candidates_with_index(
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Option<Vec<SchemaCompletion>> {
 	if !is_schema_key_completion_position(text, position) {
-		let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+		let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
 		return schema_value_completion_candidates(
 			engine,
 			dynamic_values,
 			file_path,
-			&parsed.ast.statements,
+			&parsed.statements,
 			text,
 			position,
 			prefix_lower,
 		);
 	}
-	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	let parent_path = find_completion_parent_path(&parsed.ast.statements, position, &[])?;
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	let parent_path = find_completion_parent_path(&parsed.statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = schema_bind_context(
 		engine,
 		dynamic_values,
 		file_path,
-		&parsed.ast.statements,
+		&parsed.statements,
 		&parent_path,
 	)?;
 	let active_scopes = schema_active_scopes_for_path(
 		engine,
 		dynamic_values,
 		file_path,
-		&parsed.ast.statements,
+		&parsed.statements,
 		&parent_path,
 	);
 	let active_subtypes =
-		schema_active_subtypes_for_path(engine, file_path, &parsed.ast.statements, &parent_path);
+		schema_active_subtypes_for_path(engine, file_path, &parsed.statements, &parent_path);
 	let mut candidates = Vec::new();
 	for field in completion_rule_fields(parent_context)
 		.into_iter()
@@ -986,8 +986,8 @@ pub(super) fn schema_diagnostics_for_text_with_index(
 	text: &str,
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Vec<SchemaDiagnostic> {
-	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	schema_diagnostics_for_ast_with_index(engine, file_path, &parsed.ast.statements, dynamic_values)
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	schema_diagnostics_for_ast_with_index(engine, file_path, &parsed.statements, dynamic_values)
 }
 
 fn schema_diagnostics_for_ast_with_index(
@@ -1014,8 +1014,8 @@ pub(super) fn schema_localisation_diagnostics_for_text(
 	text: &str,
 	definitions: &[LocalisationDefinition],
 ) -> Vec<SchemaDiagnostic> {
-	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	schema_localisation_diagnostics_for_ast(engine, file_path, &parsed.ast.statements, definitions)
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	schema_localisation_diagnostics_for_ast(engine, file_path, &parsed.statements, definitions)
 }
 
 fn schema_localisation_diagnostics_for_ast(

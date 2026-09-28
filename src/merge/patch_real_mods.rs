@@ -37,8 +37,8 @@ fn parse_mod_file(steam_id: &str, relative: &str) -> ParsedScriptFile {
 		"Workshop file not found: {} (is the mod installed?)",
 		file.display()
 	);
-	parse_script_file(steam_id, &root, &file)
-		.unwrap_or_else(|| panic!("Failed to parse {}", file.display()))
+	let relative = crate::model::GamePath::new(relative).expect("valid game path");
+	parse_script_file(steam_id, &root, relative)
 }
 
 /// Count top-level Assignment statements (blocks only — these are the
@@ -442,9 +442,9 @@ fn namespace_detects_cross_file_conflicts_in_real_playlist() {
 				.to_string_lossy()
 				.to_string();
 
-			let Some(parsed) = parse_script_file(steam_id, &root, &file_path) else {
-				continue;
-			};
+			let relative = crate::model::GamePathBuf::from_physical(&root, &file_path)
+				.expect("workshop file has a game path");
+			let parsed = parse_script_file(steam_id, &root, &relative);
 
 			let keys = extract_assignment_keys(&parsed.ast.statements);
 			for key in keys {

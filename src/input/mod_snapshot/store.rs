@@ -1,9 +1,9 @@
 use crate::model::{
-	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf, GamePathError,
-	JsonProperty, KeyUsage, LocalisationDefinition, LocalisationDuplicate, MaybeScope,
-	ParamBinding, ParamContract, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind,
-	ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
-	UiDefinition,
+	AliasUsage, AsGamePathText, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf,
+	GamePathError, JsonProperty, KeyUsage, LocalisationDefinition, LocalisationDuplicate,
+	MaybeScope, ParamBinding, ParamContract, ParseIssue, ResourceReference, ScalarAssignment,
+	ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
+	SymbolReference, UiDefinition,
 };
 use crate::platform::cache_store::{CacheError, default_foch_cache_dir};
 use flate2::Compression;
@@ -136,7 +136,8 @@ struct StoredSemanticIndex {
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct StoredDocumentRecord {
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	family: DocumentFamily,
 	parse_ok: bool,
 }
@@ -149,7 +150,8 @@ struct StoredScopeNode {
 	this_type: MaybeScope,
 	aliases: std::collections::HashMap<String, MaybeScope>,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	span: SourceSpan,
 	key: String,
 }
@@ -161,7 +163,8 @@ struct StoredSymbolDefinition {
 	module: String,
 	local_name: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -182,7 +185,8 @@ struct StoredSymbolReference {
 	name: String,
 	module: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -194,7 +198,8 @@ struct StoredSymbolReference {
 struct StoredAliasUsage {
 	alias: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -204,7 +209,8 @@ struct StoredAliasUsage {
 struct StoredKeyUsage {
 	key: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -216,7 +222,8 @@ struct StoredScalarAssignment {
 	key: String,
 	value: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -226,7 +233,8 @@ struct StoredScalarAssignment {
 struct StoredLocalisationDefinition {
 	key: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -235,7 +243,8 @@ struct StoredLocalisationDefinition {
 struct StoredLocalisationDuplicate {
 	key: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	first_line: usize,
 	duplicate_line: usize,
 }
@@ -244,7 +253,8 @@ struct StoredLocalisationDuplicate {
 struct StoredUiDefinition {
 	name: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -254,7 +264,8 @@ struct StoredResourceReference {
 	key: String,
 	value: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -263,7 +274,8 @@ struct StoredResourceReference {
 struct StoredCsvRow {
 	identity: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -272,7 +284,8 @@ struct StoredCsvRow {
 struct StoredJsonProperty {
 	key_path: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -288,7 +301,8 @@ struct StoredJsonProperty {
 )]
 struct StoredParseIssue {
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	message: String,
@@ -723,7 +737,7 @@ impl StoredDocumentRecord {
 	fn from_document_record_owned(item: DocumentRecord) -> Self {
 		Self {
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			family: item.family,
 			parse_ok: item.parse_ok,
 		}
@@ -732,7 +746,7 @@ impl StoredDocumentRecord {
 	fn into_document_record(self) -> DocumentRecord {
 		DocumentRecord {
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			family: self.family,
 			parse_ok: self.parse_ok,
 		}
@@ -748,7 +762,7 @@ impl StoredScopeNode {
 			this_type: item.this_type,
 			aliases: item.aliases,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			span: item.span,
 			key: item.key,
 		}
@@ -762,7 +776,7 @@ impl StoredScopeNode {
 			this_type: self.this_type,
 			aliases: self.aliases,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			span: self.span,
 			key: self.key,
 		}
@@ -777,7 +791,7 @@ impl StoredSymbolDefinition {
 			module: item.module,
 			local_name: item.local_name,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -800,7 +814,7 @@ impl StoredSymbolDefinition {
 			module: self.module,
 			local_name: self.local_name,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -824,7 +838,7 @@ impl StoredSymbolReference {
 			name: item.name,
 			module: item.module,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -839,7 +853,7 @@ impl StoredSymbolReference {
 			name: self.name,
 			module: self.module,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -854,7 +868,7 @@ impl StoredAliasUsage {
 		Self {
 			alias: item.alias,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -865,7 +879,7 @@ impl StoredAliasUsage {
 		AliasUsage {
 			alias: self.alias,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -878,7 +892,7 @@ impl StoredKeyUsage {
 		Self {
 			key: item.key,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -890,7 +904,7 @@ impl StoredKeyUsage {
 		KeyUsage {
 			key: self.key,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -905,7 +919,7 @@ impl StoredScalarAssignment {
 			key: item.key,
 			value: item.value,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -917,7 +931,7 @@ impl StoredScalarAssignment {
 			key: self.key,
 			value: self.value,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -930,7 +944,7 @@ impl StoredLocalisationDefinition {
 		Self {
 			key: item.key,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -940,7 +954,7 @@ impl StoredLocalisationDefinition {
 		LocalisationDefinition {
 			key: self.key,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -952,7 +966,7 @@ impl StoredLocalisationDuplicate {
 		Self {
 			key: item.key,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			first_line: item.first_line,
 			duplicate_line: item.duplicate_line,
 		}
@@ -962,7 +976,7 @@ impl StoredLocalisationDuplicate {
 		LocalisationDuplicate {
 			key: self.key,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			first_line: self.first_line,
 			duplicate_line: self.duplicate_line,
 		}
@@ -974,7 +988,7 @@ impl StoredUiDefinition {
 		Self {
 			name: item.name,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -984,7 +998,7 @@ impl StoredUiDefinition {
 		UiDefinition {
 			name: self.name,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -997,7 +1011,7 @@ impl StoredResourceReference {
 			key: item.key,
 			value: item.value,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -1008,7 +1022,7 @@ impl StoredResourceReference {
 			key: self.key,
 			value: self.value,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -1020,7 +1034,7 @@ impl StoredCsvRow {
 		Self {
 			identity: item.identity,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -1030,7 +1044,7 @@ impl StoredCsvRow {
 		CsvRow {
 			identity: self.identity,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -1042,7 +1056,7 @@ impl StoredJsonProperty {
 		Self {
 			key_path: item.key_path,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -1052,7 +1066,7 @@ impl StoredJsonProperty {
 		JsonProperty {
 			key_path: self.key_path,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -1063,7 +1077,7 @@ impl StoredParseIssue {
 	fn from_parse_issue_owned(item: ParseIssue) -> Self {
 		Self {
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			message: item.message,
@@ -1073,16 +1087,12 @@ impl StoredParseIssue {
 	fn into_parse_issue(self) -> ParseIssue {
 		ParseIssue {
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			message: self.message,
 		}
 	}
-}
-
-fn path_to_string(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
 }
 
 pub fn default_mod_snapshot_cache_dir() -> PathBuf {
@@ -1289,7 +1299,7 @@ mod tests {
 		let mut index = SemanticIndex::default();
 		index.documents.push(DocumentRecord {
 			mod_id: "mod-a".to_string(),
-			path: PathBuf::from("common/countries/A.txt"),
+			path: game_path("common/countries/A.txt"),
 			family: DocumentFamily::Clausewitz,
 			parse_ok: true,
 		});
@@ -1351,7 +1361,7 @@ mod tests {
 		let mut index = SemanticIndex::default();
 		index.documents.push(DocumentRecord {
 			mod_id: "mod-a".to_string(),
-			path: PathBuf::from("common/countries/A.txt"),
+			path: game_path("common/countries/A.txt"),
 			family: DocumentFamily::Clausewitz,
 			parse_ok: true,
 		});
@@ -1499,6 +1509,86 @@ mod tests {
 			);
 			assert!(
 				cache.lookup(case, "0.1.0", "eu4 1.37.4").is_none(),
+				"{case}"
+			);
+		}
+	}
+
+	/// Record paths are text on the wire and validated when an entry is
+	/// decoded, so record text that is not a game path makes the entry a miss
+	/// that the caller rebuilds, as a corrupt inventory does. Every record
+	/// kind's path is corrupted on its own, and one of them in each way a text
+	/// can fail to be a game path.
+	#[test]
+	fn decoded_record_text_that_is_not_a_game_path_is_a_miss() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModSnapshotCache::open(tmp.path());
+		// One length for every path, so each replacement changes only the
+		// text of one record path in the archive.
+		let valid = |kind: usize| format!("events/r{kind:02}.txt");
+		let mut cases: Vec<(String, usize, String)> = crate::model::SEMANTIC_RECORD_KINDS
+			.iter()
+			.enumerate()
+			.map(|(kind, name)| (name.to_string(), kind, format!(r"events\r{kind:02}.txt")))
+			.collect();
+		for (case, invalid) in [
+			("parent-component", "../nts/r00.txt"),
+			("empty-component", "events//00.txt"),
+			("absolute", "/vents/r00.txt"),
+		] {
+			cases.push((case.to_string(), 0, invalid.to_string()));
+		}
+		let payload = |case: &str| {
+			let data = CachedModData {
+				semantic_index: crate::model::index_with_one_record_of_each_kind(|kind| {
+					game_path(&valid(kind))
+				}),
+				inventory_paths: vec![game_path("gfx/flags/A.tga")],
+				document_noop_hints: vec![false],
+				document_input_identities: vec![None],
+			};
+			StoredCachedModData::from_cached_mod_data_owned(
+				MOD_SNAPSHOT_CACHE_VERSION,
+				case,
+				"0.1.0",
+				"eu4 1.37.4",
+				data,
+			)
+			.0
+		};
+		for (case, kind, invalid) in cases {
+			let valid = valid(kind);
+			assert_eq!(invalid.len(), valid.len(), "{case}");
+			let mut raw = rkyv::to_bytes::<rkyv::rancor::Error>(&payload(&case))
+				.expect("archive payload")
+				.to_vec();
+			let positions = raw
+				.windows(valid.len())
+				.enumerate()
+				.filter(|(_, window)| *window == valid.as_bytes())
+				.map(|(at, _)| at)
+				.collect::<Vec<_>>();
+			let [at] = positions.as_slice() else {
+				panic!("{case}: `{valid}` is archived {} times", positions.len());
+			};
+			raw[*at..*at + valid.len()].copy_from_slice(invalid.as_bytes());
+			let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+			encoder.write_all(&raw).expect("compress payload");
+			let mut bytes = MOD_SNAPSHOT_CACHE_MAGIC.to_vec();
+			bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+			bytes.extend(encoder.finish().expect("finish payload"));
+			let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, &case, "0.1.0", "eu4 1.37.4");
+			fs::write(&path, bytes).expect("write entry");
+
+			let error = decode_payload_from_file(&path)
+				.expect_err(&case)
+				.to_string();
+			assert!(
+				error.contains(&format!("invalid game path `{invalid}`")),
+				"{case}: {error}"
+			);
+			assert!(
+				cache.lookup(&case, "0.1.0", "eu4 1.37.4").is_none(),
 				"{case}"
 			);
 		}

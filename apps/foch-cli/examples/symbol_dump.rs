@@ -1,5 +1,5 @@
 use foch::game::eu4::script::{build_semantic_index, parse_script_file};
-use foch::model::{SemanticIndex, SymbolDefinition, SymbolKind};
+use foch::model::{GamePathBuf, SemanticIndex, SymbolDefinition, SymbolKind};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -61,9 +61,14 @@ fn main() {
 	let mod_id = "__game__eu4";
 	let mut parsed = Vec::with_capacity(files.len());
 	for file in files {
-		if let Some(item) = parse_script_file(mod_id, &root, &file) {
-			parsed.push(item);
-		}
+		let relative = match GamePathBuf::from_physical(&root, &file) {
+			Ok(relative) => relative,
+			Err(error) => {
+				eprintln!("{} has no game path: {error}", file.display());
+				std::process::exit(1);
+			}
+		};
+		parsed.push(parse_script_file(mod_id, &root, &relative));
 	}
 
 	let index = build_semantic_index(&parsed);
@@ -148,7 +153,7 @@ fn build_symbol_entries(index: &SemanticIndex) -> Vec<SymbolEntry> {
 		let mut locations: Vec<SymbolLocation> = defs
 			.iter()
 			.map(|d| SymbolLocation {
-				path: d.path.display().to_string(),
+				path: d.path.to_string(),
 				line: d.line,
 				column: d.column,
 				mod_id: d.mod_id.clone(),

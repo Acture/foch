@@ -194,7 +194,6 @@ fn block_items(stmt: &AstStatement) -> Option<&[AstStatement]> {
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use crate::game::eu4::content::ScriptFileKind;
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
@@ -204,11 +203,11 @@ mod tests {
 	const FILE_PATH: &str = "common/test/foo.txt";
 
 	fn parsed(source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from(FILE_PATH);
-		let parsed = parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse(FILE_PATH).expect("valid game path");
+		let parsed = parse_clausewitz_content(&path, source);
 		ParsedScriptFile {
 			mod_id: "__game__".to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path.clone(),
 			content_family: None,
 			file_kind: ScriptFileKind::new("other"),

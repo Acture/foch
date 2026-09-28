@@ -114,7 +114,7 @@ pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageRep
 		roots.entry(root_family).or_default().inventory_file_count += 1;
 	}
 	for document in &snapshot.documents {
-		let Some(root_family) = coverage_root_family(&document.path) else {
+		let Some(root_family) = coverage_root_family(document.path.as_str()) else {
 			continue;
 		};
 		let entry = roots.entry(root_family).or_default();
@@ -124,7 +124,7 @@ pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageRep
 		}
 		entry.increment_document_family(document.family);
 		if document.family == DocumentFamily::Clausewitz {
-			let kind = classify_script_file(Path::new(&document.path));
+			let kind = classify_script_file(&document.path);
 			entry.increment_script_file_kind(kind.as_str());
 		}
 	}
@@ -263,67 +263,67 @@ trait CoveragePath {
 
 impl CoveragePath for BaseSymbolDefinition {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseSymbolReference {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseAliasUsage {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseKeyUsage {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseScalarAssignment {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseLocalisationDefinition {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseLocalisationDuplicate {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseUiDefinition {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseResourceReference {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseCsvRow {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 
 impl CoveragePath for BaseJsonProperty {
 	fn coverage_path(&self) -> &str {
-		&self.path
+		self.path.as_str()
 	}
 }
 

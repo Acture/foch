@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crate::input::ResolvedInputContributor;
+use crate::model::GamePathBuf;
 
 use super::normalize::normalize_defines_file;
 
@@ -210,14 +211,19 @@ pub(crate) fn build_family_key_index(
 
 	for (rel_path, contributors) in contributors_by_path {
 		for contributor in contributors {
+			// A contributor does not carry its game path yet; recover it from
+			// the physical path under its root, skipping a file outside it as
+			// before.
+			let Ok(relative) =
+				GamePathBuf::from_physical(&contributor.root_path, &contributor.absolute_path)
+			else {
+				continue;
+			};
 			let parsed = crate::game::eu4::script::parse_script_file(
 				&contributor.mod_id,
 				&contributor.root_path,
-				&contributor.absolute_path,
+				&relative,
 			);
-			let Some(parsed) = parsed else {
-				continue;
-			};
 
 			let keys = extract_keys(&parsed, merge_key_source);
 			for key in keys {

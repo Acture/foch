@@ -1508,19 +1508,21 @@ fn cross_namespace_definition_collision(
 
 /// Top-level definition names in one namespace's merged output.
 fn rendered_definition_keys(rendered: &str) -> BTreeSet<String> {
-	crate::game::eu4::script::parser::parse_clausewitz_content(PathBuf::new(), rendered)
-		.ast
-		.statements
-		.iter()
-		.filter_map(|statement| match statement {
-			crate::game::eu4::script::parser::AstStatement::Assignment { key, .. }
-				if !key.trim().is_empty() =>
-			{
-				Some(key.clone())
-			}
-			_ => None,
-		})
-		.collect()
+	crate::game::eu4::script::parser::parse_clausewitz_statements(
+		crate::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+		rendered,
+	)
+	.statements
+	.iter()
+	.filter_map(|statement| match statement {
+		crate::game::eu4::script::parser::AstStatement::Assignment { key, .. }
+			if !key.trim().is_empty() =>
+		{
+			Some(key.clone())
+		}
+		_ => None,
+	})
+	.collect()
 }
 
 fn cross_namespace_collision_detail(
@@ -3043,7 +3045,10 @@ mod tests {
 	}
 
 	fn parse_test_statements(content: &str) -> Vec<AstStatement> {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), content);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("test.txt").expect("valid game path"),
+			content,
+		);
 		assert!(
 			parsed.diagnostics.is_empty(),
 			"test content should parse without diagnostics: {:?}",
@@ -3076,7 +3081,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 1);
@@ -3093,7 +3098,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 0);
@@ -3110,7 +3115,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 0);
@@ -3127,7 +3132,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 0);
@@ -3143,9 +3148,10 @@ mod tests {
 	/// adds nothing, and the merged output must not carry the duplicate.
 	#[test]
 	fn per_entry_noop_drops_a_vanilla_equivalent_definition_under_its_content_family() {
-		let path = Path::new("common/scripted_triggers/00_scripted_triggers.txt");
+		let path = crate::model::GamePath::new("common/scripted_triggers/00_scripted_triggers.txt")
+			.expect("valid game path");
 		let descriptor = eu4()
-			.classify_content_family(path)
+			.classify_content_family(&path.to_path(""))
 			.expect("scripted_triggers family");
 		let vanilla = parse_test_statements(
 			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
@@ -3169,9 +3175,10 @@ mod tests {
 	/// The same comparison must still keep a real change to the same definition.
 	#[test]
 	fn per_entry_noop_keeps_a_changed_definition_under_its_content_family() {
-		let path = Path::new("common/scripted_triggers/00_scripted_triggers.txt");
+		let path = crate::model::GamePath::new("common/scripted_triggers/00_scripted_triggers.txt")
+			.expect("valid game path");
 		let descriptor = eu4()
-			.classify_content_family(path)
+			.classify_content_family(&path.to_path(""))
 			.expect("scripted_triggers family");
 		let vanilla = parse_test_statements(
 			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",

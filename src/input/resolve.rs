@@ -17,8 +17,8 @@ use crate::game::eu4::script::documents::classify_document_family;
 use crate::input::config::Config;
 use crate::input::request::{InputRequest, InputSource};
 use crate::model::{
-	DocumentFamily, GamePathBuf, GamePathError, MergeUnitId, ModCandidate, ProductInputManifest,
-	ProductInputMod,
+	DocumentFamily, GamePath, GamePathBuf, GamePathError, MergeUnitId, ModCandidate,
+	ProductInputManifest, ProductInputMod,
 };
 use crate::playset::ParseErrorKind;
 use crate::playset::descriptor::load_descriptor;
@@ -981,8 +981,14 @@ fn verify_absent_semantic_bases(
 
 	let mut absent = BTreeSet::new();
 	for (relative, contributors) in file_inventory {
-		let relative_path = Path::new(relative);
-		let descriptor = profile.classify_content_family(relative_path);
+		// Inventory keys are game-path text (`build_file_inventory` writes
+		// `GamePath::as_str`), so only a corrupt key fails to parse.
+		let relative_path = GamePath::new(relative).map_err(|error| InputResolveError {
+			kind: InputResolveErrorKind::Io,
+			path: error_path.to_path_buf(),
+			message: format!("unsafe semantic base path {relative:?}: {error}"),
+		})?;
+		let descriptor = profile.classify_content_family(&relative_path.to_path(""));
 		if classify_document_family(relative_path) != Some(DocumentFamily::Clausewitz)
 			|| !descriptor.is_some_and(ContentFamilyDescriptor::supports_verified_empty_file_base)
 			|| contributors
@@ -996,20 +1002,7 @@ fn verify_absent_semantic_bases(
 			continue;
 		}
 
-		if relative_path.as_os_str().is_empty()
-			|| relative_path.is_absolute()
-			|| !relative_path
-				.components()
-				.all(|component| matches!(component, std::path::Component::Normal(_)))
-		{
-			return Err(InputResolveError {
-				kind: InputResolveErrorKind::Io,
-				path: error_path.to_path_buf(),
-				message: format!("unsafe semantic base path {relative:?}"),
-			});
-		}
-
-		let absolute = root.join(relative_path);
+		let absolute = relative_path.to_path(root);
 		match fs::symlink_metadata(&absolute) {
 			Ok(_) => {
 				return Err(InputResolveError {
@@ -1386,15 +1379,47 @@ pub(crate) fn collect_relative_files(
 					.any(|root_name| name.eq_ignore_ascii_case(root_name))
 			})
 		})
-		.map(|entry| {
-			entry.map_err(|error| {
-				let kind = error
-					.io_error()
-					.map_or(io::ErrorKind::Other, io::Error::kind);
-				io::Error::new(kind, error.to_string())
-			})
-		});
+		.map(walk_entry);
 	collect_relative_files_from_entries(root, filter, owner, entries)
+}
+
+/// [`collect_relative_files`] restricted to the directories `within`, each
+/// given by its component names under `root` and matched exactly as spelled
+/// on disk. Nothing outside them is walked, so a name elsewhere under `root`
+/// that has no portable game path does not fail the walk.
+pub(crate) fn collect_relative_files_within(
+	root: &Path,
+	within: &[&[&str]],
+	filter: &FileFilter,
+	owner: InventoryOwner<'_>,
+) -> io::Result<Vec<GamePathBuf>> {
+	let entries = WalkDir::new(root)
+		.follow_links(false)
+		.into_iter()
+		.filter_entry(|entry| {
+			let Ok(relative) = entry.path().strip_prefix(root) else {
+				return false;
+			};
+			// Keep the directories on the way to one of `within`, and
+			// everything inside one.
+			within.iter().any(|directory| {
+				relative
+					.components()
+					.zip(directory.iter())
+					.all(|(component, name)| component.as_os_str() == OsStr::new(name))
+			})
+		})
+		.map(walk_entry);
+	collect_relative_files_from_entries(root, filter, owner, entries)
+}
+
+fn walk_entry(entry: walkdir::Result<walkdir::DirEntry>) -> io::Result<walkdir::DirEntry> {
+	entry.map_err(|error| {
+		let kind = error
+			.io_error()
+			.map_or(io::ErrorKind::Other, io::Error::kind);
+		io::Error::new(kind, error.to_string())
+	})
 }
 
 fn collect_relative_files_from_entries(
@@ -1467,7 +1492,7 @@ pub(crate) fn build_file_inventory(
 			if retained_paths.is_some_and(|paths| !paths.contains(relative.as_str())) {
 				continue;
 			}
-			let document = document_lookup.get(relative.as_str());
+			let document = document_lookup.get(&relative.as_game_path());
 			inventory
 				.entry(relative.as_str().to_owned())
 				.or_insert_with(Vec::new)
@@ -2546,6 +2571,44 @@ path = "mod-a"
 		)
 		.expect("binary assets do not need semantic base verification");
 		assert!(binary.is_empty());
+	}
+
+	/// Inventory keys are game-path text. A key that is not one is rejected
+	/// before any family filter, so it can neither be skipped nor joined onto
+	/// the base game root.
+	#[test]
+	fn a_semantic_base_key_that_is_not_a_game_path_is_rejected() {
+		let temp = TempDir::new().expect("tempdir");
+		for (key, reason) in [
+			("../common/defines/x.lua", "has a `..` component"),
+			(
+				r"gfx\picture.dds",
+				"which a supported host parses as path structure",
+			),
+		] {
+			let error = verify_absent_semantic_bases(
+				&eu4_test_playlist(),
+				Some(temp.path()),
+				true,
+				&two_mod_inventory(key),
+				Path::new("playlist.json"),
+			)
+			.expect_err(key);
+
+			assert_eq!(error.kind, InputResolveErrorKind::Io, "{key}");
+			assert_eq!(error.path, Path::new("playlist.json"), "{key}");
+			assert!(
+				error.message.contains("unsafe semantic base path"),
+				"{key}: {error}"
+			);
+			assert!(
+				error
+					.message
+					.contains(&format!("invalid game path `{key}`")),
+				"{key}: {error}"
+			);
+			assert!(error.message.contains(reason), "{key}: {error}");
+		}
 	}
 
 	#[test]

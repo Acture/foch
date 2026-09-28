@@ -327,11 +327,11 @@ mod tests {
 	}
 
 	fn parsed(mod_id: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/test.txt");
-		let parsed = parse_clausewitz_content(path.clone(), &format!("{mod_id} = yes\n"));
+		let path = crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path");
+		let parsed = parse_clausewitz_content(&path, &format!("{mod_id} = yes\n"));
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("other"),

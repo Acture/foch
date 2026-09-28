@@ -26,11 +26,10 @@ pub(crate) fn normalize_defines_file(
 	for fragment in &fragments {
 		if !seen_merge_keys.insert(&fragment.merge_key) {
 			return Err(MergeError::Parse {
-				path: Some(parsed.relative_path.display().to_string()),
+				path: Some(parsed.relative_path.to_string()),
 				message: format!(
 					"defines merge cannot safely normalize duplicate leaf path `{}` in {} because Lua uses last-assignment-wins semantics within a file",
-					fragment.merge_key,
-					parsed.relative_path.display()
+					fragment.merge_key, parsed.relative_path
 				),
 			});
 		}
@@ -61,10 +60,10 @@ fn collect_defines_fragments(
 			..
 		} if separator == "," => Ok(()),
 		AstStatement::Item { .. } => Err(MergeError::Parse {
-			path: Some(parsed.relative_path.display().to_string()),
+			path: Some(parsed.relative_path.to_string()),
 			message: format!(
 				"defines merge requires named assignments in {} at {}",
-				parsed.relative_path.display(),
+				parsed.relative_path,
 				describe_assignment_path(parent_segments)
 			),
 		}),
@@ -91,11 +90,11 @@ fn collect_defines_fragments(
 					}
 					if fragments.len() == fragment_count {
 						return Err(MergeError::Parse {
-							path: Some(parsed.relative_path.display().to_string()),
+							path: Some(parsed.relative_path.to_string()),
 							message: format!(
 								"defines merge requires leaf assignments below {} in {}",
 								describe_assignment_path(&path_segments),
-								parsed.relative_path.display()
+								parsed.relative_path
 							),
 						});
 					}
@@ -119,14 +118,13 @@ mod tests {
 	use super::*;
 	use crate::game::eu4::script::ParsedScriptFile;
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
-	use std::path::PathBuf;
 
 	fn parsed(path: &str, content: &str) -> ParsedScriptFile {
-		let path_buf = PathBuf::from(path);
-		let parse_result = parse_clausewitz_content(path_buf.clone(), content);
+		let path_buf = crate::model::GamePathBuf::parse(path).expect("valid game path");
+		let parse_result = parse_clausewitz_content(&path_buf, content);
 		ParsedScriptFile {
 			mod_id: "test_mod".to_string(),
-			path: path_buf.clone(),
+			path: None,
 			relative_path: path_buf,
 			content_family: None,
 			file_kind: crate::game::eu4::content::ScriptFileKind::new("other"),

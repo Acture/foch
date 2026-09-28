@@ -394,7 +394,8 @@ fn collect_content_family_merge_keys(
 		let Some(parent) = parent_scope(index, scope) else {
 			continue;
 		};
-		let Some((family_id, merge_key_source)) = dependency_merge_key_source_for_path(&scope.path)
+		let Some((family_id, merge_key_source)) =
+			dependency_merge_key_source_for_path(&scope.path.to_path(""))
 		else {
 			continue;
 		};
@@ -764,7 +765,7 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 
 		let evidence = defs
 			.iter()
-			.map(|def| format!("{}:{}#L{}", def.mod_id, def.path.display(), def.line))
+			.map(|def| format!("{}:{}#L{}", def.mod_id, def.path, def.line))
 			.collect::<Vec<_>>()
 			.join("; ");
 		let Some(last) = defs.last() else {
@@ -776,7 +777,7 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 			channel: FindingChannel::Advisory,
 			message: format!("duplicate scripted effect: {name}"),
 			mod_id: Some(last.mod_id.clone()),
-			path: Some(last.path.clone()),
+			path: Some(last.path.to_path("")),
 			evidence: Some(evidence),
 			line: Some(last.line),
 			column: Some(last.column),
@@ -884,7 +885,8 @@ mod tests {
 			module: "common.scripted_effects".to_string(),
 			local_name: local_name.to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from("common/scripted_effects/test.txt"),
+			path: crate::model::GamePathBuf::parse("common/scripted_effects/test.txt")
+				.expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id: 0,
@@ -906,7 +908,8 @@ mod tests {
 			name: name.to_string(),
 			module: "common.scripted_effects".to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from("common/scripted_effects/caller.txt"),
+			path: crate::model::GamePathBuf::parse("common/scripted_effects/caller.txt")
+				.expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id: 0,
@@ -955,7 +958,8 @@ mod tests {
 		LocalisationDefinition {
 			key: key.to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from("localisation/test_l_english.yml"),
+			path: crate::model::GamePathBuf::parse("localisation/test_l_english.yml")
+				.expect("valid game path"),
 			line: 2,
 			column: 2,
 		}
@@ -1100,9 +1104,10 @@ mod tests {
 			relative,
 			"shared_modifier = { global_tax_modifier = 0.10 }\n",
 		);
+		let game_path = crate::model::GamePath::new(relative).expect("valid game path");
 		let parsed = vec![
-			parse_script_file("100", &main_root, &main_root.join(relative)).expect("main parsed"),
-			parse_script_file("200", &dep_root, &dep_root.join(relative)).expect("dep parsed"),
+			parse_script_file("100", &main_root, game_path),
+			parse_script_file("200", &dep_root, game_path),
 		];
 		let semantic_index = build_semantic_index(&parsed);
 		let ctx = context(

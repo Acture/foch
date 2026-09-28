@@ -162,8 +162,8 @@ impl InputScriptCache {
 			}
 		}
 		documents.sort_by(|lhs, rhs| {
-			(lhs.mod_id.as_str(), lhs.relative_path.as_os_str())
-				.cmp(&(rhs.mod_id.as_str(), rhs.relative_path.as_os_str()))
+			(lhs.mod_id.as_str(), &lhs.relative_path)
+				.cmp(&(rhs.mod_id.as_str(), &rhs.relative_path))
 		});
 		Ok(documents)
 	}
@@ -247,13 +247,7 @@ impl LazyScriptFile {
 			));
 		}
 		let parsed =
-			parse_script_bytes_cached(&self.mod_id, &self.root_path, &self.absolute_path, &bytes)
-				.ok_or_else(|| {
-				format!(
-					"failed to parse snapshot-bound script {}:{}",
-					self.mod_id, self.relative_path
-				)
-			})?;
+			parse_script_bytes_cached(&self.mod_id, &self.root_path, &self.relative_path, &bytes);
 		let observed_parse_ok = parsed.parse_issues.is_empty();
 		if Some(observed_parse_ok) != self.expected_parse_ok {
 			return Err(format!(
@@ -265,25 +259,16 @@ impl LazyScriptFile {
 	}
 }
 
-/// Keys decoded base scripts by game path. Decoded documents still spell
-/// their path as a host-relative path. A document without a game path, or two
-/// documents sharing one, can only come from a corrupt section, so either is
-/// reported like a section that fails to decode rather than letting one
-/// document stand in for another.
+/// Keys decoded base scripts by game path. Two documents sharing one can only
+/// come from a corrupt section, so that is reported like a section that fails
+/// to decode rather than letting one document stand in for another.
 fn index_base_scripts(
 	documents: Vec<ParsedScriptFile>,
 ) -> Result<HashMap<ScriptCacheKey, Arc<ParsedScriptFile>>, String> {
 	let mut files = HashMap::with_capacity(documents.len());
 	for mut document in documents {
 		document.source.clear();
-		let relative_path =
-			GamePathBuf::from_native_relative(&document.relative_path).map_err(|error| {
-				format!(
-					"base parsed script for {} has no valid game path: {error}",
-					document.mod_id
-				)
-			})?;
-		match files.entry((document.mod_id.clone(), relative_path)) {
+		match files.entry((document.mod_id.clone(), document.relative_path.clone())) {
 			Entry::Occupied(entry) => {
 				let (mod_id, relative_path) = entry.key();
 				return Err(format!(
@@ -503,51 +488,33 @@ mod tests {
 		assert!(!cache.is_loaded("mod-a", &game_path(relative)));
 	}
 
-	fn base_script(root: &Path, relative: &Path) -> ParsedScriptFile {
-		let mut parsed = parse_script_bytes_cached(
-			"__game__eu4",
-			root,
-			&root.join("events").join("a.txt"),
-			b"a = 1\n",
-		)
-		.expect("parse base script");
-		parsed.path = root.join(relative);
-		parsed.relative_path = relative.to_path_buf();
-		parsed
+	fn base_script(root: &Path, relative: &str) -> ParsedScriptFile {
+		parse_script_bytes_cached("__game__eu4", root, &game_path(relative), b"a = 1\n")
 	}
 
 	#[test]
 	fn decoded_base_scripts_are_keyed_by_game_path() {
 		let root = Path::new("/base-game");
-		let files = index_base_scripts(vec![base_script(root, Path::new("events/a.txt"))])
+		let files = index_base_scripts(vec![base_script(root, "events/a.txt")])
 			.expect("index base scripts");
 		let parsed = files
 			.get(&("__game__eu4".to_string(), game_path("events/a.txt")))
 			.expect("keyed by game path");
 		assert!(parsed.source.is_empty(), "preloaded sources are dropped");
-	}
-
-	#[cfg(unix)]
-	#[test]
-	fn a_decoded_base_script_without_a_game_path_fails_the_section() {
-		let root = Path::new("/base-game");
-		let error = index_base_scripts(vec![base_script(root, Path::new(r"events\a.txt"))])
-			.expect_err("a literal backslash has no game path");
-		assert!(
-			error.contains("base parsed script for __game__eu4"),
-			"{error}"
+		assert_eq!(
+			parsed.path.as_deref(),
+			Some(root.join("events").join("a.txt").as_path())
 		);
-		assert!(error.contains(r"`events\a.txt`"), "{error}");
 	}
 
 	#[test]
 	fn decoded_base_scripts_sharing_a_game_path_fail_the_section() {
-		// `./` collapses when converted, so these two decoded spellings would
-		// otherwise leave only the last document under `events/a.txt`.
+		// A decoded section that lists one game path twice would otherwise
+		// leave only the last document under `events/a.txt`.
 		let root = Path::new("/base-game");
 		let error = index_base_scripts(vec![
-			base_script(root, Path::new("events/a.txt")),
-			base_script(root, Path::new("./events/a.txt")),
+			base_script(root, "events/a.txt"),
+			base_script(root, "events/a.txt"),
 		])
 		.expect_err("two documents cannot share one game path");
 		assert!(

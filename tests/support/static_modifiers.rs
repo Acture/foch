@@ -140,8 +140,11 @@ pub fn assert_output(case: &Case, out: &Path, report: &MergeReport) {
 			"{}: {report:#?}",
 			case.name
 		);
-		let parsed: ParsedScriptFile =
-			parse_script_file("generated", out, &out.join(OUTPUT)).expect("parse generated module");
+		let parsed: ParsedScriptFile = parse_script_file(
+			"generated",
+			out,
+			foch::model::GamePath::new(OUTPUT).expect("valid game path"),
+		);
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		let mut actual: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 		for statement in &parsed.ast.statements {

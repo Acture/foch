@@ -20,6 +20,10 @@
 
 use ref_cast::{RefCastCustom, ref_cast_custom};
 use relative_path::{Component, FromPathErrorKind, RelativePath, RelativePathBuf};
+use rkyv::rancor::{Fallible, Source};
+use rkyv::string::{ArchivedString, StringResolver};
+use rkyv::with::{ArchiveWith, DeserializeWith, SerializeWith};
+use rkyv::{Place, SerializeUnsized};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -200,6 +204,19 @@ impl GamePath {
 	/// comparing whole components.
 	pub fn starts_with(&self, prefix: &Self) -> bool {
 		self.0.starts_with(&prefix.0)
+	}
+
+	/// Whether this path lies strictly inside the directory whose components
+	/// are `directory`. `same_name(component, name)` compares one leading
+	/// component with one directory name, which is where a caller states its
+	/// case policy (`str::eq`, `str::eq_ignore_ascii_case`).
+	pub fn is_inside(&self, directory: &[&str], same_name: impl Fn(&str, &str) -> bool) -> bool {
+		let mut components = self.0.iter();
+		directory.iter().all(|name| {
+			components
+				.next()
+				.is_some_and(|component| same_name(component, name))
+		}) && components.next().is_some()
 	}
 
 	/// The part of this path below `prefix`, or `None` when `prefix` is not a
@@ -453,6 +470,43 @@ impl<'de> Deserialize<'de> for GamePathBuf {
 	}
 }
 
+/// An rkyv `with` adapter that archives a [`GamePathBuf`] as its canonical
+/// text. The archived form is the plain string a `String` field archives to,
+/// byte for byte, and reading it back validates the text like every other
+/// constructor, so a corrupt archive fails to deserialize instead of yielding
+/// a path outside the rooted namespace.
+pub struct AsGamePathText;
+
+impl ArchiveWith<GamePathBuf> for AsGamePathText {
+	type Archived = ArchivedString;
+	type Resolver = StringResolver;
+
+	fn resolve_with(field: &GamePathBuf, resolver: StringResolver, out: Place<ArchivedString>) {
+		ArchivedString::resolve_from_str(field.as_str(), resolver, out);
+	}
+}
+
+impl<S> SerializeWith<GamePathBuf, S> for AsGamePathText
+where
+	S: Fallible + ?Sized,
+	S::Error: Source,
+	str: SerializeUnsized<S>,
+{
+	fn serialize_with(field: &GamePathBuf, serializer: &mut S) -> Result<StringResolver, S::Error> {
+		ArchivedString::serialize_from_str(field.as_str(), serializer)
+	}
+}
+
+impl<D> DeserializeWith<ArchivedString, GamePathBuf, D> for AsGamePathText
+where
+	D: Fallible + ?Sized,
+	D::Error: Source,
+{
+	fn deserialize_with(field: &ArchivedString, _: &mut D) -> Result<GamePathBuf, D::Error> {
+		GamePathBuf::parse(field.as_str()).map_err(D::Error::new)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -632,6 +686,67 @@ mod tests {
 		}
 	}
 
+	#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+	struct TextRecord {
+		path: String,
+		line: u32,
+	}
+
+	#[derive(Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+	struct TypedRecord {
+		#[rkyv(with = AsGamePathText)]
+		path: GamePathBuf,
+		line: u32,
+	}
+
+	#[test]
+	fn archived_game_paths_are_the_bytes_of_an_archived_string() {
+		// Short and long texts cover the inline and out-of-line string forms.
+		for text in [
+			"events/a.txt",
+			"common/scripted_effects/00_a_rather_long_name_that_is_stored_out_of_line.txt",
+		] {
+			let as_text = rkyv::to_bytes::<rkyv::rancor::Error>(&TextRecord {
+				path: text.to_string(),
+				line: 7,
+			})
+			.expect("archive text");
+			let typed = TypedRecord {
+				path: GamePathBuf::parse(text).expect("valid"),
+				line: 7,
+			};
+			let as_path = rkyv::to_bytes::<rkyv::rancor::Error>(&typed).expect("archive path");
+			assert_eq!(as_text.as_slice(), as_path.as_slice(), "{text}");
+			let decoded =
+				rkyv::from_bytes::<TypedRecord, rkyv::rancor::Error>(&as_path).expect("decode");
+			assert_eq!(decoded, typed);
+		}
+	}
+
+	#[test]
+	fn archived_text_that_is_not_a_game_path_fails_to_deserialize() {
+		for text in [
+			r"events\a.txt",
+			"../a.txt",
+			"/events/a.txt",
+			"events//a.txt",
+			"",
+		] {
+			let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&TextRecord {
+				path: text.to_string(),
+				line: 1,
+			})
+			.expect("archive text");
+			let error = rkyv::from_bytes::<TypedRecord, rkyv::rancor::Error>(&bytes)
+				.expect_err(text)
+				.to_string();
+			assert!(
+				error.contains(&format!("invalid game path `{text}`")),
+				"{text}: {error}"
+			);
+		}
+	}
+
 	#[test]
 	fn ordering_is_the_byte_order_of_the_canonical_text() {
 		let dash = GamePath::new("common/a-b.txt").expect("valid");
@@ -667,6 +782,12 @@ mod tests {
 				.expect("valid")
 				.starts_with(common)
 		);
+		assert!(path.is_inside(&["common", "ideas"], str::eq));
+		assert!(!path.is_inside(&["common", "Ideas"], str::eq));
+		assert!(path.is_inside(&["COMMON", "Ideas"], str::eq_ignore_ascii_case));
+		assert!(!path.is_inside(&["common", "ideas", "x.txt"], str::eq));
+		assert!(!path.is_inside(&["common", "idea"], str::eq));
+		assert!(!common.is_inside(&["common"], str::eq));
 		assert_eq!(
 			common.join(GamePath::new("ideas/x.txt").expect("valid")),
 			GamePathBuf::parse("common/ideas/x.txt").expect("valid")

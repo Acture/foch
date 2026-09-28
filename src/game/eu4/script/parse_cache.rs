@@ -1,4 +1,5 @@
-use super::parser::{ParseResult, parse_clausewitz_content, parse_clausewitz_file};
+use super::parser::{ParseResult, ParsedStatements, ScriptSyntax, parse_clausewitz_statements};
+use crate::model::GamePath;
 use crate::platform::cache_store::{
 	cache_version_namespace, default_foch_cache_dir, write_atomically,
 };
@@ -11,7 +12,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PARSE_CACHE_VERSION: &str = "11.0.0";
+const PARSE_CACHE_VERSION: &str = "12.0.0";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const OBSOLETE_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 
@@ -21,11 +22,13 @@ thread_local! {
 	static TEST_OBSOLETE_CACHE_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
+/// A cached parse. It holds only what the parser derives from the syntax and
+/// the bytes, never a path, so one entry serves every file with that content.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ParseCacheEntry {
 	version: String,
 	content_key: String,
-	result: ParseResult,
+	result: ParsedStatements,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,39 +65,28 @@ struct CacheFile {
 	is_current_version: bool,
 }
 
-pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
-	let Ok(bytes) = fs::read(path) else {
-		return (parse_clausewitz_file(path), false);
-	};
-	let content_key = parse_content_key(path, &bytes);
-	parse_clausewitz_bytes_with_key(path, &bytes, content_key)
-}
-
-/// Parses caller-supplied bytes without reopening `path`.
+/// Parses the bytes of the script loaded at `path` without reopening any
+/// file, and gives the result that path.
 ///
-/// The persistent cache is addressed only by parser mode and the actual bytes;
-/// external installation or snapshot identities do not create a second parser
-/// identity for identical input.
-pub fn parse_clausewitz_bytes_cached(path: &Path, bytes: &[u8]) -> (ParseResult, bool) {
-	let content_key = parse_content_key(path, bytes);
-	parse_clausewitz_bytes_with_key(path, bytes, content_key)
+/// The persistent cache is addressed only by the syntax and the actual bytes;
+/// neither the game path nor any installation or snapshot identity creates a
+/// second parser identity for identical input.
+pub fn parse_clausewitz_bytes_cached(path: &GamePath, bytes: &[u8]) -> (ParseResult, bool) {
+	let (statements, hit) = parse_statements_cached(ScriptSyntax::for_game_path(path), bytes);
+	(statements.into_parse_result(path.to_owned()), hit)
 }
 
-fn parse_clausewitz_bytes_with_key(
-	path: &Path,
-	bytes: &[u8],
-	content_key: String,
-) -> (ParseResult, bool) {
+fn parse_statements_cached(syntax: ScriptSyntax, bytes: &[u8]) -> (ParsedStatements, bool) {
+	let content_key = parse_content_key(syntax, bytes);
 	let cache_path = cache_file_for_key(&parser_cache_root(), &content_key);
 
-	if let Some(mut result) = load_cache_hit(&cache_path, &content_key) {
-		result.ast.path = path.to_path_buf();
+	if let Some(result) = load_cache_hit(&cache_path, &content_key) {
 		touch_cache_file(&cache_path);
 		return (result, true);
 	}
 
 	let content = crate::game::eu4::text::decode_paradox_bytes(bytes);
-	let parsed = parse_clausewitz_content(path.to_path_buf(), &content);
+	let parsed = parse_clausewitz_statements(syntax, &content);
 	let entry = ParseCacheEntry {
 		version: PARSE_CACHE_VERSION.to_string(),
 		content_key,
@@ -109,9 +101,9 @@ fn active_cache_namespace() -> String {
 	cache_version_namespace(PARSE_CACHE_VERSION).expect("parse cache version is valid SemVer")
 }
 
-fn parse_content_key(path: &Path, bytes: &[u8]) -> String {
+fn parse_content_key(syntax: ScriptSyntax, bytes: &[u8]) -> String {
 	let mut hasher = Sha256::new();
-	let mode = parser_mode(path);
+	let mode = parser_mode(syntax);
 	hasher.update((mode.len() as u64).to_le_bytes());
 	hasher.update(mode);
 	hasher.update((bytes.len() as u64).to_le_bytes());
@@ -119,21 +111,14 @@ fn parse_content_key(path: &Path, bytes: &[u8]) -> String {
 	format!("{:x}", hasher.finalize())
 }
 
-fn parser_mode(path: &Path) -> &'static [u8] {
-	if is_lua_path(path) {
-		b"lua"
-	} else {
-		b"clausewitz"
+fn parser_mode(syntax: ScriptSyntax) -> &'static [u8] {
+	match syntax {
+		ScriptSyntax::Lua => b"lua",
+		ScriptSyntax::Clausewitz => b"clausewitz",
 	}
 }
 
-fn is_lua_path(path: &Path) -> bool {
-	path.extension()
-		.and_then(|extension| extension.to_str())
-		.is_some_and(|extension| extension.eq_ignore_ascii_case("lua"))
-}
-
-fn load_cache_hit(path: &Path, content_key: &str) -> Option<ParseResult> {
+fn load_cache_hit(path: &Path, content_key: &str) -> Option<ParsedStatements> {
 	let raw = fs::read(path).ok()?;
 	let entry = bincode::deserialize::<ParseCacheEntry>(&raw).ok()?;
 	if entry.version != PARSE_CACHE_VERSION || entry.content_key != content_key {
@@ -195,10 +180,8 @@ fn cache_file_for_key(root: &Path, key: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-fn parser_cache_file(path: &Path) -> PathBuf {
-	let bytes = fs::read(path).expect("read parser cache test source");
-	let key = parse_content_key(path, &bytes);
-	cache_file_for_key(&parser_cache_root(), &key)
+fn parser_cache_file(syntax: ScriptSyntax, bytes: &[u8]) -> PathBuf {
+	cache_file_for_key(&parser_cache_root(), &parse_content_key(syntax, bytes))
 }
 
 fn touch_cache_file(path: &Path) {
@@ -458,6 +441,21 @@ mod tests {
 	use std::time::Duration;
 	use tempfile::tempdir;
 
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
+	/// Parses the bytes of `source` as the script at one fixed game path.
+	fn parse_source(source: &Path) -> (ParseResult, bool) {
+		let bytes = fs::read(source).expect("read parser cache test source");
+		parse_clausewitz_bytes_cached(game_path("common/scripted_effects/source.txt"), &bytes)
+	}
+
+	fn source_cache_file(source: &Path) -> PathBuf {
+		let bytes = fs::read(source).expect("read parser cache test source");
+		parser_cache_file(ScriptSyntax::Clausewitz, &bytes)
+	}
+
 	struct CacheEnvGuard {
 		previous: Option<PathBuf>,
 		previous_obsolete: Option<PathBuf>,
@@ -490,7 +488,7 @@ mod tests {
 	fn shard_path() {
 		let temp = tempdir().expect("tempdir");
 		let _env = CacheEnvGuard::new(temp.path());
-		let key = parse_content_key(Path::new("/mods/test/common/foo.txt"), b"answer = 42\n");
+		let key = parse_content_key(ScriptSyntax::Clausewitz, b"answer = 42\n");
 		let cache_file = cache_file_for_key(&parser_cache_root(), &key);
 		let root = parser_cache_root();
 		let relative = cache_file.strip_prefix(&root).expect("under cache root");
@@ -522,7 +520,7 @@ mod tests {
 		let source = source_temp.path().join("source.txt");
 		fs::write(&source, "root = { value = yes }\n").expect("write source");
 
-		let (_, hit) = parse_clausewitz_file_cached(&source);
+		let (_, hit) = parse_source(&source);
 
 		assert!(!hit);
 		assert!(obsolete.join("entry.json").is_file());
@@ -572,13 +570,13 @@ mod tests {
 		let _env = CacheEnvGuard::new(cache_temp.path());
 		let source = source_temp.path().join("source.txt");
 		fs::write(&source, "root = { value = yes }\n").expect("write source");
-		let (_, first_hit) = parse_clausewitz_file_cached(&source);
+		let (_, first_hit) = parse_source(&source);
 		assert!(!first_hit);
-		let cache_file = parser_cache_file(&source);
+		let cache_file = source_cache_file(&source);
 		let old_mtime = UNIX_EPOCH + Duration::from_secs(1);
 		set_mtime(&cache_file, old_mtime);
 
-		let (_, second_hit) = parse_clausewitz_file_cached(&source);
+		let (_, second_hit) = parse_source(&source);
 
 		assert!(second_hit);
 		let touched = fs::metadata(&cache_file)
@@ -589,29 +587,51 @@ mod tests {
 	}
 
 	#[test]
-	fn identical_content_reuses_cache_across_paths_and_rebases_ast_path() {
+	fn identical_bytes_share_one_entry_and_each_result_carries_its_own_game_path() {
 		let cache_temp = tempdir().expect("cache tempdir");
-		let source_temp = tempdir().expect("source tempdir");
 		let _env = CacheEnvGuard::new(cache_temp.path());
-		let first = source_temp.path().join("first.txt");
-		let second = source_temp.path().join("second.txt");
-		fs::write(&first, "answer = 42\n").expect("write first source");
-		fs::write(&second, "answer = 42\n").expect("write second source");
+		let first = game_path("common/scripted_effects/first.txt");
+		let second = game_path("events/second.txt");
+		let bytes = b"answer = 42\n";
 
-		let (_, first_hit) = parse_clausewitz_file_cached(&first);
-		let (second_result, second_hit) = parse_clausewitz_file_cached(&second);
+		let (first_result, first_hit) = parse_clausewitz_bytes_cached(first, bytes);
+		let (second_result, second_hit) = parse_clausewitz_bytes_cached(second, bytes);
 
 		assert!(!first_hit);
 		assert!(second_hit);
-		assert_eq!(second_result.ast.path, second);
+		assert_eq!(first_result.ast.path.as_game_path(), first);
+		assert_eq!(second_result.ast.path.as_game_path(), second);
+		assert_eq!(first_result.ast.statements, second_result.ast.statements);
 		assert_eq!(cache_stats().file_count, 1);
+	}
+
+	#[test]
+	fn the_stored_entry_holds_no_path() {
+		let cache_temp = tempdir().expect("cache tempdir");
+		let _env = CacheEnvGuard::new(cache_temp.path());
+		let path = game_path("common/scripted_effects/a_distinctive_name.txt");
+		let bytes = b"answer = 42\n";
+
+		parse_clausewitz_bytes_cached(path, bytes);
+
+		let raw = fs::read(parser_cache_file(ScriptSyntax::Clausewitz, bytes))
+			.expect("read stored entry");
+		let entry = bincode::deserialize::<ParseCacheEntry>(&raw).expect("decode stored entry");
+		assert_eq!(entry.version, PARSE_CACHE_VERSION);
+		let (fresh, _) = parse_clausewitz_bytes_cached(path, bytes);
+		assert_eq!(entry.result.statements, fresh.ast.statements);
+		assert!(
+			!raw.windows(b"a_distinctive_name".len())
+				.any(|window| window == b"a_distinctive_name"),
+			"the entry must not record the path it was first parsed at"
+		);
 	}
 
 	#[test]
 	fn caller_supplied_byte_cache_reuses_identical_bytes_without_reopening_path() {
 		let cache_temp = tempdir().expect("cache tempdir");
 		let _env = CacheEnvGuard::new(cache_temp.path());
-		let missing_path = Path::new("/missing/mod/common/scripted_effects/a.txt");
+		let missing_path = game_path("common/scripted_effects/a.txt");
 		let bytes = b"effect = { add_prestige = 1 }\n";
 
 		let (first, first_hit) = parse_clausewitz_bytes_cached(missing_path, bytes);
@@ -626,8 +646,8 @@ mod tests {
 	#[test]
 	fn lua_and_clausewitz_modes_have_distinct_content_keys() {
 		let bytes = b"-- comment\nanswer = 42\n";
-		let lua_key = parse_content_key(Path::new("defines.lua"), bytes);
-		let clausewitz_key = parse_content_key(Path::new("interface.gui"), bytes);
+		let lua_key = parse_content_key(ScriptSyntax::Lua, bytes);
+		let clausewitz_key = parse_content_key(ScriptSyntax::Clausewitz, bytes);
 
 		assert_ne!(lua_key, clausewitz_key);
 	}
@@ -660,7 +680,7 @@ mod tests {
 		fs::create_dir_all(&obsolete_generation).expect("create obsolete cache generation");
 		fs::write(obsolete_generation.join("entry.json"), "stale").expect("write obsolete entry");
 
-		let (_, hit) = parse_clausewitz_file_cached(&source);
+		let (_, hit) = parse_source(&source);
 
 		assert!(!hit);
 		assert!(obsolete_generation.is_dir());
@@ -710,16 +730,16 @@ mod tests {
 		let source = source_temp.path().join("source.txt");
 		fs::write(&source, "answer = 42\n").expect("write source");
 
-		let (_, first_hit) = parse_clausewitz_file_cached(&source);
-		let (_, second_hit) = parse_clausewitz_file_cached(&source);
+		let (_, first_hit) = parse_source(&source);
+		let (_, second_hit) = parse_source(&source);
 		let gc_stats = gc_with_cap(0);
-		let (_, third_hit) = parse_clausewitz_file_cached(&source);
+		let (_, third_hit) = parse_source(&source);
 
 		assert!(!first_hit);
 		assert!(second_hit);
 		assert_eq!(gc_stats.evicted, 1);
 		assert!(!third_hit);
-		assert!(parser_cache_file(&source).exists());
+		assert!(source_cache_file(&source).exists());
 	}
 
 	fn write_cache_file(path: &Path, size: usize) {

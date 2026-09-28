@@ -24,8 +24,8 @@ pub use mod_snapshot::{CacheError, default_mod_snapshot_cache_dir};
 pub use request::{CheckOptions, InputRequest, InputSource};
 pub(crate) use resolve::{
 	InputInventory, InventoryOwner, ResolvedInput, ResolvedInputContributor,
-	build_input_inventory_for_paths, collect_relative_files, dedup_candidates,
-	normalize_relative_path, resolve_input, resolve_input_from_inventory,
+	build_input_inventory_for_paths, collect_relative_files, collect_relative_files_within,
+	dedup_candidates, resolve_input, resolve_input_from_inventory,
 };
 pub use resolve::{
 	InputResolveError, InputResolveErrorKind, InputResolveSummary, InputTarget, InputTargetRole,
