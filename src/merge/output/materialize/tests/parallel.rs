@@ -159,7 +159,7 @@ impl FrozenPlayset {
 		self.plan
 			.paths
 			.iter()
-			.find(|entry| entry.output_path() == path)
+			.find(|entry| entry.output_path().as_str() == path)
 			.unwrap_or_else(|| panic!("plan has no unit for {path}"))
 	}
 
@@ -629,7 +629,7 @@ fn unit_for<'a>(merged: &'a MaterializedMerge, path: &str) -> &'a MergeUnitOutco
 		.review
 		.units()
 		.iter()
-		.find(|unit| unit.path == path)
+		.find(|unit| unit.path.as_str() == path)
 		.unwrap_or_else(|| panic!("review has no unit for {path}"))
 }
 
@@ -677,7 +677,7 @@ fn assert_mixed_run_is_not_vacuous(
 		);
 		// With --force a conflict writes a placeholder; without it, nothing.
 		assert_eq!(
-			conflict.output_path.as_deref(),
+			conflict.output_path.as_ref().map(|path| path.as_str()),
 			force.then_some(path),
 			"{run}"
 		);
@@ -702,7 +702,7 @@ fn assert_mixed_run_is_not_vacuous(
 		"{run}"
 	);
 	let module: &MergePlanEntry = frozen.module();
-	let module_unit: &MergeUnitOutcome = unit_for(merged, module.output_path());
+	let module_unit: &MergeUnitOutcome = unit_for(merged, module.output_path().as_str());
 	assert_eq!(module_unit.disposition, MergeDisposition::Safe, "{run}");
 	assert_eq!(module_unit.output_paths.len(), 2, "{run}: {module_unit:?}");
 	assert_eq!(
@@ -996,12 +996,15 @@ fn a_definition_module_is_analyzed_once_on_one_worker() {
 		.target
 		.output_paths()
 		.into_iter()
-		.map(str::to_string)
+		.map(|path| path.as_str().to_string())
 		.collect();
 	assert_eq!(namespaces.len(), 2);
 	// The module comes first, so a namespace dispatched as a job of its own
 	// would reach a free worker while the first namespace is held.
-	assert_eq!(frozen.output_paths()[0], frozen.module().output_path());
+	assert_eq!(
+		frozen.output_paths()[0],
+		frozen.module().output_path().as_str()
+	);
 	let first_namespace: String = namespaces[0].clone();
 	let (backend, recorder) = recording(move |attempt, recorder, proceed| {
 		if attempt.module && attempt.target == first_namespace {
@@ -1034,9 +1037,16 @@ fn a_definition_module_is_analyzed_once_on_one_worker() {
 		first.exited < second.entered,
 		"namespaces overlapped: {module_calls:?}"
 	);
-	let module_unit: &MergeUnitOutcome = unit_for(&merged, frozen.module().output_path());
+	let module_unit: &MergeUnitOutcome = unit_for(&merged, frozen.module().output_path().as_str());
 	assert_eq!(module_unit.disposition, MergeDisposition::Safe);
-	assert_eq!(module_unit.output_paths, namespaces);
+	assert_eq!(
+		module_unit
+			.output_paths
+			.iter()
+			.map(|path| path.as_str())
+			.collect::<Vec<_>>(),
+		namespaces
+	);
 	for namespace in &namespaces {
 		assert!(artifacts_dir.join(namespace).is_file(), "{namespace}");
 	}
@@ -1053,7 +1063,7 @@ fn a_module_failing_in_its_second_namespace_writes_neither_directory() {
 		.target
 		.output_paths()
 		.into_iter()
-		.map(str::to_string)
+		.map(|path| path.as_str().to_string())
 		.collect();
 	let mut serial: Option<RunSnapshot> = None;
 	for worker_count in [1, 4] {

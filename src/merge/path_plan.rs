@@ -12,12 +12,11 @@ use crate::input::{
 	ResolvedInputContributor,
 };
 use crate::model::{
-	DocumentFamily, GamePath, MergeModuleOutput, MergePlanContributor, MergePlanEntry,
-	MergePlanResult, MergePlanStrategies, MergePlanStrategy, MergePlanTarget, MergeUnitId,
-	path_is_within_namespace,
+	DocumentFamily, GamePath, MergeModuleOutput, MergeModuleOutputs, MergePlanContributor,
+	MergePlanEntry, MergePlanResult, MergePlanStrategies, MergePlanStrategy, MergePlanTarget,
+	MergeUnitId,
 };
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn fatal_plan_from_input_error(
@@ -62,7 +61,7 @@ pub(crate) fn build_merge_plan_from_input(
 	result
 }
 
-type ModuleInputs<'a> = Vec<(&'a str, &'a [ResolvedInputContributor])>;
+type ModuleInputs<'a> = Vec<(&'a GamePath, &'a [ResolvedInputContributor])>;
 
 fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePlanEntry>, String> {
 	let rules: Option<&DatabaseLoadRules> = input
@@ -75,9 +74,8 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		BTreeMap::new();
 
 	for (path, contributors) in &input.file_inventory {
-		let game_path = inventory_game_path(path)?;
 		if let Some(database) = rules
-			.map(|rules| rules.database_for(game_path))
+			.map(|rules| rules.database_for(path))
 			.transpose()?
 			.flatten()
 		{
@@ -87,7 +85,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 				.push((path, contributors));
 			continue;
 		}
-		let Some(descriptor) = profile.classify_content_family(game_path) else {
+		let Some(descriptor) = profile.classify_content_family(path) else {
 			regular.push(classify_entry(
 				path,
 				contributors,
@@ -125,7 +123,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		// a file in a subdirectory is not one of its inputs. It keeps its own
 		// per-path handling instead of joining — and then blocking — the module.
 		if !is_structural_merge_path(path, Some(descriptor))
-			|| !path_is_within_namespace(path, policy.namespace_prefix.as_str())
+			|| !path.is_child_of(policy.namespace_prefix)
 		{
 			regular.push(classify_entry(
 				path,
@@ -143,14 +141,14 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 			.entry(merge_unit)
 			.or_insert_with(|| (policy, Vec::new()))
 			.1
-			.push((path.as_str(), contributors.as_slice()));
+			.push((path, contributors.as_slice()));
 	}
 
 	for (merge_unit, (policy, inputs)) in modules {
-		let has_reset_participant = module_has_reset_participant(input, policy);
+		let has_reset_participant = namespace_has_reset_participant(input, policy.namespace_prefix);
 		if !module_has_non_base_contributor(&inputs) && !has_reset_participant {
 			for (path, contributors) in inputs {
-				let descriptor = profile.classify_content_family(inventory_game_path(path)?);
+				let descriptor = profile.classify_content_family(path);
 				regular.push(classify_entry(
 					path,
 					contributors,
@@ -166,13 +164,11 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 			&inputs,
 			input,
 			&input.script_cache,
-		));
+		)?);
 	}
 	for (database, inputs) in databases {
 		let has_reset: bool = inputs.iter().any(|(path, _)| {
-			Path::new(path)
-				.parent()
-				.and_then(Path::to_str)
+			path.parent()
 				.is_some_and(|directory| namespace_has_reset_participant(input, directory))
 		});
 		if !module_has_non_base_contributor(&inputs) && !has_reset {
@@ -180,7 +176,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 				regular.push(classify_entry(
 					path,
 					contributors,
-					profile.classify_content_family(inventory_game_path(path)?),
+					profile.classify_content_family(path),
 					&input.script_cache,
 				));
 			}
@@ -193,7 +189,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 					regular.push(classify_entry(
 						path,
 						contributors,
-						profile.classify_content_family(inventory_game_path(path)?),
+						profile.classify_content_family(path),
 						&input.script_cache,
 					));
 				}
@@ -221,18 +217,17 @@ fn classify_database_entry(
 	input: &ResolvedInput,
 	profile: &Eu4,
 ) -> Result<Option<MergePlanEntry>, String> {
-	let mut policies: BTreeMap<&str, DefinitionModulePolicy> = BTreeMap::new();
-	let mut unsupported: Vec<&str> = Vec::new();
+	let mut policies: BTreeMap<&GamePath, DefinitionModulePolicy> = BTreeMap::new();
+	let mut unsupported: Vec<&GamePath> = Vec::new();
 	for (path, _) in inputs {
-		let descriptor: Option<&ContentFamilyDescriptor> =
-			profile.classify_content_family(inventory_game_path(path)?);
+		let descriptor: Option<&ContentFamilyDescriptor> = profile.classify_content_family(path);
 		match descriptor.map(|descriptor| descriptor.load_policy) {
 			// `database_for` matches only direct children of a rule directory,
 			// so every input here is already inside its namespace.
 			Some(ContentLoadPolicy::DefinitionModule(policy))
 				if is_structural_merge_path(path, descriptor) =>
 			{
-				policies.insert(policy.namespace_prefix.as_str(), policy);
+				policies.insert(policy.namespace_prefix, policy);
 			}
 			_ => unsupported.push(path),
 		}
@@ -249,21 +244,22 @@ fn classify_database_entry(
 		return Ok(None);
 	}
 	if unsupported.is_empty() {
-		return Ok(Some(classify_module_entry(
+		return classify_module_entry(
 			merge_unit,
 			policies.values().copied(),
 			inputs,
 			input,
 			&input.script_cache,
-		)));
+		)
+		.map(Some);
 	}
 	// Only inputs the analyzer cannot merge structurally reach this point.
 	// Deferring names them instead of reporting the whole database as opaque.
-	let outputs: Vec<MergeModuleOutput> = module_outputs(policies.values().copied(), input);
+	let outputs: MergeModuleOutputs = module_outputs(policies.values().copied(), input)?;
 	Ok(Some(MergePlanEntry {
 		target: MergePlanTarget::Module {
 			id: merge_unit,
-			input_paths: inputs.iter().map(|(path, _)| (*path).to_string()).collect(),
+			input_paths: inputs.iter().map(|(path, _)| (*path).to_owned()).collect(),
 			outputs,
 		},
 		strategy: MergePlanStrategy::ManualConflict,
@@ -271,7 +267,11 @@ fn classify_database_entry(
 		winner: None,
 		notes: vec![format!(
 			"Database {database} cannot merge {} structurally; the complete database unit is deferred",
-			unsupported.join(", ")
+			unsupported
+				.iter()
+				.map(|path| path.as_str())
+				.collect::<Vec<_>>()
+				.join(", ")
 		)],
 	}))
 }
@@ -281,22 +281,27 @@ fn classify_database_entry(
 fn module_outputs(
 	policies: impl IntoIterator<Item = DefinitionModulePolicy>,
 	input: &ResolvedInput,
-) -> Vec<MergeModuleOutput> {
+) -> Result<MergeModuleOutputs, String> {
 	let mut outputs: Vec<MergeModuleOutput> = policies
 		.into_iter()
-		.map(|policy| MergeModuleOutput {
-			output_path: policy.output_path.to_string(),
-			namespace_prefix: policy.namespace_prefix.to_string(),
+		.map(|policy| {
 			// `replace_path` is declared per directory, so each namespace
 			// answers this for itself.
-			replace_prefix: (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace
-				|| namespace_has_reset_participant(input, policy.namespace_prefix.as_str()))
-			.then(|| policy.namespace_prefix.to_string()),
+			let replace_prefix = (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace
+				|| namespace_has_reset_participant(input, policy.namespace_prefix))
+			.then(|| policy.namespace_prefix.to_owned());
+			MergeModuleOutput::new(policy.output_path.to_owned(), replace_prefix).ok_or_else(|| {
+				format!(
+					"definition module output {} is not inside a namespace directory",
+					policy.output_path
+				)
+			})
 		})
-		.collect();
-	outputs.sort_by(|left, right| left.output_path.cmp(&right.output_path));
-	outputs.dedup_by(|left, right| left.output_path == right.output_path);
-	outputs
+		.collect::<Result<_, String>>()?;
+	outputs.sort_by(|left, right| left.output_path().cmp(right.output_path()));
+	outputs.dedup_by(|left, right| left.output_path() == right.output_path());
+	MergeModuleOutputs::new(outputs)
+		.ok_or_else(|| "a definition module unit has no namespace".to_string())
 }
 
 fn module_has_non_base_contributor(inputs: &ModuleInputs<'_>) -> bool {
@@ -307,30 +312,18 @@ fn module_has_non_base_contributor(inputs: &ModuleInputs<'_>) -> bool {
 	})
 }
 
-fn module_has_reset_participant(input: &ResolvedInput, policy: DefinitionModulePolicy) -> bool {
-	namespace_has_reset_participant(input, policy.namespace_prefix.as_str())
-}
-
-fn namespace_has_reset_participant(input: &ResolvedInput, namespace: &str) -> bool {
+/// Whether a mod in the playset declares a `replace_path` that resets
+/// `namespace`: the namespace itself or a directory above it.
+fn namespace_has_reset_participant(input: &ResolvedInput, namespace: &GamePath) -> bool {
 	input.mods.iter().any(|mod_item| {
 		mod_item.root_path.is_some()
 			&& mod_item.descriptor.as_ref().is_some_and(|descriptor| {
 				descriptor
 					.replace_path
 					.iter()
-					.any(|replace_path| replace_path_covers_namespace(replace_path, namespace))
+					.any(|replace_path| namespace.starts_with(replace_path))
 			})
 	})
-}
-
-fn replace_path_covers_namespace(replace_path: &str, namespace_prefix: &str) -> bool {
-	let replace_path = replace_path.trim_matches('/').replace('\\', "/");
-	let namespace_prefix = namespace_prefix.trim_matches('/').replace('\\', "/");
-	!replace_path.is_empty()
-		&& (namespace_prefix == replace_path
-			|| namespace_prefix
-				.strip_prefix(&replace_path)
-				.is_some_and(|suffix| suffix.starts_with('/')))
 }
 
 fn classify_module_entry(
@@ -339,11 +332,11 @@ fn classify_module_entry(
 	inputs: &ModuleInputs<'_>,
 	input: &ResolvedInput,
 	script_cache: &InputScriptCache,
-) -> MergePlanEntry {
-	let outputs: Vec<MergeModuleOutput> = module_outputs(policies, input);
+) -> Result<MergePlanEntry, String> {
+	let outputs: MergeModuleOutputs = module_outputs(policies, input)?;
 	let input_paths = inputs
 		.iter()
-		.map(|(path, _)| (*path).to_string())
+		.map(|(path, _)| (*path).to_owned())
 		.collect::<Vec<_>>();
 	let contributors: Vec<MergePlanContributor> = module_contributors(inputs);
 	let mut notes = Vec::new();
@@ -360,7 +353,7 @@ fn classify_module_entry(
 		.then(|| contributors.last().cloned())
 		.flatten();
 
-	MergePlanEntry {
+	Ok(MergePlanEntry {
 		target: MergePlanTarget::Module {
 			id: merge_unit,
 			input_paths,
@@ -370,32 +363,47 @@ fn classify_module_entry(
 		contributors,
 		winner,
 		notes,
-	}
+	})
 }
 
+/// Every contributor of a module, ordered by precedence, then the base game
+/// before any mod, then by mod, then by the input it contributes. The order
+/// never depends on where a contributor's file lives on disk.
+///
+/// Before, equal precedence fell back to the physical path's text. In the
+/// default Steam layout this key gives the same order: the game under
+/// `steamapps/common/` sorts before every mod under `steamapps/workshop/`;
+/// each Workshop mod's directory is named by its id, which is its mod id, and
+/// `<id>/` orders as `<id>` does because `/` sorts before every digit; and
+/// within one root the physical path's tail is the game path's text. Where
+/// mods live elsewhere (a local mod under `Documents/` sorted before the game
+/// on macOS) the order is now the same as in the Steam layout. Ties occur at
+/// precedence 0, where the base game meets synthetic bases, and when a
+/// priority boost gives two mods one precedence.
 fn module_contributors(inputs: &ModuleInputs<'_>) -> Vec<MergePlanContributor> {
-	let mut contributors: Vec<MergePlanContributor> = inputs
+	let mut contributors: Vec<(&GamePath, &ResolvedInputContributor)> = inputs
 		.iter()
-		.flat_map(|(_, contributors)| contributors.iter())
-		.map(to_merge_contributor)
-		.collect::<Vec<_>>();
-	contributors.sort_by(|left, right| {
+		.flat_map(|(path, contributors)| {
+			contributors
+				.iter()
+				.map(move |contributor| (*path, contributor))
+		})
+		.collect();
+	contributors.sort_by(|(left_path, left), (right_path, right)| {
 		left.precedence
 			.cmp(&right.precedence)
-			.then_with(|| left.source_path.cmp(&right.source_path))
+			.then_with(|| right.is_base_game.cmp(&left.is_base_game))
 			.then_with(|| left.mod_id.cmp(&right.mod_id))
+			.then_with(|| left_path.cmp(right_path))
 	});
 	contributors
-}
-
-/// Inventory keys are written from game paths, so this parse restores the
-/// typed key rather than interpreting new text; it fails only on a corrupt key.
-fn inventory_game_path(path: &str) -> Result<&GamePath, String> {
-	GamePath::new(path).map_err(|error| format!("inventory key is not a game path: {error}"))
+		.into_iter()
+		.map(|(_, contributor)| to_merge_contributor(contributor))
+		.collect()
 }
 
 fn classify_entry(
-	path: &str,
+	path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	descriptor: Option<&ContentFamilyDescriptor>,
 	script_cache: &InputScriptCache,
@@ -433,7 +441,7 @@ fn classify_entry(
 
 	MergePlanEntry {
 		target: MergePlanTarget::File {
-			path: path.to_string(),
+			path: path.to_owned(),
 		},
 		strategy,
 		contributors: contributors_out,
@@ -442,11 +450,14 @@ fn classify_entry(
 	}
 }
 
+/// The plan's view of a contributor. `source_path` renders the physical file
+/// for display only; the contributor is identified by its mod, precedence and
+/// base-game flag (see `ResolvedInputContributor::is_planned_as`).
 fn to_merge_contributor(contributor: &ResolvedInputContributor) -> MergePlanContributor {
 	MergePlanContributor {
 		mod_id: contributor.mod_id.clone(),
 		source_path: contributor
-			.absolute_path
+			.absolute_path()
 			.to_string_lossy()
 			.replace('\\', "/"),
 		precedence: contributor.precedence,
@@ -481,19 +492,12 @@ fn current_generated_at() -> String {
 }
 
 fn validate_structural_merge_inputs(
-	path: &str,
+	path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	script_cache: &InputScriptCache,
 ) -> Result<(), MergeError> {
 	let mut failures = Vec::new();
-	// Inventory keys are written from game paths, so only a corrupt key fails
-	// to parse.
-	let is_defines_path = is_clausewitz_defines_path(GamePath::new(path).map_err(|error| {
-		MergeError::Validation {
-			path: Some(path.to_string()),
-			message: format!("inventory key is not a game path: {error}"),
-		}
-	})?);
+	let is_defines_path = is_clausewitz_defines_path(path);
 
 	for contributor in contributors {
 		let Some(parse_ok) = contributor.parse_ok_hint else {
@@ -545,17 +549,11 @@ fn validate_structural_merge_inputs(
 	}
 }
 
-fn is_structural_merge_path(path: &str, descriptor: Option<&ContentFamilyDescriptor>) -> bool {
-	// Inventory keys are written from game paths, so the parse fails only on a
-	// corrupt key, which is then not treated as a structural merge input.
-	if !GamePath::new(path)
-		.is_ok_and(|path| classify_document_family(path) == Some(DocumentFamily::Clausewitz))
-	{
-		return false;
-	}
-	descriptor
-		.and_then(|descriptor| descriptor.merge_key_source)
-		.is_some()
+fn is_structural_merge_path(path: &GamePath, descriptor: Option<&ContentFamilyDescriptor>) -> bool {
+	classify_document_family(path) == Some(DocumentFamily::Clausewitz)
+		&& descriptor
+			.and_then(|descriptor| descriptor.merge_key_source)
+			.is_some()
 }
 
 fn validate_structural_snapshot(
@@ -570,8 +568,11 @@ fn validate_structural_snapshot(
 			.iter()
 			.map(move |path| (entry, path))
 	}) {
-		let contributors: &[ResolvedInputContributor] = &input.file_inventory[path];
-		let descriptor = profile.classify_content_family(inventory_game_path(path)?);
+		let contributors: &[ResolvedInputContributor] =
+			input.file_inventory.get(path).ok_or_else(|| {
+				format!("merge plan input {path} is missing from the input inventory")
+			})?;
+		let descriptor = profile.classify_content_family(path);
 		if !is_structural_merge_path(path, descriptor) {
 			continue;
 		}
@@ -607,21 +608,11 @@ fn validate_structural_snapshot(
 	Ok(())
 }
 
-pub(crate) fn prune_noop_script_contributors(
-	input: &mut ResolvedInput,
-	profile: &Eu4,
-) -> Result<(), InputResolveError> {
+pub(crate) fn prune_noop_script_contributors(input: &mut ResolvedInput, profile: &Eu4) {
 	let script_cache = &input.script_cache;
 	let mut emptied = Vec::new();
 	for (relative_path, contributors) in &mut input.file_inventory {
-		// Inventory keys are written from game paths, so this parse restores
-		// the typed key rather than interpreting new text.
-		let game_path = GamePath::new(relative_path).map_err(|error| InputResolveError {
-			kind: InputResolveErrorKind::Io,
-			path: input.playlist_path.clone(),
-			message: format!("inventory key is not a game path: {error}"),
-		})?;
-		let descriptor = profile.classify_content_family(game_path);
+		let descriptor = profile.classify_content_family(relative_path);
 		if descriptor.is_some_and(|descriptor| {
 			matches!(
 				descriptor.load_policy,
@@ -639,7 +630,7 @@ pub(crate) fn prune_noop_script_contributors(
 		contributors.retain(|contributor| {
 			contributor.is_base_game
 				|| contributor.is_synthetic_base
-				|| script_cache.is_noop_hint(&contributor.mod_id, game_path) != Some(true)
+				|| script_cache.is_noop_hint(&contributor.mod_id, relative_path) != Some(true)
 		});
 		if contributors.is_empty() {
 			emptied.push(relative_path.clone());
@@ -648,36 +639,32 @@ pub(crate) fn prune_noop_script_contributors(
 	for relative_path in emptied {
 		input.file_inventory.remove(&relative_path);
 	}
-	Ok(())
 }
 
-fn is_text_like_overlay_path(path: &str) -> bool {
-	let normalized = path.to_ascii_lowercase();
-	let Some(ext) = normalized.rsplit('.').next() else {
-		return false;
-	};
+/// The lowercased extension of the final component; `None` for a name with
+/// no `.` after its first character.
+fn lowercase_extension(path: &GamePath) -> Option<String> {
+	path.extension().map(str::to_ascii_lowercase)
+}
 
-	matches!(
-		ext,
-		"txt" | "lua" | "yml" | "yaml" | "csv" | "json" | "asset" | "gui" | "gfx" | "mod"
-	)
+fn is_text_like_overlay_path(path: &GamePath) -> bool {
+	lowercase_extension(path).is_some_and(|ext| {
+		matches!(
+			ext.as_str(),
+			"txt" | "lua" | "yml" | "yaml" | "csv" | "json" | "asset" | "gui" | "gfx" | "mod"
+		)
+	})
 }
 
 /// Localisation YAML files (`localisation/**.yml` and
-/// `common/localisation/**.yml`) follow the EU4 paradox-yaml format and can be
-/// merged at the key level: the union of all contributors' keys is preserved,
-/// with the highest-precedence contributor winning on collision.
-pub(crate) fn is_localisation_yml_path(path: &str) -> bool {
-	let normalized = path.to_ascii_lowercase();
-	let under_loc =
-		normalized.starts_with("localisation/") || normalized.starts_with("common/localisation/");
-	if !under_loc {
-		return false;
-	}
-	let Some(ext) = normalized.rsplit('.').next() else {
-		return false;
-	};
-	matches!(ext, "yml" | "yaml")
+/// `common/localisation/**.yml`, directory names compared ignoring ASCII case)
+/// follow the EU4 paradox-yaml format and can be merged at the key level: the
+/// union of all contributors' keys is preserved, with the highest-precedence
+/// contributor winning on collision.
+pub(crate) fn is_localisation_yml_path(path: &GamePath) -> bool {
+	let under_loc = path.is_inside(&["localisation"], str::eq_ignore_ascii_case)
+		|| path.is_inside(&["common", "localisation"], str::eq_ignore_ascii_case);
+	under_loc && lowercase_extension(path).is_some_and(|ext| matches!(ext.as_str(), "yml" | "yaml"))
 }
 
 #[cfg(test)]
@@ -685,11 +672,22 @@ mod tests {
 	use super::build_merge_plan_from_input;
 	use crate::game::eu4::Eu4;
 	use crate::input::{ResolvedInput, ResolvedInputContributor};
-	use crate::model::{GamePath, MergePlanStrategy, MergePlanTarget, ModCandidate};
+	use crate::model::{
+		GamePath, GamePathBuf, MergePlanContributor, MergePlanStrategy, MergePlanTarget,
+		ModCandidate,
+	};
 	use crate::playset::descriptor::ModDescriptor;
 	use crate::playset::{Playset, PlaysetEntry};
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::PathBuf;
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn texts<'a>(paths: impl IntoIterator<Item = &'a GamePath>) -> Vec<&'a str> {
+		paths.into_iter().map(GamePath::as_str).collect()
+	}
 
 	fn input_with_snapshot_gap(
 		mod_id: &str,
@@ -708,11 +706,11 @@ mod tests {
 		let root_path = PathBuf::from(mod_id);
 		let mut file_inventory = BTreeMap::new();
 		file_inventory.insert(
-			relative_path.to_string(),
+			game_path(relative_path),
 			vec![ResolvedInputContributor {
 				mod_id: mod_id.to_string(),
 				root_path: root_path.clone(),
-				absolute_path: root_path.join(relative_path),
+				relative_path: game_path(relative_path),
 				precedence: usize::from(!is_base_game),
 				is_base_game,
 				is_synthetic_base: false,
@@ -745,11 +743,10 @@ mod tests {
 		relative_path: &str,
 		precedence: usize,
 	) -> ResolvedInputContributor {
-		let root_path = PathBuf::from(mod_id);
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
-			root_path: root_path.clone(),
-			absolute_path: root_path.join(relative_path),
+			root_path: PathBuf::from(mod_id),
+			relative_path: game_path(relative_path),
 			precedence,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -771,7 +768,7 @@ mod tests {
 			descriptor_path: None,
 			descriptor: Some(ModDescriptor {
 				name: mod_id.to_string(),
-				replace_path: vec![replace_path.to_string()],
+				replace_path: vec![game_path(replace_path)],
 				..ModDescriptor::default()
 			}),
 			workshop_identity: None,
@@ -788,7 +785,7 @@ mod tests {
 			input_with_snapshot_gap_at_path(event_path, "mod-b", false, Some(true));
 		input.game_version = Some("1.37.5".to_string());
 		input.file_inventory.insert(
-			static_path.to_string(),
+			game_path(static_path),
 			vec![mod_contributor("mod-a", static_path, 2)],
 		);
 
@@ -796,7 +793,16 @@ mod tests {
 		assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
 		assert_eq!(result.paths.len(), 1);
 		let entry: &crate::model::MergePlanEntry = &result.paths[0];
-		assert_eq!(entry.target.input_paths(), &[event_path, static_path]);
+		assert_eq!(
+			texts(
+				entry
+					.target
+					.input_paths()
+					.iter()
+					.map(GamePathBuf::as_game_path)
+			),
+			[event_path, static_path]
+		);
 		assert_eq!(
 			entry.target.module_id().unwrap().module_name,
 			"CStaticModifierDataBase"
@@ -805,7 +811,7 @@ mod tests {
 		// mods' contributions are kept instead of deferring the database.
 		assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
 		assert_eq!(
-			entry.target.output_paths(),
+			texts(entry.target.output_paths()),
 			[
 				"common/event_modifiers/zzz_foch_event_modifiers.txt",
 				"common/static_modifiers/zzz_foch_static_modifiers.txt",
@@ -813,13 +819,19 @@ mod tests {
 		);
 		// Each namespace keeps only the inputs read from its own directory.
 		assert_eq!(
-			entry.target.namespace_input_paths("common/event_modifiers"),
+			texts(
+				entry
+					.target
+					.namespace_input_paths(&game_path("common/event_modifiers"))
+			),
 			[event_path]
 		);
 		assert_eq!(
-			entry
-				.target
-				.namespace_input_paths("common/static_modifiers"),
+			texts(
+				entry
+					.target
+					.namespace_input_paths(&game_path("common/static_modifiers"))
+			),
 			[static_path]
 		);
 		assert!(
@@ -827,7 +839,7 @@ mod tests {
 				.target
 				.module_outputs()
 				.iter()
-				.all(|output| output.replace_prefix.is_none())
+				.all(|output| output.replace_prefix().is_none())
 		);
 		assert_eq!(
 			entry
@@ -854,7 +866,7 @@ mod tests {
 		for path in [mod_path, other_path] {
 			input
 				.file_inventory
-				.insert(path.to_string(), vec![mod_contributor("mod-a", path, 1)]);
+				.insert(game_path(path), vec![mod_contributor("mod-a", path, 1)]);
 		}
 		let result = build_merge_plan_from_input(&input, true);
 		assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
@@ -867,10 +879,18 @@ mod tests {
 					.target
 					.input_paths()
 					.iter()
-					.any(|path| path == mod_path)
+					.any(|path| path.as_str() == mod_path)
 			})
 			.unwrap();
-		assert_eq!(unit.target.input_paths(), &[base_path, mod_path]);
+		assert_eq!(
+			texts(
+				unit.target
+					.input_paths()
+					.iter()
+					.map(GamePathBuf::as_game_path)
+			),
+			[base_path, mod_path]
+		);
 		assert!(unit.contributors[0].is_base_game);
 		assert_eq!(unit.contributors[0].precedence, 0);
 		assert_eq!(
@@ -879,10 +899,14 @@ mod tests {
 		);
 		assert!(result.paths.iter().any(|entry| {
 			entry.target.module_id().unwrap().module_name == "CPolicyDatabase"
-				&& entry.target.input_paths() == [other_path]
+				&& entry.target.input_paths() == [game_path(other_path)]
 		}));
 
-		input.file_inventory.get_mut(base_path).unwrap()[0].parse_ok_hint = None;
+		input
+			.file_inventory
+			.get_mut(GamePath::new(base_path).expect("valid game path"))
+			.unwrap()[0]
+			.parse_ok_hint = None;
 		let invalid = build_merge_plan_from_input(&input, true);
 		assert!(invalid.has_fatal_errors());
 		assert!(invalid.paths.is_empty());
@@ -901,7 +925,7 @@ mod tests {
 		for path in [second, unmatched] {
 			input
 				.file_inventory
-				.insert(path.to_string(), vec![mod_contributor("mod-b", path, 2)]);
+				.insert(game_path(path), vec![mod_contributor("mod-b", path, 2)]);
 		}
 
 		let result = build_merge_plan_from_input(&input, false);
@@ -912,19 +936,29 @@ mod tests {
 			.iter()
 			.find(|entry| entry.target.module_id().is_some())
 			.unwrap();
-		assert_eq!(module.target.input_paths(), &[first, second]);
+		assert_eq!(
+			texts(
+				module
+					.target
+					.input_paths()
+					.iter()
+					.map(GamePathBuf::as_game_path)
+			),
+			[first, second]
+		);
 		assert_eq!(
 			module.target.module_id().unwrap().module_name,
 			"CStaticModifierDataBase"
 		);
 		assert_eq!(module.strategy, MergePlanStrategy::StructuralMerge);
 		assert_eq!(
-			module.output_path(),
+			module.output_path().as_str(),
 			"common/static_modifiers/zzz_foch_static_modifiers.txt"
 		);
-		assert!(result.paths.iter().any(
-			|entry| matches!(&entry.target, MergePlanTarget::File { path } if path == unmatched)
-		));
+		assert!(result.paths.iter().any(|entry| matches!(
+			&entry.target,
+			MergePlanTarget::File { path } if path.as_str() == unmatched
+		)));
 	}
 
 	#[test]
@@ -945,7 +979,7 @@ mod tests {
 		assert!(!reset.has_fatal_errors(), "{:?}", reset.fatal_errors);
 		assert_eq!(reset.paths[0].strategy, MergePlanStrategy::StructuralMerge);
 		assert_eq!(
-			reset.paths[0].target.replace_prefix(),
+			reset.paths[0].target.replace_prefix().map(GamePath::as_str),
 			Some("common/static_modifiers")
 		);
 	}
@@ -1007,7 +1041,7 @@ mod tests {
 		assert!(matches!(
 			&result.paths[0].target,
 			MergePlanTarget::File { path }
-				if path == "common/powerprojection/00_static.txt"
+				if path.as_str() == "common/powerprojection/00_static.txt"
 		));
 		assert!(
 			result.paths[0]
@@ -1023,7 +1057,7 @@ mod tests {
 		let mod_path = "common/powerprojection/modded.txt";
 		let mut input = input_with_snapshot_gap_at_path(base_path, "__game__eu4", true, Some(true));
 		input.file_inventory.insert(
-			mod_path.to_string(),
+			game_path(mod_path),
 			vec![mod_contributor("mod-a", mod_path, 1)],
 		);
 
@@ -1039,8 +1073,8 @@ mod tests {
 		else {
 			panic!("expected definition module");
 		};
-		assert_eq!(input_paths, &[base_path.to_string(), mod_path.to_string()]);
-		assert!(outputs[0].replace_prefix.is_none());
+		assert_eq!(input_paths, &[game_path(base_path), game_path(mod_path)]);
+		assert!(outputs[0].replace_prefix().is_none());
 		assert!(
 			result.paths[0]
 				.contributors
@@ -1067,7 +1101,7 @@ mod tests {
 		assert!(matches!(
 			&result.paths[0].target,
 			MergePlanTarget::Module { outputs, .. }
-				if outputs[0].replace_prefix.as_deref() == Some("common/powerprojection")
+				if outputs[0].replace_prefix().map(GamePath::as_str) == Some("common/powerprojection")
 		));
 	}
 
@@ -1077,12 +1111,12 @@ mod tests {
 			input_with_snapshot_gap_at_path("gfx/shader_upgrade.lua", "__game__eu4", true, None);
 		input
 			.file_inventory
-			.get_mut("gfx/shader_upgrade.lua")
+			.get_mut(GamePath::new("gfx/shader_upgrade.lua").expect("valid game path"))
 			.expect("shader inventory")
 			.push(ResolvedInputContributor {
 				mod_id: "mod-a".to_string(),
 				root_path: PathBuf::from("mod-a"),
-				absolute_path: PathBuf::from("mod-a/gfx/shader_upgrade.lua"),
+				relative_path: game_path("gfx/shader_upgrade.lua"),
 				precedence: 1,
 				is_base_game: false,
 				is_synthetic_base: false,
@@ -1129,12 +1163,12 @@ mod tests {
 		);
 		input
 			.file_inventory
-			.get_mut("common/governments/metadata.json")
+			.get_mut(GamePath::new("common/governments/metadata.json").expect("valid game path"))
 			.expect("governments metadata inventory")
 			.push(ResolvedInputContributor {
 				mod_id: "mod-a".to_string(),
 				root_path: PathBuf::from("mod-a"),
-				absolute_path: PathBuf::from("mod-a/common/governments/metadata.json"),
+				relative_path: game_path("common/governments/metadata.json"),
 				precedence: 1,
 				is_base_game: false,
 				is_synthetic_base: false,
@@ -1149,7 +1183,202 @@ mod tests {
 		assert!(matches!(
 			&result.paths[0].target,
 			crate::model::MergePlanTarget::File { path }
-				if path == "common/governments/metadata.json"
+				if path.as_str() == "common/governments/metadata.json"
 		));
+	}
+
+	/// Two mods that share a precedence (a priority boost can do that) are
+	/// ordered by mod, so where a mod is installed cannot reorder them. Before,
+	/// equal precedence fell back to the physical path's text.
+	#[test]
+	fn module_contributor_order_does_not_depend_on_where_mods_are_installed() {
+		let order = |alpha_root: &str, beta_root: &str| {
+			let mut input = input_with_snapshot_gap_at_path(
+				"common/governments/a.txt",
+				"alpha",
+				false,
+				Some(true),
+			);
+			let alpha = &mut input
+				.file_inventory
+				.get_mut(GamePath::new("common/governments/a.txt").expect("valid game path"))
+				.expect("alpha inventory")[0];
+			alpha.root_path = PathBuf::from(alpha_root);
+			let mut beta = mod_contributor("beta", "common/governments/b.txt", 1);
+			beta.root_path = PathBuf::from(beta_root);
+			input
+				.file_inventory
+				.insert(game_path("common/governments/b.txt"), vec![beta]);
+			let result = build_merge_plan_from_input(&input, false);
+			assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
+			assert!(result.paths[0].target.module_id().is_some());
+			result.paths[0]
+				.contributors
+				.iter()
+				.map(|contributor| (contributor.mod_id.clone(), contributor.precedence))
+				.collect::<Vec<_>>()
+		};
+
+		let expected = vec![("alpha".to_string(), 1), ("beta".to_string(), 1)];
+		assert_eq!(order("/zzz/alpha", "/aaa/beta"), expected);
+		assert_eq!(order("/aaa/alpha", "/zzz/beta"), expected);
+	}
+
+	/// At precedence 0 the base game meets the synthetic bases of files it does
+	/// not ship. The base game comes first, then each synthetic base by the mod
+	/// that seeds it, whatever file each contributes; a mod's own files follow
+	/// in input order. In the default Steam layout this is exactly the order the
+	/// physical path text gave, and elsewhere it does not change.
+	#[test]
+	fn module_contributors_put_the_base_game_first_and_order_synthetic_bases_by_mod() {
+		const BASE: &str = "__game__eu4";
+		let plan_order = |root_of: &dyn Fn(&str) -> PathBuf| {
+			let contributor = |mod_id: &str, path: &str, precedence: usize| {
+				let mut contributor = mod_contributor(mod_id, path, precedence);
+				contributor.root_path = root_of(mod_id);
+				contributor.is_base_game = mod_id == BASE;
+				contributor
+			};
+			let synthetic = |mod_id: &str, path: &str| ResolvedInputContributor {
+				is_synthetic_base: true,
+				..contributor(mod_id, path, 0)
+			};
+			let (vanilla, shared_early, shared_late) = (
+				"common/governments/00_governments.txt",
+				"common/governments/00_ME_governments.txt",
+				"common/governments/zz_a.txt",
+			);
+			let mut input = input_with_snapshot_gap_at_path(vanilla, BASE, true, Some(true));
+			input
+				.file_inventory
+				.insert(game_path(vanilla), vec![contributor(BASE, vanilla, 0)]);
+			input.file_inventory.insert(
+				game_path(shared_early),
+				vec![
+					synthetic("2000", shared_early),
+					contributor("2000", shared_early, 1),
+					contributor("1000", shared_early, 2),
+				],
+			);
+			input.file_inventory.insert(
+				game_path(shared_late),
+				vec![
+					synthetic("1000", shared_late),
+					contributor("1000", shared_late, 2),
+					contributor("3000", shared_late, 3),
+				],
+			);
+			let result = build_merge_plan_from_input(&input, false);
+			assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
+			assert_eq!(result.paths.len(), 1);
+			assert!(result.paths[0].target.module_id().is_some());
+			result.paths[0].contributors.clone()
+		};
+		let identity = |contributors: &[MergePlanContributor]| {
+			contributors
+				.iter()
+				.map(|contributor| {
+					(
+						contributor.mod_id.clone(),
+						contributor.precedence,
+						contributor
+							.source_path
+							.rsplit('/')
+							.next()
+							.map(str::to_string),
+					)
+				})
+				.collect::<Vec<_>>()
+		};
+		let expected: Vec<(String, usize, Option<String>)> = [
+			(BASE, 0, "00_governments.txt"),
+			("1000", 0, "zz_a.txt"),
+			("2000", 0, "00_ME_governments.txt"),
+			("2000", 1, "00_ME_governments.txt"),
+			("1000", 2, "00_ME_governments.txt"),
+			("1000", 2, "zz_a.txt"),
+			("3000", 3, "zz_a.txt"),
+		]
+		.into_iter()
+		.map(|(mod_id, precedence, file)| (mod_id.to_string(), precedence, Some(file.to_string())))
+		.collect();
+
+		let steam = |mod_id: &str| {
+			if mod_id == BASE {
+				PathBuf::from("/steam/steamapps/common/Europa Universalis IV")
+			} else {
+				PathBuf::from("/steam/steamapps/workshop/content/236850").join(mod_id)
+			}
+		};
+		let in_steam = plan_order(&steam);
+		assert_eq!(identity(&in_steam), expected);
+		let mut by_physical_text = in_steam.clone();
+		by_physical_text.sort_by(|left, right| {
+			left.precedence
+				.cmp(&right.precedence)
+				.then_with(|| left.source_path.cmp(&right.source_path))
+				.then_with(|| left.mod_id.cmp(&right.mod_id))
+		});
+		assert_eq!(identity(&by_physical_text), expected);
+
+		let elsewhere = |mod_id: &str| {
+			if mod_id == BASE {
+				PathBuf::from("/zzz/game")
+			} else {
+				PathBuf::from("/aaa/mods").join(mod_id)
+			}
+		};
+		assert_eq!(identity(&plan_order(&elsewhere)), expected);
+	}
+
+	/// Localisation directories are matched ignoring ASCII case, one component
+	/// at a time, and extensions ignoring case, as the lowercased text was. The
+	/// extension is the game path's own: a name that is only an extension
+	/// (`.yml`) has none, and neither has a root file named `txt`.
+	#[test]
+	fn overlay_classes_come_from_the_directory_and_extension_of_the_path() {
+		for (path, localisation, text_like) in [
+			("localisation/x.yml", true, true),
+			("Localisation/X.YML", true, true),
+			("common/LOCALISATION/x.yaml", true, true),
+			("localisation/nested/x.yml", true, true),
+			("localisation/x.txt", false, true),
+			("common/localisation_extra/x.yml", false, true),
+			("localisation/.yml", false, false),
+			("gfx/x.TXT", false, true),
+			("gfx/x.dds", false, false),
+			("gfx/x", false, false),
+			("txt", false, false),
+		] {
+			let path = game_path(path);
+			assert_eq!(
+				super::is_localisation_yml_path(&path),
+				localisation,
+				"{path}"
+			);
+			assert_eq!(super::is_text_like_overlay_path(&path), text_like, "{path}");
+		}
+	}
+
+	/// A `replace_path` resets a namespace when it names the namespace itself or
+	/// a directory above it, compared by whole components.
+	#[test]
+	fn a_replace_path_covers_its_directory_and_what_lies_below_it() {
+		let mut input = input_with_snapshot_gap("mod-a", false, Some(true));
+		for (replace_path, namespace, covered) in [
+			("common/ideas", "common/ideas", true),
+			("common", "common/ideas", true),
+			("common/ideas", "common/ideas/nested", true),
+			("common/ideas", "common/ideas_extra", false),
+			("common/ideas_extra", "common/ideas", false),
+			("common/ideas/nested", "common/ideas", false),
+		] {
+			input.mods = vec![reset_only_mod("reset", replace_path)];
+			assert_eq!(
+				super::namespace_has_reset_participant(&input, &game_path(namespace)),
+				covered,
+				"{replace_path} over {namespace}"
+			);
+		}
 	}
 }

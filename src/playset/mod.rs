@@ -7,7 +7,7 @@ pub use error::{ParseError, ParseErrorKind};
 
 use crate::game::eu4::Eu4;
 use crate::model::GamePath;
-use descriptor::{ModDescriptor, load_descriptor};
+use descriptor::{LauncherDescriptor, load_launcher_descriptor};
 use relative_path::RelativePath;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -137,7 +137,8 @@ fn read_dlc_load_entry(
 	position: usize,
 	rel: &RelativePath,
 ) -> PlaysetEntry {
-	let descriptor = load_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel)).ok();
+	let descriptor =
+		load_launcher_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel)).ok();
 	playset_entry_from_descriptor(position, rel, descriptor)
 }
 
@@ -146,7 +147,7 @@ fn read_dlc_load_entry_required(
 	position: usize,
 	rel: &RelativePath,
 ) -> Result<PlaysetEntry, ParseError> {
-	let descriptor = load_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel))?;
+	let descriptor = load_launcher_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel))?;
 	Ok(playset_entry_from_descriptor(
 		position,
 		rel,
@@ -157,7 +158,7 @@ fn read_dlc_load_entry_required(
 fn playset_entry_from_descriptor(
 	position: usize,
 	rel: &RelativePath,
-	descriptor: Option<ModDescriptor>,
+	descriptor: Option<LauncherDescriptor>,
 ) -> PlaysetEntry {
 	let steam_id = descriptor
 		.as_ref()
@@ -267,6 +268,30 @@ mod tests {
 			Playset::from_dlc_load_with_required_descriptors(&game_dir.join("dlc_load.json"))
 				.expect_err("current-input inspection must require the sibling descriptor");
 		assert!(strict_error.path.ends_with("mod/ugc_999.mod"));
+	}
+
+	/// The launcher's copy of a descriptor is read for the mod's name and id
+	/// only. A `replace_path` the mod's own descriptor would reject leaves both
+	/// readers with the name the launcher wrote, not a file-name fallback or an
+	/// unreadable playset.
+	#[test]
+	fn a_launcher_descriptor_replace_path_does_not_affect_the_playset_entry() {
+		let temp = TempDir::new().unwrap();
+		let game_dir = temp.path().join("Europa Universalis IV");
+		write_dlc_load(&game_dir, &[("1001", "Named")]);
+		let launcher_copy = game_dir.join("mod").join("ugc_1001.mod");
+		let mut body = fs::read_to_string(&launcher_copy).unwrap();
+		body.push_str("replace_path=\"common/../events\"\n");
+		fs::write(&launcher_copy, body).unwrap();
+
+		let dlc_load = game_dir.join("dlc_load.json");
+		for playset in [
+			Playset::from_dlc_load(&dlc_load).unwrap(),
+			Playset::from_dlc_load_with_required_descriptors(&dlc_load).unwrap(),
+		] {
+			assert_eq!(playset.mods[0].display_name.as_deref(), Some("Named"));
+			assert_eq!(playset.mods[0].steam_id.as_deref(), Some("1001"));
+		}
 	}
 
 	#[test]

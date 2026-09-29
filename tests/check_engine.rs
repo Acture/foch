@@ -2,8 +2,9 @@ use foch::check::{run_checks, run_checks_with_options};
 use foch::input::{CheckOptions, Config, InputRequest};
 use foch::merge::{CancellationToken, MergeAnalysisOptions, NoopProgressObserver, analyze_merge};
 use foch::model::{
-	CheckResult, Finding, GamePath, MergePlanEntry, MergePlanResult, MergePlanStrategy,
-	MergePlanTarget, MergeReport, MergeReportStatus, MergeReportValidation, Severity,
+	CheckResult, Finding, GamePath, GamePathBuf, MergePlanEntry, MergePlanResult,
+	MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportStatus, MergeReportValidation,
+	Severity,
 };
 use serde_json::json;
 use std::fs;
@@ -105,8 +106,12 @@ fn plan_entry_for<'a>(result: &'a MergePlanResult, path: &str) -> &'a MergePlanE
 	result
 		.paths
 		.iter()
-		.find(|entry| entry.output_path() == path)
+		.find(|entry| entry.output_path().as_str() == path)
 		.expect("merge plan entry exists")
+}
+
+fn game_path(text: &str) -> GamePathBuf {
+	GamePathBuf::parse(text).expect("valid game path")
 }
 
 fn finding<'a>(result: &'a CheckResult, rule_id: &str) -> &'a Finding {
@@ -733,8 +738,8 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 			input_paths,
 			outputs,
 			..
-		} if input_paths == &["common/scripted_effects/effects.txt"]
-			&& outputs[0].replace_prefix.is_none()
+		} if input_paths == &[game_path("common/scripted_effects/effects.txt")]
+			&& outputs[0].replace_prefix().is_none()
 	));
 	assert_eq!(
 		entry.winner.as_ref().expect("winner").mod_id,
@@ -776,7 +781,7 @@ fn merge_plan_groups_opted_in_governments_module_across_filenames() {
 	assert_eq!(result.strategies.structural_merge, 1, "plan: {result:#?}");
 	assert_eq!(result.paths.len(), 1, "plan: {result:#?}");
 	assert_eq!(
-		result.paths[0].output_path(),
+		result.paths[0].output_path().as_str(),
 		"common/governments/zzz_foch_governments.txt"
 	);
 	let MergePlanTarget::Module {
@@ -789,7 +794,7 @@ fn merge_plan_groups_opted_in_governments_module_across_filenames() {
 	};
 	assert_eq!(input_paths.len(), 2);
 	assert_eq!(
-		outputs[0].replace_prefix.as_deref(),
+		outputs[0].replace_prefix().map(GamePath::as_str),
 		Some("common/governments")
 	);
 }
@@ -815,9 +820,9 @@ fn merge_plan_keeps_single_governments_file_as_a_complete_module_target() {
 			input_paths,
 			outputs,
 			..
-		} if input_paths == &["common/governments/only.txt"]
-			&& outputs[0].output_path == "common/governments/zzz_foch_governments.txt"
-			&& outputs[0].replace_prefix.as_deref() == Some("common/governments")
+		} if input_paths == &[game_path("common/governments/only.txt")]
+			&& outputs[0].output_path().as_str() == "common/governments/zzz_foch_governments.txt"
+			&& outputs[0].replace_prefix().map(GamePath::as_str) == Some("common/governments")
 	));
 }
 
@@ -850,11 +855,11 @@ fn merge_plan_closes_common_institutions_across_filenames_without_replace_path()
 			outputs,
 			..
 		} if input_paths == &[
-			"common/institutions/00_Core.txt",
-			"common/institutions/00_ME_Override.txt",
+			game_path("common/institutions/00_Core.txt"),
+			game_path("common/institutions/00_ME_Override.txt"),
 		]
-			&& outputs[0].output_path == "common/institutions/zzz_foch_institutions.txt"
-			&& outputs[0].replace_prefix.is_none()
+			&& outputs[0].output_path().as_str() == "common/institutions/zzz_foch_institutions.txt"
+			&& outputs[0].replace_prefix().is_none()
 	));
 }
 

@@ -8,9 +8,7 @@ use crate::game::eu4::content::{
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
 use crate::game::eu4::script::parser::AstStatement;
-use crate::model::{
-	GamePath, MergeModuleOutput, MergePlanEntry, MergePlanTarget, path_is_within_namespace,
-};
+use crate::model::{GamePath, GamePathBuf, MergeModuleOutput, MergePlanEntry, MergePlanTarget};
 use crate::project::DepOverride;
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
@@ -67,7 +65,6 @@ pub(crate) fn build_cross_file_module_views(
 		input.game_version.as_deref(),
 	)
 	.map_err(CrossFileModuleViewError::engine_failure)?;
-	let input_paths: &[String] = &input_paths;
 	let module_policy = apply_duplicate_definition_override(
 		module_policy,
 		duplicate_definitions,
@@ -75,7 +72,7 @@ pub(crate) fn build_cross_file_module_views(
 	);
 
 	let mut base_files = BTreeMap::new();
-	let mut files_by_mod: HashMap<ModId, BTreeMap<String, ParsedScriptFile>> = HashMap::new();
+	let mut files_by_mod: HashMap<ModId, BTreeMap<GamePathBuf, ParsedScriptFile>> = HashMap::new();
 	let mut representatives: HashMap<ModId, ResolvedInputContributor> = HashMap::new();
 	let mut base_representative = None;
 
@@ -91,7 +88,7 @@ pub(crate) fn build_cross_file_module_views(
 				.map_err(CrossFileModuleViewError::engine_failure)?;
 			if contributor.is_base_game {
 				base_files.insert(
-					input_path.clone(),
+					input_path.to_owned(),
 					VisibleModuleFile {
 						layer_ordinal: 0,
 						parsed,
@@ -104,11 +101,14 @@ pub(crate) fn build_cross_file_module_views(
 			files_by_mod
 				.entry(mod_id.clone())
 				.or_default()
-				.insert(input_path.clone(), parsed);
+				.insert(input_path.to_owned(), parsed);
+			// One contributor stands for each mod: the one with the first
+			// game path. Module inputs are direct children of one directory,
+			// so this is also the first physical file under the mod's root.
 			representatives
 				.entry(mod_id)
 				.and_modify(|current| {
-					if contributor.absolute_path < current.absolute_path {
+					if contributor.relative_path < current.relative_path {
 						*current = contributor.clone();
 					}
 				})
@@ -134,7 +134,7 @@ pub(crate) fn build_cross_file_module_views(
 	// for this namespace's own output path and never the unit's primary one.
 	let file_dag = induced_file_dag_with_overrides(
 		mod_dag,
-		&namespace.output_path,
+		namespace.output_path(),
 		&aggregate_contributors,
 		ignore_replace_path,
 		dep_overrides,
@@ -221,7 +221,7 @@ fn validate_module_target<'a>(
 ) -> Result<
 	(
 		&'a crate::model::MergeUnitId,
-		Vec<String>,
+		Vec<&'a GamePath>,
 		DefinitionModulePolicy,
 	),
 	String,
@@ -232,7 +232,7 @@ fn validate_module_target<'a>(
 			entry.output_path()
 		));
 	};
-	let replace_prefix: &Option<String> = &namespace.replace_prefix;
+	let replace_prefix: Option<&GamePath> = namespace.replace_prefix();
 	// Each namespace of a database unit keeps only its own inputs: the
 	// directory decides the output file, the `replace_path` prefix and the
 	// extractor, so inputs must not cross namespaces. An input claimed by no
@@ -241,22 +241,17 @@ fn validate_module_target<'a>(
 	if let Some(orphan) = entry.target.input_paths().iter().find(|path| {
 		!namespaces
 			.iter()
-			.any(|namespace| path_is_within_namespace(path, &namespace.namespace_prefix))
+			.any(|namespace| path.is_child_of(namespace.namespace_prefix()))
 	}) {
 		return Err(format!(
 			"module input {orphan} is outside every output namespace of {}",
 			merge_unit.module_name
 		));
 	}
-	let input_paths: Vec<String> = entry
+	let input_paths: Vec<&GamePath> = entry
 		.target
-		.namespace_input_paths(&namespace.namespace_prefix)
-		.into_iter()
-		.map(str::to_string)
-		.collect();
-	// Plan paths are still text; rule lookup takes the game path they name.
-	let output_path = GamePath::new(&namespace.output_path)
-		.map_err(|error| format!("module output is not a game path: {error}"))?;
+		.namespace_input_paths(namespace.namespace_prefix());
+	let output_path: &GamePath = namespace.output_path();
 	let database: Option<&str> = game_version
 		.and_then(load_rules_for_version)
 		.map(|rules| rules.database_for(output_path))
@@ -291,14 +286,14 @@ fn validate_module_target<'a>(
 	if module_policy.output_path != output_path {
 		return Err(format!(
 			"module output {} does not match policy output {}",
-			namespace.output_path, module_policy.output_path
+			output_path, module_policy.output_path
 		));
 	}
 	let statically_replaces_namespace =
 		module_policy.output_mode == DefinitionModuleOutput::ReplaceNamespace;
-	let replacement_prefix_is_valid = match replace_prefix.as_deref() {
+	let replacement_prefix_is_valid = match replace_prefix {
 		Some(prefix) => {
-			prefix == module_policy.namespace_prefix.as_str()
+			prefix == module_policy.namespace_prefix
 				&& (statically_replaces_namespace || has_covering_reset_participant)
 		}
 		None => !statically_replaces_namespace,
@@ -312,22 +307,21 @@ fn validate_module_target<'a>(
 	if input_paths.is_empty() {
 		return Err(format!(
 			"definition module {} has no input paths in namespace {}",
-			merge_unit.module_name, namespace.namespace_prefix
+			merge_unit.module_name,
+			namespace.namespace_prefix()
 		));
 	}
 	for input_path in &input_paths {
-		if !module_input_is_within_prefix(input_path, module_policy.namespace_prefix.as_str()) {
+		if !module_input_is_within_prefix(input_path, module_policy.namespace_prefix) {
 			return Err(format!(
 				"module input {input_path} is outside namespace prefix {}",
 				module_policy.namespace_prefix
 			));
 		}
 		let expected_module_name = module_policy.namespace_prefix.file_name();
-		let input_game_path = GamePath::new(input_path)
-			.map_err(|error| format!("module input is not a game path: {error}"))?;
 		let database: Option<&str> = game_version
 			.and_then(load_rules_for_version)
-			.map(|rules| rules.database_for(input_game_path))
+			.map(|rules| rules.database_for(input_path))
 			.transpose()?
 			.flatten();
 		let expected_module_name: &str = database.unwrap_or(expected_module_name);
@@ -351,19 +345,26 @@ fn definition_module_has_covering_reset_participant(
 	input.mods.iter().any(|mod_item| {
 		mod_item.root_path.is_some()
 			&& mod_item.descriptor.as_ref().is_some_and(|mod_descriptor| {
-				mod_descriptor
-					.replace_path
-					.iter()
-					.any(|prefix| path_is_covered(policy.namespace_prefix.as_str(), prefix))
+				replace_paths_reset(&mod_descriptor.replace_path, policy)
 			})
 	})
 }
 
-fn module_input_is_within_prefix(path: &str, prefix: &str) -> bool {
-	let path = path.replace('\\', "/");
-	let prefix = prefix.trim_matches('/').replace('\\', "/");
-	path.strip_prefix(&prefix)
-		.is_some_and(|suffix| suffix.starts_with('/'))
+/// Whether one of `replace_paths` resets `policy`'s namespace: a
+/// `replace_path` names the namespace itself or a directory above it, compared
+/// by whole components (`common/ideas` resets `common/ideas`, not
+/// `common/ideas_extra`).
+fn replace_paths_reset(replace_paths: &[GamePathBuf], policy: DefinitionModulePolicy) -> bool {
+	replace_paths
+		.iter()
+		.any(|prefix| policy.namespace_prefix.starts_with(prefix))
+}
+
+/// Whether `path` lies anywhere below the `prefix` directory. Unlike a
+/// namespace's inputs, which are its direct children, this admits nested
+/// files; it guards that no input escapes its policy's directory.
+fn module_input_is_within_prefix(path: &GamePath, prefix: &GamePath) -> bool {
+	path.strip_prefix(prefix).is_some()
 }
 
 fn parse_contributor(
@@ -384,7 +385,7 @@ fn parse_contributor(
 /// `base_game_only` restricts the scan to the analyzed vanilla snapshot, whose
 /// own arrangement is the evidence for how a database registers a repeated name.
 pub(crate) fn declared_definition_keys<'a>(
-	input_paths: impl IntoIterator<Item = &'a str>,
+	input_paths: impl IntoIterator<Item = &'a GamePath>,
 	input: &ResolvedInput,
 	base_game_only: bool,
 ) -> BTreeSet<String> {
@@ -427,12 +428,10 @@ fn include_reset_only_module_participants(
 	for (index, mod_item) in input.mods.iter().enumerate() {
 		let mod_id = ModId(mod_item.mod_id.clone());
 		let owns_reset = !replace_path_is_ignored(ignore_replace_path, &mod_id)
-			&& mod_item.descriptor.as_ref().is_some_and(|descriptor| {
-				descriptor
-					.replace_path
-					.iter()
-					.any(|prefix| path_is_covered(policy.namespace_prefix.as_str(), prefix))
-			});
+			&& mod_item
+				.descriptor
+				.as_ref()
+				.is_some_and(|descriptor| replace_paths_reset(&descriptor.replace_path, policy));
 		if !owns_reset && !representatives.contains_key(&mod_id) {
 			continue;
 		}
@@ -453,8 +452,8 @@ fn include_reset_only_module_participants(
 			mod_id,
 			ResolvedInputContributor {
 				mod_id: mod_item.mod_id.clone(),
-				absolute_path: policy.output_path.to_path(&root_path),
 				root_path,
+				relative_path: policy.output_path.to_owned(),
 				precedence,
 				is_base_game: false,
 				is_synthetic_base: false,
@@ -473,12 +472,6 @@ fn replace_path_is_ignored(ignore: &IgnoreReplacePath, mod_id: &ModId) -> bool {
 	}
 }
 
-fn path_is_covered(path: &str, prefix: &str) -> bool {
-	let path = path.trim_matches('/').replace('\\', "/");
-	let prefix = prefix.trim_matches('/').replace('\\', "/");
-	path == prefix || path.starts_with(&format!("{prefix}/"))
-}
-
 fn module_is_reset_by(
 	mod_id: &ModId,
 	policy: DefinitionModulePolicy,
@@ -486,10 +479,7 @@ fn module_is_reset_by(
 	ignore_replace_path: &IgnoreReplacePath,
 ) -> bool {
 	!replace_path_is_ignored(ignore_replace_path, mod_id)
-		&& mod_dag
-			.replace_paths(mod_id)
-			.iter()
-			.any(|prefix| path_is_covered(policy.namespace_prefix.as_str(), prefix))
+		&& replace_paths_reset(mod_dag.replace_paths(mod_id), policy)
 }
 
 fn effective_ancestors(
@@ -528,22 +518,14 @@ fn fold_visible_module_files(
 	mod_id: &str,
 	module_name: &str,
 	policy: DefinitionModulePolicy,
-	visible_files: &BTreeMap<String, VisibleModuleFile>,
+	visible_files: &BTreeMap<GamePathBuf, VisibleModuleFile>,
 ) -> Result<ParsedScriptFile, CrossFileModuleViewError> {
 	let inputs = visible_files
 		.iter()
 		.map(|(path, file)| {
-			// Keys are inventory text written from game paths, so only a
-			// corrupt key fails to parse.
-			let path = GamePath::new(path).map_err(|error| {
-				CrossFileModuleViewError::unsupported_input(format!(
-					"module input is not a game path: {error}"
-				))
-			})?;
-			Ok(DefinitionModuleInput::new(path, &file.parsed)
-				.with_layer_ordinal(file.layer_ordinal))
+			DefinitionModuleInput::new(path, &file.parsed).with_layer_ordinal(file.layer_ordinal)
 		})
-		.collect::<Result<Vec<_>, CrossFileModuleViewError>>()?;
+		.collect::<Vec<_>>();
 	let canonical = load_definition_module(&inputs, policy).map_err(|error| {
 		CrossFileModuleViewError::unsupported_input(format!(
 			"failed to load definition module: {error:?}"
@@ -592,9 +574,14 @@ mod tests {
 	use crate::game::eu4::script::parse_script_file;
 	use crate::game::eu4::script::parser::{AstStatement, AstValue};
 	use crate::input::{InputScriptCache, ResolvedInputContributor};
+	use crate::merge::planning::dag::{IgnoreReplacePath, ModId, build_mod_dag};
+	use crate::model::ModCandidate;
 	use crate::model::{
-		MergeModuleOutput, MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId,
+		GamePathBuf, MergeModuleOutput, MergeModuleOutputs, MergePlanEntry, MergePlanStrategy,
+		MergePlanTarget, MergeUnitId,
 	};
+	use crate::playset::PlaysetEntry;
+	use crate::playset::descriptor::ModDescriptor;
 	use std::collections::BTreeMap;
 	use std::fs;
 	use tempfile::TempDir;
@@ -609,7 +596,7 @@ mod tests {
 		let contributor = ResolvedInputContributor {
 			mod_id: "mod-a".to_string(),
 			root_path: temp.path().to_path_buf(),
-			absolute_path: temp.path().join(relative),
+			relative_path: crate::model::GamePathBuf::parse(relative).expect("valid game path"),
 			precedence: 1,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -623,6 +610,18 @@ mod tests {
 		assert!(error.contains("no semantic-snapshot input"));
 	}
 
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn outputs(output_path: &str, replace_prefix: Option<&str>) -> MergeModuleOutputs {
+		MergeModuleOutputs::new(vec![
+			MergeModuleOutput::new(game_path(output_path), replace_prefix.map(game_path))
+				.expect("output inside a namespace directory"),
+		])
+		.expect("one output")
+	}
+
 	fn module_entry(input_path: &str, module_name: &str, replace_prefix: &str) -> MergePlanEntry {
 		MergePlanEntry {
 			target: MergePlanTarget::Module {
@@ -630,11 +629,11 @@ mod tests {
 					family_id: "common/governments".to_string(),
 					module_name: module_name.to_string(),
 				},
-				input_paths: vec![input_path.to_string()],
-				outputs: vec![MergeModuleOutput::new(
-					"common/governments/zzz_foch_governments.txt".to_string(),
-					Some(replace_prefix.to_string()),
-				)],
+				input_paths: vec![game_path(input_path)],
+				outputs: outputs(
+					"common/governments/zzz_foch_governments.txt",
+					Some(replace_prefix),
+				),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -659,11 +658,11 @@ mod tests {
 					family_id: "common/powerprojection".to_string(),
 					module_name: "powerprojection".to_string(),
 				},
-				input_paths: vec!["common/powerprojection/example.txt".to_string()],
-				outputs: vec![MergeModuleOutput::new(
-					"common/powerprojection/zzz_foch_powerprojection.txt".to_string(),
-					replace_prefix.map(str::to_string),
-				)],
+				input_paths: vec![game_path("common/powerprojection/example.txt")],
+				outputs: outputs(
+					"common/powerprojection/zzz_foch_powerprojection.txt",
+					replace_prefix,
+				),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -798,6 +797,58 @@ mod tests {
 		assert!(error.contains("no input paths"), "error: {error}");
 	}
 
+	/// Every reset decision here (a covering reset participant, a reset-only
+	/// participant, a mod resetting a module) asks one question: does a
+	/// `replace_path` name the namespace or a directory above it, by whole
+	/// components.
+	#[test]
+	fn a_replace_path_resets_its_directory_and_what_lies_below_it() {
+		let ContentLoadPolicy::DefinitionModule(policy) = governments_descriptor().load_policy
+		else {
+			panic!("governments must be a definition module");
+		};
+		assert_eq!(policy.namespace_prefix.as_str(), "common/governments");
+		for (replace_path, resets) in [
+			("common/governments", true),
+			("common", true),
+			("common/governments_extra", false),
+			("common/governments/nested", false),
+			("common/govern", false),
+		] {
+			let replace_paths = vec![game_path(replace_path)];
+			assert_eq!(
+				super::replace_paths_reset(&replace_paths, policy),
+				resets,
+				"{replace_path}"
+			);
+			let mods = vec![ModCandidate {
+				entry: PlaysetEntry::default(),
+				mod_id: "reset".to_string(),
+				root_path: None,
+				descriptor_path: None,
+				descriptor: Some(ModDescriptor {
+					name: "reset".to_string(),
+					replace_path: replace_paths,
+					..ModDescriptor::default()
+				}),
+				workshop_identity: None,
+				descriptor_error: None,
+				files: Vec::new(),
+			}];
+			let (mod_dag, _) = build_mod_dag(&mods);
+			assert_eq!(
+				super::module_is_reset_by(
+					&ModId("reset".to_string()),
+					policy,
+					&mod_dag,
+					&IgnoreReplacePath::None,
+				),
+				resets,
+				"{replace_path}"
+			);
+		}
+	}
+
 	#[test]
 	fn overlay_module_replacement_requires_a_covering_reset_participant() {
 		let entry = powerprojection_entry(Some("common/powerprojection"));
@@ -891,7 +942,7 @@ mod tests {
 				.expect("file under the mod root");
 			let parsed = parse_script_file("mod", temp.path(), &relative);
 			files.insert(
-				parsed.relative_path.as_str().to_string(),
+				parsed.relative_path.clone(),
 				VisibleModuleFile {
 					layer_ordinal: 1,
 					parsed,
@@ -959,14 +1010,14 @@ mod tests {
 		let later = parse_script_file("compatch", temp.path(), &game_path(&later));
 		let mut files = BTreeMap::new();
 		files.insert(
-			earlier.relative_path.as_str().to_string(),
+			earlier.relative_path.clone(),
 			VisibleModuleFile {
 				layer_ordinal: 1,
 				parsed: earlier,
 			},
 		);
 		files.insert(
-			later.relative_path.as_str().to_string(),
+			later.relative_path.clone(),
 			VisibleModuleFile {
 				layer_ordinal: 2,
 				parsed: later,

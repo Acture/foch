@@ -657,7 +657,13 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 	// primary would understate the plan.
 	format!(
 		"[{strategy}] path={} winner={} contributors={}{}",
-		entry.target.output_paths().join(", "),
+		entry
+			.target
+			.output_paths()
+			.iter()
+			.map(|path| path.as_str())
+			.collect::<Vec<_>>()
+			.join(", "),
 		winner,
 		contributors,
 		notes

@@ -1016,7 +1016,7 @@ remote_file_id="43"
 		assert_eq!(request.expected_game_root.as_ref(), Some(&game_root));
 		assert!(request.base_snapshot_lease.is_some());
 		assert!(request.expected_base_snapshot_identity.is_some());
-		let manifest = resolve_product_input_manifest(&request, None).expect("frozen manifest");
+		let manifest = resolve_product_input_manifest(&request).expect("frozen manifest");
 		assert_eq!(manifest.mods.len(), 2);
 		assert_eq!(manifest.mods[0].mod_id, FIRST_ID);
 		assert_eq!(manifest.mods[0].precedence, 1);
@@ -1171,7 +1171,7 @@ remote_file_id="43"
 		assert_eq!(prepared.source_mod_count, 2);
 		assert_eq!(prepared.recovery.as_ref(), Some(&recovery));
 		let manifest =
-			resolve_product_input_manifest(&prepared.request, None).expect("selected manifest");
+			resolve_product_input_manifest(&prepared.request).expect("selected manifest");
 		assert_eq!(manifest.mods.len(), 1);
 		assert_eq!(manifest.mods[0].mod_id, FIRST_ID);
 		assert_eq!(manifest.mods[0].precedence, 1);

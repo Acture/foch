@@ -535,34 +535,17 @@ fn has_declared_dependency_semantic_signal(
 		|| replace_path_covers_dependency_content(mod_item, dep_mod)
 }
 
+/// Whether a directory `mod_item` replaces holds a file `dep_mod` ships.
 fn replace_path_covers_dependency_content(mod_item: &ModCandidate, dep_mod: &ModCandidate) -> bool {
 	let Some(descriptor) = mod_item.descriptor.as_ref() else {
 		return false;
 	};
-	let prefixes: Vec<String> = descriptor
-		.replace_path
-		.iter()
-		.map(|path| normalize_path_prefix(path))
-		.filter(|path| !path.is_empty())
-		.collect();
-	if prefixes.is_empty() {
-		return false;
-	}
-
 	dep_mod.files.iter().any(|file| {
-		let normalized = normalize_path_prefix(file.as_str());
-		prefixes
+		descriptor
+			.replace_path
 			.iter()
-			.any(|prefix| path_is_under_prefix(&normalized, prefix))
+			.any(|prefix| file.starts_with(prefix))
 	})
-}
-
-fn normalize_path_prefix(raw: &str) -> String {
-	raw.trim().trim_matches('/').replace('\\', "/")
-}
-
-fn path_is_under_prefix(normalized_file: &str, prefix: &str) -> bool {
-	normalized_file == prefix || normalized_file.starts_with(&format!("{prefix}/"))
 }
 
 fn is_dependency_merge_key_source(source: MergeKeySource) -> bool {
@@ -1162,7 +1145,8 @@ mod tests {
 	#[test]
 	fn does_not_flag_dependency_with_replace_path_coverage() {
 		let mut main = candidate("100", "Main Mod", "main", &["Dependency Mod"]);
-		main.descriptor.as_mut().unwrap().replace_path = vec!["common/missions".to_string()];
+		main.descriptor.as_mut().unwrap().replace_path =
+			vec![GamePathBuf::parse("common/missions").expect("valid game path")];
 		let mut dep = candidate("200", "Dependency Mod", "Dependency Mod", &[]);
 		dep.files =
 			vec![GamePathBuf::parse("common/missions/dep_missions.txt").expect("valid game path")];
@@ -1171,6 +1155,29 @@ mod tests {
 		let findings = detect_dependency_misuse(&ctx);
 
 		assert!(findings.is_empty());
+	}
+
+	/// A `replace_path` covers the files in and below the directory it names,
+	/// compared by whole components.
+	#[test]
+	fn replace_path_covers_dependency_files_in_and_below_its_directory_only() {
+		let mut main = candidate("100", "Main Mod", "main", &["Dependency Mod"]);
+		main.descriptor.as_mut().unwrap().replace_path =
+			vec![GamePathBuf::parse("common/ideas").expect("valid game path")];
+		for (file, covered) in [
+			("common/ideas/x.txt", true),
+			("common/ideas/nested/x.txt", true),
+			("common/ideas", true),
+			("common/ideas_extra/x.txt", false),
+		] {
+			let mut dep = candidate("200", "Dependency Mod", "Dependency Mod", &[]);
+			dep.files = vec![GamePathBuf::parse(file).expect("valid game path")];
+			assert_eq!(
+				replace_path_covers_dependency_content(&main, &dep),
+				covered,
+				"{file}"
+			);
+		}
 	}
 
 	#[test]

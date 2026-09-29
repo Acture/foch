@@ -17,11 +17,11 @@ use crate::game::eu4::script::documents::classify_document_family;
 use crate::input::config::Config;
 use crate::input::request::{InputRequest, InputSource};
 use crate::model::{
-	DocumentFamily, GamePath, GamePathBuf, GamePathError, MergeUnitId, ModCandidate,
-	ProductInputManifest, ProductInputMod,
+	DocumentFamily, GamePath, GamePathBuf, GamePathError, MergePlanContributor, MergeUnitId,
+	ModCandidate, ProductInputManifest, ProductInputMod,
 };
 use crate::playset::ParseErrorKind;
-use crate::playset::descriptor::load_descriptor;
+use crate::playset::descriptor::{load_descriptor, load_launcher_descriptor};
 use crate::playset::steam::{
 	SteamWorkshopCatalog, WorkshopInstallIdentity, steam_workshop_mod_path,
 };
@@ -87,16 +87,37 @@ pub struct InputResolveSummary {
 	pub mods: Vec<ResolvedInputMod>,
 }
 
+/// One source of one inventory file: which mod ships it, under which root.
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedInputContributor {
 	pub mod_id: String,
 	pub root_path: PathBuf,
-	pub absolute_path: PathBuf,
+	/// The file's game path under `root_path`, the same path that keys it in
+	/// the inventory.
+	pub relative_path: GamePathBuf,
 	pub precedence: usize,
 	pub is_base_game: bool,
 	pub is_synthetic_base: bool,
 	pub parse_ok_hint: Option<bool>,
 	pub mod_hash: Option<String>,
+}
+
+impl ResolvedInputContributor {
+	/// The physical file this contributor reads, resolved under its own root.
+	pub(crate) fn absolute_path(&self) -> PathBuf {
+		self.relative_path.to_path(&self.root_path)
+	}
+
+	/// Whether `planned` names this contributor. A plan contributor carries
+	/// its mod, precedence and base-game flag; within one inventory entry
+	/// those identify a contributor, except that a synthetic base shares
+	/// all three with its seed when both sit at precedence 0 (no base game).
+	/// The two read one physical file, so either answers the lookup.
+	pub(crate) fn is_planned_as(&self, planned: &MergePlanContributor) -> bool {
+		self.mod_id == planned.mod_id
+			&& self.precedence == planned.precedence
+			&& self.is_base_game == planned.is_base_game
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -109,14 +130,14 @@ pub(crate) struct ResolvedInput {
 	pub cache_game_version: Option<String>,
 	pub mod_snapshots: Vec<Option<LoadedModSnapshot>>,
 	pub script_cache: InputScriptCache,
-	pub file_inventory: BTreeMap<String, Vec<ResolvedInputContributor>>,
+	pub file_inventory: BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 	/// Exact per-path absence observations made against the current game root
 	/// for semantic families that explicitly support an empty ancestor. A
 	/// missing entry in the installed snapshot is not, by itself, proof of
 	/// absence because snapshots can be built with filters.
-	pub verified_absent_base_paths: BTreeSet<String>,
-	pub requested_retained_paths: Option<BTreeSet<String>>,
-	pub effective_retained_paths: Option<BTreeSet<String>>,
+	pub verified_absent_base_paths: BTreeSet<GamePathBuf>,
+	pub requested_retained_paths: Option<BTreeSet<GamePathBuf>>,
+	pub effective_retained_paths: Option<BTreeSet<GamePathBuf>>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,7 +153,7 @@ pub(crate) struct InputInventory {
 	pub snapshot_filter: FileFilter,
 	pub mod_hashes: Vec<Option<String>>,
 	pub product_input_manifest: Option<ProductInputManifest>,
-	pub requested_retained_paths: Option<BTreeSet<String>>,
+	pub requested_retained_paths: Option<BTreeSet<GamePathBuf>>,
 }
 
 impl InputInventory {
@@ -209,9 +230,13 @@ fn input_error_from_playset_parse(err: crate::playset::ParseError) -> InputResol
 			InputResolveErrorKind::Io
 		},
 		path: err.path.clone(),
+		// A launcher playset reads its descriptors with
+		// `load_launcher_descriptor`, which never interprets `replace_path`.
 		message: match err.kind {
 			ParseErrorKind::Format => err.message,
-			ParseErrorKind::Io => format!("failed to read Playset: {err}"),
+			ParseErrorKind::Io | ParseErrorKind::InvalidReplacePath => {
+				format!("failed to read Playset: {err}")
+			}
 		},
 	}
 }
@@ -404,7 +429,7 @@ pub fn resolve_input_summary(
 	let mut mods =
 		build_mod_candidates_metadata(&loaded.source_root, &loaded.config, &loaded.playlist);
 	for mod_item in &mut mods {
-		load_mod_candidate_descriptor(mod_item);
+		load_mod_candidate_descriptor(mod_item)?;
 	}
 	let game_root = resolve_game_root(&loaded.config, &loaded.playlist.game);
 	Ok(InputResolveSummary {
@@ -457,7 +482,6 @@ pub fn resolve_input_targets(
 /// is opened to construct this manifest.
 pub fn resolve_product_input_manifest(
 	request: &InputRequest,
-	_retained_paths: Option<&BTreeSet<String>>,
 ) -> Result<ProductInputManifest, InputResolveError> {
 	let loaded = load_input_source(request)?;
 	let mut entries = loaded.playlist.mods.clone();
@@ -500,7 +524,7 @@ pub fn resolve_product_input_manifest(
 
 fn retained_definition_modules(
 	game: &Eu4,
-	requested_paths: &[GamePathBuf],
+	requested_paths: &BTreeSet<GamePathBuf>,
 ) -> BTreeMap<MergeUnitId, u32> {
 	let profile = game;
 	requested_paths
@@ -521,49 +545,38 @@ fn retained_definition_modules(
 		.collect()
 }
 
+/// The retained paths widened to every available input their merge unit
+/// reads: a retained definition-module or database file brings in its whole
+/// module, because a module is merged as one unit.
 fn expand_retained_paths_for_game<'a>(
 	game: &Eu4,
 	game_version: Option<&str>,
-	requested_paths: Option<&BTreeSet<String>>,
-	available_paths: impl IntoIterator<Item = &'a str>,
-) -> Result<Option<BTreeSet<String>>, String> {
+	requested_paths: Option<&BTreeSet<GamePathBuf>>,
+	available_paths: impl IntoIterator<Item = &'a GamePath>,
+) -> Result<Option<BTreeSet<GamePathBuf>>, String> {
 	let Some(requested_paths) = requested_paths else {
 		return Ok(None);
 	};
-	let mut effective = requested_paths
-		.iter()
-		.map(|path| normalize_relative_path(Path::new(path)))
-		.collect::<BTreeSet<_>>();
-	// Retained and available paths still arrive as text; classification and
-	// rule lookup take a game path, so a retained path must be one.
-	let requested_game_paths = effective
-		.iter()
-		.map(|path| {
-			GamePathBuf::parse(path).map_err(|error| format!("retained path {path:?}: {error}"))
-		})
-		.collect::<Result<Vec<_>, String>>()?;
-	let selected_modules = retained_definition_modules(game, &requested_game_paths);
+	let mut effective = requested_paths.clone();
+	let selected_modules = retained_definition_modules(game, requested_paths);
 	let rules = game_version.and_then(load_rules_for_version);
 	let mut selected_databases: BTreeSet<&str> = BTreeSet::new();
 	if let Some(rules) = rules {
-		for path in &requested_game_paths {
+		for path in requested_paths {
 			if let Some(database) = rules.database_for(path)? {
 				selected_databases.insert(database);
 			}
 		}
 	}
 	let profile = game;
-	for available_path in available_paths {
-		let normalized = normalize_relative_path(Path::new(available_path));
-		let game_path = GamePath::new(&normalized)
-			.map_err(|error| format!("available path {normalized:?}: {error}"))?;
+	for game_path in available_paths {
 		if let Some(database) = rules
 			.map(|rules| rules.database_for(game_path))
 			.transpose()?
 			.flatten()
 		{
 			if selected_databases.contains(database) {
-				effective.insert(normalized);
+				effective.insert(game_path.to_owned());
 			}
 			continue;
 		}
@@ -586,7 +599,7 @@ fn expand_retained_paths_for_game<'a>(
 			module_name: module_name_for_descriptor(game_path, descriptor),
 		};
 		if selected_modules.contains_key(&module) {
-			effective.insert(normalized);
+			effective.insert(game_path.to_owned());
 		}
 	}
 	Ok(Some(effective))
@@ -595,7 +608,7 @@ fn expand_retained_paths_for_game<'a>(
 pub(crate) fn build_input_inventory_for_paths(
 	request: &InputRequest,
 	include_game_base: bool,
-	retained_paths: Option<&BTreeSet<String>>,
+	retained_paths: Option<&BTreeSet<GamePathBuf>>,
 ) -> Result<InputInventory, InputResolveError> {
 	let loaded = load_input_source(request)?;
 	let LoadedInputSource {
@@ -870,7 +883,7 @@ pub(crate) fn resolve_input_from_inventory(
 	// after every process/disk snapshot lookup so a warm run never touches a
 	// Workshop file before its semantic caches have had a chance to hit.
 	for mod_item in &mut mods {
-		load_mod_candidate_descriptor(mod_item);
+		load_mod_candidate_descriptor(mod_item)?;
 	}
 	for (mod_item, snapshot) in mods.iter_mut().zip(mod_snapshots.iter()) {
 		if let Some(snapshot) = snapshot {
@@ -880,7 +893,7 @@ pub(crate) fn resolve_input_from_inventory(
 	let mut available_paths = mods
 		.iter()
 		.flat_map(|mod_item| mod_item.files.iter())
-		.map(|path| path.as_str())
+		.map(GamePathBuf::as_game_path)
 		.collect::<Vec<_>>();
 	if let Some(base_snapshot) = installed_base_snapshot.as_ref() {
 		available_paths.extend(
@@ -888,7 +901,7 @@ pub(crate) fn resolve_input_from_inventory(
 				.snapshot
 				.inventory_paths
 				.iter()
-				.map(|path| path.as_str()),
+				.map(GamePathBuf::as_game_path),
 		);
 	}
 	let effective_retained_paths = expand_retained_paths_for_game(
@@ -906,7 +919,7 @@ pub(crate) fn resolve_input_from_inventory(
 		for mod_item in &mut mods {
 			mod_item
 				.files
-				.retain(|relative| effective_retained_paths.contains(relative.as_str()));
+				.retain(|relative| effective_retained_paths.contains(relative));
 		}
 		for (mod_item, snapshot) in mods.iter().zip(mod_snapshots.iter_mut()) {
 			let Some(full_snapshot) = snapshot.as_ref() else {
@@ -943,7 +956,6 @@ pub(crate) fn resolve_input_from_inventory(
 		base_game_root.as_deref(),
 		installed_base_snapshot.is_some(),
 		&file_inventory,
-		&playlist_path,
 	)?;
 	inject_synthetic_bases(&mut file_inventory);
 	let script_cache = InputScriptCache::from_parts(
@@ -978,9 +990,8 @@ fn verify_absent_semantic_bases(
 	playlist: &Playset,
 	base_game_root: Option<&Path>,
 	base_snapshot_loaded: bool,
-	file_inventory: &BTreeMap<String, Vec<ResolvedInputContributor>>,
-	error_path: &Path,
-) -> Result<BTreeSet<String>, InputResolveError> {
+	file_inventory: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
+) -> Result<BTreeSet<GamePathBuf>, InputResolveError> {
 	let Some(root) = base_game_root else {
 		return Ok(BTreeSet::new());
 	};
@@ -991,15 +1002,8 @@ fn verify_absent_semantic_bases(
 
 	let mut absent = BTreeSet::new();
 	for (relative, contributors) in file_inventory {
-		// Inventory keys are game-path text (`build_file_inventory` writes
-		// `GamePath::as_str`), so only a corrupt key fails to parse.
-		let relative_path = GamePath::new(relative).map_err(|error| InputResolveError {
-			kind: InputResolveErrorKind::Io,
-			path: error_path.to_path_buf(),
-			message: format!("unsafe semantic base path {relative:?}: {error}"),
-		})?;
-		let descriptor = profile.classify_content_family(relative_path);
-		if classify_document_family(relative_path) != Some(DocumentFamily::Clausewitz)
+		let descriptor = profile.classify_content_family(relative);
+		if classify_document_family(relative) != Some(DocumentFamily::Clausewitz)
 			|| !descriptor.is_some_and(ContentFamilyDescriptor::supports_verified_empty_file_base)
 			|| contributors
 				.iter()
@@ -1012,7 +1016,7 @@ fn verify_absent_semantic_bases(
 			continue;
 		}
 
-		let absolute = relative_path.to_path(root);
+		let absolute = relative.to_path(root);
 		match fs::symlink_metadata(&absolute) {
 			Ok(_) => {
 				return Err(InputResolveError {
@@ -1083,10 +1087,27 @@ pub(crate) fn build_mod_candidates_metadata(
 		.collect()
 }
 
-fn load_mod_candidate_descriptor(mod_item: &mut ModCandidate) {
+/// Reads a mod's descriptor. A descriptor that is missing or does not parse
+/// is recorded on the mod, which then merges without descriptor metadata. A
+/// `replace_path` value that names no directory under the game root is an
+/// input error instead: it decides which earlier contributions the merge
+/// drops, so there is no safe reading of it and no safe merge without it.
+fn load_mod_candidate_descriptor(mod_item: &mut ModCandidate) -> Result<(), InputResolveError> {
 	let (descriptor, descriptor_error) = match mod_item.descriptor_path.as_ref() {
 		Some(path) if path.exists() => match load_descriptor(path) {
 			Ok(descriptor) => (Some(descriptor), None),
+			Err(error) if error.kind == ParseErrorKind::InvalidReplacePath => {
+				return Err(InputResolveError {
+					kind: InputResolveErrorKind::Io,
+					path: path.clone(),
+					message: format!(
+						"mod {} descriptor {}: {}",
+						mod_item.mod_id,
+						path.display(),
+						error.message
+					),
+				});
+			}
 			Err(error) => (None, Some(error.to_string())),
 		},
 		Some(path) => (None, Some(format!("{} does not exist", path.display()))),
@@ -1094,6 +1115,7 @@ fn load_mod_candidate_descriptor(mod_item: &mut ModCandidate) {
 	};
 	mod_item.descriptor = descriptor;
 	mod_item.descriptor_error = descriptor_error;
+	Ok(())
 }
 
 fn mod_id_for_entry(entry: &PlaysetEntry) -> String {
@@ -1296,8 +1318,7 @@ fn resolve_mod_from_ugc_descriptor(game_data_dir: &Path, steam_id: &str) -> Opti
 		return None;
 	}
 
-	let descriptor = load_descriptor(&metadata).ok()?;
-	let raw_path = descriptor.path?;
+	let raw_path = load_launcher_descriptor(&metadata).ok()?.path?;
 	descriptor_path_candidates(game_data_dir, &raw_path)
 		.into_iter()
 		.find(|candidate| candidate.is_dir())
@@ -1490,8 +1511,8 @@ pub(crate) fn build_file_inventory(
 	base_game_root: Option<&PathBuf>,
 	installed_base_snapshot: Option<&InstalledBaseSnapshot>,
 	mod_hashes: &[Option<String>],
-	retained_paths: Option<&BTreeSet<String>>,
-) -> BTreeMap<String, Vec<ResolvedInputContributor>> {
+	retained_paths: Option<&BTreeSet<GamePathBuf>>,
+) -> BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> {
 	let mut inventory = BTreeMap::new();
 	let mut precedence = 0;
 
@@ -1499,17 +1520,17 @@ pub(crate) fn build_file_inventory(
 		let mod_id = base_game_mod_id(playlist.game.key());
 		let document_lookup = snapshot.snapshot.document_lookup();
 		for relative in &snapshot.snapshot.inventory_paths {
-			if retained_paths.is_some_and(|paths| !paths.contains(relative.as_str())) {
+			if retained_paths.is_some_and(|paths| !paths.contains(relative)) {
 				continue;
 			}
 			let document = document_lookup.get(&relative.as_game_path());
 			inventory
-				.entry(relative.as_str().to_owned())
+				.entry(relative.clone())
 				.or_insert_with(Vec::new)
 				.push(ResolvedInputContributor {
 					mod_id: mod_id.clone(),
 					root_path: root.clone(),
-					absolute_path: relative.to_path(root),
+					relative_path: relative.clone(),
 					precedence,
 					is_base_game: true,
 					is_synthetic_base: false,
@@ -1536,12 +1557,12 @@ pub(crate) fn build_file_inventory(
 		for relative in &mod_item.files {
 			let parse_ok_hint = parse_hints.and_then(|hints| hints.get(relative).copied());
 			inventory
-				.entry(relative.as_str().to_owned())
+				.entry(relative.clone())
 				.or_insert_with(Vec::new)
 				.push(ResolvedInputContributor {
 					mod_id: mod_item.mod_id.clone(),
 					root_path: root.clone(),
-					absolute_path: relative.to_path(root),
+					relative_path: relative.clone(),
 					precedence,
 					is_base_game: false,
 					is_synthetic_base: false,
@@ -1555,10 +1576,6 @@ pub(crate) fn build_file_inventory(
 	inventory
 }
 
-pub(crate) fn normalize_relative_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
 /// 当 file_inventory 中某个文件没有 base game 贡献者，但有 ≥2 个 mod 贡献者时，
 /// 选取 precedence 最小的 mod（tie 用 mod_id 字典序）clone 一份作为合成 base，
 /// 插入到 contributors 最前面。这样下游的 patch 引擎可以把所有 mod 视为对该 base 的 patch。
@@ -1566,7 +1583,7 @@ pub(crate) fn normalize_relative_path(path: &Path) -> String {
 /// 合成 base 的特征：`is_synthetic_base = true`，`is_base_game = false`，`precedence = 0`。
 /// 原贡献者保持不动。
 pub(crate) fn inject_synthetic_bases(
-	file_inventory: &mut BTreeMap<String, Vec<ResolvedInputContributor>>,
+	file_inventory: &mut BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 ) {
 	for contributors in file_inventory.values_mut() {
 		if contributors.iter().any(|c| c.is_base_game) {
@@ -1604,9 +1621,10 @@ mod tests {
 	use tempfile::TempDir;
 
 	fn descriptor_path_value(path: &Path) -> String {
-		path.to_string_lossy()
-			.replace('\\', "/")
-			.replace('"', "\\\"")
+		crate::playset::descriptor::escape_descriptor_value(
+			&crate::playset::descriptor::descriptor_path_text(path)
+				.expect("a fixture directory has descriptor text"),
+		)
 	}
 
 	fn write_descriptor(root: &Path, name: &str, steam_id: Option<&str>) {
@@ -2253,7 +2271,7 @@ workshop_identity = { app_id = 236850, workshop_id = "1001", manifest_id = "2001
 		.expect("write manifest");
 
 		let request = request_for_manifest(&manifest_path);
-		let first = resolve_product_input_manifest(&request, None).expect("first manifest");
+		let first = resolve_product_input_manifest(&request).expect("first manifest");
 		fs::write(&content_file, b"changed bytes").expect("mutate content without changing ACF");
 		#[cfg(unix)]
 		{
@@ -2261,7 +2279,7 @@ workshop_identity = { app_id = 236850, workshop_id = "1001", manifest_id = "2001
 			fs::set_permissions(&content_file, fs::Permissions::from_mode(0o000))
 				.expect("make sentinel unreadable");
 		}
-		let second = resolve_product_input_manifest(&request, None).expect("second manifest");
+		let second = resolve_product_input_manifest(&request).expect("second manifest");
 		#[cfg(unix)]
 		{
 			use std::os::unix::fs::PermissionsExt;
@@ -2309,7 +2327,7 @@ path = "governments_mod"
 "#,
 		)
 		.expect("write manifest");
-		let requested = BTreeSet::from(["common/governments/00_governments.txt".to_string()]);
+		let requested = BTreeSet::from([game_path("common/governments/00_governments.txt")]);
 
 		let inventory = build_input_inventory_for_paths(
 			&request_for_manifest(&manifest_path),
@@ -2329,16 +2347,12 @@ path = "governments_mod"
 				.map(|descriptor| descriptor.name.as_str()),
 			Some("Governments Mod")
 		);
-		let retained_files = input.mods[0]
-			.files
-			.iter()
-			.map(|path| path.as_str().to_owned())
-			.collect::<BTreeSet<_>>();
+		let retained_files = input.mods[0].files.iter().cloned().collect::<BTreeSet<_>>();
 		assert_eq!(
 			retained_files,
 			BTreeSet::from([
-				"common/governments/00_governments.txt".to_string(),
-				"common/governments/zzz_governments.txt".to_string(),
+				game_path("common/governments/00_governments.txt"),
+				game_path("common/governments/zzz_governments.txt"),
 			])
 		);
 		assert_eq!(input.effective_retained_paths, Some(retained_files));
@@ -2377,8 +2391,8 @@ path = "mod-a"
 "#,
 		)
 		.unwrap();
-		let requested: BTreeSet<String> =
-			BTreeSet::from(["common/static_modifiers/entry.txt".to_string()]);
+		let requested: BTreeSet<GamePathBuf> =
+			BTreeSet::from([game_path("common/static_modifiers/entry.txt")]);
 		let inventory = build_input_inventory_for_paths(
 			&request_for_manifest(&manifest),
 			false,
@@ -2392,59 +2406,148 @@ path = "mod-a"
 		assert_eq!(
 			input.effective_retained_paths,
 			Some(BTreeSet::from([
-				"common/static_modifiers/entry.txt".to_string(),
-				"common/event_modifiers/entry.txt".to_string(),
+				game_path("common/static_modifiers/entry.txt"),
+				game_path("common/event_modifiers/entry.txt"),
 			]))
 		);
 		assert_eq!(input.mods[0].mod_id, "mod-z");
 		assert_eq!(input.mods[1].mod_id, "mod-a");
 		assert_eq!(
-			input.file_inventory["common/static_modifiers/entry.txt"][0].precedence,
+			input.file_inventory[&game_path("common/static_modifiers/entry.txt")][0].precedence,
 			0
 		);
 		assert_eq!(
-			input.file_inventory["common/event_modifiers/entry.txt"][0].precedence,
+			input.file_inventory[&game_path("common/event_modifiers/entry.txt")][0].precedence,
 			1
 		);
 	}
 
 	#[test]
 	fn retained_database_selection_includes_other_directories_and_respects_file_filters() {
-		let requested: BTreeSet<String> =
-			BTreeSet::from(["common/static_modifiers/mod.txt".to_string()]);
-		let available: [&str; 5] = [
+		let requested: BTreeSet<GamePathBuf> =
+			BTreeSet::from([game_path("common/static_modifiers/mod.txt")]);
+		let available: [GamePathBuf; 5] = [
 			"common/static_modifiers/base.txt",
 			"common/static_modifiers/notes.gui",
 			"common/event_modifiers/base.txt",
 			"common/event_modifiers/notes.gui",
 			"common/policies/unrelated.txt",
-		];
-		let expanded: Option<BTreeSet<String>> =
-			expand_retained_paths_for_game(&Eu4, Some("1.37.5"), Some(&requested), available)
-				.unwrap();
+		]
+		.map(game_path);
+		let expanded: Option<BTreeSet<GamePathBuf>> = expand_retained_paths_for_game(
+			&Eu4,
+			Some("1.37.5"),
+			Some(&requested),
+			available.iter().map(GamePathBuf::as_game_path),
+		)
+		.unwrap();
 		assert_eq!(
 			expanded,
 			Some(BTreeSet::from([
-				"common/static_modifiers/mod.txt".to_string(),
-				"common/static_modifiers/base.txt".to_string(),
-				"common/event_modifiers/base.txt".to_string(),
+				game_path("common/static_modifiers/mod.txt"),
+				game_path("common/static_modifiers/base.txt"),
+				game_path("common/event_modifiers/base.txt"),
 			]))
 		);
+	}
+
+	fn write_manifest_mod(temp: &Path, mod_id: &str, descriptor: &str) -> (PathBuf, PathBuf) {
+		let root = temp.join(mod_id);
+		fs::create_dir_all(root.join("events")).expect("create mod root");
+		fs::write(root.join("events").join("a.txt"), "namespace = a\n").expect("write event");
+		fs::write(root.join("descriptor.mod"), descriptor).expect("write descriptor");
+		let manifest = temp.join("foch.toml");
+		fs::write(
+			&manifest,
+			format!(
+				"[project]\ngame = \"eu4\"\n\n[[project.mods]]\nid = \"{mod_id}\"\npath = \"{mod_id}\"\n"
+			),
+		)
+		.expect("write manifest");
+		(manifest, root.join("descriptor.mod"))
+	}
+
+	/// A `replace_path` decides which earlier contributions the merge drops,
+	/// so a value that names no directory under the game root stops input
+	/// resolution. It is not treated like an unreadable descriptor, which would
+	/// merge the mod as if it declared no replacement at all.
+	#[test]
+	fn an_invalid_replace_path_stops_input_resolution_naming_the_mod_and_value() {
+		let temp = TempDir::new().expect("tempdir");
+		let (manifest, descriptor) = write_manifest_mod(
+			temp.path(),
+			"bad_mod",
+			"name=\"Bad\"\nreplace_path=\"common/../events\"\n",
+		);
+		let request = request_for_manifest(&manifest);
+
+		for error in [
+			resolve_input(&request, false).expect_err("resolution must stop"),
+			resolve_input_summary(&request).expect_err("the summary reads descriptors too"),
+		] {
+			assert_eq!(error.kind, InputResolveErrorKind::Io, "{error}");
+			assert_eq!(error.path, descriptor, "{error}");
+			for expected in [
+				"mod bad_mod".to_string(),
+				descriptor.display().to_string(),
+				r#""common/../events""#.to_string(),
+				"`..`".to_string(),
+			] {
+				assert!(
+					error.message.contains(&expected),
+					"{expected} not in {error}"
+				);
+			}
+		}
+	}
+
+	/// The launcher's copy of a descriptor is read only for the mod's location,
+	/// so its `replace_path` does not hide the mod: the mod is found, and its
+	/// own descriptor then reports the value.
+	#[test]
+	fn a_launcher_descriptor_with_an_invalid_replace_path_still_locates_its_mod() {
+		let temp = TempDir::new().expect("tempdir");
+		let paradox_dir = temp.path().join("Europa Universalis IV");
+		let mod_root = temp.path().join("workshop_mod");
+		let bad = "replace_path=\"C:/events\"\n";
+		fs::create_dir_all(mod_root.join("events")).expect("create mod root");
+		fs::write(mod_root.join("events").join("a.txt"), "namespace = a\n").expect("write event");
+		fs::write(
+			mod_root.join("descriptor.mod"),
+			format!("name=\"Bad\"\nremote_file_id=\"1001\"\n{bad}"),
+		)
+		.expect("write mod descriptor");
+		write_dlc_load(&paradox_dir, &[("1001", mod_root.as_path())]);
+		let launcher = paradox_dir.join("mod").join("ugc_1001.mod");
+		let mut body = fs::read_to_string(&launcher).expect("read launcher descriptor");
+		body.push_str(bad);
+		fs::write(&launcher, body).expect("write launcher descriptor");
+
+		let error = resolve_input(
+			&InputRequest::from_playset_path(paradox_dir.join("dlc_load.json"), Config::default()),
+			false,
+		)
+		.expect_err("the mod's own replace_path stops resolution");
+
+		assert_eq!(error.path, mod_root.join("descriptor.mod"), "{error}");
+		assert!(error.message.contains("mod 1001"), "{error}");
+		assert!(error.message.contains(r#""C:/events""#), "{error}");
+		assert!(!error.message.contains("unavailable"), "{error}");
 	}
 
 	#[test]
 	fn retained_non_module_path_stays_exact() {
 		let available = BTreeSet::from([
-			"common/countries/France.txt".to_string(),
-			"common/countries/England.txt".to_string(),
+			game_path("common/countries/France.txt"),
+			game_path("common/countries/England.txt"),
 		]);
-		let requested = BTreeSet::from(["common/countries/France.txt".to_string()]);
+		let requested = BTreeSet::from([game_path("common/countries/France.txt")]);
 
 		let effective = expand_retained_paths_for_game(
 			&Eu4,
 			None,
 			Some(&requested),
-			available.iter().map(String::as_str),
+			available.iter().map(GamePathBuf::as_game_path),
 		)
 		.unwrap();
 
@@ -2453,26 +2556,26 @@ path = "mod-a"
 
 	#[test]
 	fn retained_module_expansion_includes_available_basegame_siblings() {
-		let requested = BTreeSet::from(["common/governments/mod_override.txt".to_string()]);
+		let requested = BTreeSet::from([game_path("common/governments/mod_override.txt")]);
 		let available = BTreeSet::from([
-			"common/governments/00_vanilla.txt".to_string(),
-			"common/governments/mod_override.txt".to_string(),
-			"common/scripted_effects/unrelated.txt".to_string(),
+			game_path("common/governments/00_vanilla.txt"),
+			game_path("common/governments/mod_override.txt"),
+			game_path("common/scripted_effects/unrelated.txt"),
 		]);
 
 		let effective = expand_retained_paths_for_game(
 			&Eu4,
 			None,
 			Some(&requested),
-			available.iter().map(String::as_str),
+			available.iter().map(GamePathBuf::as_game_path),
 		)
 		.unwrap();
 
 		assert_eq!(
 			effective,
 			Some(BTreeSet::from([
-				"common/governments/00_vanilla.txt".to_string(),
-				"common/governments/mod_override.txt".to_string(),
+				game_path("common/governments/00_vanilla.txt"),
+				game_path("common/governments/mod_override.txt"),
 			]))
 		);
 	}
@@ -2485,7 +2588,7 @@ path = "mod-a"
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
 			root_path: PathBuf::from(format!("/mods/{mod_id}")),
-			absolute_path: PathBuf::from(format!("/mods/{mod_id}/file.txt")),
+			relative_path: game_path("common/file.txt"),
 			precedence,
 			is_base_game,
 			is_synthetic_base: false,
@@ -2494,13 +2597,17 @@ path = "mod-a"
 		}
 	}
 
-	fn two_mod_inventory(relative_path: &str) -> BTreeMap<String, Vec<ResolvedInputContributor>> {
+	fn two_mod_inventory(
+		relative_path: &str,
+	) -> BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> {
+		let relative_path = game_path(relative_path);
+		let contributor = |mod_id: &str, precedence: usize| ResolvedInputContributor {
+			relative_path: relative_path.clone(),
+			..make_contributor(mod_id, precedence, false)
+		};
 		BTreeMap::from([(
-			relative_path.to_string(),
-			vec![
-				make_contributor("mod_a", 1, false),
-				make_contributor("mod_b", 2, false),
-			],
+			relative_path.clone(),
+			vec![contributor("mod_a", 1), contributor("mod_b", 2)],
 		)])
 	}
 
@@ -2519,36 +2626,21 @@ path = "mod-a"
 		let defines_path = "common/defines/es_defines.lua";
 		let defines_inventory = two_mod_inventory(defines_path);
 
-		let absent = verify_absent_semantic_bases(
-			&playlist,
-			Some(temp.path()),
-			true,
-			&defines_inventory,
-			Path::new("playlist.json"),
-		)
-		.expect("verify absent defines base");
-		assert_eq!(absent, BTreeSet::from([defines_path.to_string()]));
+		let absent =
+			verify_absent_semantic_bases(&playlist, Some(temp.path()), true, &defines_inventory)
+				.expect("verify absent defines base");
+		assert_eq!(absent, BTreeSet::from([game_path(defines_path)]));
 
-		let without_snapshot = verify_absent_semantic_bases(
-			&playlist,
-			Some(temp.path()),
-			false,
-			&defines_inventory,
-			Path::new("playlist.json"),
-		)
-		.expect("skip absence proof without a base snapshot");
+		let without_snapshot =
+			verify_absent_semantic_bases(&playlist, Some(temp.path()), false, &defines_inventory)
+				.expect("skip absence proof without a base snapshot");
 		assert!(without_snapshot.is_empty());
 
 		let events_inventory = two_mod_inventory("events/test.txt");
-		let events = verify_absent_semantic_bases(
-			&playlist,
-			Some(temp.path()),
-			true,
-			&events_inventory,
-			Path::new("playlist.json"),
-		)
-		.expect("verify absent event base");
-		assert_eq!(events, BTreeSet::from(["events/test.txt".to_string()]));
+		let events =
+			verify_absent_semantic_bases(&playlist, Some(temp.path()), true, &events_inventory)
+				.expect("verify absent event base");
+		assert_eq!(events, BTreeSet::from([game_path("events/test.txt")]));
 
 		let gfx_path = "interface/000_expanded_mod_family.gfx";
 		let gfx = verify_absent_semantic_bases(
@@ -2556,20 +2648,14 @@ path = "mod-a"
 			Some(temp.path()),
 			true,
 			&two_mod_inventory(gfx_path),
-			Path::new("playlist.json"),
 		)
 		.expect("verify absent GFX base");
-		assert_eq!(gfx, BTreeSet::from([gfx_path.to_string()]));
+		assert_eq!(gfx, BTreeSet::from([game_path(gfx_path)]));
 
 		let module_inventory = two_mod_inventory("common/governments/test.txt");
-		let module = verify_absent_semantic_bases(
-			&playlist,
-			Some(temp.path()),
-			true,
-			&module_inventory,
-			Path::new("playlist.json"),
-		)
-		.expect("aggregate definition module stays required");
+		let module =
+			verify_absent_semantic_bases(&playlist, Some(temp.path()), true, &module_inventory)
+				.expect("aggregate definition module stays required");
 		assert!(module.is_empty());
 
 		let binary = verify_absent_semantic_bases(
@@ -2577,48 +2663,9 @@ path = "mod-a"
 			Some(temp.path()),
 			true,
 			&two_mod_inventory("gfx/picture.dds"),
-			Path::new("playlist.json"),
 		)
 		.expect("binary assets do not need semantic base verification");
 		assert!(binary.is_empty());
-	}
-
-	/// Inventory keys are game-path text. A key that is not one is rejected
-	/// before any family filter, so it can neither be skipped nor joined onto
-	/// the base game root.
-	#[test]
-	fn a_semantic_base_key_that_is_not_a_game_path_is_rejected() {
-		let temp = TempDir::new().expect("tempdir");
-		for (key, reason) in [
-			("../common/defines/x.lua", "has a `..` component"),
-			(
-				r"gfx\picture.dds",
-				"which a supported host parses as path structure",
-			),
-		] {
-			let error = verify_absent_semantic_bases(
-				&eu4_test_playlist(),
-				Some(temp.path()),
-				true,
-				&two_mod_inventory(key),
-				Path::new("playlist.json"),
-			)
-			.expect_err(key);
-
-			assert_eq!(error.kind, InputResolveErrorKind::Io, "{key}");
-			assert_eq!(error.path, Path::new("playlist.json"), "{key}");
-			assert!(
-				error.message.contains("unsafe semantic base path"),
-				"{key}: {error}"
-			);
-			assert!(
-				error
-					.message
-					.contains(&format!("invalid game path `{key}`")),
-				"{key}: {error}"
-			);
-			assert!(error.message.contains(reason), "{key}: {error}");
-		}
 	}
 
 	#[test]
@@ -2635,7 +2682,6 @@ path = "mod-a"
 			Some(temp.path()),
 			true,
 			&two_mod_inventory(relative_path),
-			Path::new("playlist.json"),
 		)
 		.expect_err("filtered snapshot must not prove live base absence");
 
@@ -2649,9 +2695,9 @@ path = "mod-a"
 
 	#[test]
 	fn inject_synthetic_bases_no_base_two_mods_creates_synthetic() {
-		let mut inventory: BTreeMap<String, Vec<ResolvedInputContributor>> = BTreeMap::new();
+		let mut inventory: BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> = BTreeMap::new();
 		inventory.insert(
-			"common/file.txt".to_string(),
+			game_path("common/file.txt"),
 			vec![
 				make_contributor("mod_b", 5, false),
 				make_contributor("mod_a", 3, false),
@@ -2660,7 +2706,7 @@ path = "mod-a"
 
 		inject_synthetic_bases(&mut inventory);
 
-		let contribs = &inventory["common/file.txt"];
+		let contribs = &inventory[GamePath::new("common/file.txt").expect("valid game path")];
 		assert_eq!(contribs.len(), 3, "synthetic base should be added");
 		let synth = &contribs[0];
 		assert!(synth.is_synthetic_base);
@@ -2677,9 +2723,9 @@ path = "mod-a"
 
 	#[test]
 	fn inject_synthetic_bases_with_real_base_skipped() {
-		let mut inventory: BTreeMap<String, Vec<ResolvedInputContributor>> = BTreeMap::new();
+		let mut inventory: BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> = BTreeMap::new();
 		inventory.insert(
-			"common/file.txt".to_string(),
+			game_path("common/file.txt"),
 			vec![
 				make_contributor("base:eu4", 0, true),
 				make_contributor("mod_a", 1, false),
@@ -2689,31 +2735,31 @@ path = "mod-a"
 
 		inject_synthetic_bases(&mut inventory);
 
-		let contribs = &inventory["common/file.txt"];
+		let contribs = &inventory[GamePath::new("common/file.txt").expect("valid game path")];
 		assert_eq!(contribs.len(), 3, "no synthetic base should be added");
 		assert!(!contribs.iter().any(|c| c.is_synthetic_base));
 	}
 
 	#[test]
 	fn inject_synthetic_bases_single_mod_skipped() {
-		let mut inventory: BTreeMap<String, Vec<ResolvedInputContributor>> = BTreeMap::new();
+		let mut inventory: BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> = BTreeMap::new();
 		inventory.insert(
-			"common/file.txt".to_string(),
+			game_path("common/file.txt"),
 			vec![make_contributor("mod_a", 1, false)],
 		);
 
 		inject_synthetic_bases(&mut inventory);
 
-		let contribs = &inventory["common/file.txt"];
+		let contribs = &inventory[GamePath::new("common/file.txt").expect("valid game path")];
 		assert_eq!(contribs.len(), 1, "no synthetic base for single mod");
 		assert!(!contribs[0].is_synthetic_base);
 	}
 
 	#[test]
 	fn inject_synthetic_bases_tie_breaks_on_mod_id() {
-		let mut inventory: BTreeMap<String, Vec<ResolvedInputContributor>> = BTreeMap::new();
+		let mut inventory: BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> = BTreeMap::new();
 		inventory.insert(
-			"common/file.txt".to_string(),
+			game_path("common/file.txt"),
 			vec![
 				make_contributor("mod_z", 2, false),
 				make_contributor("mod_a", 2, false),
@@ -2722,7 +2768,7 @@ path = "mod-a"
 
 		inject_synthetic_bases(&mut inventory);
 
-		let contribs = &inventory["common/file.txt"];
+		let contribs = &inventory[GamePath::new("common/file.txt").expect("valid game path")];
 		assert_eq!(contribs.len(), 3);
 		assert!(contribs[0].is_synthetic_base);
 		assert_eq!(

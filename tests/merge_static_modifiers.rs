@@ -148,7 +148,10 @@ fn static_modifiers_preserve_contributions_through_analyze_and_commit() {
 				"{}: {unit:#?}",
 				case.name
 			);
-			assert_eq!(unit.output_path.as_deref(), case.expected.map(|_| OUTPUT));
+			assert_eq!(
+				unit.output_path.as_ref().map(|path| path.as_str()),
+				case.expected.map(|_| OUTPUT)
+			);
 			assert!(
 				unit.contributors.iter().any(|source| source.is_base_game
 					&& source

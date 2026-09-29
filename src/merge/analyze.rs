@@ -20,11 +20,12 @@ use crate::input::{
 	resolve_input_summary,
 };
 use crate::model::{
-	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
+	AnalysisMode, ChannelMode, Finding, GamePathBuf, MERGE_EXECUTION_ATTESTATION_SCHEMA,
 	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
 	MergeExecutionAttestation, MergePlanResult, MergeReport, MergeReportBaseSnapshot,
 	MergeReportScope, MergeReportStatus, MergeReportValidation,
 };
+use crate::playset::descriptor::{descriptor_path_text, escape_descriptor_value};
 use crate::project::{AppliedDepOverride, Project, ResolutionDecision, ResolutionMap};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -65,9 +66,11 @@ pub struct MergeAnalysisOptions {
 	/// the output does not depend on it, and fewer run while their estimated
 	/// memory does not fit. Interactive prompts still come in plan order.
 	pub merge_workers: NonZeroUsize,
-	/// Optional relative-path retention set for scoring callers that only need
-	/// target corpus paths. Full production merge leaves this unset.
-	pub retained_paths: Option<BTreeSet<String>>,
+	/// Optional game-path retention set for scoring callers that only need
+	/// target corpus paths. Full production merge leaves this unset. A caller
+	/// holding text parses it with [`GamePathBuf::parse`], which names the
+	/// text it rejects.
+	pub retained_paths: Option<BTreeSet<GamePathBuf>>,
 }
 
 /// Worker count for callers that do not choose one: the detected available
@@ -341,13 +344,10 @@ fn analyze_merge_with_backend_and_observer(
 		Ok(inventory) => BaseSnapshotCommitGuard::from_inventory(inventory)?,
 		Err(_) => None,
 	};
-	let product_input_commit_guard = inventory_result.as_ref().ok().and_then(|inventory| {
-		ProductInputCommitGuard::from_inventory(
-			request.clone(),
-			options.retained_paths.clone(),
-			inventory,
-		)
-	});
+	let product_input_commit_guard = inventory_result
+		.as_ref()
+		.ok()
+		.and_then(|inventory| ProductInputCommitGuard::from_inventory(request.clone(), inventory));
 	let execution_attestation = merge_execution_attestation(
 		backend_id,
 		options.retained_paths.is_some(),
@@ -837,16 +837,24 @@ fn revalidate_generated_output(
 				canonical_out_dir.display()
 			),
 		})?;
+	let out_dir_text =
+		descriptor_path_text(&canonical_out_dir).map_err(|reason| MergeError::Validation {
+			path: Some(canonical_out_dir.display().to_string()),
+			message: format!(
+				"generated output {} cannot be named in a descriptor: {reason}",
+				canonical_out_dir.display()
+			),
+		})?;
 	let out_dir_name = canonical_out_dir
 		.file_name()
+		.and_then(|name| name.to_str())
 		.ok_or_else(|| MergeError::Validation {
 			path: Some(canonical_out_dir.display().to_string()),
 			message: format!(
 				"generated output {} has no terminal directory name",
 				canonical_out_dir.display()
 			),
-		})?
-		.to_string_lossy();
+		})?;
 	let validation_dir = validation_playlist_dir(parent_dir);
 	fs::create_dir_all(validation_dir.join("mod")).map_err(|err| {
 		MergeError::Io(io::Error::other(format!(
@@ -869,8 +877,8 @@ fn revalidate_generated_output(
 	fs::write(&dlc_load_path, dlc_load_bytes)?;
 	let descriptor_body = format!(
 		"name=\"{}\"\npath=\"{}\"\nremote_file_id=\"{}\"\n",
-		escape_descriptor_value(&out_dir_name),
-		escape_descriptor_value(&normalize_descriptor_path(&canonical_out_dir)),
+		escape_descriptor_value(out_dir_name),
+		escape_descriptor_value(&out_dir_text),
 		escape_descriptor_value(&synthetic_steam_id)
 	);
 	fs::write(validation_dir.join(&descriptor_rel), descriptor_body)?;
@@ -1017,14 +1025,6 @@ fn validation_playlist_dir(parent_dir: &Path) -> PathBuf {
 		.map(|duration| duration.as_nanos())
 		.unwrap_or_default();
 	parent_dir.join(format!(".foch-merge-validation-{pid}-{nanos}-{nonce}"))
-}
-
-fn normalize_descriptor_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
-fn escape_descriptor_value(value: &str) -> String {
-	value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(test)]
@@ -1594,7 +1594,7 @@ mod tests {
 			paradox_dir.join("mod/ugc_100.mod"),
 			format!(
 				"name=\"Test Mod\"\npath=\"{}\"\nremote_file_id=\"100\"\n",
-				escape_descriptor_value(&normalize_descriptor_path(&mod_root))
+				escape_descriptor_value(&descriptor_path_text(&mod_root).expect("UTF-8 mod root"))
 			),
 		)
 		.expect("write mod descriptor");

@@ -10,7 +10,7 @@ use foch::merge::{
 	analyze_merge, run_merge_for_evaluation, run_merge_with_options,
 };
 use foch::model::{
-	ConflictKind, GamePath, MergeReportStatus, MergeTraceDecision, MergeTraceEntry,
+	ConflictKind, GamePath, GamePathBuf, MergeReportStatus, MergeTraceDecision, MergeTraceEntry,
 	MergeTracePolicy,
 };
 use foch::playset::descriptor::load_descriptor;
@@ -1196,7 +1196,7 @@ fn eu4_governments_cross_file_module_emits_union_once() {
 		load_descriptor(&out_dir.join("descriptor.mod")).expect("parse generated descriptor");
 	assert_eq!(
 		generated_descriptor.replace_path,
-		vec!["common/governments".to_string()]
+		vec![GamePathBuf::parse("common/governments").expect("valid game path")]
 	);
 
 	let relative =
@@ -1242,7 +1242,7 @@ fn eu4_institutions_cross_file_module_overlays_without_replace_path() {
 		!generated_descriptor
 			.replace_path
 			.iter()
-			.any(|path| path == "common/institutions")
+			.any(|path| path.as_str() == "common/institutions")
 	);
 }
 
@@ -1468,7 +1468,7 @@ fn eu4_case_insensitive_explicit_defer_is_reviewed_without_a_forced_marker() {
 	);
 	let units = analyzed.list_units();
 	assert_eq!(units.len(), 1, "fixture must produce one review unit");
-	assert_eq!(units[0].path, target);
+	assert_eq!(units[0].path.as_str(), target);
 	assert_eq!(units[0].disposition, MergeDisposition::Deferred);
 	assert_eq!(units[0].output_path, None);
 	assert_eq!(analyzed.review_summary().deferred, 1);
@@ -1538,13 +1538,16 @@ handler = "DeFeR"
 	);
 	let units = analyzed.list_units();
 	assert_eq!(units.len(), 1, "fixture must produce one review unit");
-	assert_eq!(units[0].path, target);
+	assert_eq!(units[0].path.as_str(), target);
 	assert_eq!(
 		units[0].disposition,
 		MergeDisposition::NeedsUserChoice,
 		"one explicit defer must not hide the unrelated unresolved leaf"
 	);
-	assert_eq!(units[0].output_path.as_deref(), Some(target));
+	assert_eq!(
+		units[0].output_path.as_ref().map(|path| path.as_str()),
+		Some(target)
+	);
 	assert_eq!(analyzed.review_summary().needs_user_choice, 1);
 	let result = analyzed
 		.commit(CommitAuthorization::EmptyTargetOnly)
@@ -2108,7 +2111,9 @@ fn structured_merge_allows_an_explicit_empty_base() {
 			playset_fingerprint: None,
 			provenance: false,
 			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
-			retained_paths: Some(["events/test_events.txt".to_string()].into()),
+			retained_paths: Some(
+				[GamePathBuf::parse("events/test_events.txt").expect("valid game path")].into(),
+			),
 		},
 		MergeBackendId::GumtreePcsNway,
 	)
@@ -2159,7 +2164,9 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 			playset_fingerprint: None,
 			provenance: false,
 			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
-			retained_paths: Some(["events/foo.txt".to_string()].into()),
+			retained_paths: Some(
+				[GamePathBuf::parse("events/foo.txt").expect("valid game path")].into(),
+			),
 		},
 		MergeBackendId::GumtreePcsNway,
 	)

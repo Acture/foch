@@ -1,11 +1,10 @@
 use super::error::MergeError;
 use crate::game::eu4::content::eu4;
 use crate::model::{
-	GamePath, MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy,
-	MergePlanTarget,
+	GamePath, GamePathBuf, MergePlanContributor, MergePlanEntry, MergePlanResult,
+	MergePlanStrategy, MergePlanTarget,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Component, Path};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MergeDisposition {
@@ -27,6 +26,7 @@ pub enum MergeUnitKind {
 pub struct MergeReviewContributor {
 	pub mod_id: String,
 	pub name: String,
+	/// The contributor's physical files, rendered for display.
 	pub source_paths: Vec<String>,
 	pub precedence: usize,
 	pub is_base_game: bool,
@@ -34,18 +34,20 @@ pub struct MergeReviewContributor {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MergeUnitOutcome {
+	/// The unit's stable key: `file:{path}` for a file, or
+	/// `module:{family}/{module}` for a definition module.
 	pub id: String,
-	pub path: String,
+	pub path: GamePathBuf,
 	pub family: String,
 	pub kind: MergeUnitKind,
 	pub disposition: MergeDisposition,
 	pub strategy: String,
 	pub summary: String,
-	pub output_path: Option<String>,
+	pub output_path: Option<GamePathBuf>,
 	/// Every file this unit wrote, in plan order. A unit that writes several
 	/// files — an EU4 database fed by more than one directory — commits all of
 	/// them or none, so this is empty exactly when `output_path` is `None`.
-	pub output_paths: Vec<String>,
+	pub output_paths: Vec<GamePathBuf>,
 	pub contributors: Vec<MergeReviewContributor>,
 	pub notes: Vec<String>,
 }
@@ -103,19 +105,10 @@ impl UnitOutcomeLedger {
 			// A unit can write more than one file: an EU4 database fed by
 			// several directories keeps one output per directory. Every one of
 			// them must be unique across the plan, not just the primary.
-			if matches!(&entry.target, MergePlanTarget::Module { outputs, .. } if outputs.is_empty())
-			{
-				return Err(invariant(
-					entry.output_path(),
-					"definition module has no output namespace".to_string(),
-				));
-			}
-			for planned_path in entry.target.output_paths() {
-				let output_path = normalize_path(planned_path);
-				validate_relative_id_part(&output_path, planned_path)?;
-				if !output_paths.insert(output_path.clone()) {
+			for output_path in entry.target.output_paths() {
+				if !output_paths.insert(output_path) {
 					return Err(invariant(
-						planned_path,
+						output_path,
 						format!("duplicate review output path `{output_path}`"),
 					));
 				}
@@ -130,7 +123,7 @@ impl UnitOutcomeLedger {
 		entry: &MergePlanEntry,
 		disposition: MergeDisposition,
 		summary: impl Into<String>,
-		output_path: Option<String>,
+		output_path: Option<GamePathBuf>,
 		additional_notes: impl IntoIterator<Item = String>,
 	) -> Result<(), MergeError> {
 		self.resolve_written(
@@ -152,7 +145,7 @@ impl UnitOutcomeLedger {
 		entry: &MergePlanEntry,
 		disposition: MergeDisposition,
 		summary: impl Into<String>,
-		written_paths: Vec<String>,
+		written_paths: Vec<GamePathBuf>,
 		additional_notes: impl IntoIterator<Item = String>,
 	) -> Result<(), MergeError> {
 		let id = stable_unit_id(entry)?;
@@ -168,33 +161,30 @@ impl UnitOutcomeLedger {
 				format!("review unit `{id}` resolved twice"),
 			));
 		}
-		let (kind, family) = unit_kind_and_family(entry)?;
+		let (kind, family) = unit_kind_and_family(entry);
 		let mut notes = entry.notes.clone();
 		notes.extend(additional_notes);
-		let mut output_paths: Vec<String> = Vec::with_capacity(written_paths.len());
-		for path in written_paths {
-			let normalized = normalize_path(&path);
-			validate_relative_id_part(&normalized, entry.output_path())?;
-			if !entry
-				.target
-				.output_paths()
-				.iter()
-				.any(|planned| normalize_path(planned) == normalized)
-			{
+		let planned_paths: Vec<&GamePath> = entry.target.output_paths();
+		for path in &written_paths {
+			if !planned_paths.contains(&path.as_game_path()) {
 				return Err(invariant(
 					entry.output_path(),
 					format!(
-						"review output path `{normalized}` is not one of this unit's planned outputs `{}`",
-						entry.target.output_paths().join(", ")
+						"review output path `{path}` is not one of this unit's planned outputs `{}`",
+						planned_paths
+							.iter()
+							.map(|planned| planned.as_str())
+							.collect::<Vec<_>>()
+							.join(", ")
 					),
 				));
 			}
-			output_paths.push(normalized);
 		}
-		let output_path: Option<String> = output_paths.first().cloned();
+		let output_paths: Vec<GamePathBuf> = written_paths;
+		let output_path: Option<GamePathBuf> = output_paths.first().cloned();
 		self.units[index] = Some(MergeUnitOutcome {
 			id,
-			path: normalize_path(entry.output_path()),
+			path: entry.output_path().to_owned(),
 			family,
 			kind,
 			disposition,
@@ -261,15 +251,15 @@ impl UnitOutcomeLedger {
 
 	pub(super) fn mark_output_pruned(
 		&mut self,
-		paths: &BTreeSet<String>,
+		paths: &BTreeSet<GamePathBuf>,
 	) -> Result<(), MergeError> {
 		for path in paths {
-			let normalized = normalize_path(path);
-			let Some(unit) = self.units.iter_mut().flatten().find(|unit| {
-				unit.output_paths
-					.iter()
-					.any(|written| written == &normalized)
-			}) else {
+			let Some(unit) = self
+				.units
+				.iter_mut()
+				.flatten()
+				.find(|unit| unit.output_paths.contains(path))
+			else {
 				return Err(invariant(
 					path,
 					"pruned output does not match a resolved review unit",
@@ -277,8 +267,8 @@ impl UnitOutcomeLedger {
 			};
 			// A unit that writes several files keeps the rest: pruning one
 			// directory's duplicate does not withdraw the others.
-			unit.output_paths.retain(|written| written != &normalized);
-			if unit.output_path.as_deref() == Some(normalized.as_str()) {
+			unit.output_paths.retain(|written| written != path);
+			if unit.output_path.as_ref() == Some(path) {
 				unit.output_path = unit.output_paths.first().cloned();
 			}
 			unit.notes
@@ -288,72 +278,44 @@ impl UnitOutcomeLedger {
 	}
 }
 
+/// The unit's review id. A file id is its game path's canonical text; a
+/// module id joins its family and module names, which are identifiers rather
+/// than paths and only need to be present.
 fn stable_unit_id(entry: &MergePlanEntry) -> Result<String, MergeError> {
 	match &entry.target {
-		MergePlanTarget::File { path } => {
-			let path = normalize_path(path);
-			validate_relative_id_part(&path, entry.output_path())?;
-			Ok(format!("file:{path}"))
-		}
+		MergePlanTarget::File { path } => Ok(format!("file:{path}")),
 		MergePlanTarget::Module { id, .. } => {
-			let family = normalize_path(&id.family_id);
-			let module = normalize_path(&id.module_name);
-			validate_relative_id_part(&family, entry.output_path())?;
-			validate_relative_id_part(&module, entry.output_path())?;
-			Ok(format!("module:{family}/{module}"))
+			for part in [&id.family_id, &id.module_name] {
+				if part.is_empty() {
+					return Err(invariant(
+						entry.output_path(),
+						"a module review id needs a family and a module name",
+					));
+				}
+			}
+			Ok(format!("module:{}/{}", id.family_id, id.module_name))
 		}
 	}
 }
 
-fn validate_relative_id_part(value: &str, output_path: &str) -> Result<(), MergeError> {
-	let path = Path::new(value);
-	let bytes = value.as_bytes();
-	let windows_absolute = bytes.len() >= 2
-		&& bytes[0].is_ascii_alphabetic()
-		&& bytes[1] == b':'
-		&& (bytes.len() == 2 || bytes.get(2) == Some(&b'/'));
-	if value.is_empty()
-		|| windows_absolute
-		|| path.is_absolute()
-		|| path.components().any(|component| {
-			matches!(
-				component,
-				Component::CurDir
-					| Component::ParentDir
-					| Component::RootDir
-					| Component::Prefix(_)
-			)
-		}) {
-		return Err(invariant(
-			output_path,
-			format!("invalid review unit id component `{value}`"),
-		));
-	}
-	Ok(())
-}
-
-fn unit_kind_and_family(entry: &MergePlanEntry) -> Result<(MergeUnitKind, String), MergeError> {
-	Ok(match &entry.target {
-		MergePlanTarget::File { path } => {
-			// Plan paths are still text; the family is that of the path the
-			// unit id names.
-			let id_path = normalize_path(path);
-			let game_path =
-				GamePath::new(&id_path).map_err(|error| invariant(path, error.to_string()))?;
-			(
-				MergeUnitKind::File,
-				eu4().classify_content_family(game_path).map_or_else(
-					|| "unclassified".to_string(),
-					|descriptor| descriptor.id.as_str().to_string(),
-				),
-			)
-		}
+fn unit_kind_and_family(entry: &MergePlanEntry) -> (MergeUnitKind, String) {
+	match &entry.target {
+		MergePlanTarget::File { path } => (
+			MergeUnitKind::File,
+			eu4().classify_content_family(path).map_or_else(
+				|| "unclassified".to_string(),
+				|descriptor| descriptor.id.as_str().to_string(),
+			),
+		),
 		MergePlanTarget::Module { id, .. } => {
 			(MergeUnitKind::DefinitionModule, id.family_id.clone())
 		}
-	})
+	}
 }
 
+/// One review contributor per mod, identified by mod id and base-game flag.
+/// Its source list is display text: a file a plan lists twice for one mod (a
+/// synthetic base and the seed it copies) is shown once.
 fn review_contributors(contributors: &[MergePlanContributor]) -> Vec<MergeReviewContributor> {
 	let mut output = Vec::<MergeReviewContributor>::new();
 	let mut by_identity = BTreeMap::<(bool, String), usize>::new();
@@ -390,10 +352,6 @@ fn review_contributors(contributors: &[MergePlanContributor]) -> Vec<MergeReview
 	output
 }
 
-fn normalize_path(path: &str) -> String {
-	path.replace('\\', "/")
-}
-
 fn strategy_name(strategy: MergePlanStrategy) -> &'static str {
 	match strategy {
 		MergePlanStrategy::CopyThrough => "copy_through",
@@ -422,9 +380,9 @@ fn summarize(units: &[MergeUnitOutcome]) -> MergeReviewSummary {
 	summary
 }
 
-fn invariant(path: impl Into<String>, message: impl Into<String>) -> MergeError {
+fn invariant(subject: impl ToString, message: impl Into<String>) -> MergeError {
 	MergeError::Validation {
-		path: Some(path.into()),
+		path: Some(subject.to_string()),
 		message: message.into(),
 	}
 }
@@ -432,11 +390,17 @@ fn invariant(path: impl Into<String>, message: impl Into<String>) -> MergeError 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::model::{MergeModuleOutput, MergePlanStrategies, MergeUnitId};
+	use crate::model::{MergeModuleOutput, MergeModuleOutputs, MergePlanStrategies, MergeUnitId};
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
 
 	fn entry(path: &str, strategy: MergePlanStrategy) -> MergePlanEntry {
 		MergePlanEntry {
-			target: MergePlanTarget::File { path: path.into() },
+			target: MergePlanTarget::File {
+				path: game_path(path),
+			},
 			strategy,
 			contributors: Vec::new(),
 			winner: None,
@@ -479,7 +443,7 @@ mod tests {
 					entry,
 					disposition,
 					"done",
-					Some(entry.output_path().into()),
+					Some(entry.output_path().to_owned()),
 					[],
 				)
 				.unwrap();
@@ -521,10 +485,11 @@ mod tests {
 					module_name: "ideas".into(),
 				},
 				input_paths: vec![],
-				outputs: vec![MergeModuleOutput::new(
-					"common/ideas/zzz_foch_ideas.txt",
-					None,
-				)],
+				outputs: MergeModuleOutputs::new(vec![
+					MergeModuleOutput::new(game_path("common/ideas/zzz_foch_ideas.txt"), None)
+						.expect("output inside a namespace directory"),
+				])
+				.expect("one output"),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: vec![contributor, second],
@@ -541,7 +506,7 @@ mod tests {
 				&plan.paths[0],
 				MergeDisposition::Safe,
 				"merged",
-				Some(plan.paths[0].output_path().into()),
+				Some(plan.paths[0].output_path().to_owned()),
 				[],
 			)
 			.unwrap();
@@ -552,21 +517,37 @@ mod tests {
 		assert_eq!(review.units()[0].contributors[0].source_paths.len(), 2);
 	}
 
+	/// A file unit's id is its game path, so a path that escapes the output
+	/// or names a drive cannot even enter a plan: reading one back fails. A
+	/// module id needs both of its names.
 	#[test]
 	fn ledger_rejects_invalid_ids_duplicate_paths_double_resolution_and_pending_finish() {
-		let invalid = MergePlanResult {
-			paths: vec![entry("../bad.txt", MergePlanStrategy::CopyThrough)],
+		for invalid in ["../bad.txt", r"C:\absolute\bad.txt"] {
+			let json = format!(
+				r#"{{"target":{{"kind":"file","path":{}}},"strategy":"copy_through","contributors":[],"winner":null}}"#,
+				serde_json::to_string(invalid).expect("encode path text")
+			);
+			let error = serde_json::from_str::<MergePlanEntry>(&json).expect_err(invalid);
+			assert!(error.to_string().contains("invalid game path"), "{error}");
+		}
+		let mut unnamed = entry("common/ideas/a.txt", MergePlanStrategy::StructuralMerge);
+		unnamed.target = MergePlanTarget::Module {
+			id: MergeUnitId {
+				family_id: String::new(),
+				module_name: "ideas".to_string(),
+			},
+			input_paths: Vec::new(),
+			outputs: MergeModuleOutputs::new(vec![
+				MergeModuleOutput::new(game_path("common/ideas/zzz_foch_ideas.txt"), None)
+					.expect("output inside a namespace directory"),
+			])
+			.expect("one output"),
+		};
+		let unnamed = MergePlanResult {
+			paths: vec![unnamed],
 			..Default::default()
 		};
-		assert!(UnitOutcomeLedger::from_plan(&invalid).is_err());
-		let windows_absolute = MergePlanResult {
-			paths: vec![entry(
-				"C:\\absolute\\bad.txt",
-				MergePlanStrategy::CopyThrough,
-			)],
-			..Default::default()
-		};
-		assert!(UnitOutcomeLedger::from_plan(&windows_absolute).is_err());
+		assert!(UnitOutcomeLedger::from_plan(&unnamed).is_err());
 		let duplicate = MergePlanResult {
 			paths: vec![
 				entry("a.txt", MergePlanStrategy::CopyThrough),
@@ -585,7 +566,7 @@ mod tests {
 				&plan.paths[0],
 				MergeDisposition::Copy,
 				"copied",
-				Some("a.txt".into()),
+				Some(game_path("a.txt")),
 				[],
 			)
 			.unwrap();
@@ -595,7 +576,7 @@ mod tests {
 					&plan.paths[0],
 					MergeDisposition::Copy,
 					"copied",
-					Some("a.txt".into()),
+					Some(game_path("a.txt")),
 					[]
 				)
 				.is_err()
@@ -610,15 +591,20 @@ mod tests {
 					&plan.paths[0],
 					MergeDisposition::Copy,
 					"copied",
-					Some("different.txt".into()),
+					Some(game_path("different.txt")),
 					[]
 				)
 				.is_err()
 		);
 	}
 
+	/// Review ids used to fold `\` into `/`. A unit's path is a game path now,
+	/// which has no `\` spelling at all, so its id is simply the canonical
+	/// text: the same id every valid path had before. Contributors still show
+	/// product names.
 	#[test]
-	fn ids_normalize_windows_separators_and_contributors_use_product_names() {
+	fn ids_are_the_canonical_game_path_text_and_contributors_use_product_names() {
+		assert!(GamePathBuf::parse("common\\test\\one.txt").is_err());
 		let base = MergePlanContributor {
 			mod_id: "base:eu4".into(),
 			source_path: "common\\test\\base.txt".into(),
@@ -634,7 +620,7 @@ mod tests {
 		let mut high = low.clone();
 		high.source_path = "common/test/high.txt".into();
 		high.precedence = 5;
-		let mut planned = entry("common\\test\\one.txt", MergePlanStrategy::CopyThrough);
+		let mut planned = entry("common/test/one.txt", MergePlanStrategy::CopyThrough);
 		planned.contributors = vec![base, low.clone(), high];
 		low.source_path = "unused".into();
 		let plan = MergePlanResult {
@@ -647,7 +633,7 @@ mod tests {
 				&plan.paths[0],
 				MergeDisposition::Copy,
 				"copied",
-				Some("common/test/one.txt".into()),
+				Some(game_path("common/test/one.txt")),
 				[],
 			)
 			.unwrap();
@@ -656,7 +642,9 @@ mod tests {
 			.unwrap();
 		let unit = &review.units()[0];
 		assert_eq!(unit.id, "file:common/test/one.txt");
-		assert_eq!(unit.path, "common/test/one.txt");
+		assert_eq!(unit.path.as_str(), "common/test/one.txt");
+		assert_eq!(unit.output_path, Some(game_path("common/test/one.txt")));
+		assert_eq!(review.unit("file:common/test/one.txt"), Some(unit));
 		assert_eq!(unit.family, "unclassified");
 		assert_eq!(unit.strategy, "copy_through");
 		assert_eq!(unit.contributors[0].name, "Europa Universalis IV");

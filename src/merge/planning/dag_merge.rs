@@ -441,7 +441,10 @@ mod tests {
 			descriptor: Some(ModDescriptor {
 				name: name.to_string(),
 				dependencies: deps.into_iter().map(str::to_string).collect(),
-				replace_path: replace_path.into_iter().map(str::to_string).collect(),
+				replace_path: replace_path
+					.into_iter()
+					.map(|path| crate::model::GamePathBuf::parse(path).expect("valid game path"))
+					.collect(),
 				..ModDescriptor::default()
 			}),
 			workshop_identity: None,
@@ -465,7 +468,8 @@ mod tests {
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
 			root_path: PathBuf::from(format!("/mods/{mod_id}")),
-			absolute_path: PathBuf::from(format!("/mods/{mod_id}/common/foo.txt")),
+			relative_path: crate::model::GamePathBuf::parse("common/foo.txt")
+				.expect("valid game path"),
 			precedence,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -565,7 +569,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"events/test.txt",
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -602,7 +606,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"events/test.txt",
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -640,7 +644,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			path,
+			crate::model::GamePath::new(path).expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -686,7 +690,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			path,
+			crate::model::GamePath::new(path).expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -987,7 +991,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1038,7 +1042,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1077,7 +1081,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&ignore,
 			dep_overrides,
@@ -1112,7 +1116,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&ignore,
 			dep_overrides,
@@ -1149,7 +1153,7 @@ mod tests {
 		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 		let fdag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1272,7 +1276,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"events/test.txt",
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1336,7 +1340,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1385,7 +1389,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],

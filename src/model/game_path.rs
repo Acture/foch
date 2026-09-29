@@ -206,6 +206,12 @@ impl GamePath {
 		self.0.starts_with(&prefix.0)
 	}
 
+	/// Whether this path names an entry directly inside `directory`, not one
+	/// nested deeper.
+	pub fn is_child_of(&self, directory: &Self) -> bool {
+		self.parent() == Some(directory)
+	}
+
 	/// Whether this path lies strictly inside the directory whose components
 	/// are `directory`. `same_name(component, name)` compares one leading
 	/// component with one directory name, which is where a caller states its
@@ -782,6 +788,11 @@ mod tests {
 				.expect("valid")
 				.starts_with(common)
 		);
+		let ideas = GamePath::new("common/ideas").expect("valid");
+		assert!(path.is_child_of(ideas));
+		assert!(!path.is_child_of(common), "a nested file is not a child");
+		assert!(!ideas.is_child_of(ideas));
+		assert!(!common.is_child_of(common));
 		assert!(path.is_inside(&["common", "ideas"], str::eq));
 		assert!(!path.is_inside(&["common", "Ideas"], str::eq));
 		assert!(path.is_inside(&["COMMON", "Ideas"], str::eq_ignore_ascii_case));

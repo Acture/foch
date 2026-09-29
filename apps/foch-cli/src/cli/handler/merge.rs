@@ -9,7 +9,7 @@ use foch::merge::{
 };
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
-use foch::playset::descriptor::load_descriptor;
+use foch::playset::descriptor::load_launcher_descriptor;
 use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 
@@ -326,7 +326,7 @@ fn compute_fingerprint_for_playset(playset_path: &Path, local_config: &Project) 
 		}
 		let steam_id = entry.steam_id.clone()?;
 		let descriptor_path = playset_root.join("mod").join(format!("ugc_{steam_id}.mod"));
-		let version = load_descriptor(&descriptor_path)
+		let version = load_launcher_descriptor(&descriptor_path)
 			.ok()
 			.and_then(|descriptor| descriptor.version)?;
 		mods.push((steam_id, version));
@@ -342,7 +342,7 @@ fn compute_fingerprint_for_manifest(
 	request: &InputRequest,
 	local_config: &Project,
 ) -> Option<String> {
-	let manifest = resolve_product_input_manifest(request, None).ok()?;
+	let manifest = resolve_product_input_manifest(request).ok()?;
 	Some(compute_fingerprint_for_workshop_manifest(
 		&manifest,
 		local_config,
@@ -528,6 +528,32 @@ mod tests {
 		let second = compute_fingerprint_for_workshop_manifest(&workshop_manifest(2_002), &config);
 
 		assert_ne!(first, second);
+	}
+
+	/// The fingerprint reads each launcher descriptor's version only, so a
+	/// `replace_path` the mod's own descriptor would reject does not unset it.
+	#[test]
+	fn playset_fingerprint_ignores_a_launcher_descriptor_replace_path() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		std::fs::create_dir_all(temp.path().join("mod")).expect("create launcher mod dir");
+		let dlc_load = temp.path().join("dlc_load.json");
+		std::fs::write(
+			&dlc_load,
+			r#"{"enabled_mods":["mod/ugc_1001.mod"],"disabled_dlcs":[]}"#,
+		)
+		.expect("write dlc_load");
+		let descriptor = |extra: &str| {
+			std::fs::write(
+				temp.path().join("mod").join("ugc_1001.mod"),
+				format!("name=\"Named\"\nremote_file_id=\"1001\"\nversion=\"2.0\"\n{extra}"),
+			)
+			.expect("write launcher descriptor");
+			compute_fingerprint_for_playset(&dlc_load, &Project::default())
+		};
+
+		let plain = descriptor("");
+		assert!(plain.is_some());
+		assert_eq!(descriptor("replace_path=\"common/../events\"\n"), plain);
 	}
 
 	#[test]

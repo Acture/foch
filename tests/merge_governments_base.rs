@@ -179,10 +179,13 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 			playset_fingerprint: None,
 			provenance: false,
 			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
-			retained_paths: Some(BTreeSet::from([
-				"common/governments/zzz_10_override.txt".to_string(),
-				"common/defines/es_defines.lua".to_string(),
-			])),
+			retained_paths: Some(BTreeSet::from(
+				[
+					"common/governments/zzz_10_override.txt",
+					"common/defines/es_defines.lua",
+				]
+				.map(|path| foch::model::GamePathBuf::parse(path).expect("valid game path")),
+			)),
 		},
 	)
 	.expect("merge synthetic base-aware module");

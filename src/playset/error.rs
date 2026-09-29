@@ -6,6 +6,10 @@ use std::path::PathBuf;
 pub enum ParseErrorKind {
 	Io,
 	Format,
+	/// A mod's own descriptor has a `replace_path` that names no directory
+	/// under the game root. Only `load_descriptor` reports it: a launcher's copy
+	/// of a descriptor never interprets `replace_path`.
+	InvalidReplacePath,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

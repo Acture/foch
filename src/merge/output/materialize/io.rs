@@ -266,11 +266,11 @@ pub(super) fn copy_winner_file(
 	out_dir: &Path,
 ) -> Result<bool, MergeError> {
 	let source = winner_source_path(input, entry)?;
-	let target = out_dir.join(entry.output_path());
+	let target = entry.output_path().to_path(out_dir);
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
-	copy_file(source, &target).map_err(MergeError::from)
+	copy_file(&source, &target).map_err(MergeError::from)
 }
 
 fn copy_file(source: &Path, target: &Path) -> io::Result<bool> {
@@ -307,7 +307,7 @@ pub(super) fn write_conflict_placeholder(
 	entry: &MergePlanEntry,
 	out_dir: &Path,
 ) -> Result<(), MergeError> {
-	let target = out_dir.join(entry.output_path());
+	let target = entry.output_path().to_path(out_dir);
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
@@ -358,10 +358,10 @@ pub(super) fn write_generated_descriptor(
 	Ok(())
 }
 
-fn winner_source_path<'a>(
-	input: &'a ResolvedInput,
+fn winner_source_path(
+	input: &ResolvedInput,
 	entry: &MergePlanEntry,
-) -> Result<&'a Path, MergeError> {
+) -> Result<PathBuf, MergeError> {
 	let winner = entry
 		.winner
 		.as_ref()
@@ -382,35 +382,27 @@ fn winner_source_path<'a>(
 				entry.output_path()
 			),
 		})?;
-	find_contributor_path(contributors, winner)
-		.map(|path| path.as_path())
-		.ok_or_else(|| MergeError::Validation {
-			path: Some(entry.output_path().to_string()),
-			message: format!(
-				"winner source {} is missing from input inventory for {}",
-				winner.source_path,
-				entry.output_path()
-			),
-		})
+	find_contributor_path(contributors, winner).ok_or_else(|| MergeError::Validation {
+		path: Some(entry.output_path().to_string()),
+		message: format!(
+			"winner source {} is missing from input inventory for {}",
+			winner.source_path,
+			entry.output_path()
+		),
+	})
 }
 
-fn find_contributor_path<'a>(
-	contributors: &'a [ResolvedInputContributor],
+/// The physical file of the contributor the plan names as `winner`. The plan
+/// names it by mod, precedence and base-game flag; its displayed source path
+/// never selects a file.
+fn find_contributor_path(
+	contributors: &[ResolvedInputContributor],
 	winner: &MergePlanContributor,
-) -> Option<&'a PathBuf> {
+) -> Option<PathBuf> {
 	contributors
 		.iter()
-		.find(|contributor| normalized_contributor_path(contributor) == winner.source_path)
-		.map(|contributor| &contributor.absolute_path)
-}
-
-fn normalized_contributor_path(contributor: &ResolvedInputContributor) -> String {
-	// Match the plan's source identity, including any Windows extended prefix.
-	// Descriptor formatting must not change the path used to find an input file.
-	contributor
-		.absolute_path
-		.to_string_lossy()
-		.replace('\\', "/")
+		.find(|contributor| contributor.is_planned_as(winner))
+		.map(ResolvedInputContributor::absolute_path)
 }
 
 fn descriptor_path_string(path: &Path) -> String {
@@ -458,15 +450,19 @@ mod tests {
 	use crate::model::MergePlanContributor;
 	use std::path::{Path, PathBuf};
 
+	/// The winner is found by the plan's structured identity and copied from the
+	/// contributor's own physical path, whatever the plan displays for it.
 	#[test]
 	fn winner_lookup_preserves_windows_extended_path_identity() {
-		for (source, plan_path, descriptor_path) in [
+		for (root, source, plan_path, descriptor_path) in [
 			(
+				r"\\?\D:\mods\tax",
 				r"\\?\D:\mods\tax\localisation\p553.yml",
 				"//?/D:/mods/tax/localisation/p553.yml",
 				"D:/mods/tax/localisation/p553.yml",
 			),
 			(
+				r"\\?\UNC\server\mods\tax",
 				r"\\?\UNC\server\mods\tax\localisation\p553.yml",
 				"//?/UNC/server/mods/tax/localisation/p553.yml",
 				"//server/mods/tax/localisation/p553.yml",
@@ -474,8 +470,9 @@ mod tests {
 		] {
 			let contributor: ResolvedInputContributor = ResolvedInputContributor {
 				mod_id: "tax".to_string(),
-				root_path: PathBuf::new(),
-				absolute_path: PathBuf::from(source),
+				root_path: PathBuf::from(root),
+				relative_path: crate::model::GamePathBuf::parse("localisation/p553.yml")
+					.expect("valid game path"),
 				precedence: 1,
 				is_base_game: false,
 				is_synthetic_base: false,
@@ -490,10 +487,44 @@ mod tests {
 			};
 			assert_eq!(
 				find_contributor_path(std::slice::from_ref(&contributor), &winner),
-				Some(&contributor.absolute_path),
+				Some(contributor.absolute_path()),
 				"copy lookup must retain the original filesystem path"
 			);
+			// Joining the game path onto the verbatim root spells the original
+			// file; only Windows reads `\\?\` as a prefix.
+			#[cfg(windows)]
+			assert_eq!(contributor.absolute_path(), PathBuf::from(source));
 			assert_eq!(descriptor_path_string(Path::new(source)), descriptor_path);
 		}
+	}
+
+	/// A displayed source path is text for people: two files can render alike
+	/// (a lossy name, a `\\` read as a separator), so it cannot say which file
+	/// wins. The plan's identity can.
+	#[test]
+	fn the_winner_is_found_by_identity_even_when_displayed_paths_collide() {
+		let contributor = |mod_id: &str, precedence: usize| ResolvedInputContributor {
+			mod_id: mod_id.to_string(),
+			root_path: PathBuf::from("/mods").join(mod_id),
+			relative_path: crate::model::GamePathBuf::parse("events/a.txt")
+				.expect("valid game path"),
+			precedence,
+			is_base_game: false,
+			is_synthetic_base: false,
+			parse_ok_hint: None,
+			mod_hash: None,
+		};
+		let contributors = [contributor("low", 1), contributor("high", 2)];
+		let winner = MergePlanContributor {
+			mod_id: "high".to_string(),
+			source_path: "/mods/low/events/a.txt".to_string(),
+			precedence: 2,
+			is_base_game: false,
+		};
+
+		assert_eq!(
+			find_contributor_path(&contributors, &winner),
+			Some(contributors[1].absolute_path())
+		);
 	}
 }

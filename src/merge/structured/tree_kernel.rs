@@ -7,7 +7,7 @@ use crate::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
-use crate::model::{GamePathBuf, HandlerResolutionRecord};
+use crate::model::HandlerResolutionRecord;
 
 use crate::game::eu4::script::emit::emit_clausewitz_statements;
 use crate::merge::conflict_handler::{
@@ -1213,9 +1213,7 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				},
 			));
 		}
-		// The DAG names its file by inventory text, written from a game path.
-		let path = GamePathBuf::parse(request.file_dag.file_path())
-			.map_err(|error| format!("merge DAG file is not a game path: {error}"))?;
+		let path = request.file_dag.file_path().to_owned();
 		let adjusted_states = if self.kernel.join.supports_sparse_reset_layers()
 			&& request.file_dag.has_replace_path_owner()
 		{
@@ -1633,8 +1631,9 @@ mod tests {
 			&policies,
 		);
 		let ids = [ModId::from("a"), ModId::from("b"), ModId::from("c")];
-		let mut file_dag = FileDag::default();
-		file_dag.file_path = "common/test.txt".to_string();
+		let file_dag = FileDag::empty(
+			crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
+		);
 		let plan =
 			plan_dag_join(&ids, &file_dag, DagJoinScope::Final).expect("plan independent join");
 		let revisions = vec![
@@ -1744,7 +1743,8 @@ mod tests {
 		let pass_left = intermediate.clone();
 		let pass_right = intermediate.clone();
 		let pass_ids = [ModId::from("pass-left"), ModId::from("pass-right")];
-		file_dag.file_path = "common/test.txt".to_string();
+		file_dag.file_path =
+			crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path");
 		let plan = plan_dag_join(&pass_ids, &file_dag, DagJoinScope::Final)
 			.expect("plan unrelated pass-through join");
 		let mut handler = DeferHandler;
@@ -2273,8 +2273,8 @@ mod tests {
 			let left_file = parsed_script_file_at(path, "left", &left_source);
 			let right_file = parsed_script_file_at(path, "right", "retained = { value = 0 }\n");
 			let ids = [ModId::from("left"), ModId::from("right")];
-			let mut file_dag = FileDag::default();
-			file_dag.file_path = path.to_string();
+			let file_dag =
+				FileDag::empty(crate::model::GamePathBuf::parse(path).expect("valid game path"));
 			let plan = plan_dag_join(&ids, &file_dag, DagJoinScope::Final)
 				.expect("plan independent definition-module join");
 			let mut handler = DeferHandler;
@@ -2368,8 +2368,8 @@ mod tests {
 		let left_file = parsed_script_file_at(path, "left", left_source);
 		let right_file = parsed_script_file_at(path, "right", base_source);
 		let ids = [ModId::from("left"), ModId::from("right")];
-		let mut file_dag = FileDag::default();
-		file_dag.file_path = path.to_string();
+		let file_dag =
+			FileDag::empty(crate::model::GamePathBuf::parse(path).expect("valid game path"));
 		let plan = plan_dag_join(&ids, &file_dag, DagJoinScope::Final)
 			.expect("plan file-fallback definition-module join");
 		let mut handler = DeferHandler;
@@ -2841,8 +2841,9 @@ mod tests {
 			parsed_script_file("b", "value = 2\n"),
 		];
 		let ids = [ModId::from("a"), ModId::from("b")];
-		let mut file_dag = FileDag::default();
-		file_dag.file_path = "common/test.txt".to_string();
+		let file_dag = FileDag::empty(
+			crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
+		);
 		let plan = plan_dag_join(&ids, &file_dag, DagJoinScope::Intermediate)
 			.expect("plan conflicting intermediate join");
 		let mut handler = DeferHandler;
@@ -3105,8 +3106,8 @@ mod tests {
 			})
 			.expect("observe the contributor");
 
-		let mut file_dag = FileDag::default();
-		file_dag.file_path = relative.to_string();
+		let file_dag =
+			FileDag::empty(crate::model::GamePathBuf::parse(relative).expect("valid game path"));
 		let plan = plan_dag_join(
 			std::slice::from_ref(&mod_id),
 			&file_dag,
@@ -3140,12 +3141,11 @@ mod tests {
 	/// On Windows the two sides of a join used to describe the same file with
 	/// different separators, and classification folded `\\` into `/` to make
 	/// them agree. Both sides are game paths now: a parsed file's AST path is
-	/// converted from its host path component by component, so it always uses
-	/// `/`, and text that spells the file with `\\` is not a game path at all.
-	/// The join therefore rejects such a DAG file path instead of folding it.
+	/// converted from its host path component by component, and the DAG's file
+	/// path is typed where the DAG is induced, so the join never re-reads text.
+	/// Text that spells the file with `\\` cannot become a DAG path at all.
 	#[test]
-	fn dag_join_rejects_a_backslash_separated_file_path_instead_of_folding_it() {
-		crate::model::test_support::install_defaults();
+	fn a_backslash_separated_spelling_cannot_become_a_dag_file_path() {
 		let relative = "decisions/Regression.txt";
 		let backslashed = relative.replace('/', "\\");
 		assert_eq!(
@@ -3157,71 +3157,9 @@ mod tests {
 				character: '\\',
 			}
 		);
-
-		let policies = &crate::game::eu4::content::eu4()
-			.classify_content_family(
-				crate::model::GamePath::new(relative).expect("valid game path"),
-			)
-			.expect("decisions content family")
-			.merge_policies;
-		let temp = tempfile::TempDir::new().expect("temp dir");
-		let vanilla = parse_from_absolute_root(
-			&temp.path().join("Europa Universalis IV"),
-			"__game__eu4",
-			relative,
-			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 5 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
-		);
-		let contributor = parse_from_absolute_root(
-			&temp.path().join("workshop/content/236850/900000001"),
-			"mod-a",
-			relative,
-			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 7 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
-		);
-		assert_eq!(contributor.ast.path.as_str(), relative);
-
-		let base = vanilla_state_from_parsed(&vanilla, policies);
-		let mod_id = ModId::from("mod-a");
-		let mut handler = DeferHandler;
-		let mut protocol = TreeDagProtocol::new(
-			&ClausewitzFileAdapter,
-			&ClausewitzFileJoin,
-			policies,
-			true,
-			VanillaBaseMode::Required,
-			&mut handler,
-		);
-		let revision = protocol
-			.effective_node(EffectiveNodeRequest {
-				mod_id: &mod_id,
-				precedence: 1,
-				resets_base: false,
-				parent: &base,
-				source: &contributor,
-			})
-			.expect("observe the contributor");
-
-		let mut file_dag = FileDag::default();
-		file_dag.file_path = backslashed.clone();
-		let plan = plan_dag_join(
-			std::slice::from_ref(&mod_id),
-			&file_dag,
-			DagJoinScope::Final,
-		)
-		.expect("plan the final join");
-		let error = protocol
-			.join(DagJoinRequest {
-				plan: &plan,
-				file_dag: &file_dag,
-				base: &base,
-				revisions: vec![DagJoinRevision {
-					mod_id: &mod_id,
-					precedence: 1,
-					state: &revision,
-				}],
-			})
-			.expect_err("a backslash-separated DAG path is not folded into a game path");
-		assert!(error.contains("is not a game path"), "{error}");
-		assert!(error.contains(&backslashed), "{error}");
+		let file_dag =
+			FileDag::empty(crate::model::GamePathBuf::parse(relative).expect("valid game path"));
+		assert_eq!(file_dag.file_path().as_str(), relative);
 	}
 
 	/// The repair must not weaken the check: an input whose lineage really does
@@ -3288,8 +3226,8 @@ mod tests {
 			.expect("file partition lineage")
 			.tree = wrong_tree;
 
-		let mut file_dag = FileDag::default();
-		file_dag.file_path = relative.to_string();
+		let file_dag =
+			FileDag::empty(crate::model::GamePathBuf::parse(relative).expect("valid game path"));
 		let plan = plan_dag_join(
 			std::slice::from_ref(&mod_id),
 			&file_dag,

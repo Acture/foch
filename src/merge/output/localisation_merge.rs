@@ -40,10 +40,10 @@ pub(crate) fn merge_localisation_file(
 	let mut order: Vec<String> = Vec::new();
 
 	for contributor in &sorted {
-		let raw = fs::read(&contributor.absolute_path).map_err(|err| {
+		let raw = fs::read(contributor.absolute_path()).map_err(|err| {
 			format!(
 				"failed to read {} ({}): {err}",
-				contributor.absolute_path.display(),
+				contributor.absolute_path().display(),
 				contributor.mod_id
 			)
 		})?;
@@ -210,7 +210,7 @@ mod tests {
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
 			root_path: dir.to_path_buf(),
-			absolute_path: path,
+			relative_path: crate::model::GamePathBuf::parse(filename).expect("valid game path"),
 			precedence,
 			is_base_game: false,
 			is_synthetic_base: false,

@@ -6,8 +6,8 @@ use crate::game::eu4::content::eu4;
 use crate::input::request::InputRequest;
 use crate::input::{ResolvedInput, resolve_input};
 use crate::model::{
-	AliasUsage, GamePath, GamePathError, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind,
-	ScopeNode, SymbolReference,
+	AliasUsage, GamePath, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
+	SymbolReference,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -370,7 +370,7 @@ fn build_semantic_graph_artifact(
 	let Some(_descriptor) = profile.descriptor_for_root_family(family_id) else {
 		return Err(format!("unknown content family {family_id}").into());
 	};
-	let contributors = collect_family_contributors(input, family_id)?;
+	let contributors = collect_family_contributors(input, family_id);
 	if contributors.is_empty() {
 		return Err(format!("no contributors found for content family {family_id}").into());
 	}
@@ -666,15 +666,11 @@ fn build_semantic_graph_artifact(
 	Ok(artifact)
 }
 
-fn collect_family_contributors(
-	input: &ResolvedInput,
-	family_id: &str,
-) -> Result<Vec<FamilyContributor>, GamePathError> {
+fn collect_family_contributors(input: &ResolvedInput, family_id: &str) -> Vec<FamilyContributor> {
 	let profile = eu4();
 	let mut contributors = Vec::new();
 	for (relative_path, items) in &input.file_inventory {
-		// Inventory keys are written from game paths; the parse restores it.
-		let Some(fid) = profile.family_id_for(GamePath::new(relative_path)?) else {
+		let Some(fid) = profile.family_id_for(relative_path) else {
 			continue;
 		};
 		if fid != family_id {
@@ -683,8 +679,8 @@ fn collect_family_contributors(
 		for item in items {
 			contributors.push(FamilyContributor {
 				mod_id: item.mod_id.clone(),
-				relative_path: relative_path.clone(),
-				absolute_path: item.absolute_path.clone(),
+				relative_path: relative_path.as_str().to_string(),
+				absolute_path: item.absolute_path(),
 				precedence: item.precedence,
 				is_base_game: item.is_base_game,
 				parse_ok_hint: item.parse_ok_hint,
@@ -699,7 +695,7 @@ fn collect_family_contributors(
 			item.absolute_path.clone(),
 		)
 	});
-	Ok(contributors)
+	contributors
 }
 
 fn collect_definition_seeds(
@@ -1763,8 +1759,8 @@ mod tests {
 	use crate::input::ResolvedInputContributor;
 	use crate::input::request::InputRequest;
 	use crate::model::{
-		DocumentFamily, DocumentRecord, KeyUsage, MaybeScope, ScalarAssignment, ScopeNode,
-		SemanticIndex, SourceSpan, base_scope, test_support,
+		DocumentFamily, DocumentRecord, GamePathBuf, KeyUsage, MaybeScope, ScalarAssignment,
+		ScopeNode, SemanticIndex, SourceSpan, base_scope, test_support,
 	};
 	use crate::playset::Playset;
 	use std::collections::{BTreeMap, HashMap};
@@ -2100,13 +2096,14 @@ mod tests {
 
 	fn test_input() -> ResolvedInput {
 		let mut file_inventory = BTreeMap::new();
+		let orders = GamePathBuf::parse("common/holy_orders/orders.txt").expect("valid game path");
 		file_inventory.insert(
-			"common/holy_orders/orders.txt".to_string(),
+			orders.clone(),
 			vec![
 				ResolvedInputContributor {
 					mod_id: "base:eu4".to_string(),
 					root_path: PathBuf::from("/base"),
-					absolute_path: PathBuf::from("/base/common/holy_orders/orders.txt"),
+					relative_path: orders.clone(),
 					precedence: 0,
 					is_base_game: true,
 					is_synthetic_base: false,
@@ -2116,7 +2113,7 @@ mod tests {
 				ResolvedInputContributor {
 					mod_id: "mod:test".to_string(),
 					root_path: PathBuf::from("/mod"),
-					absolute_path: PathBuf::from("/mod/common/holy_orders/orders.txt"),
+					relative_path: orders.clone(),
 					precedence: 1,
 					is_base_game: false,
 					is_synthetic_base: false,

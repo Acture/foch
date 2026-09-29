@@ -1,6 +1,6 @@
 //! Commit of an already analyzed and frozen merge artifact.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -61,25 +61,22 @@ impl BaseSnapshotCommitGuard {
 #[derive(Clone, Debug)]
 pub(super) struct ProductInputCommitGuard {
 	request: InputRequest,
-	retained_paths: Option<BTreeSet<String>>,
 	pub(super) expected: ProductInputAttestation,
 }
 
 impl ProductInputCommitGuard {
 	pub(super) fn from_inventory(
 		request: InputRequest,
-		retained_paths: Option<BTreeSet<String>>,
 		inventory: &InputInventory,
 	) -> Option<Self> {
 		Some(Self {
 			request,
-			retained_paths,
 			expected: inventory.product_input_manifest.as_ref()?.attestation(),
 		})
 	}
 
 	fn validate(&self) -> Result<(), MergeError> {
-		let observed = resolve_product_input_manifest(&self.request, self.retained_paths.as_ref())
+		let observed = resolve_product_input_manifest(&self.request)
 			.map_err(|error| MergeError::InputResolve {
 				path: error.path,
 				message: format!(

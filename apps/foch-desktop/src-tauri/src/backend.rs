@@ -181,7 +181,7 @@ fn unit_view(unit: &foch::merge::MergeUnitOutcome) -> MergeUnitDetail {
 	let contributor_count = unit.contributors.len();
 	MergeUnitDetail {
 		id: unit.id.clone(),
-		path: unit.path.clone(),
+		path: unit.path.to_string(),
 		family: bounded_text(&unit.family, MAX_SHORT_TEXT_CHARS),
 		kind: match unit.kind {
 			foch::merge::MergeUnitKind::File => MergeUnitKind::File,
@@ -199,13 +199,13 @@ fn unit_view(unit: &foch::merge::MergeUnitOutcome) -> MergeUnitDetail {
 		summary: bounded_text(&unit.summary, MAX_DETAIL_TEXT_CHARS),
 		output_path: unit
 			.output_path
-			.as_deref()
-			.map(|path| bounded_text(path, MAX_DETAIL_TEXT_CHARS)),
+			.as_ref()
+			.map(|path| bounded_text(path.as_str(), MAX_DETAIL_TEXT_CHARS)),
 		// A definition module can write one file per contributing directory.
 		output_paths: unit
 			.output_paths
 			.iter()
-			.map(|path| bounded_text(path, MAX_DETAIL_TEXT_CHARS))
+			.map(|path| bounded_text(path.as_str(), MAX_DETAIL_TEXT_CHARS))
 			.collect(),
 		contributors: unit
 			.contributors

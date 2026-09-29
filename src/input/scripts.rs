@@ -172,19 +172,13 @@ impl InputScriptCache {
 		&self,
 		contributor: &super::ResolvedInputContributor,
 	) -> Result<Arc<ParsedScriptFile>, String> {
-		let relative_path =
-			GamePathBuf::from_physical(&contributor.root_path, &contributor.absolute_path)
-				.map_err(|error| {
-					format!(
-						"{} has no game path under contributor root {}: {error}",
-						contributor.absolute_path.display(),
-						contributor.root_path.display()
-					)
-				})?;
-		if let Some(parsed) = self.get(&contributor.mod_id, &relative_path)? {
+		if let Some(parsed) = self.get(&contributor.mod_id, &contributor.relative_path)? {
 			return Ok(parsed);
 		}
-		let key = (contributor.mod_id.clone(), relative_path);
+		let key = (
+			contributor.mod_id.clone(),
+			contributor.relative_path.clone(),
+		);
 		let entry = self
 			.lazy
 			.get(&key)
@@ -201,7 +195,7 @@ impl LazyScriptFile {
 	) -> Result<(), String> {
 		if contributor.mod_id != self.mod_id
 			|| contributor.root_path != self.root_path
-			|| contributor.absolute_path != self.absolute_path
+			|| contributor.relative_path != self.relative_path
 		{
 			return Err(format!(
 				"lazy AST contributor identity does not match semantic snapshot for {}:{}",
@@ -300,7 +294,7 @@ mod tests {
 		super::super::ResolvedInputContributor {
 			mod_id: "mod-a".to_string(),
 			root_path: root.to_path_buf(),
-			absolute_path: root.join(relative),
+			relative_path: game_path(relative),
 			precedence: 1,
 			is_base_game: false,
 			is_synthetic_base: false,

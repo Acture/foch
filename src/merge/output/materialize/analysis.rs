@@ -155,7 +155,7 @@ pub(super) fn working_set_estimate(input: &ResolvedInput, entry: &MergePlanEntry
 		.iter()
 		.filter_map(|path| input.file_inventory.get(path))
 		.flatten()
-		.filter_map(|contributor| fs::metadata(&contributor.absolute_path).ok())
+		.filter_map(|contributor| fs::metadata(contributor.absolute_path()).ok())
 		.map(|metadata| metadata.len())
 		.sum();
 	input_bytes.saturating_mul(WORKING_SET_PER_INPUT_BYTE)
@@ -176,13 +176,11 @@ pub(super) fn analyze_unit(
 	prompt: InteractivePrompt<'_>,
 ) -> UnitAnalysis {
 	match entry.strategy {
-		MergePlanStrategy::LocalisationMerge => UnitAnalysis::Localisation(
-			context
-				.input
-				.file_inventory
-				.get(entry.output_path())
-				.map(|contributors| merge_localisation_file(entry.output_path(), contributors)),
-		),
+		MergePlanStrategy::LocalisationMerge => {
+			UnitAnalysis::Localisation(context.input.file_inventory.get(entry.output_path()).map(
+				|contributors| merge_localisation_file(entry.output_path().as_str(), contributors),
+			))
+		}
 		MergePlanStrategy::StructuralMerge => analyze_structural_unit(context, entry, prompt),
 		MergePlanStrategy::CopyThrough
 		| MergePlanStrategy::LastWriterOverlay
@@ -195,21 +193,20 @@ fn analyze_structural_unit(
 	entry: &MergePlanEntry,
 	prompt: InteractivePrompt<'_>,
 ) -> UnitAnalysis {
-	let path: &str = entry.output_path();
-	// Plan paths are still text written from game paths. One that is not is
-	// left unanalyzed, and applying the unit then fails the merge.
-	let Ok(game_path) = GamePath::new(path) else {
-		return UnitAnalysis::Nothing;
-	};
-	let contributors: Option<&[ResolvedInputContributor]> =
-		context.input.file_inventory.get(path).map(Vec::as_slice);
+	let game_path: &GamePath = entry.output_path();
+	let path: &str = game_path.as_str();
+	let contributors: Option<&[ResolvedInputContributor]> = context
+		.input
+		.file_inventory
+		.get(game_path)
+		.map(Vec::as_slice);
 	let descriptor: Option<&ContentFamilyDescriptor> =
 		context.profile.classify_content_family(game_path);
 	let vanilla_base_mode: VanillaBaseMode = effective_vanilla_base_mode(
 		descriptor,
 		contributors,
 		VanillaBaseMode::from_include_game_base(context.include_game_base),
-		context.input.verified_absent_base_paths.contains(path),
+		context.input.verified_absent_base_paths.contains(game_path),
 	);
 	// Applying validates the unit first and fails the whole merge when it is
 	// rejected. A rejected unit must not reach the backend here, where it could
@@ -320,20 +317,14 @@ fn analyze_module_namespace(
 	namespace: &MergeModuleOutput,
 	prompt: InteractivePrompt<'_>,
 ) -> NamespaceAnalysis {
-	let output_path: &str = namespace.output_path.as_str();
+	let output_path: &str = namespace.output_path().as_str();
 	eprintln!("[merge] definition module: start {output_path}");
 	// The descriptor comes from this namespace's own output path: the
 	// extractors dispatch on the directory a definition was read from.
-	let game_path = match GamePath::new(output_path) {
-		Ok(game_path) => game_path,
-		Err(error) => {
-			return NamespaceAnalysis::Failed(
-				DeferredUnitReason::EngineFailure,
-				format!("module output is not a game path: {error}"),
-			);
-		}
-	};
-	let Some(descriptor) = context.profile.classify_content_family(game_path) else {
+	let Some(descriptor) = context
+		.profile
+		.classify_content_family(namespace.output_path())
+	else {
 		return NamespaceAnalysis::Failed(
 			DeferredUnitReason::EngineFailure,
 			format!("missing content-family descriptor for {output_path}"),

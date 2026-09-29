@@ -16,17 +16,20 @@ pub enum MergeError {
 	AnalyzedOutputChanged { path: PathBuf },
 	/// Input resolution failed (playlist, game root, base data, profile)
 	InputResolve { path: PathBuf, message: String },
-	/// Parse failure during IR construction
+	/// Parse failure during IR construction. `path` names the failing file
+	/// or unit for people only; it is never parsed, compared or joined.
 	Parse {
 		path: Option<String>,
 		message: String,
 	},
-	/// Validation failure (structural merge inputs, revalidation)
+	/// Validation failure (structural merge inputs, revalidation). `path`
+	/// is display text, as for [`Self::Parse`].
 	Validation {
 		path: Option<String>,
 		message: String,
 	},
-	/// Emit failure (Clausewitz output generation)
+	/// Emit failure (Clausewitz output generation). `path` is display text,
+	/// as for [`Self::Parse`].
 	Emit {
 		path: Option<String>,
 		message: String,

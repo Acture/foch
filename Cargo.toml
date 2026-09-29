@@ -112,6 +112,7 @@ tracing.workspace = true
 tree-sitter = "0.25"
 tree-sitter-paradox = { path = "packages/tree-sitter-paradox" }
 thiserror = "2.0"
+typed-path = "0.12"
 walkdir.workspace = true
 
 [target.'cfg(windows)'.dependencies]

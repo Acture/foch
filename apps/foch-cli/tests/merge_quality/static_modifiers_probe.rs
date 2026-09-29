@@ -16,6 +16,7 @@ use foch::merge::{
 	AnalyzedMerge, CancellationToken, CommitAuthorization, CommitResult, MergeAnalysisOptions,
 	MergeDisposition, NoopProgressObserver, analyze_merge,
 };
+use foch::model::GamePathBuf;
 use foch::project::{Project, ProjectConfig, ProjectMod};
 
 use super::merge_quality::config::{DiscoveryOverrides, Eu4Discovery, discover_eu4};
@@ -98,9 +99,10 @@ fn workshop_static_modifiers_product_probe() {
 		.iter()
 		.map(|root| capture_tree_bytes(&root.join(FAMILY)))
 		.collect();
-	let retained: BTreeSet<String> = before
+	let retained: BTreeSet<GamePathBuf> = before
 		.iter()
 		.flat_map(|files| files.keys().map(|path| format!("{FAMILY}/{path}")))
+		.map(|path| GamePathBuf::parse(&path).expect("retained path is a game path"))
 		.collect();
 	let input: InputVersionRecord = case
 		.input_version(&discovery.game_version, discovery.steam_build_id)

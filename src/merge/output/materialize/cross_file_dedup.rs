@@ -6,8 +6,7 @@ use crate::game::eu4::content::MergeKeySource;
 use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use crate::game::eu4::script::{ParsedScriptFile, is_decision_container_key, parse_script_file};
 use crate::input::{ResolvedInput, ResolvedInputContributor};
-use crate::model::GamePathBuf;
-use crate::model::{HandlerResolutionRecord, MergeReport};
+use crate::model::{GamePath, GamePathBuf, HandlerResolutionRecord, MergeReport};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
@@ -53,14 +52,14 @@ impl CrossFileValueExtraction {
 
 #[derive(Default)]
 struct FamilyValueFingerprintIndex {
-	file_extractions: HashMap<String, CrossFileValueExtraction>,
-	path_key_fingerprints: HashMap<(String, String), Vec<String>>,
+	file_extractions: HashMap<GamePathBuf, CrossFileValueExtraction>,
+	path_key_fingerprints: HashMap<(GamePathBuf, String), Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct CrossFilePruneResult {
 	pub surviving_generated_paths: BTreeSet<String>,
-	pub pruned_paths: BTreeSet<String>,
+	pub pruned_paths: BTreeSet<GamePathBuf>,
 }
 
 pub(super) fn prune_cross_file_noop_duplicates(
@@ -74,12 +73,19 @@ pub(super) fn prune_cross_file_noop_duplicates(
 		return Ok(CrossFilePruneResult::default());
 	}
 
-	let effective_inventory = build_effective_merged_inventory(out_dir, &generated_paths, input);
-	let grouped =
-		group_by_family(&effective_inventory, profile).map_err(|error| MergeError::Validation {
-			path: Some(error.input.clone()),
-			message: error.to_string(),
-		})?;
+	// Generated paths are still text here; they were written from plan paths.
+	let generated_game_paths = generated_paths
+		.iter()
+		.map(|path| {
+			GamePathBuf::parse(path).map_err(|error| MergeError::Validation {
+				path: Some(path.clone()),
+				message: format!("generated output is not a game path: {error}"),
+			})
+		})
+		.collect::<Result<BTreeSet<_>, _>>()?;
+	let effective_inventory =
+		build_effective_merged_inventory(out_dir, &generated_game_paths, input);
+	let grouped = group_by_family(&effective_inventory, profile);
 	let mut dropped_paths = BTreeSet::new();
 
 	for (family_id, paths_by_file) in &grouped {
@@ -93,9 +99,9 @@ pub(super) fn prune_cross_file_noop_duplicates(
 			continue;
 		};
 
-		let generated_paths_in_family = generated_paths
+		let generated_paths_in_family = generated_game_paths
 			.iter()
-			.filter(|path| paths_by_file.contains_key(path.as_str()))
+			.filter(|path| paths_by_file.contains_key(*path))
 			.cloned()
 			.collect::<BTreeSet<_>>();
 		if generated_paths_in_family.is_empty() {
@@ -131,7 +137,7 @@ pub(super) fn prune_cross_file_noop_duplicates(
 
 			if fully_covered {
 				drop_cross_file_noop_path(out_dir, path, family_id, report)?;
-				generated_paths.remove(path);
+				generated_paths.remove(path.as_str());
 				dropped_paths.insert(path.clone());
 			}
 		}
@@ -145,9 +151,9 @@ pub(super) fn prune_cross_file_noop_duplicates(
 
 fn build_effective_merged_inventory(
 	out_dir: &Path,
-	generated_paths: &BTreeSet<String>,
+	generated_paths: &BTreeSet<GamePathBuf>,
 	input: &ResolvedInput,
-) -> BTreeMap<String, Vec<ResolvedInputContributor>> {
+) -> BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> {
 	let mut all_paths = input
 		.file_inventory
 		.keys()
@@ -157,14 +163,13 @@ fn build_effective_merged_inventory(
 
 	let mut inventory = BTreeMap::new();
 	for path in all_paths {
-		let output_path = out_dir.join(&path);
-		if output_path.is_file() {
+		if path.to_path(out_dir).is_file() {
 			inventory.insert(
 				path.clone(),
 				vec![ResolvedInputContributor {
 					mod_id: "__foch_merged_output__".to_string(),
 					root_path: out_dir.to_path_buf(),
-					absolute_path: output_path,
+					relative_path: path,
 					precedence: usize::MAX,
 					is_base_game: false,
 					is_synthetic_base: false,
@@ -190,27 +195,19 @@ fn build_effective_merged_inventory(
 }
 
 fn build_family_value_fingerprint_index(
-	paths_by_file: &BTreeMap<String, Vec<ResolvedInputContributor>>,
+	paths_by_file: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 	merge_key_source: MergeKeySource,
 	_profile: &Eu4,
 ) -> FamilyValueFingerprintIndex {
 	let mut index = FamilyValueFingerprintIndex::default();
 	for (rel_path, contributors) in paths_by_file {
 		for contributor in contributors {
-			// A contributor does not carry its game path yet; one outside its
-			// root stays untracked, as before.
-			let extraction = if let Ok(relative) =
-				GamePathBuf::from_physical(&contributor.root_path, &contributor.absolute_path)
-			{
-				let parsed =
-					parse_script_file(&contributor.mod_id, &contributor.root_path, &relative);
-				extract_key_value_fingerprints(&parsed, merge_key_source)
-			} else {
-				CrossFileValueExtraction {
-					entries: Vec::new(),
-					completeness: CrossFileSemanticCompleteness::ContainsUntracked,
-				}
-			};
+			let parsed = parse_script_file(
+				&contributor.mod_id,
+				&contributor.root_path,
+				&contributor.relative_path,
+			);
+			let extraction = extract_key_value_fingerprints(&parsed, merge_key_source);
 			for entry in &extraction.entries {
 				index
 					.path_key_fingerprints
@@ -231,17 +228,17 @@ fn build_family_value_fingerprint_index(
 fn has_cross_file_identical_match(
 	key_index: &FamilyKeyIndex,
 	value_index: &FamilyValueFingerprintIndex,
-	current_path: &str,
+	current_path: &GamePath,
 	entry: &CrossFileKeyValue,
-	generated_paths_in_family: &BTreeSet<String>,
-	dropped_paths: &BTreeSet<String>,
+	generated_paths_in_family: &BTreeSet<GamePathBuf>,
+	dropped_paths: &BTreeSet<GamePathBuf>,
 ) -> bool {
 	let Some(contributors) = key_index.entries.get(&entry.key) else {
 		return false;
 	};
 
 	contributors.iter().any(|contributor| {
-		let other_path = contributor.file_path.as_str();
+		let other_path = contributor.file_path.as_game_path();
 		if other_path == current_path {
 			return false;
 		}
@@ -255,16 +252,16 @@ fn has_cross_file_identical_match(
 		}
 		value_index
 			.path_key_fingerprints
-			.get(&(other_path.to_string(), entry.key.clone()))
+			.get(&(other_path.to_owned(), entry.key.clone()))
 			.is_some_and(|fingerprints| fingerprints.iter().any(|fp| fp == &entry.fingerprint))
 	})
 }
 
 fn covering_path_survives(
-	current_path: &str,
-	other_path: &str,
-	generated_paths_in_family: &BTreeSet<String>,
-	dropped_paths: &BTreeSet<String>,
+	current_path: &GamePath,
+	other_path: &GamePath,
+	generated_paths_in_family: &BTreeSet<GamePathBuf>,
+	dropped_paths: &BTreeSet<GamePathBuf>,
 ) -> bool {
 	if !generated_paths_in_family.contains(other_path) {
 		return true;
@@ -274,11 +271,11 @@ fn covering_path_survives(
 
 fn drop_cross_file_noop_path(
 	out_dir: &Path,
-	path: &str,
+	path: &GamePath,
 	family_id: &str,
 	report: &mut MergeReport,
 ) -> Result<(), MergeError> {
-	let target = out_dir.join(path);
+	let target = path.to_path(out_dir);
 	match fs::remove_file(&target) {
 		Ok(()) => {}
 		Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -639,13 +636,14 @@ mod tests {
 		] {
 			let root_path = test_root.join(mod_id);
 			write_file(&root_path, relative_path, content);
+			let relative_path = GamePathBuf::parse(relative_path).expect("valid game path");
 			file_inventory
-				.entry(relative_path.to_string())
+				.entry(relative_path.clone())
 				.or_insert_with(Vec::new)
 				.push(ResolvedInputContributor {
 					mod_id: mod_id.to_string(),
 					root_path: root_path.clone(),
-					absolute_path: root_path.join(relative_path),
+					relative_path,
 					precedence,
 					is_base_game,
 					is_synthetic_base: false,

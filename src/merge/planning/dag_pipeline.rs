@@ -317,7 +317,8 @@ mod tests {
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
 			root_path: PathBuf::from(format!("/mods/{mod_id}")),
-			absolute_path: PathBuf::from(format!("/mods/{mod_id}/common/test.txt")),
+			relative_path: crate::model::GamePathBuf::parse("common/test.txt")
+				.expect("valid game path"),
 			precedence,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -361,7 +362,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&mod_dag,
-			"common/test.txt",
+			crate::model::GamePath::new("common/test.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],

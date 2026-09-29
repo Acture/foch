@@ -381,7 +381,7 @@ mod tests {
 		let contributor = ResolvedInputContributor {
 			mod_id: "__game__".to_string(),
 			root_path: temp.path().to_path_buf(),
-			absolute_path: temp.path().join(relative),
+			relative_path: crate::model::GamePathBuf::parse(relative).expect("valid game path"),
 			precedence: 0,
 			is_base_game: true,
 			is_synthetic_base: false,

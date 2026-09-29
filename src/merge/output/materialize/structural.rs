@@ -505,7 +505,7 @@ fn run_semantic_structural_file_engine(
 	compute_dag_merge_with_handler(
 		SemanticDagMergeRequest {
 			input: DagMergeInputRequest {
-				file_path: target_path,
+				file_path: plan_game_path(target_path)?,
 				contributors,
 				mod_dag: context.mod_dag,
 				ignore_replace_path: context.ignore_replace_path,

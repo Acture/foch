@@ -1,7 +1,6 @@
 //! Address-patch implementation of the neutral DAG execution protocols.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::Path;
 
 use crate::game::eu4::content::{MergeKeySource, MergePolicies, ScriptFileKind};
 use crate::game::eu4::script::ParsedScriptFile;
@@ -198,8 +197,7 @@ pub(crate) fn execute_reference_dag_with_caches(
 		intent_only_patches: Vec::new(),
 		pending_conflicts: Vec::new(),
 	};
-	let file_game_path = GamePathBuf::parse(file_dag.file_path())
-		.map_err(|error| format!("merge DAG file is not a game path: {error}"))?;
+	let file_game_path = file_dag.file_path().to_owned();
 	let mut protocol = PatchBaselineDagProtocol {
 		file_dag,
 		file_game_path,
@@ -225,7 +223,7 @@ pub(crate) fn execute_reference_dag_with_caches(
 		&mut protocol.merge_result,
 		&protocol.seen_pending_conflicts,
 		&final_state.pending_conflicts,
-		file_dag.file_path(),
+		file_dag.file_path().as_str(),
 	);
 	protocol.merge_result.conflicts = final_state.pending_conflicts;
 	normalize_merge_result(&mut protocol.merge_result);
@@ -718,7 +716,7 @@ impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'
 		let base_view_hash = hash_ast_statements(&current_base.ast.statements);
 		let patches = cached_or_diff_patches(CachedDiffArgs {
 			cache: self.diff_cache,
-			target_path: self.file_dag.file_path(),
+			target_path: self.file_dag.file_path().as_str(),
 			mod_hash: self
 				.mod_hashes
 				.and_then(|hashes| hashes.get(request.mod_id).map(String::as_str)),
@@ -737,7 +735,7 @@ impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'
 		let effective_statements = cached_or_apply_base(CachedApplyArgs {
 			cache: self.dag_base_cache,
 			deps_hash: apply_hash.as_deref(),
-			file_path: self.file_dag.file_path(),
+			file_path: self.file_dag.file_path().as_str(),
 			current_statements: &request.parent.statements,
 			resolved_patches: &patches,
 			merge_key_source: self.merge_key_source,
@@ -812,13 +810,10 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 		}
 
 		patch_sets.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
-		let mut merge_result = merge_patch_sets_for_file(
-			patch_sets,
-			self.policies,
-			self.handler,
-			Some(Path::new(request.file_dag.file_path())),
-		)
-		.map_err(|error| error.to_string())?;
+		let file_path = request.file_dag.file_path().to_path("");
+		let mut merge_result =
+			merge_patch_sets_for_file(patch_sets, self.policies, self.handler, Some(&file_path))
+				.map_err(|error| error.to_string())?;
 		normalize_merge_result(&mut merge_result);
 		let new_conflicts = std::mem::take(&mut merge_result.conflicts);
 		extend_unique_conflicts(&mut pending_conflicts, &new_conflicts);
@@ -846,7 +841,7 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 		let statements = cached_or_apply_base(CachedApplyArgs {
 			cache: self.dag_base_cache,
 			deps_hash: deps_hash.as_deref(),
-			file_path: request.file_dag.file_path(),
+			file_path: request.file_dag.file_path().as_str(),
 			current_statements: &request.base.statements,
 			resolved_patches: &materialized,
 			merge_key_source: self.merge_key_source,

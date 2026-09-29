@@ -20,7 +20,7 @@ use crate::merge::namespace::{
 };
 use crate::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
-	Finding, FindingChannel, GamePathError, ParseFamilyStats, ParseIssueReportItem, SemanticIndex,
+	Finding, FindingChannel, GamePathBuf, ParseFamilyStats, ParseIssueReportItem, SemanticIndex,
 	Severity, SymbolDefinition,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -285,20 +285,17 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		);
 		result.findings.extend(runtime_overlap_findings);
 		result.findings.extend(check_dependency_misuse(&ctx));
-		match check_namespace_conflicts(&resolved.file_inventory, &mod_dag) {
-			Ok(findings) => result
-				.findings
-				.extend(findings.into_iter().filter(|finding| {
+		result.findings.extend(
+			check_namespace_conflicts(&resolved.file_inventory, &mod_dag)
+				.into_iter()
+				.filter(|finding| {
 					!finding
 						.evidence
 						.as_deref()
 						.and_then(extract_namespace_key)
 						.is_some_and(|key| overlap_covered_names.contains(key))
-				})),
-			Err(error) => result.push_fatal_error(format!(
-				"namespace conflict check could not classify an inventory path: {error}"
-			)),
-		}
+				}),
+		);
 	} else {
 		// Basic mode: no overlap module runs, so the heuristic
 		// `duplicate-scripted-effect` still provides value for scripted-effect
@@ -451,11 +448,11 @@ const NAMESPACE_CHECK_FAMILIES: &[&str] = &["common/scripted_effects", "common/s
 /// where two mods silently redefining the same key is a common source of
 /// broken gameplay.
 fn check_namespace_conflicts(
-	file_inventory: &BTreeMap<String, Vec<ResolvedInputContributor>>,
+	file_inventory: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 	mod_dag: &ModDag,
-) -> Result<Vec<Finding>, GamePathError> {
+) -> Vec<Finding> {
 	let profile = eu4();
-	let families_by_id = group_by_family(file_inventory, profile)?;
+	let families_by_id = group_by_family(file_inventory, profile);
 
 	let mut findings = Vec::new();
 
@@ -517,7 +514,7 @@ fn check_namespace_conflicts(
 		}
 	}
 
-	Ok(findings)
+	findings
 }
 
 fn leaf_namespace_contributors<'a>(

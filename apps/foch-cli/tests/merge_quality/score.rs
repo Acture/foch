@@ -1126,7 +1126,7 @@ fn layer_replaces_module(root: &Path, family_prefix: &str) -> Option<bool> {
 		descriptor
 			.replace_path
 			.iter()
-			.any(|replace_path| replace_path_covers_prefix(replace_path, family_prefix)),
+			.any(|replace_path| replace_path_covers_prefix(replace_path.as_str(), family_prefix)),
 	)
 }
 
