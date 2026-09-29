@@ -229,8 +229,8 @@ pub fn scoring_reference_units(reference_paths: &[String]) -> Vec<String> {
 		}
 		if let Some(policy) = definition_module_policy_for_path(rel) {
 			module_units
-				.entry(policy.namespace_prefix)
-				.or_insert(policy.output_path);
+				.entry(policy.namespace_prefix.as_str())
+				.or_insert(policy.output_path.as_str());
 		} else {
 			units.insert(rel.clone());
 		}
@@ -270,7 +270,7 @@ pub fn scoring_evidence_files(root: &Path, scoring_unit: &str) -> io::Result<Vec
 	let mut paths = BTreeSet::new();
 	push_regular_evidence_file(root, Path::new("descriptor.mod"), &mut paths)?;
 	if let Some(policy) = definition_module_policy_for_path(scoring_unit) {
-		let namespace = root.join(policy.namespace_prefix);
+		let namespace = policy.namespace_prefix.to_path(root);
 		match fs::symlink_metadata(&namespace) {
 			Ok(metadata) if metadata.file_type().is_dir() => {
 				for entry in walkdir::WalkDir::new(&namespace) {
@@ -332,7 +332,7 @@ pub fn scoring_evidence_path_belongs_to_unit(scoring_unit: &str, relative_text: 
 	}
 	definition_module_policy_for_path(scoring_unit).map_or_else(
 		|| relative_path == scoring_path,
-		|policy| relative_path.starts_with(policy.namespace_prefix),
+		|policy| relative_path.starts_with(policy.namespace_prefix.to_path("")),
 	)
 }
 
@@ -833,8 +833,8 @@ fn score_definition_module(
 	policy: DefinitionModulePolicy,
 	basegame_root: Option<&Path>,
 ) -> FileScore {
-	let rel = policy.output_path;
-	let prefix = policy.namespace_prefix;
+	let rel = policy.output_path.as_str();
+	let prefix = policy.namespace_prefix.as_str();
 	let mut human_roots = Vec::with_capacity(request.source_mods.len() + 2);
 	let mut foch_roots = Vec::with_capacity(request.source_mods.len() + 2);
 	if let Some(root) = basegame_root {
@@ -1006,7 +1006,8 @@ fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor>
 	if is_path_sensitive_for_module_scoring(rel) {
 		return None;
 	}
-	let descriptor = Eu4.classify_content_family(Path::new(rel))?;
+	// A scored path that is not a game path belongs to no content family.
+	let descriptor = Eu4.classify_content_family(GamePath::new(rel).ok()?)?;
 	if !matches!(descriptor.matcher, ContentFamilyPathMatcher::Prefix(_)) {
 		return None;
 	}
@@ -1031,7 +1032,7 @@ fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor>
 
 fn family_prefix(descriptor: &ContentFamilyDescriptor) -> Option<&'static str> {
 	match descriptor.load_policy {
-		ContentLoadPolicy::DefinitionModule(policy) => Some(policy.namespace_prefix),
+		ContentLoadPolicy::DefinitionModule(policy) => Some(policy.namespace_prefix.as_str()),
 		ContentLoadPolicy::PerPath => None,
 	}
 }
@@ -1046,9 +1047,11 @@ pub(crate) fn definition_module_policy_for_path(rel: &str) -> Option<DefinitionM
 
 fn definition_module_policy_for_prefix(prefix: &str) -> Option<DefinitionModulePolicy> {
 	let probe = format!("{}/__foch_module__.txt", prefix.trim_end_matches('/'));
-	let descriptor = Eu4.classify_content_family(Path::new(&probe))?;
+	let descriptor = Eu4.classify_content_family(GamePath::new(&probe).ok()?)?;
 	match descriptor.load_policy {
-		ContentLoadPolicy::DefinitionModule(policy) if policy.namespace_prefix == prefix => {
+		ContentLoadPolicy::DefinitionModule(policy)
+			if policy.namespace_prefix.as_str() == prefix =>
+		{
 			Some(policy)
 		}
 		ContentLoadPolicy::DefinitionModule(_) | ContentLoadPolicy::PerPath => None,

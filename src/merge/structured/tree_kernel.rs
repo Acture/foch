@@ -2214,7 +2214,7 @@ mod tests {
 	fn definition_partition_preserves_duplicate_keys_and_comment_canonicalization() {
 		let path = "common/cb_types/zzz_foch_cb_types.txt";
 		let policies = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.unwrap()
 			.merge_policies;
 		let definitions = "chosen = { trigger = { always = yes # inner comment\n } }\nchosen = { trigger = { always = no } }\n";
@@ -2256,7 +2256,9 @@ mod tests {
 			),
 		] {
 			let policies = crate::game::eu4::content::eu4()
-				.classify_content_family(Path::new(path))
+				.classify_content_family(
+					crate::model::GamePath::new(path).expect("valid game path"),
+				)
 				.unwrap_or_else(|| panic!("classify {path}"))
 				.merge_policies;
 			let base = vanilla_definition_tree_state("retained = { value = 0 }\n", &policies);
@@ -2356,7 +2358,7 @@ mod tests {
 	fn definition_module_file_fallback_lineage_matches_join_input_with_trivia() {
 		let path = "common/cb_types/zzz_foch_cb_types.txt";
 		let policies = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.expect("classify cb types")
 			.merge_policies;
 		let base_source = "loose_item\nretained = { trigger = { always = yes # trivia\n} }\n";
@@ -3054,7 +3056,9 @@ mod tests {
 		crate::model::test_support::install_defaults();
 		let relative = "decisions/Regression.txt";
 		let policies = &crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(relative))
+			.classify_content_family(
+				crate::model::GamePath::new(relative).expect("valid game path"),
+			)
 			.expect("decisions content family")
 			.merge_policies;
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -3155,7 +3159,9 @@ mod tests {
 		);
 
 		let policies = &crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(relative))
+			.classify_content_family(
+				crate::model::GamePath::new(relative).expect("valid game path"),
+			)
 			.expect("decisions content family")
 			.merge_policies;
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -3225,7 +3231,9 @@ mod tests {
 		crate::model::test_support::install_defaults();
 		let relative = "decisions/Regression.txt";
 		let policies = &crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(relative))
+			.classify_content_family(
+				crate::model::GamePath::new(relative).expect("valid game path"),
+			)
 			.expect("decisions content family")
 			.merge_policies;
 		let temp = tempfile::TempDir::new().expect("temp dir");

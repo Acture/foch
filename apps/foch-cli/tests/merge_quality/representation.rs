@@ -60,7 +60,11 @@ pub fn parse_text(rel: &str, source: &str) -> Option<AstFile> {
 /// value, so canonicalizing the result is the same answer as canonicalizing
 /// every input file first, and it skips the definitions composition discards.
 pub fn compose(rel: &str, ast: &AstFile) -> AstFile {
-	canonicalize_numeric_values_with_active_schema(Path::new(rel), ast)
+	// A path that is not a game path binds no schema, so nothing is typed.
+	match GamePath::new(rel) {
+		Ok(path) => canonicalize_numeric_values_with_active_schema(path, ast),
+		Err(_) => ast.clone(),
+	}
 }
 
 /// Read a file's text in the representation foch writes, leaving every other
@@ -77,5 +81,9 @@ pub fn read_text(rel: &str, path: &Path) -> Option<String> {
 
 /// The text form of [`read_text`], for content already in memory.
 pub fn canonicalize_text(rel: &str, source: &str) -> String {
-	canonicalize_numeric_text(Path::new(rel), source)
+	// A path that is not a game path binds no schema, so nothing is typed.
+	match GamePath::new(rel) {
+		Ok(path) => canonicalize_numeric_text(path, source),
+		Err(_) => source.to_string(),
+	}
 }

@@ -370,7 +370,9 @@ fn fourth_wave_missing_effect_parameter_messages(
 #[test]
 fn interface_content_family_keys_gui_types_children_by_name() {
 	let descriptor = eu4()
-		.classify_content_family(Path::new("interface/topbar.gui"))
+		.classify_content_family(
+			crate::model::GamePath::new("interface/topbar.gui").expect("valid game path"),
+		)
 		.expect("interface descriptor");
 	match descriptor.merge_key_source.expect("merge key source") {
 		MergeKeySource::ContainerChildFieldValue {
@@ -2995,7 +2997,8 @@ immediate = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "unknown-scope-type" && finding.path == Some("events/x.txt".into())
+			finding.rule_id == "unknown-scope-type"
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("events/x.txt")
 		}),
 		"typed event roots should not stay in Unknown scope"
 	);
@@ -3189,7 +3192,7 @@ provinces_to_highlight = {
 			.advisory
 			.iter()
 			.any(|finding| finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/achievements.txt".into())),
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("common/achievements.txt")),
 		"achievements root scope should no longer stay Unknown"
 	);
 }
@@ -3401,7 +3404,8 @@ trigger = {
 	] {
 		assert!(
 			!diagnostics.strict.iter().any(|finding| {
-				finding.rule_id == "unresolved-call-target" && finding.path == Some(path.into())
+				finding.rule_id == "unresolved-call-target"
+					&& finding.path.as_ref().map(|p| p.as_str()) == Some(path)
 			}),
 			"{path} should not report top-level scripted effect fallback"
 		);
@@ -3414,7 +3418,8 @@ trigger = {
 	] {
 		assert!(
 			!diagnostics.advisory.iter().any(|finding| {
-				finding.rule_id == "unknown-scope-type" && finding.path == Some(path.into())
+				finding.rule_id == "unknown-scope-type"
+					&& finding.path.as_ref().map(|p| p.as_str()) == Some(path)
 			}),
 			"{path} should have a typed root scope"
 		);
@@ -3536,7 +3541,8 @@ test_decision = {
 	] {
 		assert!(
 			!diagnostics.advisory.iter().any(|finding| {
-				finding.rule_id == "unknown-scope-type" && finding.path == Some(path.into())
+				finding.rule_id == "unknown-scope-type"
+					&& finding.path.as_ref().map(|p| p.as_str()) == Some(path)
 			}),
 			"{path} should reuse typed DSL semantics"
 		);
@@ -4885,14 +4891,14 @@ can_use = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/cb_types/cb.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("common/cb_types/cb.txt")
 		}),
 		"cb types should no longer keep ROOT/FROM/owner/capital_scope under Unknown scope"
 	);
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
 			finding.rule_id == "unresolved-call-target"
-				&& finding.path == Some("common/cb_types/cb.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("common/cb_types/cb.txt")
 		}),
 		"cb type trigger containers should not become scripted effect calls"
 	);
@@ -5170,7 +5176,8 @@ while = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/on_actions/callbacks.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/on_actions/callbacks.txt")
 		}),
 		"on_actions callbacks should no longer start from Unknown scope"
 	);
@@ -5183,7 +5190,8 @@ while = {
 		assert!(
 			!diagnostics.strict.iter().any(|finding| {
 				finding.rule_id == "unresolved-call-target"
-					&& finding.path == Some("common/on_actions/callbacks.txt".into())
+					&& finding.path.as_ref().map(|p| p.as_str())
+						== Some("common/on_actions/callbacks.txt")
 					&& finding.message.contains(name)
 			}),
 			"{name} should not produce unresolved-call-target in on_actions callbacks"
@@ -5192,7 +5200,8 @@ while = {
 	for name in ["missing_province_effect", "missing_country_effect"] {
 		assert!(diagnostics.strict.iter().any(|finding| {
 			finding.rule_id == "unresolved-call-target"
-				&& finding.path == Some("common/on_actions/callbacks.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/on_actions/callbacks.txt")
 				&& finding.message.contains(name)
 		}));
 	}
@@ -6378,7 +6387,8 @@ capital_scope = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/wrappers.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/wrappers.txt")
 		}),
 		"wrapper-heavy scripted effects should not stay unknown"
 	);
@@ -6432,7 +6442,8 @@ hidden_effect = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/province_ids.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/province_ids.txt")
 		}),
 		"province id selector should seed Province scope for nested owner blocks"
 	);
@@ -6560,7 +6571,8 @@ immediate = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/effects.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/effects.txt")
 				&& finding.line == Some(14)
 		}),
 		"chain_b owner scope should resolve to Province after fixpoint inference"
@@ -6568,7 +6580,8 @@ immediate = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/effects.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/effects.txt")
 		}),
 		"mixed scripted effects should stay usable via mask-aware unknown-scope-type checks"
 	);
@@ -6702,7 +6715,8 @@ trigger = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_triggers/triggers.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_triggers/triggers.txt")
 		}),
 		"scripted triggers should use propagated masks for owner/capital_scope checks"
 	);
@@ -6793,7 +6807,9 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 	use super::extractors;
 	let descriptor = ContentFamilyDescriptor {
 		id: super::super::content::ContentFamilyId::new("unregistered_test_family"),
-		matcher: ContentFamilyPathMatcher::Prefix("unregistered_test_family/"),
+		matcher: ContentFamilyPathMatcher::Prefix(
+			crate::model::GamePath::new("unregistered_test_family").expect("valid game path"),
+		),
 		script_file_kind: ScriptFileKind::new("events"),
 		module_name_rule: ModuleNameRule::Static("events"),
 		load_policy: ContentLoadPolicy::PerPath,
@@ -6816,7 +6832,9 @@ fn extractor_for_returns_some_for_registered_families() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("common/fervor/test.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("common/fervor/test.txt").expect("valid game path"),
+		)
 		.expect("fervor family");
 	assert!(extractors::extractor_for(descriptor).is_some());
 }
@@ -7053,7 +7071,9 @@ NCountry = {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("common/defines/00_defines.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("common/defines/00_defines.txt").expect("valid game path"),
+		)
 		.expect("defines family");
 	assert!(
 		extractors::extractor_for(descriptor).is_none(),
@@ -7131,7 +7151,9 @@ fn events_extractor_is_registered() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("events/FlavorFRA.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("events/FlavorFRA.txt").expect("valid game path"),
+		)
 		.expect("events family");
 	assert!(
 		extractors::extractor_for(descriptor).is_some(),
@@ -7145,7 +7167,10 @@ fn events_decisions_extractor_is_registered() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("events/decisions/00_decisions.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("events/decisions/00_decisions.txt")
+				.expect("valid game path"),
+		)
 		.expect("events/decisions family");
 	assert_eq!(descriptor.id.as_str(), "events/decisions");
 	assert!(
@@ -7160,7 +7185,9 @@ fn decisions_extractor_is_registered() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("decisions/00_decisions.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("decisions/00_decisions.txt").expect("valid game path"),
+		)
 		.expect("decisions family");
 	assert_eq!(descriptor.id.as_str(), "decisions");
 	assert!(
@@ -7792,7 +7819,7 @@ fn batch_promoted_roots_have_registered_extractors() {
 	let profile = eu4();
 	for &(path, expected_id) in roots {
 		let descriptor = profile
-			.classify_content_family(std::path::Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.unwrap_or_else(|| panic!("no descriptor for path {path}"));
 		assert_eq!(descriptor.id.as_str(), expected_id, "wrong id for {path}");
 		assert!(

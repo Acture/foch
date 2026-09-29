@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Display, Formatter};
-use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -11,9 +10,11 @@ use super::compile::{
 	SchemaRootDefinition, SchemaRootId, SchemaRootKeyFilter,
 };
 use super::error::CwtLoadError;
+use super::rule_path::SchemaDirectory;
 use super::source::SchemaPack;
+use crate::model::{GamePath, GamePathBuf};
 
-pub const PACK_FORMAT_VERSION: &str = "0.11.0";
+pub const PACK_FORMAT_VERSION: &str = "0.12.0";
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CwtNodeId(pub String);
@@ -112,10 +113,8 @@ impl CompiledRulePack {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompiledRoot {
 	pub name: String,
-	pub path: Option<String>,
-	pub normalized_path: Option<String>,
-	pub path_file: Option<String>,
-	pub normalized_file_path: Option<String>,
+	pub path: Option<SchemaDirectory>,
+	pub path_file: Option<GamePathBuf>,
 	pub name_field: Option<String>,
 	pub localisation: Vec<CompiledRuleField>,
 	pub type_key_filter: Option<CompiledTypeKeyFilter>,
@@ -130,28 +129,27 @@ pub struct CompiledRoot {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompiledComplexEnum {
 	pub name: String,
-	pub path: Option<String>,
-	pub normalized_path: Option<String>,
-	pub path_file: Option<String>,
-	pub normalized_file_path: Option<String>,
+	pub path: Option<SchemaDirectory>,
+	pub path_file: Option<GamePathBuf>,
 	pub start_from_root: bool,
 	pub name_rules: Vec<CompiledRuleField>,
 }
 
 impl CompiledComplexEnum {
+	/// Whether this enum reads its values from `file`.
+	pub fn matches(&self, file: &GamePath) -> bool {
+		self.path.as_ref().is_some_and(|directory| {
+			directory
+				.match_depth(self.path_file.as_deref(), file)
+				.is_some()
+		})
+	}
+
 	fn from_complex_enum(complex_enum: &CwtComplexEnum) -> Self {
 		Self {
 			name: complex_enum.name.clone(),
 			path: complex_enum.path.clone(),
-			normalized_path: complex_enum.path.as_deref().map(normalize_schema_path),
 			path_file: complex_enum.path_file.clone(),
-			normalized_file_path: complex_enum
-				.path
-				.as_deref()
-				.zip(complex_enum.path_file.as_deref())
-				.map(|(path, path_file)| {
-					normalized_schema_file_path(&normalize_schema_path(path), path_file)
-				}),
 			start_from_root: complex_enum.start_from_root,
 			name_rules: complex_enum
 				.name_rules
@@ -183,19 +181,19 @@ impl CompiledLink {
 }
 
 impl CompiledRoot {
+	/// How specifically this root type's `path` and `path_file` match `file`,
+	/// or `None` when they do not.
+	fn match_depth(&self, file: &GamePath) -> Option<usize> {
+		self.path
+			.as_ref()?
+			.match_depth(self.path_file.as_deref(), file)
+	}
+
 	fn from_type_def(definition: &SchemaRootDefinition) -> Self {
 		Self {
 			name: definition.name.as_str().to_string(),
 			path: definition.path.clone(),
-			normalized_path: definition.path.as_deref().map(normalize_schema_path),
 			path_file: definition.path_file.clone(),
-			normalized_file_path: definition
-				.path
-				.as_deref()
-				.zip(definition.path_file.as_deref())
-				.map(|(path, path_file)| {
-					normalized_schema_file_path(&normalize_schema_path(path), path_file)
-				}),
 			name_field: definition.name_field.clone(),
 			localisation: definition
 				.localisation
@@ -586,19 +584,16 @@ impl CwtQuery {
 		values
 	}
 
-	pub fn bind_root(&self, file_path: &Path) -> Option<&CompiledRoot> {
+	pub fn bind_root(&self, file_path: &GamePath) -> Option<&CompiledRoot> {
 		let SchemaBinding::Bound { type_id, .. } = self.root_binding(file_path) else {
 			return None;
 		};
 		self.root(type_id.as_str())
 	}
 
-	pub fn root_binding(&self, file_path: &Path) -> SchemaBinding {
-		let normalized = normalize_path(file_path);
+	pub fn root_binding(&self, file_path: &GamePath) -> SchemaBinding {
 		match self.matching_root_indices(file_path).as_slice() {
-			[] => SchemaBinding::Unbound {
-				reason: format!("no root type matches `{normalized}`"),
-			},
+			[] => unbound_root(file_path),
 			[index] => bound_node(&self.pack.roots[*index], Vec::new()),
 			_ => SchemaBinding::Dynamic {
 				reason: "ambiguous-root-type",
@@ -606,15 +601,13 @@ impl CwtQuery {
 		}
 	}
 
-	pub fn bind_chain(&self, file_path: &Path, ast_path: &[&str]) -> SchemaBinding {
+	pub fn bind_chain(&self, file_path: &GamePath, ast_path: &[&str]) -> SchemaBinding {
 		if ast_path.is_empty() {
 			return self.root_binding(file_path);
 		}
 		let matches = self.matching_root_indices(file_path);
 		if matches.is_empty() {
-			return SchemaBinding::Unbound {
-				reason: format!("no root type matches `{}`", normalize_path(file_path)),
-			};
+			return unbound_root(file_path);
 		}
 		let attempts = matches
 			.into_iter()
@@ -634,7 +627,7 @@ impl CwtQuery {
 
 	pub fn bind_context<'p>(
 		&'p self,
-		file_path: &Path,
+		file_path: &GamePath,
 		ast_path: &[&str],
 	) -> Option<RuleContext<'p>> {
 		let target = self.bind_chain(file_path, ast_path);
@@ -740,21 +733,16 @@ impl CwtQuery {
 			.map(|field_match| field_match.field())
 	}
 
-	fn matching_root_indices(&self, file_path: &Path) -> Vec<usize> {
-		let normalized = normalize_path(file_path);
+	/// The root types whose paths match `file_path` most specifically.
+	fn matching_root_indices(&self, file_path: &GamePath) -> Vec<usize> {
 		let mut matches = self
 			.pack
 			.roots
 			.iter()
 			.enumerate()
 			.filter_map(|(index, root)| {
-				let normalized_path = root.normalized_path.as_deref()?;
-				root_path_match_len(
-					&normalized,
-					normalized_path,
-					root.normalized_file_path.as_deref(),
-				)
-				.map(|match_len| (match_len, root.name.as_str(), index))
+				root.match_depth(file_path)
+					.map(|depth| (depth, root.name.as_str(), index))
 			})
 			.collect::<Vec<_>>();
 		matches.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
@@ -1361,16 +1349,15 @@ fn field_rules(field: &CompiledRuleField) -> Option<&[CompiledRuleField]> {
 	Some(fields.as_slice())
 }
 
-fn root_path_match_len(
-	file_path: &str,
-	normalized_root_path: &str,
-	normalized_file_path: Option<&str>,
-) -> Option<usize> {
-	if let Some(normalized_file_path) = normalized_file_path {
-		return (file_path == normalized_file_path).then_some(normalized_file_path.len());
+/// Rule paths compare ignoring ASCII case, and the reason spells the file
+/// folded the same way.
+fn unbound_root(file_path: &GamePath) -> SchemaBinding {
+	SchemaBinding::Unbound {
+		reason: format!(
+			"no root type matches `{}`",
+			file_path.as_str().to_ascii_lowercase()
+		),
 	}
-	let suffix = file_path.strip_prefix(normalized_root_path)?;
-	(suffix.is_empty() || suffix.starts_with('/')).then_some(normalized_root_path.len())
 }
 
 fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
@@ -1506,38 +1493,22 @@ fn sorted_scope_definitions(definitions: &[CwtScope]) -> Vec<CompiledScope> {
 	by_name.into_values().collect()
 }
 
-fn normalize_schema_path(path: &str) -> String {
-	path.trim_start_matches("game/")
-		.trim_matches('/')
-		.to_ascii_lowercase()
-}
-
-fn normalized_schema_file_path(normalized_root_path: &str, path_file: &str) -> String {
-	let path_file = normalize_schema_path(path_file);
-	if normalized_root_path.is_empty() {
-		path_file
-	} else {
-		format!("{normalized_root_path}/{path_file}")
-	}
-}
-
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.trim_matches('/')
-		.to_ascii_lowercase()
-}
-
 #[cfg(test)]
 mod tests {
-	use super::root_path_match_len;
+	use super::super::rule_path::SchemaDirectory;
+	use crate::model::GamePath;
 
 	#[test]
 	fn root_path_matching_requires_a_component_boundary() {
-		assert_eq!(root_path_match_len("common/foo", "common", None), Some(6));
-		assert_eq!(root_path_match_len("common", "common", None), Some(6));
-		assert_eq!(root_path_match_len("commonplace/foo", "common", None), None);
-		assert_eq!(root_path_match_len("events/a.txt", "", None), None);
+		let file = |text| GamePath::new(text).expect("valid game path");
+		let common = SchemaDirectory::parse("game/common").expect("valid rule path");
+		assert_eq!(common.match_depth(None, file("common/foo")), Some(1));
+		assert_eq!(common.match_depth(None, file("common")), Some(1));
+		assert_eq!(common.match_depth(None, file("commonplace/foo")), None);
+		assert_eq!(
+			SchemaDirectory::GameRoot.match_depth(None, file("events/a.txt")),
+			None
+		);
 	}
 }
 

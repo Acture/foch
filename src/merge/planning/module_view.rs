@@ -254,9 +254,12 @@ fn validate_module_target<'a>(
 		.into_iter()
 		.map(str::to_string)
 		.collect();
+	// Plan paths are still text; rule lookup takes the game path they name.
+	let output_path = GamePath::new(&namespace.output_path)
+		.map_err(|error| format!("module output is not a game path: {error}"))?;
 	let database: Option<&str> = game_version
 		.and_then(load_rules_for_version)
-		.map(|rules| rules.database_for(&namespace.output_path))
+		.map(|rules| rules.database_for(output_path))
 		.transpose()?
 		.flatten();
 	let expected_family: &str = database.unwrap_or(descriptor.id.as_str());
@@ -285,7 +288,7 @@ fn validate_module_target<'a>(
 			merge_unit.module_name
 		));
 	};
-	if module_policy.output_path != namespace.output_path {
+	if module_policy.output_path != output_path {
 		return Err(format!(
 			"module output {} does not match policy output {}",
 			namespace.output_path, module_policy.output_path
@@ -295,7 +298,7 @@ fn validate_module_target<'a>(
 		module_policy.output_mode == DefinitionModuleOutput::ReplaceNamespace;
 	let replacement_prefix_is_valid = match replace_prefix.as_deref() {
 		Some(prefix) => {
-			prefix == module_policy.namespace_prefix
+			prefix == module_policy.namespace_prefix.as_str()
 				&& (statically_replaces_namespace || has_covering_reset_participant)
 		}
 		None => !statically_replaces_namespace,
@@ -313,20 +316,18 @@ fn validate_module_target<'a>(
 		));
 	}
 	for input_path in &input_paths {
-		if !module_input_is_within_prefix(input_path, module_policy.namespace_prefix) {
+		if !module_input_is_within_prefix(input_path, module_policy.namespace_prefix.as_str()) {
 			return Err(format!(
 				"module input {input_path} is outside namespace prefix {}",
 				module_policy.namespace_prefix
 			));
 		}
-		let expected_module_name = module_policy
-			.namespace_prefix
-			.rsplit('/')
-			.next()
-			.unwrap_or(descriptor.id.as_str());
+		let expected_module_name = module_policy.namespace_prefix.file_name();
+		let input_game_path = GamePath::new(input_path)
+			.map_err(|error| format!("module input is not a game path: {error}"))?;
 		let database: Option<&str> = game_version
 			.and_then(load_rules_for_version)
-			.map(|rules| rules.database_for(input_path))
+			.map(|rules| rules.database_for(input_game_path))
 			.transpose()?
 			.flatten();
 		let expected_module_name: &str = database.unwrap_or(expected_module_name);
@@ -353,7 +354,7 @@ fn definition_module_has_covering_reset_participant(
 				mod_descriptor
 					.replace_path
 					.iter()
-					.any(|prefix| path_is_covered(policy.namespace_prefix, prefix))
+					.any(|prefix| path_is_covered(policy.namespace_prefix.as_str(), prefix))
 			})
 	})
 }
@@ -430,7 +431,7 @@ fn include_reset_only_module_participants(
 				descriptor
 					.replace_path
 					.iter()
-					.any(|prefix| path_is_covered(policy.namespace_prefix, prefix))
+					.any(|prefix| path_is_covered(policy.namespace_prefix.as_str(), prefix))
 			});
 		if !owns_reset && !representatives.contains_key(&mod_id) {
 			continue;
@@ -452,7 +453,7 @@ fn include_reset_only_module_participants(
 			mod_id,
 			ResolvedInputContributor {
 				mod_id: mod_item.mod_id.clone(),
-				absolute_path: root_path.join(policy.output_path),
+				absolute_path: policy.output_path.to_path(&root_path),
 				root_path,
 				precedence,
 				is_base_game: false,
@@ -488,7 +489,7 @@ fn module_is_reset_by(
 		&& mod_dag
 			.replace_paths(mod_id)
 			.iter()
-			.any(|prefix| path_is_covered(policy.namespace_prefix, prefix))
+			.any(|prefix| path_is_covered(policy.namespace_prefix.as_str(), prefix))
 }
 
 fn effective_ancestors(
@@ -596,7 +597,6 @@ mod tests {
 	};
 	use std::collections::BTreeMap;
 	use std::fs;
-	use std::path::Path;
 	use tempfile::TempDir;
 
 	#[test]
@@ -645,7 +645,10 @@ mod tests {
 
 	fn governments_descriptor() -> &'static ContentFamilyDescriptor {
 		eu4()
-			.classify_content_family(Path::new("common/governments/example.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("common/governments/example.txt")
+					.expect("valid game path"),
+			)
 			.expect("governments descriptor")
 	}
 
@@ -671,7 +674,10 @@ mod tests {
 
 	fn powerprojection_descriptor() -> &'static ContentFamilyDescriptor {
 		eu4()
-			.classify_content_family(Path::new("common/powerprojection/example.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("common/powerprojection/example.txt")
+					.expect("valid game path"),
+			)
 			.expect("powerprojection descriptor")
 	}
 
@@ -819,7 +825,10 @@ mod tests {
 	#[test]
 	fn structured_module_views_use_runtime_effective_duplicate_definitions() {
 		let descriptor = eu4()
-			.classify_content_family(Path::new("common/scripted_triggers/example.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("common/scripted_triggers/example.txt")
+					.expect("valid game path"),
+			)
 			.expect("scripted triggers descriptor");
 		let ContentLoadPolicy::DefinitionModule(mut policy) = descriptor.load_policy else {
 			panic!("scripted triggers must be a definition module");
@@ -848,7 +857,10 @@ mod tests {
 	#[test]
 	fn nested_identity_modules_preserve_repeated_top_level_assignments() {
 		let descriptor = eu4()
-			.classify_content_family(Path::new("common/estates_preload/example.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("common/estates_preload/example.txt")
+					.expect("valid game path"),
+			)
 			.expect("estates preload descriptor");
 		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
 			panic!("estates preload must be a definition module");
@@ -894,8 +906,12 @@ mod tests {
 				definition_key: DefinitionKeyPolicy::AssignmentKey,
 				file_order: DefinitionFileOrder::NormalizedPathAscending,
 				duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-				output_path: "common/governments/zzz_foch_governments.txt",
-				namespace_prefix: "common/governments",
+				output_path: crate::model::GamePath::new(
+					"common/governments/zzz_foch_governments.txt",
+				)
+				.expect("valid game path"),
+				namespace_prefix: crate::model::GamePath::new("common/governments")
+					.expect("valid game path"),
 				output_mode: DefinitionModuleOutput::ReplaceNamespace,
 				policy_version: 1,
 			},
@@ -964,8 +980,12 @@ mod tests {
 				definition_key: DefinitionKeyPolicy::AssignmentKey,
 				file_order: DefinitionFileOrder::NormalizedPathAscending,
 				duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-				output_path: "common/governments/zzz_foch_governments.txt",
-				namespace_prefix: "common/governments",
+				output_path: crate::model::GamePath::new(
+					"common/governments/zzz_foch_governments.txt",
+				)
+				.expect("valid game path"),
+				namespace_prefix: crate::model::GamePath::new("common/governments")
+					.expect("valid game path"),
 				output_mode: DefinitionModuleOutput::ReplaceNamespace,
 				policy_version: 1,
 			},

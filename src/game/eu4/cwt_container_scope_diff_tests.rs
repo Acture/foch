@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use super::content::ScriptFileKind;
-use super::cwt::schema_file_kind_container_scope_kind;
+use super::cwt::{schema_file_kind_container_scope_kind, schema_path_matches_file_kind};
 use super::script::classify_script_file;
 use super::script::parser::{AstStatement, AstValue, parse_clausewitz_file};
 use crate::game::schema::compile::CwtSchemaGraph;
@@ -692,20 +692,12 @@ fn root_type_candidates<'e>(engine: &'e CwtQuery, file_kind: &str) -> Vec<&'e Co
 			definition.name.as_str() == file_kind
 				|| definition
 					.path
-					.as_deref()
+					.as_ref()
 					.is_some_and(|path| schema_path_matches_file_kind(path, file_kind))
 		})
 		.collect::<Vec<_>>();
 	matches.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
 	matches
-}
-
-fn schema_path_matches_file_kind(path: &str, file_kind: &str) -> bool {
-	let normalized = path
-		.trim_start_matches("game/")
-		.trim_matches('/')
-		.to_ascii_lowercase();
-	normalized == file_kind || normalized.rsplit('/').next() == Some(file_kind)
 }
 
 fn collect_field_descriptions<'e>(

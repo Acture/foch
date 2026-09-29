@@ -436,12 +436,6 @@ fn namespace_detects_cross_file_conflicts_in_real_playlist() {
 		for entry in &entries {
 			let file_path = entry.path();
 			let root = mod_root(steam_id);
-			let rel = file_path
-				.strip_prefix(&root)
-				.unwrap()
-				.to_string_lossy()
-				.to_string();
-
 			let relative = crate::model::GamePathBuf::from_physical(&root, &file_path)
 				.expect("workshop file has a game path");
 			let parsed = parse_script_file(steam_id, &root, &relative);
@@ -450,7 +444,7 @@ fn namespace_detects_cross_file_conflicts_in_real_playlist() {
 			for key in keys {
 				index.entries.entry(key).or_default().push(KeyContributor {
 					mod_id: steam_id.to_string(),
-					file_path: rel.clone(),
+					file_path: relative.clone(),
 					precedence,
 					is_base_game: false,
 				});

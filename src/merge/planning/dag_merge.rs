@@ -396,7 +396,7 @@ fn compute_semantic_definition_provenance(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::path::{Path, PathBuf};
+	use std::path::PathBuf;
 
 	use crate::game::eu4::content::{ListMergePolicy, MergeKeySource, ScriptFileKind};
 	use crate::game::eu4::script::parser::AstValue;
@@ -576,7 +576,9 @@ mod tests {
 			(mid("right"), parsed_event_file("right", right_source)),
 		]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new("events/test.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+			)
 			.expect("events content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -608,7 +610,9 @@ mod tests {
 		let vanilla = vanilla_source.map(|source| parsed_event_file("__game__", source));
 		let inventory = HashMap::from([(mid("only"), parsed_event_file("only", source))]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new("events/test.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+			)
 			.expect("events content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -653,7 +657,7 @@ mod tests {
 			),
 		]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.expect("institutions content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -700,7 +704,7 @@ mod tests {
 			),
 		]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.expect("diplomatic actions content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -1292,7 +1296,9 @@ mod tests {
 			})
 			.collect::<HashMap<_, _>>();
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new("events/test.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+			)
 			.expect("events content family");
 		let mut handler = DeferHandler;
 

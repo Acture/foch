@@ -72,16 +72,11 @@ pub(super) struct ParsedScriptWithInputIdentity {
 use parse_cache::parse_clausewitz_bytes_cached;
 
 pub fn classify_script_file(relative: &GamePath) -> ScriptFileKind {
-	content_family_for(relative).map_or(ScriptFileKind::new("other"), |descriptor| {
-		descriptor.script_file_kind.clone()
-	})
-}
-
-/// Content-family classification still takes a host path; `to_path("")`
-/// spells a game path that way exactly. Game-path callers classify through
-/// here, so the bridge has one site.
-pub(crate) fn content_family_for(relative: &GamePath) -> Option<&'static ContentFamilyDescriptor> {
-	eu4().classify_content_family(&relative.to_path(""))
+	eu4()
+		.classify_content_family(relative)
+		.map_or(ScriptFileKind::new("other"), |descriptor| {
+			descriptor.script_file_kind.clone()
+		})
 }
 
 #[derive(Default)]
@@ -230,15 +225,13 @@ fn parsed_script_file_from_result(
 	source: String,
 ) -> ParsedScriptFile {
 	let relative = parsed.ast.path.clone();
-	let content_family = content_family_for(&relative);
+	let content_family = eu4().classify_content_family(&relative);
 	let file_kind = content_family.map_or(ScriptFileKind::new("other"), |descriptor| {
 		descriptor.script_file_kind.clone()
 	});
 	let module_name = content_family.map_or_else(
 		|| fallback_module_name_from_relative(&relative),
-		|descriptor| {
-			module_name_for_descriptor(&relative.to_path(""), descriptor).replace('-', "_")
-		},
+		|descriptor| module_name_for_descriptor(&relative, descriptor).replace('-', "_"),
 	);
 	let parse_issues = parsed
 		.diagnostics
@@ -302,13 +295,7 @@ pub fn script_container_scope_kind(
 	let key = *ast_path.last()?;
 	super::cwt::rule_engine()
 		.and_then(|engine| {
-			// CWT binding still takes a host path.
-			schema_path_container_scope_kind(
-				engine,
-				file_kind.clone(),
-				&file_path.to_path(""),
-				ast_path,
-			)
+			schema_path_container_scope_kind(engine, file_kind.clone(), file_path, ast_path)
 		})
 		.or_else(|| hand_container_scope_fallback(file_kind, key))
 }
@@ -344,11 +331,9 @@ fn build_file_index(
 		key: "",
 	});
 
-	let rule_path = file.relative_path.to_path("");
 	let mut ctx = BuildContext {
 		mod_id: &file.mod_id,
 		path: &file.relative_path,
-		rule_path: &rule_path,
 		content_family: file.content_family,
 		file_kind: file.file_kind.clone(),
 		cwt_rule_engine,
@@ -400,8 +385,6 @@ fn is_top_level_event_definition(
 struct BuildContext<'a> {
 	mod_id: &'a str,
 	path: &'a GamePath,
-	/// `path` spelled as a host path, which CWT binding still takes.
-	rule_path: &'a Path,
 	content_family: Option<&'static ContentFamilyDescriptor>,
 	file_kind: ScriptFileKind,
 	cwt_rule_engine: Option<&'a CwtQuery>,
@@ -692,7 +675,6 @@ fn handle_event_block(
 	let mut child_ctx = BuildContext {
 		mod_id: ctx.mod_id,
 		path: ctx.path,
-		rule_path: ctx.rule_path,
 		content_family: ctx.content_family,
 		file_kind: ctx.file_kind.clone(),
 		cwt_rule_engine: ctx.cwt_rule_engine,
@@ -1577,7 +1559,7 @@ fn create_child_scope(
 				schema_path_container_scope_kind(
 					engine,
 					ctx.file_kind.clone(),
-					ctx.rule_path,
+					ctx.path,
 					path_refs.as_slice(),
 				)
 			})

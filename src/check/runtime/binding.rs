@@ -7,9 +7,10 @@ use crate::game::eu4::script::{
 	resolve_scripted_trigger_reference_targets,
 };
 use crate::input::request::InputRequest;
-use crate::input::{InputResolveErrorKind, ResolvedInput, resolve_input};
-use crate::model::{SemanticIndex, SymbolKind, SymbolReference};
+use crate::input::{InputResolveErrorKind, ResolvedInput, ResolvedInputContributor, resolve_input};
+use crate::model::{GamePath, GamePathBuf, SemanticIndex, SymbolKind, SymbolReference};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -29,7 +30,7 @@ pub(crate) struct DefinitionRecord {
 	pub name: String,
 	pub local_name: String,
 	pub mod_id: String,
-	pub path: String,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub precedence: usize,
@@ -220,57 +221,36 @@ fn collect_input_scripts(
 	let required = semantic_index
 		.definitions
 		.iter()
-		.map(|definition| {
-			(
-				definition.mod_id.clone(),
-				definition.path.as_str().to_string(),
-			)
-		})
+		.map(|definition| (definition.mod_id.as_str(), definition.path.as_game_path()))
 		.collect::<HashSet<_>>();
 	let mut parsed = input
 		.script_cache
 		.documents_for_mods(enabled_mod_ids, base_mod_id)?;
 	parsed.retain(|document| {
 		required.contains(&(
-			document.mod_id.clone(),
-			document.relative_path.as_str().to_string(),
+			document.mod_id.as_str(),
+			document.relative_path.as_game_path(),
 		))
 	});
-	let mut seen = parsed
+	let loaded = parsed
 		.iter()
-		.map(|document| format!("{}::{}", document.mod_id, document.relative_path))
+		.map(|document| (document.mod_id.clone(), document.relative_path.clone()))
 		.collect::<HashSet<_>>();
 
-	let mut contributors_by_key = HashMap::new();
-	for contributor in input.file_inventory.values().flatten() {
-		if !(enabled_mod_ids.contains(&contributor.mod_id)
-			|| base_mod_id.is_some_and(|base| contributor.mod_id == base))
-		{
-			continue;
-		}
-		let relative_path = contributor
-			.absolute_path
-			.strip_prefix(&contributor.root_path)
-			.map_err(|_| {
-				format!(
-					"runtime contributor {} escaped its root",
-					contributor.mod_id
-				)
-			})?;
-		contributors_by_key.insert(
-			(contributor.mod_id.clone(), normalize_path(relative_path)),
-			contributor,
-		);
-	}
+	let contributors_by_key = runtime_contributors_by_key(
+		input.file_inventory.values().flatten(),
+		enabled_mod_ids,
+		base_mod_id,
+	)?;
 	let mut required = required.into_iter().collect::<Vec<_>>();
 	required.sort();
 	for (mod_id, relative_path) in required {
-		let seen_key = format!("{mod_id}::{relative_path}");
-		if !seen.insert(seen_key) {
+		let key = (mod_id.to_string(), relative_path.to_owned());
+		if loaded.contains(&key) {
 			continue;
 		}
 		let contributor = contributors_by_key
-			.get(&(mod_id.clone(), relative_path.clone()))
+			.get(&key)
 			.ok_or_else(|| format!("missing runtime AST contributor {mod_id}::{relative_path}"))?;
 		if !looks_like_clausewitz_path(&contributor.absolute_path) {
 			return Err(format!(
@@ -283,6 +263,53 @@ fn collect_input_scripts(
 		(lhs.mod_id.as_str(), &lhs.relative_path).cmp(&(rhs.mod_id.as_str(), &rhs.relative_path))
 	});
 	Ok(parsed)
+}
+
+/// The enabled contributors keyed by mod id and game path, the key semantic
+/// definitions name their files by. A contributor names only its physical
+/// file, so its game path is taken against its own root; a file outside that
+/// root or without a portable name is an error. Two different physical files
+/// under one key (two playset entries sharing a mod id) are an error too,
+/// because the key cannot say which of them a definition was read from. The
+/// same file listed twice, as a synthetic base copies its seed, is one file.
+fn runtime_contributors_by_key<'a>(
+	contributors: impl IntoIterator<Item = &'a ResolvedInputContributor>,
+	enabled_mod_ids: &HashSet<String>,
+	base_mod_id: Option<&str>,
+) -> Result<HashMap<(String, GamePathBuf), &'a ResolvedInputContributor>, String> {
+	let mut contributors_by_key = HashMap::new();
+	for contributor in contributors {
+		if !(enabled_mod_ids.contains(&contributor.mod_id)
+			|| base_mod_id.is_some_and(|base| contributor.mod_id == base))
+		{
+			continue;
+		}
+		let relative_path =
+			GamePathBuf::from_physical(&contributor.root_path, &contributor.absolute_path)
+				.map_err(|error| {
+					format!(
+						"runtime contributor {} file {} (root {}) has no game path: {error}",
+						contributor.mod_id,
+						contributor.absolute_path.display(),
+						contributor.root_path.display()
+					)
+				})?;
+		match contributors_by_key.entry((contributor.mod_id.clone(), relative_path)) {
+			Entry::Vacant(slot) => {
+				slot.insert(contributor);
+			}
+			Entry::Occupied(slot) if slot.get().absolute_path != contributor.absolute_path => {
+				let (mod_id, relative_path) = slot.key();
+				return Err(format!(
+					"runtime contributors {mod_id}::{relative_path} name two files: {} and {}",
+					slot.get().absolute_path.display(),
+					contributor.absolute_path.display()
+				));
+			}
+			Entry::Occupied(_) => {}
+		}
+	}
+	Ok(contributors_by_key)
 }
 
 fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
@@ -356,23 +383,17 @@ fn collect_definition_records(
 	parsed_scripts: &[Arc<ParsedScriptFile>],
 	precedence_by_mod: &HashMap<String, usize>,
 ) -> Result<Vec<DefinitionRecord>, String> {
-	let mut by_path = HashMap::<(String, String), &ParsedScriptFile>::new();
+	let mut by_path = HashMap::<(&str, &GamePath), &ParsedScriptFile>::new();
 	for parsed in parsed_scripts {
 		by_path.insert(
-			(
-				parsed.mod_id.clone(),
-				parsed.relative_path.as_str().to_string(),
-			),
+			(parsed.mod_id.as_str(), parsed.relative_path.as_game_path()),
 			parsed.as_ref(),
 		);
 	}
 
 	let mut definitions = Vec::new();
 	for (idx, definition) in index.definitions.iter().enumerate() {
-		let key = (
-			definition.mod_id.clone(),
-			definition.path.as_str().to_string(),
-		);
+		let key = (definition.mod_id.as_str(), definition.path.as_game_path());
 		let parsed = by_path.get(&key).ok_or_else(|| {
 			format!(
 				"missing verified AST for runtime definition {} {}:{}",
@@ -400,14 +421,14 @@ fn collect_definition_records(
 			name: definition.name.clone(),
 			local_name: definition.local_name.clone(),
 			mod_id: definition.mod_id.clone(),
-			path: definition.path.as_str().to_string(),
+			path: definition.path.clone(),
 			line: definition.line,
 			column: definition.column,
 			precedence: precedence_by_mod
 				.get(&definition.mod_id)
 				.copied()
 				.unwrap_or_default(),
-			root_mergeable: is_merge_candidate_path(&definition.path.to_path("")),
+			root_mergeable: is_merge_candidate_path(&definition.path),
 			normalized_statement,
 		});
 	}
@@ -544,16 +565,164 @@ fn looks_like_clausewitz_path(path: &Path) -> bool {
 	)
 }
 
-fn is_merge_candidate_path(path: &Path) -> bool {
-	let normalized = normalize_path(path).to_ascii_lowercase();
-	normalized.starts_with("events/")
-		|| normalized.starts_with("decisions/")
-		|| normalized.starts_with("common/scripted_effects/")
-		|| normalized.starts_with("common/diplomatic_actions/")
-		|| normalized.starts_with("common/triggered_modifiers/")
-		|| normalized.starts_with("common/defines/")
+/// Directories whose definitions merge structurally. Names compare ignoring
+/// ASCII case.
+const MERGE_CANDIDATE_DIRECTORIES: [&[&str]; 6] = [
+	&["events"],
+	&["decisions"],
+	&["common", "scripted_effects"],
+	&["common", "diplomatic_actions"],
+	&["common", "triggered_modifiers"],
+	&["common", "defines"],
+];
+
+fn is_merge_candidate_path(path: &GamePath) -> bool {
+	MERGE_CANDIDATE_DIRECTORIES
+		.iter()
+		.any(|directory| path.is_inside(directory, str::eq_ignore_ascii_case))
 }
 
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
+#[cfg(test)]
+mod tests {
+	use super::{is_merge_candidate_path, runtime_contributors_by_key};
+	use crate::input::ResolvedInputContributor;
+	use crate::model::{GamePath, GamePathBuf};
+	use std::collections::HashSet;
+
+	fn contributor(mod_id: &str, root: &str, relative: &[&str]) -> ResolvedInputContributor {
+		let root_path = std::env::temp_dir().join(root);
+		let absolute_path = relative
+			.iter()
+			.fold(root_path.clone(), |path, component| path.join(component));
+		ResolvedInputContributor {
+			mod_id: mod_id.to_string(),
+			root_path,
+			absolute_path,
+			precedence: 1,
+			is_base_game: false,
+			is_synthetic_base: false,
+			parse_ok_hint: None,
+			mod_hash: None,
+		}
+	}
+
+	#[test]
+	fn contributor_keys_are_the_game_paths_definitions_carry() {
+		let effects = contributor("a", "mod-a", &["common", "scripted_effects", "x.txt"]);
+		let disabled = contributor("b", "mod-b", &["common", "scripted_effects", "x.txt"]);
+		let enabled = HashSet::from(["a".to_string()]);
+
+		let keys = runtime_contributors_by_key([&effects, &disabled], &enabled, None)
+			.expect("contributors lie under their roots");
+
+		// A semantic definition names its file by mod id and game path.
+		let definition_path =
+			GamePathBuf::parse("common/scripted_effects/x.txt").expect("valid game path");
+		let key = ("a".to_string(), definition_path);
+		assert_eq!(
+			keys.get(&key).map(|found| &found.absolute_path),
+			Some(&effects.absolute_path)
+		);
+		assert_eq!(keys.len(), 1, "a disabled mod contributes no key");
+	}
+
+	fn key_error(contributor: &ResolvedInputContributor) -> String {
+		let enabled = HashSet::from([contributor.mod_id.clone()]);
+		let error = runtime_contributors_by_key([contributor], &enabled, None)
+			.expect_err("the contributor has no game path");
+		for expected in [
+			"runtime contributor a ".to_string(),
+			contributor.absolute_path.display().to_string(),
+			contributor.root_path.display().to_string(),
+			"has no game path".to_string(),
+		] {
+			assert!(error.contains(&expected), "{expected} not in {error}");
+		}
+		error
+	}
+
+	#[test]
+	fn a_contributor_outside_its_root_is_an_error() {
+		let mut escaped = contributor("a", "mod-a", &["common", "x.txt"]);
+		escaped.absolute_path = std::env::temp_dir().join("elsewhere").join("x.txt");
+
+		let error = key_error(&escaped);
+		assert!(error.contains("not under its root"), "{error}");
+	}
+
+	/// The lossy key this replaced folded a literal backslash into a
+	/// separator, so `scripted_effects\x.txt` collided with the nested
+	/// `scripted_effects/x.txt`. It has no game path, and says so.
+	#[cfg(unix)]
+	#[test]
+	fn a_contributor_named_with_a_literal_backslash_is_an_error_not_a_nested_key() {
+		let literal = contributor("a", "mod-a", &["common", r"scripted_effects\x.txt"]);
+
+		let error = key_error(&literal);
+		assert!(error.contains(r"scripted_effects\x.txt"), "{error}");
+		assert!(error.contains("contains '\\\\'"), "{error}");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_contributor_with_a_non_utf8_name_is_an_error() {
+		use std::ffi::OsStr;
+		use std::os::unix::ffi::OsStrExt;
+
+		let mut unnamed = contributor("a", "mod-a", &["common"]);
+		unnamed.absolute_path = unnamed.absolute_path.join(OsStr::from_bytes(b"\xff.txt"));
+
+		let error = key_error(&unnamed);
+		assert!(error.contains("not valid UTF-8"), "{error}");
+	}
+
+	#[test]
+	fn two_files_under_one_mod_id_and_game_path_are_an_error() {
+		let first = contributor("a", "mod-a", &["common", "scripted_effects", "x.txt"]);
+		let second = contributor("a", "mod-a-copy", &["common", "scripted_effects", "x.txt"]);
+		let enabled = HashSet::from(["a".to_string()]);
+
+		let error = runtime_contributors_by_key([&first, &second], &enabled, None)
+			.expect_err("one key cannot name two files");
+		for expected in [
+			"a::common/scripted_effects/x.txt".to_string(),
+			first.absolute_path.display().to_string(),
+			second.absolute_path.display().to_string(),
+		] {
+			assert!(error.contains(&expected), "{expected} not in {error}");
+		}
+	}
+
+	#[test]
+	fn the_same_file_listed_twice_is_one_contributor() {
+		let seed = contributor("a", "mod-a", &["common", "scripted_effects", "x.txt"]);
+		let mut synthetic_base = seed.clone();
+		synthetic_base.is_synthetic_base = true;
+		synthetic_base.precedence = 0;
+		let enabled = HashSet::from(["a".to_string()]);
+
+		let keys = runtime_contributors_by_key([&synthetic_base, &seed], &enabled, None)
+			.expect("a synthetic base names its seed's file");
+		assert_eq!(keys.len(), 1);
+	}
+
+	#[test]
+	fn merge_candidate_directories_match_whole_components_ignoring_ascii_case() {
+		for (path, candidate) in [
+			("events/x.txt", true),
+			("Events/x.txt", true),
+			("common/scripted_effects/x.txt", true),
+			("COMMON/Defines/x.lua", true),
+			("eventsx/x.txt", false),
+			("events", false),
+			("common/scripted_effects_extra/x.txt", false),
+			("common/ideas/x.txt", false),
+		] {
+			assert_eq!(
+				is_merge_candidate_path(GamePath::new(path).expect("valid game path")),
+				candidate,
+				"{path}"
+			);
+		}
+	}
 }

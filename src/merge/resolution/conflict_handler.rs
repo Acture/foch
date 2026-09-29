@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-use crate::model::HandlerResolutionRecord;
+use crate::model::{GamePathBuf, HandlerResolutionRecord};
 use crate::project::{
 	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
 };
@@ -520,8 +520,21 @@ fn log_cwt_suggestion_on_miss(current_file: &Path, address_path: &[String], addr
 	} else {
 		address_path.iter().map(String::as_str).collect::<Vec<_>>()
 	};
+	// The metadata still names the file as a host path. A file without a game
+	// path binds no schema, so there is no suggestion to log; say why.
+	let game_path = match GamePathBuf::from_native_relative(current_file) {
+		Ok(game_path) => game_path,
+		Err(error) => {
+			tracing::warn!(
+				target: "foch_merge_cwt_suggest",
+				file = %current_file.display(),
+				"no cwt merge suggestion: {error}"
+			);
+			return;
+		}
+	};
 	let Some(suggestion) =
-		crate::game::eu4::cwt::merge::suggest_for_conflict(current_file, &ast_path)
+		crate::game::eu4::cwt::merge::suggest_for_conflict(&game_path, &ast_path)
 	else {
 		return;
 	};

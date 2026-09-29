@@ -9,6 +9,7 @@ pub(crate) mod cache;
 pub(crate) mod compile;
 pub(crate) mod error;
 pub(crate) mod query;
+pub(crate) mod rule_path;
 pub(crate) mod source;
 pub(crate) mod syntax;
 

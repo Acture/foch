@@ -75,8 +75,9 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		BTreeMap::new();
 
 	for (path, contributors) in &input.file_inventory {
+		let game_path = inventory_game_path(path)?;
 		if let Some(database) = rules
-			.map(|rules| rules.database_for(path))
+			.map(|rules| rules.database_for(game_path))
 			.transpose()?
 			.flatten()
 		{
@@ -86,7 +87,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 				.push((path, contributors));
 			continue;
 		}
-		let Some(descriptor) = profile.classify_content_family(Path::new(path)) else {
+		let Some(descriptor) = profile.classify_content_family(game_path) else {
 			regular.push(classify_entry(
 				path,
 				contributors,
@@ -124,7 +125,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		// a file in a subdirectory is not one of its inputs. It keeps its own
 		// per-path handling instead of joining — and then blocking — the module.
 		if !is_structural_merge_path(path, Some(descriptor))
-			|| !path_is_within_namespace(path, policy.namespace_prefix)
+			|| !path_is_within_namespace(path, policy.namespace_prefix.as_str())
 		{
 			regular.push(classify_entry(
 				path,
@@ -136,12 +137,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		}
 		let merge_unit = MergeUnitId {
 			family_id: descriptor.id.as_str().to_string(),
-			module_name: policy
-				.namespace_prefix
-				.rsplit('/')
-				.next()
-				.unwrap_or(descriptor.id.as_str())
-				.to_string(),
+			module_name: policy.namespace_prefix.file_name().to_string(),
 		};
 		modules
 			.entry(merge_unit)
@@ -154,7 +150,7 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		let has_reset_participant = module_has_reset_participant(input, policy);
 		if !module_has_non_base_contributor(&inputs) && !has_reset_participant {
 			for (path, contributors) in inputs {
-				let descriptor = profile.classify_content_family(Path::new(path));
+				let descriptor = profile.classify_content_family(inventory_game_path(path)?);
 				regular.push(classify_entry(
 					path,
 					contributors,
@@ -184,20 +180,20 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 				regular.push(classify_entry(
 					path,
 					contributors,
-					profile.classify_content_family(Path::new(path)),
+					profile.classify_content_family(inventory_game_path(path)?),
 					&input.script_cache,
 				));
 			}
 			continue;
 		}
-		match classify_database_entry(database, &inputs, input, profile) {
+		match classify_database_entry(database, &inputs, input, profile)? {
 			Some(entry) => regular.push(entry),
 			None => {
 				for (path, contributors) in inputs {
 					regular.push(classify_entry(
 						path,
 						contributors,
-						profile.classify_content_family(Path::new(path)),
+						profile.classify_content_family(inventory_game_path(path)?),
 						&input.script_cache,
 					));
 				}
@@ -224,19 +220,19 @@ fn classify_database_entry(
 	inputs: &ModuleInputs<'_>,
 	input: &ResolvedInput,
 	profile: &Eu4,
-) -> Option<MergePlanEntry> {
+) -> Result<Option<MergePlanEntry>, String> {
 	let mut policies: BTreeMap<&str, DefinitionModulePolicy> = BTreeMap::new();
 	let mut unsupported: Vec<&str> = Vec::new();
 	for (path, _) in inputs {
 		let descriptor: Option<&ContentFamilyDescriptor> =
-			profile.classify_content_family(Path::new(path));
+			profile.classify_content_family(inventory_game_path(path)?);
 		match descriptor.map(|descriptor| descriptor.load_policy) {
 			// `database_for` matches only direct children of a rule directory,
 			// so every input here is already inside its namespace.
 			Some(ContentLoadPolicy::DefinitionModule(policy))
 				if is_structural_merge_path(path, descriptor) =>
 			{
-				policies.insert(policy.namespace_prefix, policy);
+				policies.insert(policy.namespace_prefix.as_str(), policy);
 			}
 			_ => unsupported.push(path),
 		}
@@ -250,21 +246,21 @@ fn classify_database_entry(
 	// content family already defines. Grouping it by database would withhold
 	// content the analyzer merges today.
 	if policies.is_empty() {
-		return None;
+		return Ok(None);
 	}
 	if unsupported.is_empty() {
-		return Some(classify_module_entry(
+		return Ok(Some(classify_module_entry(
 			merge_unit,
 			policies.values().copied(),
 			inputs,
 			input,
 			&input.script_cache,
-		));
+		)));
 	}
 	// Only inputs the analyzer cannot merge structurally reach this point.
 	// Deferring names them instead of reporting the whole database as opaque.
 	let outputs: Vec<MergeModuleOutput> = module_outputs(policies.values().copied(), input);
-	Some(MergePlanEntry {
+	Ok(Some(MergePlanEntry {
 		target: MergePlanTarget::Module {
 			id: merge_unit,
 			input_paths: inputs.iter().map(|(path, _)| (*path).to_string()).collect(),
@@ -277,7 +273,7 @@ fn classify_database_entry(
 			"Database {database} cannot merge {} structurally; the complete database unit is deferred",
 			unsupported.join(", ")
 		)],
-	})
+	}))
 }
 
 /// One output per participating namespace, ordered by output path so the
@@ -294,7 +290,7 @@ fn module_outputs(
 			// `replace_path` is declared per directory, so each namespace
 			// answers this for itself.
 			replace_prefix: (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace
-				|| namespace_has_reset_participant(input, policy.namespace_prefix))
+				|| namespace_has_reset_participant(input, policy.namespace_prefix.as_str()))
 			.then(|| policy.namespace_prefix.to_string()),
 		})
 		.collect();
@@ -312,7 +308,7 @@ fn module_has_non_base_contributor(inputs: &ModuleInputs<'_>) -> bool {
 }
 
 fn module_has_reset_participant(input: &ResolvedInput, policy: DefinitionModulePolicy) -> bool {
-	namespace_has_reset_participant(input, policy.namespace_prefix)
+	namespace_has_reset_participant(input, policy.namespace_prefix.as_str())
 }
 
 fn namespace_has_reset_participant(input: &ResolvedInput, namespace: &str) -> bool {
@@ -390,6 +386,12 @@ fn module_contributors(inputs: &ModuleInputs<'_>) -> Vec<MergePlanContributor> {
 			.then_with(|| left.mod_id.cmp(&right.mod_id))
 	});
 	contributors
+}
+
+/// Inventory keys are written from game paths, so this parse restores the
+/// typed key rather than interpreting new text; it fails only on a corrupt key.
+fn inventory_game_path(path: &str) -> Result<&GamePath, String> {
+	GamePath::new(path).map_err(|error| format!("inventory key is not a game path: {error}"))
 }
 
 fn classify_entry(
@@ -569,7 +571,7 @@ fn validate_structural_snapshot(
 			.map(move |path| (entry, path))
 	}) {
 		let contributors: &[ResolvedInputContributor] = &input.file_inventory[path];
-		let descriptor = profile.classify_content_family(Path::new(path));
+		let descriptor = profile.classify_content_family(inventory_game_path(path)?);
 		if !is_structural_merge_path(path, descriptor) {
 			continue;
 		}
@@ -612,7 +614,14 @@ pub(crate) fn prune_noop_script_contributors(
 	let script_cache = &input.script_cache;
 	let mut emptied = Vec::new();
 	for (relative_path, contributors) in &mut input.file_inventory {
-		let descriptor = profile.classify_content_family(Path::new(relative_path));
+		// Inventory keys are written from game paths, so this parse restores
+		// the typed key rather than interpreting new text.
+		let game_path = GamePath::new(relative_path).map_err(|error| InputResolveError {
+			kind: InputResolveErrorKind::Io,
+			path: input.playlist_path.clone(),
+			message: format!("inventory key is not a game path: {error}"),
+		})?;
+		let descriptor = profile.classify_content_family(game_path);
 		if descriptor.is_some_and(|descriptor| {
 			matches!(
 				descriptor.load_policy,
@@ -627,13 +636,6 @@ pub(crate) fn prune_noop_script_contributors(
 		if contributors.len() < 2 {
 			continue;
 		}
-		// Inventory keys are written from game paths, so this parse restores
-		// the typed key rather than interpreting new text.
-		let game_path = GamePath::new(relative_path).map_err(|error| InputResolveError {
-			kind: InputResolveErrorKind::Io,
-			path: input.playlist_path.clone(),
-			message: format!("inventory key is not a game path: {error}"),
-		})?;
 		contributors.retain(|contributor| {
 			contributor.is_base_game
 				|| contributor.is_synthetic_base

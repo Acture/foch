@@ -1,6 +1,5 @@
-use crate::model::{MaybeScope, ScopeType};
+use crate::model::{GamePath, MaybeScope, ScopeType};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::Arc;
 
 mod families;
@@ -426,8 +425,9 @@ pub struct DefinitionModulePolicy {
 	pub definition_key: DefinitionKeyPolicy,
 	pub file_order: DefinitionFileOrder,
 	pub duplicate_definitions: DuplicateDefinitionPolicy,
-	pub output_path: &'static str,
-	pub namespace_prefix: &'static str,
+	pub output_path: &'static GamePath,
+	/// The directory the module reads its input files from.
+	pub namespace_prefix: &'static GamePath,
 	pub output_mode: DefinitionModuleOutput,
 	/// Increment when loader semantics change. Callers must include this value
 	/// in cache identities for canonical module output.
@@ -703,10 +703,34 @@ impl<'de> Deserialize<'de> for MergeKeySource {
 	}
 }
 
+/// The game paths a content family owns. Both forms compare whole names as
+/// spelled, including their case.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentFamilyPathMatcher {
-	Prefix(&'static str),
-	Exact(&'static str),
+	/// Every file below this directory, at any depth.
+	Prefix(&'static GamePath),
+	/// This one file.
+	Exact(&'static GamePath),
+}
+
+impl ContentFamilyPathMatcher {
+	pub fn matches(&self, path: &GamePath) -> bool {
+		match self {
+			Self::Prefix(directory) => path.strip_prefix(directory).is_some(),
+			Self::Exact(file) => path == *file,
+		}
+	}
+}
+
+/// A game path spelled by a static rule table, either as a literal or
+/// derived from one. The tables are fixed at compile time and their tests
+/// build and check every entry, so text that is not a game path is a defect
+/// in the table: it panics, naming the text, when the table is first built.
+pub(crate) fn table_game_path(text: &str) -> &GamePath {
+	match GamePath::new(text) {
+		Ok(path) => path,
+		Err(error) => panic!("static EU4 rule table: {error}"),
+	}
 }
 
 #[non_exhaustive]
@@ -873,10 +897,11 @@ impl ContentFamilyDescriptor {
 			&& self.merge_key_source.is_some()
 	}
 
-	pub fn prefix(id: &'static str, prefix: &'static str) -> ContentFamilyDescriptorBuilder {
+	/// A family owning every file below `directory`, a game path literal.
+	pub fn prefix(id: &'static str, directory: &'static str) -> ContentFamilyDescriptorBuilder {
 		ContentFamilyDescriptorBuilder {
 			id: ContentFamilyId::new(id),
-			matcher: ContentFamilyPathMatcher::Prefix(prefix),
+			matcher: ContentFamilyPathMatcher::Prefix(table_game_path(directory)),
 			script_file_kind: ScriptFileKind::new("other"),
 			module_name_rule: ModuleNameRule::FallbackParent,
 			load_policy: ContentLoadPolicy::PerPath,
@@ -911,10 +936,11 @@ impl ContentFamilyDescriptor {
 		}
 	}
 
+	/// A family owning the single file `exact_path`, a game path literal.
 	pub fn exact(id: &'static str, exact_path: &'static str) -> ContentFamilyDescriptorBuilder {
 		ContentFamilyDescriptorBuilder {
 			id: ContentFamilyId::new(id),
-			matcher: ContentFamilyPathMatcher::Exact(exact_path),
+			matcher: ContentFamilyPathMatcher::Exact(table_game_path(exact_path)),
 			script_file_kind: ScriptFileKind::new("other"),
 			module_name_rule: ModuleNameRule::FallbackParent,
 			load_policy: ContentLoadPolicy::PerPath,
@@ -950,9 +976,11 @@ impl ContentFamilyDescriptor {
 	}
 }
 
-pub fn module_name_for_descriptor(relative: &Path, descriptor: &ContentFamilyDescriptor) -> String {
-	let normalized = relative.to_string_lossy().replace('\\', "/");
-	let parts: Vec<&str> = normalized.split('/').collect();
+pub fn module_name_for_descriptor(
+	relative: &GamePath,
+	descriptor: &ContentFamilyDescriptor,
+) -> String {
+	let parts: Vec<&str> = relative.iter().collect();
 	match descriptor.module_name_rule {
 		ModuleNameRule::Static(value) => value.to_string(),
 		ModuleNameRule::Tail {
@@ -1072,7 +1100,7 @@ mod tests {
 	fn boolean_merge_defaults_to_or_across_revisions() {
 		assert_eq!(MergePolicies::default().boolean, BooleanMergePolicy::Or);
 		assert_eq!(
-			ContentFamilyDescriptor::prefix("test", "common/test/")
+			ContentFamilyDescriptor::prefix("test", "common/test")
 				.build()
 				.merge_policies
 				.boolean,
@@ -1164,22 +1192,26 @@ mod content_load_policy_tests {
 		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
 		DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy,
 	};
+	use crate::model::GamePath;
 
-	const MODULE_POLICY: DefinitionModulePolicy = DefinitionModulePolicy {
-		definition_key: DefinitionKeyPolicy::AssignmentKey,
-		file_order: DefinitionFileOrder::NormalizedPathAscending,
-		duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-		output_path: "common/governments/00_foch_governments.txt",
-		namespace_prefix: "common/governments",
-		output_mode: DefinitionModuleOutput::ReplaceNamespace,
-		policy_version: 1,
-	};
+	fn module_policy() -> DefinitionModulePolicy {
+		DefinitionModulePolicy {
+			definition_key: DefinitionKeyPolicy::AssignmentKey,
+			file_order: DefinitionFileOrder::NormalizedPathAscending,
+			duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
+			output_path: GamePath::new("common/governments/00_foch_governments.txt")
+				.expect("valid game path"),
+			namespace_prefix: GamePath::new("common/governments").expect("valid game path"),
+			output_mode: DefinitionModuleOutput::ReplaceNamespace,
+			policy_version: 1,
+		}
+	}
 
 	#[test]
 	fn load_policy_defaults_to_per_path() {
 		assert_eq!(ContentLoadPolicy::default(), ContentLoadPolicy::PerPath);
 		assert_eq!(
-			ContentFamilyDescriptor::prefix("test", "common/test/")
+			ContentFamilyDescriptor::prefix("test", "common/test")
 				.build()
 				.load_policy,
 			ContentLoadPolicy::PerPath
@@ -1188,35 +1220,39 @@ mod content_load_policy_tests {
 
 	#[test]
 	fn descriptor_records_the_complete_definition_module_policy() {
-		let descriptor = ContentFamilyDescriptor::prefix("test", "common/test/")
-			.load_policy(ContentLoadPolicy::DefinitionModule(MODULE_POLICY))
+		let module_policy = module_policy();
+		let descriptor = ContentFamilyDescriptor::prefix("test", "common/test")
+			.load_policy(ContentLoadPolicy::DefinitionModule(module_policy))
 			.build();
 
 		assert_eq!(
 			descriptor.load_policy,
-			ContentLoadPolicy::DefinitionModule(MODULE_POLICY)
+			ContentLoadPolicy::DefinitionModule(module_policy)
 		);
 		assert_eq!(
-			MODULE_POLICY.definition_key,
+			module_policy.definition_key,
 			DefinitionKeyPolicy::AssignmentKey
 		);
 		assert_eq!(
-			MODULE_POLICY.file_order,
+			module_policy.file_order,
 			DefinitionFileOrder::NormalizedPathAscending
 		);
 		assert_eq!(
-			MODULE_POLICY.duplicate_definitions,
+			module_policy.duplicate_definitions,
 			DuplicateDefinitionPolicy::LaterDefinitionWins
 		);
 		assert_eq!(
-			MODULE_POLICY.output_path,
+			module_policy.output_path.as_str(),
 			"common/governments/00_foch_governments.txt"
 		);
-		assert_eq!(MODULE_POLICY.namespace_prefix, "common/governments");
 		assert_eq!(
-			MODULE_POLICY.output_mode,
+			module_policy.namespace_prefix.as_str(),
+			"common/governments"
+		);
+		assert_eq!(
+			module_policy.output_mode,
 			DefinitionModuleOutput::ReplaceNamespace
 		);
-		assert_eq!(MODULE_POLICY.policy_version, 1);
+		assert_eq!(module_policy.policy_version, 1);
 	}
 }

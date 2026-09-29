@@ -20,8 +20,9 @@ use foch::input::{
 	Config, InputRequest, InputSource, InputTargetRole, load_or_init_config, resolve_input_targets,
 };
 use foch::model::{
-	AnalysisMode, DocumentFamily, DocumentRecord, Finding, GamePathBuf, LocalisationDefinition,
-	SemanticIndex, Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
+	AnalysisMode, DocumentFamily, DocumentRecord, Finding, GamePath, GamePathBuf,
+	LocalisationDefinition, SemanticIndex, Severity, SymbolDefinition,
+	SymbolKind as FochSymbolKind,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -192,7 +193,10 @@ impl Backend {
 			(state.workspace.clone(), state.targets.clone())
 		};
 		let schema = self.schema.read().await.clone();
-		let relative_path = match_scan_target(&targets, &path).map(|(_, relative)| relative);
+		// Schema features need the document's game path; a name without one
+		// gets none.
+		let relative_path = match_scan_target(&targets, &path)
+			.and_then(|(_, relative)| GamePathBuf::from_native_relative(&relative).ok());
 		let mut diagnostics = snapshot
 			.as_ref()
 			.and_then(|snapshot| {
@@ -383,6 +387,9 @@ impl LanguageServer for Backend {
 		let Some((_, relative_path)) = match_scan_target(&targets, &path) else {
 			return Ok(None);
 		};
+		let Ok(relative_path) = GamePathBuf::from_native_relative(&relative_path) else {
+			return Ok(None);
+		};
 		Ok(schema_hover(
 			&schema,
 			&relative_path,
@@ -405,6 +412,7 @@ impl LanguageServer for Backend {
 		let mut candidates = if let Some(schema) = schema.as_ref()
 			&& let Ok(path) = uri.to_file_path()
 			&& let Some((_, relative_path)) = match_scan_target(&state.targets, &path)
+			&& let Ok(relative_path) = GamePathBuf::from_native_relative(&relative_path)
 			&& let Some(candidates) = schema_completion_candidates_with_index(
 				schema,
 				&relative_path,
@@ -595,7 +603,7 @@ fn lsp_range_from_editor(range: EditorRange) -> Range {
 
 fn schema_hover(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: Position,
 	workspace: Option<&SchemaWorkspace>,
@@ -616,7 +624,7 @@ fn schema_hover_view(hover: SchemaHover) -> Hover {
 
 fn schema_completion_candidates_with_index(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: Position,
 	prefix_lower: &str,
@@ -651,7 +659,7 @@ fn schema_completion_candidate(completion: SchemaCompletion) -> CompletionCandid
 
 fn schema_diagnostics_for_text_with_index(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	workspace: Option<&SchemaWorkspace>,
 ) -> Vec<Diagnostic> {
@@ -664,7 +672,7 @@ fn schema_diagnostics_for_text_with_index(
 
 fn schema_localisation_diagnostics_for_text(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	definitions: &[LocalisationDefinition],
 ) -> Vec<Diagnostic> {
@@ -902,25 +910,20 @@ fn build_workspace_snapshot_with_schema(
 		.into_iter()
 		.chain(diagnostics.advisory)
 		.collect();
-	// The editor schema still takes each game path spelled as a host path.
-	let schema_paths = parsed
-		.iter()
-		.map(|file| file.relative_path.to_path(""))
-		.collect::<Vec<_>>();
 	let schema_workspace = schema
 		.as_ref()
 		.map(|schema| {
 			let documents = parsed
 				.iter()
-				.zip(&schema_paths)
-				.map(|(file, path)| SchemaDocument::new(path, &file.source))
+				.map(|file| SchemaDocument::new(&file.relative_path, &file.source))
 				.collect::<Vec<_>>();
 			schema.workspace(&documents)
 		})
 		.unwrap_or_default();
 	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
 	if let Some(schema) = schema.as_ref() {
-		for (file, schema_path) in parsed.iter().zip(&schema_paths) {
+		for file in &parsed {
+			let schema_path = &file.relative_path;
 			// Every workspace script was read from disk.
 			let Some(physical) = file.path.as_deref() else {
 				continue;
@@ -993,7 +996,8 @@ fn build_workspace_diagnostics(
 		let Some(mod_id) = finding.mod_id.as_deref() else {
 			continue;
 		};
-		let Some(path) = path_lookup.get(&path_lookup_key(mod_id, relative_path)) else {
+		let Some(path) = path_lookup.get(&path_lookup_key(mod_id, &relative_path.to_path("")))
+		else {
 			continue;
 		};
 		diagnostics_by_path

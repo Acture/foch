@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::syntax::ByteSpan;
 
@@ -65,6 +65,23 @@ pub(crate) enum CwtLoadError {
 	Codec {
 		message: String,
 	},
+}
+
+impl CwtLoadError {
+	/// Names `file` as the schema file an invalid-schema error came from,
+	/// unless the error already names one.
+	pub(crate) fn in_file(self, file: &Path) -> Self {
+		match self {
+			Self::InvalidSchema {
+				path: None,
+				message,
+			} => Self::InvalidSchema {
+				path: Some(file.to_path_buf()),
+				message,
+			},
+			other => other,
+		}
+	}
 }
 
 impl Display for CwtLoadError {

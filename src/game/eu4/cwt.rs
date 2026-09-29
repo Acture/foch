@@ -1,16 +1,18 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use super::base::builtin::is_builtin_effect;
 use super::content::ScriptFileKind;
+use crate::game::schema::error::CwtLoadError;
 #[cfg(test)]
 use crate::game::schema::query::CompiledAlias;
 use crate::game::schema::query::{
 	CompiledAliasCategory, CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery,
 	RuleContext,
 };
+use crate::game::schema::rule_path::SchemaDirectory;
 use crate::game::schema::{CwtSchema, CwtSource};
-use crate::model::{ScopeKind, ScopeType, base_scope};
+use crate::model::{GamePath, ScopeKind, ScopeType, base_scope};
 
 pub mod merge;
 
@@ -35,13 +37,27 @@ fn active_schema_slot() -> &'static Option<Arc<CwtSchema>> {
 	EU4_SCHEMA.get_or_init(load_schema)
 }
 
+/// Loads the first schema directory that exists. A schema that fails to load
+/// leaves every CWT feature off, so the failure is reported, naming the
+/// directory and the cause, instead of passing silently.
 fn load_schema() -> Option<Arc<CwtSchema>> {
 	let candidate = schema_candidates()
 		.into_iter()
 		.find(|candidate| candidate.root.is_dir())?;
-	CwtSchema::load(&candidate.root, candidate.source)
-		.ok()
-		.map(Arc::new)
+	match CwtSchema::load(&candidate.root, candidate.source.clone()) {
+		Ok(schema) => Some(Arc::new(schema)),
+		Err(error) => {
+			tracing::error!("{}", schema_load_failure(&candidate, &error));
+			None
+		}
+	}
+}
+
+fn schema_load_failure(candidate: &SchemaCandidate, error: &CwtLoadError) -> String {
+	format!(
+		"CWT schema `{}` failed to load, so schema-driven features are off: {error}",
+		candidate.root.display()
+	)
 }
 
 fn schema_candidates() -> Vec<SchemaCandidate> {
@@ -406,7 +422,7 @@ pub(crate) fn schema_file_kind_container_scope_kind(
 pub(crate) fn schema_path_container_scope_kind(
 	engine: &CwtQuery,
 	file_kind: ScriptFileKind,
-	file_path: &Path,
+	file_path: &GamePath,
 	ast_path: &[&str],
 ) -> Option<ScopeKind> {
 	let key = *ast_path.last()?;
@@ -708,7 +724,7 @@ fn file_kind_root_types<'e>(
 			definition.name.as_str() == kind
 				|| definition
 					.path
-					.as_deref()
+					.as_ref()
 					.is_some_and(|path| schema_path_matches_file_kind(path, kind))
 		})
 		.collect::<Vec<_>>();
@@ -716,12 +732,11 @@ fn file_kind_root_types<'e>(
 	matches
 }
 
-fn schema_path_matches_file_kind(path: &str, file_kind: &str) -> bool {
-	let normalized = path
-		.trim_start_matches("game/")
-		.trim_matches('/')
-		.to_ascii_lowercase();
-	normalized == file_kind || normalized.rsplit('/').next() == Some(file_kind)
+/// Whether a root type's directory is named for `file_kind`: its last
+/// component, compared ignoring ASCII case as rule paths are.
+pub(super) fn schema_path_matches_file_kind(path: &SchemaDirectory, file_kind: &str) -> bool {
+	path.as_game_path()
+		.is_some_and(|directory| directory.file_name().eq_ignore_ascii_case(file_kind))
 }
 
 fn file_kind_container_fields<'e>(
@@ -1059,10 +1074,12 @@ pub fn looks_like_map_group_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use std::path::Path;
-
-	use super::{iterator_scope_type, schema_path_container_scope_kind};
+	use super::{
+		CwtSchema, CwtSource, SchemaCandidate, iterator_scope_type, schema_load_failure,
+		schema_path_container_scope_kind,
+	};
 	use crate::game::eu4::content::ScriptFileKind;
+	use crate::model::GamePath;
 	use crate::model::{ScopeKind, base_scope};
 
 	#[test]
@@ -1102,7 +1119,7 @@ mod tests {
 	#[test]
 	fn schema_path_classifies_dynamic_age_objectives_as_triggers() {
 		let engine = super::rule_engine().expect("EU4 CWT rules");
-		let file = Path::new("common/ages/00_default.txt");
+		let file = GamePath::new("common/ages/00_default.txt").expect("valid game path");
 		let file_kind = ScriptFileKind::new("ages");
 
 		assert_eq!(
@@ -1123,5 +1140,38 @@ mod tests {
 			),
 			Some(ScopeKind::Trigger),
 		);
+	}
+
+	/// A user schema can declare a rule path that is not a game path. It no
+	/// longer loads, and the report says which schema, which file and which
+	/// declaration instead of switching schema features off silently.
+	#[test]
+	fn a_user_schema_that_fails_to_load_is_reported_with_its_cause() {
+		let root = tempfile::tempdir().expect("create schema dir");
+		let file = root.path().join("ideas.cwt");
+		std::fs::write(
+			&file,
+			"types = { type[idea_group] = { path = \"game/common/ideas/\" } }\n",
+		)
+		.expect("write schema");
+		let candidate = SchemaCandidate {
+			root: root.path().to_path_buf(),
+			source: CwtSource::UserProvided {
+				path: root.path().to_path_buf(),
+			},
+		};
+
+		let error = CwtSchema::load_with_cache(&candidate.root, candidate.source.clone(), None)
+			.err()
+			.expect("a trailing `/` is not a game path");
+		let report = schema_load_failure(&candidate, &error);
+
+		for expected in [
+			root.path().display().to_string(),
+			file.display().to_string(),
+			"`idea_group` declares an invalid path".to_string(),
+		] {
+			assert!(report.contains(&expected), "{expected} not in {report}");
+		}
 	}
 }

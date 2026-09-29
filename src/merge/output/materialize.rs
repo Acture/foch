@@ -40,9 +40,9 @@ use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
 use crate::merge::review::{MergeDisposition, MergeReview, UnitOutcomeLedger};
 use crate::model::{
-	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, HandlerResolutionRecord,
-	LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput, MergePlanEntry,
-	MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
+	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath,
+	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
+	MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 	MergeReportConflictResolution, MergeReportStatus, MergeTraceEntry, SemanticIndex,
 	StaleVanillaTargetDescriptor,
 };
@@ -773,7 +773,7 @@ fn apply_structural_unit(
 			.file_inventory
 			.get(entry.output_path())
 			.map(Vec::as_slice);
-		let descriptor = profile.classify_content_family(Path::new(entry.output_path()));
+		let descriptor = profile.classify_content_family(output_game_path(entry)?);
 		let vanilla_base_mode = effective_vanilla_base_mode(
 			descriptor,
 			contributors,
@@ -1971,6 +1971,15 @@ fn dag_diagnostic_warning(diagnostic: &DagDiagnostic) -> Option<String> {
 	}
 }
 
+/// Plan paths are still text written from game paths; this restores the one
+/// an entry writes, and fails only on a corrupt plan.
+fn output_game_path(entry: &MergePlanEntry) -> Result<&GamePath, MergeError> {
+	GamePath::new(entry.output_path()).map_err(|error| MergeError::Validation {
+		path: Some(entry.output_path().to_string()),
+		message: error.to_string(),
+	})
+}
+
 fn validate_structured_merge_entry(
 	entry: &MergePlanEntry,
 	contributors: Option<&[ResolvedInputContributor]>,
@@ -1978,7 +1987,7 @@ fn validate_structured_merge_entry(
 	profile: &Eu4,
 ) -> Result<(), MergeError> {
 	let descriptor = profile
-		.classify_content_family(Path::new(entry.output_path()))
+		.classify_content_family(output_game_path(entry)?)
 		.ok_or_else(|| {
 			structured_merge_unsupported(entry, "the path has no ContentFamily descriptor")
 		})?;
@@ -2837,11 +2846,19 @@ mod tests {
 	#[test]
 	fn supported_file_families_treat_verified_missing_vanilla_as_known_absent() {
 		let profile = eu4();
-		let defines = profile.classify_content_family(Path::new("common/defines/es_defines.lua"));
-		let events = profile.classify_content_family(Path::new("events/test.txt"));
-		let gfx =
-			profile.classify_content_family(Path::new("interface/000_expanded_mod_family.gfx"));
-		let governments = profile.classify_content_family(Path::new("common/governments/test.txt"));
+		let defines = profile.classify_content_family(
+			crate::model::GamePath::new("common/defines/es_defines.lua").expect("valid game path"),
+		);
+		let events = profile.classify_content_family(
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+		);
+		let gfx = profile.classify_content_family(
+			crate::model::GamePath::new("interface/000_expanded_mod_family.gfx")
+				.expect("valid game path"),
+		);
+		let governments = profile.classify_content_family(
+			crate::model::GamePath::new("common/governments/test.txt").expect("valid game path"),
+		);
 		let contributors = [
 			test_contributor("left", 1, false, false),
 			test_contributor("right", 2, false, false),
@@ -3035,7 +3052,7 @@ mod tests {
 	}
 
 	fn per_entry_noop_descriptor(opted_in: bool) -> ContentFamilyDescriptor {
-		let builder = ContentFamilyDescriptor::prefix("test", "test/")
+		let builder = ContentFamilyDescriptor::prefix("test", "test")
 			.merge_key(MergeKeySource::AssignmentKey);
 		if opted_in {
 			builder.per_entry_dedup_safe().build()
@@ -3151,7 +3168,7 @@ mod tests {
 		let path = crate::model::GamePath::new("common/scripted_triggers/00_scripted_triggers.txt")
 			.expect("valid game path");
 		let descriptor = eu4()
-			.classify_content_family(&path.to_path(""))
+			.classify_content_family(path)
 			.expect("scripted_triggers family");
 		let vanilla = parse_test_statements(
 			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
@@ -3178,7 +3195,7 @@ mod tests {
 		let path = crate::model::GamePath::new("common/scripted_triggers/00_scripted_triggers.txt")
 			.expect("valid game path");
 		let descriptor = eu4()
-			.classify_content_family(&path.to_path(""))
+			.classify_content_family(path)
 			.expect("scripted_triggers family");
 		let vanilla = parse_test_statements(
 			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",

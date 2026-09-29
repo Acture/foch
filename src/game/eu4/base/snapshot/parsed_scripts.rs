@@ -1,8 +1,9 @@
 //! Codec for parsed Clausewitz documents embedded in base-data snapshots.
 
 use crate::game::eu4::content::ScriptFileKind;
+use crate::game::eu4::content::eu4;
+use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
-use crate::game::eu4::script::{ParsedScriptFile, content_family_for};
 use crate::model::{GamePathBuf, ParseIssue};
 use std::path::Path;
 
@@ -87,7 +88,7 @@ impl StoredParsedScriptFile {
 	}
 
 	fn into_parsed_script_file(self, root: &Path) -> ParsedScriptFile {
-		let content_family = content_family_for(&self.relative_path);
+		let content_family = eu4().classify_content_family(&self.relative_path);
 		// The AST is identified by the document's game path, so decoded base
 		// documents normalize the same way as the merge inputs they are the
 		// ancestor of, whatever the stored AST path says.

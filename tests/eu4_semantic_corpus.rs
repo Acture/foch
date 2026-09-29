@@ -59,10 +59,9 @@ fn is_targeted_noise(finding: &Finding, relative_paths: &[&str], rule_ids: &[&st
 			.path
 			.as_ref()
 			.map(|path| {
-				let rendered = path.to_string_lossy().replace('\\', "/");
 				relative_paths
 					.iter()
-					.any(|relative| rendered.ends_with(relative))
+					.any(|relative| path.ends_with(relative))
 			})
 			.unwrap_or(false)
 }
@@ -965,7 +964,7 @@ fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
 				finding
 					.path
 					.as_ref()
-					.map(|path| path.display().to_string())
+					.map(ToString::to_string)
 					.unwrap_or_else(|| "<none>".to_string()),
 				finding.line.unwrap_or_default(),
 				finding.message
@@ -983,7 +982,7 @@ fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
 				finding
 					.path
 					.as_ref()
-					.map(|path| path.display().to_string())
+					.map(ToString::to_string)
 					.unwrap_or_else(|| "<none>".to_string()),
 				finding.line.unwrap_or_default(),
 				finding.message
@@ -1049,7 +1048,7 @@ fn corpus_real_minimized_europa_expanded_building_params_stay_clean() {
 				finding
 					.path
 					.as_ref()
-					.map(|path| path.display().to_string())
+					.map(ToString::to_string)
 					.unwrap_or_else(|| "<none>".to_string()),
 				finding.line.unwrap_or_default(),
 				finding.message
@@ -1105,7 +1104,7 @@ fn corpus_real_minimized_europa_expanded_complex_effects_stay_clean() {
 				finding
 					.path
 					.as_ref()
-					.map(|path| path.display().to_string())
+					.map(ToString::to_string)
 					.unwrap_or_else(|| "<none>".to_string()),
 				finding.line.unwrap_or_default(),
 				finding.message
@@ -1165,7 +1164,7 @@ fn corpus_real_minimized_base_game_complex_effects_stay_clean() {
 				finding
 					.path
 					.as_ref()
-					.map(|path| path.display().to_string())
+					.map(ToString::to_string)
 					.unwrap_or_else(|| "<none>".to_string()),
 				finding.line.unwrap_or_default(),
 				finding.message

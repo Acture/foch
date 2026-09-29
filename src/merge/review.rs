@@ -1,7 +1,8 @@
 use super::error::MergeError;
 use crate::game::eu4::content::eu4;
 use crate::model::{
-	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget,
+	GamePath, MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy,
+	MergePlanTarget,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path};
@@ -167,7 +168,7 @@ impl UnitOutcomeLedger {
 				format!("review unit `{id}` resolved twice"),
 			));
 		}
-		let (kind, family) = unit_kind_and_family(entry);
+		let (kind, family) = unit_kind_and_family(entry)?;
 		let mut notes = entry.notes.clone();
 		notes.extend(additional_notes);
 		let mut output_paths: Vec<String> = Vec::with_capacity(written_paths.len());
@@ -331,19 +332,26 @@ fn validate_relative_id_part(value: &str, output_path: &str) -> Result<(), Merge
 	Ok(())
 }
 
-fn unit_kind_and_family(entry: &MergePlanEntry) -> (MergeUnitKind, String) {
-	match &entry.target {
-		MergePlanTarget::File { path } => (
-			MergeUnitKind::File,
-			eu4().classify_content_family(Path::new(path)).map_or_else(
-				|| "unclassified".to_string(),
-				|descriptor| descriptor.id.as_str().to_string(),
-			),
-		),
+fn unit_kind_and_family(entry: &MergePlanEntry) -> Result<(MergeUnitKind, String), MergeError> {
+	Ok(match &entry.target {
+		MergePlanTarget::File { path } => {
+			// Plan paths are still text; the family is that of the path the
+			// unit id names.
+			let id_path = normalize_path(path);
+			let game_path =
+				GamePath::new(&id_path).map_err(|error| invariant(path, error.to_string()))?;
+			(
+				MergeUnitKind::File,
+				eu4().classify_content_family(game_path).map_or_else(
+					|| "unclassified".to_string(),
+					|descriptor| descriptor.id.as_str().to_string(),
+				),
+			)
+		}
 		MergePlanTarget::Module { id, .. } => {
 			(MergeUnitKind::DefinitionModule, id.family_id.clone())
 		}
-	}
+	})
 }
 
 fn review_contributors(contributors: &[MergePlanContributor]) -> Vec<MergeReviewContributor> {

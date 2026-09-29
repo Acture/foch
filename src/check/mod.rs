@@ -20,8 +20,8 @@ use crate::merge::namespace::{
 };
 use crate::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
-	Finding, FindingChannel, ParseFamilyStats, ParseIssueReportItem, SemanticIndex, Severity,
-	SymbolDefinition,
+	Finding, FindingChannel, GamePathError, ParseFamilyStats, ParseIssueReportItem, SemanticIndex,
+	Severity, SymbolDefinition,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
@@ -120,7 +120,8 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 					channel: FindingChannel::Strict,
 					message: "failed to parse Playset JSON".to_string(),
 					mod_id: None,
-					path: Some(err.path),
+					path: None,
+					source_file: Some(err.path),
 					evidence: Some(err.message),
 					line: None,
 					column: None,
@@ -284,17 +285,20 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		);
 		result.findings.extend(runtime_overlap_findings);
 		result.findings.extend(check_dependency_misuse(&ctx));
-		result.findings.extend(
-			check_namespace_conflicts(&resolved.file_inventory, &mod_dag)
-				.into_iter()
-				.filter(|finding| {
+		match check_namespace_conflicts(&resolved.file_inventory, &mod_dag) {
+			Ok(findings) => result
+				.findings
+				.extend(findings.into_iter().filter(|finding| {
 					!finding
 						.evidence
 						.as_deref()
 						.and_then(extract_namespace_key)
 						.is_some_and(|key| overlap_covered_names.contains(key))
-				}),
-		);
+				})),
+			Err(error) => result.push_fatal_error(format!(
+				"namespace conflict check could not classify an inventory path: {error}"
+			)),
+		}
 	} else {
 		// Basic mode: no overlap module runs, so the heuristic
 		// `duplicate-scripted-effect` still provides value for scripted-effect
@@ -449,9 +453,9 @@ const NAMESPACE_CHECK_FAMILIES: &[&str] = &["common/scripted_effects", "common/s
 fn check_namespace_conflicts(
 	file_inventory: &BTreeMap<String, Vec<ResolvedInputContributor>>,
 	mod_dag: &ModDag,
-) -> Vec<Finding> {
+) -> Result<Vec<Finding>, GamePathError> {
 	let profile = eu4();
-	let families_by_id = group_by_family(file_inventory, profile);
+	let families_by_id = group_by_family(file_inventory, profile)?;
 
 	let mut findings = Vec::new();
 
@@ -503,7 +507,8 @@ fn check_namespace_conflicts(
 				channel: FindingChannel::Advisory,
 				message: format!("duplicate key is defined by {} sibling mods", leaves.len()),
 				mod_id: Some(primary.mod_id.clone()),
-				path: Some(std::path::PathBuf::from(&primary.file_path)),
+				path: Some(primary.file_path.clone()),
+				source_file: None,
 				evidence: Some(evidence),
 				line: None,
 				column: None,
@@ -512,7 +517,7 @@ fn check_namespace_conflicts(
 		}
 	}
 
-	findings
+	Ok(findings)
 }
 
 fn leaf_namespace_contributors<'a>(

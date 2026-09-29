@@ -2,8 +2,8 @@ use foch::check::{run_checks, run_checks_with_options};
 use foch::input::{CheckOptions, Config, InputRequest};
 use foch::merge::{CancellationToken, MergeAnalysisOptions, NoopProgressObserver, analyze_merge};
 use foch::model::{
-	CheckResult, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
-	MergeReportStatus, MergeReportValidation, Severity,
+	CheckResult, Finding, GamePath, MergePlanEntry, MergePlanResult, MergePlanStrategy,
+	MergePlanTarget, MergeReport, MergeReportStatus, MergeReportValidation, Severity,
 };
 use serde_json::json;
 use std::fs;
@@ -109,6 +109,27 @@ fn plan_entry_for<'a>(result: &'a MergePlanResult, path: &str) -> &'a MergePlanE
 		.expect("merge plan entry exists")
 }
 
+fn finding<'a>(result: &'a CheckResult, rule_id: &str) -> &'a Finding {
+	result
+		.findings
+		.iter()
+		.find(|finding| finding.rule_id == rule_id)
+		.unwrap_or_else(|| panic!("no {rule_id} finding in {:?}", result.findings))
+}
+
+/// A finding about an input file names it physically in `source_file` and
+/// has no game path.
+fn assert_names_input_file(finding: &Finding, expected: &Path) {
+	assert_eq!(finding.path, None, "{finding:?}");
+	let source_file = finding.source_file.as_deref().expect("an input file");
+	assert_eq!(
+		fs::canonicalize(source_file.parent().expect("parent")).expect("canonical parent"),
+		fs::canonicalize(expected.parent().expect("parent")).expect("canonical parent"),
+		"{finding:?}"
+	);
+	assert_eq!(source_file.file_name(), expected.file_name(), "{finding:?}");
+}
+
 fn run_checks_no_base(request: InputRequest) -> CheckResult {
 	run_checks_with_options(
 		request,
@@ -159,12 +180,7 @@ fn invalid_json_creates_playset_parse_error() {
 	fs::write(&playlist_path, "{broken").expect("write broken json");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "playset-parse-error")
-	);
+	assert_names_input_file(finding(&result, "playset-parse-error"), &playlist_path);
 }
 
 #[test]
@@ -177,12 +193,7 @@ fn duplicate_steam_id_creates_duplicate_playset_entry() {
 	write_descriptor(&temp.path().join("1001"), "mod-a", &[]);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "duplicate-playset-entry")
-	);
+	assert_names_input_file(finding(&result, "duplicate-playset-entry"), &playlist_path);
 }
 
 #[test]
@@ -194,11 +205,9 @@ fn missing_descriptor_creates_mod_descriptor_error() {
 	fs::create_dir_all(temp.path().join("1002")).expect("create mod dir");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "mod-descriptor-error")
+	assert_names_input_file(
+		finding(&result, "mod-descriptor-error"),
+		&temp.path().join("1002").join("descriptor.mod"),
 	);
 }
 
@@ -220,12 +229,12 @@ fn file_conflict_creates_file_overwrite_conflict() {
 	fs::write(mod_b.join("common").join("shared.txt"), "from-b").expect("write file");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "file-overwrite-conflict")
+	let conflict = finding(&result, "file-overwrite-conflict");
+	assert_eq!(
+		conflict.path.as_deref().map(GamePath::as_str),
+		Some("common/shared.txt")
 	);
+	assert_eq!(conflict.source_file, None);
 }
 
 #[test]
@@ -239,11 +248,9 @@ fn missing_dependency_creates_missing_mod_dependency() {
 	write_descriptor(&mod_a, "mod-a", &["mod-b"]);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "missing-mod-dependency")
+	assert_names_input_file(
+		finding(&result, "missing-mod-dependency"),
+		&mod_a.join("descriptor.mod"),
 	);
 }
 

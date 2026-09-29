@@ -7,11 +7,12 @@ use crate::game::schema::compile::{
 	CwtSubtype, SchemaRootDefinition,
 };
 use crate::game::schema::query::{CwtQuery, SchemaBinding};
+use crate::game::schema::rule_path::SchemaDirectory;
 use crate::game::schema::source::{CwtSource, SchemaPack};
 use crate::game::schema::syntax::ParadoxTree;
+use crate::model::GamePath;
 use serde::Serialize;
 use serde_json::Value;
-use walkdir::WalkDir;
 
 #[derive(Serialize)]
 struct FixtureBaseline {
@@ -128,19 +129,19 @@ fn fixture_root_binding_prefers_exact_path_and_reports_ambiguity() {
 	let graph = CwtSchemaGraph::from_directory(&root).expect("load schema fixture");
 	let engine = CwtQuery::from_graph(&graph);
 
-	let event_binding = engine.root_binding(Path::new("events/example.txt"));
+	let event_binding = engine.root_binding(game_path("events/example.txt"));
 	let SchemaBinding::Bound { type_id, .. } = event_binding else {
 		panic!("expected bound events root, got {event_binding:?}");
 	};
 	assert_eq!(type_id.as_str(), "event");
 
-	let missions_binding = engine.root_binding(Path::new("missions/example.txt"));
+	let missions_binding = engine.root_binding(game_path("missions/example.txt"));
 	let SchemaBinding::Dynamic { reason } = missions_binding else {
 		panic!("expected dynamic missions root, got {missions_binding:?}");
 	};
 	assert_eq!(reason, "ambiguous-root-type");
 
-	let missing_binding = engine.root_binding(Path::new("common/example.txt"));
+	let missing_binding = engine.root_binding(game_path("common/example.txt"));
 	let SchemaBinding::Unbound { reason } = missing_binding else {
 		panic!("expected unbound common root, got {missing_binding:?}");
 	};
@@ -173,15 +174,15 @@ fn build_fixture_baseline(root: &Path) -> FixtureBaseline {
 		bindings: vec![
 			binding_baseline(
 				"events/example.txt",
-				engine.root_binding(Path::new("events/example.txt")),
+				engine.root_binding(game_path("events/example.txt")),
 			),
 			binding_baseline(
 				"missions/example.txt",
-				engine.root_binding(Path::new("missions/example.txt")),
+				engine.root_binding(game_path("missions/example.txt")),
 			),
 			binding_baseline(
 				"common/example.txt",
-				engine.root_binding(Path::new("common/example.txt")),
+				engine.root_binding(game_path("common/example.txt")),
 			),
 		],
 	}
@@ -234,23 +235,23 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 		selected_bindings: vec![
 			binding_baseline(
 				"events/example.txt",
-				engine.root_binding(Path::new("events/example.txt")),
+				engine.root_binding(game_path("events/example.txt")),
 			),
 			binding_baseline(
 				"decisions/example.txt",
-				engine.root_binding(Path::new("decisions/example.txt")),
+				engine.root_binding(game_path("decisions/example.txt")),
 			),
 			binding_baseline(
 				"missions/example.txt",
-				engine.root_binding(Path::new("missions/example.txt")),
+				engine.root_binding(game_path("missions/example.txt")),
 			),
 			binding_baseline(
 				"common/opinion_modifiers/example.txt",
-				engine.root_binding(Path::new("common/opinion_modifiers/example.txt")),
+				engine.root_binding(game_path("common/opinion_modifiers/example.txt")),
 			),
 			binding_baseline(
 				"common/achievements.txt",
-				engine.root_binding(Path::new("common/achievements.txt")),
+				engine.root_binding(game_path("common/achievements.txt")),
 			),
 		],
 		known_scopes: graph
@@ -300,8 +301,8 @@ fn sorted_complex_enum_baselines(graph: &CwtSchemaGraph) -> BTreeMap<String, Com
 			(
 				name.clone(),
 				ComplexEnumBaseline {
-					path: complex_enum.path.clone(),
-					path_file: complex_enum.path_file.clone(),
+					path: complex_enum.path.as_ref().map(schema_directory_text),
+					path_file: complex_enum.path_file.as_ref().map(ToString::to_string),
 					start_from_root: complex_enum.start_from_root,
 					name_rules: complex_enum
 						.name_rules
@@ -314,11 +315,23 @@ fn sorted_complex_enum_baselines(graph: &CwtSchemaGraph) -> BTreeMap<String, Com
 		.collect()
 }
 
+/// A rule directory as the baseline records it: the game root is the empty
+/// text.
+fn schema_directory_text(directory: &SchemaDirectory) -> String {
+	directory
+		.as_game_path()
+		.map_or_else(String::new, |path| path.as_str().to_string())
+}
+
+fn game_path(text: &str) -> &GamePath {
+	GamePath::new(text).expect("valid game path")
+}
+
 fn type_baseline(definition: &SchemaRootDefinition) -> TypeBaseline {
 	TypeBaseline {
 		name: definition.name.as_str().to_string(),
-		path: definition.path.clone(),
-		path_file: definition.path_file.clone(),
+		path: definition.path.as_ref().map(schema_directory_text),
+		path_file: definition.path_file.as_ref().map(ToString::to_string),
 		name_field: definition.name_field.clone(),
 		localisation: definition
 			.localisation
@@ -469,15 +482,7 @@ fn vendor_schema_dir() -> Option<PathBuf> {
 }
 
 fn cwt_files(root: &Path) -> Vec<PathBuf> {
-	let mut files = WalkDir::new(root)
-		.into_iter()
-		.filter_map(Result::ok)
-		.filter(|entry| entry.file_type().is_file())
-		.filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cwt"))
-		.map(|entry| entry.into_path())
-		.collect::<Vec<_>>();
-	files.sort();
-	files
+	crate::game::schema::source::cwt_files(root).expect("walk schema files")
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {

@@ -35,6 +35,10 @@ pub enum ChannelMode {
 
 pub const STALE_VANILLA_FALLBACK_RULE_ID: &str = "stale-vanilla-fallback";
 
+/// One check result. A finding about a script names its file by game path in
+/// `path`, relative to the root of the mod in `mod_id`; a finding about an
+/// input file itself (the playset, a descriptor, a mod root) names that file
+/// in `source_file` instead.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
 	pub rule_id: String,
@@ -42,7 +46,9 @@ pub struct Finding {
 	pub channel: FindingChannel,
 	pub message: String,
 	pub mod_id: Option<String>,
-	pub path: Option<PathBuf>,
+	pub path: Option<GamePathBuf>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source_file: Option<PathBuf>,
 	pub evidence: Option<String>,
 	pub line: Option<usize>,
 	pub column: Option<usize>,
@@ -52,7 +58,7 @@ pub struct Finding {
 impl Finding {
 	pub fn stale_vanilla_fallback(
 		mod_id: String,
-		file_path: PathBuf,
+		file_path: GamePathBuf,
 		reference_kind: SymbolKind,
 		reference_name: String,
 		line: usize,
@@ -71,6 +77,7 @@ impl Finding {
 			),
 			mod_id: Some(mod_id),
 			path: Some(file_path),
+			source_file: None,
 			evidence: Some(format!(
 				"reference_kind={} reference_name={} rationale={}",
 				reference_kind.as_str(),
@@ -188,4 +195,64 @@ pub struct CheckContext {
 pub struct SemanticDiagnostics {
 	pub strict: Vec<Finding>,
 	pub advisory: Vec<Finding>,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Finding, FindingChannel, Severity};
+	use crate::model::GamePathBuf;
+	use std::path::PathBuf;
+
+	fn finding(path: Option<GamePathBuf>, source_file: Option<PathBuf>) -> Finding {
+		Finding {
+			rule_id: "rule".to_string(),
+			severity: Severity::Warning,
+			channel: FindingChannel::Advisory,
+			message: "message".to_string(),
+			mod_id: Some("mod".to_string()),
+			path,
+			source_file,
+			evidence: None,
+			line: Some(3),
+			column: None,
+			confidence: None,
+		}
+	}
+
+	#[test]
+	fn a_script_finding_serializes_its_game_path_under_the_path_key_as_before() {
+		let game_path = GamePathBuf::parse("events/Flavor FRA.txt").expect("valid game path");
+		let json = serde_json::to_value(finding(Some(game_path.clone()), None)).expect("serialize");
+		assert_eq!(json["path"], "events/Flavor FRA.txt");
+		assert!(json.get("source_file").is_none(), "{json}");
+
+		// The exact bytes a finding with this path serialized to before the
+		// split: same keys, same order, no `source_file`.
+		let text = r#"{"rule_id":"rule","severity":"Warning","channel":"Advisory","message":"message","mod_id":"mod","path":"events/Flavor FRA.txt","evidence":null,"line":3,"column":null,"confidence":null}"#;
+		assert_eq!(
+			serde_json::to_string(&finding(Some(game_path.clone()), None)).expect("serialize"),
+			text
+		);
+		let read: Finding = serde_json::from_str(text).expect("a finding written before the split");
+		assert_eq!(read.path, Some(game_path));
+		assert_eq!(read.source_file, None);
+	}
+
+	#[test]
+	fn an_input_file_finding_names_its_file_in_source_file_and_leaves_path_null() {
+		let playlist = std::env::temp_dir().join("playlist.json");
+		let json = serde_json::to_value(finding(None, Some(playlist.clone()))).expect("serialize");
+		assert!(json["path"].is_null(), "{json}");
+		assert_eq!(
+			json["source_file"],
+			playlist.to_str().expect("UTF-8 temp dir")
+		);
+	}
+
+	#[test]
+	fn a_finding_path_that_is_not_a_game_path_fails_to_read() {
+		let text = r#"{"rule_id":"rule","severity":"Warning","channel":"Advisory","message":"m","mod_id":null,"path":"/abs/playlist.json","evidence":null,"line":null,"column":null,"confidence":null}"#;
+		let error = serde_json::from_str::<Finding>(text).expect_err("an absolute path");
+		assert!(error.to_string().contains("invalid game path"), "{error}");
+	}
 }

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::game::schema::{CwtLoadStatus, CwtSchema, CwtSource};
-use crate::model::{LocalisationDefinition, Severity};
+use crate::model::{GamePath, LocalisationDefinition, Severity};
 
 pub use workspace::{SchemaDocument, SchemaWorkspace};
 
@@ -177,7 +177,7 @@ impl EditorSchema {
 
 	pub fn hover(
 		&self,
-		file_path: &Path,
+		file_path: &GamePath,
 		text: &str,
 		position: EditorPosition,
 		workspace: Option<&SchemaWorkspace>,
@@ -187,7 +187,7 @@ impl EditorSchema {
 
 	pub fn completions(
 		&self,
-		file_path: &Path,
+		file_path: &GamePath,
 		text: &str,
 		position: EditorPosition,
 		prefix_lower: &str,
@@ -214,7 +214,7 @@ impl EditorSchema {
 
 	pub fn diagnostics(
 		&self,
-		file_path: &Path,
+		file_path: &GamePath,
 		text: &str,
 		workspace: Option<&SchemaWorkspace>,
 	) -> Vec<SchemaDiagnostic> {
@@ -231,7 +231,7 @@ impl EditorSchema {
 
 	pub fn localisation_diagnostics(
 		&self,
-		file_path: &Path,
+		file_path: &GamePath,
 		text: &str,
 		definitions: &[LocalisationDefinition],
 	) -> Vec<SchemaDiagnostic> {

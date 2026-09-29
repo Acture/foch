@@ -625,7 +625,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 			.join("dag-base")
 			.join("v12.0.0")
 			.join("dag-base-entry.bin"),
-		cwt_rules: root.join("cwt-rules").join("v0.11.0").join("cwt-entry.bin"),
+		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
 			.join("v12.0.0")
@@ -736,6 +736,65 @@ fn check_json_output_can_be_deserialized() {
 	let content = fs::read_to_string(output_path).expect("read json output");
 	let parsed: serde_json::Value = serde_json::from_str(&content).expect("deserialize result");
 	assert!(parsed.get("findings").is_some());
+}
+
+/// A finding about a script names its file by game path under `path`, as it
+/// always has. A finding about an input file (here a descriptor) leaves
+/// `path` null and names the physical file under `source_file`.
+#[test]
+fn check_json_findings_keep_game_paths_and_input_files_apart() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let output_path = tmp.path().join("result.json");
+
+	write_dlc_load(&playlist_path, &[("5101", "A"), ("5102", "B")]);
+	let mod_a = tmp.path().join("5101");
+	let mod_b = tmp.path().join("5102");
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor_with_dependencies(&mod_b, "mod-b", &["absent-mod"]);
+	write_script_file(&mod_a, "common/shared.txt", "a = 1\n");
+	write_script_file(&mod_b, "common/shared.txt", "a = 2\n");
+
+	let playlist_str = playlist_path.display().to_string();
+	let output_str = output_path.display().to_string();
+	let args = [
+		"check",
+		playlist_str.as_str(),
+		"--format",
+		"json",
+		"--output",
+		output_str.as_str(),
+		"--no-game-base",
+	];
+	let (code, _stdout, stderr) = run_foch(&args, tmp.path());
+	assert_eq!(code, 0, "{stderr}");
+
+	let content = fs::read_to_string(output_path).expect("read json output");
+	let parsed: serde_json::Value = serde_json::from_str(&content).expect("deserialize result");
+	let findings = parsed["findings"].as_array().expect("findings array");
+	let finding = |rule_id: &str| {
+		findings
+			.iter()
+			.find(|finding| finding["rule_id"] == rule_id)
+			.unwrap_or_else(|| panic!("no {rule_id} finding in {content}"))
+	};
+
+	let conflict = finding("file-overwrite-conflict");
+	assert_eq!(conflict["path"], "common/shared.txt");
+	assert!(conflict.get("source_file").is_none(), "{conflict}");
+
+	let dependency = finding("missing-mod-dependency");
+	assert!(dependency["path"].is_null(), "{dependency}");
+	let source_file = Path::new(
+		dependency["source_file"]
+			.as_str()
+			.expect("the descriptor is named"),
+	);
+	assert!(
+		source_file.ends_with(Path::new("5102").join("descriptor.mod")),
+		"{}",
+		source_file.display()
+	);
 }
 
 #[test]

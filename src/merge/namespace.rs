@@ -11,10 +11,9 @@ use crate::game::eu4::script::parser::{AstStatement, AstValue};
 use crate::game::eu4::script::{ParsedScriptFile, is_decision_container_key};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 
 use crate::input::ResolvedInputContributor;
-use crate::model::GamePathBuf;
+use crate::model::{GamePath, GamePathBuf, GamePathError};
 
 use super::normalize::normalize_defines_file;
 
@@ -22,7 +21,7 @@ use super::normalize::normalize_defines_file;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyContributor {
 	pub mod_id: String,
-	pub file_path: String,
+	pub file_path: GamePathBuf,
 	pub precedence: usize,
 	pub is_base_game: bool,
 }
@@ -209,7 +208,7 @@ pub(crate) fn build_family_key_index(
 		..Default::default()
 	};
 
-	for (rel_path, contributors) in contributors_by_path {
+	for contributors in contributors_by_path.values() {
 		for contributor in contributors {
 			// A contributor does not carry its game path yet; recover it from
 			// the physical path under its root, skipping a file outside it as
@@ -229,7 +228,7 @@ pub(crate) fn build_family_key_index(
 			for key in keys {
 				index.entries.entry(key).or_default().push(KeyContributor {
 					mod_id: contributor.mod_id.clone(),
-					file_path: rel_path.clone(),
+					file_path: relative.clone(),
 					precedence: contributor.precedence,
 					is_base_game: contributor.is_base_game,
 				});
@@ -273,13 +272,13 @@ pub fn detect_key_conflicts(index: &FamilyKeyIndex) -> Vec<FamilyKeyConflict> {
 pub(crate) fn group_by_family(
 	file_inventory: &BTreeMap<String, Vec<ResolvedInputContributor>>,
 	profile: &Eu4,
-) -> HashMap<String, BTreeMap<String, Vec<ResolvedInputContributor>>> {
+) -> Result<HashMap<String, BTreeMap<String, Vec<ResolvedInputContributor>>>, GamePathError> {
 	let mut grouped: HashMap<String, BTreeMap<String, Vec<ResolvedInputContributor>>> =
 		HashMap::new();
 
 	for (rel_path, contributors) in file_inventory {
-		let path = Path::new(rel_path);
-		if let Some(descriptor) = profile.classify_content_family(path) {
+		// Inventory keys are written from game paths; the parse restores it.
+		if let Some(descriptor) = profile.classify_content_family(GamePath::new(rel_path)?) {
 			grouped
 				.entry(descriptor.id.as_str().to_string())
 				.or_default()
@@ -287,7 +286,7 @@ pub(crate) fn group_by_family(
 		}
 	}
 
-	grouped
+	Ok(grouped)
 }
 
 #[cfg(test)]
@@ -298,7 +297,8 @@ mod tests {
 	fn make_contributor(mod_id: &str, precedence: usize, is_base_game: bool) -> KeyContributor {
 		KeyContributor {
 			mod_id: mod_id.to_string(),
-			file_path: format!("common/test/{mod_id}.txt"),
+			file_path: GamePathBuf::parse(&format!("common/test/{mod_id}.txt"))
+				.expect("valid game path"),
 			precedence,
 			is_base_game,
 		}
@@ -340,13 +340,15 @@ mod tests {
 				vec![
 					KeyContributor {
 						mod_id: "mod_a".to_string(),
-						file_path: "common/scripted_triggers/shared.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/shared.txt")
+							.expect("valid game path"),
 						precedence: 1,
 						is_base_game: false,
 					},
 					KeyContributor {
 						mod_id: "mod_b".to_string(),
-						file_path: "common/scripted_triggers/shared.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/shared.txt")
+							.expect("valid game path"),
 						precedence: 2,
 						is_base_game: false,
 					},
@@ -369,13 +371,15 @@ mod tests {
 				vec![
 					KeyContributor {
 						mod_id: "mod_a".to_string(),
-						file_path: "common/scripted_triggers/a.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/a.txt")
+							.expect("valid game path"),
 						precedence: 1,
 						is_base_game: false,
 					},
 					KeyContributor {
 						mod_id: "mod_b".to_string(),
-						file_path: "common/scripted_triggers/b.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/b.txt")
+							.expect("valid game path"),
 						precedence: 2,
 						is_base_game: false,
 					},
@@ -475,7 +479,7 @@ mod tests {
 			}],
 		);
 
-		let grouped = group_by_family(&inventory, profile);
+		let grouped = group_by_family(&inventory, profile).expect("inventory keys are game paths");
 
 		// Unclassified paths should not appear in any family
 		for paths in grouped.values() {

@@ -600,7 +600,13 @@ fn render_finding(finding: &Finding, color: bool) -> String {
 	let path = finding
 		.path
 		.as_ref()
-		.map(|value| value.display().to_string())
+		.map(ToString::to_string)
+		.or_else(|| {
+			finding
+				.source_file
+				.as_ref()
+				.map(|value| value.display().to_string())
+		})
 		.unwrap_or_else(|| "<none>".to_string());
 	let mod_id = finding
 		.mod_id
@@ -679,6 +685,7 @@ mod tests {
 			message: "synthetic finding".to_string(),
 			mod_id: None,
 			path: None,
+			source_file: None,
 			evidence: None,
 			line: None,
 			column: None,
@@ -724,6 +731,34 @@ mod tests {
 				&& line.contains("beta-rule")
 		}));
 		assert!(summary.find("alpha-rule") < summary.find("beta-rule"));
+	}
+
+	/// A script finding shows its game path; a finding about an input file
+	/// shows that file's physical path, as it did before `path` split.
+	#[test]
+	fn rendered_findings_name_the_game_path_or_else_the_input_file() {
+		let mut script = finding("script-rule", Severity::Warning, FindingChannel::Advisory);
+		script.path = Some(crate::model::GamePathBuf::parse("events/x.txt").expect("valid"));
+		assert!(
+			render_finding(&script, false).contains(" path=events/x.txt "),
+			"{}",
+			render_finding(&script, false)
+		);
+
+		let playlist = std::env::temp_dir().join("playlist.json");
+		let mut input = finding("input-rule", Severity::Error, FindingChannel::Strict);
+		input.source_file = Some(playlist.clone());
+		let rendered = render_finding(&input, false);
+		assert!(
+			rendered.contains(&format!(" path={} ", playlist.display())),
+			"{rendered}"
+		);
+
+		let rendered = render_finding(
+			&finding("bare-rule", Severity::Info, FindingChannel::Advisory),
+			false,
+		);
+		assert!(rendered.contains(" path=<none> "), "{rendered}");
 	}
 
 	#[test]

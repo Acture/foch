@@ -7,7 +7,9 @@ use crate::game::eu4::content::{
 };
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, Span, SpanRange};
-use crate::model::{HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor};
+use crate::model::{
+	GamePath, HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor,
+};
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
 use super::provenance_tooltip::materialize_condition_provenance_tooltips;
@@ -46,7 +48,7 @@ use crate::merge::planning::module_view::CrossFileModuleViews;
 pub(crate) mod reference;
 
 fn leaf_conflicts_for_semantic(
-	target_path: &str,
+	target_path: &GamePath,
 	conflicts: &[SemanticMergeConflict],
 	mod_versions: &HashMap<String, String>,
 ) -> Vec<LeafConflictDetail> {
@@ -79,12 +81,24 @@ fn leaf_conflicts_for_semantic(
 			LeafConflictDetail {
 				address_path: joined_path.clone(),
 				address_key: address_key.clone(),
-				conflict_id: semantic_conflict_id(Path::new(target_path), conflict.conflict.id),
-				kind: classify_conflict_kind(Path::new(target_path), &ast_path, &conflict.reason),
+				conflict_id: semantic_conflict_id(
+					Path::new(target_path.as_str()),
+					conflict.conflict.id,
+				),
+				kind: classify_conflict_kind(target_path, &ast_path, &conflict.reason),
 				contributors,
 			}
 		})
 		.collect()
+}
+
+/// The game path a plan target names. Plan paths are still text, and a
+/// target that is not a game path is an invalid plan.
+fn plan_game_path(target_path: &str) -> Result<&GamePath, MergeError> {
+	GamePath::new(target_path).map_err(|error| MergeError::Validation {
+		path: Some(target_path.to_string()),
+		message: error.to_string(),
+	})
 }
 
 fn split_semantic_path(path: &[String]) -> (Vec<String>, String) {
@@ -251,7 +265,7 @@ where
 			conflict_keys.join("; "),
 		);
 		let leaf_conflicts = leaf_conflicts_for_semantic(
-			target_path,
+			plan_game_path(target_path)?,
 			&dag_merge.semantic.unresolved_conflicts,
 			context.mod_versions,
 		);
@@ -610,12 +624,17 @@ mod tests {
 	#[test]
 	fn structured_definition_modules_keep_the_complete_resolved_output() {
 		let module = eu4()
-			.classify_content_family(Path::new(
-				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
-			))
+			.classify_content_family(
+				crate::model::GamePath::new(
+					"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				)
+				.expect("valid game path"),
+			)
 			.expect("scripted triggers descriptor");
 		let event = eu4()
-			.classify_content_family(Path::new("events/test.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+			)
 			.expect("events descriptor");
 
 		assert!(preserves_complete_tree_module(module));
@@ -665,7 +684,11 @@ mod tests {
 			.iter()
 			.zip(&conflicts)
 			.flat_map(|(target, conflict)| {
-				leaf_conflicts_for_semantic(target, std::slice::from_ref(conflict), &HashMap::new())
+				leaf_conflicts_for_semantic(
+					GamePath::new(target).expect("valid game path"),
+					std::slice::from_ref(conflict),
+					&HashMap::new(),
+				)
 			})
 			.collect::<Vec<_>>();
 		assert_eq!(

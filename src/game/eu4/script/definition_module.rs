@@ -3,7 +3,7 @@ use super::super::content::{
 };
 use super::ParsedScriptFile;
 use super::parser::{AstFile, AstStatement, SpanRange};
-use crate::model::{GamePath, GamePathBuf, GamePathError};
+use crate::model::{GamePath, GamePathBuf};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug)]
@@ -61,11 +61,6 @@ pub enum TopLevelStatementKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DefinitionModuleLoadError {
-	/// A path of the content family's module policy is not a game path.
-	InvalidPolicyPath {
-		path: &'static str,
-		source: GamePathError,
-	},
 	InputPathMismatch {
 		input_path: GamePathBuf,
 		file_relative_path: GamePathBuf,
@@ -109,8 +104,7 @@ pub fn load_definition_module(
 	inputs: &[DefinitionModuleInput<'_>],
 	policy: DefinitionModulePolicy,
 ) -> Result<CanonicalDefinitionModule, DefinitionModuleLoadError> {
-	let namespace_prefix = policy_path(policy.namespace_prefix)?;
-	let output_path = policy_path(policy.output_path)?;
+	let namespace_prefix: &GamePath = policy.namespace_prefix;
 	let mut ordered_inputs = inputs
 		.iter()
 		.map(|input| {
@@ -221,7 +215,7 @@ pub fn load_definition_module(
 
 	Ok(CanonicalDefinitionModule {
 		ast: AstFile {
-			path: output_path.to_owned(),
+			path: policy.output_path.to_owned(),
 			statements: output_statements.into_iter().flatten().collect(),
 		},
 		definition_sources: winners
@@ -230,13 +224,6 @@ pub fn load_definition_module(
 			.collect(),
 		duplicate_diagnostics,
 	})
-}
-
-/// Parses a path of the static module policy, which names game paths in the
-/// portable `/` syntax.
-fn policy_path(path: &'static str) -> Result<&'static GamePath, DefinitionModuleLoadError> {
-	GamePath::new(path)
-		.map_err(|source| DefinitionModuleLoadError::InvalidPolicyPath { path, source })
 }
 
 #[cfg(test)]
@@ -256,20 +243,25 @@ mod tests {
 	};
 	use crate::model::{GamePath, GamePathBuf, GamePathErrorKind, ParseIssue};
 
-	const POLICY: DefinitionModulePolicy = DefinitionModulePolicy {
-		definition_key: DefinitionKeyPolicy::AssignmentKey,
-		file_order: DefinitionFileOrder::NormalizedPathAscending,
-		duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-		output_path: "common/governments/00_foch_governments.txt",
-		namespace_prefix: "common/governments",
-		output_mode: DefinitionModuleOutput::ReplaceNamespace,
-		policy_version: 1,
-	};
+	fn policy() -> DefinitionModulePolicy {
+		DefinitionModulePolicy {
+			definition_key: DefinitionKeyPolicy::AssignmentKey,
+			file_order: DefinitionFileOrder::NormalizedPathAscending,
+			duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
+			output_path: GamePath::new("common/governments/00_foch_governments.txt")
+				.expect("valid game path"),
+			namespace_prefix: GamePath::new("common/governments").expect("valid game path"),
+			output_mode: DefinitionModuleOutput::ReplaceNamespace,
+			policy_version: 1,
+		}
+	}
 
-	const PRESERVE_DUPLICATES_POLICY: DefinitionModulePolicy = DefinitionModulePolicy {
-		duplicate_definitions: DuplicateDefinitionPolicy::PreserveAll,
-		..POLICY
-	};
+	fn preserve_duplicates_policy() -> DefinitionModulePolicy {
+		DefinitionModulePolicy {
+			duplicate_definitions: DuplicateDefinitionPolicy::PreserveAll,
+			..policy()
+		}
+	}
 
 	fn game_path(text: &str) -> GamePathBuf {
 		GamePathBuf::parse(text).expect("valid game path")
@@ -357,7 +349,7 @@ mod tests {
 				DefinitionModuleInput::new(&z_path, &z_file),
 				DefinitionModuleInput::new(&a_path, &a_file),
 			],
-			POLICY,
+			policy(),
 		)
 		.expect("module should load");
 
@@ -365,7 +357,7 @@ mod tests {
 			assignment_keys(&loaded.ast),
 			vec!["a_government", "z_government"]
 		);
-		assert_eq!(loaded.ast.path.as_str(), POLICY.output_path);
+		assert_eq!(loaded.ast.path, policy().output_path);
 	}
 
 	#[test]
@@ -382,7 +374,7 @@ mod tests {
 				DefinitionModuleInput::new(&nested_path, &nested_file),
 				DefinitionModuleInput::new(&dashed_path, &dashed_file),
 			],
-			POLICY,
+			policy(),
 		)
 		.expect("module should load");
 
@@ -421,7 +413,7 @@ mod tests {
 				DefinitionModuleInput::new(&later_path, &later_file).with_layer_ordinal(1),
 				DefinitionModuleInput::new(&earlier_path, &earlier_file).with_layer_ordinal(0),
 			],
-			POLICY,
+			policy(),
 		)
 		.expect("layered module should load");
 
@@ -461,7 +453,7 @@ mod tests {
 		let file = parsed_file(&file_path, "shared = { marker = value }");
 
 		let error =
-			load_definition_module(&[DefinitionModuleInput::new(&input_path, &file)], POLICY)
+			load_definition_module(&[DefinitionModuleInput::new(&input_path, &file)], policy())
 				.expect_err("mismatched caller and parsed-file paths must be rejected");
 
 		assert_eq!(
@@ -478,7 +470,7 @@ mod tests {
 		let path = game_path("events/not_a_government.txt");
 		let file = parsed_file(&path, "event_definition = { marker = value }");
 
-		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], POLICY)
+		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
 			.expect_err("definition modules must not absorb files from another runtime prefix");
 
 		assert_eq!(
@@ -495,7 +487,7 @@ mod tests {
 		let path = game_path("common/governments");
 		let file = parsed_file(&path, "shared = { marker = value }");
 
-		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], POLICY)
+		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
 			.expect_err("only files inside the prefix directory belong to the module");
 
 		assert_eq!(
@@ -518,7 +510,7 @@ mod tests {
 				DefinitionModuleInput::new(&path, &first_file),
 				DefinitionModuleInput::new(&path, &second_file),
 			],
-			POLICY,
+			policy(),
 		)
 		.expect_err("one path must not create two module inputs");
 
@@ -564,25 +556,6 @@ mod tests {
 	}
 
 	#[test]
-	fn an_invalid_policy_path_is_a_load_error() {
-		let policy = DefinitionModulePolicy {
-			namespace_prefix: "common/governments/",
-			..POLICY
-		};
-		let path = game_path("common/governments/definitions.txt");
-		let file = parsed_file(&path, "shared = { marker = value }");
-
-		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy)
-			.expect_err("a policy prefix with a trailing `/` is not a game path");
-
-		let DefinitionModuleLoadError::InvalidPolicyPath { path, source } = error else {
-			panic!("expected an invalid policy path, got {error:?}");
-		};
-		assert_eq!(path, "common/governments/");
-		assert_eq!(source.kind, GamePathErrorKind::EmptyComponent);
-	}
-
-	#[test]
 	fn same_file_duplicate_later_definition_wins() {
 		let path = game_path("common/governments/definitions.txt");
 		let file = parsed_file(
@@ -590,7 +563,7 @@ mod tests {
 			"shared = { marker = first }\nshared = { marker = second }",
 		);
 
-		let loaded = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], POLICY)
+		let loaded = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
 			.expect("module should load");
 
 		assert_eq!(assignment_keys(&loaded.ast), vec!["shared"]);
@@ -608,7 +581,7 @@ mod tests {
 
 		let loaded = load_definition_module(
 			&[DefinitionModuleInput::new(&path, &file)],
-			PRESERVE_DUPLICATES_POLICY,
+			preserve_duplicates_policy(),
 		)
 		.expect("module should preserve repeated wrappers");
 
@@ -629,7 +602,7 @@ mod tests {
 				DefinitionModuleInput::new(&late_path, &late_file),
 				DefinitionModuleInput::new(&early_path, &early_file),
 			],
-			POLICY,
+			policy(),
 		)
 		.expect("module should load");
 
@@ -648,7 +621,7 @@ mod tests {
 			"# module comment\nalpha = { marker = kept }\n# trailing comment",
 		);
 
-		let loaded = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], POLICY)
+		let loaded = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
 			.expect("module should load");
 
 		assert_eq!(assignment_keys(&loaded.ast), vec!["alpha"]);
@@ -662,7 +635,7 @@ mod tests {
 		let path = game_path("common/governments/unsupported.txt");
 		let file = parsed_file(&path, "standalone_item");
 
-		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], POLICY)
+		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
 			.expect_err("bare top-level items must not be guessed into definitions");
 
 		assert_eq!(
@@ -690,7 +663,7 @@ mod tests {
 				DefinitionModuleInput::new(&current_path, &current_file),
 				DefinitionModuleInput::new(&previous_path, &previous_file),
 			],
-			POLICY,
+			policy(),
 		)
 		.expect("module should load");
 
@@ -732,7 +705,7 @@ mod tests {
 				DefinitionModuleInput::new(&first_path, &first_file),
 				DefinitionModuleInput::new(&second_path, &second_file),
 			],
-			POLICY,
+			policy(),
 		)
 		.expect("module should load");
 
@@ -775,7 +748,7 @@ mod tests {
 		};
 		key.clear();
 
-		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], POLICY)
+		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
 			.expect_err("missing keys must not be merged");
 
 		assert_eq!(
@@ -799,7 +772,7 @@ mod tests {
 			message: "synthetic parse issue".to_string(),
 		});
 
-		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], POLICY)
+		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
 			.expect_err("parse issues must stop module loading");
 
 		assert_eq!(

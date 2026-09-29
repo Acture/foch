@@ -549,7 +549,7 @@ mod tests {
 	#[test]
 	fn trace_derivation_marks_union_of_two_mods() {
 		let descriptor =
-			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects/")
+			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects")
 				.merge_key(MergeKeySource::AssignmentKey)
 				.divergent_block_policy(DivergentBlockPolicy::Union)
 				.build();
@@ -836,7 +836,7 @@ mod tests {
 
 	#[test]
 	fn trace_derivation_marks_overlay_winner_as_overridden() {
-		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test/")
+		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test")
 			.merge_key(MergeKeySource::AssignmentKey)
 			.divergent_block_policy(DivergentBlockPolicy::LastWriter)
 			.build();
@@ -855,7 +855,7 @@ mod tests {
 
 	#[test]
 	fn observer_projects_kernel_evidence_to_its_definition() {
-		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test/")
+		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test")
 			.merge_key(MergeKeySource::AssignmentKey)
 			.divergent_block_policy(DivergentBlockPolicy::Union)
 			.build();

@@ -39,7 +39,7 @@ pub fn run_simplify_with_options(
 		out_dir.clone()
 	};
 
-	let mut removals_by_path = BTreeMap::<String, Vec<(usize, usize)>>::new();
+	let mut removals_by_path = BTreeMap::<GamePathBuf, Vec<(usize, usize)>>::new();
 	let mut report = SimplifyReport {
 		target_mod_id: options.target_mod_id.clone(),
 		..SimplifyReport::default()
@@ -96,25 +96,8 @@ pub fn run_simplify_with_options(
 		}
 	}
 
-	let mut removed_file_count = 0usize;
-	for (path, positions) in removals_by_path {
-		// Definition records name their file by game-path text.
-		let relative = GamePathBuf::parse(&path)?;
-		let absolute = relative.to_path(&destination_root);
-		if !absolute.exists() {
-			continue;
-		}
-		let mut parsed = parse_script_file(&options.target_mod_id, &destination_root, &relative);
-		let positions = positions.into_iter().collect::<HashSet<_>>();
-		remove_matching_statements(&mut parsed.ast.statements, &positions);
-		if parsed.ast.statements.is_empty() {
-			fs::remove_file(&absolute)?;
-			removed_file_count += 1;
-			continue;
-		}
-		let rendered = emit_clausewitz_statements(&parsed.ast.statements)?;
-		fs::write(&absolute, rendered)?;
-	}
+	let removed_file_count =
+		apply_removals(&options.target_mod_id, &destination_root, removals_by_path)?;
 
 	let report_path = destination_root.join("simplify-report.json");
 	fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
@@ -125,6 +108,35 @@ pub fn run_simplify_with_options(
 		removed_file_count,
 		target_root: destination_root,
 	})
+}
+
+/// Removes the statements at each file's positions from the copy of the mod
+/// under `destination_root`, deleting a file left empty. Each file is the
+/// game path joined onto that root, and a file absent there is skipped.
+/// Returns how many files were deleted.
+fn apply_removals(
+	mod_id: &str,
+	destination_root: &Path,
+	removals_by_path: BTreeMap<GamePathBuf, Vec<(usize, usize)>>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+	let mut removed_file_count = 0usize;
+	for (relative, positions) in removals_by_path {
+		let absolute = relative.to_path(destination_root);
+		if !absolute.exists() {
+			continue;
+		}
+		let mut parsed = parse_script_file(mod_id, destination_root, &relative);
+		let positions = positions.into_iter().collect::<HashSet<_>>();
+		remove_matching_statements(&mut parsed.ast.statements, &positions);
+		if parsed.ast.statements.is_empty() {
+			fs::remove_file(&absolute)?;
+			removed_file_count += 1;
+			continue;
+		}
+		let rendered = emit_clausewitz_statements(&parsed.ast.statements)?;
+		fs::write(&absolute, rendered)?;
+	}
+	Ok(removed_file_count)
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -191,5 +203,128 @@ fn symbol_kind_text(kind: SymbolKind) -> &'static str {
 		SymbolKind::Decision => "decision",
 		SymbolKind::DiplomaticAction => "diplomatic_action",
 		SymbolKind::TriggeredModifier => "triggered_modifier",
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::apply_removals;
+	use crate::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
+	use crate::model::GamePathBuf;
+	use std::collections::BTreeMap;
+	use std::fs;
+	use std::path::Path;
+
+	const TWO_DEFINITIONS: &str = "keep = { a = 1 }\ndrop = { b = 2 }\n";
+	const ONLY_DROP: &str = "drop = { b = 2 }\n";
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn write(root: &Path, path: &GamePathBuf, source: &str) {
+		let physical = path.to_path(root);
+		fs::create_dir_all(physical.parent().expect("file has a parent")).expect("create dir");
+		fs::write(physical, source).expect("write fixture");
+	}
+
+	fn drop_position(path: &GamePathBuf, source: &str) -> (usize, usize) {
+		parse_clausewitz_content(path, source)
+			.ast
+			.statements
+			.iter()
+			.find_map(|statement| match statement {
+				AstStatement::Assignment { key, key_span, .. } if key == "drop" => {
+					Some((key_span.start.line, key_span.start.column))
+				}
+				_ => None,
+			})
+			.expect("fixture defines `drop`")
+	}
+
+	#[test]
+	fn removals_rewrite_exactly_the_file_their_game_path_names_under_the_destination() {
+		let root = tempfile::tempdir().expect("create destination");
+		let nested = game_path("common/scripted_effects/a/b.txt");
+		// Sorts directly before `a/b.txt` in byte order and must stay untouched.
+		let neighbour = game_path("common/scripted_effects/a-b.txt");
+		let spaced = game_path("common/scripted_effects/only drop.txt");
+		write(root.path(), &nested, TWO_DEFINITIONS);
+		write(root.path(), &neighbour, TWO_DEFINITIONS);
+		write(root.path(), &spaced, ONLY_DROP);
+
+		let removals = BTreeMap::from([
+			(
+				nested.clone(),
+				vec![drop_position(&nested, TWO_DEFINITIONS)],
+			),
+			(spaced.clone(), vec![drop_position(&spaced, ONLY_DROP)]),
+		]);
+		let deleted = apply_removals("mod", root.path(), removals).expect("apply removals");
+
+		assert_eq!(deleted, 1);
+		assert!(
+			!root
+				.path()
+				.join("common/scripted_effects/only drop.txt")
+				.exists()
+		);
+		let rewritten = fs::read_to_string(
+			root.path()
+				.join("common")
+				.join("scripted_effects")
+				.join("a")
+				.join("b.txt"),
+		)
+		.expect("read rewritten file");
+		assert!(rewritten.contains("keep"), "{rewritten}");
+		assert!(!rewritten.contains("drop"), "{rewritten}");
+		assert_eq!(
+			fs::read_to_string(neighbour.to_path(root.path())).expect("read neighbour"),
+			TWO_DEFINITIONS
+		);
+	}
+
+	/// The lossy path this replaced folded a literal backslash into a
+	/// separator, so a file named `a\b.txt` and the nested `a/b.txt` were one
+	/// removal target. Only the file the game path names is rewritten.
+	#[cfg(unix)]
+	#[test]
+	fn a_file_named_with_a_literal_backslash_is_not_the_nested_file() {
+		let root = tempfile::tempdir().expect("create destination");
+		let nested = game_path("common/scripted_effects/a/b.txt");
+		write(root.path(), &nested, TWO_DEFINITIONS);
+		let literal = root
+			.path()
+			.join("common")
+			.join("scripted_effects")
+			.join(r"a\b.txt");
+		fs::write(&literal, TWO_DEFINITIONS).expect("write literal-backslash sibling");
+
+		let removals = BTreeMap::from([(
+			nested.clone(),
+			vec![drop_position(&nested, TWO_DEFINITIONS)],
+		)]);
+		apply_removals("mod", root.path(), removals).expect("apply removals");
+
+		let rewritten = fs::read_to_string(nested.to_path(root.path())).expect("read nested");
+		assert!(!rewritten.contains("drop"), "{rewritten}");
+		assert_eq!(
+			fs::read_to_string(&literal).expect("read literal-backslash sibling"),
+			TWO_DEFINITIONS
+		);
+	}
+
+	#[test]
+	fn a_removal_whose_file_is_absent_from_the_destination_is_skipped() {
+		let root = tempfile::tempdir().expect("create destination");
+		let missing = game_path("common/scripted_effects/missing.txt");
+		let removals = BTreeMap::from([(missing.clone(), vec![(1, 1)])]);
+
+		assert_eq!(
+			apply_removals("mod", root.path(), removals).expect("apply removals"),
+			0
+		);
+		assert!(!missing.to_path(root.path()).exists());
 	}
 }

@@ -1,11 +1,12 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{self, Display, Formatter};
-use std::path::{Path, PathBuf};
-
-use walkdir::WalkDir;
+use std::path::Path;
 
 use super::error::CwtLoadError;
+use super::rule_path::SchemaDirectory;
+use super::source::cwt_files;
 use super::syntax::{CommentKind, ParadoxNode, ParadoxScalar, ParadoxTree};
+use crate::model::{GamePathBuf, GamePathError};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SchemaRootId(String);
@@ -128,8 +129,8 @@ pub enum CwtRuleValue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaRootDefinition {
 	pub name: SchemaRootId,
-	pub path: Option<String>,
-	pub path_file: Option<String>,
+	pub path: Option<SchemaDirectory>,
+	pub path_file: Option<GamePathBuf>,
 	pub name_field: Option<String>,
 	pub localisation: Vec<CwtRuleField>,
 	pub type_key_filter: Option<SchemaRootKeyFilter>,
@@ -170,8 +171,8 @@ pub struct CwtScope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CwtComplexEnum {
 	pub name: String,
-	pub path: Option<String>,
-	pub path_file: Option<String>,
+	pub path: Option<SchemaDirectory>,
+	pub path_file: Option<GamePathBuf>,
 	pub start_from_root: bool,
 	pub name_rules: Vec<CwtRuleField>,
 }
@@ -208,7 +209,9 @@ impl CwtSchemaGraph {
 				source,
 			})?;
 			let tree = ParadoxTree::parse(&bytes)?;
-			graph.ingest_tree(path.strip_prefix(dir).ok(), &tree)?;
+			graph
+				.ingest_tree(path.strip_prefix(dir).ok(), &tree)
+				.map_err(|error| error.in_file(&path))?;
 		}
 		graph.finalize_scopes();
 		Ok(graph)
@@ -247,7 +250,7 @@ impl CwtSchemaGraph {
 						key.as_ref(),
 						value,
 						std::mem::take(&mut pending_doc_comments),
-					);
+					)?;
 				}
 				_ => pending_doc_comments.clear(),
 			}
@@ -261,36 +264,36 @@ impl CwtSchemaGraph {
 		key: &str,
 		value: &ParadoxNode<'_>,
 		doc_comments: Vec<String>,
-	) {
+	) -> Result<(), CwtLoadError> {
 		if key == "types" {
 			if let Some(items) = block_items(value) {
-				self.ingest_types_block(items);
+				self.ingest_types_block(items)?;
 			}
-			return;
+			return Ok(());
 		}
 		if key == "enums" {
 			if let Some(items) = block_items(value) {
-				self.ingest_enums_block(items);
+				self.ingest_enums_block(items)?;
 			}
-			return;
+			return Ok(());
 		}
 		if key == "values" {
 			if let Some(items) = block_items(value) {
 				self.ingest_values_block(items);
 			}
-			return;
+			return Ok(());
 		}
 		if key == "links" {
 			if let Some(items) = block_items(value) {
 				self.ingest_links_block(items);
 			}
-			return;
+			return Ok(());
 		}
 		if key == "scopes" {
 			if let Some(items) = block_items(value) {
 				self.ingest_scopes_block(items);
 			}
-			return;
+			return Ok(());
 		}
 		if let Some(marker) = ParsedMarker::parse(key) {
 			match marker.head {
@@ -303,17 +306,18 @@ impl CwtSchemaGraph {
 					marker.payload,
 					value,
 					parse_type_key_filter(&doc_comments),
-				),
+				)?,
 				_ => {}
 			}
-			return;
+			return Ok(());
 		}
 		if let Some(items) = block_items(value) {
-			self.merge_type_body(SchemaRootId::new(key), items, relative);
+			self.merge_type_body(SchemaRootId::new(key), items, relative)?;
 		}
+		Ok(())
 	}
 
-	fn ingest_types_block(&mut self, items: &[ParadoxNode<'_>]) {
+	fn ingest_types_block(&mut self, items: &[ParadoxNode<'_>]) -> Result<(), CwtLoadError> {
 		let mut pending_doc_comments = Vec::new();
 		for item in items {
 			match item {
@@ -337,15 +341,16 @@ impl CwtSchemaGraph {
 							marker.payload,
 							value,
 							parse_type_key_filter(&pending_doc_comments),
-						);
+						)?;
 					}
 					pending_doc_comments.clear();
 				}
 			}
 		}
+		Ok(())
 	}
 
-	fn ingest_enums_block(&mut self, items: &[ParadoxNode<'_>]) {
+	fn ingest_enums_block(&mut self, items: &[ParadoxNode<'_>]) -> Result<(), CwtLoadError> {
 		for item in items {
 			let Some((key, value)) = assignment_parts(item) else {
 				continue;
@@ -356,7 +361,7 @@ impl CwtSchemaGraph {
 			match marker.head {
 				"enum" => insert_enumeration(&mut self.enums, marker.payload, value),
 				"complex_enum" => {
-					if let Some(complex_enum) = parse_complex_enum(marker.payload, value) {
+					if let Some(complex_enum) = parse_complex_enum(marker.payload, value)? {
 						self.complex_enums
 							.insert(marker.payload.to_string(), complex_enum);
 					}
@@ -364,6 +369,7 @@ impl CwtSchemaGraph {
 				_ => {}
 			}
 		}
+		Ok(())
 	}
 
 	fn ingest_values_block(&mut self, items: &[ParadoxNode<'_>]) {
@@ -397,7 +403,7 @@ impl CwtSchemaGraph {
 		name: &str,
 		value: &ParadoxNode<'_>,
 		type_key_filter: Option<SchemaRootKeyFilter>,
-	) {
+	) -> Result<(), CwtLoadError> {
 		let entry = self
 			.types
 			.entry(SchemaRootId::new(name))
@@ -406,25 +412,38 @@ impl CwtSchemaGraph {
 			entry.type_key_filter = Some(type_key_filter);
 		}
 		let Some(items) = block_items(value) else {
-			return;
+			return Ok(());
 		};
-		merge_type_items(entry, items, true);
+		merge_type_items(entry, items, true)
 	}
 
+	/// A top-level block names a type whose files, until a `type[...]` header
+	/// declares a `path`, are the ones below the directory holding the schema
+	/// file, read as a game directory.
 	fn merge_type_body(
 		&mut self,
 		name: SchemaRootId,
 		items: &[ParadoxNode<'_>],
 		relative: Option<&Path>,
-	) {
+	) -> Result<(), CwtLoadError> {
 		let entry = self
 			.types
 			.entry(name)
 			.or_insert_with_key(|name| SchemaRootDefinition::new(name.clone()));
-		if entry.path.is_none() {
-			entry.path = relative.and_then(|path| path.parent()).map(normalize_path);
+		if entry.path.is_none()
+			&& let Some(directory) = relative.and_then(Path::parent)
+		{
+			entry.path = Some(if directory.as_os_str().is_empty() {
+				SchemaDirectory::GameRoot
+			} else {
+				GamePathBuf::from_native_relative(directory)
+					.map(SchemaDirectory::Directory)
+					.map_err(|error| {
+						invalid_rule_path(entry.name.as_str(), "schema directory", error)
+					})?
+			});
 		}
-		merge_type_items(entry, items, false);
+		merge_type_items(entry, items, false)
 	}
 
 	fn insert_alias(
@@ -513,7 +532,7 @@ fn merge_type_items(
 	entry: &mut SchemaRootDefinition,
 	items: &[ParadoxNode<'_>],
 	header_fields: bool,
-) {
+) -> Result<(), CwtLoadError> {
 	let mut pending_doc_comments = Vec::new();
 	for item in items {
 		match item {
@@ -532,9 +551,15 @@ fn merge_type_items(
 				};
 				if header_fields {
 					match key.as_str() {
-						"path" => entry.path = scalar_text(child_value).map(normalize_schema_path),
+						"path" => {
+							entry.path = scalar_text(child_value)
+								.map(|text| rule_directory(entry.name.as_str(), &text))
+								.transpose()?
+						}
 						"path_file" => {
-							entry.path_file = scalar_text(child_value).map(normalize_schema_path)
+							entry.path_file = scalar_text(child_value)
+								.map(|text| rule_file(entry.name.as_str(), &text))
+								.transpose()?
 						}
 						"name_field" => entry.name_field = scalar_text(child_value),
 						"localisation" | "localization" => {
@@ -590,18 +615,7 @@ fn merge_type_items(
 			}
 		}
 	}
-}
-
-fn cwt_files(root: &Path) -> Result<Vec<PathBuf>, CwtLoadError> {
-	let mut files = WalkDir::new(root)
-		.into_iter()
-		.filter_map(Result::ok)
-		.filter(|entry| entry.file_type().is_file())
-		.filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cwt"))
-		.map(|entry| entry.into_path())
-		.collect::<Vec<_>>();
-	files.sort_by_key(|path| normalize_path(path));
-	Ok(files)
+	Ok(())
 }
 
 fn assignment_parts<'source>(
@@ -992,8 +1006,13 @@ fn parse_link(name: String, value: &ParadoxNode<'_>) -> Option<CwtLink> {
 	Some(link)
 }
 
-fn parse_complex_enum(name: &str, value: &ParadoxNode<'_>) -> Option<CwtComplexEnum> {
-	let items = block_items(value)?;
+fn parse_complex_enum(
+	name: &str,
+	value: &ParadoxNode<'_>,
+) -> Result<Option<CwtComplexEnum>, CwtLoadError> {
+	let Some(items) = block_items(value) else {
+		return Ok(None);
+	};
 	let mut complex_enum = CwtComplexEnum {
 		name: name.to_string(),
 		path: None,
@@ -1006,9 +1025,15 @@ fn parse_complex_enum(name: &str, value: &ParadoxNode<'_>) -> Option<CwtComplexE
 			continue;
 		};
 		match key.as_str() {
-			"path" => complex_enum.path = scalar_text(child_value).map(normalize_schema_path),
+			"path" => {
+				complex_enum.path = scalar_text(child_value)
+					.map(|text| rule_directory(name, &text))
+					.transpose()?
+			}
 			"path_file" => {
-				complex_enum.path_file = scalar_text(child_value).map(normalize_schema_path)
+				complex_enum.path_file = scalar_text(child_value)
+					.map(|text| rule_file(name, &text))
+					.transpose()?
 			}
 			"start_from_root" => {
 				complex_enum.start_from_root = scalar_bool(child_value).unwrap_or(false);
@@ -1017,7 +1042,7 @@ fn parse_complex_enum(name: &str, value: &ParadoxNode<'_>) -> Option<CwtComplexE
 			_ => {}
 		}
 	}
-	(!complex_enum.name_rules.is_empty()).then_some(complex_enum)
+	Ok((!complex_enum.name_rules.is_empty()).then_some(complex_enum))
 }
 
 fn complex_enum_name_rules(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
@@ -1070,15 +1095,18 @@ fn merge_unique(values: &mut Vec<String>, incoming: Vec<String>) {
 	}
 }
 
-fn normalize_schema_path(path: String) -> String {
-	path.trim_start_matches("game/")
-		.trim_matches('/')
-		.to_ascii_lowercase()
+fn rule_directory(rule: &str, text: &str) -> Result<SchemaDirectory, CwtLoadError> {
+	SchemaDirectory::parse(text).map_err(|error| invalid_rule_path(rule, "path", error))
 }
 
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.trim_matches('/')
-		.to_ascii_lowercase()
+/// `path_file` names a file below the rule's directory as a game path.
+fn rule_file(rule: &str, text: &str) -> Result<GamePathBuf, CwtLoadError> {
+	GamePathBuf::parse(text).map_err(|error| invalid_rule_path(rule, "path_file", error))
+}
+
+fn invalid_rule_path(rule: &str, field: &str, error: GamePathError) -> CwtLoadError {
+	CwtLoadError::InvalidSchema {
+		path: None,
+		message: format!("`{rule}` declares an invalid {field}: {error}"),
+	}
 }

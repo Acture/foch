@@ -25,8 +25,8 @@ use crate::merge::planning::module_view::{
 	CrossFileModuleViewError, build_cross_file_module_views,
 };
 use crate::model::{
-	DeferredUnitReason, DepMisuseFinding, MergeModuleOutput, MergePlanEntry, MergePlanStrategy,
-	MergePlanTarget,
+	DeferredUnitReason, DepMisuseFinding, GamePath, MergeModuleOutput, MergePlanEntry,
+	MergePlanStrategy, MergePlanTarget,
 };
 use crate::project::{DepOverride, ResolutionMap};
 
@@ -196,10 +196,15 @@ fn analyze_structural_unit(
 	prompt: InteractivePrompt<'_>,
 ) -> UnitAnalysis {
 	let path: &str = entry.output_path();
+	// Plan paths are still text written from game paths. One that is not is
+	// left unanalyzed, and applying the unit then fails the merge.
+	let Ok(game_path) = GamePath::new(path) else {
+		return UnitAnalysis::Nothing;
+	};
 	let contributors: Option<&[ResolvedInputContributor]> =
 		context.input.file_inventory.get(path).map(Vec::as_slice);
 	let descriptor: Option<&ContentFamilyDescriptor> =
-		context.profile.classify_content_family(Path::new(path));
+		context.profile.classify_content_family(game_path);
 	let vanilla_base_mode: VanillaBaseMode = effective_vanilla_base_mode(
 		descriptor,
 		contributors,
@@ -319,10 +324,16 @@ fn analyze_module_namespace(
 	eprintln!("[merge] definition module: start {output_path}");
 	// The descriptor comes from this namespace's own output path: the
 	// extractors dispatch on the directory a definition was read from.
-	let Some(descriptor) = context
-		.profile
-		.classify_content_family(Path::new(output_path))
-	else {
+	let game_path = match GamePath::new(output_path) {
+		Ok(game_path) => game_path,
+		Err(error) => {
+			return NamespaceAnalysis::Failed(
+				DeferredUnitReason::EngineFailure,
+				format!("module output is not a game path: {error}"),
+			);
+		}
+	};
+	let Some(descriptor) = context.profile.classify_content_family(game_path) else {
 		return NamespaceAnalysis::Failed(
 			DeferredUnitReason::EngineFailure,
 			format!("missing content-family descriptor for {output_path}"),

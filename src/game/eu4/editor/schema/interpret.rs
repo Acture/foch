@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use crate::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, ScriptSyntax, SpanRange, parse_clausewitz_statements,
@@ -9,7 +8,7 @@ use crate::game::schema::query::{
 	CompiledLink, CompiledRoot, CompiledRuleCondition, CompiledRuleField, CompiledRuleValue,
 	CompiledSeverity, CwtQuery, RuleContext, SchemaScalarType, parse_schema_marker,
 };
-use crate::model::{LocalisationDefinition, Severity};
+use crate::model::{GamePath, LocalisationDefinition, Severity};
 
 use super::{
 	EditorPosition, EditorRange, SchemaCompletion, SchemaCompletionKind, SchemaDiagnostic,
@@ -25,12 +24,12 @@ struct KeyPathTarget {
 
 pub(super) fn schema_hover(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: EditorPosition,
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Option<SchemaHover> {
-	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(file_path), text);
 	let target = find_hover_target(&parsed.statements, position, &[])?;
 	let parent_path = target
 		.parent_path
@@ -294,7 +293,7 @@ fn span_contains_position(span: &SpanRange, position: EditorPosition) -> bool {
 
 pub(super) fn schema_completion_candidates(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: EditorPosition,
 	prefix_lower: &str,
@@ -304,14 +303,14 @@ pub(super) fn schema_completion_candidates(
 
 pub(super) fn schema_completion_candidates_with_index(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: EditorPosition,
 	prefix_lower: &str,
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Option<Vec<SchemaCompletion>> {
 	if !is_schema_key_completion_position(text, position) {
-		let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+		let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(file_path), text);
 		return schema_value_completion_candidates(
 			engine,
 			dynamic_values,
@@ -322,7 +321,7 @@ pub(super) fn schema_completion_candidates_with_index(
 			prefix_lower,
 		);
 	}
-	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(file_path), text);
 	let parent_path = find_completion_parent_path(&parsed.statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = schema_bind_context(
@@ -362,7 +361,7 @@ pub(super) fn schema_completion_candidates_with_index(
 fn schema_value_completion_candidates(
 	engine: &CwtQuery,
 	dynamic_values: Option<&SchemaWorkspace>,
-	file_path: &Path,
+	file_path: &GamePath,
 	statements: &[AstStatement],
 	text: &str,
 	position: EditorPosition,
@@ -589,7 +588,7 @@ fn schema_dynamic_key_completion_entries(
 fn schema_active_scopes_for_path(
 	engine: &CwtQuery,
 	dynamic_values: Option<&SchemaWorkspace>,
-	file_path: &Path,
+	file_path: &GamePath,
 	document_statements: &[AstStatement],
 	path: &[&str],
 ) -> Vec<String> {
@@ -687,7 +686,7 @@ fn schema_alias_scope_matches(
 fn schema_bind_context<'p>(
 	engine: &'p CwtQuery,
 	dynamic_values: Option<&SchemaWorkspace>,
-	file_path: &Path,
+	file_path: &GamePath,
 	document_statements: &[AstStatement],
 	path: &[&str],
 ) -> Option<RuleContext<'p>> {
@@ -856,7 +855,7 @@ fn schema_conditions_match(
 
 fn schema_active_subtypes_for_path(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	statements: &[AstStatement],
 	path: &[&str],
 ) -> HashSet<String> {
@@ -974,7 +973,7 @@ fn is_schema_angle_dynamic_key_marker(key: &str) -> bool {
 
 pub(super) fn schema_diagnostics_for_text(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 ) -> Vec<SchemaDiagnostic> {
 	schema_diagnostics_for_text_with_index(engine, file_path, text, None)
@@ -982,17 +981,17 @@ pub(super) fn schema_diagnostics_for_text(
 
 pub(super) fn schema_diagnostics_for_text_with_index(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Vec<SchemaDiagnostic> {
-	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(file_path), text);
 	schema_diagnostics_for_ast_with_index(engine, file_path, &parsed.statements, dynamic_values)
 }
 
 fn schema_diagnostics_for_ast_with_index(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	statements: &[AstStatement],
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Vec<SchemaDiagnostic> {
@@ -1010,17 +1009,17 @@ fn schema_diagnostics_for_ast_with_index(
 
 pub(super) fn schema_localisation_diagnostics_for_text(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	definitions: &[LocalisationDefinition],
 ) -> Vec<SchemaDiagnostic> {
-	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(file_path), text);
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(file_path), text);
 	schema_localisation_diagnostics_for_ast(engine, file_path, &parsed.statements, definitions)
 }
 
 fn schema_localisation_diagnostics_for_ast(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	statements: &[AstStatement],
 	definitions: &[LocalisationDefinition],
 ) -> Vec<SchemaDiagnostic> {
@@ -1053,7 +1052,7 @@ struct SchemaRootInstance<'a> {
 
 fn schema_localisation_references_for_ast(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	statements: &[AstStatement],
 ) -> Vec<SchemaLocalisationReference> {
 	let Some(root) = engine.bind_root(file_path) else {
@@ -1109,7 +1108,7 @@ fn schema_rule_scalar_pattern(value: &CompiledRuleValue) -> Option<&str> {
 fn schema_root_instances<'a>(
 	root: &CompiledRoot,
 	statements: &'a [AstStatement],
-	file_path: &Path,
+	file_path: &GamePath,
 ) -> Vec<SchemaRootInstance<'a>> {
 	let mut instances = Vec::new();
 	collect_schema_root_instances(
@@ -1128,7 +1127,7 @@ fn collect_schema_root_instances<'a>(
 	statements: &'a [AstStatement],
 	remaining_skip_keys: &[String],
 	path: Vec<String>,
-	file_path: &Path,
+	file_path: &GamePath,
 	out: &mut Vec<SchemaRootInstance<'a>>,
 ) {
 	if let Some((skip_key, rest)) = remaining_skip_keys.split_first() {
@@ -1180,7 +1179,7 @@ fn schema_root_instance_identity(
 	key: &str,
 	key_span: &SpanRange,
 	items: &[AstStatement],
-	file_path: &Path,
+	file_path: &GamePath,
 ) -> (String, EditorRange) {
 	if let Some(name_field) = root.name_field.as_deref()
 		&& let Some((value, range)) = scalar_assignment_in_statements(items, name_field)
@@ -1188,7 +1187,7 @@ fn schema_root_instance_identity(
 		return (value, range);
 	}
 	if root.name_from_file
-		&& let Some(stem) = file_path.file_stem().and_then(|value| value.to_str())
+		&& let Some(stem) = file_path.file_stem()
 	{
 		return (stem.to_string(), editor_range_from_span(key_span));
 	}
@@ -1215,7 +1214,7 @@ fn scalar_assignment_in_statements(
 
 fn schema_active_subtypes_for_instance(
 	engine: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	root: &CompiledRoot,
 	statements: &[AstStatement],
 	path: &[&str],
@@ -1245,7 +1244,7 @@ fn schema_missing_localisation_diagnostic(range: EditorRange, key: &str) -> Sche
 struct SchemaDiagnosticContext<'a> {
 	engine: &'a CwtQuery,
 	dynamic_values: Option<&'a SchemaWorkspace>,
-	file_path: &'a Path,
+	file_path: &'a GamePath,
 	document_statements: &'a [AstStatement],
 }
 

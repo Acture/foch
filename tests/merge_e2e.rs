@@ -1204,7 +1204,7 @@ fn eu4_governments_cross_file_module_emits_union_once() {
 	assert_eq!(relative.to_path(&out_dir), merged_path);
 	let parsed_output = parse_script_file("generated", &out_dir, relative);
 	let descriptor = eu4()
-		.classify_content_family(&relative.to_path(""))
+		.classify_content_family(relative)
 		.expect("governments descriptor");
 	let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
 		panic!("governments must use definition-module loading");

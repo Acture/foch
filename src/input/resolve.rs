@@ -500,20 +500,20 @@ pub fn resolve_product_input_manifest(
 
 fn retained_definition_modules(
 	game: &Eu4,
-	requested_paths: &BTreeSet<String>,
+	requested_paths: &[GamePathBuf],
 ) -> BTreeMap<MergeUnitId, u32> {
 	let profile = game;
 	requested_paths
 		.iter()
 		.filter_map(|path| {
-			let descriptor = profile.classify_content_family(Path::new(path))?;
+			let descriptor = profile.classify_content_family(path)?;
 			let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
 				return None;
 			};
 			Some((
 				MergeUnitId {
 					family_id: descriptor.id.as_str().to_string(),
-					module_name: module_name_for_descriptor(Path::new(path), descriptor),
+					module_name: module_name_for_descriptor(path, descriptor),
 				},
 				policy.policy_version,
 			))
@@ -534,11 +534,19 @@ fn expand_retained_paths_for_game<'a>(
 		.iter()
 		.map(|path| normalize_relative_path(Path::new(path)))
 		.collect::<BTreeSet<_>>();
-	let selected_modules = retained_definition_modules(game, &effective);
+	// Retained and available paths still arrive as text; classification and
+	// rule lookup take a game path, so a retained path must be one.
+	let requested_game_paths = effective
+		.iter()
+		.map(|path| {
+			GamePathBuf::parse(path).map_err(|error| format!("retained path {path:?}: {error}"))
+		})
+		.collect::<Result<Vec<_>, String>>()?;
+	let selected_modules = retained_definition_modules(game, &requested_game_paths);
 	let rules = game_version.and_then(load_rules_for_version);
 	let mut selected_databases: BTreeSet<&str> = BTreeSet::new();
 	if let Some(rules) = rules {
-		for path in &effective {
+		for path in &requested_game_paths {
 			if let Some(database) = rules.database_for(path)? {
 				selected_databases.insert(database);
 			}
@@ -547,8 +555,10 @@ fn expand_retained_paths_for_game<'a>(
 	let profile = game;
 	for available_path in available_paths {
 		let normalized = normalize_relative_path(Path::new(available_path));
+		let game_path = GamePath::new(&normalized)
+			.map_err(|error| format!("available path {normalized:?}: {error}"))?;
 		if let Some(database) = rules
-			.map(|rules| rules.database_for(&normalized))
+			.map(|rules| rules.database_for(game_path))
 			.transpose()?
 			.flatten()
 		{
@@ -557,7 +567,7 @@ fn expand_retained_paths_for_game<'a>(
 			}
 			continue;
 		}
-		let Some(descriptor) = profile.classify_content_family(Path::new(&normalized)) else {
+		let Some(descriptor) = profile.classify_content_family(game_path) else {
 			continue;
 		};
 		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
@@ -573,7 +583,7 @@ fn expand_retained_paths_for_game<'a>(
 		}
 		let module = MergeUnitId {
 			family_id: descriptor.id.as_str().to_string(),
-			module_name: module_name_for_descriptor(Path::new(&normalized), descriptor),
+			module_name: module_name_for_descriptor(game_path, descriptor),
 		};
 		if selected_modules.contains_key(&module) {
 			effective.insert(normalized);
@@ -988,7 +998,7 @@ fn verify_absent_semantic_bases(
 			path: error_path.to_path_buf(),
 			message: format!("unsafe semantic base path {relative:?}: {error}"),
 		})?;
-		let descriptor = profile.classify_content_family(&relative_path.to_path(""));
+		let descriptor = profile.classify_content_family(relative_path);
 		if classify_document_family(relative_path) != Some(DocumentFamily::Clausewitz)
 			|| !descriptor.is_some_and(ContentFamilyDescriptor::supports_verified_empty_file_base)
 			|| contributors

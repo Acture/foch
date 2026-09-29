@@ -261,7 +261,7 @@ fn build_input_calls_graph(state: &crate::check::runtime::RuntimeState) -> Calls
 				symbol_kind: Some(symbol_kind_text(definition.kind).to_string()),
 				name: Some(definition.name.clone()),
 				mod_id: Some(definition.mod_id.clone()),
-				path: Some(definition.path.clone()),
+				path: Some(definition.path.to_string()),
 				line: Some(definition.line),
 				column: Some(definition.column),
 			},

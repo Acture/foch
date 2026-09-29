@@ -1,9 +1,13 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tempfile::TempDir;
 
 use super::*;
+
+fn game_path(text: &str) -> &GamePath {
+	GamePath::new(text).expect("valid game path")
+}
 
 struct WorkspaceFixture {
 	schema_workspace: SchemaWorkspace,
@@ -42,19 +46,19 @@ fn load_inline_lsp_schema(schema: &str) -> EditorSchema {
 fn complex_enum_workspace(schema: EditorSchema) -> WorkspaceFixture {
 	let documents = [
 		SchemaDocument::new(
-			Path::new("common/country_tags/00_countries.txt"),
+			game_path("common/country_tags/00_countries.txt"),
 			"SWE = \"countries/Sweden.txt\"\nFRA = \"countries/France.txt\"\n",
 		),
 		SchemaDocument::new(
-			Path::new("common/graphicalculturetype.txt"),
+			game_path("common/graphicalculturetype.txt"),
 			"westerngfx = {}\neasterngfx = {}\n",
 		),
 		SchemaDocument::new(
-			Path::new("customizable_localization/sample_custom_locs.txt"),
+			game_path("customizable_localization/sample_custom_locs.txt"),
 			"defined_text = {\n  name = sample_defined_text\n  text = { localisation_key = sample_defined_text_key }\n}\n",
 		),
 		SchemaDocument::new(
-			Path::new("common/cultures/00_cultures.txt"),
+			game_path("common/cultures/00_cultures.txt"),
 			"latin = {\n  dynasty_names = { von_habsburg de_valois }\n  austrian = {\n    name = { dynasty_names = { von_luxembourg } }\n  }\n}\n",
 		),
 	];
@@ -117,7 +121,7 @@ fn hover_markdown(hover: SchemaHover) -> String {
 
 fn schema_hover(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: EditorPosition,
 	workspace: Option<&SchemaWorkspace>,
@@ -127,7 +131,7 @@ fn schema_hover(
 
 fn schema_completion_candidates(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: EditorPosition,
 	prefix_lower: &str,
@@ -137,7 +141,7 @@ fn schema_completion_candidates(
 
 fn schema_completion_candidates_with_index(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	position: EditorPosition,
 	prefix_lower: &str,
@@ -148,7 +152,7 @@ fn schema_completion_candidates_with_index(
 
 fn schema_diagnostics_for_text(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 ) -> Vec<SchemaDiagnostic> {
 	schema.diagnostics(file_path, text, None)
@@ -156,7 +160,7 @@ fn schema_diagnostics_for_text(
 
 fn schema_diagnostics_for_text_with_index(
 	schema: &EditorSchema,
-	file_path: &Path,
+	file_path: &GamePath,
 	text: &str,
 	workspace: Option<&SchemaWorkspace>,
 ) -> Vec<SchemaDiagnostic> {
@@ -195,7 +199,7 @@ fn hover_renders_event_field_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let hover = schema_hover(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token(&text, "immediate"),
 		None,
@@ -215,7 +219,7 @@ fn hover_renders_enum_value_constraints_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let hover = schema_hover(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token(&text, "category"),
 		None,
@@ -235,7 +239,7 @@ fn hover_renders_scope_value_constraints_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let hover = schema_hover(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token(&text, "friend_scope"),
 		None,
@@ -254,7 +258,7 @@ fn hover_renders_complex_enum_values_from_workspace() {
 	let text = fixture_text("events/sample.txt");
 	let hover = schema_hover(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token(&text, "gfx"),
 		Some(&workspace.schema_workspace),
@@ -280,7 +284,7 @@ country_event = {
 ";
 	let hover = schema_hover(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token(text, "SWE"),
 		Some(&workspace.schema_workspace),
@@ -308,7 +312,7 @@ country_event = {
 ";
 	let hover = schema_hover(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token(text, "SWE"),
 		Some(&workspace.schema_workspace),
@@ -326,7 +330,7 @@ fn hover_renders_mission_field_from_schema() {
 	let text = fixture_text("missions/sample.txt");
 	let hover = schema_hover(
 		&engine,
-		Path::new("missions/sample.txt"),
+		game_path("missions/sample.txt"),
 		&text,
 		position_for_token(&text, "provinces_to_highlight"),
 		None,
@@ -347,7 +351,7 @@ fn hover_renders_scripted_effect_field_from_schema() {
 	let text = fixture_text("common/scripted_effects/sample.txt");
 	let hover = schema_hover(
 		&engine,
-		Path::new("common/scripted_effects/sample.txt"),
+		game_path("common/scripted_effects/sample.txt"),
 		&text,
 		position_for_token(&text, "add_prestige"),
 		None,
@@ -365,7 +369,7 @@ fn completion_suggests_event_children_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token(&text, "trigger"),
 		"",
@@ -393,7 +397,7 @@ fn completion_expands_trigger_aliases_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token(&text, "has_country_flag"),
 		"has",
@@ -424,7 +428,7 @@ fn completion_suggests_enum_values_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token_offset(&text, "ADM", 1),
 		"a",
@@ -442,7 +446,7 @@ fn completion_suggests_value_set_values_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token_offset(&text, "root", 2),
 		"ro",
@@ -460,7 +464,7 @@ fn completion_suggests_value_values_from_schema() {
 	let text = fixture_text("events/sample.txt");
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token_offset(&text, "prev", 2),
 		"pr",
@@ -478,7 +482,7 @@ fn completion_suggests_scope_values_from_schema() {
 	let text = "namespace = sample\ncountry_event = {\n  friend_scope = ro\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token_offset(text, "ro", 2),
 		"ro",
@@ -496,7 +500,7 @@ fn completion_expands_static_dynamic_key_markers_from_schema() {
 	let text = "namespace = sample\ncountry_event = {\n  dynamic_fields = {\n    al\n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token_offset(text, "al", 2),
 		"al",
@@ -522,7 +526,7 @@ fn completion_expands_workspace_dynamic_key_markers_from_schema() {
 	let text = "namespace = sample\ncountry_event = {\n  dynamic_fields = {\n    SW\n  }\n}\n";
 	let candidates = schema_completion_candidates_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token_offset(text, "SW", 2),
 		"sw",
@@ -548,7 +552,7 @@ fn completion_expands_workspace_dynamic_alias_names_from_schema() {
 	let text = "namespace = sample\ncountry_event = {\n  immediate = {\n    SW\n  }\n}\n";
 	let candidates = schema_completion_candidates_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token_offset(text, "SW", 2),
 		"sw",
@@ -584,7 +588,7 @@ country_event = {
 ";
 	let candidates = schema_completion_candidates_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token_offset(text, "add", 3),
 		"add",
@@ -606,7 +610,7 @@ fn completion_suggests_complex_enum_values_from_workspace() {
 	let text = fixture_text("events/sample.txt");
 	let country_candidates = schema_completion_candidates_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token_offset(&text, "SWE", 2),
 		"sw",
@@ -622,7 +626,7 @@ fn completion_suggests_complex_enum_values_from_workspace() {
 	);
 	let graphical_candidates = schema_completion_candidates_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token_offset(&text, "westerngfx", 4),
 		"west",
@@ -637,7 +641,7 @@ fn completion_suggests_complex_enum_values_from_workspace() {
 	);
 	let text_command_candidates = schema_completion_candidates_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token_offset(&text, "sample_defined_text", 6),
 		"sample",
@@ -648,7 +652,7 @@ fn completion_suggests_complex_enum_values_from_workspace() {
 	assert_eq!(text_command_candidates[0].label, "sample_defined_text");
 	let dynasty_candidates = schema_completion_candidates_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token_offset(&text, "von_habsburg", 5),
 		"von_h",
@@ -665,7 +669,7 @@ fn completion_suggests_scripted_effect_fields_from_schema() {
 	let text = fixture_text("common/scripted_effects/sample.txt");
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("common/scripted_effects/sample.txt"),
+		game_path("common/scripted_effects/sample.txt"),
 		&text,
 		position_for_token(&text, "add_prestige"),
 		"add",
@@ -687,7 +691,7 @@ fn completion_filters_aliases_by_active_scope_when_known() {
 	let text = fixture_text("events/sample.txt");
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		&text,
 		position_for_token(&text, "add_prestige"),
 		"",
@@ -707,7 +711,7 @@ fn completion_inherits_subtype_scope_for_alias_filtering() {
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  trigger = {\n    has\n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token_offset(text, "has", 3),
 		"has",
@@ -728,7 +732,7 @@ fn completion_accepts_parent_scope_aliases_in_subscope_context() {
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    country_wide_effect = 1\n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token(text, "country_wide_effect"),
 		"",
@@ -749,7 +753,7 @@ fn completion_uses_cwt_links_to_transition_active_scope() {
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    owner = {\n      country_wide_effect = 1\n    }\n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		position_for_token(text, "country_wide_effect"),
 		"",
@@ -770,7 +774,7 @@ fn completion_uses_replace_scope_this_for_alias_filtering() {
 	let text = "demo_mission = {\n  provinces_to_highlight = {\n    has\n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("missions/sample.txt"),
+		game_path("missions/sample.txt"),
 		text,
 		position_for_token_offset(text, "has", 3),
 		"has",
@@ -819,7 +823,7 @@ fn completion_uses_root_type_key_filter_exclusion_for_schema_context() {
 	let text = "sample_group = {\n  sample_idea = {\n    \n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("common/ideas/sample.txt"),
+		game_path("common/ideas/sample.txt"),
 		text,
 		EditorPosition {
 			line: 2,
@@ -862,7 +866,7 @@ fn completion_uses_ordered_skip_root_key_chain_for_schema_context() {
 		"age_of_discovery = {\n  abilities = {\n    free_war_taxes = {\n      \n    }\n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("common/ages/sample.txt"),
+		game_path("common/ages/sample.txt"),
 		text,
 		EditorPosition {
 			line: 3,
@@ -912,7 +916,7 @@ fn completion_uses_cwt_path_file_for_root_matching() {
 	let text = "sample_area = {\n  \n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("map/area.txt"),
+		game_path("map/area.txt"),
 		text,
 		EditorPosition {
 			line: 1,
@@ -936,7 +940,7 @@ fn completion_filters_cwt_rule_subtype_conditions() {
 	let hidden_text = "sample_event = {\n  hidden = yes\n  \n}\n";
 	let hidden_candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		hidden_text,
 		EditorPosition {
 			line: 2,
@@ -956,7 +960,7 @@ fn completion_filters_cwt_rule_subtype_conditions() {
 	let visible_text = "sample_event = {\n  hidden = no\n  \n}\n";
 	let visible_candidates = schema_completion_candidates(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		visible_text,
 		EditorPosition {
 			line: 2,
@@ -979,7 +983,7 @@ fn completion_binds_dynamic_cwt_marker_fields() {
 	let text = "demo_mission = {\n  mission_tree = {\n    conquest = {\n      has\n    }\n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("missions/sample.txt"),
+		game_path("missions/sample.txt"),
 		text,
 		position_for_token_offset(text, "has", 3),
 		"has",
@@ -1000,7 +1004,7 @@ fn completion_does_not_suggest_dynamic_marker_literals() {
 	let text = "demo_mission = {\n  mission_tree = {\n    \n  }\n}\n";
 	let candidates = schema_completion_candidates(
 		&engine,
-		Path::new("missions/sample.txt"),
+		game_path("missions/sample.txt"),
 		text,
 		EditorPosition {
 			line: 2,
@@ -1020,7 +1024,7 @@ fn completion_does_not_suggest_dynamic_marker_literals() {
 fn diagnostics_report_alias_scope_mismatches_when_scope_is_known() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  immediate = {\n    province_only_effect = 1\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V007".to_string())
 			&& diagnostic.message.contains("province_only_effect")
@@ -1034,7 +1038,7 @@ fn diagnostics_report_alias_scope_mismatches_when_scope_is_known() {
 fn diagnostics_inherit_subtype_scope_for_alias_mismatches() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  trigger = {\n    has_province_flag = demo_flag\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V007".to_string())
 			&& diagnostic.message.contains("has_province_flag")
@@ -1054,7 +1058,7 @@ sample_event = {
   visible_only = yes
 }
 ";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("hidden_only")
 	}));
@@ -1072,7 +1076,7 @@ country_event = {
   localisation = bad_key
 }
 ";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("localisation")
 	}));
@@ -1082,7 +1086,7 @@ country_event = {
 fn diagnostics_use_replace_scope_this_for_alias_mismatches() {
 	let engine = load_lsp_schema();
 	let text = "demo_mission = {\n  provinces_to_highlight = {\n    has_country_flag = demo_flag\n    has_province_flag = demo_flag\n    has_sea_flag = demo_flag\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("missions/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("missions/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V007".to_string())
 			&& diagnostic.message.contains("has_country_flag")
@@ -1103,7 +1107,7 @@ fn diagnostics_use_replace_scope_this_for_alias_mismatches() {
 fn diagnostics_bind_dynamic_cwt_marker_fields() {
 	let engine = load_lsp_schema();
 	let text = "demo_mission = {\n  mission_tree = {\n    conquest = {\n      has_country_flag = demo_flag\n      has_province_flag = demo_flag\n      has_sea_flag = demo_flag\n    }\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("missions/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("missions/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("conquest")
 	}));
@@ -1127,7 +1131,7 @@ fn diagnostics_bind_dynamic_cwt_marker_fields() {
 fn diagnostics_accept_parent_scope_aliases_in_subscope_context() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    country_wide_effect = 1\n    province_only_effect = 1\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V007".to_string())
 			&& diagnostic.message.contains("country_wide_effect")
@@ -1142,7 +1146,7 @@ fn diagnostics_accept_parent_scope_aliases_in_subscope_context() {
 fn diagnostics_use_cwt_links_to_transition_active_scope() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    owner = {\n      country_wide_effect = 1\n      province_only_effect = 1\n    }\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V007".to_string())
 			&& diagnostic.message.contains("country_wide_effect")
@@ -1160,7 +1164,7 @@ fn diagnostics_report_unknown_keys_and_cardinality_violations() {
 	let engine = load_lsp_schema();
 	let text = fixture_text("events/diagnostics.txt");
 	let diagnostics =
-		schema_diagnostics_for_text(&engine, Path::new("events/diagnostics.txt"), &text);
+		schema_diagnostics_for_text(&engine, game_path("events/diagnostics.txt"), &text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string())
 			&& diagnostic.message.contains("mystery_key")
@@ -1232,7 +1236,7 @@ country_event = {
   }
 }
 ";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("alpha")
 	}));
@@ -1258,7 +1262,7 @@ country_event = {
 ";
 	let diagnostics = schema_diagnostics_for_text_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		Some(&workspace.schema_workspace),
 	);
@@ -1294,7 +1298,7 @@ country_event = {
 ";
 	let diagnostics = schema_diagnostics_for_text_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		Some(&workspace.schema_workspace),
 	);
@@ -1322,7 +1326,7 @@ fn diagnostics_validate_complex_enum_values_from_workspace() {
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  ally = XXX\n  gfx = missinggfx\n  text_command = missing_text\n  dynasty = missing_dynasty\n}\n";
 	let diagnostics = schema_diagnostics_for_text_with_index(
 		&engine,
-		Path::new("events/sample.txt"),
+		game_path("events/sample.txt"),
 		text,
 		Some(&workspace.schema_workspace),
 	);
@@ -1363,7 +1367,7 @@ fn diagnostics_validate_scope_values_from_schema() {
 	let engine = load_lsp_schema();
 	let text =
 		"namespace = sample\ncountry_event = {\n  friend_scope = root\n  friend_scope = sea\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V003".to_string()) && diagnostic.message.contains("value `root`")
 	}));
@@ -1421,7 +1425,7 @@ sample = {
   }
 }
 ";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V005".to_string())
 			&& diagnostic.message.contains("gentle_bool")
@@ -1467,7 +1471,7 @@ sample = {
   open_int = 99
 }
 ";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V005".to_string())
 			&& diagnostic.message.contains("limited_int")
@@ -1487,7 +1491,7 @@ sample = {
 fn diagnostics_report_missing_required_schema_keys() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  title = sample_title\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V004".to_string())
 			&& diagnostic.message.contains("category")
@@ -1506,7 +1510,7 @@ fn diagnostics_report_missing_required_schema_keys() {
 fn diagnostics_report_schema_value_shape_mismatches() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  trigger = yes\n  days = { value = 1 }\n  immediate = {\n    add_prestige = { amount = 5 }\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V006".to_string())
 			&& diagnostic.message.contains("trigger")
@@ -1534,7 +1538,7 @@ fn diagnostics_report_schema_value_shape_mismatches() {
 fn diagnostics_skip_unknown_keys_inside_alias_bodies() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  trigger = {\n    custom_trigger = {\n      mystery_key = yes\n    }\n  }\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("mystery_key")
 	}));
@@ -1545,7 +1549,7 @@ fn diagnostics_skip_unknown_keys_inside_alias_bodies() {
 fn value_coercion_errors_where_the_game_reads_a_different_value() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  id = sample.3\n  chance = 0.1234\n  hidden = YES\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 
 	assert!(
 		diagnostics.iter().any(|diagnostic| {
@@ -1573,7 +1577,7 @@ fn value_coercion_errors_where_the_game_reads_a_different_value() {
 fn value_coercion_warns_on_a_lossless_excess_decimal() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  id = sample.4\n  chance = 0.5000\n  hidden = yes\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 
 	assert!(
 		diagnostics.iter().any(|diagnostic| {
@@ -1596,7 +1600,7 @@ fn value_coercion_warns_on_a_lossless_excess_decimal() {
 fn value_coercion_diagnostics_stay_quiet_at_the_kept_precision() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  id = sample.5\n  chance = 0.500\n}\n";
-	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
 
 	assert!(
 		!diagnostics

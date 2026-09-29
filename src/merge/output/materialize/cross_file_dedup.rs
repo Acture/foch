@@ -75,7 +75,11 @@ pub(super) fn prune_cross_file_noop_duplicates(
 	}
 
 	let effective_inventory = build_effective_merged_inventory(out_dir, &generated_paths, input);
-	let grouped = group_by_family(&effective_inventory, profile);
+	let grouped =
+		group_by_family(&effective_inventory, profile).map_err(|error| MergeError::Validation {
+			path: Some(error.input.clone()),
+			message: error.to_string(),
+		})?;
 	let mut dropped_paths = BTreeSet::new();
 
 	for (family_id, paths_by_file) in &grouped {

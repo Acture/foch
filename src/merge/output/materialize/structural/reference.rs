@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::game::eu4::cwt::merge::classify_conflict_kind;
 use crate::game::eu4::script::ParsedScriptFile;
-use crate::model::{LeafConflictDetail, MergeReportConflictContributor};
+use crate::model::{GamePath, LeafConflictDetail, MergeReportConflictContributor};
 use crate::project::{ResolutionMap, compute_conflict_id};
 
 use super::super::{
@@ -130,7 +130,7 @@ where
 	);
 	if !dag_merge.merge_result.conflicts.is_empty() {
 		return Err(StructuralMergeFailure::Unresolved(unresolved_report(
-			target_path,
+			super::plan_game_path(target_path)?,
 			&dag_merge.merge_result,
 			context.mod_versions,
 			&effective_map,
@@ -293,7 +293,7 @@ pub(super) fn survivor_views(
 }
 
 pub(super) fn unresolved_report(
-	target_path: &str,
+	target_path: &GamePath,
 	merge_result: &PatchMergeResult,
 	mod_versions: &HashMap<String, String>,
 	resolution_map: &crate::project::ResolutionMap,
@@ -309,8 +309,11 @@ pub(super) fn unresolved_report(
 		})
 		.collect::<Vec<_>>();
 	let leaf_conflicts = leaf_conflicts(target_path, &merge_result.conflicts, mod_versions);
-	let explicitly_deferred =
-		super::all_conflicts_explicitly_deferred(target_path, &leaf_conflicts, resolution_map);
+	let explicitly_deferred = super::all_conflicts_explicitly_deferred(
+		target_path.as_str(),
+		&leaf_conflicts,
+		resolution_map,
+	);
 	StructuralConflictReport {
 		reason: format!(
 			"structural merge has {} unresolved conflict(s): {}",
@@ -324,7 +327,7 @@ pub(super) fn unresolved_report(
 }
 
 fn leaf_conflicts(
-	target_path: &str,
+	target_path: &GamePath,
 	conflicts: &[PatchResolution],
 	mod_versions: &HashMap<String, String>,
 ) -> Vec<LeafConflictDetail> {
@@ -342,11 +345,11 @@ fn leaf_conflicts(
 					address_path: address_path.clone(),
 					address_key: address.key.clone(),
 					conflict_id: compute_conflict_id(
-						Path::new(target_path),
+						Path::new(target_path.as_str()),
 						&address_path,
 						&address.key,
 					),
-					kind: classify_conflict_kind(Path::new(target_path), &ast_path, reason),
+					kind: classify_conflict_kind(target_path, &ast_path, reason),
 					contributors: leaf_conflict_contributors(patches, mod_versions),
 				})
 			}

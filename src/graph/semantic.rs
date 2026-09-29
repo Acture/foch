@@ -6,8 +6,8 @@ use crate::game::eu4::content::eu4;
 use crate::input::request::InputRequest;
 use crate::input::{ResolvedInput, resolve_input};
 use crate::model::{
-	AliasUsage, GamePath, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
-	SymbolReference,
+	AliasUsage, GamePath, GamePathError, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind,
+	ScopeNode, SymbolReference,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -370,7 +370,7 @@ fn build_semantic_graph_artifact(
 	let Some(_descriptor) = profile.descriptor_for_root_family(family_id) else {
 		return Err(format!("unknown content family {family_id}").into());
 	};
-	let contributors = collect_family_contributors(input, family_id);
+	let contributors = collect_family_contributors(input, family_id)?;
 	if contributors.is_empty() {
 		return Err(format!("no contributors found for content family {family_id}").into());
 	}
@@ -666,11 +666,15 @@ fn build_semantic_graph_artifact(
 	Ok(artifact)
 }
 
-fn collect_family_contributors(input: &ResolvedInput, family_id: &str) -> Vec<FamilyContributor> {
+fn collect_family_contributors(
+	input: &ResolvedInput,
+	family_id: &str,
+) -> Result<Vec<FamilyContributor>, GamePathError> {
 	let profile = eu4();
 	let mut contributors = Vec::new();
 	for (relative_path, items) in &input.file_inventory {
-		let Some(fid) = profile.family_id_for(Path::new(relative_path)) else {
+		// Inventory keys are written from game paths; the parse restores it.
+		let Some(fid) = profile.family_id_for(GamePath::new(relative_path)?) else {
 			continue;
 		};
 		if fid != family_id {
@@ -695,7 +699,7 @@ fn collect_family_contributors(input: &ResolvedInput, family_id: &str) -> Vec<Fa
 			item.absolute_path.clone(),
 		)
 	});
-	contributors
+	Ok(contributors)
 }
 
 fn collect_definition_seeds(
@@ -784,7 +788,7 @@ fn build_block_nodes(
 		}
 		let relative_path = scope.path.as_str().to_string();
 		let profile = eu4();
-		let Some(fid) = profile.family_id_for(Path::new(&relative_path)) else {
+		let Some(fid) = profile.family_id_for(&scope.path) else {
 			continue;
 		};
 		if fid != family_id {
@@ -972,7 +976,7 @@ fn attachment_node_for_scoped_item(
 ) -> Option<String> {
 	let relative_path = path.as_str().to_string();
 	let profile = eu4();
-	let fid = profile.family_id_for(&path.to_path(""))?;
+	let fid = profile.family_id_for(path)?;
 	if fid != family_id {
 		return None;
 	}
@@ -1002,7 +1006,7 @@ fn attach_resource_references(
 			continue;
 		};
 		let profile = eu4();
-		let Some(fid) = profile.family_id_for(Path::new(&relative_path)) else {
+		let Some(fid) = profile.family_id_for(&item.path) else {
 			continue;
 		};
 		if fid != ctx.family_id {
