@@ -1,4 +1,4 @@
-use super::super::super::error::MergeError;
+use super::super::super::error::{MergeError, MergeErrorSubject};
 use super::super::super::patch::ClausewitzPatch;
 use super::super::super::patch_merge::PatchAddress;
 use super::super::stale_vanilla::detect_stale_vanilla_targets;
@@ -13,7 +13,7 @@ use crate::merge::model::{SemanticDeltaPartition, SemanticSourceDelta};
 use crate::merge::structured::{
 	DefinitionModuleAdapter, TreePartitionAdapter, semantic_node_address,
 };
-use crate::model::{DepMisuseFinding, StaleVanillaTargetDescriptor};
+use crate::model::{DepMisuseFinding, GamePath, StaleVanillaTargetDescriptor};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map::Entry};
 
 const SEMANTIC_MISSING_PATH_NOTE: &str = "vanilla snapshot for this file does not contain the semantic parent; this remove-style change may be cross-version drift, dependency-targeted, or intentionally guarded";
@@ -87,7 +87,7 @@ fn vanilla_address_lookup_key(address_key: &str) -> Option<&str> {
 }
 
 pub(super) fn parse_vanilla_for_stale_detection(
-	file_path: &str,
+	file_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	script_cache: &InputScriptCache,
 ) -> Result<Option<ParsedScriptFile>, MergeError> {
@@ -101,7 +101,7 @@ pub(super) fn parse_vanilla_for_stale_detection(
 		.load(base)
 		.map(|parsed| Some((*parsed).clone()))
 		.map_err(|error| MergeError::Validation {
-			path: Some(file_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(file_path.to_owned())),
 			message: format!(
 				"failed to load verified vanilla AST for stale target detection: {error}"
 			),
@@ -109,7 +109,7 @@ pub(super) fn parse_vanilla_for_stale_detection(
 }
 
 pub(super) fn collect_stale_vanilla_targets(
-	file_path: &str,
+	file_path: &GamePath,
 	mod_patches: &[(String, usize, Vec<ClausewitzPatch>)],
 	vanilla: Option<&ParsedScriptFile>,
 	merge_key_source: MergeKeySource,
@@ -135,7 +135,7 @@ pub(super) fn collect_stale_vanilla_targets(
 }
 
 pub(super) fn collect_semantic_stale_vanilla_targets(
-	file_path: &str,
+	file_path: &GamePath,
 	source_deltas: &[SemanticSourceDelta],
 	vanilla: Option<&ParsedScriptFile>,
 	policies: &MergePolicies,
@@ -191,7 +191,7 @@ pub(super) fn collect_semantic_stale_vanilla_targets(
 				findings.push(StaleVanillaTargetDescriptor {
 					mod_id: source_delta.source.source_id.clone(),
 					mod_version: mod_version.to_string(),
-					file_path: file_path.to_string(),
+					file_path: file_path.to_owned(),
 					patch_kind: kind.to_string(),
 					target_path: address.path,
 					target_key: address.key,
@@ -390,8 +390,8 @@ mod tests {
 		};
 
 		let error = parse_vanilla_for_stale_detection(
-			relative,
-			&[contributor],
+			&contributor.relative_path,
+			std::slice::from_ref(&contributor),
 			&InputScriptCache::default(),
 		)
 		.expect_err("missing verified AST must fail closed");
@@ -455,7 +455,7 @@ mod tests {
 		let versions = HashMap::from([("mod-a".to_string(), "1.0.0".to_string())]);
 
 		let present_findings = collect_semantic_stale_vanilla_targets(
-			"common/test.txt",
+			crate::model::GamePath::new("common/test.txt").expect("valid game path"),
 			&[present],
 			Some(&vanilla),
 			&MergePolicies::default(),
@@ -463,7 +463,7 @@ mod tests {
 		)
 		.expect("inspect present semantic target");
 		let absent_findings = collect_semantic_stale_vanilla_targets(
-			"common/test.txt",
+			crate::model::GamePath::new("common/test.txt").expect("valid game path"),
 			&[absent],
 			Some(&vanilla),
 			&MergePolicies::default(),

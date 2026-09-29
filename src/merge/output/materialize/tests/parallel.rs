@@ -31,10 +31,13 @@ use crate::merge::backend::{
 use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
 use crate::merge::conflict_view::ConflictView;
 use crate::merge::model::ExternalFileResolution;
-use crate::merge::{MergeDisposition, MergeError, MergeReviewSummary, MergeUnitOutcome};
+use crate::merge::{
+	MergeDisposition, MergeError, MergeErrorSubject, MergeReviewSummary, MergeUnitOutcome,
+};
 use crate::model::{
-	HandlerResolutionRecord, MERGE_REPORT_ARTIFACT_PATH, MergePlanEntry, MergePlanResult,
-	MergePlanStrategy, MergeReport, MergeReportStatus, StaleVanillaTargetDescriptor,
+	GamePathBuf, HandlerResolutionRecord, MERGE_REPORT_ARTIFACT_PATH, MergePlanEntry,
+	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus,
+	StaleVanillaTargetDescriptor,
 };
 use crate::project::{ResolutionDecision, ResolutionMap};
 
@@ -63,6 +66,10 @@ const BROKEN_PATH: &str = "history/provinces/p03_broken.txt";
 const LOCALISATION_PATH: &str = "localisation/par_l_english.yml";
 const OVERLAY_PATH: &str = "gfx/interface/par_icon.dds";
 const SAFE_FILE_COUNT: usize = 8;
+
+fn game_path(text: &str) -> GamePathBuf {
+	GamePathBuf::parse(text).expect("valid game path")
+}
 
 /// Cancels `cancellation` if `run` outlives twice the deadlock guard, so a
 /// scheduler that stalls fails the test with `Cancelled` instead of hanging.
@@ -339,7 +346,7 @@ fn write_mixed_playset(root: &Path) {
 fn chosen_resolution() -> ResolutionMap {
 	let mut resolution_map: ResolutionMap = ResolutionMap::default();
 	resolution_map.by_file.insert(
-		PathBuf::from(CHOSEN_CONFLICT_PATH),
+		game_path(CHOSEN_CONFLICT_PATH),
 		ResolutionDecision::PreferMod("par-a".to_string()),
 	);
 	resolution_map
@@ -618,7 +625,7 @@ fn options_with(backend: Box<dyn MergeBackend>, worker_count: usize) -> MergeMat
 fn missing_payload_output(payload: &str, target: &str) -> BackendOutcome {
 	let mut output: StructuralMergeOutput = structural_merge_output("unused = yes\n");
 	output.external_file_resolutions.insert(
-		PathBuf::from(target),
+		game_path(target),
 		ExternalFileResolution::Frozen(PathBuf::from(payload)),
 	);
 	Ok(output)
@@ -752,7 +759,7 @@ fn assert_mixed_run_is_not_vacuous(
 			report
 				.handler_resolutions
 				.iter()
-				.any(|record| record.path == DOWNSTREAM_RESOLVED_PATH),
+				.any(|record| record.path.as_str() == DOWNSTREAM_RESOLVED_PATH),
 			"{run}: {:?}",
 			report.handler_resolutions
 		);
@@ -878,7 +885,7 @@ fn probe_conflict(target: &str) -> BackendOutcome {
 			reason: format!("probe conflict in {target}"),
 			leaf_conflicts: Vec::new(),
 			handler_resolutions: vec![HandlerResolutionRecord {
-				path: target.to_string(),
+				path: game_path(target),
 				action: "probe".to_string(),
 				source: None,
 				rationale: None,
@@ -919,8 +926,13 @@ fn parallel_workers_overlap_and_never_exceed_the_limit() {
 		output
 			.stale_vanilla_targets
 			.push(StaleVanillaTargetDescriptor {
-				file_path: attempt.target.to_string(),
-				..StaleVanillaTargetDescriptor::default()
+				mod_id: String::new(),
+				mod_version: String::new(),
+				file_path: game_path(attempt.target),
+				patch_kind: String::new(),
+				target_path: Vec::new(),
+				target_key: None,
+				note: None,
 			});
 		Ok(output)
 	});
@@ -954,19 +966,19 @@ fn parallel_workers_overlap_and_never_exceed_the_limit() {
 	let stale: Vec<String> = report
 		.stale_vanilla_targets
 		.iter()
-		.map(|target| target.file_path.clone())
+		.map(|target| target.file_path.to_string())
 		.collect();
 	assert_eq!(stale, merges);
 	let deferred: Vec<String> = report
 		.conflict_resolutions
 		.iter()
-		.map(|resolution| resolution.path.clone())
+		.map(|resolution| resolution.path.to_string())
 		.collect();
 	assert_eq!(deferred, conflicts);
 	let handled: Vec<String> = report
 		.handler_resolutions
 		.iter()
-		.map(|record| record.path.clone())
+		.map(|record| record.path.to_string())
 		.collect();
 	assert_eq!(handled, conflicts);
 	let warned: Vec<usize> = conflicts
@@ -1071,7 +1083,7 @@ fn a_module_failing_in_its_second_namespace_writes_neither_directory() {
 		let (backend, recorder) = recording(move |attempt, _, proceed| {
 			if attempt.module && attempt.target == failing {
 				return Err(StructuralMergeFailure::Merge(MergeError::Validation {
-					path: Some(attempt.target.to_string()),
+					subject: Some(MergeErrorSubject::Game(game_path(attempt.target))),
 					message: "controlled second-namespace failure".to_string(),
 				}));
 			}
@@ -1182,7 +1194,7 @@ fn cancelling_mid_run_returns_cancelled_and_leaves_no_worker_running() {
 /// One conflict prompt as the test observed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Prompt {
-	file_path: PathBuf,
+	file_path: GamePathBuf,
 	conflict_id: String,
 	/// Not compared across runs: the thread the prompt ran on, and how many
 	/// backend calls were running at the time.
@@ -1216,7 +1228,7 @@ impl ConflictHandler for PickingHandler {
 /// workers.
 struct InteractiveRun {
 	snapshot: RunSnapshot,
-	prompts: Vec<(PathBuf, String)>,
+	prompts: Vec<(GamePathBuf, String)>,
 	persisted: String,
 }
 
@@ -1254,7 +1266,7 @@ fn interactive_prompts_match_one_worker_and_run_with_every_worker_paused() {
 				"{run}: no unit reached a worker"
 			);
 		}
-		let sequence: Vec<(PathBuf, String)> = prompted
+		let sequence: Vec<(GamePathBuf, String)> = prompted
 			.iter()
 			.map(|prompt| (prompt.file_path.clone(), prompt.conflict_id.clone()))
 			.collect();

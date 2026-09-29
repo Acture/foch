@@ -214,7 +214,8 @@ pub fn assert_output(case: &Case, out: &Path, report: &MergeReport) {
 				("static_modifiers_definition", "shared"),
 			]
 		);
-		let adopted: &[String] = &report.definition_provenance[OUTPUT]["shared"];
+		let adopted: &[String] = &report.definition_provenance
+			[foch::model::GamePath::new(OUTPUT).expect("valid game path")]["shared"];
 		assert_eq!(
 			adopted, case.adopted,
 			"{}: adopted contributions",
@@ -233,7 +234,7 @@ pub fn assert_output(case: &Case, out: &Path, report: &MergeReport) {
 		assert_eq!(report.engine_failure_count, 0);
 		assert_eq!(report.conflict_resolutions.len(), 1, "{report:#?}");
 		let conflict: &MergeReportConflictResolution = &report.conflict_resolutions[0];
-		assert_eq!(conflict.path, OUTPUT);
+		assert_eq!(conflict.path.as_str(), OUTPUT);
 		assert_eq!(
 			conflict.deferred_reason,
 			DeferredUnitReason::NeedsUserChoice

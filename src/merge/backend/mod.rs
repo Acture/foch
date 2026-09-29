@@ -13,6 +13,7 @@ use super::output::materialize::{
 use super::planning::module_view::CrossFileModuleViews;
 use super::resolution::conflict_handler::ConflictHandler;
 use crate::input::ResolvedInputContributor;
+use crate::model::GamePath;
 
 pub(crate) use super::kernel_adapter::{MergeBackendDescriptor, MergeBackendId};
 pub(crate) use address_patch::AddressPatchBackend;
@@ -30,7 +31,7 @@ pub(crate) enum BackendUnit<'a> {
 }
 
 pub(crate) struct BackendRequest<'data, 'handler> {
-	pub target_path: &'data str,
+	pub target_path: &'data GamePath,
 	pub unit: BackendUnit<'data>,
 	pub context: StructuralMergeContext<'data>,
 	pub interactive_handler: Option<&'handler mut (dyn ConflictHandler + 'static)>,

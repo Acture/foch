@@ -9,7 +9,9 @@ use foch::merge::{
 };
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
-use foch::playset::descriptor::load_launcher_descriptor;
+use foch::playset::descriptor::{
+	descriptor_path_text, escape_descriptor_value, load_launcher_descriptor,
+};
 use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 
@@ -449,38 +451,24 @@ fn install_launcher_stub(
 	let slug = launcher_stub_slug(out_dir);
 	let stub_path = mod_dir.join(format!("foch_{slug}.mod"));
 	let display_name = format!("foch merge ({slug})");
-	let descriptor_value =
-		strip_extended_length_prefix(&absolute_out.to_string_lossy()).replace('\\', "/");
+	let descriptor_value = descriptor_path_text(&absolute_out).map_err(|reason| {
+		format!(
+			"merged output {} cannot be named in a launcher descriptor: {reason}",
+			absolute_out.display()
+		)
+	})?;
 	let body = format!(
 		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
 		out_dir.display(),
-		escape_descriptor(&display_name),
-		escape_descriptor(&descriptor_value)
+		escape_descriptor_value(&display_name),
+		escape_descriptor_value(&descriptor_value)
 	);
 	fs::write(&stub_path, body)?;
-	let display_stub = strip_extended_length_prefix(&stub_path.to_string_lossy());
 	eprintln!(
-		"[foch] launcher stub installed at {display_stub}; enable it in the Paradox Launcher and disable the source mods to use the merge."
+		"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
+		stub_path.display()
 	);
 	Ok(())
-}
-
-/// Strip Windows extended-length path prefixes (`\\?\` / `\\?\UNC\`) so paths
-/// written into Paradox descriptors and printed to the user are loadable by
-/// the launcher and shell-friendly. Non-Windows / non-prefixed paths are
-/// returned verbatim.
-fn strip_extended_length_prefix(path: &str) -> String {
-	if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-		format!(r"\\{rest}")
-	} else if let Some(rest) = path.strip_prefix(r"\\?\") {
-		rest.to_string()
-	} else if let Some(rest) = path.strip_prefix("//?/UNC/") {
-		format!("//{rest}")
-	} else if let Some(rest) = path.strip_prefix("//?/") {
-		rest.to_string()
-	} else {
-		path.to_string()
-	}
 }
 
 fn launcher_stub_slug(out_dir: &Path) -> String {
@@ -499,10 +487,6 @@ fn launcher_stub_slug(out_dir: &Path) -> String {
 		.collect()
 }
 
-fn escape_descriptor(value: &str) -> String {
-	value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -519,6 +503,27 @@ mod tests {
 				manifest_id: SteamId::new(manifest_id),
 			},
 		}])
+	}
+
+	/// The launcher stub names the merged output with the library's descriptor
+	/// encoder: reading the stub back yields the output directory.
+	#[test]
+	fn launcher_stub_names_the_merged_output_exactly() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let out_dir = temp.path().join("merged \"out\"");
+		fs::create_dir_all(&out_dir).expect("create output");
+		let paradox_dir = temp.path().join("paradox");
+
+		install_launcher_stub(&out_dir, &paradox_dir).expect("install stub");
+
+		let stub = paradox_dir
+			.join("mod")
+			.join(format!("foch_{}.mod", launcher_stub_slug(&out_dir)));
+		let descriptor = load_launcher_descriptor(&stub).expect("read stub");
+		assert_eq!(
+			descriptor.path.map(PathBuf::from),
+			Some(fs::canonicalize(&out_dir).expect("canonical output"))
+		);
 	}
 
 	#[test]

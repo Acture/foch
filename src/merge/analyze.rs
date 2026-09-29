@@ -4,7 +4,7 @@ use super::commit::{
 	ProductInputCommitGuard,
 };
 use super::conflict_handler::ConflictHandler;
-use super::error::MergeError;
+use super::error::{MergeError, MergeErrorSubject};
 use super::materialize::{
 	MaterializeOutput, MergeMaterializeOptions, freeze_path_plan, materialize_analyzed_input,
 };
@@ -561,7 +561,7 @@ fn complete_merge_analysis(
 			Some(report.generated_file_count as u64),
 		);
 		let config: Config = output_validation_config.ok_or_else(|| MergeError::Validation {
-			path: None,
+			subject: None,
 			message: "output validation requires a resolved input".to_string(),
 		})?;
 		report.validation = revalidate_generated_output(
@@ -764,18 +764,20 @@ fn load_merge_policy(
 		.unwrap_or_else(|| Path::new("."));
 	let config = if let Some(path) = explicit_path {
 		Project::load_from_path(path).map_err(|err| MergeError::Validation {
-			path: Some(path.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(path.to_path_buf())),
 			message: err.to_string(),
 		})?
 	} else {
 		Project::try_load(playset_root).map_err(|err| MergeError::Validation {
-			path: Some(playset_root.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(playset_root.to_path_buf())),
 			message: err.to_string(),
 		})?
 	};
 	let resolution_map =
 		ResolutionMap::from_entries(&config.resolutions).map_err(|err| MergeError::Validation {
-			path: Some(explicit_path.unwrap_or(playset_root).display().to_string()),
+			subject: Some(MergeErrorSubject::Host(
+				explicit_path.unwrap_or(playset_root).to_path_buf(),
+			)),
 			message: err.to_string(),
 		})?;
 	let emit_options = EmitOptions::with_indent(config.emit_indent());
@@ -810,7 +812,7 @@ fn freeze_external_resolution_files(
 	let mut frozen = BTreeMap::new();
 	for path in sources {
 		let bytes = fs::read(&path).map_err(|err| MergeError::Validation {
-			path: Some(path.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(path.to_path_buf())),
 			message: format!("failed to freeze external resolution source: {err}"),
 		})?;
 		frozen.insert(path, bytes);
@@ -831,7 +833,7 @@ fn revalidate_generated_output(
 	let parent_dir = canonical_out_dir
 		.parent()
 		.ok_or_else(|| MergeError::Validation {
-			path: Some(canonical_out_dir.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(canonical_out_dir.to_path_buf())),
 			message: format!(
 				"generated output {} has no parent directory",
 				canonical_out_dir.display()
@@ -839,7 +841,7 @@ fn revalidate_generated_output(
 		})?;
 	let out_dir_text =
 		descriptor_path_text(&canonical_out_dir).map_err(|reason| MergeError::Validation {
-			path: Some(canonical_out_dir.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(canonical_out_dir.to_path_buf())),
 			message: format!(
 				"generated output {} cannot be named in a descriptor: {reason}",
 				canonical_out_dir.display()
@@ -849,7 +851,7 @@ fn revalidate_generated_output(
 		.file_name()
 		.and_then(|name| name.to_str())
 		.ok_or_else(|| MergeError::Validation {
-			path: Some(canonical_out_dir.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(canonical_out_dir.to_path_buf())),
 			message: format!(
 				"generated output {} has no terminal directory name",
 				canonical_out_dir.display()
@@ -1393,7 +1395,7 @@ mod tests {
 	fn compute_merge_status_partial_on_handler_resolutions() {
 		let report = report_with(|report| {
 			report.handler_resolutions.push(HandlerResolutionRecord {
-				path: "common/test.txt".to_string(),
+				path: crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
 				action: "last_writer".to_string(),
 				source: None,
 				rationale: None,

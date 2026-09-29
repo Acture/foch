@@ -58,13 +58,13 @@ struct FamilyValueFingerprintIndex {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct CrossFilePruneResult {
-	pub surviving_generated_paths: BTreeSet<String>,
+	pub surviving_generated_paths: BTreeSet<GamePathBuf>,
 	pub pruned_paths: BTreeSet<GamePathBuf>,
 }
 
 pub(super) fn prune_cross_file_noop_duplicates(
 	out_dir: &Path,
-	mut generated_paths: BTreeSet<String>,
+	mut generated_paths: BTreeSet<GamePathBuf>,
 	input: &ResolvedInput,
 	profile: &Eu4,
 	report: &mut MergeReport,
@@ -73,18 +73,7 @@ pub(super) fn prune_cross_file_noop_duplicates(
 		return Ok(CrossFilePruneResult::default());
 	}
 
-	// Generated paths are still text here; they were written from plan paths.
-	let generated_game_paths = generated_paths
-		.iter()
-		.map(|path| {
-			GamePathBuf::parse(path).map_err(|error| MergeError::Validation {
-				path: Some(path.clone()),
-				message: format!("generated output is not a game path: {error}"),
-			})
-		})
-		.collect::<Result<BTreeSet<_>, _>>()?;
-	let effective_inventory =
-		build_effective_merged_inventory(out_dir, &generated_game_paths, input);
+	let effective_inventory = build_effective_merged_inventory(out_dir, &generated_paths, input);
 	let grouped = group_by_family(&effective_inventory, profile);
 	let mut dropped_paths = BTreeSet::new();
 
@@ -99,7 +88,7 @@ pub(super) fn prune_cross_file_noop_duplicates(
 			continue;
 		};
 
-		let generated_paths_in_family = generated_game_paths
+		let generated_paths_in_family = generated_paths
 			.iter()
 			.filter(|path| paths_by_file.contains_key(*path))
 			.cloned()
@@ -137,7 +126,7 @@ pub(super) fn prune_cross_file_noop_duplicates(
 
 			if fully_covered {
 				drop_cross_file_noop_path(out_dir, path, family_id, report)?;
-				generated_paths.remove(path.as_str());
+				generated_paths.remove(path);
 				dropped_paths.insert(path.clone());
 			}
 		}
@@ -282,7 +271,7 @@ fn drop_cross_file_noop_path(
 		Err(err) => return Err(MergeError::Io(err)),
 	}
 	report.handler_resolutions.push(HandlerResolutionRecord {
-		path: path.to_string(),
+		path: path.to_owned(),
 		action: "cross_file_noop_skipped".to_string(),
 		source: None,
 		rationale: Some(format!(
@@ -692,7 +681,7 @@ mod tests {
 
 		let result = prune_cross_file_noop_duplicates(
 			&out_dir,
-			BTreeSet::from([generated_path.to_string()]),
+			BTreeSet::from([GamePathBuf::parse(generated_path).expect("valid game path")]),
 			&input,
 			crate::game::eu4::content::eu4(),
 			&mut report,
@@ -702,7 +691,7 @@ mod tests {
 		assert!(out_dir.join(generated_path).is_file());
 		assert_eq!(
 			result.surviving_generated_paths,
-			BTreeSet::from([generated_path.to_string()])
+			BTreeSet::from([GamePathBuf::parse(generated_path).expect("valid game path")])
 		);
 		assert!(result.pruned_paths.is_empty());
 		assert!(report.handler_resolutions.is_empty());
@@ -786,6 +775,32 @@ mod tests {
 			decision,
 			"decisions/zz_generated.txt",
 			&format!("{decision}extra_setting = yes\n"),
+		);
+	}
+
+	/// Among generated files that cover each other, the one earlier in the byte
+	/// order of its game-path text survives and covers the later one, as when
+	/// the paths were strings. Byte order and component order disagree when a
+	/// name sorts below `/`: `a-b.txt` comes before `a/b.txt` here.
+	#[test]
+	fn the_earlier_generated_path_in_byte_order_covers_the_later_one() {
+		let dash = GamePathBuf::parse("events/a-b.txt").expect("valid game path");
+		let nested = GamePathBuf::parse("events/a/b.txt").expect("valid game path");
+		let generated = BTreeSet::from([dash.clone(), nested.clone()]);
+		let dropped = BTreeSet::new();
+
+		assert!(covering_path_survives(&nested, &dash, &generated, &dropped));
+		assert!(!covering_path_survives(
+			&dash, &nested, &generated, &dropped
+		));
+		assert_eq!(
+			generated.iter().next(),
+			Some(&dash),
+			"the dash file is pruned first"
+		);
+		assert!(
+			!covering_path_survives(&nested, &dash, &generated, &BTreeSet::from([dash.clone()])),
+			"a pruned file covers nothing"
 		);
 	}
 

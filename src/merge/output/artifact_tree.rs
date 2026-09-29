@@ -1,4 +1,4 @@
-use crate::merge::error::MergeError;
+use crate::merge::error::{MergeError, MergeErrorSubject};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -68,7 +68,7 @@ fn digest_tree(root: &Path) -> Result<(blake3::Hash, usize), MergeError> {
 	for entry in sorted_entries(root)? {
 		let relative = safe_relative_path(root, entry.path())?;
 		let relative = relative.to_str().ok_or_else(|| MergeError::Validation {
-			path: Some(relative.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(relative.to_path_buf())),
 			message: "analyzed artifact path is not valid UTF-8".to_string(),
 		})?;
 		if entry.file_type().is_dir() {
@@ -97,7 +97,7 @@ fn sorted_entries(root: &Path) -> Result<Vec<walkdir::DirEntry>, MergeError> {
 				match error.into_io_error() {
 					Some(error) => MergeError::Io(io::Error::new(error.kind(), message)),
 					None => MergeError::Validation {
-						path: Some(root.display().to_string()),
+						subject: Some(MergeErrorSubject::Host(root.to_path_buf())),
 						message,
 					},
 				}
@@ -112,7 +112,7 @@ fn safe_relative_path(root: &Path, path: &Path) -> Result<PathBuf, MergeError> {
 	let relative = path
 		.strip_prefix(root)
 		.map_err(|_| MergeError::Validation {
-			path: Some(path.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(path.to_path_buf())),
 			message: "analyzed artifact escaped its root".to_string(),
 		})?;
 	if relative.as_os_str().is_empty()
@@ -121,7 +121,7 @@ fn safe_relative_path(root: &Path, path: &Path) -> Result<PathBuf, MergeError> {
 			.any(|component| !matches!(component, Component::Normal(_)))
 	{
 		return Err(MergeError::Validation {
-			path: Some(relative.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(relative.to_path_buf())),
 			message: "analyzed artifact path is not a safe relative path".to_string(),
 		});
 	}
@@ -135,7 +135,7 @@ fn hash_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 
 fn unsupported_entry(path: &Path) -> MergeError {
 	MergeError::Validation {
-		path: Some(path.display().to_string()),
+		subject: Some(MergeErrorSubject::Host(path.to_path_buf())),
 		message: "analyzed artifact contains a symlink or special file".to_string(),
 	}
 }

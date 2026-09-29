@@ -234,7 +234,8 @@ fn workshop_static_modifiers_product_probe() {
 		);
 	}
 	assert_eq!(
-		result.report.definition_provenance[OUTPUT]["prestige"],
+		result.report.definition_provenance
+			[foch::model::GamePath::new(OUTPUT).expect("valid game path")]["prestige"],
 		["3342969370", "2164202838"]
 	);
 }

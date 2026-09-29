@@ -3,6 +3,7 @@ mod fingerprint;
 pub use fingerprint::compute_playset_fingerprint;
 
 use crate::game::eu4::Eu4;
+use crate::model::{GamePath, GamePathBuf};
 use crate::playset::steam::WorkshopInstallIdentity;
 use globset::{Glob, GlobMatcher};
 use regex::Regex;
@@ -139,8 +140,10 @@ impl DepOverride {
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionEntry {
+	/// The output file a whole-file resolution applies to, as a game path.
+	/// Reading a config validates it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub file: Option<PathBuf>,
+	pub file: Option<GamePathBuf>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub conflict_id: Option<String>,
 	#[serde(rename = "mod", default, skip_serializing_if = "Option::is_none")]
@@ -162,6 +165,7 @@ pub struct ResolutionEntry {
 	/// selector, whose identity binds the complete candidate sequence.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prefer_candidate: Option<usize>,
+	/// A file on this host whose bytes replace the output, in host syntax.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub use_file: Option<PathBuf>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,9 +182,9 @@ pub struct ResolutionEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionMap {
-	/// Indexed by file path. BTreeMap (not HashMap) for deterministic iteration
+	/// Indexed by game path. BTreeMap (not HashMap) for deterministic iteration
 	/// order across runs — important for foch.toml dumps and diagnostic output.
-	pub by_file: BTreeMap<PathBuf, ResolutionDecision>,
+	pub by_file: BTreeMap<GamePathBuf, ResolutionDecision>,
 	/// Indexed by conflict ID. BTreeMap (not HashMap) for deterministic iteration
 	/// order across runs — important for foch.toml dumps and diagnostic output.
 	pub by_conflict_id: BTreeMap<String, ResolutionDecision>,
@@ -188,8 +192,6 @@ pub struct ResolutionMap {
 	/// order across runs — important for foch.toml dumps and diagnostic output.
 	pub mod_priority_boost: BTreeMap<String, i32>,
 	pub pattern_rules: Vec<PatternRule>,
-	pub policy_by_file: BTreeMap<PathBuf, ResolutionPolicy>,
-	pub policy_pattern_rules: Vec<PolicyPatternRule>,
 }
 
 impl PartialEq for ResolutionMap {
@@ -197,19 +199,12 @@ impl PartialEq for ResolutionMap {
 		self.by_file == other.by_file
 			&& self.by_conflict_id == other.by_conflict_id
 			&& self.mod_priority_boost == other.mod_priority_boost
-			&& self.policy_by_file == other.policy_by_file
 			&& self.pattern_rules.len() == other.pattern_rules.len()
-			&& self.policy_pattern_rules.len() == other.policy_pattern_rules.len()
 			&& self
 				.pattern_rules
 				.iter()
 				.zip(other.pattern_rules.iter())
 				.all(|(a, b)| a.dsl == b.dsl && a.decision == b.decision)
-			&& self
-				.policy_pattern_rules
-				.iter()
-				.zip(other.policy_pattern_rules.iter())
-				.all(|(a, b)| a.dsl == b.dsl && a.policy == b.policy)
 	}
 }
 
@@ -246,34 +241,19 @@ pub struct PatternRule {
 	pub decision: ResolutionDecision,
 }
 
-#[derive(Clone, Debug)]
-pub struct PolicyPatternRule {
-	pub dsl: String,
-	pub file_matcher: Matcher,
-	pub policy: ResolutionPolicy,
-}
-
 impl PatternRule {
 	/// Returns true when this rule covers the given (file, leaf_address).
-	/// `leaf_address` may be empty when the caller has no per-leaf identity
-	/// (e.g. file-only resolutions); rules with a leaf matcher then never
-	/// match.
-	pub fn matches(&self, file: &Path, leaf_address: &str) -> bool {
-		let file_str = file.to_string_lossy().replace('\\', "/");
-		if !self.file_matcher.is_match(&file_str) {
+	/// The file side matches the game path's canonical text. `leaf_address`
+	/// may be empty when the caller has no per-leaf identity (e.g. file-only
+	/// resolutions); rules with a leaf matcher then never match.
+	pub fn matches(&self, file: &GamePath, leaf_address: &str) -> bool {
+		if !self.file_matcher.is_match(file.as_str()) {
 			return false;
 		}
 		match &self.leaf_matcher {
 			None => true,
 			Some(matcher) => !leaf_address.is_empty() && matcher.is_match(leaf_address),
 		}
-	}
-}
-
-impl PolicyPatternRule {
-	pub fn matches(&self, file: &Path) -> bool {
-		let file_str = file.to_string_lossy().replace('\\', "/");
-		self.file_matcher.is_match(&file_str)
 	}
 }
 
@@ -388,11 +368,11 @@ impl ResolutionMap {
 				continue;
 			}
 
-			if let Some(policy) = entry.policy_action() {
-				if let Some(file) = &entry.file {
-					map.policy_by_file.insert(file.clone(), policy);
-				} else if let Some(dsl) = &entry.r#match {
-					let (file_matcher, leaf_matcher) = parse_match_dsl(dsl)
+			// A policy entry is validated and then takes no part in the merge:
+			// nothing applies a policy yet, so none is stored.
+			if entry.policy.is_some() {
+				if let Some(dsl) = &entry.r#match {
+					let (_, leaf_matcher) = parse_match_dsl(dsl)
 						.map_err(|err| ConfigError::resolution_entry(index, err.message()))?;
 					if leaf_matcher.is_some() {
 						return Err(ConfigError::resolution_entry(
@@ -400,11 +380,6 @@ impl ResolutionMap {
 							"policy action does not support address-constrained match selectors",
 						));
 					}
-					map.policy_pattern_rules.push(PolicyPatternRule {
-						dsl: dsl.clone(),
-						file_matcher,
-						policy,
-					});
 				}
 				continue;
 			}
@@ -444,7 +419,7 @@ impl ResolutionMap {
 	/// address side).
 	pub fn lookup(
 		&self,
-		file: &Path,
+		file: &GamePath,
 		conflict_id: &str,
 		leaf_address: &str,
 	) -> Option<&ResolutionDecision> {
@@ -458,16 +433,6 @@ impl ResolutionMap {
 			.iter()
 			.find(|rule| rule.matches(file, leaf_address))
 			.map(|rule| &rule.decision)
-	}
-
-	pub fn lookup_policy(&self, file: &Path) -> Option<&ResolutionPolicy> {
-		if let Some(policy) = self.policy_by_file.get(file) {
-			return Some(policy);
-		}
-		self.policy_pattern_rules
-			.iter()
-			.find(|rule| rule.matches(file))
-			.map(|rule| &rule.policy)
 	}
 }
 
@@ -582,16 +547,14 @@ impl ResolutionEntry {
 				.map(|handler| ResolutionDecision::Handler(handler.clone()))
 		}
 	}
-
-	fn policy_action(&self) -> Option<ResolutionPolicy> {
-		self.policy
-	}
 }
 
-pub fn compute_conflict_id(file_path: &Path, addr_path: &str, addr_key: &str) -> String {
+/// The persisted identity of an address-patch conflict. `foch.toml` stores it,
+/// so the hashed text is the game path's canonical text, exactly what the
+/// slash-normalized path text was for every valid path.
+pub fn compute_conflict_id(file_path: &GamePath, addr_path: &str, addr_key: &str) -> String {
 	let mut hasher = blake3::Hasher::new();
-	let normalized_file_path = file_path.to_string_lossy().replace('\\', "/");
-	hasher.update(normalized_file_path.as_bytes());
+	hasher.update(file_path.as_str().as_bytes());
 	hasher.update(b"\0");
 	hasher.update(addr_path.as_bytes());
 	hasher.update(b"\0");
@@ -779,6 +742,14 @@ mod tests {
 	use super::*;
 	use tempfile::TempDir;
 
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
+	fn game_path_buf(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
 	#[test]
 	fn parses_valid_toml_with_multiple_overrides() {
 		let config = Project::from_toml_str(
@@ -943,17 +914,17 @@ policy = "cwt_suggested"
 
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build resolution map");
 		assert_eq!(
-			map.by_file.get(Path::new("events/PirateEvents.txt")),
+			map.by_file.get(game_path("events/PirateEvents.txt")),
 			Some(&ResolutionDecision::PreferMod("1234567890".to_owned()))
 		);
 		assert_eq!(
-			map.by_file.get(Path::new("events/ManualEvents.txt")),
+			map.by_file.get(game_path("events/ManualEvents.txt")),
 			Some(&ResolutionDecision::UseFile(PathBuf::from(
 				"manual/PirateEvents.txt"
 			)))
 		);
 		assert_eq!(
-			map.by_file.get(Path::new("events/ExistingEvents.txt")),
+			map.by_file.get(game_path("events/ExistingEvents.txt")),
 			Some(&ResolutionDecision::KeepExisting)
 		);
 		assert_eq!(
@@ -966,8 +937,14 @@ policy = "cwt_suggested"
 		);
 		assert_eq!(map.mod_priority_boost.get("1234567890"), Some(&100));
 		assert_eq!(
-			map.lookup_policy(Path::new("common/estates_preload/test.txt")),
-			Some(&ResolutionPolicy::CwtSuggested)
+			config.resolutions[6].policy,
+			Some(ResolutionPolicy::CwtSuggested)
+		);
+		// A policy entry is validated but not applied, so it adds no decision.
+		assert_eq!(map.by_file.len(), 3);
+		assert!(
+			!map.by_file
+				.contains_key(game_path("common/estates_preload/test.txt"))
 		);
 	}
 
@@ -1017,11 +994,11 @@ priority_boost = 10
 			by_file,
 			vec![
 				(
-					PathBuf::from("events/alpha.txt"),
+					game_path_buf("events/alpha.txt"),
 					ResolutionDecision::UseFile(PathBuf::from("manual/alpha.txt")),
 				),
 				(
-					PathBuf::from("events/zulu.txt"),
+					game_path_buf("events/zulu.txt"),
 					ResolutionDecision::PreferMod("zulu-mod".to_string()),
 				),
 			]
@@ -1173,25 +1150,77 @@ policy = "cwt_suggested"
 
 	#[test]
 	fn compute_conflict_id_is_stable_and_input_sensitive() {
-		let base = compute_conflict_id(Path::new("events/PirateEvents.txt"), "root/event", "id");
+		let base = compute_conflict_id(game_path("events/PirateEvents.txt"), "root/event", "id");
 
 		assert_eq!(base.len(), 8);
 		assert!(base.chars().all(|c| c.is_ascii_hexdigit()));
 		assert_eq!(
 			base,
-			compute_conflict_id(Path::new("events/PirateEvents.txt"), "root/event", "id")
+			compute_conflict_id(game_path("events/PirateEvents.txt"), "root/event", "id")
 		);
 		assert_ne!(
 			base,
-			compute_conflict_id(Path::new("events/OtherEvents.txt"), "root/event", "id")
+			compute_conflict_id(game_path("events/OtherEvents.txt"), "root/event", "id")
 		);
 		assert_ne!(
 			base,
-			compute_conflict_id(Path::new("events/PirateEvents.txt"), "root/other", "id")
+			compute_conflict_id(game_path("events/PirateEvents.txt"), "root/other", "id")
 		);
 		assert_ne!(
 			base,
-			compute_conflict_id(Path::new("events/PirateEvents.txt"), "root/event", "other")
+			compute_conflict_id(game_path("events/PirateEvents.txt"), "root/event", "other")
+		);
+	}
+
+	/// `foch.toml` stores these ids, so typing the path must not move them:
+	/// the value is the one the slash-normalized path text produced.
+	#[test]
+	fn compute_conflict_id_keeps_the_ids_persisted_before_paths_were_typed() {
+		assert_eq!(
+			compute_conflict_id(game_path("events/PirateEvents.txt"), "root/event", "id"),
+			"2d6e0b85"
+		);
+	}
+
+	/// A whole-file resolution names a game path; text that is not one is a
+	/// config error naming it, not a key that silently never matches.
+	#[test]
+	fn a_resolution_file_that_is_not_a_game_path_is_a_config_error() {
+		for (file, rejected) in [
+			(r#""events\\PirateEvents.txt""#, r"events\PirateEvents.txt"),
+			(
+				r#""../events/PirateEvents.txt""#,
+				"../events/PirateEvents.txt",
+			),
+			(r#""/events/PirateEvents.txt""#, "/events/PirateEvents.txt"),
+		] {
+			let error = Project::from_toml_str(&format!(
+				"[[resolutions]]\nfile = {file}\nprefer_mod = \"x\"\n"
+			))
+			.expect_err(file)
+			.to_string();
+			assert!(
+				error.contains(&format!("invalid game path `{rejected}`")),
+				"{file}: {error}"
+			);
+		}
+	}
+
+	/// `use_file` names a host file: its text is kept exactly, including a
+	/// `\`, which is an ordinary name character off Windows.
+	#[test]
+	fn a_use_file_keeps_its_host_text() {
+		let config = Project::from_toml_str(
+			r#"
+[[resolutions]]
+file = "events/PirateEvents.txt"
+use_file = "manual\\Pirate Events.txt"
+"#,
+		)
+		.expect("parse config");
+		assert_eq!(
+			config.resolutions[0].use_file.as_deref(),
+			Some(Path::new(r"manual\Pirate Events.txt"))
 		);
 	}
 
@@ -1214,15 +1243,15 @@ prefer_mod = "conflict-mod"
 		let conflict_decision = ResolutionDecision::PreferMod("conflict-mod".to_owned());
 		let file_decision = ResolutionDecision::PreferMod("file-mod".to_owned());
 		assert_eq!(
-			map.lookup(Path::new("events/PirateEvents.txt"), "ab12cd34", ""),
+			map.lookup(game_path("events/PirateEvents.txt"), "ab12cd34", ""),
 			Some(&conflict_decision)
 		);
 		assert_eq!(
-			map.lookup(Path::new("events/PirateEvents.txt"), "unknown", ""),
+			map.lookup(game_path("events/PirateEvents.txt"), "unknown", ""),
 			Some(&file_decision)
 		);
 		assert_eq!(
-			map.lookup(Path::new("events/OtherEvents.txt"), "unknown", ""),
+			map.lookup(game_path("events/OtherEvents.txt"), "unknown", ""),
 			None
 		);
 	}
@@ -1350,9 +1379,9 @@ handler = "last_writer"
 			rule.decision,
 			ResolutionDecision::Handler("last_writer".to_string())
 		);
-		assert!(rule.matches(Path::new("common/ideas/national.txt"), "xx_idea_pirates"));
-		assert!(!rule.matches(Path::new("common/ideas/national.txt"), "yy_idea_pirates"));
-		assert!(!rule.matches(Path::new("events/foo.txt"), "xx_idea_pirates"));
+		assert!(rule.matches(game_path("common/ideas/national.txt"), "xx_idea_pirates"));
+		assert!(!rule.matches(game_path("common/ideas/national.txt"), "yy_idea_pirates"));
+		assert!(!rule.matches(game_path("events/foo.txt"), "xx_idea_pirates"));
 	}
 
 	#[test]
@@ -1383,16 +1412,48 @@ policy = "cwt_suggested"
 "#,
 		)
 		.expect("parse match+policy");
-		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
-		assert_eq!(map.policy_pattern_rules.len(), 1);
 		assert_eq!(
-			map.lookup_policy(Path::new("common/estates_preload/test.txt")),
-			Some(&ResolutionPolicy::CwtSuggested)
+			config.resolutions[0].policy,
+			Some(ResolutionPolicy::CwtSuggested)
 		);
+		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
+		// Validated but not applied: the policy adds no pattern decision.
+		assert!(map.pattern_rules.is_empty());
 		assert_eq!(
-			map.lookup_policy(Path::new("common/estate_privileges/test.txt")),
+			map.lookup(game_path("common/estates_preload/test.txt"), "no-id", ""),
 			None
 		);
+	}
+
+	#[test]
+	fn a_policy_with_an_address_constrained_match_is_a_config_error() {
+		let error = Project::from_toml_str(
+			r#"
+[[resolutions]]
+match = "common/estates_preload/**::estate_*"
+policy = "cwt_suggested"
+"#,
+		)
+		.expect_err("a policy match cannot name an address");
+		assert!(
+			error
+				.to_string()
+				.contains("policy action does not support address-constrained match selectors"),
+			"{error}"
+		);
+	}
+
+	#[test]
+	fn a_policy_with_an_invalid_match_is_a_config_error() {
+		let error = Project::from_toml_str(
+			r#"
+[[resolutions]]
+match = "re:("
+policy = "cwt_suggested"
+"#,
+		)
+		.expect_err("the match pattern is still compiled");
+		assert!(error.to_string().contains("invalid regex"), "{error}");
 	}
 
 	#[test]
@@ -1480,7 +1541,7 @@ prefer_mod = "specific-mod"
 		.expect("parse");
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
 		assert_eq!(
-			map.lookup(Path::new("anything.txt"), "abc12345", "any/leaf"),
+			map.lookup(game_path("anything.txt"), "abc12345", "any/leaf"),
 			Some(&ResolutionDecision::PreferMod("specific-mod".to_string()))
 		);
 	}
@@ -1501,18 +1562,18 @@ prefer_mod = "file-mod"
 		.expect("parse");
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
 		assert_eq!(
-			map.lookup(Path::new("events/foo.txt"), "no-id", "any/leaf"),
+			map.lookup(game_path("events/foo.txt"), "no-id", "any/leaf"),
 			Some(&ResolutionDecision::PreferMod("file-mod".to_string()))
 		);
 		// pattern still applies to non-matching file
 		assert_eq!(
-			map.lookup(Path::new("events/bar.txt"), "no-id", "any/leaf"),
+			map.lookup(game_path("events/bar.txt"), "no-id", "any/leaf"),
 			Some(&ResolutionDecision::Handler("last_writer".to_string()))
 		);
 	}
 
 	#[test]
-	fn file_and_match_policy_entries_round_trip_together() {
+	fn file_and_match_policy_entries_validate_and_add_no_decisions() {
 		let config = Project::from_toml_str(
 			r#"
 [[resolutions]]
@@ -1526,12 +1587,7 @@ policy = "cwt_suggested"
 		)
 		.expect("parse");
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
-		assert_eq!(map.policy_pattern_rules.len(), 1);
-		assert_eq!(map.policy_by_file.len(), 1);
-		assert_eq!(
-			map.lookup_policy(Path::new("common/estates_preload/exact.txt")),
-			Some(&ResolutionPolicy::CwtSuggested)
-		);
+		assert_eq!(map, ResolutionMap::default());
 	}
 
 	#[test]
@@ -1552,7 +1608,7 @@ handler = "defer"
 		// xx_idea_* should win; first rule covers it
 		assert_eq!(
 			map.lookup(
-				Path::new("common/ideas/national.txt"),
+				game_path("common/ideas/national.txt"),
 				"no-id",
 				"xx_idea_pirates"
 			),
@@ -1561,7 +1617,7 @@ handler = "defer"
 		// non-xx_ leaf falls through to second rule
 		assert_eq!(
 			map.lookup(
-				Path::new("common/ideas/national.txt"),
+				game_path("common/ideas/national.txt"),
 				"no-id",
 				"yy_idea_pirates"
 			),
@@ -1581,6 +1637,6 @@ handler = "last_writer"
 		.expect("parse");
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
 		// empty leaf address — leaf matcher can't match
-		assert_eq!(map.lookup(Path::new("common/foo.txt"), "no-id", ""), None);
+		assert_eq!(map.lookup(game_path("common/foo.txt"), "no-id", ""), None);
 	}
 }

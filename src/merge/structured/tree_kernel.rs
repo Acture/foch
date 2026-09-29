@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
@@ -7,7 +6,7 @@ use crate::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
-use crate::model::HandlerResolutionRecord;
+use crate::model::{GamePath, HandlerResolutionRecord};
 
 use crate::game::eu4::script::emit::emit_clausewitz_statements;
 use crate::merge::conflict_handler::{
@@ -44,12 +43,15 @@ pub(crate) type TreeDagState = SemanticMergeComputation;
 /// `ConflictNodeId` remains the kernel-internal resolution key. Its derivation
 /// intentionally excludes the target path, so the same structural conflict in
 /// two files can have the same raw id. Public and persisted ids bind that raw
-/// identity to the slash-normalized merge target and retain the full digest.
-pub(crate) fn semantic_conflict_id(target_path: &Path, raw_conflict_id: ConflictNodeId) -> String {
-	let normalized_target_path = target_path.to_string_lossy().replace('\\', "/");
+/// identity to the merge target's canonical game-path text and retain the full
+/// digest.
+pub(crate) fn semantic_conflict_id(
+	target_path: &GamePath,
+	raw_conflict_id: ConflictNodeId,
+) -> String {
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(b"foch-semantic-conflict-v1\0");
-	hasher.update(normalized_target_path.as_bytes());
+	hasher.update(target_path.as_str().as_bytes());
 	hasher.update(b"\0");
 	hasher.update(raw_conflict_id.as_bytes());
 	hasher.finalize().to_hex().to_string()
@@ -591,7 +593,7 @@ fn resolve_tree_conflicts(
 	handler.set_conflict_progress(0, conflict_count);
 	for (index, conflict) in conflicts.iter().enumerate() {
 		handler.set_conflict_progress(index + 1, conflict_count);
-		let conflict_id = semantic_conflict_id(&builder.input.base.path.to_path(""), conflict.id);
+		let conflict_id = semantic_conflict_id(&builder.input.base.path, conflict.id);
 		let mut prebuilt_record = None;
 		let decision = match view_requirement {
 			ConflictViewRequirement::DeferWithoutView => ConflictDecision::Defer { record: None },
@@ -609,8 +611,7 @@ fn resolve_tree_conflicts(
 							resolution.full_view_build_count += 1;
 						}
 						let record = builder.record(conflict)?;
-						let view =
-							semantic_conflict_view(&builder.input.base.path.to_path(""), &record)?;
+						let view = semantic_conflict_view(&builder.input.base.path, &record)?;
 						let decision = handler.on_conflict(&view);
 						prebuilt_record = Some(record);
 						decision
@@ -623,7 +624,7 @@ fn resolve_tree_conflicts(
 					resolution.full_view_build_count += 1;
 				}
 				let record = builder.record(conflict)?;
-				let view = semantic_conflict_view(&builder.input.base.path.to_path(""), &record)?;
+				let view = semantic_conflict_view(&builder.input.base.path, &record)?;
 				let decision = handler.on_conflict(&view);
 				prebuilt_record = Some(record);
 				decision
@@ -738,10 +739,10 @@ fn tree_conflict_metadata(
 		})
 		.collect::<Result<Vec<_>, String>>()?;
 	Ok(ConflictMetadataView {
-		file_path: input.base.path.to_path(""),
+		file_path: input.base.path.clone(),
 		address_path,
 		address_key,
-		conflict_id: semantic_conflict_id(&input.base.path.to_path(""), conflict.id),
+		conflict_id: semantic_conflict_id(&input.base.path, conflict.id),
 		reason: format!("{}: {}", conflict.kind, conflict.detail),
 		candidates,
 	})
@@ -796,7 +797,7 @@ fn split_semantic_address(path: &[String]) -> (Vec<String>, String) {
 }
 
 pub(crate) fn semantic_conflict_view(
-	file_path: &std::path::Path,
+	file_path: &GamePath,
 	record: &SemanticMergeConflict,
 ) -> Result<ConflictView, String> {
 	let (display_path, display_key) = split_semantic_address(&record.conflict.semantic_path);
@@ -831,7 +832,7 @@ pub(crate) fn semantic_conflict_view(
 		.map_err(|error| format!("failed to emit vanilla conflict candidate: {error}"))?
 		.map(|rendered| rendered.trim_end().to_string());
 	Ok(ConflictView {
-		file_path: file_path.to_path_buf(),
+		file_path: file_path.to_owned(),
 		address_path: display_path.clone(),
 		address_key: display_key.clone(),
 		conflict_id: semantic_conflict_id(file_path, record.conflict.id),
@@ -2701,7 +2702,7 @@ mod tests {
 		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
 
 		let record = builder.record(&conflict).expect("build guarded record");
-		let view = super::semantic_conflict_view(&input.base.path.to_path(""), &record)
+		let view = super::semantic_conflict_view(&input.base.path, &record)
 			.expect("render guarded conflict");
 		let candidate_index = conflict.candidates[..source_index]
 			.iter()
@@ -2727,7 +2728,7 @@ mod tests {
 		);
 		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
 		assert!(probe.conflicts.len() >= 3, "expected three conflicts");
-		let selected_id = semantic_conflict_id(&input.base.path.to_path(""), probe.conflicts[1].id);
+		let selected_id = semantic_conflict_id(&input.base.path, probe.conflicts[1].id);
 		let map = ResolutionMap {
 			by_conflict_id: BTreeMap::from([(
 				selected_id,
@@ -2736,7 +2737,7 @@ mod tests {
 			..ResolutionMap::default()
 		};
 		let mut handler = ChainHandler {
-			first: LookupHandler::new(&map, input.base.path.to_path("")),
+			first: LookupHandler::new(&map, input.base.path.clone()),
 			second: DeferHandler,
 		};
 		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
@@ -2765,7 +2766,7 @@ mod tests {
 		let expected_conflict_ids = probe
 			.conflicts
 			.iter()
-			.map(|conflict| semantic_conflict_id(&input.base.path.to_path(""), conflict.id))
+			.map(|conflict| semantic_conflict_id(&input.base.path, conflict.id))
 			.collect::<Vec<_>>();
 		let mut handler = PickCandidateHandler {
 			candidate: 1,

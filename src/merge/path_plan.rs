@@ -1,4 +1,4 @@
-use super::error::MergeError;
+use super::error::{MergeError, MergeErrorSubject};
 use super::normalize::normalize_defines_file;
 use crate::game::eu4::Eu4;
 use crate::game::eu4::content::eu4;
@@ -540,7 +540,7 @@ fn validate_structural_merge_inputs(
 		Ok(())
 	} else {
 		Err(MergeError::Validation {
-			path: Some(path.to_string()),
+			subject: Some(MergeErrorSubject::Game(path.to_owned())),
 			message: format!(
 				"structural merge blocked by invalid contributors: {}",
 				failures.join(", ")

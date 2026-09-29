@@ -4,10 +4,8 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-use crate::model::{GamePathBuf, HandlerResolutionRecord};
-use crate::project::{
-	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
-};
+use crate::model::{GamePath, GamePathBuf, HandlerResolutionRecord};
+use crate::project::{DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::merge::conflict_view::ConflictView;
@@ -31,7 +29,8 @@ pub struct ConflictMetadataCandidate {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConflictMetadataView {
-	pub file_path: PathBuf,
+	/// The output file the conflict is in.
+	pub file_path: GamePathBuf,
 	pub address_path: Vec<String>,
 	pub address_key: String,
 	pub conflict_id: String,
@@ -206,13 +205,13 @@ impl DepResolutionGraph {
 /// Single-threaded only: holds &mut self per-conflict via the ConflictHandler trait.
 /// The merge engine drives this serially; do NOT share across threads.
 pub(crate) struct DepImpliesResolutionHandler {
-	current_file: PathBuf,
+	current_file: GamePathBuf,
 	dep_graph: DepResolutionGraph,
 }
 
 impl DepImpliesResolutionHandler {
 	pub(crate) fn from_mod_dag(
-		current_file: PathBuf,
+		current_file: GamePathBuf,
 		mod_dag: &ModDag,
 		dep_overrides: &[DepOverride],
 	) -> Self {
@@ -222,7 +221,7 @@ impl DepImpliesResolutionHandler {
 		)
 	}
 
-	pub(crate) fn new(current_file: PathBuf, dep_graph: DepResolutionGraph) -> Self {
+	pub(crate) fn new(current_file: GamePathBuf, dep_graph: DepResolutionGraph) -> Self {
 		Self {
 			current_file,
 			dep_graph,
@@ -262,9 +261,7 @@ impl DepImpliesResolutionHandler {
 		if let Some((left, right)) = self.cycle_pair(mods) {
 			eprintln!(
 				"[foch] dep_implied skipped for {}: dependency cycle between {} and {}",
-				self.current_file.display(),
-				left,
-				right
+				self.current_file, left, right
 			);
 			return None;
 		}
@@ -312,7 +309,7 @@ impl DepImpliesResolutionHandler {
 		ConflictDecision::PickCandidate {
 			candidate,
 			record: Some(HandlerResolutionRecord {
-				path: view.file_path.to_string_lossy().replace('\\', "/"),
+				path: view.file_path.clone(),
 				action: "dep_implied".to_string(),
 				source: Some(winner),
 				rationale: Some(rationale),
@@ -336,16 +333,12 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 }
 
 pub(crate) struct PriorityBoostResolutionHandler<'a> {
-	_current_file: PathBuf,
 	boosts: &'a BTreeMap<String, i32>,
 }
 
 impl<'a> PriorityBoostResolutionHandler<'a> {
-	pub(crate) fn new(current_file: PathBuf, boosts: &'a BTreeMap<String, i32>) -> Self {
-		Self {
-			_current_file: current_file,
-			boosts,
-		}
+	pub(crate) fn new(boosts: &'a BTreeMap<String, i32>) -> Self {
+		Self { boosts }
 	}
 
 	fn winner(&self, view: &ConflictMetadataView) -> Option<(usize, String, usize)> {
@@ -383,7 +376,7 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 		ConflictDecision::PickCandidate {
 			candidate,
 			record: Some(HandlerResolutionRecord {
-				path: view.file_path.to_string_lossy().replace('\\', "/"),
+				path: view.file_path.clone(),
 				action: "priority_boost".to_string(),
 				source: Some(winner.clone()),
 				rationale: Some(format!(
@@ -413,35 +406,29 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 /// The merge engine drives this serially; do NOT share across threads.
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
-	pub _current_file: PathBuf,
+	/// The output file being merged, which file and pattern resolutions are
+	/// looked up by. Every view this handler decides is a conflict in it.
+	current_file: GamePathBuf,
 	current_conflict_index: usize,
 	total_conflicts: usize,
 }
 
 impl<'a> LookupHandler<'a> {
 	#[cfg(test)]
-	pub(crate) fn new(map: &'a ResolutionMap, file: PathBuf) -> Self {
+	pub(crate) fn new(map: &'a ResolutionMap, file: GamePathBuf) -> Self {
 		Self::with_display_names(map, file, HashMap::new())
 	}
 
 	pub(crate) fn with_display_names(
 		map: &'a ResolutionMap,
-		file: PathBuf,
+		file: GamePathBuf,
 		_mod_displayname_lookup: HashMap<String, String>,
 	) -> Self {
 		Self {
 			map,
-			_current_file: file,
+			current_file: file,
 			current_conflict_index: 1,
 			total_conflicts: 1,
-		}
-	}
-
-	fn lookup_file<'view>(&'view self, view: &'view ConflictMetadataView) -> &'view Path {
-		if self._current_file.as_os_str().is_empty() {
-			&view.file_path
-		} else {
-			&self._current_file
 		}
 	}
 
@@ -450,24 +437,15 @@ impl<'a> LookupHandler<'a> {
 		view: &'view ConflictMetadataView,
 	) -> Option<&'view ResolutionDecision> {
 		let address_path = view.address_path.join("/");
-		let lookup_file = self.lookup_file(view);
+		let lookup_file: &GamePath = &self.current_file;
 		let leaf_address = if address_path.is_empty() {
 			view.address_key.clone()
 		} else {
 			format!("{address_path}/{}", view.address_key)
 		};
-		let view_address_conflict_id =
-			compute_conflict_id(&view.file_path, &address_path, &view.address_key);
-		let address_conflict_id = (view.conflict_id == view_address_conflict_id)
-			.then(|| compute_conflict_id(lookup_file, &address_path, &view.address_key));
 		self.map
 			.by_conflict_id
 			.get(&view.conflict_id)
-			.or_else(|| {
-				address_conflict_id
-					.as_ref()
-					.and_then(|conflict_id| self.map.by_conflict_id.get(conflict_id))
-			})
 			.or_else(|| self.map.by_file.get(lookup_file))
 			.or_else(|| {
 				self.map
@@ -504,7 +482,7 @@ impl<'a> LookupHandler<'a> {
 			}
 			None => {
 				log_cwt_suggestion_on_miss(
-					self.lookup_file(view),
+					&self.current_file,
 					&view.address_path,
 					&view.address_key,
 				);
@@ -514,33 +492,20 @@ impl<'a> LookupHandler<'a> {
 	}
 }
 
-fn log_cwt_suggestion_on_miss(current_file: &Path, address_path: &[String], address_key: &str) {
+fn log_cwt_suggestion_on_miss(current_file: &GamePath, address_path: &[String], address_key: &str) {
 	let ast_path = if address_path.is_empty() {
 		vec![address_key]
 	} else {
 		address_path.iter().map(String::as_str).collect::<Vec<_>>()
 	};
-	// The metadata still names the file as a host path. A file without a game
-	// path binds no schema, so there is no suggestion to log; say why.
-	let game_path = match GamePathBuf::from_native_relative(current_file) {
-		Ok(game_path) => game_path,
-		Err(error) => {
-			tracing::warn!(
-				target: "foch_merge_cwt_suggest",
-				file = %current_file.display(),
-				"no cwt merge suggestion: {error}"
-			);
-			return;
-		}
-	};
 	let Some(suggestion) =
-		crate::game::eu4::cwt::merge::suggest_for_conflict(&game_path, &ast_path)
+		crate::game::eu4::cwt::merge::suggest_for_conflict(current_file, &ast_path)
 	else {
 		return;
 	};
 	tracing::info!(
 		target: "foch_merge_cwt_suggest",
-		file = %current_file.display(),
+		file = %current_file,
 		ast_path = %ast_path.join("/"),
 		suggested_identity_source = ?suggestion.suggested_identity_source,
 		suggested_block_policy = ?suggestion.suggested_block_policy,
@@ -624,7 +589,7 @@ impl FilesystemConfigWriter {
 		if !next_content.is_empty() && !next_content.ends_with("\n\n") {
 			next_content.push('\n');
 		}
-		next_content.push_str(&render_resolution_entry(&entry));
+		next_content.push_str(&render_resolution_entry(&entry)?);
 		if !next_content.ends_with('\n') {
 			next_content.push('\n');
 		}
@@ -687,8 +652,7 @@ impl InteractiveCliHandler {
 			"[foch] unresolved structural merge conflict (conflict {}/{}) ({} deferred)",
 			self.current_conflict_index, self.total_conflicts, self.deferred_so_far
 		);
-		let path = view.file_path.to_string_lossy();
-		let _ = writeln!(self.stderr, "  file: {path}");
+		let _ = writeln!(self.stderr, "  file: {}", view.file_path);
 		let _ = writeln!(
 			self.stderr,
 			"  address: {address_path}/{}",
@@ -903,7 +867,7 @@ impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<
 
 pub(crate) fn resolution_entry_for_decision(
 	view: &ConflictView,
-	current_file: &Path,
+	current_file: &GamePath,
 	conflict_id: &str,
 	decision: &ConflictDecision,
 ) -> Option<ResolutionEntry> {
@@ -941,7 +905,7 @@ pub(crate) fn resolution_entry_for_decision(
 			})
 		}
 		ConflictDecision::KeepExisting => Some(ResolutionEntry {
-			file: Some(current_file.to_path_buf()),
+			file: Some(current_file.to_owned()),
 			conflict_id: None,
 			mod_id: None,
 			r#match: None,
@@ -986,7 +950,7 @@ pub struct PromptSurvivorsResult {
 /// fold into the in-memory map before re-running the merge engine. If the user
 /// aborts, `aborted` is set and any outcomes already collected are returned.
 pub fn prompt_survivors_and_persist(
-	target_path: &Path,
+	target_path: &GamePath,
 	survivors: &[ConflictView],
 	handler: &mut dyn ConflictHandler,
 	config_path: &Path,
@@ -1054,10 +1018,14 @@ pub fn prompt_survivors_and_persist(
 	result
 }
 
-fn render_resolution_entry(entry: &ResolutionEntry) -> String {
+/// One `[[resolutions]]` table. `file` is written as the game path's
+/// canonical text and `use_file` as the host path's own text, never folded:
+/// on Unix a `\` is part of a name. A `use_file` that is not UTF-8 has no
+/// TOML text, which is an error rather than a lossy name for another file.
+fn render_resolution_entry(entry: &ResolutionEntry) -> Result<String, io::Error> {
 	let mut table = Table::new();
 	if let Some(file) = &entry.file {
-		table["file"] = value(path_to_toml_string(file));
+		table["file"] = value(file.as_str());
 	}
 	if let Some(conflict_id) = &entry.conflict_id {
 		table["conflict_id"] = value(conflict_id.clone());
@@ -1074,7 +1042,16 @@ fn render_resolution_entry(entry: &ResolutionEntry) -> String {
 		);
 	}
 	if let Some(use_file) = &entry.use_file {
-		table["use_file"] = value(path_to_toml_string(use_file));
+		let text = use_file.to_str().ok_or_else(|| {
+			io::Error::new(
+				io::ErrorKind::InvalidData,
+				format!(
+					"use_file {} is not valid UTF-8 and cannot be written to a foch config",
+					use_file.display()
+				),
+			)
+		})?;
+		table["use_file"] = value(text);
 	}
 	if let Some(keep_existing) = entry.keep_existing {
 		table["keep_existing"] = value(keep_existing);
@@ -1087,11 +1064,7 @@ fn render_resolution_entry(entry: &ResolutionEntry) -> String {
 	resolutions.push(table);
 	let mut doc = DocumentMut::new();
 	doc["resolutions"] = Item::ArrayOfTables(resolutions);
-	doc.to_string()
-}
-
-fn path_to_toml_string(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
+	Ok(doc.to_string())
 }
 
 #[cfg(test)]
@@ -1119,6 +1092,10 @@ mod tests {
 	struct TestConflict {
 		candidates: Vec<(String, usize)>,
 		reason: String,
+	}
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
 	}
 
 	fn address() -> TestAddress {
@@ -1151,11 +1128,11 @@ mod tests {
 
 	fn view_for(file: &str, address: &TestAddress, conflict: &TestConflict) -> ConflictView {
 		ConflictView {
-			file_path: PathBuf::from(file),
+			file_path: game_path(file),
 			address_path: address.path.clone(),
 			address_key: address.key.clone(),
 			conflict_id: compute_conflict_id(
-				&PathBuf::from(file),
+				&game_path(file),
 				&address.path.join("/"),
 				&address.key,
 			),
@@ -1177,7 +1154,7 @@ mod tests {
 
 	fn dep_handler(edges: &[(&str, &str)]) -> DepImpliesResolutionHandler {
 		DepImpliesResolutionHandler::new(
-			PathBuf::from("common/ideas/dep.txt"),
+			game_path("common/ideas/dep.txt"),
 			DepResolutionGraph::from_edges(edges),
 		)
 	}
@@ -1189,7 +1166,7 @@ mod tests {
 				record: Some(record),
 			} => {
 				assert_eq!(candidate, 0);
-				assert_eq!(record.path, "common/ideas/dep.txt");
+				assert_eq!(record.path.as_str(), "common/ideas/dep.txt");
 				assert_eq!(record.action, "dep_implied");
 				assert_eq!(record.source.as_deref(), Some(expected_mod));
 				assert_eq!(record.rationale.as_deref(), Some(expected_rationale));
@@ -1247,7 +1224,7 @@ mod tests {
 		fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
 			ConflictDecision::Defer {
 				record: Some(HandlerResolutionRecord {
-					path: view.file_path.to_string_lossy().replace('\\', "/"),
+					path: view.file_path.clone(),
 					action: "defer".to_string(),
 					source: None,
 					rationale: Some("matched DSL handler=defer rule".to_string()),
@@ -1258,7 +1235,7 @@ mod tests {
 
 	#[test]
 	fn lookup_handler_replays_generic_patch_address_conflict_id() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let current_file = game_path("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(
@@ -1287,8 +1264,8 @@ mod tests {
 	}
 
 	#[test]
-	fn lookup_handler_prefers_exact_view_then_target_address_then_file_and_pattern() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+	fn lookup_handler_prefers_the_exact_view_id_then_file_then_pattern() {
+		let current_file = game_path("events/PirateEvents.txt");
 		let address = address();
 		let conflict = conflict_with_patches();
 		let address_conflict_id =
@@ -1319,7 +1296,7 @@ mod tests {
 				candidate: 1,
 				record: None,
 			},
-			"the exact public view id must beat the target address id and file rule",
+			"the exact view id must beat an address-derived id and the file rule",
 		);
 
 		let address_only_map = ResolutionMap {
@@ -1335,7 +1312,11 @@ mod tests {
 			"an address-derived id must not select a semantic candidate sequence",
 		);
 
-		let address_view = view_for("root/event/id", &address, &conflict);
+		// An address-patch view is a conflict in the file being merged, and its
+		// id is derived from that file and the address. A resolution recorded
+		// under that id is the exact match, found before the file rule.
+		let address_view = view_for("events/PirateEvents.txt", &address, &conflict);
+		assert_eq!(address_view.conflict_id, address_conflict_id);
 		let address_map = ResolutionMap {
 			by_conflict_id: BTreeMap::from([(
 				address_conflict_id,
@@ -1353,7 +1334,7 @@ mod tests {
 				candidate: 0,
 				record: None,
 			},
-			"the target address fallback must run before the file rule",
+			"an address-patch view's own id must beat the file rule",
 		);
 
 		let (file_matcher, leaf_matcher) =
@@ -1384,7 +1365,7 @@ mod tests {
 	#[test]
 	fn lookup_handler_returns_defer_on_miss() {
 		let map = ResolutionMap::default();
-		let mut handler = LookupHandler::new(&map, PathBuf::from("events/PirateEvents.txt"));
+		let mut handler = LookupHandler::new(&map, game_path("events/PirateEvents.txt"));
 
 		let decision = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
@@ -1397,7 +1378,7 @@ mod tests {
 
 	#[test]
 	fn lookup_handler_requests_full_view_only_after_a_named_handler_matches() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let current_file = game_path("events/PirateEvents.txt");
 		let map = ResolutionMap {
 			by_file: BTreeMap::from([(
 				current_file.clone(),
@@ -1424,7 +1405,7 @@ mod tests {
 
 	#[test]
 	fn lookup_handler_defers_when_prefer_mod_is_not_an_exact_candidate() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let current_file = game_path("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let map = ResolutionMap {
 			by_conflict_id: BTreeMap::from([(
@@ -1444,7 +1425,7 @@ mod tests {
 
 	#[test]
 	fn lookup_handler_replays_exact_candidate_when_mod_ids_repeat() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let current_file = game_path("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let map = ResolutionMap {
 			by_conflict_id: BTreeMap::from([(conflict_id, ResolutionDecision::PreferCandidate(1))]),
@@ -1467,7 +1448,7 @@ mod tests {
 
 	#[test]
 	fn lookup_handler_chained_with_defer_uses_resolution_then_defers() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let current_file = game_path("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(
@@ -1636,7 +1617,7 @@ mod tests {
 			&[crate::project::DepOverride::new("mod_a", "mod_b")],
 		);
 		let mut handler =
-			DepImpliesResolutionHandler::new(PathBuf::from("common/ideas/dep.txt"), graph);
+			DepImpliesResolutionHandler::new(game_path("common/ideas/dep.txt"), graph);
 
 		let decision = handler.on_conflict(&view_for(
 			"common/ideas/dep.txt",
@@ -1683,7 +1664,7 @@ mod tests {
 	fn prompt_survivors_persists_resolution_to_config_writer() {
 		let root = project_test_dir("prompt_survivors_persists_resolution_to_config_writer");
 		let config_path = root.join("foch.toml");
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let current_file = game_path("events/PirateEvents.txt");
 		let mut handler = handler_with_input("1\n", true);
 		let survivor_address = address();
 		let survivor_conflict = conflict_with_patches();
@@ -1702,6 +1683,66 @@ mod tests {
 		assert!(content.contains("[[resolutions]]"));
 		assert!(content.contains("prefer_candidate = 1"));
 		assert!(content.contains(&compute_conflict_id(&current_file, "root/event", "id")));
+	}
+
+	fn keep_existing_entry(file: &str) -> ResolutionEntry {
+		ResolutionEntry {
+			file: Some(game_path(file)),
+			conflict_id: None,
+			mod_id: None,
+			r#match: None,
+			prefer_mod: None,
+			prefer_candidate: None,
+			use_file: None,
+			keep_existing: Some(true),
+			priority_boost: None,
+			handler: None,
+			policy: None,
+		}
+	}
+
+	/// A persisted resolution reads back as the entry that was written: the
+	/// game path as its canonical text, and a host `use_file` exactly as
+	/// spelled. Off Windows a `\` is part of a name, so folding it into `/`
+	/// would name a different file.
+	#[test]
+	fn rendered_resolutions_read_back_unchanged() {
+		let use_file = ResolutionEntry {
+			file: None,
+			conflict_id: Some("abc12345".to_string()),
+			use_file: Some(PathBuf::from(r"manual\Pirate Events.txt")),
+			keep_existing: None,
+			..keep_existing_entry("events/PirateEvents.txt")
+		};
+		for entry in [
+			keep_existing_entry("history/countries/FRA - France.txt"),
+			use_file,
+		] {
+			let rendered = render_resolution_entry(&entry).expect("render");
+			let read_back = crate::project::Project::from_toml_str(&rendered)
+				.expect("parse rendered resolution")
+				.resolutions;
+			assert_eq!(read_back, [entry], "{rendered}");
+		}
+	}
+
+	/// TOML text is UTF-8, so a `use_file` whose name is not has no spelling.
+	#[cfg(unix)]
+	#[test]
+	fn a_use_file_that_is_not_utf8_is_not_written() {
+		// In-memory path: some filesystems refuse to create this name.
+		use std::ffi::OsStr;
+		use std::os::unix::ffi::OsStrExt;
+
+		let entry = ResolutionEntry {
+			file: None,
+			conflict_id: Some("abc12345".to_string()),
+			use_file: Some(PathBuf::from(OsStr::from_bytes(b"manual/\xff.txt"))),
+			keep_existing: None,
+			..keep_existing_entry("events/PirateEvents.txt")
+		};
+		let error = render_resolution_entry(&entry).expect_err("non-UTF-8 use_file");
+		assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 	}
 
 	#[test]
@@ -1748,7 +1789,7 @@ mod tests {
 
 	#[test]
 	fn merge_command_with_interactive_handler_chains_handlers_correctly() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let current_file = game_path("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(

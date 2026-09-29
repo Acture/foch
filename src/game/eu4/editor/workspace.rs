@@ -89,7 +89,6 @@ impl WorkspaceSession {
 #[cfg(test)]
 mod tests {
 	use std::collections::HashMap;
-	use std::path::Path;
 
 	use crate::model::SemanticIndex;
 	use crate::project::{Project, ResolutionDecision};
@@ -117,9 +116,11 @@ prefer_mod = "mod-a"
 		.expect("build session");
 
 		assert_eq!(
-			session
-				.resolution_map()
-				.lookup(Path::new("common/ideas/resolved.txt"), "missing", ""),
+			session.resolution_map().lookup(
+				crate::model::GamePath::new("common/ideas/resolved.txt").expect("valid game path"),
+				"missing",
+				""
+			),
 			Some(&ResolutionDecision::PreferMod("mod-a".to_string()))
 		);
 	}

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use crate::game::eu4::content::{
@@ -8,7 +8,8 @@ use crate::game::eu4::content::{
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, Span, SpanRange};
 use crate::model::{
-	GamePath, HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor,
+	GamePath, GamePathBuf, HandlerResolutionRecord, LeafConflictDetail,
+	MergeReportConflictContributor,
 };
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
@@ -37,7 +38,7 @@ use super::super::super::conflict_handler::{
 	ChainHandler, ConflictHandler, DeferHandler, DepImpliesResolutionHandler, LookupHandler,
 	PriorityBoostResolutionHandler, PromptOutcomeKind, prompt_survivors_and_persist,
 };
-use super::super::super::error::MergeError;
+use super::super::super::error::{MergeError, MergeErrorSubject};
 use crate::merge::planning::dag_input::DagMergeInputRequest;
 use crate::merge::planning::dag_merge::{
 	SemanticDagMergeComputation, SemanticDagMergeRequest, compute_dag_merge_from_parsed,
@@ -81,24 +82,12 @@ fn leaf_conflicts_for_semantic(
 			LeafConflictDetail {
 				address_path: joined_path.clone(),
 				address_key: address_key.clone(),
-				conflict_id: semantic_conflict_id(
-					Path::new(target_path.as_str()),
-					conflict.conflict.id,
-				),
+				conflict_id: semantic_conflict_id(target_path, conflict.conflict.id),
 				kind: classify_conflict_kind(target_path, &ast_path, &conflict.reason),
 				contributors,
 			}
 		})
 		.collect()
-}
-
-/// The game path a plan target names. Plan paths are still text, and a
-/// target that is not a game path is an invalid plan.
-fn plan_game_path(target_path: &str) -> Result<&GamePath, MergeError> {
-	GamePath::new(target_path).map_err(|error| MergeError::Validation {
-		path: Some(target_path.to_string()),
-		message: error.to_string(),
-	})
 }
 
 fn split_semantic_path(path: &[String]) -> (Vec<String>, String) {
@@ -109,22 +98,22 @@ fn split_semantic_path(path: &[String]) -> (Vec<String>, String) {
 }
 
 fn semantic_output_metadata(
-	target_path: &str,
+	target_path: &GamePath,
 	computation: SemanticMergeComputation,
 ) -> (
 	Vec<HandlerResolutionRecord>,
-	HashMap<PathBuf, ExternalFileResolution>,
-	HashSet<PathBuf>,
+	HashMap<GamePathBuf, ExternalFileResolution>,
+	HashSet<GamePathBuf>,
 ) {
 	let mut external_file_resolutions = HashMap::new();
 	let mut keep_existing_paths = HashSet::new();
 	for directive in computation.output_directives {
 		match directive {
 			MergeOutputDirective::UseFile(source) => {
-				external_file_resolutions.insert(PathBuf::from(target_path), source);
+				external_file_resolutions.insert(target_path.to_owned(), source);
 			}
 			MergeOutputDirective::KeepExisting => {
-				keep_existing_paths.insert(PathBuf::from(target_path));
+				keep_existing_paths.insert(target_path.to_owned());
 			}
 		}
 	}
@@ -136,7 +125,7 @@ fn semantic_output_metadata(
 }
 
 pub(crate) fn merge_semantic_structural_file(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
@@ -165,7 +154,7 @@ pub(crate) fn merge_semantic_structural_file(
 }
 
 pub(crate) fn merge_semantic_definition_module(
-	target_path: &str,
+	target_path: &GamePath,
 	views: &CrossFileModuleViews,
 	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
@@ -185,7 +174,7 @@ pub(crate) fn merge_semantic_definition_module(
 }
 
 fn finish_semantic_structural_merge<F>(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: StructuralMergeContext<'_>,
 	vanilla: Option<ParsedScriptFile>,
@@ -211,9 +200,9 @@ where
 			.unresolved_conflicts
 			.iter()
 			.map(|conflict| {
-				semantic_conflict_view(Path::new(target_path), conflict).map_err(|message| {
+				semantic_conflict_view(target_path, conflict).map_err(|message| {
 					MergeError::Validation {
-						path: Some(target_path.to_string()),
+						subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 						message,
 					}
 				})
@@ -239,7 +228,7 @@ where
 	)
 	.map_err(|message| {
 		StructuralMergeFailure::Merge(MergeError::Validation {
-			path: Some(target_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 			message,
 		})
 	})?;
@@ -265,7 +254,7 @@ where
 			conflict_keys.join("; "),
 		);
 		let leaf_conflicts = leaf_conflicts_for_semantic(
-			plan_game_path(target_path)?,
+			target_path,
 			&dag_merge.semantic.unresolved_conflicts,
 			context.mod_versions,
 		);
@@ -292,7 +281,7 @@ where
 		clausewitz_files_semantically_equivalent(&base.ast, &merged, &merge_policies).map_err(
 			|error| {
 				StructuralMergeFailure::Merge(MergeError::Validation {
-					path: Some(target_path.to_string()),
+					subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 					message: format!("failed to compare semantic no-op output: {error}"),
 				})
 			},
@@ -323,7 +312,7 @@ where
 	)
 	.map_err(|message| {
 		StructuralMergeFailure::Merge(MergeError::Validation {
-			path: Some(target_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 			message,
 		})
 	})?;
@@ -337,7 +326,7 @@ where
 	)
 	.map_err(|message| {
 		StructuralMergeFailure::Merge(MergeError::Validation {
-			path: Some(target_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 			message,
 		})
 	})?;
@@ -373,7 +362,7 @@ where
 }
 
 fn all_conflicts_explicitly_deferred(
-	target_path: &str,
+	target_path: &GamePath,
 	leaves: &[LeafConflictDetail],
 	resolution_map: &crate::project::ResolutionMap,
 ) -> bool {
@@ -386,7 +375,7 @@ fn all_conflicts_explicitly_deferred(
 			};
 			matches!(
 				resolution_map.lookup(
-					Path::new(target_path),
+					target_path,
 					&leaf.conflict_id,
 					&leaf_address,
 				),
@@ -396,7 +385,7 @@ fn all_conflicts_explicitly_deferred(
 }
 
 fn prompt_conflict_views(
-	target_path: &str,
+	target_path: &GamePath,
 	views: &[crate::merge::conflict_view::ConflictView],
 	effective_map: &mut crate::project::ResolutionMap,
 	handler: &mut dyn ConflictHandler,
@@ -405,7 +394,7 @@ fn prompt_conflict_views(
 	if views.is_empty() {
 		return Ok(false);
 	}
-	let prompt = prompt_survivors_and_persist(Path::new(target_path), views, handler, config_path);
+	let prompt = prompt_survivors_and_persist(target_path, views, handler, config_path);
 	let mut changed = false;
 	for outcome in prompt.outcomes {
 		if let PromptOutcomeKind::Picked(decision) = outcome.kind {
@@ -417,7 +406,7 @@ fn prompt_conflict_views(
 	}
 	if prompt.aborted {
 		return Err(StructuralMergeFailure::Merge(MergeError::Validation {
-			path: Some(target_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 			message: "merge aborted by user".to_string(),
 		}));
 	}
@@ -495,7 +484,7 @@ fn inject_provenance_comments(
 }
 
 fn run_semantic_structural_file_engine(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: &StructuralMergeContext<'_>,
 	resolution_map: &crate::project::ResolutionMap,
@@ -505,7 +494,7 @@ fn run_semantic_structural_file_engine(
 	compute_dag_merge_with_handler(
 		SemanticDagMergeRequest {
 			input: DagMergeInputRequest {
-				file_path: plan_game_path(target_path)?,
+				file_path: target_path,
 				contributors,
 				mod_dag: context.mod_dag,
 				ignore_replace_path: context.ignore_replace_path,
@@ -518,13 +507,13 @@ fn run_semantic_structural_file_engine(
 		&mut handler,
 	)
 	.map_err(|err| MergeError::Validation {
-		path: Some(target_path.to_string()),
+		subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 		message: format!("semantic DAG merge failed: {err}"),
 	})
 }
 
 fn run_semantic_definition_module_engine(
-	target_path: &str,
+	target_path: &GamePath,
 	views: &CrossFileModuleViews,
 	context: &StructuralMergeContext<'_>,
 	resolution_map: &crate::project::ResolutionMap,
@@ -540,30 +529,27 @@ fn run_semantic_definition_module_engine(
 		&mut handler,
 	)
 	.map_err(|err| MergeError::Validation {
-		path: Some(target_path.to_string()),
+		subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 		message: format!("semantic definition-module DAG merge failed: {err}"),
 	})
 }
 
 fn automatic_conflict_handler<'a>(
-	target_path: &str,
+	target_path: &GamePath,
 	context: &'a StructuralMergeContext<'a>,
 	resolution_map: &'a crate::project::ResolutionMap,
 ) -> impl ConflictHandler + 'a {
 	ChainHandler {
 		first: LookupHandler::with_display_names(
 			resolution_map,
-			PathBuf::from(target_path),
+			target_path.to_owned(),
 			(*context.mod_display_names).clone(),
 		),
 		second: ChainHandler {
-			first: PriorityBoostResolutionHandler::new(
-				PathBuf::from(target_path),
-				&resolution_map.mod_priority_boost,
-			),
+			first: PriorityBoostResolutionHandler::new(&resolution_map.mod_priority_boost),
 			second: ChainHandler {
 				first: DepImpliesResolutionHandler::from_mod_dag(
-					PathBuf::from(target_path),
+					target_path.to_owned(),
 					context.mod_dag,
 					context.dep_overrides,
 				),
@@ -592,6 +578,7 @@ fn is_gui_container_family(context: &StructuralMergeContext<'_>) -> bool {
 mod tests {
 	use super::*;
 	use std::fs;
+	use std::path::PathBuf;
 	use std::time::{SystemTime, UNIX_EPOCH};
 
 	use crate::game::eu4::content::{MergePolicies, eu4};
@@ -653,7 +640,7 @@ mod tests {
 		let expected_ids = TARGETS
 			.iter()
 			.zip(&conflicts)
-			.map(|(target, conflict)| semantic_conflict_id(Path::new(target), conflict.conflict.id))
+			.map(|(target, conflict)| semantic_conflict_id(game_path(target), conflict.conflict.id))
 			.collect::<Vec<_>>();
 		assert_ne!(expected_ids[0], expected_ids[1]);
 		assert!(
@@ -667,7 +654,7 @@ mod tests {
 			.iter()
 			.zip(&conflicts)
 			.map(|(target, conflict)| {
-				semantic_conflict_view(Path::new(target), conflict).expect("semantic conflict view")
+				semantic_conflict_view(game_path(target), conflict).expect("semantic conflict view")
 			})
 			.collect::<Vec<_>>();
 		assert_eq!(views[0].address_path, views[1].address_path);
@@ -685,7 +672,7 @@ mod tests {
 			.zip(&conflicts)
 			.flat_map(|(target, conflict)| {
 				leaf_conflicts_for_semantic(
-					GamePath::new(target).expect("valid game path"),
+					game_path(target),
 					std::slice::from_ref(conflict),
 					&HashMap::new(),
 				)
@@ -706,7 +693,7 @@ mod tests {
 			.zip(&views)
 			.flat_map(|(target, view)| {
 				let prompt = prompt_survivors_and_persist(
-					Path::new(target),
+					game_path(target),
 					std::slice::from_ref(view),
 					&mut picker,
 					&config_path,
@@ -730,14 +717,16 @@ mod tests {
 		let resolution_map =
 			ResolutionMap::from_entries(&config.resolutions).expect("index conflict resolutions");
 		assert_eq!(
-			LookupHandler::new(&resolution_map, PathBuf::from(TARGETS[0])).on_conflict(&views[0]),
+			LookupHandler::new(&resolution_map, game_path(TARGETS[0]).to_owned())
+				.on_conflict(&views[0]),
 			ConflictDecision::PickCandidate {
 				candidate: 0,
 				record: None,
 			}
 		);
 		assert_eq!(
-			LookupHandler::new(&resolution_map, PathBuf::from(TARGETS[1])).on_conflict(&views[1]),
+			LookupHandler::new(&resolution_map, game_path(TARGETS[1]).to_owned())
+				.on_conflict(&views[1]),
 			ConflictDecision::PickCandidate {
 				candidate: 1,
 				record: None,
@@ -756,7 +745,7 @@ mod tests {
 		let views = conflicts
 			.iter()
 			.map(|conflict| {
-				semantic_conflict_view(Path::new(TARGET), conflict).expect("semantic conflict view")
+				semantic_conflict_view(game_path(TARGET), conflict).expect("semantic conflict view")
 			})
 			.collect::<Vec<_>>();
 		assert_eq!(views[0].address_path, views[1].address_path);
@@ -766,7 +755,7 @@ mod tests {
 		let config_path = project_test_dir("semantic_candidate_sequence_ids").join("foch.toml");
 		let mut picker = SequentialCandidateHandler { next_candidate: 0 };
 		let prompt =
-			prompt_survivors_and_persist(Path::new(TARGET), &views, &mut picker, &config_path);
+			prompt_survivors_and_persist(game_path(TARGET), &views, &mut picker, &config_path);
 		assert!(!prompt.aborted);
 		assert_eq!(prompt.outcomes.len(), 2);
 
@@ -776,7 +765,7 @@ mod tests {
 		.expect("parse persisted conflict resolutions");
 		let resolution_map =
 			ResolutionMap::from_entries(&config.resolutions).expect("index conflict resolutions");
-		let mut lookup = LookupHandler::new(&resolution_map, PathBuf::from(TARGET));
+		let mut lookup = LookupHandler::new(&resolution_map, game_path(TARGET).to_owned());
 		assert_eq!(
 			lookup.on_conflict(&views[0]),
 			ConflictDecision::PickCandidate {
@@ -841,7 +830,7 @@ mod tests {
 
 	#[test]
 	fn explicit_defer_requires_every_surviving_leaf_to_match_the_recorded_handler() {
-		let target = "common/ideas/test.txt";
+		let target = game_path("common/ideas/test.txt");
 		let leaves = vec![
 			LeafConflictDetail {
 				address_path: "idea_a".into(),
@@ -858,7 +847,7 @@ mod tests {
 		];
 		let mut resolutions = ResolutionMap::default();
 		resolutions.by_file.insert(
-			PathBuf::from(target),
+			target.to_owned(),
 			ResolutionDecision::Handler("DEFER".into()),
 		);
 		assert!(all_conflicts_explicitly_deferred(
@@ -881,6 +870,29 @@ mod tests {
 			&[],
 			&resolutions
 		));
+	}
+
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
+	/// Leaf and prompt ids persist in `foch.toml`, so typing the target path
+	/// must not move them: the value is the one the slash-normalized target
+	/// text produced.
+	#[test]
+	fn semantic_conflict_ids_keep_the_ids_persisted_before_paths_were_typed() {
+		let raw = crate::merge::kernel::ConflictNodeId::derive(
+			[],
+			crate::merge::kernel::ConflictKind::Policy,
+			None,
+			None,
+			&[],
+			&[],
+		);
+		assert_eq!(
+			semantic_conflict_id(game_path("history/countries/FRA - France.txt"), raw),
+			"6a7f001d92b0b9eaa1e7b0466034fbec14fdd933c662c772f9f152782aec4086"
+		);
 	}
 
 	fn project_test_dir(name: &str) -> PathBuf {

@@ -25,7 +25,7 @@ use crate::merge::address_patch::dag_merge::{
 use crate::merge::address_patch::patch_merge::{
 	AttributedPatch, PatchConflict, PatchMergeResult, PatchResolution,
 };
-use crate::merge::error::MergeError;
+use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::planning::dag_input::{
 	DagMergeInputRequest, merge_ancestor_statements, template_for,
 };
@@ -35,7 +35,7 @@ use crate::merge::resolution::conflict_view::ConflictView;
 use crate::merge::structured::observe_merge_trace;
 
 pub(crate) fn merge_structural_file(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
@@ -57,7 +57,7 @@ pub(crate) fn merge_structural_file(
 }
 
 pub(crate) fn merge_definition_module(
-	target_path: &str,
+	target_path: &GamePath,
 	views: &CrossFileModuleViews,
 	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
@@ -77,7 +77,7 @@ pub(crate) fn merge_definition_module(
 }
 
 fn finish_reference_structural_merge<F>(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: StructuralMergeContext<'_>,
 	vanilla: Option<ParsedScriptFile>,
@@ -130,7 +130,7 @@ where
 	);
 	if !dag_merge.merge_result.conflicts.is_empty() {
 		return Err(StructuralMergeFailure::Unresolved(unresolved_report(
-			super::plan_game_path(target_path)?,
+			target_path,
 			&dag_merge.merge_result,
 			context.mod_versions,
 			&effective_map,
@@ -164,7 +164,7 @@ where
 	)
 	.map_err(|message| {
 		StructuralMergeFailure::Merge(MergeError::Validation {
-			path: Some(target_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 			message,
 		})
 	})?;
@@ -198,7 +198,7 @@ where
 }
 
 fn run_reference_structural_file_engine(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: &StructuralMergeContext<'_>,
 	resolution_map: &ResolutionMap,
@@ -208,7 +208,7 @@ fn run_reference_structural_file_engine(
 	compute_reference_dag_merge(
 		ReferenceDagMergeRequest {
 			input: DagMergeInputRequest {
-				file_path: super::plan_game_path(target_path)?,
+				file_path: target_path,
 				contributors,
 				mod_dag: context.mod_dag,
 				ignore_replace_path: context.ignore_replace_path,
@@ -222,13 +222,13 @@ fn run_reference_structural_file_engine(
 		&mut handler,
 	)
 	.map_err(|error| MergeError::Validation {
-		path: Some(target_path.to_string()),
+		subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 		message: format!("address-patch reference DAG merge failed: {error}"),
 	})
 }
 
 fn run_reference_definition_module_engine(
-	target_path: &str,
+	target_path: &GamePath,
 	views: &CrossFileModuleViews,
 	context: &StructuralMergeContext<'_>,
 	resolution_map: &ResolutionMap,
@@ -248,13 +248,13 @@ fn run_reference_definition_module_engine(
 		game_version: context.cache_game_version,
 	})
 	.map_err(|error| MergeError::Validation {
-		path: Some(target_path.to_string()),
+		subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 		message: format!("address-patch reference definition-module DAG merge failed: {error}"),
 	})
 }
 
 pub(super) fn survivor_views(
-	target_path: &str,
+	target_path: &GamePath,
 	merge_result: &PatchMergeResult,
 	vanilla: Option<&ParsedScriptFile>,
 	mod_display_names: &HashMap<String, String>,
@@ -274,10 +274,9 @@ pub(super) fn survivor_views(
 		})
 		.map(|(address, patches, reason)| {
 			let address_path = address.path.join("/");
-			let conflict_id =
-				compute_conflict_id(Path::new(target_path), &address_path, &address.key);
+			let conflict_id = compute_conflict_id(target_path, &address_path, &address.key);
 			build_conflict_view(
-				Path::new(target_path),
+				target_path,
 				address,
 				&PatchConflict {
 					patches: patches.clone(),
@@ -309,11 +308,8 @@ pub(super) fn unresolved_report(
 		})
 		.collect::<Vec<_>>();
 	let leaf_conflicts = leaf_conflicts(target_path, &merge_result.conflicts, mod_versions);
-	let explicitly_deferred = super::all_conflicts_explicitly_deferred(
-		target_path.as_str(),
-		&leaf_conflicts,
-		resolution_map,
-	);
+	let explicitly_deferred =
+		super::all_conflicts_explicitly_deferred(target_path, &leaf_conflicts, resolution_map);
 	StructuralConflictReport {
 		reason: format!(
 			"structural merge has {} unresolved conflict(s): {}",
@@ -344,11 +340,7 @@ fn leaf_conflicts(
 				Some(LeafConflictDetail {
 					address_path: address_path.clone(),
 					address_key: address.key.clone(),
-					conflict_id: compute_conflict_id(
-						Path::new(target_path.as_str()),
-						&address_path,
-						&address.key,
-					),
+					conflict_id: compute_conflict_id(target_path, &address_path, &address.key),
 					kind: classify_conflict_kind(target_path, &ast_path, reason),
 					contributors: leaf_conflict_contributors(patches, mod_versions),
 				})

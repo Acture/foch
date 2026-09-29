@@ -17,6 +17,7 @@ use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget, Wrap};
 
 use foch::merge::{ConflictDecision, ConflictHandler, ConflictView};
+use foch::model::GamePathBuf;
 
 const ACTION_COUNT: usize = 4;
 const MAX_RENDERED_SUMMARY_LINES: usize = 4;
@@ -54,7 +55,7 @@ pub struct ConflictResolver {
 	pub current_conflict_index: usize,
 	pub total_conflicts: usize,
 	pub deferred_so_far: usize,
-	file_path: PathBuf,
+	file_path: GamePathBuf,
 	address_path: Vec<String>,
 	reason: String,
 	conflict_id: String,
@@ -236,7 +237,7 @@ impl Widget for &ConflictResolver {
 			buf,
 			inner,
 			inner.y.saturating_add(1),
-			&self.file_path.to_string_lossy(),
+			self.file_path.as_str(),
 			Style::default(),
 		);
 		write_line(
@@ -917,7 +918,7 @@ mod tests {
 
 	fn sample_view() -> ConflictView {
 		ConflictView {
-			file_path: PathBuf::from("events/FlavorFRA.txt"),
+			file_path: GamePathBuf::parse("events/FlavorFRA.txt").expect("valid game path"),
 			address_path: vec![
 				"flavor_fra.3135".to_string(),
 				"option".to_string(),

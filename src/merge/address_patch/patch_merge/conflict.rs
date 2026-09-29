@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
+use crate::model::GamePath;
 use crate::project::compute_conflict_id;
 
 use super::super::patch::AstPath;
@@ -11,7 +11,7 @@ use super::{
 };
 use crate::merge::address_patch::conflict_view::build_decision_conflict_view;
 use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
-use crate::merge::error::MergeError;
+use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::model::ExternalFileResolution;
 
 /// Cross-kind sibling conflict detected before per-address dispatch.
@@ -90,17 +90,17 @@ pub(super) fn detect_cross_kind_sibling_conflicts(
 	conflicts
 }
 
+/// Let `handler` decide one conflict in `conflict_file`, the output file the
+/// conflict is in, which names its id and keys any whole-file decision.
 pub(super) fn apply_conflict_decision(
 	result: &mut PatchMergeResult,
 	handler: &mut dyn ConflictHandler,
-	current_file: Option<&Path>,
+	conflict_file: &GamePath,
 	address: PatchAddress,
 	patches: Vec<AttributedPatch>,
 	reason: String,
 ) -> Result<(), MergeError> {
-	let conflict_path = conflict_path_for_handler(&address);
-	let fallback_file = PathBuf::from(&conflict_path);
-	let conflict_file = current_file.unwrap_or(&fallback_file);
+	let conflict_address = conflict_address_label(&address);
 	let conflict_id = compute_conflict_id(conflict_file, &address.path.join("/"), &address.key);
 	let conflict = PatchConflict { patches, reason };
 	let view = build_decision_conflict_view(
@@ -130,7 +130,7 @@ pub(super) fn apply_conflict_decision(
 				// the next interactive pass; the surviving conflict still
 				// surfaces in the report.
 				eprintln!(
-					"[foch] stale pick for {conflict_path}: candidate {candidate} no longer exists; deferring"
+					"[foch] stale pick for {conflict_file}::{conflict_address}: candidate {candidate} no longer exists; deferring"
 				);
 				result.conflicts.push(PatchResolution::Conflict {
 					address,
@@ -153,14 +153,14 @@ pub(super) fn apply_conflict_decision(
 			// the real target file so write_patch_merge_output can honor it; the
 			// old synthetic AST key was unreachable by the materializer.
 			result.external_file_resolutions.insert(
-				conflict_file.to_path_buf(),
+				conflict_file.to_owned(),
 				ExternalFileResolution::Live(source_path),
 			);
 		}
 		ConflictDecision::UseFrozenFile(source_path) => {
 			result.handler_resolved_count += 1;
 			result.external_file_resolutions.insert(
-				conflict_file.to_path_buf(),
+				conflict_file.to_owned(),
 				ExternalFileResolution::Frozen(source_path),
 			);
 		}
@@ -168,14 +168,15 @@ pub(super) fn apply_conflict_decision(
 			result.handler_resolved_count += 1;
 			// Same whole-file keying as use_file: the output writer checks by
 			// target path, not by a synthetic conflict address.
-			result
-				.keep_existing_paths
-				.insert(conflict_file.to_path_buf());
+			result.keep_existing_paths.insert(conflict_file.to_owned());
 		}
 		ConflictDecision::Abort => {
 			return Err(MergeError::Validation {
-				path: Some(conflict_path),
-				message: format!("conflict handler aborted merge: {}", conflict.reason),
+				subject: Some(MergeErrorSubject::Game(conflict_file.to_owned())),
+				message: format!(
+					"conflict handler aborted merge at {conflict_address}: {}",
+					conflict.reason
+				),
 			});
 		}
 	}
@@ -183,7 +184,8 @@ pub(super) fn apply_conflict_decision(
 	Ok(())
 }
 
-fn conflict_path_for_handler(address: &PatchAddress) -> String {
+/// The AST address of a conflict as `path/key` text, for messages.
+fn conflict_address_label(address: &PatchAddress) -> String {
 	if address.path.is_empty() {
 		return address.key.clone();
 	}

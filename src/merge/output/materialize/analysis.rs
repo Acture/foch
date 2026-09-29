@@ -176,11 +176,13 @@ pub(super) fn analyze_unit(
 	prompt: InteractivePrompt<'_>,
 ) -> UnitAnalysis {
 	match entry.strategy {
-		MergePlanStrategy::LocalisationMerge => {
-			UnitAnalysis::Localisation(context.input.file_inventory.get(entry.output_path()).map(
-				|contributors| merge_localisation_file(entry.output_path().as_str(), contributors),
-			))
-		}
+		MergePlanStrategy::LocalisationMerge => UnitAnalysis::Localisation(
+			context
+				.input
+				.file_inventory
+				.get(entry.output_path())
+				.map(|contributors| merge_localisation_file(entry.output_path(), contributors)),
+		),
 		MergePlanStrategy::StructuralMerge => analyze_structural_unit(context, entry, prompt),
 		MergePlanStrategy::CopyThrough
 		| MergePlanStrategy::LastWriterOverlay
@@ -194,7 +196,6 @@ fn analyze_structural_unit(
 	prompt: InteractivePrompt<'_>,
 ) -> UnitAnalysis {
 	let game_path: &GamePath = entry.output_path();
-	let path: &str = game_path.as_str();
 	let contributors: Option<&[ResolvedInputContributor]> = context
 		.input
 		.file_inventory
@@ -227,7 +228,7 @@ fn analyze_structural_unit(
 	}
 	UnitAnalysis::File(analyze_file(
 		context,
-		path,
+		game_path,
 		contributors,
 		descriptor,
 		vanilla_base_mode,
@@ -237,7 +238,7 @@ fn analyze_structural_unit(
 
 fn analyze_file(
 	context: &UnitAnalysisContext<'_>,
-	path: &str,
+	path: &GamePath,
 	contributors: Option<&[ResolvedInputContributor]>,
 	descriptor: Option<&ContentFamilyDescriptor>,
 	vanilla_base_mode: VanillaBaseMode,
@@ -317,7 +318,7 @@ fn analyze_module_namespace(
 	namespace: &MergeModuleOutput,
 	prompt: InteractivePrompt<'_>,
 ) -> NamespaceAnalysis {
-	let output_path: &str = namespace.output_path().as_str();
+	let output_path: &GamePath = namespace.output_path();
 	eprintln!("[merge] definition module: start {output_path}");
 	// The descriptor comes from this namespace's own output path: the
 	// extractors dispatch on the directory a definition was read from.

@@ -1,6 +1,41 @@
 use crate::input::InputResolveError;
+use crate::model::{GamePath, GamePathBuf};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// What a [`MergeError`] is about, named for people. It is never parsed,
+/// compared or joined; each kind of subject keeps its own type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MergeErrorSubject {
+	/// A file or directory of the game's filesystem, such as a merge target.
+	Game(GamePathBuf),
+	/// A file or directory on this host.
+	Host(PathBuf),
+	/// Something that is not a path, such as a review unit.
+	Named(String),
+}
+
+impl fmt::Display for MergeErrorSubject {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Game(path) => fmt::Display::fmt(path, f),
+			Self::Host(path) => fmt::Display::fmt(&path.display(), f),
+			Self::Named(name) => f.write_str(name),
+		}
+	}
+}
+
+impl From<&GamePath> for MergeErrorSubject {
+	fn from(path: &GamePath) -> Self {
+		Self::Game(path.to_owned())
+	}
+}
+
+impl From<&Path> for MergeErrorSubject {
+	fn from(path: &Path) -> Self {
+		Self::Host(path.to_path_buf())
+	}
+}
 
 #[derive(Debug)]
 pub enum MergeError {
@@ -16,22 +51,14 @@ pub enum MergeError {
 	AnalyzedOutputChanged { path: PathBuf },
 	/// Input resolution failed (playlist, game root, base data, profile)
 	InputResolve { path: PathBuf, message: String },
-	/// Parse failure during IR construction. `path` names the failing file
-	/// or unit for people only; it is never parsed, compared or joined.
+	/// Parse failure during IR construction.
 	Parse {
-		path: Option<String>,
+		subject: Option<MergeErrorSubject>,
 		message: String,
 	},
-	/// Validation failure (structural merge inputs, revalidation). `path`
-	/// is display text, as for [`Self::Parse`].
+	/// Validation failure (structural merge inputs, revalidation).
 	Validation {
-		path: Option<String>,
-		message: String,
-	},
-	/// Emit failure (Clausewitz output generation). `path` is display text,
-	/// as for [`Self::Parse`].
-	Emit {
-		path: Option<String>,
+		subject: Option<MergeErrorSubject>,
 		message: String,
 	},
 	/// IO error (file system operations)
@@ -63,25 +90,18 @@ impl fmt::Display for MergeError {
 			Self::InputResolve { message, .. } => {
 				write!(f, "input resolve: {message}")
 			}
-			Self::Parse { path, message } => {
-				if let Some(p) = path {
-					write!(f, "parse error in {p}: {message}")
+			Self::Parse { subject, message } => {
+				if let Some(subject) = subject {
+					write!(f, "parse error in {subject}: {message}")
 				} else {
 					write!(f, "parse error: {message}")
 				}
 			}
-			Self::Validation { path, message } => {
-				if let Some(p) = path {
-					write!(f, "validation error in {p}: {message}")
+			Self::Validation { subject, message } => {
+				if let Some(subject) = subject {
+					write!(f, "validation error in {subject}: {message}")
 				} else {
 					write!(f, "validation error: {message}")
-				}
-			}
-			Self::Emit { path, message } => {
-				if let Some(p) = path {
-					write!(f, "emit error in {p}: {message}")
-				} else {
-					write!(f, "emit error: {message}")
 				}
 			}
 			Self::Io(e) => write!(f, "io error: {e}"),

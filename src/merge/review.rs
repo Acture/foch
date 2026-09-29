@@ -1,4 +1,4 @@
-use super::error::MergeError;
+use super::error::{MergeError, MergeErrorSubject};
 use crate::game::eu4::content::eu4;
 use crate::model::{
 	GamePath, GamePathBuf, MergePlanContributor, MergePlanEntry, MergePlanResult,
@@ -223,7 +223,7 @@ impl UnitOutcomeLedger {
 					.find_map(|(id, candidate)| (*candidate == index).then_some(id.as_str()))
 					.unwrap_or("<unknown>");
 				return Err(invariant(
-					id,
+					MergeErrorSubject::Named(id.to_string()),
 					format!("review unit `{id}` is still pending"),
 				));
 			};
@@ -238,7 +238,7 @@ impl UnitOutcomeLedger {
 			+ summary.deferred;
 		if summary.total != resolved.len() || disposition_total != summary.total {
 			return Err(invariant(
-				"review",
+				MergeErrorSubject::Named("review".to_string()),
 				"review summary does not cover every unit",
 			));
 		}
@@ -261,7 +261,7 @@ impl UnitOutcomeLedger {
 				.find(|unit| unit.output_paths.contains(path))
 			else {
 				return Err(invariant(
-					path,
+					path.as_game_path(),
 					"pruned output does not match a resolved review unit",
 				));
 			};
@@ -380,9 +380,9 @@ fn summarize(units: &[MergeUnitOutcome]) -> MergeReviewSummary {
 	summary
 }
 
-fn invariant(subject: impl ToString, message: impl Into<String>) -> MergeError {
+fn invariant(subject: impl Into<MergeErrorSubject>, message: impl Into<String>) -> MergeError {
 	MergeError::Validation {
-		path: Some(subject.to_string()),
+		subject: Some(subject.into()),
 		message: message.into(),
 	}
 }

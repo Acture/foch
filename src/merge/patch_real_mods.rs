@@ -256,7 +256,7 @@ fn patch_p1_funding_event_modifiers() {
 		);
 		if let Some(fb) = &alternate {
 			println!("Primary file not found; using alternate: {fb}");
-			run_funding_convergence_test(funding_steam_id, simplified_steam_id, fb);
+			run_funding_convergence_test(funding_steam_id, simplified_steam_id, fb.as_str());
 		} else {
 			panic!(
 				"No overlapping event_modifiers file found between {} and {}",
@@ -269,17 +269,24 @@ fn patch_p1_funding_event_modifiers() {
 	run_funding_convergence_test(funding_steam_id, simplified_steam_id, rel_path);
 }
 
-fn find_first_overlapping_file(steam_a: &str, steam_b: &str, subdir: &str) -> Option<String> {
-	let dir_a = mod_root(steam_a).join(subdir);
+fn find_first_overlapping_file(
+	steam_a: &str,
+	steam_b: &str,
+	subdir: &str,
+) -> Option<crate::model::GamePathBuf> {
+	let root_a = mod_root(steam_a);
+	let dir_a = root_a.join(subdir);
 	let dir_b = mod_root(steam_b).join(subdir);
 	if !dir_a.exists() || !dir_b.exists() {
 		return None;
 	}
 	for entry in std::fs::read_dir(&dir_a).ok()? {
 		let entry = entry.ok()?;
-		let name = entry.file_name();
-		if dir_b.join(&name).exists() {
-			return Some(format!("{subdir}/{}", name.to_string_lossy()));
+		if dir_b.join(entry.file_name()).exists() {
+			return Some(
+				crate::model::GamePathBuf::from_physical(&root_a, &entry.path())
+					.expect("workshop file has a game path"),
+			);
 		}
 	}
 	None

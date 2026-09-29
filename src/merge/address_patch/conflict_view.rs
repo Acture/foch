@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::path::Path;
 
 use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use crate::game::eu4::script::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::merge::conflict_view::{CandidateView, ConflictView};
 use crate::merge::error::MergeError;
+use crate::model::GamePath;
 
 use super::patch::ClausewitzPatch;
 use super::patch_merge::{PatchAddress, PatchConflict};
@@ -14,7 +14,7 @@ const MAX_SUMMARY_CHARS: usize = 80;
 const MAX_CHILD_PREVIEW_ENTRIES: usize = 3;
 
 pub(crate) fn build_conflict_view(
-	file_path: &Path,
+	file_path: &GamePath,
 	address: &PatchAddress,
 	conflict: &PatchConflict,
 	conflict_id: String,
@@ -41,7 +41,7 @@ pub(crate) fn build_conflict_view(
 		.collect::<Result<Vec<_>, MergeError>>()?;
 
 	Ok(ConflictView {
-		file_path: file_path.to_path_buf(),
+		file_path: file_path.to_owned(),
 		address_path: address.path.clone(),
 		address_key: address.key.clone(),
 		conflict_id,
@@ -52,7 +52,7 @@ pub(crate) fn build_conflict_view(
 }
 
 pub(crate) fn build_decision_conflict_view(
-	file_path: &Path,
+	file_path: &GamePath,
 	address: &PatchAddress,
 	conflict: &PatchConflict,
 	conflict_id: String,
@@ -75,7 +75,7 @@ pub(crate) fn build_decision_conflict_view(
 		.collect();
 
 	ConflictView {
-		file_path: file_path.to_path_buf(),
+		file_path: file_path.to_owned(),
 		address_path: address.path.clone(),
 		address_key: address.key.clone(),
 		conflict_id,

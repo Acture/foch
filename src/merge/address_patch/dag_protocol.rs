@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::game::eu4::content::{MergeKeySource, MergePolicies, ScriptFileKind};
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
-use crate::model::{GamePath, GamePathBuf, HandlerResolutionRecord};
+use crate::model::{GamePath, HandlerResolutionRecord};
 
 use crate::merge::address_patch::cache::{DagBaseCache, ModDiffCache};
 use crate::merge::planning::dag::{FileDag, ModId};
@@ -52,7 +52,7 @@ pub(crate) struct ReferenceDagCaches<'a> {
 
 struct CachedDiffArgs<'a> {
 	cache: Option<&'a ModDiffCache>,
-	target_path: &'a str,
+	target_path: &'a GamePath,
 	mod_hash: Option<&'a str>,
 	base_view_hash: Option<&'a str>,
 	current_base: &'a ParsedScriptFile,
@@ -65,7 +65,7 @@ struct CachedDiffArgs<'a> {
 struct CachedApplyArgs<'a> {
 	cache: Option<&'a DagBaseCache>,
 	deps_hash: Option<&'a str>,
-	file_path: &'a str,
+	file_path: &'a GamePath,
 	current_statements: &'a [AstStatement],
 	resolved_patches: &'a [ClausewitzPatch],
 	merge_key_source: MergeKeySource,
@@ -102,8 +102,6 @@ struct PatchBaselineDagState {
 
 struct PatchBaselineDagProtocol<'a> {
 	file_dag: &'a FileDag,
-	/// The game path of `file_dag`'s file, which the DAG names by text.
-	file_game_path: GamePathBuf,
 	base_statements: &'a [AstStatement],
 	template: Option<&'a ParsedScriptFile>,
 	merge_key_source: MergeKeySource,
@@ -197,10 +195,8 @@ pub(crate) fn execute_reference_dag_with_caches(
 		intent_only_patches: Vec::new(),
 		pending_conflicts: Vec::new(),
 	};
-	let file_game_path = file_dag.file_path().to_owned();
 	let mut protocol = PatchBaselineDagProtocol {
 		file_dag,
-		file_game_path,
 		base_statements,
 		template,
 		merge_key_source,
@@ -223,7 +219,7 @@ pub(crate) fn execute_reference_dag_with_caches(
 		&mut protocol.merge_result,
 		&protocol.seen_pending_conflicts,
 		&final_state.pending_conflicts,
-		file_dag.file_path().as_str(),
+		file_dag.file_path(),
 	);
 	protocol.merge_result.conflicts = final_state.pending_conflicts;
 	normalize_merge_result(&mut protocol.merge_result);
@@ -709,14 +705,14 @@ impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'
 			&request.parent.pending_conflicts,
 		);
 		let current_base = synthesized_parsed_file(
-			&self.file_game_path,
+			self.file_dag.file_path(),
 			self.template,
 			request.parent.statements.clone(),
 		);
 		let base_view_hash = hash_ast_statements(&current_base.ast.statements);
 		let patches = cached_or_diff_patches(CachedDiffArgs {
 			cache: self.diff_cache,
-			target_path: self.file_dag.file_path().as_str(),
+			target_path: self.file_dag.file_path(),
 			mod_hash: self
 				.mod_hashes
 				.and_then(|hashes| hashes.get(request.mod_id).map(String::as_str)),
@@ -735,7 +731,7 @@ impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'
 		let effective_statements = cached_or_apply_base(CachedApplyArgs {
 			cache: self.dag_base_cache,
 			deps_hash: apply_hash.as_deref(),
-			file_path: self.file_dag.file_path().as_str(),
+			file_path: self.file_dag.file_path(),
 			current_statements: &request.parent.statements,
 			resolved_patches: &patches,
 			merge_key_source: self.merge_key_source,
@@ -744,7 +740,7 @@ impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'
 			game_version: &self.dag_base_cache_context,
 		});
 		let (_, intent_only_patches) = build_branch_patches(
-			&self.file_game_path,
+			self.file_dag.file_path(),
 			self.template,
 			self.base_statements,
 			&effective_statements,
@@ -787,7 +783,7 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 				.cloned()
 				.collect::<Vec<_>>();
 			let (branch_patches, branch_intent_only) = build_branch_patches(
-				&self.file_game_path,
+				self.file_dag.file_path(),
 				self.template,
 				&request.base.statements,
 				&revision.state.statements,
@@ -810,10 +806,13 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 		}
 
 		patch_sets.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
-		let file_path = request.file_dag.file_path().to_path("");
-		let mut merge_result =
-			merge_patch_sets_for_file(patch_sets, self.policies, self.handler, Some(&file_path))
-				.map_err(|error| error.to_string())?;
+		let mut merge_result = merge_patch_sets_for_file(
+			patch_sets,
+			self.policies,
+			self.handler,
+			request.file_dag.file_path(),
+		)
+		.map_err(|error| error.to_string())?;
 		normalize_merge_result(&mut merge_result);
 		let new_conflicts = std::mem::take(&mut merge_result.conflicts);
 		extend_unique_conflicts(&mut pending_conflicts, &new_conflicts);
@@ -841,7 +840,7 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 		let statements = cached_or_apply_base(CachedApplyArgs {
 			cache: self.dag_base_cache,
 			deps_hash: deps_hash.as_deref(),
-			file_path: request.file_dag.file_path().as_str(),
+			file_path: request.file_dag.file_path(),
 			current_statements: &request.base.statements,
 			resolved_patches: &materialized,
 			merge_key_source: self.merge_key_source,
@@ -890,7 +889,7 @@ fn record_downstream_resolutions(
 	merge_result: &mut PatchMergeResult,
 	seen_pending: &[PatchResolution],
 	final_pending: &[PatchResolution],
-	file_path: &str,
+	file_path: &GamePath,
 ) {
 	for conflict in seen_pending {
 		if final_pending.contains(conflict) {
@@ -910,7 +909,7 @@ fn record_downstream_resolutions(
 		merge_result
 			.handler_resolutions
 			.push(HandlerResolutionRecord {
-				path: file_path.to_string(),
+				path: file_path.to_owned(),
 				action: "downstream_override".to_string(),
 				source: Some(format!("{}::{}", address.path.join("/"), address.key)),
 				rationale: Some(format!(

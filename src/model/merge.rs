@@ -408,6 +408,64 @@ mod tests {
 		);
 	}
 
+	/// Report paths are typed, but the persisted report is the same text: a
+	/// path record serializes as the string it held before, and a map keyed
+	/// by path keeps its keys and their order.
+	#[test]
+	fn report_path_fields_serialize_to_the_same_json_text() {
+		use super::{
+			DeferredUnitReason, HandlerResolutionRecord, MergeReportConflictResolution,
+			StaleVanillaTargetDescriptor,
+		};
+		use std::collections::BTreeMap;
+
+		let record = HandlerResolutionRecord {
+			path: game_path("history/countries/FRA - France.txt"),
+			action: "kept_existing".to_string(),
+			source: None,
+			rationale: None,
+		};
+		assert_eq!(
+			serde_json::to_string(&record).expect("serialize record"),
+			r#"{"path":"history/countries/FRA - France.txt","action":"kept_existing"}"#
+		);
+		let resolution = MergeReportConflictResolution {
+			path: game_path("common/ideas/00_basic_ideas.txt"),
+			reason: "deferred".to_string(),
+			deferred_reason: DeferredUnitReason::NeedsUserChoice,
+			kind: None,
+			leaf_conflicts: Vec::new(),
+		};
+		assert_eq!(
+			serde_json::to_string(&resolution).expect("serialize resolution"),
+			r#"{"path":"common/ideas/00_basic_ideas.txt","reason":"deferred","deferred_reason":"needs_user_choice","leaf_conflicts":[]}"#
+		);
+		let stale = StaleVanillaTargetDescriptor {
+			mod_id: "mod-a".to_string(),
+			mod_version: "1.0".to_string(),
+			file_path: game_path("events/Flavor.txt"),
+			patch_kind: "remove".to_string(),
+			target_path: vec!["root".to_string()],
+			target_key: None,
+			note: None,
+		};
+		assert_eq!(
+			serde_json::to_string(&stale).expect("serialize stale target"),
+			r#"{"mod_id":"mod-a","mod_version":"1.0","file_path":"events/Flavor.txt","patch_kind":"remove","target_path":["root"],"target_key":null,"note":null}"#
+		);
+		let provenance: BTreeMap<GamePathBuf, BTreeMap<String, Vec<String>>> = [
+			"common/scripted_effects/a-b.txt",
+			"common/scripted_effects/a/b.txt",
+		]
+		.into_iter()
+		.map(|path| (game_path(path), BTreeMap::new()))
+		.collect();
+		assert_eq!(
+			serde_json::to_string(&provenance).expect("serialize provenance"),
+			r#"{"common/scripted_effects/a-b.txt":{},"common/scripted_effects/a/b.txt":{}}"#
+		);
+	}
+
 	#[test]
 	fn a_persisted_plan_that_names_no_game_path_or_no_output_is_rejected() {
 		for (json, reason) in [
@@ -840,9 +898,10 @@ impl DeferredUnitReason {
 	}
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergeReportConflictResolution {
-	pub path: String,
+	/// The deferred unit's primary output.
+	pub path: GamePathBuf,
 	pub reason: String,
 	#[serde(default)]
 	pub deferred_reason: DeferredUnitReason,
@@ -852,9 +911,12 @@ pub struct MergeReportConflictResolution {
 	pub leaf_conflicts: Vec<LeafConflictDetail>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HandlerResolutionRecord {
-	pub path: String,
+	/// The output file the decision applies to. Commit reads a `kept_existing`
+	/// record's file back from the prior output, so reading a report validates
+	/// it as a game path.
+	pub path: GamePathBuf,
 	pub action: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub source: Option<String>,
@@ -932,11 +994,11 @@ pub struct VersionMismatchFinding {
 	pub message: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StaleVanillaTargetDescriptor {
 	pub mod_id: String,
 	pub mod_version: String,
-	pub file_path: String,
+	pub file_path: GamePathBuf,
 	pub patch_kind: String,
 	pub target_path: Vec<String>,
 	pub target_key: Option<String>,
@@ -1036,11 +1098,11 @@ pub struct MergeReport {
 	/// does not affect the emitted game files, so it is omitted from the report
 	/// (and thus the report stays byte-identical) when the flag is off.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	pub definition_provenance: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+	pub definition_provenance: BTreeMap<GamePathBuf, BTreeMap<String, Vec<String>>>,
 	/// Per merged file path → per top-level definition key → merge audit trail.
 	/// Populated with `definition_provenance` when `--provenance` is enabled.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	pub merge_trace: BTreeMap<String, BTreeMap<String, MergeTraceEntry>>,
+	pub merge_trace: BTreeMap<GamePathBuf, BTreeMap<String, MergeTraceEntry>>,
 }
 
 impl MergeReport {

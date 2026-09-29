@@ -995,10 +995,7 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 		.report
 		.definition_provenance
 		.iter()
-		.find(|(path, _)| {
-			path.replace('\\', "/")
-				.ends_with("scripted_effects/zzz_foch_scripted_effects.txt")
-		})
+		.find(|(path, _)| path.ends_with("scripted_effects/zzz_foch_scripted_effects.txt"))
 		.map(|(_, defs)| defs)
 		.expect("report has provenance for the merged file");
 	assert_eq!(
@@ -1033,10 +1030,7 @@ fn eu4_merge_trace_records_union_scripted_effect() {
 		.report
 		.merge_trace
 		.iter()
-		.find(|(path, _)| {
-			path.replace('\\', "/")
-				.ends_with("scripted_effects/zzz_foch_scripted_effects.txt")
-		})
+		.find(|(path, _)| path.ends_with("scripted_effects/zzz_foch_scripted_effects.txt"))
 		.map(|(_, defs)| defs)
 		.expect("report has merge trace for the merged file");
 	let entry = trace
@@ -1965,7 +1959,11 @@ fn eu4_conflict_id_use_file_does_not_mask_second_unresolved_leaf_conflict() {
 	)
 	.expect("write external resolution file");
 	let target_rel = "history/countries/TES - Test.txt";
-	let religion_conflict_id = compute_conflict_id(Path::new(target_rel), "", "religion");
+	let religion_conflict_id = compute_conflict_id(
+		foch::model::GamePath::new(target_rel).expect("valid game path"),
+		"",
+		"religion",
+	);
 	let config_path = temp_dir.path().join("foch.one-conflict-use-file.toml");
 	fs::write(
 		&config_path,

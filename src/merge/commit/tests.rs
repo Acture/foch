@@ -536,3 +536,69 @@ fn finalization_holds_the_commit_guard_through_commit() {
 		std::env::remove_var(BASE_DATA_DIR_ENV);
 	}
 }
+
+fn kept_existing(path: &str) -> crate::model::HandlerResolutionRecord {
+	crate::model::HandlerResolutionRecord {
+		path: GamePathBuf::parse(path).expect("valid game path"),
+		action: "kept_existing".to_string(),
+		source: None,
+		rationale: None,
+	}
+}
+
+/// A kept file is read back from the prior output at its game path under the
+/// output root, and a change to it after analysis stops the commit.
+#[test]
+fn prior_output_guard_watches_the_kept_file_at_its_game_path() {
+	let temp = tempfile::TempDir::new().expect("temp dir");
+	let root = temp.path().join("merged");
+	let kept = root.join("common").join("ideas").join("00 kept.txt");
+	fs::create_dir_all(kept.parent().expect("kept file parent")).expect("create parent");
+	fs::write(&kept, "kept = yes\n").expect("write kept file");
+	let report = MergeReport {
+		handler_resolutions: vec![kept_existing("common/ideas/00 kept.txt")],
+		..MergeReport::default()
+	};
+
+	let guard = PriorOutputGuard::from_report(&root, &report)
+		.expect("read kept file")
+		.expect("a kept file is guarded");
+	assert_eq!(
+		guard
+			.files
+			.keys()
+			.map(|path| path.as_str())
+			.collect::<Vec<_>>(),
+		["common/ideas/00 kept.txt"]
+	);
+	guard.validate().expect("unchanged kept file");
+
+	fs::write(&kept, "kept = no\n").expect("change kept file");
+	assert!(matches!(
+		guard.validate(),
+		Err(MergeError::AnalyzedOutputChanged { path }) if path == kept
+	));
+}
+
+/// Reading a report back validates every handler record's path, so a
+/// `kept_existing` record naming something other than a game path never
+/// reaches the guard, let alone the filesystem.
+#[test]
+fn a_report_whose_kept_path_is_not_a_game_path_does_not_read_back() {
+	for path in [r"common\ideas\x.txt", "../outside.txt", "/etc/passwd", ""] {
+		let json = serde_json::json!({
+			"status": "ready",
+			"manual_conflict_count": 0,
+			"generated_file_count": 0,
+			"copied_file_count": 0,
+			"overlay_file_count": 0,
+			"validation": MergeReport::default().validation,
+			"handler_resolutions": [{ "path": path, "action": "kept_existing" }],
+		});
+		let error = serde_json::from_value::<MergeReport>(json).expect_err(path);
+		assert!(
+			error.to_string().contains("invalid game path"),
+			"{path}: {error}"
+		);
+	}
+}

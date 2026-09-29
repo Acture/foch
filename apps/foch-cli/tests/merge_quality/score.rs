@@ -406,8 +406,8 @@ pub fn definition_index(mod_dir: &Path) -> HashMap<(String, String), Vec<String>
 pub fn conflict_rel_paths(report: &MergeReport) -> HashSet<String> {
 	let mut out = HashSet::new();
 	for c in &report.conflict_resolutions {
-		if c.deferred_reason == DeferredUnitReason::NeedsUserChoice && !c.path.is_empty() {
-			out.insert(c.path.clone());
+		if c.deferred_reason == DeferredUnitReason::NeedsUserChoice {
+			out.insert(c.path.to_string());
 		}
 	}
 	// Pre-structured reports exposed only warning text. Keep that fallback for
@@ -2918,7 +2918,7 @@ mod classify_tests {
 			report
 				.conflict_resolutions
 				.push(foch::model::MergeReportConflictResolution {
-					path: path.to_string(),
+					path: foch::model::GamePathBuf::parse(path).expect("valid game path"),
 					reason: deferred_reason.as_str().to_string(),
 					deferred_reason,
 					kind: None,

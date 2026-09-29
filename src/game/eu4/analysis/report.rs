@@ -796,7 +796,8 @@ mod tests {
 		crate::model::StaleVanillaTargetDescriptor {
 			mod_id: mod_id.to_string(),
 			mod_version: "1.0".to_string(),
-			file_path: "common/example.txt".to_string(),
+			file_path: crate::model::GamePathBuf::parse("common/example.txt")
+				.expect("valid game path"),
 			patch_kind: "replace".to_string(),
 			target_path: vec!["root".to_string()],
 			target_key: None,
@@ -932,7 +933,8 @@ mod tests {
 	fn render_merge_report_text_includes_conflict_kinds() {
 		let report = MergeReport {
 			conflict_resolutions: vec![crate::model::MergeReportConflictResolution {
-				path: "history/countries/TES - Test.txt".to_string(),
+				path: crate::model::GamePathBuf::parse("history/countries/TES - Test.txt")
+					.expect("valid game path"),
 				reason: "manual resolution required".to_string(),
 				deferred_reason: crate::model::DeferredUnitReason::NeedsUserChoice,
 				kind: Some(ConflictKind::SchemaCardinalityViolation),

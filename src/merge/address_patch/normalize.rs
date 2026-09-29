@@ -1,4 +1,4 @@
-use super::super::error::MergeError;
+use super::super::error::{MergeError, MergeErrorSubject};
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue, SpanRange};
 use std::collections::BTreeSet;
@@ -26,7 +26,7 @@ pub(crate) fn normalize_defines_file(
 	for fragment in &fragments {
 		if !seen_merge_keys.insert(&fragment.merge_key) {
 			return Err(MergeError::Parse {
-				path: Some(parsed.relative_path.to_string()),
+				subject: Some(MergeErrorSubject::Game(parsed.relative_path.to_owned())),
 				message: format!(
 					"defines merge cannot safely normalize duplicate leaf path `{}` in {} because Lua uses last-assignment-wins semantics within a file",
 					fragment.merge_key, parsed.relative_path
@@ -60,7 +60,7 @@ fn collect_defines_fragments(
 			..
 		} if separator == "," => Ok(()),
 		AstStatement::Item { .. } => Err(MergeError::Parse {
-			path: Some(parsed.relative_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(parsed.relative_path.to_owned())),
 			message: format!(
 				"defines merge requires named assignments in {} at {}",
 				parsed.relative_path,
@@ -90,7 +90,7 @@ fn collect_defines_fragments(
 					}
 					if fragments.len() == fragment_count {
 						return Err(MergeError::Parse {
-							path: Some(parsed.relative_path.to_string()),
+							subject: Some(MergeErrorSubject::Game(parsed.relative_path.to_owned())),
 							message: format!(
 								"defines merge requires leaf assignments below {} in {}",
 								describe_assignment_path(&path_segments),
@@ -215,10 +215,15 @@ mod tests {
 
 		let err = normalize_defines_file(&file)
 			.expect_err("Lua last-assignment-wins duplicates must fail closed");
-		let MergeError::Parse { path, message } = err else {
+		let MergeError::Parse { subject, message } = err else {
 			panic!("expected parse error for duplicate defines leaf");
 		};
-		assert_eq!(path.as_deref(), Some("common/defines.lua"));
+		assert_eq!(
+			subject,
+			Some(MergeErrorSubject::Game(
+				crate::model::GamePathBuf::parse("common/defines.lua").expect("valid game path")
+			))
+		);
 		assert!(
 			message.contains("duplicate leaf path `NDefines.NGame.MAX_CLIENT_STATES`"),
 			"{message}"
