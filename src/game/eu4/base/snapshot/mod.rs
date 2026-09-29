@@ -2009,9 +2009,17 @@ fn validate_loaded_base_snapshot(
 }
 
 fn stale_installed_base_data_message(game_key: &str, game_version: &str, reason: &str) -> String {
-	format!(
+	let mut message = format!(
 		"{reason}; installed base data is stale, rerun `foch data install {game_key} --game-version {game_version}` or `foch data build {game_key} --from-game-path <game_root> --game-version {game_version} --install`"
-	)
+	);
+	if let Some(dir) = crate::game::eu4::cwt_schema_override() {
+		message.push_str(&format!(
+			"; the analysis rules include the CWT schema from {}={}, so build base data under that override into its own {BASE_DATA_DIR_ENV}",
+			crate::game::eu4::CWT_SCHEMA_OVERRIDE_ENV,
+			dir.display()
+		));
+	}
+	message
 }
 
 pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String> {

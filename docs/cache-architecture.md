@@ -12,7 +12,7 @@ repository root.
 | `mods/` | `10.0.0` | Complete semantic snapshot and loadable-file inventory for an installed mod |
 | `diffs/v6.0.0/` | `6.0.0` | Address-patch evaluation deltas for a target/mod/base identity |
 | `dag-base/v12.0.0/` | `12.0.0` | Address-patch evaluation DAG ancestors |
-| `cwt-rules/v0.11.0/` | `0.11.0` | Compiled reusable CWT rule pack |
+| `cwt-rules/v0.11.0/` | `0.11.0` | Compiled CWT rule packs left by earlier builds; no longer written |
 | `parse/v11.0.0/` | `11.0.0` | Parser-mode and source-byte addressed parse result |
 
 There is no full merge-output or modset archive cache. A merge owns its frozen
@@ -68,9 +68,18 @@ The parser cache is content-addressed by parser mode and source bytes. The same
 bytes may be reused across paths; a hit rebases the stored AST path to the
 requested file. Lua and Clausewitz modes never share entries.
 
-The CWT cache stores the compiled reusable rule pack keyed by the vendored
-source-pack identity. EU4 interpretation remains in `src/game/eu4`; a compiled
-CWT hit does not prove EU4 runtime or merge semantics.
+The product no longer writes the CWT cache. `build.rs` compiles the vendored
+schema and the binary embeds the pack; the `FOCH_CWTOOLS_SCHEMA_DIR`
+maintainer override is compiled fresh in every process, so an edit to the
+compiler cannot be masked by a pack an earlier build stored. `foch cache` still
+lists and cleans the `cwt-rules` entries earlier builds left. EU4
+interpretation remains in `src/game/eu4`; compiled CWT facts do not prove EU4
+runtime or merge semantics.
+
+Analysis output cached elsewhere depends on the schema through scope
+classification, so the active `cwt_schema_id` is part of
+`analysis_rules_version`, which base snapshots are validated against and which
+the persistent mod-snapshot key includes.
 
 ## Integrity boundary
 

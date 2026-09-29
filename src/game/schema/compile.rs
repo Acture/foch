@@ -1,10 +1,11 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{self, Display, Formatter};
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
 use super::error::CwtLoadError;
+use super::source::normalize_line_endings;
 use super::syntax::{CommentKind, ParadoxNode, ParadoxScalar, ParadoxTree};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -96,7 +97,7 @@ impl SchemaRootKeyFilter {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CwtFieldAttributes {
 	pub push_scope: Option<String>,
-	pub replace_scope: HashMap<String, String>,
+	pub replace_scope: BTreeMap<String, String>,
 	pub scope: Vec<String>,
 	pub cardinality: Option<(u32, Option<u32>)>,
 	pub severity: Option<CwtSeverity>,
@@ -207,7 +208,10 @@ impl CwtSchemaGraph {
 				path: path.clone(),
 				source,
 			})?;
-			let tree = ParadoxTree::parse(&bytes)?;
+			// Compile the text `cwt_schema_id` hashes: a Windows checkout converts
+			// the submodule's line endings, and raw block values would otherwise
+			// keep the `\r`, embedding another pack under the same id.
+			let tree = ParadoxTree::parse(&normalize_line_endings(&bytes))?;
 			graph.ingest_tree(path.strip_prefix(dir).ok(), &tree)?;
 		}
 		graph.finalize_scopes();
@@ -592,14 +596,28 @@ fn merge_type_items(
 	}
 }
 
-fn cwt_files(root: &Path) -> Result<Vec<PathBuf>, CwtLoadError> {
-	let mut files = WalkDir::new(root)
-		.into_iter()
-		.filter_map(Result::ok)
-		.filter(|entry| entry.file_type().is_file())
-		.filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cwt"))
-		.map(|entry| entry.into_path())
-		.collect::<Vec<_>>();
+/// Lists a schema directory's `.cwt` files in the order every schema reader
+/// consumes them. An unreadable entry or a directory with no rule files is an
+/// error rather than a smaller schema: an uninitialized submodule is an empty
+/// directory, and compiling it yields a schema that silently types nothing.
+pub(crate) fn cwt_files(root: &Path) -> Result<Vec<PathBuf>, CwtLoadError> {
+	let mut files = Vec::new();
+	for entry in WalkDir::new(root) {
+		let entry = entry.map_err(|error| CwtLoadError::Io {
+			path: error.path().unwrap_or(root).to_path_buf(),
+			source: error.into(),
+		})?;
+		if entry.file_type().is_file()
+			&& entry.path().extension().and_then(|ext| ext.to_str()) == Some("cwt")
+		{
+			files.push(entry.into_path());
+		}
+	}
+	if files.is_empty() {
+		return Err(CwtLoadError::NoRuleFiles {
+			root: root.to_path_buf(),
+		});
+	}
 	files.sort_by_key(|path| normalize_path(path));
 	Ok(files)
 }
@@ -850,12 +868,12 @@ fn parse_scope_list(value: &str) -> Vec<String> {
 	value.split_whitespace().map(ToString::to_string).collect()
 }
 
-fn parse_scope_map(value: &str) -> Option<HashMap<String, String>> {
+fn parse_scope_map(value: &str) -> Option<BTreeMap<String, String>> {
 	let tokens = strip_braces(value).split_whitespace().collect::<Vec<_>>();
 	if tokens.is_empty() {
-		return Some(HashMap::new());
+		return Some(BTreeMap::new());
 	}
-	let mut mappings = HashMap::new();
+	let mut mappings = BTreeMap::new();
 	let mut index = 0;
 	while index < tokens.len() {
 		let (key, equals, value) = match tokens.get(index..index + 3) {

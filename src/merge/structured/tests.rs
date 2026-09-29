@@ -2293,7 +2293,7 @@ mod game_value_equivalence {
 	use tempfile::TempDir;
 
 	use super::{MergePolicies, emit, parse_at};
-	use crate::game::schema::{CwtSchema, CwtSource};
+	use crate::game::schema::CwtSchema;
 	use crate::merge::structured::merge_clausewitz_files_n_way_with_schema;
 
 	const SCHEMA: &str = r#"
@@ -2316,14 +2316,7 @@ mod game_value_equivalence {
 	fn schema() -> CwtSchema {
 		let root = TempDir::new().expect("create schema directory");
 		fs::write(root.path().join("things.cwt"), SCHEMA).expect("write schema");
-		CwtSchema::load_with_cache(
-			root.path(),
-			CwtSource::UserProvided {
-				path: root.path().to_path_buf(),
-			},
-			None,
-		)
-		.expect("load schema")
+		CwtSchema::load_with_cache(root.path(), None).expect("load schema")
 	}
 
 	fn merge_with(

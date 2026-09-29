@@ -1,74 +1,73 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use super::base::builtin::is_builtin_effect;
 use super::content::ScriptFileKind;
+use crate::game::schema::CwtSchema;
 #[cfg(test)]
 use crate::game::schema::query::CompiledAlias;
 use crate::game::schema::query::{
 	CompiledAliasCategory, CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery,
 	RuleContext,
 };
-use crate::game::schema::{CwtSchema, CwtSource};
 use crate::model::{ScopeKind, ScopeType, base_scope};
 
 pub mod merge;
 
-const VENDORED_CWT_COMMIT: &str = "a85622d6f87970fbae7831598f13d29f7df9a762";
+/// The rule pack `build.rs` compiled from `vendor/cwtools-eu4-config`.
+static EMBEDDED_RULE_PACK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cwt-rules.pack"));
 
-struct SchemaCandidate {
-	root: PathBuf,
-	source: CwtSource,
+/// `cwt_schema_id` of the rule pack compiled into this binary.
+pub const EMBEDDED_CWT_SCHEMA_ID: &str = env!("FOCH_CWT_SCHEMA_ID");
+
+/// Maintainer override: compile the schema from this directory instead of
+/// using the embedded pack. It changes output bytes, so a directory that does
+/// not load is a fatal error rather than a quiet fallback. It is compiled in
+/// every process and never cached, so an edit to the compiler shows at once.
+pub const CWT_SCHEMA_OVERRIDE_ENV: &str = "FOCH_CWTOOLS_SCHEMA_DIR";
+
+/// The directory [`CWT_SCHEMA_OVERRIDE_ENV`] names; set but empty is unset.
+pub fn cwt_schema_override() -> Option<PathBuf> {
+	override_dir(std::env::var_os(CWT_SCHEMA_OVERRIDE_ENV))
+}
+
+fn override_dir(value: Option<OsString>) -> Option<PathBuf> {
+	value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// Loads the active EU4 schema without changing EU4's global base-scope state.
-pub(crate) fn rule_engine() -> Option<&'static CwtQuery> {
-	active_schema_slot().as_ref().map(|schema| schema.facts())
+pub(crate) fn rule_engine() -> &'static CwtQuery {
+	active_schema_slot().facts()
 }
 
-pub(crate) fn active_schema() -> Option<Arc<CwtSchema>> {
-	active_schema_slot().clone()
+pub(crate) fn active_schema() -> Arc<CwtSchema> {
+	Arc::clone(active_schema_slot())
 }
 
-fn active_schema_slot() -> &'static Option<Arc<CwtSchema>> {
-	static EU4_SCHEMA: OnceLock<Option<Arc<CwtSchema>>> = OnceLock::new();
-	EU4_SCHEMA.get_or_init(load_schema)
+/// `cwt_schema_id` of the schema this process uses: the embedded pack unless
+/// [`CWT_SCHEMA_OVERRIDE_ENV`] names another directory.
+pub fn active_cwt_schema_id() -> &'static str {
+	static ID: OnceLock<String> = OnceLock::new();
+	ID.get_or_init(|| active_schema_slot().source_id().to_hex())
 }
 
-fn load_schema() -> Option<Arc<CwtSchema>> {
-	let candidate = schema_candidates()
-		.into_iter()
-		.find(|candidate| candidate.root.is_dir())?;
-	CwtSchema::load(&candidate.root, candidate.source)
-		.ok()
-		.map(Arc::new)
+fn active_schema_slot() -> &'static Arc<CwtSchema> {
+	static EU4_SCHEMA: OnceLock<Arc<CwtSchema>> = OnceLock::new();
+	EU4_SCHEMA.get_or_init(|| Arc::new(load_schema(cwt_schema_override())))
 }
 
-fn schema_candidates() -> Vec<SchemaCandidate> {
-	let mut candidates = std::env::var_os("FOCH_CWTOOLS_SCHEMA_DIR")
-		.map(PathBuf::from)
-		.map(|root| SchemaCandidate {
-			source: CwtSource::UserProvided { path: root.clone() },
-			root,
-		})
-		.into_iter()
-		.collect::<Vec<_>>();
-	let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-	let vendored = workspace_root.join("vendor").join("cwtools-eu4-config");
-	candidates.push(SchemaCandidate {
-		root: vendored,
-		source: CwtSource::Vendored {
-			commit: VENDORED_CWT_COMMIT.to_string(),
-		},
-	});
-	let output = workspace_root.join("output").join("cwtools-eu4-config");
-	candidates.push(SchemaCandidate {
-		source: CwtSource::UserProvided {
-			path: output.clone(),
-		},
-		root: output,
-	});
-	candidates
+fn load_schema(override_root: Option<PathBuf>) -> CwtSchema {
+	match override_root {
+		None => CwtSchema::from_compiled_bytes(EMBEDDED_RULE_PACK)
+			.expect("build.rs embeds a rule pack this binary's compiler wrote"),
+		Some(root) => CwtSchema::load_with_cache(&root, None).unwrap_or_else(|error| {
+			panic!(
+				"{CWT_SCHEMA_OVERRIDE_ENV}=`{}` is not a loadable CWT schema: {error}",
+				root.display()
+			)
+		}),
+	}
 }
 
 pub fn iterator_scope_type(key: &str) -> Option<ScopeType> {
@@ -1059,14 +1058,117 @@ pub fn looks_like_map_group_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use std::path::Path;
+	use std::path::{Path, PathBuf};
 
-	use super::{iterator_scope_type, schema_path_container_scope_kind};
+	use std::ffi::OsString;
+
+	use super::{
+		EMBEDDED_CWT_SCHEMA_ID, EMBEDDED_RULE_PACK, iterator_scope_type, load_schema, override_dir,
+		schema_path_container_scope_kind,
+	};
 	use crate::game::eu4::content::ScriptFileKind;
-	use crate::model::{ScopeKind, base_scope};
+	use crate::game::schema::CwtLoadStatus;
+	use crate::game::schema::compile::cwt_files;
+	use crate::game::schema::query::CompiledRulePack;
+	use crate::game::schema::source::{SchemaPack, cwt_schema_id_from_dir, normalize_line_endings};
+	use crate::model::{ScopeKind, ScopeRegistry, base_scope};
+
+	fn vendored_schema_dir() -> PathBuf {
+		Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")
+	}
+
+	#[test]
+	fn default_schema_is_the_embedded_pack_of_the_vendored_config() {
+		let schema = load_schema(None);
+		let vendored_id =
+			cwt_schema_id_from_dir(&vendored_schema_dir()).expect("hash vendored CWT");
+
+		assert_eq!(schema.cache_status(), CwtLoadStatus::Embedded);
+		assert_eq!(schema.source_id(), &vendored_id);
+		assert_eq!(schema.source_id().to_hex(), EMBEDDED_CWT_SCHEMA_ID);
+		assert!(schema.facts().root_count() > 0);
+		assert!(schema.facts().alias_count() > 0);
+	}
+
+	#[test]
+	fn compiling_the_vendored_config_reproduces_the_embedded_bytes() {
+		// build.rs compiled the embedded pack in another process, so equality
+		// also proves the encoding does not depend on per-process hash seeds.
+		let pack = SchemaPack::load_from_dir(&vendored_schema_dir()).expect("compile vendored CWT");
+		let bytes = CompiledRulePack::from_schema_pack(&pack)
+			.to_bytes()
+			.expect("encode compiled CWT");
+
+		assert!(bytes == EMBEDDED_RULE_PACK);
+	}
+
+	#[test]
+	fn a_crlf_checkout_compiles_to_the_embedded_bytes() {
+		// Windows checkouts convert the submodule's line endings; its binaries
+		// must embed the same pack the same `cwt_schema_id` names elsewhere.
+		let vendored = vendored_schema_dir();
+		let crlf = tempfile::tempdir().expect("create CRLF schema copy");
+		for source in cwt_files(&vendored).expect("list vendored CWT") {
+			let target = crlf
+				.path()
+				.join(source.strip_prefix(&vendored).expect("vendored path"));
+			let text = std::fs::read(&source).expect("read vendored CWT");
+			let lf = normalize_line_endings(&text);
+			let mut converted = Vec::with_capacity(lf.len() * 11 / 10);
+			for &byte in lf.iter() {
+				if byte == b'\n' {
+					converted.push(b'\r');
+				}
+				converted.push(byte);
+			}
+			std::fs::create_dir_all(target.parent().expect("CWT parent"))
+				.expect("create CWT parent");
+			std::fs::write(target, converted).expect("write CRLF CWT");
+		}
+
+		let pack = SchemaPack::load_from_dir(crlf.path()).expect("compile CRLF CWT");
+		let bytes = CompiledRulePack::from_schema_pack(&pack)
+			.to_bytes()
+			.expect("encode compiled CWT");
+
+		assert!(bytes == EMBEDDED_RULE_PACK);
+	}
+
+	#[test]
+	fn an_override_compiles_its_own_directory() {
+		let root =
+			Path::new(env!("CARGO_MANIFEST_DIR")).join("src/game/schema/tests/fixtures/binding");
+		let schema = load_schema(Some(root.clone()));
+
+		assert_eq!(schema.cache_status(), CwtLoadStatus::CompiledFromSource);
+		assert!(schema.cache_path().is_none());
+		assert_eq!(
+			schema.source_id(),
+			&cwt_schema_id_from_dir(&root).expect("hash fixture CWT")
+		);
+		assert_ne!(schema.source_id().to_hex(), EMBEDDED_CWT_SCHEMA_ID);
+	}
+
+	#[test]
+	#[should_panic(expected = "FOCH_CWTOOLS_SCHEMA_DIR")]
+	fn an_override_without_rule_files_is_fatal() {
+		let empty = tempfile::tempdir().expect("create empty schema directory");
+		load_schema(Some(empty.path().to_path_buf()));
+	}
+
+	#[test]
+	fn an_empty_override_variable_is_unset() {
+		assert_eq!(override_dir(None), None);
+		assert_eq!(override_dir(Some(OsString::new())), None);
+		assert_eq!(
+			override_dir(Some(OsString::from("/maintainer/cwt"))),
+			Some(PathBuf::from("/maintainer/cwt"))
+		);
+	}
 
 	#[test]
 	fn iterator_scope_type_classifies_known_iterators() {
+		ScopeRegistry::install_test_defaults();
 		for key in [
 			"all_core_province",
 			"any_owned_province",
@@ -1101,7 +1203,7 @@ mod tests {
 
 	#[test]
 	fn schema_path_classifies_dynamic_age_objectives_as_triggers() {
-		let engine = super::rule_engine().expect("EU4 CWT rules");
+		let engine = super::rule_engine();
 		let file = Path::new("common/ages/00_default.txt");
 		let file_kind = ScriptFileKind::new("ages");
 

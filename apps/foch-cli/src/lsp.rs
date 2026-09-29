@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tower_lsp::jsonrpc::Result;
+use tower_lsp::jsonrpc::{self, Result};
 use tower_lsp::lsp_types::{
 	CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
 	CodeActionProviderCapability, CodeActionResponse, Command, CompletionItem, CompletionItemKind,
@@ -237,18 +237,18 @@ impl LanguageServer for Backend {
 		let load_result = tokio::task::spawn_blocking(EditorSchema::active).await;
 		let elapsed = started.elapsed();
 		let schema = match load_result {
-			Ok(Some(schema)) => {
+			Ok(schema) => {
 				let info = schema.info();
 				self.client
 					.log_message(
 						MessageType::INFO,
 						format!(
-							"foch lsp loaded compiled CWT rule pack: {} roots, {} aliases, {}, source {}, hash {:.1} ms, cache {}, compile {}, total {:.1} ms, task {:.1} ms",
+							"foch lsp loaded compiled CWT rule pack: {} roots, {} aliases, {}, source {}, hash {}, cache {}, compile {}, total {:.1} ms, task {:.1} ms",
 							info.root_count,
 							info.alias_count,
 							schema_load_status_label(info.status),
 							short_source_id(&info.source_id),
-							duration_ms(info.timings.source_hash),
+							optional_duration_ms(info.timings.source_hash),
 							optional_duration_ms(info.timings.cache_read),
 							optional_duration_ms(info.timings.source_compile),
 							duration_ms(info.timings.total),
@@ -256,25 +256,16 @@ impl LanguageServer for Backend {
 						),
 					)
 					.await;
-				Some(schema)
+				schema
 			}
-			Ok(None) => {
-				self.client
-					.log_message(
-						MessageType::WARNING,
-						"foch lsp missing vendored CWT schema directory; schema-aware features disabled",
-					)
-					.await;
-				None
-			}
+			// Only a broken FOCH_CWTOOLS_SCHEMA_DIR override fails to load. Refuse to
+			// start rather than serve without the schema the user asked for.
 			Err(err) => {
-				self.client
-					.log_message(
-						MessageType::ERROR,
-						format!("foch lsp schema load task failed: {err}"),
-					)
-					.await;
-				None
+				return Err(jsonrpc::Error {
+					code: jsonrpc::ErrorCode::InternalError,
+					message: format!("foch lsp could not load its CWT schema: {err}").into(),
+					data: None,
+				});
 			}
 		};
 
@@ -282,7 +273,7 @@ impl LanguageServer for Backend {
 			let mut state = self.state.write().await;
 			state.targets = targets;
 		}
-		*self.schema.write().await = schema;
+		*self.schema.write().await = Some(schema);
 
 		Ok(InitializeResult {
 			server_info: None,
@@ -554,6 +545,7 @@ pub fn run() -> i32 {
 
 fn schema_load_status_label(status: SchemaLoadStatus) -> &'static str {
 	match status {
+		SchemaLoadStatus::Embedded => "embedded",
 		SchemaLoadStatus::CacheHit => "cache hit",
 		SchemaLoadStatus::CompiledFromSource => "compiled from source",
 	}

@@ -15,3 +15,12 @@ tests remain attributed in the test modules that contain them.
 foch's original code remains AGPL-3.0-only. The combined work is distributed
 under the compatible terms identified in this crate's Cargo metadata; the
 upstream GPL text is preserved in `LICENSE-MERGIRAF.txt`.
+
+## CWTools EU4 config
+
+foch binaries embed a rule pack compiled from the CWTools EU4 config:
+
+- upstream repository: <https://github.com/cwtools/cwtools-eu4-config>
+- vendored as the `vendor/cwtools-eu4-config` submodule
+- upstream license: MIT, Copyright (c) 2018 tboby; the full text is
+  `vendor/cwtools-eu4-config/LICENSE`

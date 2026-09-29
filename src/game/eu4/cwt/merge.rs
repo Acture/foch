@@ -26,8 +26,7 @@ pub enum SchemaMergeIdentity {
 
 /// Suggests schema-backed merge identity and block policy for an EU4 AST path.
 pub fn suggest_for_conflict(file_path: &Path, ast_path: &[&str]) -> Option<SchemaMergeSuggestion> {
-	let schema = super::rule_engine()?;
-	suggest_for_conflict_with_query(schema, file_path, ast_path)
+	suggest_for_conflict_with_query(super::rule_engine(), file_path, ast_path)
 }
 
 /// Classifies an unresolved EU4 merge conflict using schema evidence.
@@ -36,8 +35,7 @@ pub fn classify_conflict_kind(
 	ast_path: &[&str],
 	reason: &str,
 ) -> Option<ConflictKind> {
-	let schema = super::rule_engine()?;
-	classify_conflict_kind_with_query(schema, file_path, ast_path, reason)
+	classify_conflict_kind_with_query(super::rule_engine(), file_path, ast_path, reason)
 }
 
 fn suggest_for_conflict_with_query(
@@ -238,7 +236,7 @@ mod tests {
 	use tempfile::TempDir;
 
 	use super::*;
-	use crate::game::schema::{CwtSchema, CwtSource};
+	use crate::game::schema::CwtSchema;
 
 	const EVENT_SCHEMA: &str = r#"
 		types = {
@@ -343,7 +341,6 @@ mod tests {
 	}
 
 	#[test]
-	#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
 	fn classifies_vendor_country_history_cardinality_conflict() {
 		assert_eq!(
 			classify_conflict_kind(
@@ -356,7 +353,6 @@ mod tests {
 	}
 
 	#[test]
-	#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
 	fn classifies_vendor_recursive_block_conflict_as_deep_mergeable() {
 		assert_eq!(
 			classify_conflict_kind(
@@ -437,13 +433,6 @@ mod tests {
 	fn test_schema(source: &str) -> CwtSchema {
 		let root = TempDir::new().expect("create merge schema directory");
 		fs::write(root.path().join("merge.cwt"), source).expect("write merge schema");
-		CwtSchema::load_with_cache(
-			root.path(),
-			CwtSource::UserProvided {
-				path: root.path().to_path_buf(),
-			},
-			None,
-		)
-		.expect("load merge schema")
+		CwtSchema::load_with_cache(root.path(), None).expect("load merge schema")
 	}
 }
