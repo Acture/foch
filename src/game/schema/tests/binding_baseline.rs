@@ -7,7 +7,7 @@ use crate::game::schema::compile::{
 	CwtSubtype, SchemaRootDefinition,
 };
 use crate::game::schema::query::{CwtQuery, SchemaBinding};
-use crate::game::schema::source::{CwtSource, SchemaPack};
+use crate::game::schema::source::SchemaPack;
 use crate::game::schema::syntax::ParadoxTree;
 use serde::Serialize;
 use serde_json::Value;
@@ -149,10 +149,7 @@ fn fixture_root_binding_prefers_exact_path_and_reports_ambiguity() {
 
 #[test]
 fn cwtools_schema_pack_matches_baseline() {
-	let Some(root) = vendor_schema_dir() else {
-		eprintln!("skipping CWTools schema baseline: vendor schema directory not available");
-		return;
-	};
+	let root = vendor_schema_dir();
 	assert_schema_parses_cleanly(&root);
 	let actual = build_vendor_baseline(&root);
 	assert_json_fixture(&fixture_file("cwtools_binding_baseline.json"), &actual);
@@ -263,13 +260,7 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 }
 
 fn load_pack(root: &Path) -> SchemaPack {
-	SchemaPack::load_from_dir(
-		root,
-		CwtSource::UserProvided {
-			path: root.to_path_buf(),
-		},
-	)
-	.expect("load schema pack")
+	SchemaPack::load_from_dir(root).expect("load schema pack")
 }
 
 fn sorted_type_baselines(graph: &CwtSchemaGraph) -> Vec<TypeBaseline> {
@@ -455,17 +446,9 @@ fn fixture_file(path: &str) -> PathBuf {
 		.join(path)
 }
 
-fn vendor_schema_dir() -> Option<PathBuf> {
-	let from_env = std::env::var_os("FOCH_CWTOOLS_SCHEMA_DIR").map(PathBuf::from);
-	let candidate_paths = [
-		from_env,
-		Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")),
-		Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output/cwtools-eu4-config")),
-	];
-	candidate_paths
-		.into_iter()
-		.flatten()
-		.find(|path| path.is_dir())
+/// The build embeds this directory, so it is present whenever the crate compiles.
+fn vendor_schema_dir() -> PathBuf {
+	PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")
 }
 
 fn cwt_files(root: &Path) -> Vec<PathBuf> {

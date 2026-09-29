@@ -1,6 +1,11 @@
 # Project Status
 
-Latest worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
+Latest worktree verification: 2026-09-29 on `049a9f0` plus the P-709 embedded
+CWT rule pack: strict workspace Clippy and formatting, and `cargo test
+--workspace --no-fail-fast` at 1,592 passed and 3 failed across all targets,
+the three being exactly the sandbox denials `AGENTS.md` records as environment
+results.
+Earlier worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
 equivalence change: strict workspace Clippy and formatting, and `cargo test
 --workspace --no-fail-fast` at 1,579 passed and 3 failed across all targets,
 the three being exactly the sandbox denials `AGENTS.md` records as environment
@@ -40,6 +45,90 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## CWT rule pack embedded in the binary (2026-09-29)
+
+P-709, the blocker P-695 derived. `load_schema()` searched
+`FOCH_CWTOOLS_SCHEMA_DIR`, then `vendor/cwtools-eu4-config` and
+`output/cwtools-eu4-config` under `env!("CARGO_MANIFEST_DIR")`, the build
+machine's source path. Since P-695 the schema decides output bytes, and each
+silent outcome changed them: a binary away from its build tree ran without a
+schema (every release, VSIX and Homebrew binary on a user's machine); an
+uninitialized submodule's empty directory compiled to an empty schema (the
+maintainer cache held its 151-byte pack keyed `e3b0c442…`, the SHA-256 of no
+input); and an override that failed to load became no schema through `.ok()`.
+
+`build.rs` now compiles the vendored config with the library's own
+`src/game/schema` modules, included by path because a build script cannot link
+the crate it builds and those five files depend on nothing else in it. The
+binary embeds the pack; `load_schema()` decodes it, and
+`FOCH_CWTOOLS_SCHEMA_DIR` (set but empty counts as unset) compiles another
+directory instead, uncached in every process, or panics naming itself; `foch
+lsp` then fails `initialize` rather than serving half a workspace. A directory
+without `.cwt` files, or with an unreadable entry, is an error at every entry,
+so an empty submodule fails the build with the `git submodule update` command
+and a partly readable one cannot embed a smaller pack. The write-only
+`CwtSource`, the `VENDORED_CWT_COMMIT` constant (not an object in the submodule
+at all), the dead `output/` candidate and the default compiled-pack cache path
+are gone; nothing in the product writes the `cwt-rules` layer any more.
+
+The pack was not byte-deterministic: `replace_scope` was a `HashMap` that
+bincode wrote in per-process hash order. It is a `BTreeMap` now, and a test
+recompiles the vendored config and requires byte equality with the embedded
+pack, which the build script wrote in another process — that pins both
+determinism and freshness. Nor was it one pack per id across checkouts: the
+submodule has no `.gitattributes`, so a Windows `autocrlf` checkout gets CRLF
+files, and raw block values in the compiled string sets kept the `\r` — an
+all-CRLF copy compiled to 1,262,919 bytes against 1,262,309 under the same
+`cwt_schema_id`, which normalizes line endings. The compiler now parses the
+same normalized text the id hashes, and a test converts the vendored config to
+CRLF and requires the embedded bytes.
+
+Identity. The embedded `cwt_schema_id` is `5d636ca3…70f3`, the baseline
+fixture's `pack_id`; `foch --version` prints it, plus a line when the override
+is set. It enters `analysis_rules_version` as `-cwt-<16 hex>`, which base
+snapshots are validated against and which the persistent mod-snapshot key now
+includes — that key previously carried neither the schema nor the rules
+version. Installed base data is therefore rejected whenever the embedded id
+changes, this change and every submodule refresh included, and release
+base-data assets must be rebuilt with the binary they ship with (P-750); the
+refresh PR body now says so. Under the override the stale-data message names
+it. The id is the source-content hash the ticket names; a compiler change still
+needs the manual `ANALYSIS_RULES_VERSION` bump, as any analysis-code change
+does. For merge quality, the product side follows the executable's BLAKE3 now
+that the pack is inside it; the scorer's schema id enters
+`workshop_scorer_config_hash`; and every product runner refuses to start under
+`FOCH_CWTOOLS_SCHEMA_DIR`, because its child clears the environment and would
+merge with a different schema from the one scoring reads.
+
+Size: release `foch` on macOS arm64 under the default release profile went
+from 20,642,288 to 21,913,328 bytes, +1,271,040 (+6.2%); `__TEXT,__const` grew
+by 1,265,664 for the 1,262,309-byte pack, which is stored uncompressed.
+
+Evidence: with `vendor/cwtools-eu4-config` moved out of the tree, a copy of the
+release binary run from a scratch directory with an empty environment reported
+the embedded id, and the prebuilt `merge_reads_one_value_written_two_ways_as_one_value`
+still wrote `all_estate_loyalty_equilibrium = 0.500`. With the directory empty,
+`cargo check` failed in `build.rs` with the submodule command.
+
+Adjudicated tests: the two `classifies_vendor_*` tests are no longer ignored
+and pass, though they call the classifier with a path shape production never
+sends. `eu4_schema_cardinality_conflict_is_tagged_from_cwt` stays ignored, now
+under P-747: with the schema present it still fails because the report hands
+the classifier a conflict's parent path without its key, so a root-level key
+binds no CWT field — nothing to do with where the schema lives.
+`iterator_scope_type_classifies_known_iterators`
+relied on another test to install base scopes and failed when run alone; it
+installs them itself now.
+
+Follow-ups: P-747 (classifier path), P-748 (release artifacts carry no license
+notices, now including the MIT CWTools text), P-749 (the cache-root fallback
+still bakes the build path), P-750 (base-data assets must match the release
+binary's schema).
+
+Not established: a real Windows or Linux build's embedded bytes (only the
+line-ending difference was reproduced, on macOS), or any cohort run with the
+new identity.
 
 ## VFS dependency evaluation (2026-09-26)
 

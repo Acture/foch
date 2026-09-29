@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::game::schema::{CwtLoadStatus, CwtSchema, CwtSource};
+use crate::game::schema::{CwtLoadStatus, CwtSchema};
 use crate::model::{LocalisationDefinition, Severity};
 
 pub use workspace::{SchemaDocument, SchemaWorkspace};
@@ -68,13 +68,14 @@ pub struct SchemaDiagnostic {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchemaLoadStatus {
+	Embedded,
 	CacheHit,
 	CompiledFromSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchemaLoadTimings {
-	pub source_hash: Duration,
+	pub source_hash: Option<Duration>,
 	pub cache_read: Option<Duration>,
 	pub source_compile: Option<Duration>,
 	pub total: Duration,
@@ -110,25 +111,12 @@ pub struct EditorSchema {
 }
 
 impl EditorSchema {
-	/// Loads the discovered EU4 schema, if one is installed.
-	pub fn active() -> Option<Self> {
-		super::super::cwt::active_schema().map(|schema| Self { schema })
-	}
-
-	/// Loads an explicit EU4 CWT schema directory using the default cache.
-	pub fn load_from_directory(root: &Path) -> Result<Self, SchemaLoadError> {
-		let schema = CwtSchema::load(
-			root,
-			CwtSource::UserProvided {
-				path: root.to_path_buf(),
-			},
-		)
-		.map_err(|error| SchemaLoadError {
-			message: error.to_string(),
-		})?;
-		Ok(Self {
-			schema: Arc::new(schema),
-		})
+	/// The EU4 schema this process uses: the rule pack embedded in the binary,
+	/// or the maintainer override directory.
+	pub fn active() -> Self {
+		Self {
+			schema: super::super::cwt::active_schema(),
+		}
 	}
 
 	/// Loads an explicit schema with a caller-selected compiled-schema cache.
@@ -136,16 +124,10 @@ impl EditorSchema {
 		root: &Path,
 		cache_dir: Option<&Path>,
 	) -> Result<Self, SchemaLoadError> {
-		let schema = CwtSchema::load_with_cache(
-			root,
-			CwtSource::UserProvided {
-				path: root.to_path_buf(),
-			},
-			cache_dir,
-		)
-		.map_err(|error| SchemaLoadError {
-			message: error.to_string(),
-		})?;
+		let schema =
+			CwtSchema::load_with_cache(root, cache_dir).map_err(|error| SchemaLoadError {
+				message: error.to_string(),
+			})?;
 		Ok(Self {
 			schema: Arc::new(schema),
 		})
@@ -158,6 +140,7 @@ impl EditorSchema {
 			alias_count: self.facts().alias_count(),
 			source_id: self.schema.source_id().to_hex(),
 			status: match self.schema.cache_status() {
+				CwtLoadStatus::Embedded => SchemaLoadStatus::Embedded,
 				CwtLoadStatus::CacheHit => SchemaLoadStatus::CacheHit,
 				CwtLoadStatus::CompiledFromSource => SchemaLoadStatus::CompiledFromSource,
 			},

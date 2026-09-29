@@ -4,6 +4,7 @@ use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use foch::game::eu4::active_cwt_schema_id;
 use foch::model::{
 	MergeBackendId, MergeReport, MergeReportStatus, PRODUCT_INPUT_PROFILE, ProductInputManifest,
 };
@@ -299,6 +300,7 @@ pub fn measure_workshop_with_runner(
 		&local_game.game_version,
 		steam_build_id,
 		&base_snapshot_label,
+		active_cwt_schema_id(),
 	);
 
 	let mut cohort_id = None;
@@ -594,6 +596,7 @@ fn workshop_scorer_config_hash(
 	game_version: &str,
 	steam_build_id: u64,
 	base_snapshot_identity: &str,
+	cwt_schema: &str,
 ) -> String {
 	// This hash identifies scorer policy, not case data. Ordered Workshop ACF
 	// revisions live in input_version_id; per-case scoring closures are captured
@@ -615,7 +618,8 @@ fn workshop_scorer_config_hash(
 		"game_version": game_version,
 		"steam_build_id": steam_build_id.to_string(),
 		"base_snapshot_identity": base_snapshot_identity,
-		"multi_source": "all_sources_v1"
+		"multi_source": "all_sources_v1",
+		"cwt_schema": cwt_schema
 	});
 	stable_id(
 		"workshop-scorer-config-v4",
@@ -1937,14 +1941,37 @@ mod tests {
 		let second_digest = scoring_closure_digest(base.path(), &units).unwrap();
 		assert_ne!(first_digest, second_digest);
 
-		let first =
-			workshop_scorer_config_hash(Duration::from_secs(1), "1.37.5", 4242, "base-snapshot");
-		let changed_timeout =
-			workshop_scorer_config_hash(Duration::from_secs(2), "1.37.5", 4242, "base-snapshot");
-		let changed_base =
-			workshop_scorer_config_hash(Duration::from_secs(1), "1.37.5", 4242, "other-base");
+		let first = workshop_scorer_config_hash(
+			Duration::from_secs(1),
+			"1.37.5",
+			4242,
+			"base-snapshot",
+			"cwt",
+		);
+		let changed_timeout = workshop_scorer_config_hash(
+			Duration::from_secs(2),
+			"1.37.5",
+			4242,
+			"base-snapshot",
+			"cwt",
+		);
+		let changed_base = workshop_scorer_config_hash(
+			Duration::from_secs(1),
+			"1.37.5",
+			4242,
+			"other-base",
+			"cwt",
+		);
+		let changed_schema = workshop_scorer_config_hash(
+			Duration::from_secs(1),
+			"1.37.5",
+			4242,
+			"base-snapshot",
+			"other-cwt",
+		);
 		assert_ne!(first, changed_timeout);
 		assert_ne!(first, changed_base);
+		assert_ne!(first, changed_schema);
 	}
 
 	#[cfg(unix)]

@@ -56,6 +56,9 @@ pub(crate) enum CwtLoadError {
 		path: PathBuf,
 		source: std::io::Error,
 	},
+	NoRuleFiles {
+		root: PathBuf,
+	},
 	Syntax(ParseError),
 	Projection(ProjectionError),
 	InvalidSchema {
@@ -72,6 +75,9 @@ impl Display for CwtLoadError {
 		match self {
 			Self::Io { path, source } => {
 				write!(f, "failed to read `{}`: {source}", path.display())
+			}
+			Self::NoRuleFiles { root } => {
+				write!(f, "no `.cwt` rule files under `{}`", root.display())
 			}
 			Self::Syntax(error) => write!(f, "syntax parse failed: {error}"),
 			Self::Projection(error) => write!(f, "syntax projection failed: {error}"),
@@ -93,7 +99,7 @@ impl Error for CwtLoadError {
 			Self::Io { source, .. } => Some(source),
 			Self::Syntax(error) => Some(error),
 			Self::Projection(error) => Some(error),
-			Self::InvalidSchema { .. } | Self::Codec { .. } => None,
+			Self::NoRuleFiles { .. } | Self::InvalidSchema { .. } | Self::Codec { .. } => None,
 		}
 	}
 }

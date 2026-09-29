@@ -354,7 +354,7 @@ impl Display for CompiledAliasCategory {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompiledFieldAttributes {
 	pub push_scope: Option<String>,
-	pub replace_scope: HashMap<String, String>,
+	pub replace_scope: BTreeMap<String, String>,
 	pub scope: Vec<String>,
 	pub cardinality: Option<(u32, Option<u32>)>,
 	pub severity: Option<CompiledSeverity>,

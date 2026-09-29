@@ -1,12 +1,11 @@
 use std::borrow::Cow;
 use std::fmt::{self, Display, Formatter};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
-use walkdir::WalkDir;
 
-use super::compile::CwtSchemaGraph;
+use super::compile::{CwtSchemaGraph, cwt_files};
 use super::error::CwtLoadError;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -20,6 +19,17 @@ impl CwtSchemaId {
 	pub fn to_hex(&self) -> String {
 		self.0.iter().map(|byte| format!("{byte:02x}")).collect()
 	}
+
+	pub fn from_hex(hex: &str) -> Option<Self> {
+		let mut bytes = [0; 32];
+		if hex.len() != bytes.len() * 2 {
+			return None;
+		}
+		for (byte, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+			*byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+		}
+		Some(Self(bytes))
+	}
 }
 
 impl Display for CwtSchemaId {
@@ -28,46 +38,30 @@ impl Display for CwtSchemaId {
 	}
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CwtSource {
-	Vendored { commit: String },
-	UserProvided { path: PathBuf },
-}
-
 #[derive(Clone, Debug)]
 pub struct SchemaPack {
 	pub id: CwtSchemaId,
-	pub source: CwtSource,
 	pub graph: Arc<CwtSchemaGraph>,
 }
 
 impl SchemaPack {
-	pub(crate) fn load_from_dir(root: &Path, source: CwtSource) -> Result<Self, CwtLoadError> {
+	pub(crate) fn load_from_dir(root: &Path) -> Result<Self, CwtLoadError> {
 		let id = cwt_schema_id_from_dir(root)?;
-		Self::load_from_dir_with_id(root, source, id)
+		Self::load_from_dir_with_id(root, id)
 	}
 
 	pub(crate) fn load_from_dir_with_id(
 		root: &Path,
-		source: CwtSource,
 		id: CwtSchemaId,
 	) -> Result<Self, CwtLoadError> {
 		let graph = Arc::new(CwtSchemaGraph::from_directory(root)?);
-		Ok(Self { id, source, graph })
+		Ok(Self { id, graph })
 	}
 }
 
 pub fn cwt_schema_id_from_dir(root: &Path) -> Result<CwtSchemaId, CwtLoadError> {
-	let mut files = WalkDir::new(root)
-		.into_iter()
-		.filter_map(Result::ok)
-		.filter(|entry| entry.file_type().is_file())
-		.filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cwt"))
-		.map(|entry| entry.into_path())
-		.collect::<Vec<_>>();
-	files.sort_by_key(|path| normalize_path(path));
 	let mut hasher = Sha256::new();
-	for path in files {
+	for path in cwt_files(root)? {
 		let bytes = std::fs::read(&path).map_err(|source| CwtLoadError::Io {
 			path: path.clone(),
 			source,
@@ -77,7 +71,7 @@ pub fn cwt_schema_id_from_dir(root: &Path) -> Result<CwtSchemaId, CwtLoadError> 
 	Ok(CwtSchemaId(hasher.finalize().into()))
 }
 
-fn normalize_line_endings(bytes: &[u8]) -> Cow<'_, [u8]> {
+pub(crate) fn normalize_line_endings(bytes: &[u8]) -> Cow<'_, [u8]> {
 	if !bytes.contains(&b'\r') {
 		return Cow::Borrowed(bytes);
 	}
@@ -96,18 +90,34 @@ fn normalize_line_endings(bytes: &[u8]) -> Cow<'_, [u8]> {
 	Cow::Owned(normalized)
 }
 
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.trim_matches('/')
-		.to_ascii_lowercase()
-}
-
 #[cfg(test)]
 mod tests {
 	use std::fs;
 
-	use super::cwt_schema_id_from_dir;
+	use super::{CwtSchemaId, cwt_schema_id_from_dir};
+	use crate::game::schema::error::CwtLoadError;
+
+	#[test]
+	fn schema_id_round_trips_through_hex() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("rules.cwt"), b"types = { }\n").unwrap();
+		let id = cwt_schema_id_from_dir(dir.path()).unwrap();
+
+		assert_eq!(CwtSchemaId::from_hex(&id.to_hex()), Some(id));
+		assert_eq!(CwtSchemaId::from_hex("abc"), None);
+		assert_eq!(CwtSchemaId::from_hex(&"zz".repeat(32)), None);
+	}
+
+	#[test]
+	fn a_directory_without_rule_files_has_no_schema_id() {
+		let empty = tempfile::tempdir().unwrap();
+		fs::write(empty.path().join("README.md"), b"not a rule file\n").unwrap();
+
+		assert!(matches!(
+			cwt_schema_id_from_dir(empty.path()),
+			Err(CwtLoadError::NoRuleFiles { .. })
+		));
+	}
 
 	#[test]
 	fn schema_pack_id_ignores_text_line_endings() {

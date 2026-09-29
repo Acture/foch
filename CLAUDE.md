@@ -29,6 +29,16 @@ none substitutes for product merge evidence.
   with `ContentFamilyDescriptor` as the analyzer behavior boundary. CWT
   schemas are useful evidence, but they do not by themselves prove runtime
   load or merge semantics.
+- The CWT schema decides output bytes (numeric canonicalization reads its
+  field types), so `build.rs` compiles `vendor/cwtools-eu4-config` into a rule
+  pack the binary embeds, and its `cwt_schema_id` enters
+  `analysis_rules_version`, the mod-snapshot cache key, `foch --version` and
+  the merge-quality scorer identity. `FOCH_CWTOOLS_SCHEMA_DIR` is a
+  parser-maintainer override that compiles another directory, uncached, in
+  every process; it changes output bytes, fails loudly when the directory does
+  not load, and merge-quality product runners refuse to start under it. It
+  also changes `analysis_rules_version`, so pair it with its own
+  `FOCH_DATA_DIR` rather than rebuilding the shared base data.
 - Playset order and declared mod dependencies are semantic inputs. Preserve
   their precedence in input resolution, merge DAGs, cache identities, and
   tests; never sort mods merely to make a key deterministic.
@@ -171,13 +181,13 @@ Keep changing coverage status in `docs/project-status.md` and Notion. `AGENTS.md
 
 Use `direnv` in the repo root and keep Node on the supported line: `>=22 <25`. Run `direnv allow` once after cloning. `node@25` is currently not a supported local development environment for `packages/tree-sitter-paradox`.
 
-Both submodules must be checked out before any test result means anything, and `git worktree add` checks out neither:
+Both submodules must be checked out before anything builds, and `git worktree add` checks out neither:
 
 ```fish
 git submodule update --init packages/tree-sitter-paradox vendor/cwtools-eu4-config
 ```
 
-A missing `packages/tree-sitter-paradox` breaks the build; a missing `vendor/cwtools-eu4-config` instead fails 13 schema, CWT, script, structured-merge and corpus tests, most of which do not mention CWT. Treat a cluster of those failures as an uninitialized submodule before investigating them as defects.
+A missing `packages/tree-sitter-paradox` fails at manifest load. A missing or empty `vendor/cwtools-eu4-config` fails the root crate's build script, which compiles it into the embedded CWT rule pack; there is no schema-less build.
 
 Three tests need privileges a restricted sandbox may withhold: `output_transaction_rejects_an_existing_unix_socket` binds a Unix socket, and `data_install_downloads_release_asset_from_manifest` and `page_fetch_is_frozen_and_reused_without_another_network_request` each open a local HTTP server. A sandbox denial there is an environment result, not a defect. Committing an analyzed merge also takes the installed base-snapshot lock under the user data directory; point `FOCH_DATA_DIR` at a cloned data directory when that path is not writable.
 

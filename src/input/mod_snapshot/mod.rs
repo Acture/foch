@@ -1,6 +1,7 @@
 mod store;
 
 use crate::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
+use crate::game::eu4::base::analysis_rules_version;
 use crate::game::eu4::script::documents::{
 	ParsedTextDocument, build_semantic_index_from_owned_documents,
 	discover_text_documents_from_paths, parse_discovered_text_documents,
@@ -81,8 +82,8 @@ fn load_or_build_mod_snapshot_with_cache(
 	{
 		let profile = cache.and_then(|cache| {
 			let mod_hash = owned_mod_hash.as_deref()?;
-			cache.touch_entry(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key);
-			cache.entry_profile(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key)
+			cache.touch_entry(mod_hash, snapshot_analysis_identity(), &disk_cache_game_key);
+			cache.entry_profile(mod_hash, snapshot_analysis_identity(), &disk_cache_game_key)
 		});
 		eprintln!(
 			"[merge] mod_snapshot: cache_hit mod_id={} source=process elapsed_ms={} compressed_bytes={} uncompressed_bytes={} documents={} scopes={} definitions={} references={}",
@@ -101,10 +102,10 @@ fn load_or_build_mod_snapshot_with_cache(
 	let cache_lookup_started = Instant::now();
 	if let (Some(cache), Some(mod_hash)) = (cache, owned_mod_hash.as_ref())
 		&& let Some(cached) =
-			cache.lookup(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key)
+			cache.lookup(mod_hash, snapshot_analysis_identity(), &disk_cache_game_key)
 	{
 		let profile =
-			cache.entry_profile(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key);
+			cache.entry_profile(mod_hash, snapshot_analysis_identity(), &disk_cache_game_key);
 		let snapshot = to_loaded_snapshot(cached, true, owned_mod_hash.clone());
 		store_process_snapshot(process_cache_key.as_ref(), &snapshot);
 		eprintln!(
@@ -148,7 +149,7 @@ fn load_or_build_mod_snapshot_with_cache(
 	if let (Some(cache), Some(mod_hash)) = (cache, owned_mod_hash.as_ref()) {
 		let (returned_data, store_result) = cache.store_owned(
 			mod_hash,
-			env!("CARGO_PKG_VERSION"),
+			snapshot_analysis_identity(),
 			&disk_cache_game_key,
 			data,
 		);
@@ -190,6 +191,14 @@ fn load_or_build_mod_snapshot_with_cache(
 	);
 	store_process_snapshot(process_cache_key.as_ref(), &snapshot);
 	Ok(Some(snapshot))
+}
+
+/// What a stored snapshot's semantic index was computed with, besides its
+/// input: the tool build and every analysis rule set, the CWT schema among
+/// them. The ACF key alone would serve an index classified by another schema.
+fn snapshot_analysis_identity() -> &'static str {
+	static IDENTITY: OnceLock<String> = OnceLock::new();
+	IDENTITY.get_or_init(|| format!("{}-{}", env!("CARGO_PKG_VERSION"), analysis_rules_version()))
 }
 
 fn process_snapshot_cache_key(mod_hash: Option<&str>) -> Option<ProcessSnapshotCacheKey> {
@@ -467,6 +476,15 @@ mod tests {
 	use crate::playset::descriptor::ModDescriptor;
 	use std::fs;
 	use tempfile::TempDir;
+
+	#[test]
+	fn snapshot_key_carries_the_analysis_rules_and_cwt_schema() {
+		assert!(snapshot_analysis_identity().ends_with(analysis_rules_version()));
+		assert!(snapshot_analysis_identity().contains(&format!(
+			"-cwt-{}",
+			&crate::game::eu4::active_cwt_schema_id()[..16]
+		)));
+	}
 
 	#[test]
 	fn acf_snapshot_is_warm_before_walk_and_retained_subset_does_not_poison_full_cache() {

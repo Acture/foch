@@ -164,8 +164,16 @@ fn schema_diagnostics_for_text_with_index(
 }
 
 #[test]
-fn active_schema_discovers_vendored_pack() {
-	assert!(EditorSchema::active().is_some());
+fn active_schema_is_the_embedded_pack_unless_overridden() {
+	let info = EditorSchema::active().info();
+
+	assert_eq!(info.source_id, crate::game::eu4::active_cwt_schema_id());
+	if crate::game::eu4::cwt_schema_override().is_none() {
+		assert_eq!(info.status, SchemaLoadStatus::Embedded);
+		assert_eq!(info.source_id, crate::game::eu4::EMBEDDED_CWT_SCHEMA_ID);
+	}
+	assert!(info.root_count > 0);
+	assert!(info.alias_count > 0);
 }
 
 #[test]

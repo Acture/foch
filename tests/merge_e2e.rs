@@ -646,7 +646,7 @@ fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 }
 
 #[test]
-#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
+#[ignore = "P-747: the report classifies a conflict by its parent path, so a root-level key binds no CWT field and `kind` stays None"]
 fn eu4_schema_cardinality_conflict_is_tagged_from_cwt() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_schema_cardinality_conflict", false);
 	assert_eq!(

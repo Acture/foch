@@ -7,7 +7,6 @@ use crate::game::schema::query::{
 	CompiledRuleCondition, CompiledRulePack, CompiledRuleValue, CompiledSeverity,
 	CompiledTypeKeyFilter, CwtQuery, RuleContext, SchemaBinding,
 };
-use crate::game::schema::source::CwtSource;
 use crate::game::schema::syntax::ParadoxTree;
 
 #[test]
@@ -813,12 +812,8 @@ fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 	let legacy_flat_entry = cache.path().join("rules-fmt-0_10_0-src-old.bin");
 	fs::write(&legacy_flat_entry, b"obsolete").expect("write legacy flat entry");
 
-	let first = load_cwt_from_dir(
-		&root,
-		CwtSource::UserProvided { path: root.clone() },
-		Some(cache.path()),
-	)
-	.expect("compile fixture schema into cache");
+	let first =
+		load_cwt_from_dir(&root, Some(cache.path())).expect("compile fixture schema into cache");
 	assert_eq!(first.status, CwtLoadStatus::CompiledFromSource);
 	assert!(first.cache_path.as_ref().is_some_and(|path| path.is_file()));
 	assert!(
@@ -833,12 +828,8 @@ fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 	assert!(first.timings.source_compile.is_some());
 	assert!(first.facts.alias_count() > 0);
 
-	let second = load_cwt_from_dir(
-		&root,
-		CwtSource::UserProvided { path: root.clone() },
-		Some(cache.path()),
-	)
-	.expect("load fixture schema from compiled cache");
+	let second = load_cwt_from_dir(&root, Some(cache.path()))
+		.expect("load fixture schema from compiled cache");
 	assert_eq!(second.status, CwtLoadStatus::CacheHit);
 	assert!(second.timings.cache_read.is_some());
 	assert!(second.timings.source_compile.is_none());
@@ -852,10 +843,7 @@ fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 
 #[test]
 fn compiled_vendor_pack_preserves_cwtools_alias_binding() {
-	let Some(root) = vendor_schema_dir() else {
-		eprintln!("skipping compiled CWTools vendor test: schema directory not available");
-		return;
-	};
+	let root = vendor_schema_dir();
 	let graph = CwtSchemaGraph::from_directory(&root).expect("load CWTools schema graph");
 	let engine = CwtQuery::from_graph(&graph);
 	assert_eq!(engine.alias_count(), graph.aliases.len());
@@ -901,15 +889,7 @@ fn schema_pack_fixture_dir() -> PathBuf {
 		.join("schema-pack")
 }
 
-fn vendor_schema_dir() -> Option<PathBuf> {
-	let from_env = std::env::var_os("FOCH_CWTOOLS_SCHEMA_DIR").map(PathBuf::from);
-	let candidate_paths = [
-		from_env,
-		Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")),
-		Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output/cwtools-eu4-config")),
-	];
-	candidate_paths
-		.into_iter()
-		.flatten()
-		.find(|path| path.is_dir())
+/// The build embeds this directory, so it is present whenever the crate compiles.
+fn vendor_schema_dir() -> PathBuf {
+	PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")
 }

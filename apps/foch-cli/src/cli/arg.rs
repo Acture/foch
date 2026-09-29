@@ -1,14 +1,17 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
+use foch::game::eu4::{CWT_SCHEMA_OVERRIDE_ENV, EMBEDDED_CWT_SCHEMA_ID, cwt_schema_override};
 use foch::model::SymbolKind;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 #[derive(Parser, Debug)]
 #[command(
 	author,
 	version,
+	long_version = long_version(),
 	about = "Foch: Paradox mod analysis and merge toolkit",
 	long_about = None
 )]
@@ -18,6 +21,25 @@ pub struct FochCli {
 
 	#[command(flatten)]
 	pub verbose: Verbosity<WarnLevel>,
+}
+
+/// `--version` names the CWT schema compiled into the binary: the schema
+/// decides output bytes, so two builds write the same mod only if both match.
+fn long_version() -> &'static str {
+	static VERSION: OnceLock<String> = OnceLock::new();
+	VERSION.get_or_init(|| {
+		let mut version = format!(
+			"{}\ncwt-schema {EMBEDDED_CWT_SCHEMA_ID} (embedded)",
+			env!("CARGO_PKG_VERSION")
+		);
+		if let Some(dir) = cwt_schema_override() {
+			version.push_str(&format!(
+				"\ncwt-schema overridden by {CWT_SCHEMA_OVERRIDE_ENV}={}",
+				dir.display()
+			));
+		}
+		version
+	})
 }
 
 #[derive(Subcommand, Debug)]

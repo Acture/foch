@@ -2,13 +2,15 @@
 name = "foch"
 version.workspace = true
 edition.workspace = true
-license = "AGPL-3.0-only AND GPL-3.0-only"
+license = "AGPL-3.0-only AND GPL-3.0-only AND MIT"
 readme.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "EU4 mod analysis and merge toolkit"
 include = [
 	"src/**",
+	"build.rs",
+	"vendor/cwtools-eu4-config/**",
 	"Cargo.toml",
 	"README.md",
 	"LICENSE",
@@ -38,6 +40,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 bincode = "1.3.3"
+chardetng = "1.0.0"
 rkyv = "0.8"
 clap = { version = "4.5.51", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", default-features = false, features = ["tracing"] }
@@ -69,6 +72,7 @@ toml = "0.9.8"
 tower-lsp = "0.20.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
+tree-sitter = "0.25"
 walkdir = "2.5.0"
 windows-sys = { version = "0.61.2", features = [
 	"Win32_Foundation",
@@ -82,7 +86,7 @@ winreg = "0.55.0"
 [dependencies]
 bincode.workspace = true
 blake3 = "1.5.5"
-chardetng = "1.0.0"
+chardetng.workspace = true
 console.workspace = true
 dirs.workspace = true
 encoding_rs.workspace = true
@@ -107,9 +111,21 @@ tempfile.workspace = true
 toml.workspace = true
 toml_edit = "0.23"
 tracing.workspace = true
-tree-sitter = "0.25"
+tree-sitter.workspace = true
 tree-sitter-paradox = { path = "packages/tree-sitter-paradox" }
 thiserror = "2.0"
+walkdir.workspace = true
+
+# build.rs compiles the vendored CWT config with the `src/game/schema` modules
+# it includes, so it needs exactly their dependencies.
+[build-dependencies]
+bincode.workspace = true
+chardetng.workspace = true
+encoding_rs.workspace = true
+serde.workspace = true
+sha2.workspace = true
+tree-sitter.workspace = true
+tree-sitter-paradox = { path = "packages/tree-sitter-paradox" }
 walkdir.workspace = true
 
 [target.'cfg(windows)'.dependencies]

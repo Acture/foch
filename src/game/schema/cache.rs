@@ -5,12 +5,11 @@ use std::time::{Duration, Instant};
 
 use super::error::CwtLoadError;
 use super::query::{CompiledRulePack, CwtQuery, PACK_FORMAT_VERSION};
-use super::source::{CwtSchemaId, CwtSource, SchemaPack, cwt_schema_id_from_dir};
-
-const COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
+use super::source::{CwtSchemaId, SchemaPack, cwt_schema_id_from_dir};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CwtLoadStatus {
+	Embedded,
 	CacheHit,
 	CompiledFromSource,
 }
@@ -25,25 +24,20 @@ pub(crate) struct CwtLoad {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CwtLoadTimings {
-	pub(crate) source_hash: Duration,
+	pub(crate) source_hash: Option<Duration>,
 	pub(crate) cache_read: Option<Duration>,
 	pub(crate) source_compile: Option<Duration>,
 	pub(crate) total: Duration,
 }
 
-pub(crate) fn default_cwt_cache_dir() -> PathBuf {
-	crate::platform::cache_store::default_foch_cache_dir().join(COMPILED_RULE_CACHE_DIR_NAME)
-}
-
 pub(crate) fn load_cwt_from_dir(
 	root: &Path,
-	source: CwtSource,
 	cache_dir: Option<&Path>,
 ) -> Result<CwtLoad, CwtLoadError> {
 	let total_started = Instant::now();
 	let hash_started = Instant::now();
 	let source_id = cwt_schema_id_from_dir(root)?;
-	let source_hash = hash_started.elapsed();
+	let source_hash = Some(hash_started.elapsed());
 	let source_id_hex = source_id.to_hex();
 	let cache_path = cache_dir.map(|dir| {
 		let generation = open_compiled_rule_cache_generation(dir);
@@ -71,7 +65,7 @@ pub(crate) fn load_cwt_from_dir(
 	}
 
 	let compile_started = Instant::now();
-	let schema_pack = SchemaPack::load_from_dir_with_id(root, source, source_id.clone())?;
+	let schema_pack = SchemaPack::load_from_dir_with_id(root, source_id.clone())?;
 	let compiled_pack = CompiledRulePack::from_schema_pack(&schema_pack);
 	let source_compile = compile_started.elapsed();
 	if let Some(path) = cache_path.as_ref() {

@@ -179,6 +179,16 @@ impl ProductMeasurementRunner {
 		cache: ProductCacheEnvironment,
 		terminal_failure_mode: TerminalFailureMode,
 	) -> io::Result<Self> {
+		// The product child runs with a cleared environment and so merges with
+		// its embedded CWT schema, while scoring in this process would read the
+		// override: the two sides would compare numbers in different spellings.
+		if let Some(dir) = foch::game::eu4::cwt_schema_override() {
+			return Err(io::Error::other(format!(
+				"{}={} is set: the product always merges with its embedded CWT schema",
+				foch::game::eu4::CWT_SCHEMA_OVERRIDE_ENV,
+				dir.display()
+			)));
+		}
 		let executable = PathBuf::from(env!("CARGO_BIN_EXE_foch"));
 		let hash = executable_hash(&executable)?;
 		let base_data_root = std::env::var_os(foch::game::eu4::base::snapshot::BASE_DATA_DIR_ENV)

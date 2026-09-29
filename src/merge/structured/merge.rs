@@ -161,7 +161,7 @@ fn merge_clausewitz_files_n_way_inner(
 		base,
 		revisions,
 		policies,
-		rule_engine(),
+		Some(rule_engine()),
 		reduce_event_fallbacks,
 		resolutions,
 	)
@@ -169,8 +169,8 @@ fn merge_clausewitz_files_n_way_inner(
 
 /// The n-way merge with its schema evidence supplied rather than looked up.
 ///
-/// The active schema is process-global, so this is also how a test exercises
-/// schema-dependent behavior without one installed.
+/// The active schema is process-global, so this is also how a test supplies a
+/// schema other than the process one, or none.
 pub fn merge_clausewitz_files_n_way_with_schema(
 	base: &AstFile,
 	revisions: &[&AstFile],
@@ -290,7 +290,7 @@ pub fn canonicalize_clausewitz_file(
 ) -> Result<AstFile, AstAdapterError> {
 	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
-	let canonical = canonicalize_for_merge(file, policies, rule_engine(), &mut scope_cache);
+	let canonical = canonicalize_for_merge(file, policies, Some(rule_engine()), &mut scope_cache);
 	let (semantic, trivia) = detach_trivia(&canonical);
 	let tree = normalize_ast(&semantic, &policy)?;
 	let mut canonical = denormalize_ast(file.path.clone(), &tree)?;
@@ -306,8 +306,8 @@ pub(crate) fn clausewitz_files_semantically_equivalent(
 ) -> Result<bool, AstAdapterError> {
 	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
-	let left = canonicalize_for_merge(left, policies, rule_engine(), &mut scope_cache);
-	let right = canonicalize_for_merge(right, policies, rule_engine(), &mut scope_cache);
+	let left = canonicalize_for_merge(left, policies, Some(rule_engine()), &mut scope_cache);
+	let right = canonicalize_for_merge(right, policies, Some(rule_engine()), &mut scope_cache);
 	let (left, _) = detach_trivia(&left);
 	let (right, _) = detach_trivia(&right);
 	let left = normalize_ast(&left, &policy)?;
@@ -345,7 +345,7 @@ pub(crate) fn normalize_clausewitz_file(
 	policies: &MergePolicies,
 ) -> Result<NormalizedTree, AstAdapterError> {
 	let mut scope_cache = HashMap::new();
-	let canonical = canonicalize_for_merge(file, policies, rule_engine(), &mut scope_cache);
+	let canonical = canonicalize_for_merge(file, policies, Some(rule_engine()), &mut scope_cache);
 	let (semantic, _) = detach_trivia(&canonical);
 	normalize_ast(&semantic, &ContentFamilyMergePolicy::new(policies))
 }
