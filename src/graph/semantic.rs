@@ -2,12 +2,12 @@ use super::model::{GraphBuildOptions, GraphBuildSummary};
 use crate::check::runtime::{
 	RuntimeState, build_runtime_state_from_input, nearest_enclosing_definition,
 };
-use crate::game::eu4::content::eu4;
+use crate::game::eu4::content::{ContentFamilyDescriptor, eu4};
 use crate::input::request::InputRequest;
 use crate::input::{ResolvedInput, resolve_input};
 use crate::model::{
-	AliasUsage, GamePath, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
-	SymbolReference,
+	AliasUsage, GamePath, GamePathBuf, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind,
+	ScopeNode, SymbolReference,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -106,7 +106,7 @@ pub(crate) struct SemanticGraphNode {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	mod_id: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	path: Option<String>,
+	path: Option<GamePathBuf>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	line: Option<usize>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -163,19 +163,21 @@ pub(crate) struct SemanticGraphArtifact {
 #[derive(Clone, Debug)]
 struct FamilyContributor {
 	mod_id: String,
-	relative_path: String,
-	absolute_path: PathBuf,
+	relative_path: GamePathBuf,
 	precedence: usize,
 	is_base_game: bool,
 	parse_ok_hint: Option<bool>,
 }
+
+/// A file of one contributor: the mod that loads it and its game path.
+type ContributorFileKey = (String, GamePathBuf);
 
 #[derive(Clone, Debug)]
 struct DefinitionSeed {
 	node_id: String,
 	label: String,
 	mod_id: String,
-	relative_path: String,
+	relative_path: GamePathBuf,
 	line: usize,
 	column: usize,
 	precedence: usize,
@@ -185,8 +187,8 @@ struct DefinitionSeed {
 
 struct ResourceReferenceContext<'a> {
 	family_id: &'a str,
-	contributor_ids: &'a HashMap<(String, String), String>,
-	resource_definition_lines: &'a HashMap<(String, String), Vec<&'a DefinitionSeed>>,
+	contributor_ids: &'a HashMap<ContributorFileKey, String>,
+	resource_definition_lines: &'a HashMap<ContributorFileKey, Vec<&'a DefinitionSeed>>,
 	best_definition_by_identity: &'a HashMap<(String, String), String>,
 	family_node_id: &'a str,
 }
@@ -209,6 +211,9 @@ pub(crate) fn run_semantic_graph_with_options(
 		.family
 		.clone()
 		.ok_or("semantic graph mode requires --family")?;
+	let family = eu4()
+		.descriptor_for_root_family(&family_id)
+		.ok_or_else(|| format!("unknown content family {family_id}"))?;
 	let _span = tracing::debug_span!("semantic_graph_run", family_id = %family_id).entered();
 	let input = run_progress_stage(
 		&family_id,
@@ -227,10 +232,10 @@ pub(crate) fn run_semantic_graph_with_options(
 	let artifact = run_progress_stage(
 		&family_id,
 		"build semantic artifact",
-		|| build_semantic_graph_artifact(&input, &state, &family_id),
+		|| build_semantic_graph_artifact(&input, &state, family),
 		summarize_artifact,
 	)?;
-	let artifact_dir = out_dir.join("semantic").join(&family_id);
+	let artifact_dir = family_artifact_dir(out_dir, family);
 	fs::create_dir_all(&artifact_dir)?;
 	let json_path = artifact_dir.join("semantic-graph.json");
 	run_progress_stage(
@@ -261,6 +266,19 @@ pub(crate) fn run_semantic_graph_with_options(
 
 fn boxed_err(message: String) -> Box<dyn std::error::Error> {
 	message.into()
+}
+
+/// The directory a family's semantic graph is written to. A family id is not
+/// a path, but it is spelled as `/`-separated names (`common/holy_orders`),
+/// and each name becomes one directory level below `semantic/`, so the id
+/// `common/holy_orders` writes to `semantic/common/holy_orders`. The id comes
+/// from the static family table, whose names are plain directory names.
+fn family_artifact_dir(out_dir: &Path, family: &ContentFamilyDescriptor) -> PathBuf {
+	family
+		.id
+		.as_str()
+		.split('/')
+		.fold(out_dir.join("semantic"), |dir, name| dir.join(name))
 }
 
 fn run_progress_stage<T, E, F, S>(
@@ -364,12 +382,9 @@ fn summarize_artifact(artifact: &SemanticGraphArtifact) -> String {
 fn build_semantic_graph_artifact(
 	input: &ResolvedInput,
 	state: &RuntimeState,
-	family_id: &str,
+	family: &ContentFamilyDescriptor,
 ) -> Result<SemanticGraphArtifact, Box<dyn std::error::Error>> {
-	let profile = eu4();
-	let Some(_descriptor) = profile.descriptor_for_root_family(family_id) else {
-		return Err(format!("unknown content family {family_id}").into());
-	};
+	let family_id = family.id.as_str();
 	let contributors = collect_family_contributors(input, family_id);
 	if contributors.is_empty() {
 		return Err(format!("no contributors found for content family {family_id}").into());
@@ -377,8 +392,11 @@ fn build_semantic_graph_artifact(
 
 	let mut nodes = BTreeMap::<String, SemanticGraphNode>::new();
 	let mut edges = BTreeMap::<(u8, String, String, String), SemanticGraphEdge>::new();
-	let mut contributor_ids = HashMap::<(String, String), String>::new();
-	let mut contributor_lookup = HashMap::<(String, String), &FamilyContributor>::new();
+	// Lookups are keyed by (mod id, game path). Node ids are rendered from
+	// those values once, for output; `file:{mod}:{path}` cannot be ambiguous
+	// because a game path contains no `:`.
+	let mut contributor_ids = HashMap::<ContributorFileKey, String>::new();
+	let mut contributor_lookup = HashMap::<ContributorFileKey, &FamilyContributor>::new();
 
 	let family_node_id = format!("family:{family_id}");
 	nodes.insert(
@@ -432,7 +450,7 @@ fn build_semantic_graph_artifact(
 			SemanticGraphNode {
 				id: file_node_id.clone(),
 				kind: SemanticGraphNodeKind::ContributorFile,
-				label: contributor.relative_path.clone(),
+				label: contributor.relative_path.as_str().to_string(),
 				mod_id: Some(contributor.mod_id.clone()),
 				path: Some(contributor.relative_path.clone()),
 				line: None,
@@ -468,9 +486,11 @@ fn build_semantic_graph_artifact(
 		);
 	}
 
-	let definition_seeds = collect_definition_seeds(state, family_id, &contributor_lookup);
+	let DefinitionSeeds {
+		seeds: definition_seeds,
+		symbol_seed_ids,
+	} = collect_definition_seeds(state, family_id, &contributor_lookup);
 	let mut best_definition_by_identity = HashMap::<(String, String), String>::new();
-	let mut definitions_by_file = HashMap::<(String, String), Vec<DefinitionSeed>>::new();
 	for seed in &definition_seeds {
 		let Some(file_node_id) = contributor_ids
 			.get(&(seed.mod_id.clone(), seed.relative_path.clone()))
@@ -517,10 +537,6 @@ fn build_semantic_graph_artifact(
 				sample: None,
 			},
 		);
-		definitions_by_file
-			.entry((seed.mod_id.clone(), seed.relative_path.clone()))
-			.or_default()
-			.push(seed.clone());
 		let identity = (seed.definition_key.clone(), seed.definition_value.clone());
 		match best_definition_by_identity.get(&identity) {
 			Some(existing) => {
@@ -536,10 +552,6 @@ fn build_semantic_graph_artifact(
 				best_definition_by_identity.insert(identity, seed.node_id.clone());
 			}
 		}
-	}
-
-	for seeds in definitions_by_file.values_mut() {
-		seeds.sort_by_key(|item| (item.line, item.column, item.label.clone()));
 	}
 
 	let mut override_groups = BTreeMap::<(String, String), Vec<&DefinitionSeed>>::new();
@@ -595,7 +607,7 @@ fn build_semantic_graph_artifact(
 		}
 	}
 
-	let mut resource_definition_lines = HashMap::<(String, String), Vec<&DefinitionSeed>>::new();
+	let mut resource_definition_lines = HashMap::<ContributorFileKey, Vec<&DefinitionSeed>>::new();
 	for seed in &definition_seeds {
 		resource_definition_lines
 			.entry((seed.mod_id.clone(), seed.relative_path.clone()))
@@ -610,7 +622,10 @@ fn build_semantic_graph_artifact(
 		state,
 		family_id,
 		&contributor_ids,
-		&resource_definition_lines,
+		&BlockParents {
+			symbol_seed_ids: &symbol_seed_ids,
+			resource_definition_lines: &resource_definition_lines,
+		},
 		&mut nodes,
 		&mut edges,
 	);
@@ -679,101 +694,117 @@ fn collect_family_contributors(input: &ResolvedInput, family_id: &str) -> Vec<Fa
 		for item in items {
 			contributors.push(FamilyContributor {
 				mod_id: item.mod_id.clone(),
-				relative_path: relative_path.as_str().to_string(),
-				absolute_path: item.absolute_path(),
+				relative_path: relative_path.clone(),
 				precedence: item.precedence,
 				is_base_game: item.is_base_game,
 				parse_ok_hint: item.parse_ok_hint,
 			});
 		}
 	}
-	contributors.sort_by_key(|item| {
-		(
-			item.relative_path.clone(),
-			item.precedence,
-			item.mod_id.clone(),
-			item.absolute_path.clone(),
-		)
+	// Each mod contributes a game path once. The only pair sharing (path,
+	// precedence, mod) is a synthetic base and the contributor it copies,
+	// which also share their file, so the stable sort keeps them in inventory
+	// order without consulting where either file lies on disk.
+	contributors.sort_by(|left, right| {
+		(&left.relative_path, left.precedence, &left.mod_id).cmp(&(
+			&right.relative_path,
+			right.precedence,
+			&right.mod_id,
+		))
 	});
 	contributors
+}
+
+/// The definitions of a family's contributor files, in node id order, and
+/// the node standing for each symbol definition, by its index in
+/// `semantic_index.definitions`.
+struct DefinitionSeeds {
+	seeds: Vec<DefinitionSeed>,
+	symbol_seed_ids: HashMap<usize, String>,
 }
 
 fn collect_definition_seeds(
 	state: &RuntimeState,
 	family_id: &str,
-	contributor_lookup: &HashMap<(String, String), &FamilyContributor>,
-) -> Vec<DefinitionSeed> {
+	contributor_lookup: &HashMap<ContributorFileKey, &FamilyContributor>,
+) -> DefinitionSeeds {
 	let mut seeds = BTreeMap::<String, DefinitionSeed>::new();
-	for definition in &state.semantic_index.definitions {
-		let relative_path = definition.path.as_str().to_string();
-		if !contributor_lookup.contains_key(&(definition.mod_id.clone(), relative_path.clone())) {
+	let mut symbol_seed_ids = HashMap::new();
+	for (index, definition) in state.semantic_index.definitions.iter().enumerate() {
+		let Some(contributor) =
+			contributor_lookup.get(&(definition.mod_id.clone(), definition.path.clone()))
+		else {
 			continue;
-		}
-		let precedence = contributor_lookup
-			.get(&(definition.mod_id.clone(), relative_path.clone()))
-			.map(|item| item.precedence)
-			.unwrap_or_default();
+		};
 		let seed = DefinitionSeed {
 			node_id: format!(
 				"definition:symbol:{}:{}:{}:{}:{}",
 				symbol_kind_text(definition.kind),
 				definition.mod_id,
-				relative_path,
+				definition.path,
 				definition.line,
 				definition.name
 			),
 			label: definition.name.clone(),
 			mod_id: definition.mod_id.clone(),
-			relative_path,
+			relative_path: definition.path.clone(),
 			line: definition.line,
 			column: definition.column,
-			precedence,
+			precedence: contributor.precedence,
 			definition_key: format!("symbol:{}", symbol_kind_text(definition.kind)),
 			definition_value: definition.name.clone(),
 		};
+		symbol_seed_ids.insert(index, seed.node_id.clone());
 		seeds.insert(seed.node_id.clone(), seed);
 	}
 
 	for reference in &state.semantic_index.resource_references {
-		let relative_path = reference.path.as_str().to_string();
-		if !contributor_lookup.contains_key(&(reference.mod_id.clone(), relative_path.clone())) {
+		let Some(contributor) =
+			contributor_lookup.get(&(reference.mod_id.clone(), reference.path.clone()))
+		else {
 			continue;
-		}
+		};
 		let Some(target_family) = definition_reference_family(&reference.key) else {
 			continue;
 		};
 		if target_family != family_id {
 			continue;
 		}
-		let precedence = contributor_lookup
-			.get(&(reference.mod_id.clone(), relative_path.clone()))
-			.map(|item| item.precedence)
-			.unwrap_or_default();
 		let seed = DefinitionSeed {
 			node_id: format!(
 				"definition:resource:{}:{}:{}:{}:{}",
-				reference.key, reference.mod_id, relative_path, reference.line, reference.value
+				reference.key, reference.mod_id, reference.path, reference.line, reference.value
 			),
 			label: reference.value.clone(),
 			mod_id: reference.mod_id.clone(),
-			relative_path,
+			relative_path: reference.path.clone(),
 			line: reference.line,
 			column: reference.column,
-			precedence,
+			precedence: contributor.precedence,
 			definition_key: reference.key.clone(),
 			definition_value: reference.value.clone(),
 		};
 		seeds.insert(seed.node_id.clone(), seed);
 	}
 
-	seeds.into_values().collect()
+	DefinitionSeeds {
+		seeds: seeds.into_values().collect(),
+		symbol_seed_ids,
+	}
+}
+
+/// Where a semantic block hangs: under the symbol definition enclosing it,
+/// else under the nearest resource definition above it in its file.
+struct BlockParents<'a> {
+	symbol_seed_ids: &'a HashMap<usize, String>,
+	resource_definition_lines: &'a HashMap<ContributorFileKey, Vec<&'a DefinitionSeed>>,
 }
 
 fn build_block_nodes(
 	state: &RuntimeState,
 	family_id: &str,
-	contributor_ids: &HashMap<(String, String), String>,
-	resource_definition_lines: &HashMap<(String, String), Vec<&DefinitionSeed>>,
+	contributor_ids: &HashMap<ContributorFileKey, String>,
+	parents: &BlockParents<'_>,
 	nodes: &mut BTreeMap<String, SemanticGraphNode>,
 	edges: &mut BTreeMap<(u8, String, String, String), SemanticGraphEdge>,
 ) -> HashMap<usize, String> {
@@ -782,7 +813,6 @@ fn build_block_nodes(
 		if scope.kind == ScopeKind::File {
 			continue;
 		}
-		let relative_path = scope.path.as_str().to_string();
 		let profile = eu4();
 		let Some(fid) = profile.family_id_for(&scope.path) else {
 			continue;
@@ -791,14 +821,14 @@ fn build_block_nodes(
 			continue;
 		}
 		let Some(file_node_id) = contributor_ids
-			.get(&(scope.mod_id.clone(), relative_path.clone()))
+			.get(&(scope.mod_id.clone(), scope.path.clone()))
 			.cloned()
 		else {
 			continue;
 		};
-		let node_id = format!("block:{}:{}:{}", scope.mod_id, relative_path, scope.id);
-		let parent_id = definition_parent_for_scope(state, scope, resource_definition_lines, nodes)
-			.unwrap_or(file_node_id);
+		let node_id = format!("block:{}:{}:{}", scope.mod_id, scope.path, scope.id);
+		let parent_id =
+			definition_parent_for_scope(state, scope, parents, nodes).unwrap_or(file_node_id);
 		nodes.insert(
 			node_id.clone(),
 			SemanticGraphNode {
@@ -806,7 +836,7 @@ fn build_block_nodes(
 				kind: SemanticGraphNodeKind::SemanticBlock,
 				label: format!("{} @ {}", scope_kind_text(scope.kind), scope.span.line),
 				mod_id: Some(scope.mod_id.clone()),
-				path: Some(relative_path.clone()),
+				path: Some(scope.path.clone()),
 				line: Some(scope.span.line),
 				column: Some(scope.span.column),
 				precedence: nodes.get(&parent_id).and_then(|item| item.precedence),
@@ -846,29 +876,19 @@ fn build_block_nodes(
 fn definition_parent_for_scope(
 	state: &RuntimeState,
 	scope: &ScopeNode,
-	resource_definition_lines: &HashMap<(String, String), Vec<&DefinitionSeed>>,
+	parents: &BlockParents<'_>,
 	nodes: &BTreeMap<String, SemanticGraphNode>,
 ) -> Option<String> {
 	if let Some(def_idx) = nearest_enclosing_definition(state, scope.id)
-		&& let Some(definition) = state.semantic_index.definitions.get(def_idx)
+		&& let Some(node_id) = parents.symbol_seed_ids.get(&def_idx)
+		&& nodes.contains_key(node_id)
 	{
-		let relative_path = definition.path.as_str().to_string();
-		let node_id = format!(
-			"definition:symbol:{}:{}:{}:{}:{}",
-			symbol_kind_text(definition.kind),
-			definition.mod_id,
-			relative_path,
-			definition.line,
-			definition.name
-		);
-		if nodes.contains_key(&node_id) {
-			return Some(node_id);
-		}
+		return Some(node_id.clone());
 	}
 
-	let relative_path = scope.path.as_str().to_string();
-	resource_definition_lines
-		.get(&(scope.mod_id.clone(), relative_path))
+	parents
+		.resource_definition_lines
+		.get(&(scope.mod_id.clone(), scope.path.clone()))
 		.and_then(|items| {
 			items
 				.iter()
@@ -881,7 +901,7 @@ fn definition_parent_for_scope(
 fn attach_scalar_assignments(
 	state: &RuntimeState,
 	family_id: &str,
-	contributor_ids: &HashMap<(String, String), String>,
+	contributor_ids: &HashMap<ContributorFileKey, String>,
 	block_attachments: &HashMap<usize, String>,
 	nodes: &mut BTreeMap<String, SemanticGraphNode>,
 ) {
@@ -902,7 +922,7 @@ fn attach_scalar_assignments(
 fn attach_key_usages(
 	state: &RuntimeState,
 	family_id: &str,
-	contributor_ids: &HashMap<(String, String), String>,
+	contributor_ids: &HashMap<ContributorFileKey, String>,
 	block_attachments: &HashMap<usize, String>,
 	nodes: &mut BTreeMap<String, SemanticGraphNode>,
 ) {
@@ -923,7 +943,7 @@ fn attach_key_usages(
 fn attach_alias_usages(
 	state: &RuntimeState,
 	family_id: &str,
-	contributor_ids: &HashMap<(String, String), String>,
+	contributor_ids: &HashMap<ContributorFileKey, String>,
 	block_attachments: &HashMap<usize, String>,
 	nodes: &mut BTreeMap<String, SemanticGraphNode>,
 ) {
@@ -944,7 +964,7 @@ fn attach_alias_usages(
 fn attach_symbol_references(
 	state: &RuntimeState,
 	family_id: &str,
-	contributor_ids: &HashMap<(String, String), String>,
+	contributor_ids: &HashMap<ContributorFileKey, String>,
 	block_attachments: &HashMap<usize, String>,
 	nodes: &mut BTreeMap<String, SemanticGraphNode>,
 ) {
@@ -967,10 +987,9 @@ fn attachment_node_for_scoped_item(
 	path: &GamePath,
 	scope_id: usize,
 	family_id: &str,
-	contributor_ids: &HashMap<(String, String), String>,
+	contributor_ids: &HashMap<ContributorFileKey, String>,
 	block_attachments: &HashMap<usize, String>,
 ) -> Option<String> {
-	let relative_path = path.as_str().to_string();
 	let profile = eu4();
 	let fid = profile.family_id_for(path)?;
 	if fid != family_id {
@@ -980,7 +999,7 @@ fn attachment_node_for_scoped_item(
 		return Some(node_id.clone());
 	}
 	contributor_ids
-		.get(&(mod_id.to_string(), relative_path))
+		.get(&(mod_id.to_string(), path.to_owned()))
 		.cloned()
 }
 
@@ -993,10 +1012,9 @@ fn attach_resource_references(
 	let mut aggregate_edges =
 		HashMap::<(SemanticGraphEdgeKind, String, String), (usize, String)>::new();
 	for item in &state.semantic_index.resource_references {
-		let relative_path = item.path.as_str().to_string();
 		let Some(file_node_id) = ctx
 			.contributor_ids
-			.get(&(item.mod_id.clone(), relative_path.clone()))
+			.get(&(item.mod_id.clone(), item.path.clone()))
 			.cloned()
 		else {
 			continue;
@@ -1102,11 +1120,10 @@ fn attach_resource_references(
 fn resource_reference_source_node(
 	item: &ResourceReference,
 	file_node_id: &str,
-	resource_definition_lines: &HashMap<(String, String), Vec<&DefinitionSeed>>,
+	resource_definition_lines: &HashMap<ContributorFileKey, Vec<&DefinitionSeed>>,
 ) -> String {
-	let relative_path = item.path.as_str().to_string();
 	resource_definition_lines
-		.get(&(item.mod_id.clone(), relative_path))
+		.get(&(item.mod_id.clone(), item.path.clone()))
 		.and_then(|items| {
 			items
 				.iter()
@@ -1400,7 +1417,7 @@ fn insert_edge(
 	edges.insert(key, edge);
 }
 
-fn contributor_file_node_id(mod_id: &str, relative_path: &str) -> String {
+fn contributor_file_node_id(mod_id: &str, relative_path: &GamePath) -> String {
 	format!("file:{mod_id}:{relative_path}")
 }
 
@@ -1882,12 +1899,180 @@ mod tests {
 		);
 	}
 
+	fn holy_orders() -> &'static ContentFamilyDescriptor {
+		eu4()
+			.descriptor_for_root_family("common/holy_orders")
+			.expect("holy orders family")
+	}
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn contributor(
+		mod_id: &str,
+		root: &str,
+		path: &GamePathBuf,
+		precedence: usize,
+	) -> ResolvedInputContributor {
+		ResolvedInputContributor {
+			mod_id: mod_id.to_string(),
+			root_path: PathBuf::from(root),
+			relative_path: path.clone(),
+			precedence,
+			is_base_game: false,
+			is_synthetic_base: false,
+			parse_ok_hint: None,
+			mod_hash: None,
+		}
+	}
+
+	#[test]
+	fn family_artifacts_are_written_one_directory_level_per_family_id_name() {
+		let out = Path::new("graphs");
+		assert_eq!(
+			family_artifact_dir(out, holy_orders()),
+			out.join("semantic").join("common").join("holy_orders")
+		);
+		for family in crate::game::eu4::content::eu4_content_families() {
+			let dir = family_artifact_dir(out, family);
+			let below = dir
+				.strip_prefix(out.join("semantic"))
+				.unwrap_or_else(|_| panic!("{} escapes semantic/", family.id.as_str()));
+			assert!(
+				below
+					.components()
+					.all(|component| matches!(component, std::path::Component::Normal(_))),
+				"{} is not a plain directory under semantic/",
+				family.id.as_str()
+			);
+			assert_eq!(
+				below.components().count(),
+				family.id.as_str().split('/').count(),
+				"{}",
+				family.id.as_str()
+			);
+		}
+	}
+
+	#[test]
+	fn family_contributors_are_ordered_by_game_path_precedence_and_mod() {
+		let extra = game_path("common/holy_orders/extra.txt");
+		let mut input = test_input();
+		// A synthetic base copies its seed contributor, file included, at
+		// precedence 0, so the two are the same family contributor and their
+		// relative order is not observable. The roots are spelled so their
+		// disk order is the reverse of the mod order, which must not decide.
+		let mut synthetic = contributor("mod:b", "/z", &extra, 0);
+		synthetic.is_synthetic_base = true;
+		input.file_inventory.insert(
+			extra.clone(),
+			vec![
+				synthetic,
+				contributor("mod:b", "/z", &extra, 0),
+				contributor("mod:c", "/a", &extra, 2),
+				contributor("mod:a", "/y", &extra, 2),
+			],
+		);
+		let elsewhere = game_path("common/ideas/elsewhere.txt");
+		input.file_inventory.insert(
+			elsewhere.clone(),
+			vec![contributor("mod:a", "/y", &elsewhere, 1)],
+		);
+
+		let order = collect_family_contributors(&input, "common/holy_orders")
+			.into_iter()
+			.map(|item| {
+				(
+					item.relative_path.as_str().to_string(),
+					item.precedence,
+					item.mod_id,
+				)
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(
+			order,
+			[
+				(
+					"common/holy_orders/extra.txt".to_string(),
+					0,
+					"mod:b".to_string()
+				),
+				(
+					"common/holy_orders/extra.txt".to_string(),
+					0,
+					"mod:b".to_string()
+				),
+				(
+					"common/holy_orders/extra.txt".to_string(),
+					2,
+					"mod:a".to_string()
+				),
+				(
+					"common/holy_orders/extra.txt".to_string(),
+					2,
+					"mod:c".to_string()
+				),
+				(
+					"common/holy_orders/orders.txt".to_string(),
+					0,
+					"base:eu4".to_string()
+				),
+				(
+					"common/holy_orders/orders.txt".to_string(),
+					1,
+					"mod:test".to_string()
+				),
+			]
+		);
+	}
+
+	#[test]
+	fn blocks_hang_under_the_symbol_definition_that_encloses_them() {
+		let input = test_input();
+		let mut state = test_runtime_state();
+		state
+			.semantic_index
+			.definitions
+			.push(crate::model::SymbolDefinition {
+				kind: crate::model::SymbolKind::ScriptedEffect,
+				name: "order_effect".to_string(),
+				module: String::new(),
+				local_name: "order_effect".to_string(),
+				mod_id: "mod:test".to_string(),
+				path: game_path("common/holy_orders/orders.txt"),
+				line: 2,
+				column: 1,
+				scope_id: 0,
+				declared_this_type: MaybeScope::Unknown,
+				inferred_this_type: MaybeScope::Unknown,
+				inferred_this_mask: crate::model::ScopeSet::EMPTY,
+				inferred_from_mask: crate::model::ScopeSet::EMPTY,
+				inferred_root_mask: crate::model::ScopeSet::EMPTY,
+				required_params: Vec::new(),
+				optional_params: Vec::new(),
+				param_contract: None,
+				scope_param_names: Vec::new(),
+			});
+		state.scope_definition_map.insert(0, vec![0]);
+
+		let artifact =
+			build_semantic_graph_artifact(&input, &state, holy_orders()).expect("artifact");
+		let definition = "definition:symbol:scripted_effect:mod:test:common/holy_orders/orders.txt:2:order_effect";
+		assert!(artifact.nodes.iter().any(|node| node.id == definition));
+		assert!(artifact.edges.iter().any(|edge| {
+			edge.kind == SemanticGraphEdgeKind::Contains
+				&& edge.from == definition
+				&& edge.to == "block:mod:test:common/holy_orders/orders.txt:1"
+		}));
+	}
+
 	#[test]
 	fn builder_keeps_definition_trunk_but_prunes_unreferenced_block_details() {
 		let input = test_input();
 		let state = test_runtime_state();
 		let artifact =
-			build_semantic_graph_artifact(&input, &state, "common/holy_orders").expect("artifact");
+			build_semantic_graph_artifact(&input, &state, holy_orders()).expect("artifact");
 		let family = artifact
 			.nodes
 			.iter()
@@ -1925,7 +2110,7 @@ mod tests {
 		let input = test_input();
 		let state = test_runtime_state();
 		let artifact =
-			build_semantic_graph_artifact(&input, &state, "common/holy_orders").expect("artifact");
+			build_semantic_graph_artifact(&input, &state, holy_orders()).expect("artifact");
 		let html = render_semantic_graph_html(&artifact).expect("html");
 		assert!(html.contains("const state = {"));
 		assert!(html.contains(":root {"));

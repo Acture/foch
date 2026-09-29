@@ -181,7 +181,7 @@ fn unit_view(unit: &foch::merge::MergeUnitOutcome) -> MergeUnitDetail {
 	let contributor_count = unit.contributors.len();
 	MergeUnitDetail {
 		id: unit.id.clone(),
-		path: unit.path.to_string(),
+		path: unit.path.as_str().to_owned(),
 		family: bounded_text(&unit.family, MAX_SHORT_TEXT_CHARS),
 		kind: match unit.kind {
 			foch::merge::MergeUnitKind::File => MergeUnitKind::File,

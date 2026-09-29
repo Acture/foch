@@ -7,7 +7,7 @@ use walkdir::WalkDir;
 
 #[derive(Debug, Serialize)]
 struct SymbolLocation {
-	path: String,
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	mod_id: String,
@@ -118,16 +118,21 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 		if !dir.is_dir() {
 			continue;
 		}
-		for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
+		for entry in WalkDir::new(dir) {
+			let entry = entry.unwrap_or_else(|error| {
+				eprintln!("walk failed: {error}");
+				std::process::exit(1);
+			});
 			if !entry.file_type().is_file() {
 				continue;
 			}
 			let path = entry.path();
-			let Some(ext) = path.extension() else {
-				continue;
-			};
-			let ext = ext.to_string_lossy();
-			if matches!(ext.to_ascii_lowercase().as_str(), "txt" | "lua") {
+			if path
+				.extension()
+				.and_then(|ext| ext.to_str())
+				.is_some_and(|ext| {
+					ext.eq_ignore_ascii_case("txt") || ext.eq_ignore_ascii_case("lua")
+				}) {
 				files.push(path.to_path_buf());
 			}
 		}
@@ -153,7 +158,7 @@ fn build_symbol_entries(index: &SemanticIndex) -> Vec<SymbolEntry> {
 		let mut locations: Vec<SymbolLocation> = defs
 			.iter()
 			.map(|d| SymbolLocation {
-				path: d.path.to_string(),
+				path: d.path.clone(),
 				line: d.line,
 				column: d.column,
 				mod_id: d.mod_id.clone(),

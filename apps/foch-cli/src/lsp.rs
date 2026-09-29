@@ -8,7 +8,7 @@ use foch::game::eu4::editor::schema::{
 	SchemaDiagnostic as EditorSchemaDiagnostic, SchemaDocument, SchemaHover, SchemaLoadStatus,
 	SchemaWorkspace,
 };
-use foch::game::eu4::editor::workspace::WorkspaceSession;
+use foch::game::eu4::editor::workspace::{WorkspaceFiles, WorkspaceSession};
 use foch::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_statements,
 };
@@ -20,7 +20,7 @@ use foch::input::{
 	Config, InputRequest, InputSource, InputTargetRole, load_or_init_config, resolve_input_targets,
 };
 use foch::model::{
-	AnalysisMode, DocumentFamily, DocumentRecord, Finding, GamePath, GamePathBuf,
+	AnalysisMode, DocumentFamily, DocumentRecord, Finding, GamePath, GamePathBuf, GamePathError,
 	LocalisationDefinition, SemanticIndex, Severity, SymbolDefinition,
 	SymbolKind as FochSymbolKind,
 };
@@ -74,7 +74,10 @@ struct WorkspaceSnapshot {
 	candidates: Vec<CompletionCandidate>,
 	schema_workspace: SchemaWorkspace,
 	session: Option<WorkspaceSession>,
-	diagnostics_by_path: HashMap<String, Vec<Diagnostic>>,
+	/// Diagnostics by the physical file they belong to.
+	diagnostics_by_path: HashMap<PathBuf, Vec<Diagnostic>>,
+	/// What the scan could not index, for the client's log.
+	warnings: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -140,6 +143,11 @@ impl Backend {
 				let mut state = self.state.write().await;
 				state.workspace = Some(snapshot.clone());
 				drop(state);
+				for warning in &snapshot.warnings {
+					client
+						.log_message(MessageType::WARNING, warning.clone())
+						.await;
+				}
 				self.publish_workspace_diagnostics(snapshot.as_ref()).await;
 				client
 					.log_message(
@@ -171,10 +179,9 @@ impl Backend {
 			let Some(uri) = Url::from_file_path(path).ok() else {
 				continue;
 			};
-			let key = normalize_path(path);
 			let diagnostics = snapshot
 				.diagnostics_by_path
-				.get(&key)
+				.get(path)
 				.cloned()
 				.unwrap_or_default();
 			self.client
@@ -193,44 +200,56 @@ impl Backend {
 			(state.workspace.clone(), state.targets.clone())
 		};
 		let schema = self.schema.read().await.clone();
-		// Schema features need the document's game path; a name without one
-		// gets none.
-		let relative_path = match_scan_target(&targets, &path)
-			.and_then(|(_, relative)| GamePathBuf::from_native_relative(&relative).ok());
-		let mut diagnostics = snapshot
-			.as_ref()
-			.and_then(|snapshot| {
-				snapshot
-					.diagnostics_by_path
-					.get(&normalize_path(&path))
-					.cloned()
-			})
-			.unwrap_or_default();
-		diagnostics.extend(parse_diagnostics_for_text(&path, text));
-		if let (Some(schema), Some(relative_path)) = (schema.as_ref(), relative_path.as_ref()) {
-			diagnostics.extend(schema_diagnostics_for_text_with_index(
-				schema,
-				relative_path,
-				text,
-				snapshot.as_ref().map(|snapshot| &snapshot.schema_workspace),
-			));
-			if let Some(session) = snapshot
-				.as_ref()
-				.and_then(|snapshot| snapshot.session.as_ref())
-			{
-				diagnostics.extend(schema_localisation_diagnostics_for_text(
-					schema,
-					relative_path,
-					text,
-					&session.index.localisation_definitions,
-				));
-			}
-		}
-		sort_and_dedup_diagnostics(&mut diagnostics);
+		let diagnostics =
+			document_diagnostics(&path, text, snapshot.as_deref(), &targets, schema.as_ref());
 		self.client
 			.publish_diagnostics(uri.clone(), diagnostics, None)
 			.await;
 	}
+}
+
+/// Every diagnostic an open document gets: what the workspace scan found for
+/// its file, its parse issues, and the schema's findings for its game path.
+fn document_diagnostics(
+	path: &Path,
+	text: &str,
+	snapshot: Option<&WorkspaceSnapshot>,
+	targets: &[ScanTarget],
+	schema: Option<&EditorSchema>,
+) -> Vec<Diagnostic> {
+	let mut diagnostics = snapshot
+		.and_then(|snapshot| snapshot.diagnostics_by_path.get(path).cloned())
+		.unwrap_or_default();
+	diagnostics.extend(parse_diagnostics_for_text(path, text));
+	// Schema features need the document's game path. A document under a
+	// scan root whose name has none is told so instead of silently
+	// losing them.
+	let relative_path = match match_scan_target(targets, path) {
+		Some((_, Ok(relative_path))) => Some(relative_path),
+		Some((_, Err(error))) => {
+			diagnostics.push(unportable_path_diagnostic(&error));
+			None
+		}
+		None => None,
+	};
+	if let (Some(schema), Some(relative_path)) = (schema, relative_path.as_ref()) {
+		diagnostics.extend(schema_diagnostics_for_text_with_index(
+			schema,
+			relative_path,
+			text,
+			snapshot.map(|snapshot| &snapshot.schema_workspace),
+		));
+		if let Some(session) = snapshot.and_then(|snapshot| snapshot.session.as_ref()) {
+			diagnostics.extend(schema_localisation_diagnostics_for_text(
+				schema,
+				relative_path,
+				text,
+				&session.index.localisation_definitions,
+			));
+		}
+	}
+	sort_and_dedup_diagnostics(&mut diagnostics);
+	diagnostics
 }
 
 #[tower_lsp::async_trait]
@@ -384,10 +403,8 @@ impl LanguageServer for Backend {
 			Ok(path) => path,
 			Err(_) => return Ok(None),
 		};
-		let Some((_, relative_path)) = match_scan_target(&targets, &path) else {
-			return Ok(None);
-		};
-		let Ok(relative_path) = GamePathBuf::from_native_relative(&relative_path) else {
+		// A document without a game path was told so by its diagnostics.
+		let Some((_, Ok(relative_path))) = match_scan_target(&targets, &path) else {
 			return Ok(None);
 		};
 		Ok(schema_hover(
@@ -411,8 +428,7 @@ impl LanguageServer for Backend {
 
 		let mut candidates = if let Some(schema) = schema.as_ref()
 			&& let Ok(path) = uri.to_file_path()
-			&& let Some((_, relative_path)) = match_scan_target(&state.targets, &path)
-			&& let Ok(relative_path) = GamePathBuf::from_native_relative(&relative_path)
+			&& let Some((_, Ok(relative_path))) = match_scan_target(&state.targets, &path)
 			&& let Some(candidates) = schema_completion_candidates_with_index(
 				schema,
 				&relative_path,
@@ -781,46 +797,50 @@ fn build_workspace_snapshot_with_schema(
 ) -> WorkspaceSnapshot {
 	let mut parsed = Vec::new();
 	let mut file_paths = Vec::new();
-	let mut path_lookup = HashMap::new();
+	let mut files = WorkspaceFiles::default();
 	let mut localisation_definitions = Vec::new();
-	for target in roots {
-		let files = collect_semantic_script_files(&target.path);
-		let mod_id = scan_target_mod_id(target);
-		for file in files {
-			// A file without a game path under its root cannot be indexed; it
-			// is reported the way unreadable localisation is.
+	let mut unportable = Vec::<(PathBuf, GamePathError)>::new();
+	let mut warnings = Vec::new();
+	for (ordinal, target) in roots.iter().enumerate() {
+		let mod_id = scan_target_mod_id(ordinal, target);
+		for file in collect_semantic_script_files(&target.path, &mut warnings) {
+			// A file whose name has no game path cannot be indexed; its
+			// document carries a diagnostic saying why.
 			let relative = match GamePathBuf::from_physical(&target.path, &file) {
 				Ok(relative) => relative,
-				Err(err) => {
-					eprintln!("foch lsp: skipping {}: {err}", file.display());
+				Err(error) => {
+					warnings.push(format!(
+						"foch lsp: not indexing {}: {error}",
+						file.display()
+					));
+					file_paths.push(file.clone());
+					unportable.push((file, error));
 					continue;
 				}
 			};
 			let item = parse_script_file(&mod_id, &target.path, &relative);
 			file_paths.push(file.clone());
-			path_lookup.insert(
-				path_lookup_key(&item.mod_id, &item.relative_path.to_path("")),
-				file,
-			);
+			if let Err(conflict) = files.insert(&item.mod_id, item.relative_path.clone(), file) {
+				warnings.push(format!("foch lsp: {conflict}"));
+			}
 			parsed.push(item);
 		}
 		let definitions = match collect_localisation_definitions(&mod_id, &target.path) {
 			Ok(definitions) => definitions,
 			Err(err) => {
-				eprintln!(
-					"foch lsp: skipping localisation under {}: {err}",
+				warnings.push(format!(
+					"foch lsp: not indexing localisation under {}: {err}",
 					target.path.display()
-				);
+				));
 				Vec::new()
 			}
 		};
 		for definition in &definitions {
 			let path = definition.path.to_path(&target.path);
 			file_paths.push(path.clone());
-			path_lookup.insert(
-				path_lookup_key(&definition.mod_id, &definition.path.to_path("")),
-				path,
-			);
+			if let Err(conflict) = files.insert(&definition.mod_id, definition.path.clone(), path) {
+				warnings.push(format!("foch lsp: {conflict}"));
+			}
 		}
 		localisation_definitions.extend(definitions);
 	}
@@ -828,10 +848,7 @@ fn build_workspace_snapshot_with_schema(
 	let mut index = build_semantic_index(&parsed);
 	let mut localisation_documents = HashSet::new();
 	for definition in &localisation_definitions {
-		if localisation_documents.insert(path_lookup_key(
-			&definition.mod_id,
-			&definition.path.to_path(""),
-		)) {
+		if localisation_documents.insert((definition.mod_id.clone(), definition.path.clone())) {
 			index.documents.push(DocumentRecord {
 				mod_id: definition.mod_id.clone(),
 				path: definition.path.clone(),
@@ -920,7 +937,13 @@ fn build_workspace_snapshot_with_schema(
 			schema.workspace(&documents)
 		})
 		.unwrap_or_default();
-	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
+	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &files, &findings);
+	for (file, error) in &unportable {
+		diagnostics_by_path
+			.entry(file.clone())
+			.or_default()
+			.push(unportable_path_diagnostic(error));
+	}
 	if let Some(schema) = schema.as_ref() {
 		for file in &parsed {
 			let schema_path = &file.relative_path;
@@ -948,7 +971,7 @@ fn build_workspace_snapshot_with_schema(
 				.chain(localisation_diagnostics)
 				.collect::<Vec<_>>();
 			diagnostics_by_path
-				.entry(normalize_path(physical))
+				.entry(physical.to_path_buf())
 				.or_default()
 				.extend(diagnostics);
 		}
@@ -957,30 +980,30 @@ fn build_workspace_snapshot_with_schema(
 		}
 	}
 
-	let session = WorkspaceSession::from_analysis(index, file_paths, path_lookup, findings);
+	let session = WorkspaceSession::from_analysis(index, file_paths, files, findings);
 
 	WorkspaceSnapshot {
 		candidates,
 		schema_workspace,
 		diagnostics_by_path,
+		warnings,
 		session: Some(session),
 	}
 }
 
 fn build_workspace_diagnostics(
 	index: &SemanticIndex,
-	path_lookup: &HashMap<String, PathBuf>,
+	files: &WorkspaceFiles,
 	findings: &[Finding],
-) -> HashMap<String, Vec<Diagnostic>> {
-	let mut diagnostics_by_path = HashMap::<String, Vec<Diagnostic>>::new();
+) -> HashMap<PathBuf, Vec<Diagnostic>> {
+	let mut diagnostics_by_path = HashMap::<PathBuf, Vec<Diagnostic>>::new();
 
 	for issue in &index.parse_issues {
-		let Some(path) = path_lookup.get(&path_lookup_key(&issue.mod_id, &issue.path.to_path("")))
-		else {
+		let Some(path) = files.get(&issue.mod_id, &issue.path) else {
 			continue;
 		};
 		diagnostics_by_path
-			.entry(normalize_path(path))
+			.entry(path.to_path_buf())
 			.or_default()
 			.push(parse_issue_to_diagnostic(
 				issue.line,
@@ -996,12 +1019,11 @@ fn build_workspace_diagnostics(
 		let Some(mod_id) = finding.mod_id.as_deref() else {
 			continue;
 		};
-		let Some(path) = path_lookup.get(&path_lookup_key(mod_id, &relative_path.to_path("")))
-		else {
+		let Some(path) = files.get(mod_id, relative_path) else {
 			continue;
 		};
 		diagnostics_by_path
-			.entry(normalize_path(path))
+			.entry(path.to_path_buf())
 			.or_default()
 			.push(finding_to_diagnostic(finding));
 	}
@@ -1024,20 +1046,32 @@ fn sort_and_dedup_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
 	});
 }
 
-fn scan_target_mod_id(target: &ScanTarget) -> String {
+/// The mod id the scan target at `ordinal` is indexed under. A UTF-8 root
+/// is spelled exactly, so finding evidence names the folder; a root that is
+/// not UTF-8 is named by its position instead of a lossy spelling that
+/// another root could share. An absolute root never starts with `#`.
+fn scan_target_mod_id(ordinal: usize, target: &ScanTarget) -> String {
 	let role = match target.role {
 		TargetRole::Game => "game",
 		TargetRole::Mod => "mod",
 	};
-	format!("__lsp_{role}__{}", normalize_path(&target.path))
+	match target.path.to_str() {
+		Some(root) => format!("__lsp_{role}__{root}"),
+		None => format!("__lsp_{role}__#{ordinal}"),
+	}
 }
 
-fn path_lookup_key(mod_id: &str, relative_path: &Path) -> String {
-	format!("{mod_id}|{}", normalize_path(relative_path))
-}
-
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
+/// The diagnostic a document gets when its name has no game path, so it is
+/// neither indexed nor matched against the schema.
+fn unportable_path_diagnostic(error: &GamePathError) -> Diagnostic {
+	Diagnostic {
+		range: lsp_range(1, 1),
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("unportable-path".to_string())),
+		source: Some("foch".to_string()),
+		message: format!("this file is not analyzed: {error}"),
+		..Diagnostic::default()
+	}
 }
 
 fn collect_workspace_flag_values(index: &SemanticIndex) -> Vec<(&'static str, String)> {
@@ -1218,7 +1252,10 @@ fn resolve_definition_locations(
 ) -> Option<Vec<Location>> {
 	let session = snapshot.session.as_ref()?;
 	let path = uri.to_file_path().ok()?;
-	let (_, relative_path) = match_scan_target(targets, &path)?;
+	// A document without a game path was told so by its diagnostics.
+	let (_, Ok(relative_path)) = match_scan_target(targets, &path)? else {
+		return None;
+	};
 	let line = text.lines().nth(position.line as usize)?;
 	let cursor = position.character as usize;
 	let (token, _token_start, _) = extract_token_at_cursor(line, cursor)?;
@@ -1229,7 +1266,7 @@ fn resolve_definition_locations(
 	if !on_value_side && cursor >= key_start && cursor <= key_end {
 		let current_column = key_start + 1;
 		for reference in &session.index.references {
-			if reference.path.to_path("") != relative_path
+			if reference.path != relative_path
 				|| reference.line != position.line as usize + 1
 				|| reference.column != current_column
 				|| reference.name != assignment_key
@@ -1241,7 +1278,7 @@ fn resolve_definition_locations(
 					&& let Some(location) = definition_location(
 						session,
 						&definition.mod_id,
-						&definition.path.to_path(""),
+						&definition.path,
 						definition.line,
 						definition.column,
 					) {
@@ -1255,7 +1292,7 @@ fn resolve_definition_locations(
 				if let Some(location) = definition_location(
 					session,
 					&definition.mod_id,
-					&definition.path.to_path(""),
+					&definition.path,
 					definition.line,
 					definition.column,
 				) {
@@ -1270,7 +1307,7 @@ fn resolve_definition_locations(
 				if let Some(location) = definition_location(
 					session,
 					&definition.mod_id,
-					&definition.path.to_path(""),
+					&definition.path,
 					definition.line,
 					definition.column,
 				) {
@@ -1288,7 +1325,7 @@ fn resolve_definition_locations(
 					if let Some(location) = definition_location(
 						session,
 						&usage.mod_id,
-						&usage.path.to_path(""),
+						&usage.path,
 						usage.line,
 						usage.column,
 					) {
@@ -1306,7 +1343,7 @@ fn resolve_definition_locations(
 					if let Some(location) = definition_location(
 						session,
 						&usage.mod_id,
-						&usage.path.to_path(""),
+						&usage.path,
 						usage.line,
 						usage.column,
 					) {
@@ -1335,7 +1372,10 @@ fn resolve_reference_locations(
 ) -> Option<Vec<Location>> {
 	let session = snapshot.session.as_ref()?;
 	let path = uri.to_file_path().ok()?;
-	let (_, relative_path) = match_scan_target(targets, &path)?;
+	// A document without a game path was told so by its diagnostics.
+	let (_, Ok(relative_path)) = match_scan_target(targets, &path)? else {
+		return None;
+	};
 	let line = text.lines().nth(position.line as usize)?;
 	let cursor = position.character as usize;
 	let (token, _token_start, _) = extract_token_at_cursor(line, cursor)?;
@@ -1367,7 +1407,7 @@ fn resolve_reference_locations(
 			if let Some(location) = definition_location(
 				session,
 				&definition.mod_id,
-				&definition.path.to_path(""),
+				&definition.path,
 				definition.line,
 				definition.column,
 			) {
@@ -1383,7 +1423,7 @@ fn resolve_reference_locations(
 			&& let Some(location) = definition_location(
 				session,
 				&reference.mod_id,
-				&reference.path.to_path(""),
+				&reference.path,
 				reference.line,
 				reference.column,
 			) {
@@ -1401,7 +1441,7 @@ fn resolve_reference_locations(
 fn symbol_target_indices_at_cursor(
 	session: &WorkspaceSession,
 	uri: &Url,
-	relative_path: &Path,
+	relative_path: &GamePath,
 	position: Position,
 	token: &str,
 	assignment: Option<&(String, usize, usize, bool)>,
@@ -1431,7 +1471,7 @@ fn symbol_target_indices_at_cursor(
 	};
 	let current_column = key_start + 1;
 	for reference in &session.index.references {
-		if reference.path.to_path("") != relative_path
+		if *reference.path != *relative_path
 			|| reference.line != line_number
 			|| reference.column != current_column
 			|| reference.name != *assignment_key
@@ -1463,7 +1503,7 @@ fn definition_matches_cursor(
 	let Some(location) = definition_location(
 		session,
 		&definition.mod_id,
-		&definition.path.to_path(""),
+		&definition.path,
 		definition.line,
 		definition.column,
 	) else {
@@ -1541,7 +1581,7 @@ fn flag_reference_locations(
 		if let Some(location) = definition_location(
 			session,
 			&usage.mod_id,
-			&usage.path.to_path(""),
+			&usage.path,
 			usage.line,
 			usage.column,
 		) {
@@ -1573,7 +1613,7 @@ fn localisation_reference_locations(
 			if let Some(location) = definition_location(
 				session,
 				&definition.mod_id,
-				&definition.path.to_path(""),
+				&definition.path,
 				definition.line,
 				definition.column,
 			) {
@@ -1588,7 +1628,7 @@ fn localisation_reference_locations(
 		if let Some(location) = definition_location(
 			session,
 			&usage.mod_id,
-			&usage.path.to_path(""),
+			&usage.path,
 			usage.line,
 			usage.column,
 		) {
@@ -1602,7 +1642,7 @@ fn localisation_reference_locations(
 		if let Some(location) = definition_location(
 			session,
 			&reference.mod_id,
-			&reference.path.to_path(""),
+			&reference.path,
 			reference.line,
 			reference.column,
 		) {
@@ -1620,7 +1660,8 @@ fn document_symbols(
 ) -> Option<Vec<SymbolInformation>> {
 	let session = snapshot.session.as_ref()?;
 	let path = uri.to_file_path().ok()?;
-	match_scan_target(targets, &path)?;
+	// Symbols are matched by URI; the document only has to lie in a scan root.
+	let (_target, _game_path) = match_scan_target(targets, &path)?;
 	let mut symbols = collect_symbol_information(session)
 		.into_iter()
 		.filter(|symbol| symbol.location.uri == *uri)
@@ -1658,7 +1699,7 @@ fn localisation_stub_code_actions(
 	let Ok(path) = params.text_document.uri.to_file_path() else {
 		return Vec::new();
 	};
-	let Some((target, _relative_path)) = match_scan_target_with_role(targets, &path) else {
+	let Some((target, _)) = match_scan_target(targets, &path) else {
 		return Vec::new();
 	};
 	if target.role != TargetRole::Mod {
@@ -1719,7 +1760,7 @@ fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformati
 		let Some(location) = definition_location(
 			session,
 			&definition.mod_id,
-			&definition.path.to_path(""),
+			&definition.path,
 			definition.line,
 			definition.column,
 		) else {
@@ -1736,7 +1777,7 @@ fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformati
 		let Some(location) = definition_location(
 			session,
 			&definition.mod_id,
-			&definition.path.to_path(""),
+			&definition.path,
 			definition.line,
 			definition.column,
 		) else {
@@ -1753,7 +1794,7 @@ fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformati
 		let Some(location) = definition_location(
 			session,
 			&definition.mod_id,
-			&definition.path.to_path(""),
+			&definition.path,
 			definition.line,
 			definition.column,
 		) else {
@@ -1830,11 +1871,11 @@ fn sort_symbol_information(symbols: &mut [SymbolInformation]) {
 fn definition_location(
 	session: &WorkspaceSession,
 	mod_id: &str,
-	relative_path: &Path,
+	relative_path: &GamePath,
 	line: usize,
 	column: usize,
 ) -> Option<Location> {
-	let absolute_path = session.resolve_path(&path_lookup_key(mod_id, relative_path))?;
+	let absolute_path = session.resolve_path(mod_id, relative_path)?;
 	let uri = Url::from_file_path(absolute_path).ok()?;
 	Some(Location {
 		uri,
@@ -1853,34 +1894,27 @@ fn dedup_locations(locations: &mut Vec<Location>) {
 	});
 }
 
-fn match_scan_target(targets: &[ScanTarget], path: &Path) -> Option<(PathBuf, PathBuf)> {
-	match_scan_target_with_role(targets, path).map(|(target, relative)| (target.path, relative))
-}
-
-fn match_scan_target_with_role(
-	targets: &[ScanTarget],
+/// The innermost scan target holding the physical file `path`, and the game
+/// path of that file under the target's root, or why its name has none.
+fn match_scan_target<'a>(
+	targets: &'a [ScanTarget],
 	path: &Path,
-) -> Option<(ScanTarget, PathBuf)> {
-	let mut best: Option<(usize, PathBuf, PathBuf)> = None;
+) -> Option<(
+	&'a ScanTarget,
+	std::result::Result<GamePathBuf, GamePathError>,
+)> {
+	let mut best: Option<(usize, &ScanTarget)> = None;
 	for target in targets {
-		let Ok(relative) = path.strip_prefix(&target.path) else {
+		if !path.starts_with(&target.path) {
 			continue;
-		};
+		}
 		let len = target.path.components().count();
-		match &best {
-			Some((best_len, ..)) if *best_len >= len => {}
-			_ => {
-				best = Some((len, target.path.clone(), relative.to_path_buf()));
-			}
+		match best {
+			Some((best_len, _)) if best_len >= len => {}
+			_ => best = Some((len, target)),
 		}
 	}
-	best.and_then(|(_, root, relative)| {
-		targets
-			.iter()
-			.find(|target| target.path == root)
-			.cloned()
-			.map(|target| (target, relative))
-	})
+	best.map(|(_, target)| (target, GamePathBuf::from_physical(&target.path, path)))
 }
 
 fn assignment_context_at_cursor(line: &str, cursor: usize) -> Option<(String, usize, usize, bool)> {
@@ -2078,18 +2112,13 @@ fn scan_targets_from_workspace(params: &InitializeParams) -> Vec<ScanTarget> {
 	dedup_scan_targets(targets)
 }
 
+/// Keeps the first target for each root; roots compare as host paths.
 fn dedup_scan_targets(targets: Vec<ScanTarget>) -> Vec<ScanTarget> {
-	let mut seen = HashMap::<String, TargetRole>::new();
-	let mut out = Vec::new();
-	for item in targets {
-		let key = item.path.to_string_lossy().replace('\\', "/");
-		if seen.contains_key(&key) {
-			continue;
-		}
-		seen.insert(key, item.role);
-		out.push(item);
-	}
-	out
+	let mut seen = HashSet::<PathBuf>::new();
+	targets
+		.into_iter()
+		.filter(|item| seen.insert(item.path.clone()))
+		.collect()
 }
 
 fn completion_from_definition(
@@ -2131,7 +2160,9 @@ fn completion_from_definition(
 	}
 }
 
-fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
+/// The script files under `root` the workspace index reads. A directory the
+/// walk cannot read is reported in `warnings`.
+fn collect_semantic_script_files(root: &Path, warnings: &mut Vec<String>) -> Vec<PathBuf> {
 	let targets = [
 		"events",
 		"decisions",
@@ -2155,16 +2186,27 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 		if !dir.is_dir() {
 			continue;
 		}
-		for entry in WalkDir::new(dir).into_iter().filter_map(|entry| entry.ok()) {
+		for entry in WalkDir::new(dir) {
+			let entry = match entry {
+				Ok(entry) => entry,
+				Err(error) => {
+					warnings.push(format!(
+						"foch lsp: not indexing under {}: {error}",
+						root.display()
+					));
+					continue;
+				}
+			};
 			if !entry.file_type().is_file() {
 				continue;
 			}
 			let path = entry.path();
-			let Some(ext) = path.extension() else {
-				continue;
-			};
-			let ext = ext.to_string_lossy();
-			if matches!(ext.to_ascii_lowercase().as_str(), "txt" | "lua") {
+			if path
+				.extension()
+				.and_then(|ext| ext.to_str())
+				.is_some_and(|ext| {
+					ext.eq_ignore_ascii_case("txt") || ext.eq_ignore_ascii_case("lua")
+				}) {
 				files.push(path.to_path_buf());
 			}
 		}
@@ -2300,20 +2342,21 @@ mod tests {
 	use super::{
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
-		detect_completion_context, document_symbols, extract_completion_prefix,
-		localisation_stub_code_actions, parse_scan_targets_json, resolve_definition_locations,
-		resolve_reference_locations, scan_targets_from_project_manifest_path,
-		schema_completion_candidate, schema_diagnostic, schema_hover_view,
-		select_completion_candidates, workspace_symbols,
+		dedup_scan_targets, detect_completion_context, document_diagnostics, document_symbols,
+		extract_completion_prefix, localisation_stub_code_actions, match_scan_target,
+		parse_scan_targets_json, resolve_definition_locations, resolve_reference_locations,
+		scan_targets_from_project_manifest_path, schema_completion_candidate, schema_diagnostic,
+		schema_hover_view, select_completion_candidates, workspace_symbols,
 	};
 	use foch::game::eu4::editor::schema::{
 		EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
 		SchemaDiagnostic as EditorSchemaDiagnostic, SchemaHover,
 	};
 	use foch::input::Config;
-	use foch::model::{Severity, test_support};
+	use foch::model::{GamePath, Severity, test_support};
+	use foch::playset::descriptor::{descriptor_path_text, escape_descriptor_value};
 	use std::fs;
-	use std::path::PathBuf;
+	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
 	use tower_lsp::lsp_types::CompletionItemKind;
 	use tower_lsp::lsp_types::{
@@ -2444,10 +2487,11 @@ mod tests {
 	#[test]
 	fn env_targets_parse_json() {
 		let tmp = TempDir::new().expect("temp dir");
-		let tmp_path = tmp.path().to_string_lossy().replace('\\', "/");
-		let json = format!(
-			r#"[{{"path":"{tmp_path}","role":"game"}},{{"path":"/nonexistent/nope","role":"mod"}}]"#
-		);
+		let json = serde_json::json!([
+			{"path": tmp.path(), "role": "game"},
+			{"path": "/nonexistent/nope", "role": "mod"},
+		])
+		.to_string();
 		let targets = parse_scan_targets_json(&json).expect("parse targets json");
 		assert!(!targets.is_empty());
 		assert_eq!(targets[0].role, TargetRole::Game);
@@ -2465,7 +2509,9 @@ mod tests {
 			mod_root.join("descriptor.mod"),
 			format!(
 				"name=\"local-mod\"\npath=\"{}\"\n",
-				mod_root.to_string_lossy().replace('\\', "/")
+				escape_descriptor_value(
+					&descriptor_path_text(&mod_root).expect("a temp directory has descriptor text")
+				)
 			),
 		)
 		.expect("write descriptor");
@@ -3028,7 +3074,7 @@ path = "local-mod"
 		let key = root.join("events").join("diagnostics.txt");
 		let diagnostics = snapshot
 			.diagnostics_by_path
-			.get(&key.to_string_lossy().replace('\\', "/"))
+			.get(&key)
 			.expect("workspace diagnostics for fixture");
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
@@ -3073,7 +3119,7 @@ path = "local-mod"
 		);
 		let diagnostics = snapshot
 			.diagnostics_by_path
-			.get(&event_path.to_string_lossy().replace('\\', "/"))
+			.get(&event_path)
 			.expect("event diagnostics");
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("missing-localisation".to_string()))
@@ -3093,12 +3139,291 @@ path = "local-mod"
 		let snapshot = build_workspace_snapshot_with_schema(&[target], Some(engine));
 		let diagnostics = snapshot
 			.diagnostics_by_path
-			.get(&event_path.to_string_lossy().replace('\\', "/"))
+			.get(&event_path)
 			.cloned()
 			.unwrap_or_default();
 		assert!(!diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("missing-localisation".to_string()))
 				&& diagnostic.message.contains("test.1_custom")
 		}));
+	}
+
+	#[test]
+	fn workspace_files_resolve_by_game_path_under_their_own_root() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let game = tmp.path().join("game");
+		let local = tmp.path().join("mod");
+		for root in [&game, &local] {
+			fs::create_dir_all(root.join("events")).expect("create events");
+			fs::write(
+				root.join("events").join("a.txt"),
+				"namespace = test\ncountry_event = { id = test.1 }\n",
+			)
+			.expect("write event");
+		}
+		let targets = [
+			ScanTarget {
+				path: game.clone(),
+				role: TargetRole::Game,
+			},
+			ScanTarget {
+				path: local.clone(),
+				role: TargetRole::Mod,
+			},
+		];
+		let snapshot = build_workspace_snapshot(&targets);
+		let session = snapshot.session.as_ref().expect("session");
+		let path = GamePath::new("events/a.txt").expect("valid game path");
+		for (ordinal, target) in targets.iter().enumerate() {
+			assert_eq!(
+				session.resolve_path(&super::scan_target_mod_id(ordinal, target), path),
+				Some(target.path.join("events").join("a.txt").as_path())
+			);
+		}
+		assert!(snapshot.warnings.is_empty(), "{:?}", snapshot.warnings);
+	}
+
+	#[test]
+	fn scan_targets_are_deduplicated_by_host_path() {
+		let targets = dedup_scan_targets(vec![
+			ScanTarget {
+				path: PathBuf::from("/mods/a"),
+				role: TargetRole::Mod,
+			},
+			ScanTarget {
+				path: PathBuf::from("/mods/a"),
+				role: TargetRole::Game,
+			},
+			ScanTarget {
+				path: PathBuf::from("/mods/b"),
+				role: TargetRole::Mod,
+			},
+		]);
+		assert_eq!(
+			targets
+				.iter()
+				.map(|target| (target.path.clone(), target.role))
+				.collect::<Vec<_>>(),
+			[
+				(PathBuf::from("/mods/a"), TargetRole::Mod),
+				(PathBuf::from("/mods/b"), TargetRole::Mod),
+			]
+		);
+	}
+
+	/// On Unix `a\b.txt` is one file name, distinct from `a/b.txt`. It has no
+	/// game path, so it must be reported rather than folded onto the nested
+	/// file or silently skipped.
+	#[cfg(unix)]
+	#[test]
+	fn a_literal_backslash_file_is_reported_not_folded_onto_the_nested_file() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		let nested = root.join("events").join("a").join("b.txt");
+		let literal = root.join("events").join("a\\b.txt");
+		fs::create_dir_all(nested.parent().expect("parent")).expect("create nested dir");
+		fs::write(
+			&nested,
+			"namespace = nested\ncountry_event = { id = nested.1 }\n",
+		)
+		.expect("write nested event");
+		fs::write(
+			&literal,
+			"namespace = literal\ncountry_event = { id = literal.1 }\n",
+		)
+		.expect("write literal event");
+		let targets = [ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}];
+
+		let snapshot = build_workspace_snapshot(&targets);
+		let session = snapshot.session.as_ref().expect("session");
+		let mod_id = super::scan_target_mod_id(0, &targets[0]);
+		assert_eq!(
+			session.resolve_path(
+				&mod_id,
+				GamePath::new("events/a/b.txt").expect("valid game path")
+			),
+			Some(nested.as_path())
+		);
+		assert!(
+			session
+				.index
+				.definitions
+				.iter()
+				.all(|definition| definition.name != "literal.1"),
+			"the unportable file is not indexed under any game path"
+		);
+		let diagnostics = snapshot
+			.diagnostics_by_path
+			.get(&literal)
+			.expect("the unportable file has a diagnostic");
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("unportable-path".to_string()))
+				&& diagnostic.message.contains("a\\b.txt")
+		}));
+		assert!(
+			session.file_paths.contains(&literal),
+			"its diagnostic is published"
+		);
+		assert!(
+			snapshot
+				.warnings
+				.iter()
+				.any(|warning| warning.contains("a\\b.txt")),
+			"{:?}",
+			snapshot.warnings
+		);
+		assert!(!snapshot.diagnostics_by_path.contains_key(&nested));
+
+		let (_, literal_path) = match_scan_target(&targets, &literal).expect("under the root");
+		assert!(literal_path.is_err());
+		let (_, nested_path) = match_scan_target(&targets, &nested).expect("under the root");
+		assert_eq!(
+			nested_path.expect("nested file has a game path").as_str(),
+			"events/a/b.txt"
+		);
+	}
+
+	/// An open document whose name has no game path is told why it gets no
+	/// schema features, once, even though the workspace scan reported the
+	/// same file too.
+	#[cfg(unix)]
+	#[test]
+	fn an_open_document_without_a_game_path_gets_one_unportable_path_diagnostic() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		let nested = root.join("events").join("a").join("b.txt");
+		let literal = root.join("events").join("a\\b.txt");
+		let text = fs::read_to_string(lsp_fixture_dir().join("events").join("diagnostics.txt"))
+			.expect("read schema-violating fixture");
+		fs::create_dir_all(nested.parent().expect("parent")).expect("create nested dir");
+		fs::write(&nested, &text).expect("write nested event");
+		fs::write(&literal, &text).expect("write literal event");
+		let targets = [ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}];
+		let schema = load_lsp_schema();
+		let snapshot = build_workspace_snapshot_with_schema(&targets, Some(schema.clone()));
+		let codes = |path: &Path| {
+			document_diagnostics(path, &text, Some(&snapshot), &targets, Some(&schema))
+				.into_iter()
+				.filter_map(|diagnostic| match diagnostic.code {
+					Some(NumberOrString::String(code)) => Some(code),
+					_ => None,
+				})
+				.collect::<Vec<_>>()
+		};
+
+		let nested_codes = codes(&nested);
+		assert!(
+			nested_codes.iter().any(|code| code == "V001"),
+			"the schema checks a document with a game path: {nested_codes:?}"
+		);
+		assert!(!nested_codes.iter().any(|code| code == "unportable-path"));
+		assert_eq!(codes(&literal), ["unportable-path"]);
+	}
+
+	/// In memory: some filesystems refuse to create a non-UTF-8 name.
+	#[cfg(unix)]
+	#[test]
+	fn a_document_whose_name_is_not_utf8_has_no_game_path() {
+		use std::ffi::OsString;
+		use std::os::unix::ffi::OsStringExt;
+
+		let targets = [ScanTarget {
+			path: PathBuf::from("/mods/a"),
+			role: TargetRole::Mod,
+		}];
+		let document =
+			PathBuf::from("/mods/a/events").join(OsString::from_vec(b"\xff.txt".to_vec()));
+		let (target, path) = match_scan_target(&targets, &document).expect("under the root");
+		assert_eq!(target.path, PathBuf::from("/mods/a"));
+		assert_eq!(
+			path.expect_err("not UTF-8").kind,
+			foch::model::GamePathErrorKind::NonUtf8
+		);
+		assert!(match_scan_target(&targets, Path::new("/mods/b/events/a.txt")).is_none());
+	}
+
+	#[test]
+	fn the_innermost_scan_target_names_a_document() {
+		let targets = [
+			ScanTarget {
+				path: PathBuf::from("/game"),
+				role: TargetRole::Game,
+			},
+			ScanTarget {
+				path: PathBuf::from("/game/mod"),
+				role: TargetRole::Mod,
+			},
+		];
+		let (target, path) =
+			match_scan_target(&targets, Path::new("/game/mod/events/a.txt")).expect("matched");
+		assert_eq!(target.role, TargetRole::Mod);
+		assert_eq!(path.expect("valid").as_str(), "events/a.txt");
+	}
+
+	#[test]
+	fn scan_target_mod_ids_spell_utf8_roots_exactly() {
+		let target = ScanTarget {
+			path: PathBuf::from("/mods/a"),
+			role: TargetRole::Mod,
+		};
+		assert_eq!(super::scan_target_mod_id(3, &target), "__lsp_mod__/mods/a");
+	}
+
+	/// On Unix `a\b` is one directory name, so the root `/mods/a\b` is a
+	/// different folder from `/mods/a/b`. Folding `\` into `/` used to drop
+	/// the second target and give both one mod id.
+	#[cfg(unix)]
+	#[test]
+	fn a_root_with_a_literal_backslash_is_its_own_scan_target_and_mod() {
+		let literal = ScanTarget {
+			path: PathBuf::from("/mods/a\\b"),
+			role: TargetRole::Mod,
+		};
+		let nested = ScanTarget {
+			path: PathBuf::from("/mods/a/b"),
+			role: TargetRole::Mod,
+		};
+		let targets = dedup_scan_targets(vec![literal.clone(), nested.clone()]);
+		assert_eq!(
+			targets
+				.iter()
+				.map(|target| target.path.clone())
+				.collect::<Vec<_>>(),
+			[literal.path.clone(), nested.path.clone()]
+		);
+		assert_ne!(
+			super::scan_target_mod_id(0, &literal),
+			super::scan_target_mod_id(1, &nested)
+		);
+	}
+
+	/// A root that is not UTF-8 is named by its position, never by a lossy
+	/// spelling another root could share.
+	#[cfg(unix)]
+	#[test]
+	fn a_non_utf8_root_is_named_by_its_position() {
+		use std::ffi::OsString;
+		use std::os::unix::ffi::OsStringExt;
+
+		let target = ScanTarget {
+			path: PathBuf::from(OsString::from_vec(b"/mods/\xff".to_vec())),
+			role: TargetRole::Mod,
+		};
+		assert_eq!(super::scan_target_mod_id(3, &target), "__lsp_mod__#3");
+		assert_eq!(super::scan_target_mod_id(4, &target), "__lsp_mod__#4");
+		let game = ScanTarget {
+			role: TargetRole::Game,
+			..target
+		};
+		assert_eq!(super::scan_target_mod_id(3, &game), "__lsp_game__#3");
 	}
 }

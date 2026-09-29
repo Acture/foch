@@ -86,10 +86,13 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 	);
 }
 
+/// `path` as a quoted descriptor value, written by the descriptor format's
+/// own encoder.
 fn descriptor_path_value(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.replace('"', "\\\"")
+	foch::playset::descriptor::escape_descriptor_value(
+		&foch::playset::descriptor::descriptor_path_text(path)
+			.expect("a fixture directory has descriptor text"),
+	)
 }
 
 fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {

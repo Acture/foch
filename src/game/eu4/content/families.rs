@@ -208,7 +208,7 @@ const GUI_TYPES_NAMED_CHILD_TYPES: &[&str] = &[
 	"cursorType",
 ];
 
-fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
+pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 	static EU4_CONTENT_FAMILIES: OnceLock<Box<[ContentFamilyDescriptor]>> = OnceLock::new();
 	ensure_base_scopes_initialized();
 	EU4_CONTENT_FAMILIES.get_or_init(|| {

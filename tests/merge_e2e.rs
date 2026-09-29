@@ -45,12 +45,13 @@ fn fixture_dir(name: &str) -> PathBuf {
 	playsets_root().join(name)
 }
 
-fn rel_path(rel: &str) -> PathBuf {
-	rel.split('/').collect()
+/// A fixture's game path, spelled in `/` syntax.
+fn game_path(rel: &str) -> &GamePath {
+	GamePath::new(rel).expect("fixture path is a game path")
 }
 
 fn expected_path(name: &str, rel: &str) -> PathBuf {
-	fixture_dir(name).join("expected").join(rel_path(rel))
+	game_path(rel).to_path(fixture_dir(name).join("expected"))
 }
 
 // Reads a fixture playset from `tests/fixtures/playsets/<name>/`,
@@ -245,8 +246,14 @@ fn copy_dir_recursive(source: &Path, destination: &Path) {
 	}
 }
 
+/// A host path as the text a foch.toml `use_file` holds.
 fn toml_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
+	path.to_str().expect("a temp path is UTF-8").to_owned()
+}
+
+/// `path` as a quoted TOML string.
+fn toml_path_value(path: &Path) -> String {
+	toml::Value::String(toml_path(path)).to_string()
 }
 
 // Recursively scans output dir and asserts every structural EU4 .txt script file
@@ -298,11 +305,11 @@ fn is_structural_text_file(root: &Path, path: &Path) -> bool {
 	let Some(Component::Normal(top)) = relative.components().next() else {
 		return false;
 	};
-	let top = top.to_string_lossy().to_ascii_lowercase();
-	matches!(
-		top.as_str(),
-		"common" | "events" | "missions" | "decisions" | "history"
-	)
+	top.to_str().is_some_and(|top| {
+		["common", "events", "missions", "decisions", "history"]
+			.iter()
+			.any(|root| top.eq_ignore_ascii_case(root))
+	})
 }
 
 fn assert_balanced_braces(path: &Path, content: &str) {
@@ -406,7 +413,7 @@ fn assert_reparses_cleanly(path: &Path) {
 // at `tests/fixtures/playsets/<name>/expected/<rel>`.
 // Honours BLESS_SNAPSHOTS=1 by copying the actual output to the expected tree.
 fn assert_matches_golden(name: &str, out_dir: &Path, rel: &str) {
-	let actual = out_dir.join(rel_path(rel));
+	let actual = game_path(rel).to_path(out_dir);
 	let expected = expected_path(name, rel);
 
 	if env::var_os("BLESS_SNAPSHOTS").is_some() {
@@ -600,11 +607,8 @@ workshop_identity = { app_id = 236850, workshop_id = "200001", manifest_id = "30
 }
 
 fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Path, rel: &str) {
-	let input = fixture_dir(name)
-		.join("mods")
-		.join(mod_name)
-		.join(rel_path(rel));
-	let actual = out_dir.join(rel_path(rel));
+	let input = game_path(rel).to_path(fixture_dir(name).join("mods").join(mod_name));
+	let actual = game_path(rel).to_path(out_dir);
 	let input_bytes = fs::read(&input)
 		.unwrap_or_else(|err| panic!("failed to read fixture input {}: {err}", input.display()));
 	let actual_bytes = fs::read(&actual)
@@ -1472,7 +1476,7 @@ fn eu4_case_insensitive_explicit_defer_is_reviewed_without_a_forced_marker() {
 
 	assert_eq!(result.report.status, MergeReportStatus::PartialSuccess);
 	assert!(
-		!out_dir.join(rel_path(target)).exists(),
+		!game_path(target).to_path(&out_dir).exists(),
 		"--force must not turn an explicit defer into a manual marker"
 	);
 }
@@ -1548,7 +1552,8 @@ handler = "DeFeR"
 		.expect("commit mixed defer analysis");
 
 	assert_eq!(result.report.status, MergeReportStatus::PartialSuccess);
-	let marker = fs::read_to_string(out_dir.join(rel_path(target))).expect("read manual marker");
+	let marker =
+		fs::read_to_string(game_path(target).to_path(&out_dir)).expect("read manual marker");
 	assert!(marker.starts_with("FOCH_MERGE_CONFLICT"));
 	assert!(marker.contains("primary_culture"));
 }
@@ -1753,9 +1758,9 @@ fn eu4_use_file_resolution_replaces_output_file_end_to_end() {
 		format!(
 			r#"[[resolutions]]
 file = "history/countries/TES - Test.txt"
-use_file = "{}"
+use_file = {}
 "#,
-			toml_path(&external_file)
+			toml_path_value(&external_file)
 		),
 	)
 	.expect("write use_file config");
@@ -1970,9 +1975,9 @@ fn eu4_conflict_id_use_file_does_not_mask_second_unresolved_leaf_conflict() {
 		format!(
 			r#"[[resolutions]]
 conflict_id = "{religion_conflict_id}"
-use_file = "{}"
+use_file = {}
 "#,
-			toml_path(&external_file)
+			toml_path_value(&external_file)
 		),
 	)
 	.expect("write conflict_id use_file config");
@@ -2023,7 +2028,7 @@ use_file = "{}"
 	);
 	assert!(
 		{
-			let output_text = fs::read_to_string(out_dir.join(rel_path(target_rel)))
+			let output_text = fs::read_to_string(game_path(target_rel).to_path(&out_dir))
 				.expect("read partial output file");
 			output_text.contains("FOCH_MERGE_CONFLICT")
 				&& output_text.contains("primary_culture")

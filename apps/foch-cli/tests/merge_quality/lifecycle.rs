@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use foch::model::{
-	MergeBackendId, MergeReport, MergeReportStatus, PRODUCT_INPUT_PROFILE, ProductInputManifest,
+	GamePath, GamePathBuf, MergeBackendId, MergeReport, MergeReportStatus, PRODUCT_INPUT_PROFILE,
+	ProductInputManifest,
 };
 use foch::playset::steam::{SteamId, WorkshopInstallIdentity};
 use serde::{Deserialize, Serialize};
@@ -150,7 +151,7 @@ struct ScorerCaseClosure {
 	/// First-run scorer inputs and compact evidence only. Workshop ACF identity
 	/// is the authoritative installation version, so this closure is not part of
 	/// input or cohort identity and is never rebuilt for cached/report reads.
-	scoring_units: Vec<String>,
+	scoring_units: Vec<GamePathBuf>,
 	base_scoring_closure_digest: String,
 }
 
@@ -640,7 +641,7 @@ fn workshop_scorer_evidence(
 	timeout: Duration,
 	base_snapshot_identity: &str,
 	base_scoring_closure_digest: &str,
-	scoring_units: &[String],
+	scoring_units: &[GamePathBuf],
 ) -> serde_json::Value {
 	serde_json::json!({
 		"scorer_version": SCORER_VERSION,
@@ -657,31 +658,21 @@ fn workshop_scorer_evidence(
 fn stored_scorer_closure(
 	evidence: &serde_json::Value,
 ) -> Result<ScorerCaseClosure, Box<dyn std::error::Error>> {
+	// Reading the units as game paths rejects any that is not one.
 	let scoring_units = evidence
 		.get("scoring_units")
 		.cloned()
 		.ok_or_else(|| "scorer evidence has no scoring units".to_string())
 		.and_then(|value| {
-			serde_json::from_value::<Vec<String>>(value)
+			serde_json::from_value::<Vec<GamePathBuf>>(value)
 				.map_err(|error| format!("invalid scorer evidence units: {error}"))
 		})?;
 	let canonical_units = scoring_units.iter().cloned().collect::<BTreeSet<_>>();
 	if scoring_units.is_empty()
 		|| canonical_units.len() != scoring_units.len()
 		|| canonical_units.iter().cloned().collect::<Vec<_>>() != scoring_units
-		|| scoring_units.iter().any(|unit| {
-			unit.is_empty()
-				|| Path::new(unit).is_absolute()
-				|| Path::new(unit).components().any(|component| {
-					matches!(
-						component,
-						Component::Prefix(_)
-							| Component::RootDir | Component::ParentDir
-							| Component::CurDir
-					)
-				})
-		}) {
-		return Err("scorer evidence units are unsafe, empty, duplicated, or unsorted".into());
+	{
+		return Err("scorer evidence units are empty, duplicated, or unsorted".into());
 	}
 	let base_scoring_closure_digest = evidence
 		.get("base_scoring_closure_digest")
@@ -1078,7 +1069,7 @@ fn validate_scorer_evidence_index(
 	bundle: &crate::merge_quality::evidence_store::StoredEvidenceBundle,
 	file_results: &[&FileResultRecord],
 	source_manifest: &ProductInputManifest,
-	expected_scoring_units: &[String],
+	expected_scoring_units: &[GamePathBuf],
 ) -> Result<(), Box<dyn std::error::Error>> {
 	if !source_manifest.digest_is_valid() {
 		return Err("scorer evidence uses an invalid ACF source manifest".into());
@@ -1098,7 +1089,7 @@ fn validate_scorer_evidence_index(
 		.collect::<BTreeSet<_>>();
 	let current_units = expected_scoring_units
 		.iter()
-		.map(String::as_str)
+		.map(|unit| unit.as_str())
 		.collect::<BTreeSet<_>>();
 	if current_units.len() != expected_scoring_units.len()
 		|| actual_units.len() != index.units.len()
@@ -1175,12 +1166,14 @@ fn validate_scorer_evidence_index(
 			.iter()
 			.filter(|entry| entry.kind == EvidenceEntryKind::MergedOutput)
 			.collect::<Vec<_>>();
+		let unit_path = GamePath::new(&unit.relative_path)?;
 		for entry in &output_entries {
+			// Bundle paths are `output/` followed by the game path.
 			let relative_path = entry
 				.relative_path
 				.strip_prefix("output/")
 				.ok_or("merged-output evidence has an invalid prefix")?;
-			if !scoring_evidence_path_belongs_to_unit(&unit.relative_path, relative_path) {
+			if !scoring_evidence_path_belongs_to_unit(unit_path, GamePath::new(relative_path)?) {
 				return Err(format!(
 					"scorer evidence for {} contains unrelated merged output {}",
 					unit.relative_path, entry.relative_path
@@ -1283,9 +1276,12 @@ fn workshop_evidence_entries(
 
 	for file_result in request.file_results {
 		let mut unit_entries = BTreeSet::new();
-		let compatch_files =
-			scoring_evidence_files(&request.captured.compatch_dir, &file_result.relative_path)?;
-		if !compatch_files.iter().any(|path| path != "descriptor.mod") {
+		let unit = GamePath::new(&file_result.relative_path)?;
+		let compatch_files = scoring_evidence_files(&request.captured.compatch_dir, unit)?;
+		if !compatch_files
+			.iter()
+			.any(|path| path.as_str() != "descriptor.mod")
+		{
 			return Err(format!(
 				"scoring unit {} has no regular compatch evidence",
 				file_result.relative_path
@@ -1320,7 +1316,7 @@ fn workshop_evidence_entries(
 				EvidenceEntryKind::SourceInput,
 				&prefix,
 				captured_source,
-				scoring_evidence_files(captured_source, &file_result.relative_path)?,
+				scoring_evidence_files(captured_source, unit)?,
 			)?;
 		}
 		push_evidence_paths(
@@ -1330,7 +1326,7 @@ fn workshop_evidence_entries(
 			EvidenceEntryKind::MergedOutput,
 			"output",
 			&request.captured.output_dir,
-			scoring_evidence_files(&request.captured.output_dir, &file_result.relative_path)?,
+			scoring_evidence_files(&request.captured.output_dir, unit)?,
 		)?;
 		push_evidence_paths(
 			&mut entries,
@@ -1339,7 +1335,7 @@ fn workshop_evidence_entries(
 			EvidenceEntryKind::BaseInput,
 			"base",
 			&request.captured.basegame_root,
-			scoring_evidence_files(&request.captured.basegame_root, &file_result.relative_path)?,
+			scoring_evidence_files(&request.captured.basegame_root, unit)?,
 		)?;
 		units.push(ScorerEvidenceUnit {
 			relative_path: file_result.relative_path.clone(),
@@ -1365,9 +1361,11 @@ fn push_evidence_paths(
 	kind: EvidenceEntryKind,
 	prefix: &str,
 	root: &Path,
-	relative_paths: Vec<String>,
+	relative_paths: Vec<GamePathBuf>,
 ) -> io::Result<()> {
 	for relative_path in relative_paths {
+		// A bundle path is the layer's prefix followed by the game path; this
+		// is the manifest's text encoding, hashed into the bundle.
 		let destination = format!("{prefix}/{relative_path}");
 		unit_entries.insert(ScorerEvidenceReference {
 			kind,
@@ -1377,7 +1375,7 @@ fn push_evidence_paths(
 			entries.push(EvidenceEntryInput::source_file(
 				kind,
 				destination,
-				root.join(relative_path),
+				relative_path.to_path(root),
 			));
 		}
 	}
@@ -1692,7 +1690,7 @@ fn capture_scoring_inputs(
 
 fn scoring_closure_digest(
 	root: &Path,
-	scoring_units: &[String],
+	scoring_units: &[GamePathBuf],
 ) -> Result<String, Box<dyn std::error::Error>> {
 	let before = scoring_units
 		.iter()
@@ -1705,8 +1703,9 @@ fn scoring_closure_digest(
 	update_closure_field(&mut hasher, b"foch-scorer-closure-v1");
 	hasher.update(&(before.len() as u64).to_le_bytes());
 	for relative_path in &before {
-		let content = read_stable_source_file(root, Path::new(relative_path))?;
-		update_closure_field(&mut hasher, relative_path.as_bytes());
+		// The stable reader checks a host path relative to its root.
+		let content = read_stable_source_file(root, &relative_path.to_path(""))?;
+		update_closure_field(&mut hasher, relative_path.as_str().as_bytes());
 		update_closure_field(&mut hasher, &content);
 	}
 	let after = scoring_units
@@ -1730,7 +1729,7 @@ fn update_closure_field(hasher: &mut blake3::Hasher, field: &[u8]) {
 fn capture_scoring_layer(
 	source_root: &Path,
 	destination_root: &Path,
-	scoring_units: &[String],
+	scoring_units: &[GamePathBuf],
 ) -> Result<(), Box<dyn std::error::Error>> {
 	let before = scoring_units
 		.iter()
@@ -1740,8 +1739,9 @@ fn capture_scoring_layer(
 		.flatten()
 		.collect::<BTreeSet<_>>();
 	for relative_path in &before {
-		let content = read_stable_source_file(source_root, Path::new(relative_path))?;
-		let destination = destination_root.join(relative_path);
+		// The stable reader checks a host path relative to its root.
+		let content = read_stable_source_file(source_root, &relative_path.to_path(""))?;
+		let destination = relative_path.to_path(destination_root);
 		fs::create_dir_all(destination.parent().expect("captured file has parent"))?;
 		fs::write(destination, content)?;
 	}
@@ -1931,7 +1931,7 @@ mod tests {
 		let base = tempfile::tempdir().unwrap();
 		fs::create_dir_all(base.path().join("interface")).unwrap();
 		fs::write(base.path().join("interface/reference.gui"), "one\n").unwrap();
-		let units = vec!["interface/reference.gui".to_string()];
+		let units = vec![GamePathBuf::parse("interface/reference.gui").unwrap()];
 		let first_digest = scoring_closure_digest(base.path(), &units).unwrap();
 		fs::write(base.path().join("interface/reference.gui"), "two\n").unwrap();
 		let second_digest = scoring_closure_digest(base.path(), &units).unwrap();
@@ -1947,6 +1947,38 @@ mod tests {
 		assert_ne!(first, changed_base);
 	}
 
+	#[test]
+	fn stored_scorer_units_must_be_sorted_unique_game_paths() {
+		let closure = stored_scorer_closure(&serde_json::json!({
+			"scoring_units": ["common/ideas/a.txt", "history/countries/P09 - P609.txt"],
+			"base_scoring_closure_digest": "0".repeat(64),
+		}))
+		.expect("valid units");
+		assert_eq!(
+			closure
+				.scoring_units
+				.iter()
+				.map(|unit| unit.as_str())
+				.collect::<Vec<_>>(),
+			["common/ideas/a.txt", "history/countries/P09 - P609.txt"]
+		);
+		for units in [
+			serde_json::json!(["../escape.txt"]),
+			serde_json::json!(["/absolute.txt"]),
+			serde_json::json!(["common\\ideas\\a.txt"]),
+			serde_json::json!(["common/ideas/"]),
+			serde_json::json!([]),
+			serde_json::json!(["b.txt", "a.txt"]),
+			serde_json::json!(["a.txt", "a.txt"]),
+		] {
+			let evidence = serde_json::json!({
+				"scoring_units": units,
+				"base_scoring_closure_digest": "0".repeat(64),
+			});
+			assert!(stored_scorer_closure(&evidence).is_err(), "{units}");
+		}
+	}
+
 	#[cfg(unix)]
 	#[test]
 	fn scorer_closure_rejects_intermediate_symlinks() {
@@ -1957,8 +1989,11 @@ mod tests {
 		fs::write(outside.path().join("reference.gui"), "outside\n").unwrap();
 		symlink(outside.path(), root.path().join("interface")).unwrap();
 
-		let error = scoring_closure_digest(root.path(), &["interface/reference.gui".to_string()])
-			.expect_err("intermediate symlink must fail closed");
+		let error = scoring_closure_digest(
+			root.path(),
+			&[GamePathBuf::parse("interface/reference.gui").unwrap()],
+		)
+		.expect_err("intermediate symlink must fail closed");
 		assert!(
 			error.to_string().contains("not a directory") || error.to_string().contains("symlink")
 		);

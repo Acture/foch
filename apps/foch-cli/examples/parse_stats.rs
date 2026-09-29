@@ -1,4 +1,5 @@
 use foch::game::eu4::script::parser::parse_clausewitz_file;
+use foch::model::GamePathBuf;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use walkdir::WalkDir;
@@ -12,7 +13,7 @@ fn main() {
 		std::process::exit(1);
 	};
 	let mut exts = vec!["txt".to_string()];
-	let mut exclude_prefixes: Vec<String> = Vec::new();
+	let mut exclude_prefixes: Vec<GamePathBuf> = Vec::new();
 
 	while let Some(arg) = args.next() {
 		if arg == "--exts"
@@ -24,13 +25,20 @@ fn main() {
 				.filter(|item| !item.is_empty())
 				.collect();
 		}
+		// Prefixes are game paths in `/` syntax, compared by whole components.
 		if arg == "--exclude-prefixes"
 			&& let Some(value) = args.next()
 		{
 			exclude_prefixes = value
 				.split(',')
-				.map(|item| item.trim().trim_matches('/').replace('\\', "/"))
+				.map(str::trim)
 				.filter(|item| !item.is_empty())
+				.map(|item| {
+					GamePathBuf::parse(item).unwrap_or_else(|error| {
+						eprintln!("invalid --exclude-prefixes entry: {error}");
+						std::process::exit(1);
+					})
+				})
 				.collect();
 		}
 	}
@@ -54,29 +62,33 @@ fn main() {
 	}
 
 	let mut files = Vec::new();
-	for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+	for entry in WalkDir::new(&root) {
+		let entry = entry.unwrap_or_else(|error| {
+			eprintln!("walk failed: {error}");
+			std::process::exit(1);
+		});
 		if !entry.file_type().is_file() {
 			continue;
 		}
 		let path = entry.path();
-		let Some(ext) = path.extension() else {
+		let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
 			continue;
 		};
-		let ext = ext.to_string_lossy();
-		let rel = path
-			.strip_prefix(&root)
-			.unwrap_or(path)
-			.to_string_lossy()
-			.replace('\\', "/");
-		if exclude_prefixes
-			.iter()
-			.any(|prefix| rel.starts_with(prefix))
-		{
-			continue;
+		if !exclude_prefixes.is_empty() {
+			let relative = GamePathBuf::from_physical(&root, path).unwrap_or_else(|error| {
+				eprintln!("{} has no game path: {error}", path.display());
+				std::process::exit(1);
+			});
+			if exclude_prefixes
+				.iter()
+				.any(|prefix| relative.starts_with(prefix))
+			{
+				continue;
+			}
 		}
 		if exts
 			.iter()
-			.any(|candidate| candidate == &ext.to_ascii_lowercase())
+			.any(|candidate| candidate.eq_ignore_ascii_case(ext))
 		{
 			files.push(path.to_path_buf());
 		}
@@ -118,7 +130,11 @@ fn main() {
 	println!("root={}", root.display());
 	println!("extensions={}", exts.join(","));
 	if !exclude_prefixes.is_empty() {
-		println!("exclude_prefixes={}", exclude_prefixes.join(","));
+		let prefixes = exclude_prefixes
+			.iter()
+			.map(|prefix| prefix.as_str())
+			.collect::<Vec<_>>();
+		println!("exclude_prefixes={}", prefixes.join(","));
 	}
 	println!("total_files={total}");
 	println!("ok_files={ok}");

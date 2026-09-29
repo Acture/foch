@@ -9,7 +9,7 @@ use crate::check::runtime::{
 };
 use crate::input::request::InputRequest;
 use crate::input::resolve_input;
-use crate::model::SymbolKind;
+use crate::model::{GamePath, GamePathBuf, SymbolKind};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -37,7 +37,7 @@ enum CallsEdgeKind {
 
 #[derive(Clone, Debug, Serialize)]
 struct CallsiteRecord {
-	path: String,
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	reference_kind: String,
@@ -56,7 +56,7 @@ struct CallsNode {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	mod_id: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	path: Option<String>,
+	path: Option<GamePathBuf>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	line: Option<usize>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -261,7 +261,7 @@ fn build_input_calls_graph(state: &crate::check::runtime::RuntimeState) -> Calls
 				symbol_kind: Some(symbol_kind_text(definition.kind).to_string()),
 				name: Some(definition.name.clone()),
 				mod_id: Some(definition.mod_id.clone()),
-				path: Some(definition.path.to_string()),
+				path: Some(definition.path.clone()),
 				line: Some(definition.line),
 				column: Some(definition.column),
 			},
@@ -310,12 +310,12 @@ fn build_input_calls_graph(state: &crate::check::runtime::RuntimeState) -> Calls
 			if let Some(def_idx) = nearest_enclosing_definition(state, reference.scope_id) {
 				definition_node_id(def_idx)
 			} else {
-				let node = file_node(reference.mod_id.as_str(), &reference.path.to_path(""));
+				let node = file_node(reference.mod_id.as_str(), &reference.path);
 				nodes.entry(node.id.clone()).or_insert(node.clone());
 				node.id
 			};
 		let callsite = CallsiteRecord {
-			path: reference.path.as_str().to_string(),
+			path: reference.path.clone(),
 			line: reference.line,
 			column: reference.column,
 			reference_kind: symbol_kind_text(reference.kind).to_string(),
@@ -500,7 +500,7 @@ fn build_input_mod_deps_graph(
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 struct DefinitionDepsRefSite {
-	path: String,
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -511,7 +511,7 @@ struct DefinitionDepsNode {
 	mod_id: String,
 	symbol_kind: String,
 	name: String,
-	path: String,
+	path: GamePathBuf,
 	line: usize,
 }
 
@@ -585,7 +585,7 @@ fn build_input_definition_deps_artifact(
 				mod_id: provider.mod_id.clone(),
 				symbol_kind: symbol_kind_text(provider.kind).to_string(),
 				name: provider.name.clone(),
-				path: provider.path.as_str().to_string(),
+				path: provider.path.clone(),
 				line: provider.line,
 			});
 
@@ -600,7 +600,7 @@ fn build_input_definition_deps_artifact(
 				sites: Vec::new(),
 			});
 		let site = DefinitionDepsRefSite {
-			path: reference.path.as_str().to_string(),
+			path: reference.path.clone(),
 			line: reference.line,
 			column: reference.column,
 		};
@@ -812,14 +812,17 @@ fn definition_node_id(def_idx: usize) -> String {
 	format!("def:{def_idx}")
 }
 
-fn file_node(mod_id: &str, path: &Path) -> CallsNode {
+/// The node for callsites outside every definition of a file. Its id text is
+/// the node's identity and output order; it cannot be ambiguous because a
+/// game path contains no `:`.
+fn file_node(mod_id: &str, path: &GamePath) -> CallsNode {
 	CallsNode {
-		id: format!("file:{mod_id}:{}", normalize_path(path)),
+		id: format!("file:{mod_id}:{path}"),
 		kind: CallsNodeKind::File,
 		symbol_kind: None,
 		name: None,
 		mod_id: Some(mod_id.to_string()),
-		path: Some(normalize_path(path)),
+		path: Some(path.to_owned()),
 		line: None,
 		column: None,
 	}
@@ -894,7 +897,7 @@ fn render_calls_dot(graph: &CallsGraphArtifact) -> String {
 			node.symbol_kind.as_deref().unwrap_or("file"),
 			node.name.as_deref().unwrap_or(""),
 			node.mod_id.as_deref().unwrap_or(""),
-			node.path.as_deref().unwrap_or(""),
+			node.path.as_deref().map_or("", GamePath::as_str),
 		]
 		.into_iter()
 		.filter(|part| !part.is_empty())
@@ -991,10 +994,6 @@ fn symbol_kind_text(kind: SymbolKind) -> &'static str {
 		SymbolKind::DiplomaticAction => "diplomatic_action",
 		SymbolKind::TriggeredModifier => "triggered_modifier",
 	}
-}
-
-fn normalize_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
 }
 
 fn escape_dot(value: &str) -> String {
@@ -1244,7 +1243,7 @@ mod definition_deps_tests {
 		assert_eq!(edge.symbol_kind, "scripted_effect");
 		assert_eq!(edge.name, "my_effect");
 		assert_eq!(edge.sites.len(), 1);
-		assert_eq!(edge.sites[0].path, "events/b_event.txt");
+		assert_eq!(edge.sites[0].path.as_str(), "events/b_event.txt");
 		assert_eq!(edge.sites[0].line, 42);
 	}
 
@@ -1341,11 +1340,11 @@ mod definition_deps_tests {
 		let edge = &artifact.edges[0];
 		assert_eq!(edge.sites.len(), 3);
 		// stable ordering: by path then line
-		assert_eq!(edge.sites[0].path, "b1.txt");
+		assert_eq!(edge.sites[0].path.as_str(), "b1.txt");
 		assert_eq!(edge.sites[0].line, 5);
-		assert_eq!(edge.sites[1].path, "b1.txt");
+		assert_eq!(edge.sites[1].path.as_str(), "b1.txt");
 		assert_eq!(edge.sites[1].line, 22);
-		assert_eq!(edge.sites[2].path, "b2.txt");
+		assert_eq!(edge.sites[2].path.as_str(), "b2.txt");
 		assert_eq!(edge.sites[2].line, 99);
 	}
 
@@ -1412,5 +1411,33 @@ mod definition_deps_tests {
 		assert!(dot.contains("subgraph \"cluster_mod-a\""));
 		assert!(dot.contains("scripted_effect: my_effect"));
 		assert!(dot.contains("\"mod:mod-b\" -> \"mod-a:scripted_effect:my_effect\""));
+	}
+}
+
+#[cfg(test)]
+mod calls_graph_tests {
+	use super::*;
+
+	#[test]
+	fn file_nodes_render_their_game_path_as_the_same_id_and_path_text() {
+		let path = GamePath::new("history/countries/P09 - P609.txt").expect("valid game path");
+		let node = file_node("mod:a", path);
+		assert_eq!(
+			serde_json::to_value(&node).expect("serialize file node"),
+			serde_json::json!({
+				"id": "file:mod:a:history/countries/P09 - P609.txt",
+				"kind": "file",
+				"mod_id": "mod:a",
+				"path": "history/countries/P09 - P609.txt",
+			})
+		);
+		let dot = render_calls_dot(&CallsGraphArtifact {
+			nodes: vec![node],
+			edges: Vec::new(),
+		});
+		assert!(
+			dot.contains("label=\"file\\\\nmod:a\\\\nhistory/countries/P09 - P609.txt\""),
+			"{dot}"
+		);
 	}
 }

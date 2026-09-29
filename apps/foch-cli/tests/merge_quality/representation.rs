@@ -33,20 +33,18 @@ use foch::model::GamePath;
 /// Parse a file into the representation foch writes.
 ///
 /// `rel` is a semantic input, not a label. The schema binds a root type by
-/// matching a game-relative prefix such as `common/static_modifiers`, so an
-/// absolute path on disk matches nothing, every number is left as written, and
-/// the comparison silently goes back to comparing spellings. Callers hold
-/// scratch paths and must pass the game-relative one.
-pub fn parse(rel: &str, path: &Path) -> Option<AstFile> {
+/// matching a game path prefix such as `common/static_modifiers`, so callers
+/// that hold scratch copies pass the game path the file is scored as, and
+/// `path` only says where its bytes are.
+pub fn parse(rel: &GamePath, path: &Path) -> Option<AstFile> {
 	let text = fs::read(path).ok()?;
 	let text = foch::game::eu4::text::decode_paradox_bytes(&text).into_owned();
 	parse_text(rel, &text)
 }
 
 /// Parse in-memory source into the representation foch writes.
-pub fn parse_text(rel: &str, source: &str) -> Option<AstFile> {
-	let rel_path = GamePath::new(rel).expect("the harness names files by game path");
-	let parsed = parse_clausewitz_content(rel_path, source);
+pub fn parse_text(rel: &GamePath, source: &str) -> Option<AstFile> {
+	let parsed = parse_clausewitz_content(rel, source);
 	parsed
 		.diagnostics
 		.is_empty()
@@ -59,12 +57,8 @@ pub fn parse_text(rel: &str, source: &str) -> Option<AstFile> {
 /// Composing a module picks whole definitions by key and never compares a
 /// value, so canonicalizing the result is the same answer as canonicalizing
 /// every input file first, and it skips the definitions composition discards.
-pub fn compose(rel: &str, ast: &AstFile) -> AstFile {
-	// A path that is not a game path binds no schema, so nothing is typed.
-	match GamePath::new(rel) {
-		Ok(path) => canonicalize_numeric_values_with_active_schema(path, ast),
-		Err(_) => ast.clone(),
-	}
+pub fn compose(rel: &GamePath, ast: &AstFile) -> AstFile {
+	canonicalize_numeric_values_with_active_schema(rel, ast)
 }
 
 /// Read a file's text in the representation foch writes, leaving every other
@@ -73,17 +67,13 @@ pub fn compose(rel: &str, ast: &AstFile) -> AstFile {
 /// Re-emitting a parsed file would bring the numbers into line and reformat
 /// the comments and whitespace along with them — which is most of what a
 /// similarity score is measuring, so the reformatting would swamp the signal.
-pub fn read_text(rel: &str, path: &Path) -> Option<String> {
+pub fn read_text(rel: &GamePath, path: &Path) -> Option<String> {
 	let bytes = fs::read(path).ok()?;
 	let text = foch::game::eu4::text::decode_paradox_bytes(&bytes).into_owned();
 	Some(canonicalize_text(rel, &text))
 }
 
 /// The text form of [`read_text`], for content already in memory.
-pub fn canonicalize_text(rel: &str, source: &str) -> String {
-	// A path that is not a game path binds no schema, so nothing is typed.
-	match GamePath::new(rel) {
-		Ok(path) => canonicalize_numeric_text(path, source),
-		Err(_) => source.to_string(),
-	}
+pub fn canonicalize_text(rel: &GamePath, source: &str) -> String {
+	canonicalize_numeric_text(rel, source)
 }
