@@ -9,6 +9,7 @@ use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use foch::model::GamePath;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
@@ -820,9 +821,11 @@ struct SourceFileFingerprint {
 	changed_nanoseconds: Option<i64>,
 }
 
-pub(crate) fn read_stable_source_file(root: &Path, relative: &Path) -> io::Result<Vec<u8>> {
-	validate_relative_filesystem_path(relative)?;
-	read_stable_file_under_root(&root.join(relative), root, relative)
+/// Reads the file `relative` names under `root`. The checks below walk it as
+/// a host path under `root`, and a game path's host spelling has exactly its
+/// components.
+pub(crate) fn read_stable_source_file(root: &Path, relative: &GamePath) -> io::Result<Vec<u8>> {
+	read_stable_file_under_root(&relative.to_path(root), root, &relative.to_path(""))
 }
 
 fn read_stable_evidence_source_file(

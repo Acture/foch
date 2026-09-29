@@ -880,7 +880,7 @@ fn revalidate_generated_output(
 	let descriptor_body = format!(
 		"name=\"{}\"\npath=\"{}\"\nremote_file_id=\"{}\"\n",
 		escape_descriptor_value(out_dir_name),
-		escape_descriptor_value(&out_dir_text),
+		out_dir_text,
 		escape_descriptor_value(&synthetic_steam_id)
 	);
 	fs::write(validation_dir.join(&descriptor_rel), descriptor_body)?;
@@ -1596,7 +1596,7 @@ mod tests {
 			paradox_dir.join("mod/ugc_100.mod"),
 			format!(
 				"name=\"Test Mod\"\npath=\"{}\"\nremote_file_id=\"100\"\n",
-				escape_descriptor_value(&descriptor_path_text(&mod_root).expect("UTF-8 mod root"))
+				descriptor_path_text(&mod_root).expect("UTF-8 mod root")
 			),
 		)
 		.expect("write mod descriptor");

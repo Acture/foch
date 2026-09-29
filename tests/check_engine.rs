@@ -11,17 +11,17 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// `path` as a quoted descriptor value, written by the descriptor format's
-/// own encoder.
+/// The text between the quotes of a descriptor `path` value, written by the
+/// descriptor format's own encoder.
 fn descriptor_path_value(path: &Path) -> String {
-	foch::playset::descriptor::escape_descriptor_value(
-		&foch::playset::descriptor::descriptor_path_text(path)
-			.expect("a fixture directory has descriptor text"),
-	)
+	foch::playset::descriptor::descriptor_path_text(path)
+		.expect("a fixture directory has descriptor text")
 }
 
 fn vdf_path_value(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "\\\\")
+	path.to_str()
+		.expect("UTF-8 fixture path")
+		.replace('\\', "\\\\")
 }
 
 fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {

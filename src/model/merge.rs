@@ -918,6 +918,9 @@ pub struct HandlerResolutionRecord {
 	/// it as a game path.
 	pub path: GamePathBuf,
 	pub action: String,
+	/// Where the kept content came from (a mod id, an AST address or an
+	/// external file), rendered for people. It is never read back to find a
+	/// file.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub source: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]

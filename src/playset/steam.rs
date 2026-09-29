@@ -1109,7 +1109,9 @@ mod tests {
 	use tempfile::TempDir;
 
 	fn vdf_path_value(path: &Path) -> String {
-		path.to_string_lossy().replace('\\', "\\\\")
+		path.to_str()
+			.expect("UTF-8 fixture path")
+			.replace('\\', "\\\\")
 	}
 
 	fn write_steam_fixture() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {

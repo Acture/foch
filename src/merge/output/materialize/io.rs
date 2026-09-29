@@ -6,7 +6,9 @@ use crate::model::{
 	GamePath, GamePathBuf, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
 	MERGE_REPORT_ARTIFACT_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult, MergeReport,
 };
-use crate::playset::descriptor::{descriptor_path_text, escape_descriptor_value};
+use crate::playset::descriptor::{
+	descriptor_path_text, escape_descriptor_value, replace_path_text, slash_path_text,
+};
 use crate::project::{ResolutionDecision, ResolutionMap};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -325,9 +327,11 @@ pub(super) fn write_conflict_placeholder(
 }
 
 /// Write the merged mod's `descriptor.mod`. `path` names `out_dir` for the
-/// launcher on this host, and a directory the format cannot name fails the
-/// merge. The source playset is only a comment, so a path the format cannot
-/// carry is shown as the host displays it.
+/// launcher on this host and each `replace_path` names a replaced directory,
+/// both written verbatim, and a directory the format cannot name fails the
+/// merge. The source playset is only a comment: it keeps its `/`-joined
+/// spelling, escaped, even with a `"` a `path` value could not hold, and a
+/// path with no such spelling is shown as the host displays it.
 pub(super) fn write_generated_descriptor(
 	out_dir: &Path,
 	playset_path: &Path,
@@ -346,18 +350,20 @@ pub(super) fn write_generated_descriptor(
 		),
 	})?;
 	let playset_text =
-		descriptor_path_text(playset_path).unwrap_or_else(|_| playset_path.display().to_string());
+		slash_path_text(playset_path).unwrap_or_else(|_| playset_path.display().to_string());
 	let escaped_name = escape_descriptor_value(&format!("{playset_name} (Merged)"));
-	let escaped_path = escape_descriptor_value(&out_dir_text);
 	let escaped_playset = escape_descriptor_value(&playset_text);
 	let mut descriptor = format!(
-		"# Source playset: {escaped_playset}\nname=\"{escaped_name}\"\npath=\"{escaped_path}\"\n"
+		"# Source playset: {escaped_playset}\nname=\"{escaped_name}\"\npath=\"{out_dir_text}\"\n"
 	);
 	for prefix in replace_prefixes {
-		descriptor.push_str(&format!(
-			"replace_path=\"{}\"\n",
-			escape_descriptor_value(prefix.as_str())
-		));
+		let prefix_text = replace_path_text(prefix).map_err(|reason| MergeError::Validation {
+			subject: Some(MergeErrorSubject::Game(prefix.clone())),
+			message: format!(
+				"replaced directory {prefix} cannot be named in a descriptor: {reason}"
+			),
+		})?;
+		descriptor.push_str(&format!("replace_path=\"{prefix_text}\"\n"));
 	}
 	fs::write(descriptor_path, descriptor)?;
 	Ok(())
@@ -571,7 +577,7 @@ mod tests {
 	#[test]
 	fn the_generated_descriptor_reads_back_as_its_output_and_replaced_namespaces() {
 		let temp = tempfile::tempdir().expect("temp dir");
-		let out_dir = temp.path().join("merged \"quoted\" output");
+		let out_dir = temp.path().join("merged output Ölände (1)");
 		let descriptor = temp.path().join("descriptor.mod");
 		let replaced: BTreeSet<GamePathBuf> = ["common/ideas", "common/static_modifiers"]
 			.into_iter()
@@ -588,37 +594,90 @@ mod tests {
 		.expect("write descriptor");
 
 		let read_back = load_descriptor(&descriptor).expect("read descriptor");
-		assert_eq!(read_back.path.map(PathBuf::from), Some(out_dir));
+		assert_eq!(read_back.path, Some(out_dir));
 		assert_eq!(
 			read_back.replace_path,
 			replaced.into_iter().collect::<Vec<_>>()
 		);
 	}
 
-	/// The descriptor format cannot carry a `\` inside a name, which off
-	/// Windows is an ordinary name character: the merge fails instead of
-	/// writing text that names another directory.
+	/// A descriptor `path` has no spelling for a `"`, since it is read
+	/// without escapes, or for a `\` inside a name, which off Windows is an
+	/// ordinary name character: the merge fails instead of writing text that
+	/// names another directory.
 	#[cfg(unix)]
 	#[test]
 	fn an_output_directory_a_descriptor_cannot_name_fails_the_merge() {
-		// In-memory output path: only the descriptor file is written.
+		// In-memory output paths: only the descriptor file would be written.
 		let temp = tempfile::tempdir().expect("temp dir");
 		let descriptor = temp.path().join("descriptor.mod");
+		for name in [r"merged\output", "merged \"quoted\" output"] {
+			let error = write_generated_descriptor(
+				&temp.path().join(name),
+				Path::new("/playsets/dlc_load.json"),
+				"playset",
+				&BTreeSet::new(),
+				&descriptor,
+			)
+			.expect_err(name);
+			assert!(
+				error
+					.to_string()
+					.contains("cannot be named in a descriptor"),
+				"{error}"
+			);
+			assert!(!descriptor.exists());
+		}
+	}
+
+	/// A `replace_path` is read without escapes, so a replaced directory
+	/// holding a `"` has no spelling: the merge fails instead of writing a
+	/// value that ends early and names another directory.
+	#[test]
+	fn a_replaced_directory_a_descriptor_cannot_name_fails_the_merge() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let descriptor = temp.path().join("descriptor.mod");
+		let replaced: BTreeSet<GamePathBuf> = ["common/ideas", "common/a\"b"]
+			.into_iter()
+			.map(|prefix| GamePathBuf::parse(prefix).expect("valid game path"))
+			.collect();
 		let error = write_generated_descriptor(
-			&temp.path().join(r"merged\output"),
+			&temp.path().join("merged"),
 			Path::new("/playsets/dlc_load.json"),
+			"playset",
+			&replaced,
+			&descriptor,
+		)
+		.expect_err("a quote in a replaced directory");
+		let message = error.to_string();
+		assert!(message.contains("common/a\"b"), "{message}");
+		assert!(
+			message.contains("cannot be named in a descriptor"),
+			"{message}"
+		);
+		assert!(!descriptor.exists());
+	}
+
+	/// The source playset comment keeps the `/`-joined spelling of the
+	/// playset path, escaped, even when the path holds a `"` that a `path`
+	/// value could not: repeated separators are not rendered as displayed.
+	#[test]
+	fn the_source_playset_comment_keeps_its_joined_spelling() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let descriptor = temp.path().join("descriptor.mod");
+		write_generated_descriptor(
+			&temp.path().join("merged"),
+			Path::new("/tmp/p \"q\"//dlc_load.json"),
 			"playset",
 			&BTreeSet::new(),
 			&descriptor,
 		)
-		.expect_err("a backslash in a Unix directory name");
-		assert!(
-			error
-				.to_string()
-				.contains("cannot be named in a descriptor"),
-			"{error}"
+		.expect("write descriptor");
+		let written = std::fs::read_to_string(&descriptor).expect("read descriptor");
+		assert_eq!(
+			written.lines().next(),
+			Some(r#"# Source playset: /tmp/p \"q\"/dlc_load.json"#)
 		);
-		assert!(!descriptor.exists());
 	}
 
 	#[test]

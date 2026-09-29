@@ -1318,25 +1318,23 @@ fn resolve_mod_from_ugc_descriptor(game_data_dir: &Path, steam_id: &str) -> Opti
 		return None;
 	}
 
-	let raw_path = load_launcher_descriptor(&metadata).ok()?.path?;
-	descriptor_path_candidates(game_data_dir, &raw_path)
+	let path = load_launcher_descriptor(&metadata).ok()?.path?;
+	descriptor_path_candidates(game_data_dir, &path)
 		.into_iter()
 		.find(|candidate| candidate.is_dir())
 }
 
-/// Where a launcher descriptor's `path` may point. The launcher writes `path`
-/// for the host it runs on, so it is read with host syntax only: a separator
-/// the host does not use stays part of a name rather than being guessed into
-/// a directory boundary. A relative `path` is tried under the game data
-/// directory and under its `mod` directory.
-fn descriptor_path_candidates(game_data_dir: &Path, raw: &str) -> Vec<PathBuf> {
-	let path = PathBuf::from(raw);
+/// Where a launcher descriptor's `path` may point. The descriptor reader has
+/// already read it with host syntax only (see
+/// [`crate::playset::descriptor::ModDescriptor::path`]). A relative `path` is
+/// tried under the game data directory and under its `mod` directory.
+fn descriptor_path_candidates(game_data_dir: &Path, path: &Path) -> Vec<PathBuf> {
 	let mut candidates = Vec::new();
 	if path.is_absolute() {
-		candidates.push(path.clone());
+		candidates.push(path.to_path_buf());
 	}
-	candidates.push(game_data_dir.join(&path));
-	candidates.push(game_data_dir.join("mod").join(&path));
+	candidates.push(game_data_dir.join(path));
+	candidates.push(game_data_dir.join("mod").join(path));
 	dedup_candidates(candidates)
 }
 
@@ -1621,10 +1619,8 @@ mod tests {
 	use tempfile::TempDir;
 
 	fn descriptor_path_value(path: &Path) -> String {
-		crate::playset::descriptor::escape_descriptor_value(
-			&crate::playset::descriptor::descriptor_path_text(path)
-				.expect("a fixture directory has descriptor text"),
-		)
+		crate::playset::descriptor::descriptor_path_text(path)
+			.expect("a fixture directory has descriptor text")
 	}
 
 	fn write_descriptor(root: &Path, name: &str, steam_id: Option<&str>) {
@@ -1768,6 +1764,73 @@ path = "alias_mod"
 		assert!(error.message.contains("no portable game path"), "{error}");
 	}
 
+	/// The strict inventory keeps the ordinary case: one file shipped by two
+	/// mods is one game path with a contributor per mod, in playset order.
+	#[test]
+	fn one_game_path_shipped_by_two_mods_is_one_entry_with_both_contributors_in_playset_order() {
+		let temp = TempDir::new().expect("tempdir");
+		// Playset order is the reverse of id order, so an id sort would show.
+		let mods: [(&str, &str); 2] = [("zeta", "zeta = yes\n"), ("alpha", "alpha = yes\n")];
+		for (mod_id, content) in mods {
+			let root = temp.path().join(mod_id);
+			write_descriptor(&root, mod_id, None);
+			fs::create_dir_all(root.join("common").join("ideas")).expect("create ideas");
+			fs::write(root.join("common").join("ideas").join("x.txt"), content)
+				.expect("write idea file");
+		}
+		let manifest_path = temp.path().join("foch.toml");
+		fs::write(
+			&manifest_path,
+			r#"
+[project]
+game = "eu4"
+
+[[project.mods]]
+id = "zeta"
+path = "zeta"
+
+[[project.mods]]
+id = "alpha"
+path = "alpha"
+"#,
+		)
+		.expect("write manifest");
+
+		let input = resolve_input(&request_for_manifest(&manifest_path), false)
+			.expect("two mods sharing a game path resolve");
+
+		let key = game_path("common/ideas/x.txt");
+		assert_eq!(input.file_inventory.keys().collect::<Vec<_>>(), vec![&key]);
+		let contributors = &input.file_inventory[&key];
+		assert_eq!(
+			contributors
+				.iter()
+				.map(|contributor| (
+					contributor.mod_id.as_str(),
+					contributor.precedence,
+					contributor.is_synthetic_base
+				))
+				.collect::<Vec<_>>(),
+			vec![("zeta", 0, true), ("zeta", 0, false), ("alpha", 1, false)],
+			"without a base game the first mod also seeds a synthetic base"
+		);
+		for contributor in contributors {
+			assert_eq!(contributor.relative_path, key);
+			let expected = mods
+				.iter()
+				.find(|(mod_id, _)| *mod_id == contributor.mod_id)
+				.map(|(_, content)| *content);
+			assert_eq!(
+				fs::read_to_string(contributor.absolute_path())
+					.ok()
+					.as_deref(),
+				expected,
+				"{} reads its own mod's file",
+				contributor.mod_id
+			);
+		}
+	}
+
 	#[cfg(unix)]
 	#[test]
 	fn distinct_non_utf8_names_are_rejected_instead_of_sharing_one_game_path() {
@@ -1793,10 +1856,10 @@ path = "alias_mod"
 	}
 
 	#[test]
-	fn descriptor_path_is_read_with_host_syntax_only() {
+	fn a_relative_descriptor_path_is_tried_under_the_data_directory_and_its_mod_directory() {
 		let game_data_dir = Path::new("/paradox/Europa Universalis IV");
 		assert_eq!(
-			descriptor_path_candidates(game_data_dir, "mod/local_mod"),
+			descriptor_path_candidates(game_data_dir, Path::new("mod/local_mod")),
 			vec![
 				game_data_dir.join("mod/local_mod"),
 				game_data_dir.join("mod").join("mod/local_mod"),
@@ -1804,27 +1867,40 @@ path = "alias_mod"
 		);
 
 		let absolute = std::env::temp_dir().join("workshop").join("1001");
-		let absolute_text = absolute.to_str().expect("UTF-8 temp dir");
 		assert_eq!(
-			descriptor_path_candidates(game_data_dir, absolute_text),
+			descriptor_path_candidates(game_data_dir, &absolute),
 			vec![absolute],
 			"an absolute path is one candidate, not re-read under the data directory"
 		);
 	}
 
+	/// A Windows launcher's `path="mod\local_mod"`, read from the descriptor's
+	/// bytes on Unix, names a directory literally called `mod\local_mod`, never
+	/// the nested `mod/local_mod`.
 	#[cfg(unix)]
 	#[test]
 	fn a_foreign_separator_in_a_descriptor_path_stays_part_of_the_name() {
-		let game_data_dir = Path::new("/paradox/Europa Universalis IV");
-		let candidates = descriptor_path_candidates(game_data_dir, r"mod\local_mod");
+		let temp = TempDir::new().expect("tempdir");
+		let game_data_dir = temp.path().join("Europa Universalis IV");
+		fs::create_dir_all(game_data_dir.join("mod").join("local_mod")).expect("nested mod");
+		fs::write(
+			game_data_dir.join("mod").join("ugc_1001.mod"),
+			"name=\"Local\"\npath=\"mod\\local_mod\"\n",
+		)
+		.expect("write launcher descriptor");
+
 		assert_eq!(
-			candidates,
-			vec![
-				game_data_dir.join(r"mod\local_mod"),
-				game_data_dir.join("mod").join(r"mod\local_mod"),
-			]
+			resolve_mod_from_ugc_descriptor(&game_data_dir, "1001"),
+			None,
+			"the nested directory is not what the descriptor names"
 		);
-		assert!(!candidates.contains(&game_data_dir.join("mod").join("local_mod")));
+
+		let literal = game_data_dir.join(r"mod\local_mod");
+		fs::create_dir(&literal).expect("literal-backslash directory");
+		assert_eq!(
+			resolve_mod_from_ugc_descriptor(&game_data_dir, "1001"),
+			Some(literal)
+		);
 	}
 
 	#[cfg(unix)]

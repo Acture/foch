@@ -448,7 +448,7 @@ fn install_launcher_stub(
 	let mod_dir = paradox_data_path.join("mod");
 	fs::create_dir_all(&mod_dir)?;
 	let absolute_out = fs::canonicalize(out_dir).unwrap_or_else(|_| out_dir.to_path_buf());
-	let slug = launcher_stub_slug(out_dir);
+	let slug = launcher_stub_slug(out_dir)?;
 	let stub_path = mod_dir.join(format!("foch_{slug}.mod"));
 	let display_name = format!("foch merge ({slug})");
 	let descriptor_value = descriptor_path_text(&absolute_out).map_err(|reason| {
@@ -461,7 +461,7 @@ fn install_launcher_stub(
 		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
 		out_dir.display(),
 		escape_descriptor_value(&display_name),
-		escape_descriptor_value(&descriptor_value)
+		descriptor_value
 	);
 	fs::write(&stub_path, body)?;
 	eprintln!(
@@ -471,12 +471,21 @@ fn install_launcher_stub(
 	Ok(())
 }
 
-fn launcher_stub_slug(out_dir: &Path) -> String {
-	let raw = out_dir
-		.file_name()
-		.map(|s| s.to_string_lossy().into_owned())
-		.unwrap_or_else(|| "merge".to_string());
-	raw.chars()
+/// The launcher stub's file name part, taken from the output directory's
+/// name. The stub is written at that name, so a name that is not UTF-8 is an
+/// error instead of being rendered lossily into some other stub's name.
+fn launcher_stub_slug(out_dir: &Path) -> Result<String, String> {
+	let raw = match out_dir.file_name() {
+		Some(name) => name.to_str().ok_or_else(|| {
+			format!(
+				"output directory name {} is not valid UTF-8, so it cannot name a launcher stub",
+				out_dir.display()
+			)
+		})?,
+		None => "merge",
+	};
+	Ok(raw
+		.chars()
 		.map(|c| {
 			if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
 				c
@@ -484,7 +493,7 @@ fn launcher_stub_slug(out_dir: &Path) -> String {
 				'_'
 			}
 		})
-		.collect()
+		.collect())
 }
 
 #[cfg(test)]
@@ -506,23 +515,111 @@ mod tests {
 	}
 
 	/// The launcher stub names the merged output with the library's descriptor
-	/// encoder: reading the stub back yields the output directory.
+	/// encoder: reading the stub back yields the output directory. Both sides
+	/// are compared canonically, since Windows canonicalizes to a verbatim
+	/// `\\?\` prefix that the descriptor spells as the plain one.
 	#[test]
 	fn launcher_stub_names_the_merged_output_exactly() {
 		let temp = tempfile::tempdir().expect("temp dir");
-		let out_dir = temp.path().join("merged \"out\"");
+		let out_dir = temp.path().join("merged out Ölände");
 		fs::create_dir_all(&out_dir).expect("create output");
 		let paradox_dir = temp.path().join("paradox");
 
 		install_launcher_stub(&out_dir, &paradox_dir).expect("install stub");
 
-		let stub = paradox_dir
-			.join("mod")
-			.join(format!("foch_{}.mod", launcher_stub_slug(&out_dir)));
+		let stub = paradox_dir.join("mod").join(format!(
+			"foch_{}.mod",
+			launcher_stub_slug(&out_dir).expect("UTF-8 output name")
+		));
 		let descriptor = load_launcher_descriptor(&stub).expect("read stub");
 		assert_eq!(
-			descriptor.path.map(PathBuf::from),
-			Some(fs::canonicalize(&out_dir).expect("canonical output"))
+			fs::canonicalize(descriptor.path.expect("stub path")).expect("canonical stub path"),
+			fs::canonicalize(&out_dir).expect("canonical output")
+		);
+	}
+
+	/// A directory the descriptor format has no `path` text for gets no stub,
+	/// rather than one naming another directory.
+	#[test]
+	fn launcher_stub_refuses_an_output_directory_holding_a_quote() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let out_dir = temp.path().join("merged \"out\"");
+		let paradox_dir = temp.path().join("paradox");
+
+		let error = install_launcher_stub(&out_dir, &paradox_dir)
+			.expect_err("a quote has no descriptor spelling")
+			.to_string();
+		assert!(error.contains("cannot be named"), "{error}");
+		assert_eq!(
+			fs::read_dir(paradox_dir.join("mod"))
+				.expect("mod dir")
+				.count(),
+			0
+		);
+	}
+
+	/// The stub's file name comes from the output directory's name, so a name
+	/// that is not UTF-8 is an error, never a lossy name another output could
+	/// also render to. In memory: some filesystems refuse such names. The
+	/// directory does not exist, so its descriptor `path` would be refused as
+	/// well; the install error must be the slug's, which is checked first.
+	#[cfg(unix)]
+	#[test]
+	fn launcher_stub_refuses_an_output_directory_name_that_is_not_utf8() {
+		use std::ffi::OsStr;
+		use std::os::unix::ffi::OsStrExt;
+
+		let temp = tempfile::tempdir().expect("temp dir");
+		let paradox_dir = temp.path().join("paradox");
+		for name in [&b"merged\xff"[..], &b"merged\xfe"[..]] {
+			let out_dir = temp.path().join(OsStr::from_bytes(name));
+			let error = launcher_stub_slug(&out_dir).expect_err("not UTF-8");
+			assert!(error.contains("cannot name a launcher stub"), "{error}");
+			let error = install_launcher_stub(&out_dir, &paradox_dir)
+				.expect_err("not UTF-8")
+				.to_string();
+			assert!(error.contains("cannot name a launcher stub"), "{error}");
+		}
+		assert_eq!(
+			fs::read_dir(paradox_dir.join("mod"))
+				.expect("mod dir")
+				.count(),
+			0,
+			"no stub is written"
+		);
+		assert_eq!(
+			launcher_stub_slug(Path::new("/")).as_deref(),
+			Ok("merge"),
+			"a directory without a name keeps the fallback"
+		);
+	}
+
+	/// A link whose own name is not UTF-8 can point at a UTF-8 directory, so
+	/// the descriptor `path` has text while the stub's name does not: the slug
+	/// alone refuses it. Linux only: macOS filesystems refuse such names.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn launcher_stub_refuses_a_link_name_that_is_not_utf8() {
+		use std::ffi::OsStr;
+		use std::os::unix::ffi::OsStrExt;
+
+		let temp = tempfile::tempdir().expect("temp dir");
+		let target = temp.path().join("merged");
+		fs::create_dir_all(&target).expect("create output");
+		let link = temp.path().join(OsStr::from_bytes(b"merged\xff"));
+		std::os::unix::fs::symlink(&target, &link).expect("link output");
+		let paradox_dir = temp.path().join("paradox");
+
+		let error = install_launcher_stub(&link, &paradox_dir)
+			.expect_err("a link name that is not UTF-8")
+			.to_string();
+		assert!(error.contains("cannot name a launcher stub"), "{error}");
+		assert_eq!(
+			fs::read_dir(paradox_dir.join("mod"))
+				.expect("mod dir")
+				.count(),
+			0,
+			"no stub is written"
 		);
 	}
 

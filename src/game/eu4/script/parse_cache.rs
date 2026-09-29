@@ -497,7 +497,8 @@ mod tests {
 		assert_eq!(root, temp.path().join(active_cache_namespace()));
 		assert_eq!(parts.len(), 3);
 		let key = parts[2]
-			.to_string_lossy()
+			.to_str()
+			.expect("a hex cache file name")
 			.strip_suffix(".bin")
 			.expect("bin suffix")
 			.to_string();

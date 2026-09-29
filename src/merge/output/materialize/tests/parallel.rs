@@ -352,9 +352,26 @@ fn chosen_resolution() -> ResolutionMap {
 	resolution_map
 }
 
+/// One entry of an output tree. Directories are entries too, so a leftover
+/// empty directory is a difference.
+#[derive(PartialEq)]
+enum TreeEntry {
+	Directory,
+	File(Vec<u8>),
+}
+
+impl TreeEntry {
+	fn render(&self) -> std::borrow::Cow<'_, str> {
+		match self {
+			Self::Directory => "<directory>".into(),
+			Self::File(bytes) => String::from_utf8_lossy(bytes),
+		}
+	}
+}
+
 /// Everything a run produced that must not depend on the number of workers.
 struct RunSnapshot {
-	tree: BTreeMap<String, Vec<u8>>,
+	tree: BTreeMap<PathBuf, TreeEntry>,
 	report: Value,
 	units: Vec<MergeUnitOutcome>,
 	summary: MergeReviewSummary,
@@ -371,15 +388,17 @@ impl RunSnapshot {
 	}
 
 	fn assert_matches(&self, other: &Self, run: &str) {
-		let paths: Vec<&String> = self.tree.keys().collect();
-		let other_paths: Vec<&String> = other.tree.keys().collect();
+		let paths: Vec<&PathBuf> = self.tree.keys().collect();
+		let other_paths: Vec<&PathBuf> = other.tree.keys().collect();
 		assert_eq!(paths, other_paths, "{run}: output paths differ");
-		for (path, bytes) in &self.tree {
+		for (path, entry) in &self.tree {
+			let other_entry: &TreeEntry = &other.tree[path];
 			assert!(
-				other.tree[path] == *bytes,
-				"{run}: {path} differs\nexpected:\n{}\nactual:\n{}",
-				String::from_utf8_lossy(bytes),
-				String::from_utf8_lossy(&other.tree[path])
+				other_entry == entry,
+				"{run}: {} differs\nexpected:\n{}\nactual:\n{}",
+				path.display(),
+				entry.render(),
+				other_entry.render()
 			);
 		}
 		assert_eq!(self.report, other.report, "{run}: report differs");
@@ -388,31 +407,30 @@ impl RunSnapshot {
 	}
 }
 
-/// Every file and directory below `root`, by relative path; directories end
-/// in `/` so a leftover empty directory is a difference too. The report
+/// Every file and directory below `root`, keyed by its host path relative to
+/// `root`, so two distinct names are never folded into one key. The report
 /// artifact is kept without its wall-clock field.
-fn output_tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
-	let mut tree: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+fn output_tree(root: &Path) -> BTreeMap<PathBuf, TreeEntry> {
+	let mut tree: BTreeMap<PathBuf, TreeEntry> = BTreeMap::new();
 	let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
 	while let Some(directory) = pending.pop() {
 		for entry in fs::read_dir(&directory).expect("read output directory") {
 			let path: PathBuf = entry.expect("read output entry").path();
-			let relative: String = path
+			let relative: PathBuf = path
 				.strip_prefix(root)
 				.expect("entry below root")
-				.to_string_lossy()
-				.replace('\\', "/");
+				.to_path_buf();
 			if path.is_dir() {
-				tree.insert(format!("{relative}/"), Vec::new());
+				tree.insert(relative, TreeEntry::Directory);
 				pending.push(path);
 				continue;
 			}
 			let mut bytes: Vec<u8> = fs::read(&path).expect("read output file");
-			if relative == MERGE_REPORT_ARTIFACT_PATH {
+			if relative == Path::new(MERGE_REPORT_ARTIFACT_PATH) {
 				let report: Value = serde_json::from_slice(&bytes).expect("parse report artifact");
 				bytes = serde_json::to_vec(&without_wall_clock(report)).expect("serialize report");
 			}
-			tree.insert(relative, bytes);
+			tree.insert(relative, TreeEntry::File(bytes));
 		}
 	}
 	tree
@@ -1113,10 +1131,10 @@ fn a_module_failing_in_its_second_namespace_writes_neither_directory() {
 				"{run}: {namespace}"
 			);
 		}
-		let staging_left: Vec<String> = fs::read_dir(artifacts_dir.join(".foch"))
+		let staging_left: Vec<std::ffi::OsString> = fs::read_dir(artifacts_dir.join(".foch"))
 			.unwrap()
-			.map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-			.filter(|name| name.starts_with("module-stage-"))
+			.map(|entry| entry.unwrap().file_name())
+			.filter(|name| name.as_encoded_bytes().starts_with(b"module-stage-"))
 			.collect();
 		assert!(staging_left.is_empty(), "{run}: {staging_left:?}");
 		for index in 0..6 {

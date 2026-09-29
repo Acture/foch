@@ -127,9 +127,11 @@ fn parse_enabled_mod_entry<'a>(
 		})
 }
 
-/// The descriptor file an `enabled_mods` entry names, spelled as a host path.
+/// The descriptor file an `enabled_mods` entry names under the data
+/// directory, joined one name at a time.
 fn enabled_mod_descriptor_path(paradox_data_dir: &Path, rel: &RelativePath) -> PathBuf {
-	paradox_data_dir.join(rel.to_path(""))
+	rel.iter()
+		.fold(paradox_data_dir.to_path_buf(), |path, name| path.join(name))
 }
 
 fn read_dlc_load_entry(

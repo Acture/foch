@@ -452,7 +452,9 @@ fn classify_entry(
 
 /// The plan's view of a contributor. `source_path` renders the physical file
 /// for display only; the contributor is identified by its mod, precedence and
-/// base-game flag (see `ResolvedInputContributor::is_planned_as`).
+/// base-game flag (see `ResolvedInputContributor::is_planned_as`). The lossy,
+/// `/`-folded rendering is the text plan JSON has always carried, kept so
+/// plans stay byte-identical; nothing reads it back.
 fn to_merge_contributor(contributor: &ResolvedInputContributor) -> MergePlanContributor {
 	MergePlanContributor {
 		mod_id: contributor.mod_id.clone(),

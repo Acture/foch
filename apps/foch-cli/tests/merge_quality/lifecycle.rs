@@ -1703,8 +1703,7 @@ fn scoring_closure_digest(
 	update_closure_field(&mut hasher, b"foch-scorer-closure-v1");
 	hasher.update(&(before.len() as u64).to_le_bytes());
 	for relative_path in &before {
-		// The stable reader checks a host path relative to its root.
-		let content = read_stable_source_file(root, &relative_path.to_path(""))?;
+		let content = read_stable_source_file(root, relative_path)?;
 		update_closure_field(&mut hasher, relative_path.as_str().as_bytes());
 		update_closure_field(&mut hasher, &content);
 	}
@@ -1739,8 +1738,7 @@ fn capture_scoring_layer(
 		.flatten()
 		.collect::<BTreeSet<_>>();
 	for relative_path in &before {
-		// The stable reader checks a host path relative to its root.
-		let content = read_stable_source_file(source_root, &relative_path.to_path(""))?;
+		let content = read_stable_source_file(source_root, relative_path)?;
 		let destination = relative_path.to_path(destination_root);
 		fs::create_dir_all(destination.parent().expect("captured file has parent"))?;
 		fs::write(destination, content)?;

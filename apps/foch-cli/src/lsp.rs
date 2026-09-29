@@ -2354,7 +2354,7 @@ mod tests {
 	};
 	use foch::input::Config;
 	use foch::model::{GamePath, Severity, test_support};
-	use foch::playset::descriptor::{descriptor_path_text, escape_descriptor_value};
+	use foch::playset::descriptor::descriptor_path_text;
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
@@ -2509,9 +2509,7 @@ mod tests {
 			mod_root.join("descriptor.mod"),
 			format!(
 				"name=\"local-mod\"\npath=\"{}\"\n",
-				escape_descriptor_value(
-					&descriptor_path_text(&mod_root).expect("a temp directory has descriptor text")
-				)
+				descriptor_path_text(&mod_root).expect("a temp directory has descriptor text")
 			),
 		)
 		.expect("write descriptor");

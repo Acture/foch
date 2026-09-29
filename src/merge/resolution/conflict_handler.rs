@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -554,14 +555,15 @@ impl FilesystemConfigWriter {
 		Self { path }
 	}
 
+	/// The sibling the next content is staged at before it is renamed over
+	/// the config: `.<name>.<pid>.tmp`, with the config's name extended as it
+	/// is, never re-spelled as text.
 	fn temporary_path(&self) -> PathBuf {
 		let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
-		let file_name = self
-			.path
-			.file_name()
-			.and_then(|value| value.to_str())
-			.unwrap_or("foch.toml");
-		parent.join(format!(".{file_name}.{}.tmp", std::process::id()))
+		let mut name = OsString::from(".");
+		name.push(self.path.file_name().unwrap_or(OsStr::new("foch.toml")));
+		name.push(format!(".{}.tmp", std::process::id()));
+		parent.join(name)
 	}
 
 	fn append_resolution(&self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>> {
@@ -1873,6 +1875,33 @@ dep = "b"
 		assert!(content.contains(r#"prefer_mod = "mod_a""#));
 		let parsed = crate::project::Project::from_toml_str(&content).expect("parse config");
 		assert_eq!(parsed.resolutions.len(), 1);
+	}
+
+	/// A config's staging sibling extends its name as it is: two configs
+	/// whose names are not UTF-8 are staged apart, not both at a
+	/// `.foch.toml` sibling. In memory: some filesystems refuse such names.
+	#[cfg(unix)]
+	#[test]
+	fn config_staging_keeps_a_name_that_is_not_utf8() {
+		use std::os::unix::ffi::OsStrExt;
+
+		let directory = Path::new("/projects/merge");
+		let first = FilesystemConfigWriter::new(directory.join(OsStr::from_bytes(b"a\xff.toml")))
+			.temporary_path();
+		let second = FilesystemConfigWriter::new(directory.join(OsStr::from_bytes(b"b\xff.toml")))
+			.temporary_path();
+		let pid = std::process::id();
+		assert_eq!(
+			first,
+			directory.join(OsStr::from_bytes(
+				&[&b".a\xff.toml."[..], format!("{pid}.tmp").as_bytes()].concat()
+			))
+		);
+		assert_ne!(first, second);
+		assert_eq!(
+			FilesystemConfigWriter::new(directory.join("foch.toml")).temporary_path(),
+			directory.join(format!(".foch.toml.{pid}.tmp"))
+		);
 	}
 
 	fn project_test_dir(name: &str) -> PathBuf {

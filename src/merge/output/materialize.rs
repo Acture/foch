@@ -3300,10 +3300,8 @@ mod tests {
 	}
 
 	fn descriptor_path_value(path: &Path) -> String {
-		crate::playset::descriptor::escape_descriptor_value(
-			&crate::playset::descriptor::descriptor_path_text(path)
-				.expect("a test directory has descriptor text"),
-		)
+		crate::playset::descriptor::descriptor_path_text(path)
+			.expect("a test directory has descriptor text")
 	}
 
 	fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {

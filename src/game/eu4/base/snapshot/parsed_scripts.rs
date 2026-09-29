@@ -16,7 +16,8 @@ struct StoredParsedScriptFile {
 	/// Never read. Released snapshots record where the building machine read
 	/// the file; it is now written empty, which keeps the wire layout without
 	/// persisting a machine's file system. Decoding resolves `relative_path`
-	/// under the reading machine's game root instead.
+	/// under the reading machine's game root instead. It is layout only:
+	/// remove it with the next `BASE_DATA_SCHEMA_VERSION` bump.
 	path: String,
 	relative_path: GamePathBuf,
 	file_kind: ScriptFileKind,
@@ -32,7 +33,8 @@ struct StoredAstFile {
 	/// Never read, so it is not validated: snapshots built before the AST
 	/// carried its game path record the builder's absolute file here. It is
 	/// written as the game path, and a decoded AST is identified by the
-	/// validated `relative_path`.
+	/// validated `relative_path`. It is layout only: remove it with the next
+	/// `BASE_DATA_SCHEMA_VERSION` bump.
 	path: String,
 	statements: Vec<AstStatement>,
 }

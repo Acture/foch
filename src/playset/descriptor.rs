@@ -1,4 +1,4 @@
-use crate::model::{GamePathBuf, GamePathError};
+use crate::model::{GamePath, GamePathBuf, GamePathError};
 use crate::playset::{ParseError, ParseErrorKind};
 use encoding_rs::WINDOWS_1252;
 use jomini::JominiDeserialize;
@@ -9,14 +9,23 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::{Component, Path, Prefix};
+use std::path::{Component, Path, PathBuf, Prefix};
 use typed_path::{Utf8WindowsComponent, Utf8WindowsPath};
 
 /// A `descriptor.mod` as the launcher writes it.
 #[derive(Debug, Clone, Default)]
 pub struct ModDescriptor {
 	pub name: String,
-	pub path: Option<String>,
+	/// The mod's directory. The launcher writes `path` for the host it runs
+	/// on, so the value is the text between its quotes exactly as written,
+	/// read with host syntax only: escape sequences are not interpreted,
+	/// nothing is trimmed, and a separator the host does not use stays part of
+	/// a name rather than being guessed into a directory boundary. A Windows
+	/// launcher's `C:\Users\x\mod` names that directory on Windows and a
+	/// single relative name elsewhere. As with `replace_path`, a value cannot
+	/// end in `\`, because the reader takes `\"` as an escaped quote and keeps
+	/// reading. [`descriptor_path_text`] writes it.
+	pub path: Option<PathBuf>,
 	pub tags: Vec<String>,
 	pub dependencies: Vec<String>,
 	/// The directories this mod replaces, read with [`parse_replace_path`].
@@ -33,18 +42,18 @@ pub struct ModDescriptor {
 #[derive(Debug, Clone, Default)]
 pub struct LauncherDescriptor {
 	pub name: String,
-	pub path: Option<String>,
+	/// The mod's directory, read as [`ModDescriptor::path`] is.
+	pub path: Option<PathBuf>,
 	pub version: Option<String>,
 	pub remote_file_id: Option<String>,
 }
 
-/// Every descriptor field except `replace_path`, decoded the way jomini
-/// decodes text.
+/// Every descriptor field except `path` and `replace_path`, decoded the way
+/// jomini decodes text.
 #[derive(JominiDeserialize)]
 struct TextFields {
 	#[jomini(default)]
 	name: String,
-	path: Option<String>,
 	#[jomini(default)]
 	tags: Vec<String>,
 	#[jomini(default)]
@@ -54,11 +63,13 @@ struct TextFields {
 	supported_version: Option<String>,
 }
 
-/// The descriptor fields before any value is interpreted. Each
-/// `replace_path` value holds the bytes between its quotes, decoded but
-/// otherwise as written (see [`parse_replace_path`]).
+/// The descriptor fields before any value is interpreted. `path` and each
+/// `replace_path` value hold the bytes between their quotes, decoded but
+/// otherwise as written (see [`ModDescriptor::path`] and
+/// [`parse_replace_path`]).
 struct RawModDescriptor {
 	fields: TextFields,
+	path: Option<String>,
 	replace_path: Vec<String>,
 }
 
@@ -76,7 +87,7 @@ impl TryFrom<RawModDescriptor> for ModDescriptor {
 		let fields = raw.fields;
 		Ok(Self {
 			name: fields.name,
-			path: fields.path,
+			path: raw.path.map(PathBuf::from),
 			tags: fields.tags,
 			dependencies: fields.dependencies,
 			replace_path,
@@ -92,7 +103,7 @@ impl From<RawModDescriptor> for LauncherDescriptor {
 		let fields = raw.fields;
 		Self {
 			name: fields.name,
-			path: fields.path,
+			path: raw.path.map(PathBuf::from),
 			version: fields.version,
 			remote_file_id: fields.remote_file_id,
 		}
@@ -283,8 +294,8 @@ pub(crate) fn parse_descriptor_bytes(data: &[u8]) -> Result<ModDescriptor, Descr
 /// 3. Fall back to windows-1252.
 ///
 /// jomini's text decoding drops every `\` and trims trailing whitespace, so
-/// `replace_path` values are decoded from the raw bytes between their quotes
-/// instead, in the same encoding as the rest of the file.
+/// the path fields, `path` and `replace_path`, are decoded from the raw bytes
+/// between their quotes instead, in the same encoding as the rest of the file.
 fn parse_raw_descriptor_bytes(data: &[u8]) -> Result<RawModDescriptor, jomini::Error> {
 	const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 	let payload = data.strip_prefix(UTF8_BOM).unwrap_or(data);
@@ -311,14 +322,21 @@ where
 	E: jomini::Encoding + Clone,
 {
 	let fields: TextFields = reader.deserialize()?;
-	let replace_path = reader
-		.fields()
-		.filter(|(key, _, _)| key.read_str() == "replace_path")
-		.map(|(_, _, value)| Ok(decode(value.read_scalar()?.as_bytes())?.into_owned()))
-		.collect::<Result<_, jomini::Error>>()?;
+	let raw_values = |name: &str| {
+		reader
+			.fields()
+			.filter(|(key, _, _)| key.read_str() == name)
+			.map(|(_, _, value)| Ok(decode(value.read_scalar()?.as_bytes())?.into_owned()))
+			.collect::<Result<Vec<String>, jomini::Error>>()
+	};
+	let mut path = raw_values("path")?;
+	if path.len() > 1 {
+		return Err(jomini::Error::duplicate_field("path"));
+	}
 	Ok(RawModDescriptor {
 		fields,
-		replace_path,
+		path: path.pop(),
+		replace_path: raw_values("replace_path")?,
 	})
 }
 
@@ -327,8 +345,11 @@ where
 pub enum UnwritableDescriptorPath {
 	/// A name is not valid UTF-8.
 	NotUtf8,
-	/// A name holds a `\`, which the descriptor format drops.
+	/// A name holds a `\`, which a Windows launcher reads as a separator and
+	/// which, ending the value, escapes its closing quote.
 	Backslash,
+	/// A name holds a `"`, which would end the value.
+	Quote,
 	/// A device or verbatim prefix names no directory the launcher reads.
 	DevicePrefix,
 }
@@ -337,22 +358,39 @@ impl fmt::Display for UnwritableDescriptorPath {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		f.write_str(match self {
 			Self::NotUtf8 => "the path is not valid UTF-8",
-			Self::Backslash => "a descriptor value cannot hold a `\\`",
+			Self::Backslash => "a descriptor path cannot hold a `\\` inside a name",
+			Self::Quote => "a descriptor path cannot hold a `\"`",
 			Self::DevicePrefix => "a device or verbatim prefix has no descriptor spelling",
 		})
 	}
 }
 
-/// The descriptor `path` text naming the host directory `path`.
+/// The descriptor `path` text naming the host directory `path`, written
+/// verbatim between the value's quotes.
 ///
-/// The launcher reads `path` as a host path, and the descriptor reader drops
-/// every `\` from a value, so the text is built from the path's components
-/// with `/` between them. On Windows `/` is read as the same separator as `\`,
-/// and a verbatim (`\\?\`) drive or UNC prefix is written as the plain one.
-/// Elsewhere `\` is an ordinary name character the format cannot carry. A name
-/// that is not UTF-8, a name holding `\`, and a device or other verbatim
-/// prefix are errors, never a text naming some other directory.
+/// The reader takes the bytes between the quotes as a host path with no
+/// escape interpreted (see [`ModDescriptor::path`]), so the text is built
+/// from the path's components with `/` between them. On Windows `/` is read
+/// as the same separator as `\`, and a verbatim (`\\?\`) drive or UNC prefix
+/// is written as the plain one. Elsewhere `\` is an ordinary name character,
+/// but a Windows launcher splits on it and one before the closing quote
+/// escapes that quote. A name that is not UTF-8, a name holding `\` or `"`,
+/// and a device or other verbatim prefix are errors, never a text naming some
+/// other directory.
 pub fn descriptor_path_text(path: &Path) -> Result<String, UnwritableDescriptorPath> {
+	let text = slash_path_text(path)?;
+	if text.contains('"') {
+		return Err(UnwritableDescriptorPath::Quote);
+	}
+	Ok(text)
+}
+
+/// `path` spelled as [`descriptor_path_text`] spells it, with its components
+/// joined by `/`, but keeping a `"`: for text that is not a `path` value,
+/// such as the source playset comment of a generated descriptor. A name that
+/// is not UTF-8 or holds `\`, and a device or other verbatim prefix, are
+/// errors.
+pub(crate) fn slash_path_text(path: &Path) -> Result<String, UnwritableDescriptorPath> {
 	let mut text = String::new();
 	let mut after_name = false;
 	for component in path.components() {
@@ -403,8 +441,25 @@ fn descriptor_name(name: &OsStr) -> Result<&str, UnwritableDescriptorPath> {
 	Ok(name)
 }
 
+/// The `replace_path` text naming `directory`, written verbatim between the
+/// value's quotes. The reader takes those bytes with no escape interpreted
+/// (see [`parse_replace_path`]), and a game path holds no `\`, so its own
+/// text reads back as the same directory. Only a `"`, which would end the
+/// value, has no spelling.
+pub fn replace_path_text(directory: &GamePath) -> Result<&str, UnwritableDescriptorPath> {
+	let text = directory.as_str();
+	if text.contains('"') {
+		return Err(UnwritableDescriptorPath::Quote);
+	}
+	Ok(text)
+}
+
 /// A value quoted for a descriptor: `"` and `\` are escaped, so the value
-/// cannot end the quotes early.
+/// cannot end the quotes early. Only for the text fields jomini decodes, such
+/// as `name` and `remote_file_id`: jomini turns `\"` back into `"` but drops
+/// every `\`. `path` and `replace_path` are read without escapes, so their
+/// text comes from [`descriptor_path_text`] and [`replace_path_text`] and is
+/// written as it is.
 pub fn escape_descriptor_value(value: &str) -> String {
 	value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -414,12 +469,12 @@ mod tests {
 	use super::{
 		DescriptorParseError, ModDescriptor, ReplacePathError, UnwritableDescriptorPath,
 		descriptor_path_text, escape_descriptor_value, load_descriptor, load_launcher_descriptor,
-		parse_descriptor_bytes, parse_replace_path,
+		parse_descriptor_bytes, parse_replace_path, replace_path_text, slash_path_text,
 	};
-	use crate::model::GamePathErrorKind;
+	use crate::model::{GamePath, GamePathErrorKind};
 	use crate::playset::ParseErrorKind;
 	use std::fs;
-	use std::path::Path;
+	use std::path::{Path, PathBuf};
 
 	fn parse(input: &str) -> ModDescriptor {
 		parse_descriptor_bytes(input.as_bytes()).expect("failed to parse synthetic descriptor")
@@ -578,7 +633,7 @@ mod tests {
 
 		let descriptor = load_launcher_descriptor(&path).expect("launcher descriptor");
 		assert_eq!(descriptor.name, "Named");
-		assert_eq!(descriptor.path.as_deref(), Some("/mods/named"));
+		assert_eq!(descriptor.path.as_deref(), Some(Path::new("/mods/named")));
 		assert_eq!(descriptor.version.as_deref(), Some("2.0"));
 		assert_eq!(descriptor.remote_file_id.as_deref(), Some("1001"));
 		assert_eq!(
@@ -589,30 +644,67 @@ mod tests {
 		);
 	}
 
-	/// A descriptor `path` names a host directory exactly: reading the
-	/// descriptor back yields that directory.
+	/// A descriptor `path` names a host directory exactly: its text is
+	/// written verbatim between the quotes, and reading the descriptor back
+	/// yields that directory.
 	#[test]
 	fn descriptor_path_text_names_the_directory_exactly() {
 		let temp = tempfile::tempdir().expect("temp dir");
-		let directory = temp.path().join("merged \"quoted\" output");
+		let directory = temp.path().join("merged output Ölände 欧陆 (1)");
 		let text = descriptor_path_text(&directory).expect("a UTF-8 directory has text");
 		let descriptor = temp.path().join("descriptor.mod");
-		fs::write(
-			&descriptor,
-			format!("name=\"x\"\npath=\"{}\"\n", escape_descriptor_value(&text)),
-		)
-		.expect("write descriptor");
+		fs::write(&descriptor, format!("name=\"x\"\npath=\"{text}\"\n")).expect("write descriptor");
 
 		let read_back = load_launcher_descriptor(&descriptor)
 			.expect("read descriptor")
 			.path
 			.expect("descriptor path");
-		assert_eq!(std::path::PathBuf::from(read_back), directory);
+		assert_eq!(read_back, directory);
 	}
 
-	/// The descriptor reader drops `\`, and a name that is not UTF-8 has no
-	/// text at all. Off Windows either can be part of a directory name, so such
-	/// a directory is refused instead of being written as some other one.
+	/// `path` is read without escapes, so a `"` has no spelling: `\"` would be
+	/// read back as both characters. A directory holding one is refused, while
+	/// text that is not a `path` value keeps the same `/`-joined spelling.
+	#[test]
+	fn a_directory_holding_a_quote_has_no_descriptor_path() {
+		let quoted = Path::new("merged").join("out \"put\"");
+		assert_eq!(
+			descriptor_path_text(&quoted),
+			Err(UnwritableDescriptorPath::Quote)
+		);
+		assert_eq!(
+			slash_path_text(&quoted).as_deref(),
+			Ok("merged/out \"put\"")
+		);
+	}
+
+	/// `replace_path` is read from the bytes between its quotes, so a game
+	/// path's own text is its spelling and reads back as the same directory.
+	/// A `"` would end the value, so a directory holding one is refused.
+	#[test]
+	fn replace_path_text_reads_back_as_its_directory() {
+		for text in [
+			"common/ideas",
+			"history/countries",
+			"common/a b",
+			"gfx/欧陆",
+		] {
+			let directory = GamePath::new(text).expect("valid game path");
+			let value = replace_path_text(directory).expect("a directory without a quote");
+			assert_eq!(value, text);
+			let descriptor = parse(&format!("name=\"x\"\nreplace_path=\"{value}\"\n"));
+			assert_eq!(replace_texts(&descriptor), vec![text]);
+		}
+		assert_eq!(
+			replace_path_text(GamePath::new("common/a\"b").expect("valid game path")),
+			Err(UnwritableDescriptorPath::Quote)
+		);
+	}
+
+	/// A name holding `\` is refused because a Windows launcher splits on it,
+	/// and a name that is not UTF-8 has no text at all. Off Windows either can
+	/// be part of a directory name, so such a directory is refused instead of
+	/// being written as some other one.
 	#[cfg(unix)]
 	#[test]
 	fn a_directory_a_descriptor_cannot_name_is_an_error() {
@@ -633,6 +725,113 @@ mod tests {
 			descriptor_path_text(Path::new("/merged/a:/b")).as_deref(),
 			Ok("/merged/a:/b")
 		);
+	}
+
+	fn descriptor_path_of(bytes: &[u8]) -> PathBuf {
+		parse_descriptor_bytes(bytes)
+			.expect("descriptor")
+			.path
+			.expect("descriptor path")
+	}
+
+	/// The launcher writes `path` in its host's syntax, and it is read from
+	/// the bytes between its quotes: jomini's text decoding would drop every
+	/// `\` (a Windows launcher's `C:\Users\x` became `C:Usersx`) and trim
+	/// trailing whitespace.
+	#[test]
+	fn descriptor_path_is_the_text_between_its_quotes() {
+		for (value, expected) in [
+			// The current launcher, on macOS and Linux.
+			(
+				r#""/Users/x/Library/Application Support/Steam/steamapps/workshop/content/236850/1001""#,
+				"/Users/x/Library/Application Support/Steam/steamapps/workshop/content/236850/1001",
+			),
+			// Forward slashes, as the launcher writes them on Windows.
+			(
+				r#""C:/Users/x/Documents/Paradox Interactive/Europa Universalis IV/mod/named""#,
+				"C:/Users/x/Documents/Paradox Interactive/Europa Universalis IV/mod/named",
+			),
+			// A Windows launcher's backslashes are kept as written.
+			(
+				r#""C:\Users\x\Documents\Paradox Interactive\Europa Universalis IV\mod\named""#,
+				r"C:\Users\x\Documents\Paradox Interactive\Europa Universalis IV\mod\named",
+			),
+			// Nothing is trimmed, and no escape sequence is interpreted.
+			(r#""/mods/named ""#, "/mods/named "),
+			(r#""/mods/a\"b""#, r#"/mods/a\"b"#),
+			(r#""/mods/欧陆""#, "/mods/欧陆"),
+			("/mods/unquoted", "/mods/unquoted"),
+		] {
+			let path = descriptor_path_of(format!("name=\"x\"\npath={value}\n").as_bytes());
+			assert_eq!(path.as_os_str(), expected, "{value}");
+		}
+
+		// A windows-1252 descriptor decodes `path` in the same encoding as its
+		// other values.
+		let descriptor = parse_descriptor_bytes(b"name=\"Caf\xe9\"\npath=\"/mods/Caf\xe9\"\n")
+			.expect("windows-1252 descriptor");
+		assert_eq!(descriptor.name, "Café");
+		assert_eq!(descriptor.path.as_deref(), Some(Path::new("/mods/Café")));
+	}
+
+	/// A `path` cannot end in `\`: the tokenizer reads `\"` as an escaped
+	/// quote, so the value runs on to the next quote in the file and the last
+	/// one opens a value that never closes. Whether the value is followed by
+	/// other fields or is the last line, such a descriptor is a syntax error,
+	/// never a path read from the wrong bytes: a launcher copy that does not
+	/// parse gives no mod directory.
+	#[test]
+	fn a_descriptor_path_ending_in_a_backslash_does_not_parse() {
+		for bytes in [
+			&b"name=\"x\"\npath=\"C:\\mods\\x\\\"\nsupported_version=\"1.37.*\"\n"[..],
+			&b"path=\"C:\\mods\\x\\\"\nname=\"x\"\nremote_file_id=\"1001\"\n"[..],
+			&b"name=\"x\"\npath=\"C:\\mods\\x\\\"\n"[..],
+		] {
+			let result = parse_descriptor_bytes(bytes);
+			assert!(
+				matches!(result, Err(DescriptorParseError::Syntax(_))),
+				"{:?}: {result:?}",
+				String::from_utf8_lossy(bytes)
+			);
+		}
+	}
+
+	/// A Windows launcher's backslash path is read with host syntax only: a
+	/// separator the host does not use stays part of a name.
+	#[test]
+	fn a_backslash_descriptor_path_resolves_only_on_windows() {
+		let path = descriptor_path_of(br#"path="C:\mods\named""#);
+		#[cfg(unix)]
+		assert_eq!(
+			path.components().collect::<Vec<_>>(),
+			vec![std::path::Component::Normal(std::ffi::OsStr::new(
+				r"C:\mods\named"
+			))],
+			"one relative name on Unix"
+		);
+		#[cfg(windows)]
+		assert_eq!(path, Path::new("C:/").join("mods").join("named"));
+	}
+
+	/// `name` is decoded by jomini, which reads an escaped quote back.
+	#[test]
+	fn an_escaped_name_reads_back() {
+		let name = "The \"Great\" Merge";
+		let descriptor = parse(&format!("name=\"{}\"\n", escape_descriptor_value(name)));
+		assert_eq!(descriptor.name, name);
+	}
+
+	#[test]
+	fn a_repeated_or_structured_descriptor_path_does_not_parse() {
+		for bytes in [
+			&b"path=\"/mods/a\"\npath=\"/mods/b\"\n"[..],
+			&b"path={ \"/mods/a\" }\n"[..],
+		] {
+			assert!(matches!(
+				parse_descriptor_bytes(bytes),
+				Err(DescriptorParseError::Syntax(_))
+			));
+		}
 	}
 
 	/// Windows spells a verbatim drive or UNC directory with a `\\?\` prefix
