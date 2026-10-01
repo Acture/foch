@@ -16,6 +16,7 @@ use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -56,7 +57,10 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		&CancellationToken::new(),
 	)?;
 	let analysis = analyzed.analysis();
-	println!("{}", render_merge_review_text(&analyzed));
+	println!(
+		"{}",
+		render_merge_review_text(&analyzed, merge_args.review_all)
+	);
 	let plan_exit_code = merge_plan_exit_code(analysis.plan());
 	if analysis.plan().has_fatal_errors() {
 		return Ok(plan_exit_code);
@@ -90,7 +94,8 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	Ok(execution.exit_code)
 }
 
-fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
+fn render_merge_review_text(analyzed: &AnalyzedMerge, review_all: bool) -> String {
+	const UNITS_PER_DISPOSITION: usize = 20;
 	let analysis = analyzed.analysis();
 	let summary = analyzed.review_summary();
 	let status = match analysis.status() {
@@ -115,6 +120,7 @@ fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
 		}
 	}
 	output.push_str("review units:\n");
+	let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
 	for unit in analyzed.list_units() {
 		let disposition = match unit.disposition {
 			MergeDisposition::Safe => "safe",
@@ -124,6 +130,11 @@ fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
 			MergeDisposition::EngineFailure => "engine_failure",
 			MergeDisposition::Deferred => "deferred",
 		};
+		let count: &mut usize = counts.entry(disposition).or_default();
+		*count += 1;
+		if !review_all && *count > UNITS_PER_DISPOSITION {
+			continue;
+		}
 		let kind = match unit.kind {
 			MergeUnitKind::File => "file",
 			MergeUnitKind::DefinitionModule => "definition_module",
@@ -154,6 +165,18 @@ fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
 		for note in &unit.notes {
 			output.push_str(&format!("  note: {note}\n"));
 		}
+	}
+	if !review_all && counts.values().any(|count| *count > UNITS_PER_DISPOSITION) {
+		output.push_str("additional review units (not displayed):\n");
+		for (disposition, count) in counts {
+			if count > UNITS_PER_DISPOSITION {
+				output.push_str(&format!(
+					"  {} more {disposition} units\n",
+					count - UNITS_PER_DISPOSITION
+				));
+			}
+		}
+		output.push_str("Pass --review-all to display every unit before committing.\n");
 	}
 	output
 }

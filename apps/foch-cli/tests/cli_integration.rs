@@ -1514,6 +1514,80 @@ fn merge_preview_returns_exit_0_when_plan_has_manual_conflicts() {
 }
 
 #[test]
+fn merge_preview_limits_each_disposition_and_can_show_every_unit() {
+	let tmp: TempDir = TempDir::new().expect("temp dir");
+	let playlist_path: PathBuf = tmp.path().join("playlist.json");
+	let out_dir: PathBuf = tmp.path().join("merged-out");
+	let mod_a: PathBuf = tmp.path().join("7251");
+	let mod_b: PathBuf = tmp.path().join("7252");
+	write_dlc_load(&playlist_path, &[("7251", "A"), ("7252", "B")]);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	stage_structural_manual_conflict(&mod_a, &mod_b);
+	fs::create_dir_all(mod_a.join("gfx")).expect("create gfx dir");
+	for index in 0..25 {
+		fs::write(mod_a.join(format!("gfx/copy-{index:02}.dds")), [0, 1, 2])
+			.expect("write copied asset");
+	}
+	for mod_root in [&mod_a, &mod_b] {
+		for index in 0..24 {
+			fs::copy(
+				mod_root.join("events/conflict.txt"),
+				mod_root.join(format!("events/z-conflict-{index:02}.txt")),
+			)
+			.expect("write additional unsupported unit");
+		}
+	}
+	let mut args: Vec<&str> = vec![
+		"merge",
+		path_text(&playlist_path),
+		"--out",
+		path_text(&out_dir),
+		"--no-game-base",
+		"--non-interactive",
+	];
+	let (code, stdout, stderr) = run_foch(&args, tmp.path());
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert_eq!(stdout.matches("- [copy]").count(), 20, "{stdout}");
+	assert_eq!(
+		stdout.matches("- [unsupported_input]").count(),
+		20,
+		"{stdout}"
+	);
+	assert!(stdout.contains("  copy: 25"), "{stdout}");
+	assert!(stdout.contains("  unsupported_input: 25"), "{stdout}");
+	assert!(
+		stdout.contains("[unsupported_input] events/conflict.txt"),
+		"{stdout}"
+	);
+	assert!(stdout.contains("5 more copy units"), "{stdout}");
+	assert!(
+		stdout.contains("5 more unsupported_input units"),
+		"{stdout}"
+	);
+	assert!(stdout.contains("--review-all"), "{stdout}");
+	assert!(!stdout.contains("gfx/copy-24.dds"), "{stdout}");
+	assert!(!out_dir.exists(), "preview must not create --out");
+
+	args.push("--review-all");
+	let (code, stdout, stderr) = run_foch(&args, tmp.path());
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert_eq!(stdout.matches("- [copy]").count(), 25, "{stdout}");
+	assert_eq!(
+		stdout.matches("- [unsupported_input]").count(),
+		25,
+		"{stdout}"
+	);
+	assert!(stdout.contains("gfx/copy-24.dds"), "{stdout}");
+	assert!(
+		stdout.contains("[unsupported_input] events/conflict.txt"),
+		"{stdout}"
+	);
+	assert!(!stdout.contains("more copy units"), "{stdout}");
+	assert!(!out_dir.exists(), "full review must not create --out");
+}
+
+#[test]
 fn merge_command_defaults_to_plan_without_writing_output() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
