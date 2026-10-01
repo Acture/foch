@@ -136,6 +136,7 @@ mod tests {
 	use std::path::Path;
 
 	use super::{cwt_files, cwt_schema_id_from_dir};
+	#[cfg(unix)]
 	use crate::game::schema::error::CwtLoadError;
 
 	fn relative_names(root: &Path) -> Vec<String> {

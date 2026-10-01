@@ -16,7 +16,9 @@ use crate::model::{
 	MergePlanEntry, MergePlanResult, MergePlanStrategies, MergePlanStrategy, MergePlanTarget,
 	MergeUnitId,
 };
+use crate::playset::descriptor::slash_path_text;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn fatal_plan_from_input_error(
@@ -366,35 +368,20 @@ fn classify_module_entry(
 	})
 }
 
-/// Every contributor of a module, ordered by precedence, then the base game
-/// before any mod, then by mod, then by the input it contributes. The order
-/// never depends on where a contributor's file lives on disk.
-///
-/// Before, equal precedence fell back to the physical path's text. In the
-/// default Steam layout this key gives the same order: the game under
-/// `steamapps/common/` sorts before every mod under `steamapps/workshop/`;
-/// each Workshop mod's directory is named by its id, which is its mod id, and
-/// `<id>/` orders as `<id>` does because `/` sorts before every digit; and
-/// within one root the physical path's tail is the game path's text. Where
-/// mods live elsewhere (a local mod under `Documents/` sorted before the game
-/// on macOS) the order is now the same as in the Steam layout. Ties occur at
-/// precedence 0, where the base game meets synthetic bases, and when a
-/// priority boost gives two mods one precedence.
+/// Every contributor of a module, ordered by precedence, then by its native
+/// source path, then by mod. Render paths only after ordering: display text
+/// can collapse distinct non-UTF-8 root names.
 fn module_contributors(inputs: &ModuleInputs<'_>) -> Vec<MergePlanContributor> {
-	let mut contributors: Vec<(&GamePath, &ResolvedInputContributor)> = inputs
+	let mut contributors: Vec<(PathBuf, &ResolvedInputContributor)> = inputs
 		.iter()
-		.flat_map(|(path, contributors)| {
-			contributors
-				.iter()
-				.map(move |contributor| (*path, contributor))
-		})
+		.flat_map(|(_, contributors)| contributors.iter())
+		.map(|contributor| (contributor.absolute_path(), contributor))
 		.collect();
 	contributors.sort_by(|(left_path, left), (right_path, right)| {
 		left.precedence
 			.cmp(&right.precedence)
-			.then_with(|| right.is_base_game.cmp(&left.is_base_game))
-			.then_with(|| left.mod_id.cmp(&right.mod_id))
 			.then_with(|| left_path.cmp(right_path))
+			.then_with(|| left.mod_id.cmp(&right.mod_id))
 	});
 	contributors
 		.into_iter()
@@ -452,16 +439,14 @@ fn classify_entry(
 
 /// The plan's view of a contributor. `source_path` renders the physical file
 /// for display only; the contributor is identified by its mod, precedence and
-/// base-game flag (see `ResolvedInputContributor::is_planned_as`). The lossy,
-/// `/`-folded rendering is the text plan JSON has always carried, kept so
-/// plans stay byte-identical; nothing reads it back.
+/// base-game flag (see `ResolvedInputContributor::is_planned_as`). The file is
+/// spelled with its components joined by `/`, and as the host displays it when
+/// it has no such spelling, never with a name's `\` read as a separator.
 fn to_merge_contributor(contributor: &ResolvedInputContributor) -> MergePlanContributor {
+	let path: PathBuf = contributor.absolute_path();
 	MergePlanContributor {
 		mod_id: contributor.mod_id.clone(),
-		source_path: contributor
-			.absolute_path()
-			.to_string_lossy()
-			.replace('\\', "/"),
+		source_path: slash_path_text(&path).unwrap_or_else(|_| path.display().to_string()),
 		precedence: contributor.precedence,
 		is_base_game: contributor.is_base_game,
 	}
@@ -671,7 +656,7 @@ pub(crate) fn is_localisation_yml_path(path: &GamePath) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::build_merge_plan_from_input;
+	use super::{build_merge_plan_from_input, to_merge_contributor};
 	use crate::game::eu4::Eu4;
 	use crate::input::{ResolvedInput, ResolvedInputContributor};
 	use crate::model::{
@@ -1190,10 +1175,9 @@ mod tests {
 	}
 
 	/// Two mods that share a precedence (a priority boost can do that) are
-	/// ordered by mod, so where a mod is installed cannot reorder them. Before,
-	/// equal precedence fell back to the physical path's text.
+	/// ordered by their native source paths, then by mod.
 	#[test]
-	fn module_contributor_order_does_not_depend_on_where_mods_are_installed() {
+	fn module_contributors_sharing_a_precedence_follow_their_native_source_paths() {
 		let order = |alpha_root: &str, beta_root: &str| {
 			let mut input = input_with_snapshot_gap_at_path(
 				"common/governments/a.txt",
@@ -1221,18 +1205,82 @@ mod tests {
 				.collect::<Vec<_>>()
 		};
 
-		let expected = vec![("alpha".to_string(), 1), ("beta".to_string(), 1)];
-		assert_eq!(order("/zzz/alpha", "/aaa/beta"), expected);
-		assert_eq!(order("/aaa/alpha", "/zzz/beta"), expected);
+		let alpha = ("alpha".to_string(), 1);
+		let beta = ("beta".to_string(), 1);
+		assert_eq!(
+			order("/zzz/alpha", "/aaa/beta"),
+			[beta.clone(), alpha.clone()]
+		);
+		assert_eq!(order("/aaa/alpha", "/zzz/beta"), [alpha, beta]);
+	}
+
+	/// `source_path` spells the physical file with its components joined by
+	/// `/`: the host text of a plain Unix path, and a drive path with `/` for
+	/// its `\` separators.
+	#[test]
+	fn source_path_joins_the_physical_components_with_slashes() {
+		let render = |root: &str| {
+			let mut contributor = mod_contributor("123", "common/x.txt", 1);
+			contributor.root_path = PathBuf::from(root);
+			to_merge_contributor(&contributor).source_path
+		};
+		assert_eq!(
+			render("/steam/steamapps/workshop/content/236850/123"),
+			"/steam/steamapps/workshop/content/236850/123/common/x.txt"
+		);
+		#[cfg(windows)]
+		assert_eq!(
+			render(r"C:\Steam\steamapps\workshop\content\236850\123"),
+			"C:/Steam/steamapps/workshop/content/236850/123/common/x.txt"
+		);
+	}
+
+	/// On Unix a `\` inside a root's name is a character, not a separator, so
+	/// the root `/mods/a\b` is not rendered as the different directory
+	/// `/mods/a/b`.
+	#[cfg(unix)]
+	#[test]
+	fn source_path_keeps_a_backslash_inside_a_root_name() {
+		let render = |root: &str| {
+			let mut contributor = mod_contributor("mod-a", "common/x.txt", 1);
+			contributor.root_path = PathBuf::from(root);
+			to_merge_contributor(&contributor).source_path
+		};
+		assert_eq!(render("/mods/a\\b"), "/mods/a\\b/common/x.txt");
+		assert_eq!(render("/mods/a/b"), "/mods/a/b/common/x.txt");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn module_order_does_not_compare_lossy_root_displays() {
+		use std::ffi::OsString;
+		use std::os::unix::ffi::OsStringExt;
+
+		// In-memory paths: the filesystem need not support these root names.
+		let path: GamePathBuf = game_path("common/governments/a.txt");
+		let mut alpha: ResolvedInputContributor = mod_contributor("alpha", path.as_str(), 1);
+		let mut beta: ResolvedInputContributor = mod_contributor("beta", path.as_str(), 1);
+		alpha.root_path = PathBuf::from(OsString::from_vec(b"/mods/\xff".to_vec()));
+		beta.root_path = PathBuf::from(OsString::from_vec(b"/mods/\xfe".to_vec()));
+		assert_eq!(
+			to_merge_contributor(&alpha).source_path,
+			to_merge_contributor(&beta).source_path,
+			"display text alone cannot order these roots"
+		);
+		let contributors: [ResolvedInputContributor; 2] = [alpha, beta];
+		let inputs: super::ModuleInputs<'_> = vec![(&path, &contributors)];
+		let ordered: Vec<MergePlanContributor> = super::module_contributors(&inputs);
+		assert_eq!(ordered[0].mod_id, "beta");
+		assert_eq!(ordered[1].mod_id, "alpha");
 	}
 
 	/// At precedence 0 the base game meets the synthetic bases of files it does
-	/// not ship. The base game comes first, then each synthetic base by the mod
-	/// that seeds it, whatever file each contributes; a mod's own files follow
-	/// in input order. In the default Steam layout this is exactly the order the
-	/// physical path text gave, and elsewhere it does not change.
+	/// not ship, and they are ordered by their native source paths. In the default
+	/// Steam layout the game under `steamapps/common/` comes before every
+	/// synthetic base under `steamapps/workshop/`, which follow by mod; where
+	/// the game sorts after the mods, it follows the synthetic bases.
 	#[test]
-	fn module_contributors_put_the_base_game_first_and_order_synthetic_bases_by_mod() {
+	fn module_contributors_at_precedence_zero_follow_their_native_source_paths() {
 		const BASE: &str = "__game__eu4";
 		let plan_order = |root_of: &dyn Fn(&str) -> PathBuf| {
 			let contributor = |mod_id: &str, path: &str, precedence: usize| {
@@ -1312,16 +1360,7 @@ mod tests {
 				PathBuf::from("/steam/steamapps/workshop/content/236850").join(mod_id)
 			}
 		};
-		let in_steam = plan_order(&steam);
-		assert_eq!(identity(&in_steam), expected);
-		let mut by_physical_text = in_steam.clone();
-		by_physical_text.sort_by(|left, right| {
-			left.precedence
-				.cmp(&right.precedence)
-				.then_with(|| left.source_path.cmp(&right.source_path))
-				.then_with(|| left.mod_id.cmp(&right.mod_id))
-		});
-		assert_eq!(identity(&by_physical_text), expected);
+		assert_eq!(identity(&plan_order(&steam)), expected);
 
 		let elsewhere = |mod_id: &str| {
 			if mod_id == BASE {
@@ -1330,7 +1369,10 @@ mod tests {
 				PathBuf::from("/aaa/mods").join(mod_id)
 			}
 		};
-		assert_eq!(identity(&plan_order(&elsewhere)), expected);
+		let mut game_last = expected.clone();
+		let game = game_last.remove(0);
+		game_last.insert(2, game);
+		assert_eq!(identity(&plan_order(&elsewhere)), game_last);
 	}
 
 	/// Localisation directories are matched ignoring ASCII case, one component

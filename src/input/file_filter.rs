@@ -1,6 +1,6 @@
 use crate::game::eu4::Eu4;
 use crate::model::GamePath;
-use globset::{GlobSet, GlobSetBuilder};
+use globset::{Candidate, GlobSet, GlobSetBuilder};
 
 /// Filter applied while walking mod roots and the base game install. Combines
 /// the game's authoritative content-root list (`Eu4::is_loadable_content_path`)
@@ -27,6 +27,7 @@ impl FileFilter {
 			let glob = globset::GlobBuilder::new(pattern)
 				.case_insensitive(true)
 				.literal_separator(false)
+				.backslash_escape(true)
 				.build()
 				.map_err(|err| {
 					format!("failed to parse extra_ignore_patterns pattern \"{pattern}\": {err}")
@@ -66,7 +67,10 @@ impl FileFilter {
 		if self.extra_ignore_pattern_count == 0 {
 			return true;
 		}
-		!self.extra_ignore.is_match(relative.as_str())
+		// Match portable UTF-8 bytes without reinterpreting them as a host path.
+		!self
+			.extra_ignore
+			.is_match_candidate(&Candidate::from_bytes(relative.as_str()))
 	}
 }
 
@@ -134,6 +138,14 @@ mod tests {
 		let filter = FileFilter::new(Eu4, &["common/*.bak".to_string()]).unwrap();
 		assert!(!filter.accepts(&pf("common/nested/deep/foo.bak")));
 		assert!(filter.accepts(&pf("events/nested/foo.bak")));
+	}
+
+	#[test]
+	fn extra_patterns_use_portable_glob_escapes_on_every_host() {
+		let filter: FileFilter =
+			FileFilter::new(Eu4, &[r"common/literal\*.txt".to_string()]).expect("glob");
+		assert!(!filter.accepts(&pf("common/literal*.txt")));
+		assert!(filter.accepts(&pf("common/literal_other.txt")));
 	}
 
 	#[test]

@@ -9,12 +9,14 @@ use foch::game::eu4::editor::schema::{
 	SchemaWorkspace,
 };
 use foch::game::eu4::editor::workspace::{WorkspaceFiles, WorkspaceSession};
+use foch::game::eu4::script::localisation::{
+	localisation_definitions_in_files, walk_localisation_files,
+};
 use foch::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_statements,
 };
 use foch::game::eu4::script::{
-	ParsedScriptFile, build_semantic_index, collect_localisation_definitions, parse_script_file,
-	resolve_symbol_reference_targets,
+	ParsedScriptFile, build_semantic_index, parse_script_file, resolve_symbol_reference_targets,
 };
 use foch::input::{
 	Config, InputRequest, InputSource, InputTargetRole, load_or_init_config, resolve_input_targets,
@@ -825,16 +827,34 @@ fn build_workspace_snapshot_with_schema(
 			}
 			parsed.push(item);
 		}
-		let definitions = match collect_localisation_definitions(&mod_id, &target.path) {
-			Ok(definitions) => definitions,
-			Err(err) => {
-				warnings.push(format!(
-					"foch lsp: not indexing localisation under {}: {err}",
-					target.path.display()
-				));
-				Vec::new()
+		// As for scripts, an entry the walk cannot read or a file without a
+		// game path costs only that entry, never the root's localisation.
+		let mut localisation_files = Vec::new();
+		for file in walk_localisation_files(&target.path) {
+			let file = match file {
+				Ok(file) => file,
+				Err(error) => {
+					warnings.push(format!(
+						"foch lsp: not indexing localisation under {}: {error}",
+						target.path.display()
+					));
+					continue;
+				}
+			};
+			match GamePathBuf::from_physical(&target.path, &file) {
+				Ok(relative) => localisation_files.push(relative),
+				Err(error) => {
+					warnings.push(format!(
+						"foch lsp: not indexing {}: {error}",
+						file.display()
+					));
+					file_paths.push(file.clone());
+					unportable.push((file, error));
+				}
 			}
-		};
+		}
+		let definitions =
+			localisation_definitions_in_files(&mod_id, &target.path, &localisation_files);
 		for definition in &definitions {
 			let path = definition.path.to_path(&target.path);
 			file_paths.push(path.clone());
@@ -3283,6 +3303,124 @@ path = "local-mod"
 		assert_eq!(
 			nested_path.expect("nested file has a game path").as_str(),
 			"events/a/b.txt"
+		);
+	}
+
+	/// A localisation file whose name has no game path is reported on its own
+	/// and costs no other file its definitions, so their keys are not reported
+	/// missing.
+	#[cfg(unix)]
+	#[test]
+	fn an_unportable_localisation_file_costs_only_itself() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		let event_path = root.join("events").join("a.txt");
+		let kept = root.join("localisation").join("kept_l_english.yml");
+		let literal = root.join("localisation").join("a\\b_l_english.yml");
+		fs::create_dir_all(root.join("events")).expect("create events");
+		fs::create_dir_all(root.join("localisation")).expect("create localisation");
+		fs::write(
+			&event_path,
+			"namespace = test\ncountry_event = { id = test.1 title = KEPT_TITLE desc = MISSING_DESC }\n",
+		)
+		.expect("write event");
+		fs::write(&kept, "l_english:\n KEPT_TITLE:0 \"Title\"\n").expect("write localisation");
+		fs::write(&literal, "l_english:\n LITERAL_TITLE:0 \"Title\"\n")
+			.expect("write unportable localisation");
+		let targets = [ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}];
+
+		let snapshot = build_workspace_snapshot(&targets);
+		let session = snapshot.session.as_ref().expect("session");
+		let keys = session
+			.index
+			.localisation_definitions
+			.iter()
+			.map(|definition| definition.key.as_str())
+			.collect::<Vec<_>>();
+		assert_eq!(keys, ["KEPT_TITLE"]);
+		let missing = snapshot
+			.diagnostics_by_path
+			.get(&event_path)
+			.into_iter()
+			.flatten()
+			.filter(|diagnostic| {
+				diagnostic.code == Some(NumberOrString::String("missing-localisation".to_string()))
+			})
+			.map(|diagnostic| diagnostic.message.as_str())
+			.collect::<Vec<_>>();
+		assert!(
+			missing
+				.iter()
+				.any(|message| message.contains("MISSING_DESC")),
+			"{missing:?}"
+		);
+		assert!(
+			!missing.iter().any(|message| message.contains("KEPT_TITLE")),
+			"{missing:?}"
+		);
+		let diagnostics = snapshot
+			.diagnostics_by_path
+			.get(&literal)
+			.expect("the unportable file has a diagnostic");
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("unportable-path".to_string()))
+		}));
+		assert!(
+			session.file_paths.contains(&literal),
+			"its diagnostic is published"
+		);
+	}
+
+	/// A localisation directory the walk cannot read is reported and skipped;
+	/// the rest of the root's localisation is still indexed.
+	#[cfg(unix)]
+	#[test]
+	fn an_unreadable_localisation_directory_costs_only_itself() {
+		use std::os::unix::fs::PermissionsExt;
+
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		let locked = root.join("localisation").join("locked");
+		fs::create_dir_all(&locked).expect("create localisation");
+		fs::write(
+			root.join("localisation").join("kept_l_english.yml"),
+			"l_english:\n KEPT_TITLE:0 \"Title\"\n",
+		)
+		.expect("write localisation");
+		fs::write(
+			locked.join("hidden_l_english.yml"),
+			"l_english:\n HIDDEN_TITLE:0 \"Title\"\n",
+		)
+		.expect("write hidden localisation");
+		let targets = [ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}];
+
+		fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("lock directory");
+		let snapshot = build_workspace_snapshot(&targets);
+		fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("unlock directory");
+
+		let session = snapshot.session.as_ref().expect("session");
+		let keys = session
+			.index
+			.localisation_definitions
+			.iter()
+			.map(|definition| definition.key.as_str())
+			.collect::<Vec<_>>();
+		assert_eq!(keys, ["KEPT_TITLE"]);
+		assert!(
+			snapshot
+				.warnings
+				.iter()
+				.any(|warning| warning.contains("not indexing localisation under")),
+			"{:?}",
+			snapshot.warnings
 		);
 	}
 

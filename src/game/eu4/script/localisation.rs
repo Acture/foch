@@ -1,10 +1,13 @@
 use crate::game::eu4::Eu4;
-use crate::input::{FileFilter, InventoryOwner, collect_relative_files_within};
-use crate::model::{GamePath, LocalisationDefinition, LocalisationDuplicate, ParseIssue};
+use crate::input::{FileFilter, InventoryOwner, collect_relative_files_within, walk_within};
+use crate::model::{
+	GamePath, GamePathBuf, LocalisationDefinition, LocalisationDuplicate, ParseIssue,
+};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedLocalisationEntryData {
@@ -170,11 +173,43 @@ pub(crate) fn collect_localisation_definitions_from_root(
 		&FileFilter::for_game(Eu4),
 		InventoryOwner::Mod(mod_id),
 	)?;
+	Ok(localisation_definitions_in_files(mod_id, root, &files))
+}
+
+/// The `.yml`/`.yaml` files in the directories
+/// [`collect_localisation_definitions_from_root`] walks, by physical path and
+/// before any game path is taken from them, with one error for each entry
+/// the walk cannot read. A caller that must keep the other files can skip a
+/// failing entry.
+pub fn walk_localisation_files(root: &Path) -> impl Iterator<Item = io::Result<PathBuf>> + '_ {
+	walk_within(root, &LOCALISATION_DIRECTORIES).filter_map(|entry| match entry {
+		Ok(entry) => (entry.file_type().is_file() && has_localisation_extension(entry.path()))
+			.then(|| Ok(entry.into_path())),
+		Err(error) => Some(Err(error)),
+	})
+}
+
+fn has_localisation_extension(path: &Path) -> bool {
+	path.extension()
+		.and_then(OsStr::to_str)
+		.is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
+}
+
+/// Localisation definitions in `files`, game paths of files under `root`,
+/// skipping any that is not a `.yml`/`.yaml` file inside a localisation
+/// directory. They are listed by path in component order, then by position.
+pub fn localisation_definitions_in_files(
+	mod_id: &str,
+	root: &Path,
+	files: &[GamePathBuf],
+) -> Vec<LocalisationDefinition> {
+	let filter = FileFilter::for_game(Eu4);
 	let mut definitions = Vec::new();
 	for relative in files {
-		if !LOCALISATION_DIRECTORIES
-			.iter()
-			.any(|directory| relative.is_inside(directory, str::eq))
+		if !filter.accepts(relative)
+			|| !LOCALISATION_DIRECTORIES
+				.iter()
+				.any(|directory| relative.is_inside(directory, str::eq))
 		{
 			continue;
 		}
@@ -184,10 +219,9 @@ pub(crate) fn collect_localisation_definitions_from_root(
 		{
 			continue;
 		}
-		let parsed = parse_localisation_file(mod_id, &relative.to_path(root), &relative);
+		let parsed = parse_localisation_file(mod_id, &relative.to_path(root), relative);
 		definitions.extend(parsed.entries.into_iter().map(|item| item.definition));
 	}
-	// Component order, as definitions have always been listed in.
 	definitions.sort_by(|lhs, rhs| {
 		(
 			lhs.path.as_relative_path(),
@@ -211,7 +245,7 @@ pub(crate) fn collect_localisation_definitions_from_root(
 			&& lhs.key == rhs.key
 			&& lhs.mod_id == rhs.mod_id
 	});
-	Ok(definitions)
+	definitions
 }
 
 struct ParsedLocalisationEntry {

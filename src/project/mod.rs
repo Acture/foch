@@ -5,7 +5,7 @@ pub use fingerprint::compute_playset_fingerprint;
 use crate::game::eu4::Eu4;
 use crate::model::{GamePath, GamePathBuf};
 use crate::playset::steam::WorkshopInstallIdentity;
-use globset::{Glob, GlobMatcher};
+use globset::{Candidate, GlobBuilder, GlobMatcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -268,7 +268,7 @@ pub enum Matcher {
 impl Matcher {
 	pub fn is_match(&self, value: &str) -> bool {
 		match self {
-			Self::Glob(matcher) => matcher.is_match(value),
+			Self::Glob(matcher) => matcher.is_match_candidate(&Candidate::from_bytes(value)),
 			Self::Regex(regex) => regex.is_match(value),
 		}
 	}
@@ -315,7 +315,9 @@ fn parse_pattern_side(side: &str) -> Result<Matcher, ConfigError> {
 			.map(Matcher::Regex)
 			.map_err(|err| ConfigError::new(format!("invalid regex `{re}`: {err}")))
 	} else {
-		Glob::new(side)
+		GlobBuilder::new(side)
+			.backslash_escape(true)
+			.build()
 			.map(|glob| Matcher::Glob(glob.compile_matcher()))
 			.map_err(|err| ConfigError::new(format!("invalid glob `{side}`: {err}")))
 	}
@@ -1297,6 +1299,15 @@ prefer_mod = "conflict-mod"
 		assert!(file_matcher.is_match("common/ideas/foo.txt"));
 		assert!(file_matcher.is_match("common/ideas/sub/bar.txt"));
 		assert!(!file_matcher.is_match("events/foo.txt"));
+		assert!(leaf_matcher.is_none());
+	}
+
+	#[test]
+	fn pattern_dsl_uses_portable_glob_escapes_on_every_host() {
+		let (file_matcher, leaf_matcher): (Matcher, Option<Matcher>) =
+			parse_match_dsl(r"common/ideas/literal\*.txt").expect("parse glob");
+		assert!(file_matcher.is_match("common/ideas/literal*.txt"));
+		assert!(!file_matcher.is_match("common/ideas/literal_other.txt"));
 		assert!(leaf_matcher.is_none());
 	}
 

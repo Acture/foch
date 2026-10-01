@@ -100,10 +100,9 @@ pub fn discover_text_documents_from_paths(
 			family,
 		});
 	}
-	// Component order, as documents have always been parsed and indexed in:
-	// scope ids and persisted record order follow it. It differs from byte
-	// order when a name sorts below `/`, as `common/defines.lua` does against
-	// `common/defines/`.
+	// Documents are parsed and indexed in component order, and scope ids and
+	// persisted record order follow it. It differs from byte order when a name
+	// sorts below `/`, as `common/defines.lua` does against `common/defines/`.
 	docs.sort_by(|lhs, rhs| {
 		lhs.relative_path
 			.as_relative_path()

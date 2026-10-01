@@ -25,7 +25,7 @@ pub use request::{CheckOptions, InputRequest, InputSource};
 pub(crate) use resolve::{
 	InputInventory, InventoryOwner, ResolvedInput, ResolvedInputContributor,
 	build_input_inventory_for_paths, collect_relative_files, collect_relative_files_within,
-	dedup_candidates, resolve_input, resolve_input_from_inventory,
+	dedup_candidates, resolve_input, resolve_input_from_inventory, walk_within,
 };
 pub use resolve::{
 	InputResolveError, InputResolveErrorKind, InputResolveSummary, InputTarget, InputTargetRole,

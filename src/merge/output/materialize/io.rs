@@ -452,12 +452,12 @@ mod tests {
 			(
 				r"\\?\D:\mods\tax",
 				r"\\?\D:\mods\tax\localisation\p553.yml",
-				"//?/D:/mods/tax/localisation/p553.yml",
+				"D:/mods/tax/localisation/p553.yml",
 			),
 			(
 				r"\\?\UNC\server\mods\tax",
 				r"\\?\UNC\server\mods\tax\localisation\p553.yml",
-				"//?/UNC/server/mods/tax/localisation/p553.yml",
+				"//server/mods/tax/localisation/p553.yml",
 			),
 		] {
 			let contributor: ResolvedInputContributor = ResolvedInputContributor {

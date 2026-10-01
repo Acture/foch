@@ -298,30 +298,6 @@ impl Borrow<GamePath> for GamePathBuf {
 	}
 }
 
-impl AsRef<GamePath> for GamePath {
-	fn as_ref(&self) -> &GamePath {
-		self
-	}
-}
-
-impl AsRef<GamePath> for GamePathBuf {
-	fn as_ref(&self) -> &GamePath {
-		self.as_game_path()
-	}
-}
-
-impl AsRef<RelativePath> for GamePath {
-	fn as_ref(&self) -> &RelativePath {
-		&self.0
-	}
-}
-
-impl AsRef<RelativePath> for GamePathBuf {
-	fn as_ref(&self) -> &RelativePath {
-		&self.0
-	}
-}
-
 impl ToOwned for GamePath {
 	type Owned = GamePathBuf;
 
@@ -448,12 +424,6 @@ impl TryFrom<&str> for GamePathBuf {
 
 	fn try_from(text: &str) -> Result<Self, GamePathError> {
 		Self::parse(text)
-	}
-}
-
-impl From<GamePathBuf> for String {
-	fn from(path: GamePathBuf) -> String {
-		path.into_string()
 	}
 }
 

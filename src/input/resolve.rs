@@ -1422,10 +1422,19 @@ pub(crate) fn collect_relative_files_within(
 	filter: &FileFilter,
 	owner: InventoryOwner<'_>,
 ) -> io::Result<Vec<GamePathBuf>> {
-	let entries = WalkDir::new(root)
+	collect_relative_files_from_entries(root, filter, owner, walk_within(root, within))
+}
+
+/// The entries under `root` that [`collect_relative_files_within`] reads,
+/// with one error for each entry the walk cannot read.
+pub(crate) fn walk_within<'a>(
+	root: &'a Path,
+	within: &'a [&'a [&'a str]],
+) -> impl Iterator<Item = io::Result<walkdir::DirEntry>> + 'a {
+	WalkDir::new(root)
 		.follow_links(false)
 		.into_iter()
-		.filter_entry(|entry| {
+		.filter_entry(move |entry| {
 			let Ok(relative) = entry.path().strip_prefix(root) else {
 				return false;
 			};
@@ -1438,8 +1447,7 @@ pub(crate) fn collect_relative_files_within(
 					.all(|(component, name)| component.as_os_str() == OsStr::new(name))
 			})
 		})
-		.map(walk_entry);
-	collect_relative_files_from_entries(root, filter, owner, entries)
+		.map(walk_entry)
 }
 
 fn walk_entry(entry: walkdir::Result<walkdir::DirEntry>) -> io::Result<walkdir::DirEntry> {
@@ -1613,6 +1621,7 @@ pub(crate) fn inject_synthetic_bases(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[cfg(unix)]
 	use crate::model::GamePathErrorKind;
 	use crate::playset::steam::SteamId;
 	use std::fs;
@@ -1668,6 +1677,7 @@ mod tests {
 		GamePathBuf::parse(text).expect("valid game path")
 	}
 
+	#[cfg(unix)]
 	fn unportable(error: &io::Error) -> &UnportableInventoryPath {
 		error
 			.get_ref()

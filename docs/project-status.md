@@ -1,6 +1,11 @@
 # Project Status
 
-Latest worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
+Latest worktree verification: 2026-10-01 on `2fa8588` plus the P-736 completion
+changes: `cargo test --workspace --no-fail-fast --quiet` passed 1,780 tests
+(19 ignored), including the three socket/server tests rerun outside the
+restricted sandbox. Rust formatting, strict workspace Clippy, and the separate
+fuzz-workspace all-target/all-feature check passed. See the P-736 entry below.
+Earlier worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
 equivalence change: strict workspace Clippy and formatting, and `cargo test
 --workspace --no-fail-fast` at 1,579 passed and 3 failed across all targets,
 the three being exactly the sandbox denials `AGENTS.md` records as environment
@@ -40,6 +45,62 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Typed game-relative paths (2026-10-01)
+
+P-736. `GamePath` / `GamePathBuf` wrap `relative-path` with one validated
+game-root namespace. Inventory keys, ASTs, semantic records, database and CWT
+rules, merge inputs and outputs, resolution files, and cache lookups now carry
+these types. Physical roots and I/O paths remain native `Path` / `PathBuf`.
+Converting a discovered file requires its explicit mod/game root; resolving it
+back to disk requires that root again. Mod order and declared dependencies
+remain semantic inputs.
+
+All constructors and Serde/rkyv readers validate canonical relative paths.
+Absolute paths, platform prefixes, parent components, literal backslashes,
+NUL and non-UTF-8 names cannot silently become another file's logical key.
+Inventory failures retain the owning mod and physical path. The editor reports
+an unsupported script/localisation filename on that file and continues indexing
+other files; merge input resolution fails instead of omitting it.
+
+Descriptor path values are read from their original scalar bytes, before text
+escape decoding can erase backslashes. `replace_path` has an explicit Windows
+path grammar, parsed by `typed-path`; a root separator is relative to the game
+root, while drive/UNC/device prefixes and parents fail. Launcher `path` uses
+host syntax and never guesses another platform's separators. Generated
+descriptors reject physical names they cannot represent. Rule globs consume
+the validated portable bytes, with the same escape syntax on every host.
+
+Persisted logical paths remain text at the encoding boundary and are validated
+on read. The parse cache is now `12.0.0`, the mod snapshot cache `11.0.0`, and
+Workshop semantic-snapshot keys use the `v2` namespace. Existing base snapshots
+keep their wire layout; decoded documents recover their physical paths from
+the current game root and their validated logical paths. Byte order is retained
+where inventories and output order used it, and component order where document
+indexing used it. Module contributor precedence is unchanged; equal-precedence
+source paths are compared as native paths before rendering, so lossy display
+text never decides their order.
+
+Regression coverage includes actual Unix files named `a\b.txt` beside
+`a/b.txt`, in-memory non-UTF-8 paths (kept distinct from disk evidence), explicit
+root round trips, foreign descriptor syntax, rejected serialized paths,
+cache identity, playset order, CWT/database selection, and the real CLI input
+and merge boundaries.
+
+Validation: `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+`cargo test --workspace --no-fail-fast --quiet`, and
+`cargo check --manifest-path fuzz/Cargo.toml --all-targets --all-features`.
+All passed. The workspace suite includes 1,435 root unit tests, 49 CLI
+integration tests and 130 quality-harness fixture tests; the full total is
+1,780 passed and 19 ignored. The initial restricted run failed only the three
+known local socket/server tests, and the complete rerun with those privileges
+passed. Local logs are under `target/validation/p736-2026-10-01/`.
+
+This is an implementation and fixture-validation checkpoint. No full Workshop
+cohort or in-game playability result is established; `cargo acceptance` remains
+the maintainer's manual gate. Windows-specific tests are included but require a
+Windows runner; the local validation host is macOS.
 
 ## Numeric equivalence under the game's field coercion (2026-09-22)
 

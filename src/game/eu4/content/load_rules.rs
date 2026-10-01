@@ -1,5 +1,5 @@
 use crate::model::{GamePath, GamePathBuf};
-use globset::{GlobBuilder, GlobMatcher};
+use globset::{Candidate, GlobBuilder, GlobMatcher};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -40,6 +40,7 @@ impl DatabaseLoadRules {
 			for selection in selections {
 				let matcher: GlobMatcher = GlobBuilder::new(&selection.files)
 					.literal_separator(true)
+					.backslash_escape(true)
 					.build()
 					.map_err(|error| error.to_string())?
 					.compile_matcher();
@@ -61,10 +62,11 @@ impl DatabaseLoadRules {
 			return Ok(None);
 		};
 		let file_name: &str = relative_path.file_name();
+		let candidate: Candidate<'_> = Candidate::from_bytes(file_name);
 		let mut matched: Option<&str> = None;
 		for database in &self.databases {
 			if !database.files.iter().any(|(directory, matcher)| {
-				parent == directory.as_game_path() && matcher.is_match(file_name)
+				parent == directory.as_game_path() && matcher.is_match_candidate(&candidate)
 			}) {
 				continue;
 			}
@@ -201,6 +203,22 @@ mod tests {
 			);
 		}
 		assert!(load_rules_for_version("1.37.4").is_none());
+	}
+
+	#[test]
+	fn filename_globs_use_portable_escapes_on_every_host() {
+		let rules: DatabaseLoadRules = DatabaseLoadRules::parse(
+			r#"{"game_version":"test","databases":{"Ideas":[{"directory":"common/ideas","files":"literal\\*.txt"}]}}"#,
+		)
+		.expect("valid rules");
+		assert_eq!(
+			rules.database_for(game_path("common/ideas/literal*.txt")),
+			Ok(Some("Ideas"))
+		);
+		assert_eq!(
+			rules.database_for(game_path("common/ideas/literal_other.txt")),
+			Ok(None)
+		);
 	}
 
 	#[test]
