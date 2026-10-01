@@ -7,6 +7,9 @@ mod acceptance;
 #[path = "merge_quality/static_modifiers_probe.rs"]
 mod static_modifiers_probe;
 
+#[path = "merge_quality/positions_probe.rs"]
+mod positions_probe;
+
 #[path = "merge_quality/workshop_probe/mod.rs"]
 mod workshop_probe;
 
@@ -32,6 +35,7 @@ use crate::merge_quality::orchestrate::{
 use crate::merge_quality::report::WorkshopReportCohort;
 use crate::merge_quality::runner::{
 	ProductMeasurementRunner, ProductPreviewObservation, RUNNER_PROTOCOL_VERSION,
+	completed_input_cache_diagnostics,
 };
 use crate::merge_quality::score::ScoreCache;
 use crate::merge_quality::workshop_inputs::WorkshopCaseManifest;
@@ -509,6 +513,47 @@ fn require_acceptance(expected: &str) {
 	);
 }
 
+#[test]
+fn cache_gate_scopes_cold_and_warm_checks_to_input_resolution() {
+	for cold in [true, false] {
+		let (hits, misses, event): (usize, usize, &str) = if cold {
+			(0, 3, "parse_done")
+		} else {
+			(3, 0, "disk_hit")
+		};
+		let mut diagnostics: String = String::new();
+		for mod_id in CACHE_GATE_SOURCE_IDS {
+			diagnostics.push_str(&format!(
+				"[merge] mod_snapshot: start mod_id={mod_id} files=1\n"
+			));
+			if cold {
+				diagnostics.push_str(&format!(
+					"[merge] mod_snapshot: parse_done mod_id={mod_id} elapsed_ms=1\n\
+					[merge] mod_snapshot: cache_store mod_id={mod_id} state=stored elapsed_ms=1\n"
+				));
+			} else {
+				diagnostics.push_str(&format!(
+					"[merge] mod_snapshot: cache_hit mod_id={mod_id} source=disk elapsed_ms=1\n"
+				));
+			}
+		}
+		diagnostics.push_str(&format!(
+			"[merge] resolve_input: done mods=3 mod_snapshot_cache_hits={hits} mod_snapshot_cache_misses={misses}\n\
+			[merge] mod_snapshot: start mod_id=validation_output files=1\n\
+			[merge] mod_snapshot: parse_done mod_id=validation_output elapsed_ms=1\n\
+			[merge] mod_snapshot: cache_store mod_id=validation_output state=skipped elapsed_ms=0\n"
+		));
+		let observation: ProductPreviewObservation = ProductPreviewObservation {
+			failure: None,
+			plan_output: "Foch Merge Review".to_string(),
+			cache_diagnostics: diagnostics,
+			output_exists: false,
+			report_exists: false,
+		};
+		assert_cache_gate_observation("fixture", &observation, hits, misses, event);
+	}
+}
+
 fn assert_cache_gate_observation(
 	phase: &str,
 	observation: &ProductPreviewObservation,
@@ -537,7 +582,8 @@ fn assert_cache_gate_observation(
 		!observation.report_exists,
 		"{phase} cache-gate preview must not commit a merge report"
 	);
-	let diagnostics = &observation.cache_diagnostics;
+	let diagnostics: &str = completed_input_cache_diagnostics(&observation.cache_diagnostics)
+		.unwrap_or_else(|error| panic!("{phase} cache-gate input diagnostics: {error}"));
 	assert!(
 		!diagnostics.contains("truncated"),
 		"{phase} cache diagnostics were truncated; refusing an incomplete assertion"
