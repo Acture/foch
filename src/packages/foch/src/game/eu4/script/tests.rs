@@ -4382,6 +4382,7 @@ coverage_group = {
 		female_names = { "Alice" }
 	}
 }
+
 "#,
 	)
 	.expect("write cultures");
@@ -7949,5 +7950,57 @@ fn a_script_that_cannot_be_read_is_reported_at_its_game_path() {
 		issue.message.starts_with("failed to read file"),
 		"{}",
 		issue.message
+	);
+}
+
+#[test]
+fn culture_uses_enter_shared_semantic_index_with_source_identity() {
+	let tmp = TempDir::new().unwrap();
+	let root = tmp.path();
+	let relative = game_path("events/culture_mechanic.txt");
+	fs::create_dir_all(root.join("events")).unwrap();
+	fs::write(
+		relative.to_path(root),
+		r#"
+province_event = {
+	id = culture.1
+	trigger = { culture = old primary_culture = ROOT culture_group = germanic }
+	immediate = {
+		change_culture = destination
+		set_province_flag = old
+		owner = { add_accepted_culture = old }
+	}
+}
+"#,
+	)
+	.unwrap();
+	let parsed = super::parse_script_file("mechanics", root, relative);
+	let index = build_semantic_index(&[parsed]);
+	let references = index
+		.resource_references
+		.iter()
+		.filter(|reference| reference.key == "culture_reference")
+		.collect::<Vec<_>>();
+	assert_eq!(
+		references
+			.iter()
+			.map(|reference| reference.value.as_str())
+			.collect::<Vec<_>>(),
+		["old", "destination", "old"]
+	);
+	assert!(
+		references
+			.iter()
+			.all(|reference| reference.mod_id == "mechanics"
+				&& reference.path == relative
+				&& reference.line > 0
+				&& reference.column > 0)
+	);
+	assert!(
+		index
+			.resource_references
+			.iter()
+			.any(|reference| reference.key == "culture_group_reference"
+				&& reference.value == "germanic")
 	);
 }

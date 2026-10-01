@@ -904,7 +904,7 @@ mod tests {
 		let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
 		let test_file = manifest_dir
 			.join("tests")
-			.join("corpus")
+			.join("fixtures")
 			.join("defines")
 			.join("descriptor.mod");
 

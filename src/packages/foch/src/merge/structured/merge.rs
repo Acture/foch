@@ -12,6 +12,7 @@ use crate::merge::kernel::{
 	SourceSet, StructuralConflict, StructuralConflictDraft, n_way_merge_with_policy,
 	n_way_merge_with_policy_and_resolutions,
 };
+use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, ScopeKind};
 
 use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body};
@@ -178,7 +179,44 @@ pub fn merge_clausewitz_files_n_way_with_schema(
 	reduce_event_fallbacks: bool,
 	resolutions: &[ConflictResolution],
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
-	let policy = ContentFamilyMergePolicy::new(policies);
+	let entity_transform = crate::game::eu4::content::eu4()
+		.classify_content_family(&base.path)
+		.map(|descriptor| descriptor.infer_entity_transform(base, revisions))
+		.transpose()
+		.map_err(AstAdapterError::InvalidTree)?
+		.flatten();
+	merge_clausewitz_files_with_context(
+		base,
+		revisions,
+		policies,
+		schema,
+		reduce_event_fallbacks,
+		resolutions,
+		entity_transform.as_deref(),
+	)
+}
+
+pub(super) fn merge_clausewitz_files_with_context(
+	base: &AstFile,
+	revisions: &[&AstFile],
+	policies: &MergePolicies,
+	schema: Option<&CwtQuery>,
+	reduce_event_fallbacks: bool,
+	resolutions: &[ConflictResolution],
+	entity_transform: Option<&dyn EntityTransform>,
+) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
+	let entity_transform = entity_transform.filter(|transform| transform.applies_to(&base.path));
+	if let Some(transform) = entity_transform {
+		for file in std::iter::once(base).chain(revisions.iter().copied()) {
+			transform
+				.validate(file)
+				.map_err(AstAdapterError::InvalidTree)?;
+		}
+	}
+	let policy = entity_transform.map_or_else(
+		|| ContentFamilyMergePolicy::new(policies),
+		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
+	);
 	let mut scope_cache = HashMap::new();
 	let base = canonicalize_for_merge(base, policies, schema, &mut scope_cache);
 	let revisions = revisions
@@ -343,10 +381,28 @@ pub(crate) fn normalize_clausewitz_file(
 	file: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<NormalizedTree, AstAdapterError> {
+	normalize_clausewitz_file_with_context(file, policies, None)
+}
+
+pub(super) fn normalize_clausewitz_file_with_context(
+	file: &AstFile,
+	policies: &MergePolicies,
+	entity_transform: Option<&dyn EntityTransform>,
+) -> Result<NormalizedTree, AstAdapterError> {
+	let entity_transform = entity_transform.filter(|transform| transform.applies_to(&file.path));
+	if let Some(transform) = entity_transform {
+		transform
+			.validate(file)
+			.map_err(AstAdapterError::InvalidTree)?;
+	}
 	let mut scope_cache = HashMap::new();
 	let canonical = canonicalize_for_merge(file, policies, Some(rule_engine()), &mut scope_cache);
 	let (semantic, _) = detach_trivia(&canonical);
-	normalize_ast(&semantic, &ContentFamilyMergePolicy::new(policies))
+	let policy = entity_transform.map_or_else(
+		|| ContentFamilyMergePolicy::new(policies),
+		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
+	);
+	normalize_ast(&semantic, &policy)
 }
 
 /// Bring a file to the form every identity in the merge is derived from.

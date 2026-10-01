@@ -1,0 +1,17 @@
+# Deliberately malformed: four group headers lack their assignment and opener.
+thai_group
+	graphical_culture = inuitgfx
+	placeholder_t = { primary = xxx }
+}
+eastern_algonquian
+	graphical_culture = inuitgfx
+	placeholder_ea = { primary = xxx }
+}
+plains_algonquian
+	graphical_culture = inuitgfx
+	placeholder_a = { primary = xxx }
+}
+sonoran
+	graphical_culture = inuitgfx
+	placeholder_s = { primary = xxx }
+}

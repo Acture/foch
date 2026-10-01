@@ -1,6 +1,10 @@
+mod cultures;
 mod fingerprint;
+mod transform;
 
+pub use cultures::{CultureConfig, CultureRenameEntry, CultureRepairEntry};
 pub use fingerprint::compute_playset_fingerprint;
+pub use transform::SourceEdit;
 
 use crate::game::eu4::Eu4;
 use crate::model::{GamePath, GamePathBuf};
@@ -26,6 +30,8 @@ pub struct Project {
 	pub resolutions: Vec<ResolutionEntry>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub emit: Option<EmitConfig>,
+	#[serde(default, skip_serializing_if = "CultureConfig::is_empty")]
+	pub cultures: CultureConfig,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -46,6 +52,8 @@ struct RawProject {
 	resolutions: Vec<ResolutionEntry>,
 	#[serde(default)]
 	emit: Option<EmitConfig>,
+	#[serde(default)]
+	cultures: CultureConfig,
 }
 
 impl<'de> Deserialize<'de> for Project {
@@ -55,11 +63,13 @@ impl<'de> Deserialize<'de> for Project {
 	{
 		let raw = RawProject::deserialize(deserializer)?;
 		ResolutionMap::from_entries(&raw.resolutions).map_err(serde::de::Error::custom)?;
+		raw.cultures.validate().map_err(serde::de::Error::custom)?;
 		Ok(Self {
 			project: raw.project,
 			overrides: raw.overrides,
 			resolutions: raw.resolutions,
 			emit: raw.emit,
+			cultures: raw.cultures,
 		})
 	}
 }
@@ -686,6 +696,15 @@ impl Project {
 				let config = Self::load_file(&path)?;
 				merged.overrides.extend(config.overrides);
 				merged.resolutions.extend(config.resolutions);
+				merged.cultures.renames.extend(config.cultures.renames);
+				merged.cultures.repairs.extend(config.cultures.repairs);
+				merged
+					.cultures
+					.validate()
+					.map_err(|error| FochConfigLoadError::Parse {
+						path: path.clone(),
+						source: serde::de::Error::custom(error),
+					})?;
 				if config.project.is_some() {
 					merged.project = config.project;
 				}
@@ -826,6 +845,135 @@ indent = "  "
 			})
 		);
 		assert_eq!(config.emit_indent(), "  ");
+	}
+
+	#[test]
+	fn culture_config_accepts_source_bound_renames_and_repairs() {
+		let source = format!(
+			r#"
+[[cultures.renames]]
+from = "old_culture"
+to = "new_culture"
+mod = "culture_mod"
+file = "common/cultures/test.txt"
+sha256 = "{digest}"
+[[cultures.repairs]]
+mod = "culture_mod"
+file = "common/cultures/test.txt"
+sha256 = "{digest}"
+edits = [{{ start = 1, end = 3, expected = "é", replacement = "e" }}]
+"#,
+			digest = "a".repeat(64),
+		);
+		let parsed = Project::from_toml_str(&source).expect("reviewed culture inputs");
+		let encoded = toml::to_string(&parsed).expect("serialize reviewed inputs");
+		assert!(encoded.contains("old_culture"));
+		assert!(encoded.contains("expected = \"é\""));
+		assert_eq!(Project::from_toml_str(&encoded).unwrap(), parsed);
+	}
+
+	#[test]
+	fn culture_config_is_retained_and_validated_across_project_sources() {
+		let temp = tempfile::tempdir().unwrap();
+		let first = temp.path().join("first.toml");
+		let second = temp.path().join("second.toml");
+		let source = format!(
+			"[[cultures.renames]]\nfrom='old_culture'\nto='new_culture'\nmod='mod-a'\nfile='common/cultures/test.txt'\nsha256='{}'\n",
+			"a".repeat(64)
+		);
+		std::fs::write(&first, &source).unwrap();
+		std::fs::write(
+			&second,
+			source
+				.replace("new_culture", "other_culture")
+				.replace("mod-a", "mod-b"),
+		)
+		.unwrap();
+		let merged = Project::try_load_from_paths(vec![first.clone()]).unwrap();
+		assert_eq!(merged.cultures.renames.len(), 1);
+		assert!(Project::try_load_from_paths(vec![first, second]).is_err());
+	}
+
+	#[test]
+	fn culture_config_rejects_invalid_bindings_and_mapping_conflicts() {
+		let valid = format!(
+			"[[cultures.renames]]\nfrom = 'old_culture'\nto = 'new_culture'\nmod = 'culture_mod'\nfile = 'common/cultures/test.txt'\nsha256 = '{}'\n",
+			"a".repeat(64),
+		);
+		for invalid in [
+			valid.replace("old_culture", "new_culture"),
+			valid.replace("test.txt", "../test.txt"),
+			valid.replace("common/cultures", "events"),
+			valid.replace("test.txt", "nested/test.txt"),
+			valid.replace("test.txt", "*.txt"),
+			valid.replace(&"a".repeat(64), &"A".repeat(64)),
+			valid.replace("mod = 'culture_mod'", "mod = ''"),
+			format!("{valid}unknown = true\n"),
+			format!("{valid}{valid}"),
+			format!("{valid}{}", valid.replace("new_culture", "other_culture")),
+			format!("{valid}{}", valid.replace("old_culture", "other_culture")),
+		] {
+			assert!(
+				Project::from_toml_str(&invalid).is_err(),
+				"accepted {invalid}"
+			);
+		}
+	}
+
+	#[test]
+	fn culture_config_identity_binds_decisions_but_not_entry_order() {
+		let entry = |id: &str| CultureRenameEntry {
+			from: format!("old_{id}"),
+			to: format!("new_{id}"),
+			mod_id: id.into(),
+			file: "common/cultures/test.txt".into(),
+			sha256: "a".repeat(64),
+		};
+		let mut config = CultureConfig {
+			renames: vec![entry("one"), entry("two")],
+			repairs: vec![CultureRepairEntry {
+				mod_id: "one".into(),
+				file: "common/cultures/test.txt".into(),
+				sha256: "a".repeat(64),
+				edits: vec![SourceEdit {
+					start: 1,
+					end: 1,
+					expected: String::new(),
+					replacement: "}".into(),
+				}],
+			}],
+		};
+		config.validate().unwrap();
+		let identity = config.identity();
+		config.renames.reverse();
+		assert_eq!(config.identity(), identity);
+		config.repairs[0].edits[0].replacement = "{".into();
+		assert_ne!(config.identity(), identity);
+		config.repairs[0].edits[0].replacement = "}".into();
+		config.renames[0].to = "different_culture".into();
+		assert_ne!(config.identity(), identity);
+	}
+
+	#[test]
+	fn culture_config_rejects_overlapping_or_inconsistent_repairs() {
+		let source = |edits: &str| {
+			format!(
+				"[[cultures.repairs]]\nmod = 'culture_mod'\nfile = 'common/cultures/test.txt'\nsha256 = '{}'\nedits = [{edits}]\n",
+				"a".repeat(64),
+			)
+		};
+		for edits in [
+			"",
+			"{ start = 3, end = 1, expected = '', replacement = '}' }",
+			"{ start = 1, end = 2, expected = 'é', replacement = 'e' }",
+			"{ start = 1, end = 3, expected = 'ab', replacement = '' }, { start = 2, end = 4, expected = 'bc', replacement = '' }",
+			"{ start = 1, end = 1, expected = '', replacement = '}' }, { start = 1, end = 1, expected = '', replacement = '}' }",
+		] {
+			assert!(
+				Project::from_toml_str(&source(edits)).is_err(),
+				"accepted {edits}"
+			);
+		}
 	}
 
 	#[test]

@@ -487,7 +487,10 @@ fn validate_structural_merge_inputs(
 	let is_defines_path = is_clausewitz_defines_path(path);
 
 	for contributor in contributors {
-		let Some(parse_ok) = contributor.parse_ok_hint else {
+		let parse_ok = script_cache
+			.overlay_parse_ok(&contributor.mod_id, path)
+			.or(contributor.parse_ok_hint);
+		let Some(parse_ok) = parse_ok else {
 			failures.push(format!(
 				"missing cached parse status for {}",
 				contributor.mod_id

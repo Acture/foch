@@ -86,6 +86,134 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 	);
 }
 
+#[test]
+fn culture_cli_repairs_and_adapts_reviewed_sources_without_mutating_them() {
+	use foch::project::{CultureRenameEntry, CultureRepairEntry, Project, SourceEdit};
+	use sha2::{Digest, Sha256};
+	let scratch = TempDir::new().unwrap();
+	let game = scratch.path().join("game");
+	let rename = scratch.path().join("rename");
+	let bonus = scratch.path().join("bonus");
+	let culture_path = "common/cultures/base.txt";
+	let base = "g = { old = { primary = AAA } }";
+	let broken = "g renamed = { primary = AAA male_names = { NewName } } }";
+	write_game_version(&game, "culture-cli-1.0");
+	write_script_file(&game, culture_path, base);
+	write_script_file(
+		&game,
+		"common/scripted_effects/base.txt",
+		"base_effect = { add_prestige = 1 }",
+	);
+	write_script_file(
+		&game,
+		"common/scripted_triggers/base.txt",
+		"base_check = { primary_culture = old }",
+	);
+	write_descriptor(&rename, "Rename");
+	write_script_file(&rename, culture_path, broken);
+	write_descriptor(&bonus, "Bonus");
+	write_script_file(
+		&bonus,
+		culture_path,
+		"g = { old = { primary = AAA country = { discipline = 0.1 } } }",
+	);
+	write_script_file(
+		&bonus,
+		"common/scripted_effects/mechanic.txt",
+		"mechanic = { change_culture = old set_country_flag = old }",
+	);
+	write_game_path_config(scratch.path(), &game);
+	build_base_data_install(scratch.path(), &game);
+	let mut project: Project = toml::from_str("[project]\ngame='eu4'\n[[project.mods]]\nid='rename'\npath='rename'\n[[project.mods]]\nid='bonus'\npath='bonus'\n").unwrap();
+	let hash = format!("{:x}", Sha256::digest(broken.as_bytes()));
+	project.cultures.renames.push(CultureRenameEntry {
+		from: "old".into(),
+		to: "renamed".into(),
+		mod_id: "rename".into(),
+		file: culture_path.into(),
+		sha256: hash.clone(),
+	});
+	project.cultures.repairs.push(CultureRepairEntry {
+		mod_id: "rename".into(),
+		file: culture_path.into(),
+		sha256: hash,
+		edits: vec![SourceEdit {
+			start: 1,
+			end: 1,
+			expected: "".into(),
+			replacement: " = {".into(),
+		}],
+	});
+	let manifest = scratch.path().join("foch.toml");
+	fs::write(&manifest, toml::to_string(&project).unwrap()).unwrap();
+	let out = scratch.path().join("out");
+	let args = [
+		"merge",
+		manifest.to_str().unwrap(),
+		"--out",
+		out.to_str().unwrap(),
+		"--non-interactive",
+	];
+	let (code, stdout, stderr) = run_foch(&args, scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(!out.exists());
+	let mut commit = args.to_vec();
+	commit.push("--confirm");
+	let (code, stdout, stderr) = run_foch(&commit, scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert!(
+		report.stale_vanilla_targets.is_empty(),
+		"{:#?}",
+		report.stale_vanilla_targets
+	);
+	let cultures = fs::read_to_string(out.join("common/cultures/zzz_foch_cultures.txt")).unwrap();
+	assert!(
+		cultures.contains("renamed =")
+			&& cultures.contains("discipline = 0.1")
+			&& cultures.contains("NewName"),
+		"{cultures}"
+	);
+	let effect =
+		fs::read_to_string(out.join("common/scripted_effects/zzz_foch_scripted_effects.txt"))
+			.unwrap();
+	assert!(
+		effect.contains("change_culture = renamed") && effect.contains("set_country_flag = old")
+	);
+	assert!(
+		fs::read_to_string(out.join("common/scripted_triggers/base.txt"))
+			.unwrap()
+			.contains("primary_culture = renamed")
+	);
+	assert_eq!(
+		fs::read_to_string(rename.join(culture_path)).unwrap(),
+		broken
+	);
+	assert_eq!(fs::read_to_string(game.join(culture_path)).unwrap(), base);
+	write_script_file(&rename, culture_path, &format!("{broken}\n# Author update"));
+	let stale_out = scratch.path().join("stale-out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			manifest.to_str().unwrap(),
+			"--out",
+			stale_out.to_str().unwrap(),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("stale culture decision"), "{stderr}");
+	assert!(!stale_out.exists());
+}
+
 /// A test path as an argument, environment or configuration value. Test
 /// directories are UTF-8; one that is not fails the test instead of being
 /// rendered as some other path.
@@ -295,6 +423,7 @@ fn run_foch_with_env(
 	let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));
 	command
 		.env("FOCH_CONFIG_DIR", config_dir)
+		.env("FOCH_DATA_DIR", config_dir.join(".foch-data"))
 		.env("FOCH_CACHE_ROOT", &cache_root)
 		.env("HOME", &home_dir)
 		.env("XDG_DATA_HOME", &xdg_data_home);
@@ -1372,7 +1501,7 @@ fn semantic_graph_real_minimized_playlist_emits_progress_and_real_nodes() {
 		.expect("repo root");
 	let playlist_path = repo_root
 		.join("tests")
-		.join("corpus")
+		.join("fixtures")
 		.join("eu4_real_minimized")
 		.join("playlist.json");
 

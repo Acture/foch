@@ -7,8 +7,19 @@ use crate::merge::kernel::{
 	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
 	RevisionId, SemanticKey,
 };
+use crate::merge::transform::tree::EntityTransform;
 
 pub(crate) trait ClausewitzTreePolicy {
+	/// Only verified entity positions may keep correspondence while their key changes.
+	fn entity_identity(
+		&self,
+		_ancestors: &[String],
+		_key: &str,
+		_value: &AstValue,
+	) -> Option<SemanticKey> {
+		None
+	}
+
 	fn assignment_anchor(
 		&self,
 		parent_assignment_key: Option<&str>,
@@ -39,15 +50,39 @@ pub(crate) trait ClausewitzTreePolicy {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ContentFamilyMergePolicy<'a> {
 	policies: &'a MergePolicies,
+	entity_transform: Option<&'a dyn EntityTransform>,
 }
 
 impl<'a> ContentFamilyMergePolicy<'a> {
 	pub(crate) const fn new(policies: &'a MergePolicies) -> Self {
-		Self { policies }
+		Self {
+			policies,
+			entity_transform: None,
+		}
+	}
+
+	pub(crate) const fn with_transform(
+		policies: &'a MergePolicies,
+		entity_transform: &'a dyn EntityTransform,
+	) -> Self {
+		Self {
+			policies,
+			entity_transform: Some(entity_transform),
+		}
 	}
 }
 
 impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
+	fn entity_identity(
+		&self,
+		ancestors: &[String],
+		key: &str,
+		value: &AstValue,
+	) -> Option<SemanticKey> {
+		self.entity_transform?
+			.entity_identity(ancestors, key, value)
+	}
+
 	fn assignment_anchor(
 		&self,
 		parent_assignment_key: Option<&str>,

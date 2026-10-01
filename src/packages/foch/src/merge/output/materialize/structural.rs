@@ -226,6 +226,7 @@ where
 		vanilla.as_ref(),
 		&effective_merge_policies(&context),
 		context.mod_versions,
+		context.entity_transform,
 	)
 	.map_err(|message| {
 		StructuralMergeFailure::Merge(MergeError::Validation {
@@ -274,7 +275,14 @@ where
 	let merge_policies = effective_merge_policies(&context);
 	let mut merged_statements = dag_merge.merged_statements;
 	crate::merge::gui::coalesce_scroll_stack_variants(&mut merged_statements, &merge_policies);
-	let noop_vs_vanilla = if let Some(base) = vanilla.as_ref() {
+	let adapted = if preserves_complete_tree_module(context.descriptor) {
+		target_path
+			.parent()
+			.is_some_and(|directory| context.script_cache.has_overlay_in_directory(directory))
+	} else {
+		context.script_cache.has_overlay_for_path(target_path)
+	};
+	let noop_vs_vanilla = if let Some(base) = vanilla.as_ref().filter(|_| !adapted) {
 		let merged = AstFile {
 			path: base.ast.path.clone(),
 			statements: merged_statements.clone(),
@@ -291,7 +299,7 @@ where
 		false
 	};
 	let preserve_complete_module = preserves_complete_tree_module(context.descriptor);
-	let (merged_statements, per_entry_noop_skipped_count) = if preserve_complete_module {
+	let (merged_statements, per_entry_noop_skipped_count) = if preserve_complete_module || adapted {
 		(merged_statements, 0)
 	} else if let Some(base) = vanilla.as_ref() {
 		drop_per_entry_noop_duplicates(
@@ -524,6 +532,7 @@ fn run_semantic_structural_file_engine(
 			},
 			policies: &effective_policies,
 			vanilla_base_mode: context.vanilla_base_mode,
+			entity_transform: context.entity_transform,
 		},
 		&mut handler,
 	)
@@ -542,6 +551,7 @@ fn run_semantic_definition_module_engine(
 	let mut handler = automatic_conflict_handler(target_path, context, resolution_map);
 	let effective_policies = effective_merge_policies(context);
 	compute_dag_merge_from_parsed(
+		context.entity_transform,
 		&views.file_dag,
 		views.vanilla.as_ref(),
 		&views.contributors,

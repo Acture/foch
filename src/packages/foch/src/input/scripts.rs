@@ -10,6 +10,12 @@ use super::LoadedModSnapshot;
 
 type ScriptCacheKey = (String, GamePathBuf);
 
+#[derive(Clone, Debug)]
+struct ScriptOverlay {
+	parsed: Arc<ParsedScriptFile>,
+	bytes: Arc<[u8]>,
+}
+
 #[derive(Debug)]
 struct LazyScriptFile {
 	mod_id: String,
@@ -24,6 +30,8 @@ struct LazyScriptFile {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InputScriptCache {
+	/// Analysis-local adaptations. Persisted source snapshots remain unchanged.
+	overlays: Arc<HashMap<ScriptCacheKey, ScriptOverlay>>,
 	loaded: Arc<HashMap<ScriptCacheKey, Arc<ParsedScriptFile>>>,
 	lazy: Arc<HashMap<ScriptCacheKey, Arc<LazyScriptFile>>>,
 	noop_hints: Arc<HashMap<ScriptCacheKey, bool>>,
@@ -100,6 +108,7 @@ impl InputScriptCache {
 		}
 
 		Ok(Self {
+			overlays: Arc::default(),
 			loaded: Arc::new(loaded),
 			lazy: Arc::new(lazy),
 			noop_hints: Arc::new(noop_hints),
@@ -112,6 +121,9 @@ impl InputScriptCache {
 		relative_path: &GamePath,
 	) -> Result<Option<Arc<ParsedScriptFile>>, String> {
 		let key = (mod_id.to_string(), relative_path.to_owned());
+		if let Some(overlay) = self.overlays.get(&key) {
+			return Ok(Some(overlay.parsed.clone()));
+		}
 		if let Some(parsed) = self.loaded.get(&key) {
 			return Ok(Some(parsed.clone()));
 		}
@@ -131,9 +143,48 @@ impl InputScriptCache {
 	}
 
 	pub(crate) fn is_noop_hint(&self, mod_id: &str, relative_path: &GamePath) -> Option<bool> {
+		if self.overlay_bytes(mod_id, relative_path).is_some() {
+			return Some(false);
+		}
 		self.noop_hints
 			.get(&(mod_id.to_string(), relative_path.to_owned()))
 			.copied()
+	}
+
+	pub(crate) fn insert_overlay(&mut self, mut parsed: ParsedScriptFile, bytes: Vec<u8>) {
+		let key = (parsed.mod_id.clone(), parsed.relative_path.clone());
+		parsed.source.clear();
+		Arc::make_mut(&mut self.overlays).insert(
+			key,
+			ScriptOverlay {
+				parsed: Arc::new(parsed),
+				bytes: bytes.into(),
+			},
+		);
+	}
+
+	pub(crate) fn overlay_bytes(&self, mod_id: &str, relative_path: &GamePath) -> Option<&[u8]> {
+		self.overlays
+			.get(&(mod_id.to_owned(), relative_path.to_owned()))
+			.map(|overlay| overlay.bytes.as_ref())
+	}
+
+	pub(crate) fn overlay_parse_ok(&self, mod_id: &str, relative_path: &GamePath) -> Option<bool> {
+		self.overlays
+			.get(&(mod_id.to_owned(), relative_path.to_owned()))
+			.map(|overlay| overlay.parsed.parse_issues.is_empty())
+	}
+
+	pub(crate) fn has_overlay_for_path(&self, relative_path: &GamePath) -> bool {
+		self.overlays
+			.keys()
+			.any(|(_, candidate)| candidate == relative_path)
+	}
+
+	pub(crate) fn has_overlay_in_directory(&self, directory: &GamePath) -> bool {
+		self.overlays
+			.keys()
+			.any(|(_, path)| path.parent() == Some(directory))
 	}
 
 	pub(crate) fn documents_for_mods(
@@ -151,6 +202,9 @@ impl InputScriptCache {
 			.cloned()
 			.collect::<Vec<_>>();
 		for (key, entry) in self.lazy.iter() {
+			if self.overlays.contains_key(key) {
+				continue;
+			}
 			if !(enabled_mod_ids.contains(&key.0) || base_mod_id.is_some_and(|base| key.0 == base))
 			{
 				continue;
@@ -161,6 +215,20 @@ impl InputScriptCache {
 				None => {}
 			}
 		}
+		documents.retain(|document| {
+			!self
+				.overlays
+				.contains_key(&(document.mod_id.clone(), document.relative_path.clone()))
+		});
+		documents.extend(
+			self.overlays
+				.values()
+				.filter(|overlay| {
+					enabled_mod_ids.contains(&overlay.parsed.mod_id)
+						|| base_mod_id.is_some_and(|base| overlay.parsed.mod_id == base)
+				})
+				.map(|overlay| overlay.parsed.clone()),
+		);
 		documents.sort_by(|lhs, rhs| {
 			(lhs.mod_id.as_str(), &lhs.relative_path)
 				.cmp(&(rhs.mod_id.as_str(), &rhs.relative_path))

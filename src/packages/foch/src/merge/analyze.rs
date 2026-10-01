@@ -6,7 +6,7 @@ use super::commit::{
 use super::conflict_handler::ConflictHandler;
 use super::error::{MergeError, MergeErrorSubject};
 use super::materialize::{
-	MaterializeOutput, MergeMaterializeOptions, freeze_path_plan, materialize_analyzed_input,
+	MaterializeOutput, MergeMaterializeOptions, freeze_path_plan, materialize_with_adaptations,
 };
 use super::output::artifact_tree::AnalyzedArtifactTree;
 use super::review::{MergeReview, MergeReviewSummary, MergeUnitOutcome};
@@ -254,6 +254,7 @@ pub fn run_merge_for_evaluation(
 }
 
 pub struct AnalyzedMerge {
+	pub(super) transform_source_guard: super::transform::input::SourceGuard,
 	pub(super) out_dir: PathBuf,
 	pub(super) analysis: MergeAnalysis,
 	pub(super) artifacts: AnalyzedArtifactTree,
@@ -275,6 +276,7 @@ struct PendingAnalysis {
 	base_snapshot_commit_guard: Option<BaseSnapshotCommitGuard>,
 	product_input_commit_guard: Option<ProductInputCommitGuard>,
 	execution_attestation: MergeExecutionAttestation,
+	transforms: super::transform::TransformPlan,
 }
 
 impl AnalyzedMerge {
@@ -359,6 +361,7 @@ fn analyze_merge_with_backend_and_observer(
 		resolution_map,
 		emit_options,
 		frozen_external_files,
+		transform_project,
 	} = load_merge_policy(&request, options.resolution_config_path.as_deref())?;
 	let inventory_units = inventory_result
 		.as_ref()
@@ -421,11 +424,43 @@ fn analyze_merge_with_backend_and_observer(
 			err.message
 		),
 	}
-	let plan = freeze_path_plan(
+	let transforms = if backend_id == MergeBackendId::GumtreePcsNway {
+		if let Ok(input) = input_result.as_mut() {
+			let overrides = options
+				.dep_overrides
+				.iter()
+				.map(crate::project::DepOverride::from)
+				.collect::<Vec<_>>();
+			let ignore = if options.ignore_replace_path {
+				super::dag::IgnoreReplacePath::All
+			} else {
+				super::dag::IgnoreReplacePath::None
+			};
+			super::transform::TransformPlan::prepare(
+				input,
+				&super::transform::TransformRequest {
+					project: &transform_project,
+					dep_overrides: &overrides,
+					ignore_replace_path: &ignore,
+					emit_options: &emit_options,
+					duplicate_definitions: backend_for(backend_id)
+						.profile()
+						.duplicate_definition_override,
+					reference_inventory_complete: request.config.extra_ignore_patterns.is_empty(),
+				},
+			)?
+		} else {
+			super::transform::TransformPlan::default()
+		}
+	} else {
+		super::transform::TransformPlan::default()
+	};
+	let mut plan = freeze_path_plan(
 		&mut input_result,
 		options.include_game_base,
 		&resolution_map,
 	);
+	transforms.annotate(&mut plan);
 	let plan_units = plan.paths.len() as u64;
 	notify_progress(
 		progress,
@@ -450,6 +485,7 @@ fn analyze_merge_with_backend_and_observer(
 			base_snapshot_commit_guard,
 			product_input_commit_guard,
 			execution_attestation,
+			transforms,
 		},
 		progress,
 		cancellation,
@@ -475,6 +511,7 @@ fn complete_merge_analysis(
 		base_snapshot_commit_guard,
 		product_input_commit_guard,
 		execution_attestation,
+		transforms,
 	} = pending;
 
 	let final_out_dir = options.out_dir.clone();
@@ -501,7 +538,7 @@ fn complete_merge_analysis(
 		Ok(_) => Some(validation_config(&request)?),
 		Err(_) => None,
 	};
-	let materialized = materialize_analyzed_input(
+	let materialized = materialize_with_adaptations(
 		request.clone(),
 		MaterializeOutput {
 			artifacts_dir: &staging_dir,
@@ -530,6 +567,7 @@ fn complete_merge_analysis(
 		input_result,
 		plan.clone(),
 		Some((progress, analysis_started)),
+		&transforms,
 	)?;
 	let mut report = materialized.report;
 	let review = materialized.review;
@@ -542,7 +580,7 @@ fn complete_merge_analysis(
 		Some(semantic_total),
 	);
 	cancellation.check()?;
-	report.playset_fingerprint = options.playset_fingerprint.clone();
+	report.playset_fingerprint = transforms.fingerprint(options.playset_fingerprint.as_deref());
 	report.execution = Some(execution_attestation);
 	report.input = product_input_commit_guard
 		.as_ref()
@@ -618,6 +656,7 @@ fn complete_merge_analysis(
 		artifact_file_count: artifacts.file_count(),
 	};
 	Ok(AnalyzedMerge {
+		transform_source_guard: transforms.source_guard.clone(),
 		out_dir: final_out_dir,
 		analysis,
 		artifacts,
@@ -750,6 +789,7 @@ fn merge_execution_exit_code(
 }
 
 struct LoadedMergePolicy {
+	transform_project: Project,
 	resolution_map: ResolutionMap,
 	emit_options: EmitOptions,
 	frozen_external_files: BTreeMap<PathBuf, Vec<u8>>,
@@ -784,6 +824,7 @@ fn load_merge_policy(
 	let emit_options = EmitOptions::with_indent(config.emit_indent());
 	let frozen_external_files = freeze_external_resolution_files(&resolution_map)?;
 	Ok(LoadedMergePolicy {
+		transform_project: config,
 		resolution_map,
 		emit_options,
 		frozen_external_files,

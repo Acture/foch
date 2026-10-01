@@ -572,10 +572,27 @@ impl ParserState {
 		loop {
 			let token = self.peek();
 			match &token.kind {
-				TokenKind::Eof => break,
+				TokenKind::Eof => {
+					if stop_at_rbrace {
+						let span = token.span.clone();
+						self.diagnostics.push(ParseDiagnostic {
+							message: "missing closing brace before end of file".into(),
+							span,
+						});
+					}
+					break;
+				}
 				TokenKind::RBrace if stop_at_rbrace => {
 					self.bump();
 					break;
+				}
+				TokenKind::RBrace => {
+					let span = token.span.clone();
+					self.bump();
+					self.diagnostics.push(ParseDiagnostic {
+						message: "unexpected closing brace without an opening block".into(),
+						span,
+					});
 				}
 				TokenKind::Newline | TokenKind::Comma => {
 					self.bump();
@@ -1049,6 +1066,35 @@ mod tests {
 			missing.diagnostics[0]
 				.message
 				.starts_with("failed to read file")
+		);
+	}
+
+	#[test]
+	fn unclosed_block_reports_eof_and_retains_parsed_content() {
+		let source = "g = { old = { primary = AAA }";
+		let parsed = parse_clausewitz_content(game_path("common/cultures/test.txt"), source);
+		assert_eq!(parsed.diagnostics.len(), 1);
+		assert!(parsed.diagnostics[0].message.contains("closing brace"));
+		assert_eq!(parsed.diagnostics[0].span.start.offset, source.len());
+		assert_eq!(parsed.ast.statements.len(), 1);
+	}
+
+	#[test]
+	fn extra_closing_brace_is_reported_without_discarding_following_groups() {
+		let source =
+			include_str!("../../../../tests/fixtures/cultures/malformed/extra_closing_brace.txt");
+		let parsed = parse_clausewitz_content(game_path("common/cultures/test.txt"), source);
+		assert_eq!(parsed.diagnostics.len(), 1);
+		assert!(parsed.diagnostics[0].message.contains("closing brace"));
+		assert_eq!(parsed.diagnostics[0].span.start.line, 5);
+		assert_eq!(
+			parsed
+				.ast
+				.statements
+				.iter()
+				.filter(|statement| matches!(statement, AstStatement::Assignment { .. }))
+				.count(),
+			2
 		);
 	}
 
