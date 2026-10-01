@@ -1,0 +1,31 @@
+guiTypes = {
+	iconType = {
+		name = "alpha_icon"
+		spriteType = "GFX_alpha"
+		pdx_tooltip = "ALPHA_TT"
+		pdx_tooltip_delayed = "ALPHA_DELAYED"
+	}
+	buttonType = {
+		name = "shared_button"
+		pdx_tooltip = "SHARED_TT"
+		position = { x = 5 y = 7 }
+	}
+	guiButtonType = {
+		name = "alpha_button"
+		tooltipText = "ALPHA_BUTTON_TT"
+		delayedTooltipText = "ALPHA_BUTTON_DELAYED"
+	}
+	containerWindowType = {
+		name = "unsupported_window"
+		pdx_tooltip = "CONTAINER_TT"
+	}
+	iconType = {
+		name = "competing_icon"
+		pdx_tooltip = "COMPETING_TT"
+		tooltip = "ENGINE_MANAGED"
+	}
+	iconType = {
+		name = "dynamic_icon"
+		pdx_tooltip = "[Root.GetName]"
+	}
+}

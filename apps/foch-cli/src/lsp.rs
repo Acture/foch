@@ -9,6 +9,7 @@ use foch::game::eu4::editor::schema::{
 	SchemaWorkspace,
 };
 use foch::game::eu4::editor::workspace::WorkspaceSession;
+use foch::game::eu4::editor::{hover::document_hover, position::byte_offset};
 use foch::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
 };
@@ -34,12 +35,13 @@ use tower_lsp::lsp_types::{
 	CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
 	CodeActionProviderCapability, CodeActionResponse, Command, CompletionItem, CompletionItemKind,
 	CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
-	DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-	DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-	Hover, HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
-	Location, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, Position, Range,
-	ReferenceParams, ServerCapabilities, SymbolInformation, SymbolKind as LspSymbolKind,
-	TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+	DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+	DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+	GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams, InitializeResult,
+	InitializedParams, Location, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf,
+	Position, Range, ReferenceParams, ServerCapabilities, SymbolInformation,
+	SymbolKind as LspSymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
+	TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
@@ -97,10 +99,45 @@ struct EnvScanTarget {
 
 #[derive(Default)]
 struct ServerState {
-	docs: HashMap<Url, String>,
+	docs: HashMap<Url, OpenDocument>,
 	targets: Vec<ScanTarget>,
 	static_candidates: Vec<CompletionCandidate>,
 	workspace: Option<Arc<WorkspaceSnapshot>>,
+}
+
+#[derive(Clone)]
+struct OpenDocument {
+	// Invalid incremental ranges leave the document unsynchronized until a full
+	// replacement arrives. Retaining stale text could invent source attribution.
+	text: Option<String>,
+	version: i32,
+}
+
+impl OpenDocument {
+	fn apply_changes(&mut self, version: i32, changes: Vec<TextDocumentContentChangeEvent>) {
+		if version <= self.version {
+			return;
+		}
+		self.version = version;
+		for change in changes {
+			let Some(range) = change.range else {
+				self.text = Some(change.text);
+				continue;
+			};
+			let offsets = self.text.as_deref().and_then(|text| {
+				Some((
+					byte_offset(text, editor_position(range.start))?,
+					byte_offset(text, editor_position(range.end))?,
+				))
+			});
+			match (self.text.as_mut(), offsets) {
+				(Some(text), Some((start, end))) if start <= end => {
+					text.replace_range(start..end, &change.text)
+				}
+				_ => self.text = None,
+			}
+		}
+	}
 }
 
 struct Backend {
@@ -321,20 +358,28 @@ impl LanguageServer for Backend {
 		let text = params.text_document.text;
 		{
 			let mut state = self.state.write().await;
-			state.docs.insert(uri.clone(), text.clone());
+			state.docs.insert(
+				uri.clone(),
+				OpenDocument {
+					text: Some(text.clone()),
+					version: params.text_document.version,
+				},
+			);
 		}
 		self.publish_document_diagnostics(&uri, &text).await;
 	}
 
 	async fn did_change(&self, params: DidChangeTextDocumentParams) {
-		if let Some(last) = params.content_changes.last() {
-			{
-				let mut state = self.state.write().await;
-				state
-					.docs
-					.insert(params.text_document.uri.clone(), last.text.clone());
-			}
-			self.publish_document_diagnostics(&params.text_document.uri, &last.text)
+		let text = {
+			let mut state = self.state.write().await;
+			let Some(document) = state.docs.get_mut(&params.text_document.uri) else {
+				return;
+			};
+			document.apply_changes(params.text_document.version, params.content_changes);
+			document.text.clone()
+		};
+		if let Some(text) = text {
+			self.publish_document_diagnostics(&params.text_document.uri, &text)
 				.await;
 		}
 	}
@@ -342,16 +387,29 @@ impl LanguageServer for Backend {
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		if let Some(text) = params.text {
 			let mut state = self.state.write().await;
-			state.docs.insert(params.text_document.uri, text);
+			if let Some(document) = state.docs.get_mut(&params.text_document.uri) {
+				document.text = Some(text);
+			}
 		}
 		self.refresh_workspace_snapshot().await;
+	}
+
+	async fn did_close(&self, params: DidCloseTextDocumentParams) {
+		self.state
+			.write()
+			.await
+			.docs
+			.remove(&params.text_document.uri);
 	}
 
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let position = params.text_document_position_params.position;
-		let targets = { self.state.read().await.targets.clone() };
-		let (text, schema_workspace) = {
+		let path = match uri.to_file_path() {
+			Ok(path) => path,
+			Err(_) => return Ok(None),
+		};
+		let (document, schema_workspace, relative_path) = {
 			let state = self.state.read().await;
 			(
 				state.docs.get(uri).cloned(),
@@ -359,28 +417,39 @@ impl LanguageServer for Backend {
 					.workspace
 					.as_ref()
 					.map(|snapshot| snapshot.schema_workspace.clone()),
+				match_scan_target(&state.targets, &path).map(|(_, relative)| relative),
 			)
 		};
-		let Some(text) = text else {
+		let Some(OpenDocument {
+			text: Some(text),
+			version,
+		}) = document
+		else {
 			return Ok(None);
 		};
-		let Some(schema) = self.schema.read().await.clone() else {
-			return Ok(None);
-		};
-		let path = match uri.to_file_path() {
-			Ok(path) => path,
-			Err(_) => return Ok(None),
-		};
-		let Some((_, relative_path)) = match_scan_target(&targets, &path) else {
-			return Ok(None);
-		};
-		Ok(schema_hover(
-			&schema,
-			&relative_path,
-			&text,
-			position,
-			schema_workspace.as_ref(),
-		))
+		let schema = self.schema.read().await.clone();
+		let snapshot_text = text.clone();
+		let result = tokio::task::spawn_blocking(move || {
+			document_hover(
+				&path,
+				relative_path.as_deref(),
+				&text,
+				editor_position(position),
+				schema.as_ref(),
+				schema_workspace.as_ref(),
+			)
+		})
+		.await
+		.map_err(|_| jsonrpc::Error::internal_error())?;
+		let state = self.state.read().await;
+		let unchanged = state.docs.get(uri).is_some_and(|document| {
+			document.version == version && document.text.as_deref() == Some(snapshot_text.as_str())
+		});
+		Ok(if unchanged {
+			result.map(schema_hover_view)
+		} else {
+			None
+		})
 	}
 
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -388,7 +457,11 @@ impl LanguageServer for Backend {
 		let state = self.state.read().await;
 		let uri = &params.text_document_position.text_document.uri;
 		let position = params.text_document_position.position;
-		let text = state.docs.get(uri).map(String::as_str).unwrap_or_default();
+		let text = state
+			.docs
+			.get(uri)
+			.and_then(|document| document.text.as_deref())
+			.unwrap_or_default();
 		let prefix = extract_completion_prefix(text, position);
 		let context = detect_completion_context(text, position);
 		let prefix_lower = prefix.to_ascii_lowercase();
@@ -448,7 +521,11 @@ impl LanguageServer for Backend {
 		};
 		let uri = &params.text_document_position_params.text_document.uri;
 		let position = params.text_document_position_params.position;
-		let text = state.docs.get(uri).map(String::as_str).unwrap_or_default();
+		let text = state
+			.docs
+			.get(uri)
+			.and_then(|document| document.text.as_deref())
+			.unwrap_or_default();
 		let Some(locations) =
 			resolve_definition_locations(snapshot, &state.targets, uri, text, position)
 		else {
@@ -464,7 +541,11 @@ impl LanguageServer for Backend {
 		};
 		let uri = &params.text_document_position.text_document.uri;
 		let position = params.text_document_position.position;
-		let text = state.docs.get(uri).map(String::as_str).unwrap_or_default();
+		let text = state
+			.docs
+			.get(uri)
+			.and_then(|document| document.text.as_deref())
+			.unwrap_or_default();
 		let Some(locations) = resolve_reference_locations(
 			snapshot,
 			&state.targets,
@@ -583,17 +664,6 @@ fn lsp_range_from_editor(range: EditorRange) -> Range {
 			character: range.end.character,
 		},
 	}
-}
-
-fn schema_hover(
-	schema: &EditorSchema,
-	file_path: &Path,
-	text: &str,
-	position: Position,
-	workspace: Option<&SchemaWorkspace>,
-) -> Option<Hover> {
-	let hover = schema.hover(file_path, text, editor_position(position), workspace)?;
-	Some(schema_hover_view(hover))
 }
 
 fn schema_hover_view(hover: SchemaHover) -> Hover {
@@ -2251,6 +2321,9 @@ fn current_assignment_key(line_prefix: &str) -> Option<&str> {
 fn is_identifier_char(ch: char) -> bool {
 	ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '$' | '@' | '-')
 }
+
+#[cfg(test)]
+mod hover_tests;
 
 #[cfg(test)]
 mod tests {

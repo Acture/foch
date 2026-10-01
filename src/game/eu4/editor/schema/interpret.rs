@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::game::eu4::editor::position::{byte_offset, range_from_span};
 use crate::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, SpanRange, parse_clausewitz_content,
 };
@@ -30,8 +31,9 @@ pub(super) fn schema_hover(
 	position: EditorPosition,
 	dynamic_values: Option<&SchemaWorkspace>,
 ) -> Option<SchemaHover> {
+	let offset = byte_offset(text, position)?;
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	let target = find_hover_target(&parsed.ast.statements, position, &[])?;
+	let target = find_hover_target(&parsed.ast.statements, text, offset, &[])?;
 	let parent_path = target
 		.parent_path
 		.iter()
@@ -61,7 +63,8 @@ pub(super) fn schema_hover(
 
 fn find_hover_target(
 	statements: &[AstStatement],
-	position: EditorPosition,
+	text: &str,
+	offset: usize,
 	parent_path: &[String],
 ) -> Option<KeyPathTarget> {
 	for statement in statements {
@@ -74,19 +77,19 @@ fn find_hover_target(
 		else {
 			continue;
 		};
-		if span_contains_position(key_span, position) {
+		if (key_span.start.offset..key_span.end.offset).contains(&offset) {
 			return Some(KeyPathTarget {
 				parent_path: parent_path.to_vec(),
 				key: key.clone(),
-				range: editor_range_from_span(key_span),
+				range: range_from_span(text, key_span)?,
 			});
 		}
 		if let AstValue::Block { items, span } = value
-			&& span_contains_position(span, position)
+			&& (span.start.offset..span.end.offset).contains(&offset)
 		{
 			let mut child_path = parent_path.to_vec();
 			child_path.push(key.clone());
-			if let Some(target) = find_hover_target(items, position, &child_path) {
+			if let Some(target) = find_hover_target(items, text, offset, &child_path) {
 				return Some(target);
 			}
 		}
