@@ -180,7 +180,7 @@ fn cache_file_for_key(root: &Path, key: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-fn parser_cache_file(syntax: ScriptSyntax, bytes: &[u8]) -> PathBuf {
+pub(crate) fn parser_cache_file(syntax: ScriptSyntax, bytes: &[u8]) -> PathBuf {
 	cache_file_for_key(&parser_cache_root(), &parse_content_key(syntax, bytes))
 }
 

@@ -738,6 +738,30 @@ mod tests {
 					mod_hash: mod_hash.clone(),
 				});
 		}
+		// Which parse-cache entries exist, so a miss names its file and says
+		// whether the entry was never stored or could not be read back.
+		let parse_cache_entries = || -> Vec<(&'static str, bool)> {
+			[
+				"common/defines/cache_test.lua",
+				"common/scripted_effects/effects.txt",
+				"common/scripted_effects/comments.txt",
+				"common/scripted_effects/empty_block.txt",
+				"common/scripted_effects/comment_block.txt",
+				"common/scripted_effects/omitted.txt",
+			]
+			.into_iter()
+			.map(|relative| {
+				let path = game_path(relative);
+				let bytes = fs::read(path.to_path(&mod_root)).expect("read script input");
+				let entry = crate::game::eu4::script::parse_cache::parser_cache_file(
+					crate::game::eu4::script::parser::ScriptSyntax::for_game_path(&path),
+					&bytes,
+				);
+				(relative, entry.is_file())
+			})
+			.collect()
+		};
+		let before_rebuild = parse_cache_entries();
 		let rebuilt = load_or_build_mod_snapshot_with_cache(
 			"eu4",
 			&mod_item,
@@ -748,8 +772,15 @@ mod tests {
 		.expect("rebuild semantic snapshot")
 		.expect("rebuilt snapshot");
 		assert!(!rebuilt.cache_hit);
-		assert_eq!(rebuilt.clausewitz_parse_cache_hits, 6);
-		assert_eq!(rebuilt.clausewitz_parse_cache_misses, 0);
+		assert_eq!(
+			(
+				rebuilt.clausewitz_parse_cache_hits,
+				rebuilt.clausewitz_parse_cache_misses
+			),
+			(6, 0),
+			"parse-cache entries before the rebuild: {before_rebuild:?}; after: {:?}",
+			parse_cache_entries()
+		);
 	}
 
 	#[test]
