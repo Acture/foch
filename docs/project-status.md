@@ -138,6 +138,34 @@ tests are included but require a Windows runner; the local validation host is
 macOS. The initial real acceptance attempt below did not pass; the follow-on
 fixes and successful complete rerun are recorded after it.
 
+### Windows CI cache-directory probes (2026-10-03)
+
+The Windows job for `e9962d7` failed the snapshot rebuild regression: the
+semantic snapshot rebuilt correctly but recorded five parser-cache hits and one
+miss instead of six hits. The source tree was restored before the rebuild and
+the semantic-cache hit had already passed. The captured run is
+`https://github.com/Acture/foch/actions/runs/37031345812/job/110922833516`.
+The later `7b855a2` diagnostic retains the assertion and names each expected
+parser-cache entry before and after rebuilding.
+
+Cache-root selection checked writability with a shared `.foch-write-test`
+filename for every parallel reader. Failure to open that one name caused a
+reader to select the repository fallback even when the cache directory was
+writable, so independently resolved reads and writes could use different
+roots. A portable collision regression reproduced the incorrect rejection on
+the old code. Each probe now uses its own `NamedTempFile`; existing entries
+are preserved and each probe cleans up its own temporary file.
+
+Both the collision regression and eight-worker concurrent probing passed,
+alongside all seven cache-store tests. The focused snapshot regression retained
+its six-hit, zero-miss assertion and passed. Formatting and strict workspace
+Clippy passed. Logs are under `target/validation/p736-ci-cache/`; the complete
+push gate is captured in `push.log`, and the Windows outcome is tracked on
+PR #69. This local checkpoint reproduces the root-selection defect without
+claiming that the earlier Windows log identified the missing file or the sole
+cause of that failure. The recorded Workshop cohort still belongs to the
+earlier artifact above.
+
 ### Fixed Workshop acceptance attempt after P-736 (2026-10-01)
 
 Ran the unchanged `cargo acceptance` on committed source `840cd70`, with the

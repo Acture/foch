@@ -121,17 +121,9 @@ pub fn default_foch_cache_dir() -> PathBuf {
 }
 
 fn ensure_writable_dir(path: &Path) -> bool {
-	if fs::create_dir_all(path).is_err() {
-		return false;
-	}
-	let probe = path.join(".foch-write-test");
-	match fs::write(&probe, b"") {
-		Ok(()) => {
-			let _ = fs::remove_file(probe);
-			true
-		}
-		Err(_) => false,
-	}
+	// A shared probe name can be unavailable while another reader creates or
+	// removes it, changing the cache root despite the directory being writable.
+	fs::create_dir_all(path).is_ok() && tempfile::NamedTempFile::new_in(path).is_ok()
 }
 
 fn repo_fallback_cache_root_dir() -> PathBuf {
@@ -142,7 +134,46 @@ fn repo_fallback_cache_root_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-	use super::{cache_version_namespace, repo_fallback_cache_root_dir};
+	use super::{cache_version_namespace, ensure_writable_dir, repo_fallback_cache_root_dir};
+
+	#[test]
+	fn a_probe_name_collision_does_not_hide_a_writable_directory() {
+		let root: tempfile::TempDir = tempfile::tempdir().expect("cache root");
+		// An existing entry can make one fixed probe name unavailable even
+		// though other files can still be created in the directory.
+		let existing: std::path::PathBuf = root.path().join(".foch-write-test");
+		std::fs::create_dir(&existing).expect("occupy the former probe name");
+		assert!(ensure_writable_dir(root.path()));
+		assert!(
+			existing.is_dir(),
+			"the probe must preserve existing entries"
+		);
+	}
+
+	#[test]
+	fn concurrent_writability_checks_preserve_one_cache_directory() {
+		let root: tempfile::TempDir = tempfile::tempdir().expect("cache root");
+		let barrier: std::sync::Barrier = std::sync::Barrier::new(8);
+		std::thread::scope(|scope| {
+			for _ in 0..8 {
+				let directory: &std::path::Path = root.path();
+				let barrier: &std::sync::Barrier = &barrier;
+				scope.spawn(move || {
+					barrier.wait();
+					for _ in 0..32 {
+						assert!(ensure_writable_dir(directory));
+					}
+				});
+			}
+		});
+		assert_eq!(
+			std::fs::read_dir(root.path())
+				.expect("list cache root")
+				.count(),
+			0,
+			"writability checks must clean up their temporary files"
+		);
+	}
 
 	#[test]
 	fn cache_namespaces_require_semver() {
