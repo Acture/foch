@@ -180,6 +180,7 @@ mod tests {
 		);
 	}
 
+	#[cfg(unix)]
 	#[test]
 	fn an_unreadable_schema_directory_fails_the_walk() {
 		use std::os::unix::fs::PermissionsExt;
