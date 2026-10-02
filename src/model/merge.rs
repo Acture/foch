@@ -12,6 +12,22 @@ pub const MERGE_REPORT_ARTIFACT_PATH: &str = ".foch/foch-merge-report.json";
 pub const MERGE_PROVENANCE_ARTIFACT_PATH: &str = ".foch/foch-provenance.json";
 pub const MERGE_TRACE_ARTIFACT_PATH: &str = ".foch/foch-merge-trace.json";
 
+/// Definition provenance bound to the exact bytes of a generated merge output.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeProvenanceArtifact {
+	pub version: u32,
+	pub files: BTreeMap<String, MergeProvenanceFile>,
+	pub mod_names: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeProvenanceFile {
+	/// Lowercase hexadecimal BLAKE3 hash of the raw emitted file bytes.
+	pub content_hash: String,
+	/// Definition key → contributing mod IDs, in DAG-precedence order.
+	pub definitions: BTreeMap<String, Vec<String>>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergePlanStrategy {
@@ -786,6 +802,9 @@ pub struct MergeReport {
 	/// (and thus the report stays byte-identical) when the flag is off.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
 	pub definition_provenance: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+	/// Display names for mods referenced by surviving `definition_provenance`.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub provenance_mod_names: BTreeMap<String, String>,
 	/// Per merged file path → per top-level definition key → merge audit trail.
 	/// Populated with `definition_provenance` when `--provenance` is enabled.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
