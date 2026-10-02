@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use std::path::PathBuf;
 
 use super::*;
@@ -10,14 +11,20 @@ use crate::game::eu4::base::snapshot::{
 	lock_and_validate_installed_base_snapshot_identity,
 };
 use crate::input::FileFilter;
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use crate::input::config::Config;
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use crate::input::request::InputRequest;
+use crate::merge::analyze::merge_execution_result;
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use crate::merge::analyze::{
 	CancellationToken, MergeAnalysisOptions, NoopProgressObserver, analyze_merge,
-	merge_execution_result,
 };
-use crate::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
+use crate::model::MERGE_REPORT_ARTIFACT_PATH;
+use crate::model::MergeReport;
 
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 fn analyze_merge_for_test(
 	request: InputRequest,
 	options: MergeAnalysisOptions,
@@ -30,6 +37,7 @@ fn analyze_merge_for_test(
 	)
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 fn passthrough_options(out_dir: PathBuf) -> MergeAnalysisOptions {
 	MergeAnalysisOptions {
 		out_dir,
@@ -49,6 +57,7 @@ fn passthrough_options(out_dir: PathBuf) -> MergeAnalysisOptions {
 	}
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 fn minimal_passthrough_fixture() -> PathBuf {
 	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 		.join("tests/fixtures/playsets/eu4_minimal_passthrough")

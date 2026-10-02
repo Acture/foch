@@ -264,7 +264,7 @@ fn validate_commit_guards(
 		.transpose()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "windows", target_os = "redox"))))]
 pub(super) fn finalize_merge_output<Guard>(
 	transaction: OutputTransaction,
 	execution: CommitResult,
