@@ -1,13 +1,22 @@
 # Project Status
 
-Latest product acceptance: 2026-10-02 on `840cd70` plus the P-736 follow-on
-fixes described below. The unchanged `cargo acceptance` exited 0: its cold/warm
-cache gate passed, and all 14 fixed cases completed (2 `ready`, 12
+Latest PR integration verification: 2026-10-02 on `e97c93c` plus `master`
+at `c774b67` and the resolved path/CWT boundaries. The complete workspace
+suite passed 1,798 tests (20 ignored), including the socket/server tests.
+Formatting, strict all-target/all-feature workspace Clippy, all-target/all-feature
+workspace compilation, and the separate fuzz-workspace check passed. Logs are
+under `target/validation/p736-pr-integration/`. A complete Workshop cohort has
+not been measured for this integrated artifact; the recorded acceptance below
+belongs to the earlier artifact.
+
+Latest recorded product acceptance: 2026-10-02 on `e97c93c`, before integrating
+the newer `master` for the P-736 PR. The unchanged `cargo acceptance` exited 0:
+its cold/warm cache gate passed, and all 14 fixed cases completed (2 `ready`, 12
 `partial_success`). This is an accepted local cohort for the recorded product
 artifact, not universal merge correctness or in-game playability. The detailed
 semantic scores and exact cohort identity are recorded below.
 
-Latest worktree verification: 2026-10-02 on the same source artifact:
+Earlier worktree verification: 2026-10-02 on that pre-integration source artifact:
 `cargo test --workspace --no-fail-fast --quiet` passed 1,785 tests (22 ignored),
 including the local socket/server tests. Rust formatting and strict workspace
 Clippy passed. The two ignored kernel scale regressions and the ignored
@@ -20,6 +29,11 @@ changes: `cargo test --workspace --no-fail-fast --quiet` passed 1,780 tests
 (19 ignored), including the three socket/server tests rerun outside the
 restricted sandbox. Rust formatting, strict workspace Clippy, and the separate
 fuzz-workspace all-target/all-feature check passed. See the P-736 entry below.
+Earlier worktree verification: 2026-09-29 on `049a9f0` plus the P-709 embedded
+CWT rule pack: strict workspace Clippy and formatting, and `cargo test
+--workspace --no-fail-fast` at 1,592 passed and 3 failed across all targets,
+the three being exactly the sandbox denials `AGENTS.md` records as environment
+results.
 Earlier worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
 equivalence change: strict workspace Clippy and formatting, and `cargo test
 --workspace --no-fail-fast` at 1,579 passed and 3 failed across all targets,
@@ -62,6 +76,13 @@ any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
 
 ## Typed game-relative paths (2026-10-01)
+
+The PR integrates the newer embedded CWT rule pack from `master`. Build-time
+compilation includes the same game-path and rule-path modules as runtime
+matching. The embedded pack, fatal invalid overrides, no-rule-file rejection,
+deterministic schema-file ordering and LF/CRLF byte equivalence are retained
+and covered by the integration suite. Snapshot lookups, profiles and corrupt
+entry rebuild tests use the active analysis-rule identity throughout.
 
 P-736. `GamePath` / `GamePathBuf` wrap `relative-path` with one validated
 game-root namespace. Inventory keys, ASTs, semantic records, database and CWT
@@ -262,6 +283,113 @@ executable hashes and prefix verification are under
 Local reproduction logs, CPU samples and before/after test results are under
 `target/validation/p736-timeout-fix/`. The explicitly ignored scale test is
 `cargo test --release -p foch --lib large_class_facts_do_not_rescan_revision_edits -- --ignored --nocapture`.
+
+## CWT rule pack embedded in the binary (2026-09-29)
+
+P-709, the blocker P-695 derived. `load_schema()` searched
+`FOCH_CWTOOLS_SCHEMA_DIR`, then `vendor/cwtools-eu4-config` and
+`output/cwtools-eu4-config` under `env!("CARGO_MANIFEST_DIR")`, the build
+machine's source path. Since P-695 the schema decides output bytes, and each
+silent outcome changed them: a binary away from its build tree ran without a
+schema (every release, VSIX and Homebrew binary on a user's machine); an
+uninitialized submodule's empty directory compiled to an empty schema (the
+maintainer cache held its 151-byte pack keyed `e3b0c442…`, the SHA-256 of no
+input); and an override that failed to load became no schema through `.ok()`.
+
+`build.rs` now compiles the vendored config with the library's own
+`src/game/schema` modules, included by path because a build script cannot link
+the crate it builds. P-736 also includes the same game-path and rule-path
+modules in the build script, so the compiler and runtime share the validated
+path boundary. The binary embeds the pack; `load_schema()` decodes it, and
+`FOCH_CWTOOLS_SCHEMA_DIR` (set but empty counts as unset) compiles another
+directory instead, uncached in every process, or panics naming itself; `foch
+lsp` then fails `initialize` rather than serving half a workspace. A directory
+without `.cwt` files, or with an unreadable entry, is an error at every entry,
+so an empty submodule fails the build with the `git submodule update` command
+and a partly readable one cannot embed a smaller pack. The write-only
+`CwtSource`, the `VENDORED_CWT_COMMIT` constant (not an object in the submodule
+at all), the dead `output/` candidate and the default compiled-pack cache path
+are gone; nothing in the product writes the `cwt-rules` layer any more.
+
+The pack was not byte-deterministic: `replace_scope` was a `HashMap` that
+bincode wrote in per-process hash order. It is a `BTreeMap` now, and a test
+recompiles the vendored config and requires byte equality with the embedded
+pack, which the build script wrote in another process — that pins both
+determinism and freshness. Nor was it one pack per id across checkouts: the
+submodule has no `.gitattributes`, so a Windows `autocrlf` checkout gets CRLF
+files, and raw block values in the compiled string sets kept the `\r` — an
+all-CRLF copy compiled to 1,262,919 bytes against 1,262,309 under the same
+`cwt_schema_id`, which normalizes line endings. The compiler now parses the
+same normalized text the id hashes, and a test converts the vendored config to
+CRLF and requires the embedded bytes.
+
+Identity. The embedded `cwt_schema_id` is `5d636ca3…70f3`, the baseline
+fixture's `pack_id`; `foch --version` prints it, plus a line when the override
+is set. It enters `analysis_rules_version` as `-cwt-<16 hex>`, which base
+snapshots are validated against and which the persistent mod-snapshot key now
+includes — that key previously carried neither the schema nor the rules
+version. Installed base data is therefore rejected whenever the embedded id
+changes, this change and every submodule refresh included, and release
+base-data assets must be rebuilt with the binary they ship with (P-750); the
+refresh PR body now says so. Under the override the stale-data message names
+it. The id is the source-content hash the ticket names; a compiler change still
+needs the manual `ANALYSIS_RULES_VERSION` bump, as any analysis-code change
+does. For merge quality, the product side follows the executable's BLAKE3 now
+that the pack is inside it; the scorer's schema id enters
+`workshop_scorer_config_hash`; and every product runner refuses to start under
+`FOCH_CWTOOLS_SCHEMA_DIR`, because its child clears the environment and would
+merge with a different schema from the one scoring reads.
+
+Size: release `foch` on macOS arm64 under the default release profile went
+from 20,642,288 to 21,913,328 bytes, +1,271,040 (+6.2%); `__TEXT,__const` grew
+by 1,265,664 for the 1,262,309-byte pack, which is stored uncompressed.
+
+Evidence: with `vendor/cwtools-eu4-config` moved out of the tree, a copy of the
+release binary run from a scratch directory with an empty environment reported
+the embedded id, and the prebuilt `merge_reads_one_value_written_two_ways_as_one_value`
+still wrote `all_estate_loyalty_equilibrium = 0.500`. With the directory empty,
+`cargo check` failed in `build.rs` with the submodule command.
+
+Adjudicated tests: the two `classifies_vendor_*` tests are no longer ignored
+and pass, though they call the classifier with a path shape production never
+sends. `eu4_schema_cardinality_conflict_is_tagged_from_cwt` stays ignored, now
+under P-747: with the schema present it still fails because the report hands
+the classifier a conflict's parent path without its key, so a root-level key
+binds no CWT field — nothing to do with where the schema lives.
+`iterator_scope_type_classifies_known_iterators`
+relied on another test to install base scopes and failed when run alone; it
+installs them itself now.
+
+Follow-ups: P-747 (classifier path), P-748 (release artifacts carry no license
+notices, now including the MIT CWTools text), P-749 (the cache-root fallback
+still bakes the build path), P-750 (base-data assets must match the release
+binary's schema).
+
+Not established: a real Windows or Linux build's embedded bytes (only the
+line-ending difference was reproduced, on macOS), or any cohort run with the
+new identity.
+
+## VFS dependency evaluation (2026-09-26)
+
+P-735 completed a source review and isolated behavior comparison of the current
+file-walk/path-key helpers, Rust `vfs`, and PhysicsFS. The recommendation is to
+keep `std::fs` / `walkdir` for installed-directory inputs; the generic libraries
+still need adapters for Foch's input contracts and do not replace its source
+inventory or EU4 semantics. No product dependency or implementation changed.
+
+The comparison reproduced a physical-filename-to-semantic-key collision in the
+current helper. P-736 tracks its repair separately. Scope, pinned versions,
+observations, skipped cases, and reproduction artifacts are in the
+[VFS evaluation](vfs-evaluation.md). This helper-level evaluation adds no full
+Workshop, acceptance-cohort, cross-platform, or performance result.
+
+A 2026-09-28 path-type follow-up established P-736's type boundary: keep native
+`Path/PathBuf` for physical I/O and adopt `relative-path` for portable
+game-relative identities; use `typed-path` as needed for foreign descriptor
+parsing. The evaluation records tested API behavior and the validation required
+at construction, deserialization, and host-path conversion. At that checkpoint
+P-736 was still unimplemented; the completed repair and validation are recorded
+above.
 
 ## Numeric equivalence under the game's field coercion (2026-09-22)
 

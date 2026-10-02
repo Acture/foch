@@ -183,9 +183,12 @@ bun run --cwd packages/tree-sitter-paradox test
 bun run --cwd packages/vscode-foch smoke
 ```
 
-EU4 CWT schemas are vendored at `vendor/cwtools-eu4-config`. Refreshing that
-submodule and its recorded snapshot hash is an explicit maintenance operation,
-not part of a normal build.
+EU4 CWT schemas are vendored at `vendor/cwtools-eu4-config`. The build
+compiles that directory into a rule pack embedded in the binary, so the
+submodule must be checked out to build at all; `foch --version` names the
+embedded pack's `cwt-schema` identity. Refreshing that submodule and its
+recorded snapshot hash is an explicit maintenance operation, not part of a
+normal build.
 
 ### EU4 database loading rules
 

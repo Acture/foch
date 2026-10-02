@@ -1,10 +1,10 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
 use super::error::CwtLoadError;
 use super::rule_path::SchemaDirectory;
-use super::source::cwt_files;
+use super::source::{cwt_files, normalize_line_endings};
 use super::syntax::{CommentKind, ParadoxNode, ParadoxScalar, ParadoxTree};
 use crate::model::{GamePathBuf, GamePathError};
 
@@ -97,7 +97,7 @@ impl SchemaRootKeyFilter {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CwtFieldAttributes {
 	pub push_scope: Option<String>,
-	pub replace_scope: HashMap<String, String>,
+	pub replace_scope: BTreeMap<String, String>,
 	pub scope: Vec<String>,
 	pub cardinality: Option<(u32, Option<u32>)>,
 	pub severity: Option<CwtSeverity>,
@@ -208,7 +208,7 @@ impl CwtSchemaGraph {
 				path: path.clone(),
 				source,
 			})?;
-			let tree = ParadoxTree::parse(&bytes)?;
+			let tree = ParadoxTree::parse(&normalize_line_endings(&bytes))?;
 			graph
 				.ingest_tree(path.strip_prefix(dir).ok(), &tree)
 				.map_err(|error| error.in_file(&path))?;
@@ -864,12 +864,12 @@ fn parse_scope_list(value: &str) -> Vec<String> {
 	value.split_whitespace().map(ToString::to_string).collect()
 }
 
-fn parse_scope_map(value: &str) -> Option<HashMap<String, String>> {
+fn parse_scope_map(value: &str) -> Option<BTreeMap<String, String>> {
 	let tokens = strip_braces(value).split_whitespace().collect::<Vec<_>>();
 	if tokens.is_empty() {
-		return Some(HashMap::new());
+		return Some(BTreeMap::new());
 	}
-	let mut mappings = HashMap::new();
+	let mut mappings = BTreeMap::new();
 	let mut index = 0;
 	while index < tokens.len() {
 		let (key, equals, value) = match tokens.get(index..index + 3) {

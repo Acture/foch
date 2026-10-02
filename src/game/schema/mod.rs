@@ -15,12 +15,14 @@ pub(crate) mod syntax;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 pub(crate) use cache::{CwtLoad, CwtLoadStatus, CwtLoadTimings};
 pub(crate) use query::CwtQuery;
-pub(crate) use source::{CwtSchemaId, CwtSource};
+pub(crate) use source::CwtSchemaId;
 
 use error::CwtLoadError;
+use query::CompiledRulePack;
 
 pub(crate) type CwtFacts = CwtQuery;
 
@@ -33,9 +35,31 @@ pub(crate) struct CwtSchema {
 }
 
 impl CwtSchema {
-	pub(crate) fn load(root: &Path, source: CwtSource) -> Result<Self, CwtLoadError> {
-		let cache_dir = cache::default_cwt_cache_dir();
-		Self::load_with_cache(root, source, Some(&cache_dir))
+	/// Decodes a rule pack compiled ahead of time, such as the one a build
+	/// script embeds. The pack must carry the source identity it was compiled
+	/// from, because that identity is what caches and reports key on.
+	pub(crate) fn from_compiled_bytes(bytes: &[u8]) -> Result<Self, CwtLoadError> {
+		let started = Instant::now();
+		let pack = CompiledRulePack::from_bytes(bytes)?;
+		let source_id = pack
+			.source_id
+			.as_deref()
+			.and_then(CwtSchemaId::from_hex)
+			.ok_or_else(|| CwtLoadError::Codec {
+				message: "compiled pack carries no valid source id".to_string(),
+			})?;
+		Ok(Self {
+			facts: Arc::new(CwtQuery::new(pack)),
+			source_id,
+			cache_status: CwtLoadStatus::Embedded,
+			cache_path: None,
+			timings: CwtLoadTimings {
+				source_hash: None,
+				cache_read: None,
+				source_compile: None,
+				total: started.elapsed(),
+			},
+		})
 	}
 
 	pub(crate) fn facts(&self) -> &CwtFacts {
@@ -60,10 +84,9 @@ impl CwtSchema {
 
 	pub(crate) fn load_with_cache(
 		root: &Path,
-		source: CwtSource,
 		cache_dir: Option<&Path>,
 	) -> Result<Self, CwtLoadError> {
-		let loaded: CwtLoad = cache::load_cwt_from_dir(root, source, cache_dir)?;
+		let loaded: CwtLoad = cache::load_cwt_from_dir(root, cache_dir)?;
 		Ok(Self {
 			facts: loaded.facts,
 			source_id: loaded.source_id,

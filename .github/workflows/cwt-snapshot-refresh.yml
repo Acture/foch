@@ -143,6 +143,8 @@ jobs:
           \`\`\`
 
           ⚠️ Any baseline diff is a fixture failure and requires human review.
+
+          ⚠️ The build embeds this schema, and its identity is part of \`analysis_rules_version\`: merging invalidates every installed base snapshot and persistent mod snapshot, so release base-data assets must be rebuilt with the new binary.
           EOF
           )"
           fi

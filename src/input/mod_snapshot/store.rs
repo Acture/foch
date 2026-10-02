@@ -107,7 +107,7 @@ pub struct ModSnapshotCache {
 struct StoredCachedModData {
 	cache_version: String,
 	mod_hash: String,
-	foch_version: String,
+	analysis_identity: String,
 	game_key: String,
 	semantic_index: StoredSemanticIndex,
 	inventory_paths: Vec<String>,
@@ -323,16 +323,21 @@ impl ModSnapshotCache {
 	pub fn lookup(
 		&self,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 	) -> Option<CachedModData> {
-		self.lookup_with_cache_version(MOD_SNAPSHOT_CACHE_VERSION, mod_hash, foch_version, game_key)
+		self.lookup_with_cache_version(
+			MOD_SNAPSHOT_CACHE_VERSION,
+			mod_hash,
+			analysis_identity,
+			game_key,
+		)
 	}
 
 	pub(crate) fn store_owned(
 		&self,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 		data: CachedModData,
 	) -> (
@@ -342,7 +347,7 @@ impl ModSnapshotCache {
 		self.store_owned_with_cache_version(
 			MOD_SNAPSHOT_CACHE_VERSION,
 			mod_hash,
-			foch_version,
+			analysis_identity,
 			game_key,
 			data,
 		)
@@ -352,14 +357,14 @@ impl ModSnapshotCache {
 	fn store(
 		&self,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 		data: &CachedModData,
 	) -> Result<(), CacheError> {
 		let (_, result) = self.store_owned_with_cache_version(
 			MOD_SNAPSHOT_CACHE_VERSION,
 			mod_hash,
-			foch_version,
+			analysis_identity,
 			game_key,
 			data.clone(),
 		);
@@ -369,10 +374,15 @@ impl ModSnapshotCache {
 	pub(crate) fn entry_profile(
 		&self,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 	) -> Option<ModSnapshotCacheEntryProfile> {
-		let path = self.cache_file(MOD_SNAPSHOT_CACHE_VERSION, mod_hash, foch_version, game_key);
+		let path = self.cache_file(
+			MOD_SNAPSHOT_CACHE_VERSION,
+			mod_hash,
+			analysis_identity,
+			game_key,
+		);
 		let compressed_bytes = fs::metadata(&path).ok()?.len();
 		let mut header = [0_u8; MOD_SNAPSHOT_CACHE_HEADER_BYTES];
 		fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
@@ -383,11 +393,11 @@ impl ModSnapshotCache {
 		})
 	}
 
-	pub(crate) fn touch_entry(&self, mod_hash: &str, foch_version: &str, game_key: &str) {
+	pub(crate) fn touch_entry(&self, mod_hash: &str, analysis_identity: &str, game_key: &str) {
 		touch_cache_file(&self.cache_file(
 			MOD_SNAPSHOT_CACHE_VERSION,
 			mod_hash,
-			foch_version,
+			analysis_identity,
 			game_key,
 		));
 	}
@@ -396,14 +406,14 @@ impl ModSnapshotCache {
 		&self,
 		cache_version: &str,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 	) -> Option<CachedModData> {
-		let path = self.cache_file(cache_version, mod_hash, foch_version, game_key);
+		let path = self.cache_file(cache_version, mod_hash, analysis_identity, game_key);
 		let stored = decode_payload_from_file(&path).ok()?;
 		if stored.cache_version != cache_version
 			|| stored.mod_hash != mod_hash
-			|| stored.foch_version != foch_version
+			|| stored.analysis_identity != analysis_identity
 			|| stored.game_key != game_key
 		{
 			return None;
@@ -417,7 +427,7 @@ impl ModSnapshotCache {
 		&self,
 		cache_version: &str,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 		data: CachedModData,
 	) -> (
@@ -433,11 +443,11 @@ impl ModSnapshotCache {
 		let (payload, inventory_paths) = StoredCachedModData::from_cached_mod_data_owned(
 			cache_version,
 			mod_hash,
-			foch_version,
+			analysis_identity,
 			game_key,
 			data,
 		);
-		let path = self.cache_file(cache_version, mod_hash, foch_version, game_key);
+		let path = self.cache_file(cache_version, mod_hash, analysis_identity, game_key);
 		let result = store_payload_streaming(&path, &payload);
 		let data = payload.into_cached_mod_data_with_inventory(inventory_paths);
 		(data, result)
@@ -447,10 +457,10 @@ impl ModSnapshotCache {
 		&self,
 		cache_version: &str,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 	) -> PathBuf {
-		let filename = cache_filename(cache_version, mod_hash, foch_version, game_key);
+		let filename = cache_filename(cache_version, mod_hash, analysis_identity, game_key);
 		self.root.join(filename)
 	}
 }
@@ -474,7 +484,7 @@ impl StoredCachedModData {
 	fn from_cached_mod_data_owned(
 		cache_version: &str,
 		mod_hash: &str,
-		foch_version: &str,
+		analysis_identity: &str,
 		game_key: &str,
 		data: CachedModData,
 	) -> (Self, Vec<GamePathBuf>) {
@@ -487,7 +497,7 @@ impl StoredCachedModData {
 		let stored = Self {
 			cache_version: cache_version.to_string(),
 			mod_hash: mod_hash.to_string(),
-			foch_version: foch_version.to_string(),
+			analysis_identity: analysis_identity.to_string(),
 			game_key: game_key.to_string(),
 			semantic_index: StoredSemanticIndex::from_semantic_index_owned(semantic_index),
 			inventory_paths: inventory_paths
@@ -1244,14 +1254,14 @@ fn declared_uncompressed_bytes(header: &[u8]) -> Result<u64, CacheError> {
 fn cache_filename(
 	cache_version: &str,
 	mod_hash: &str,
-	foch_version: &str,
+	analysis_identity: &str,
 	game_key: &str,
 ) -> String {
 	format!(
 		"{}__cv{}__v{}__g{}.rkyv",
 		sanitize_component(mod_hash),
 		cache_version,
-		sanitize_component(foch_version),
+		sanitize_component(analysis_identity),
 		sanitize_component(game_key)
 	)
 }

@@ -339,6 +339,37 @@ fn top_level_help_exposes_only_current_merge_commands() {
 }
 
 #[test]
+fn version_names_the_embedded_cwt_schema_and_any_override() {
+	let version = |override_dir: Option<&str>| {
+		let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));
+		command
+			.arg("--version")
+			.env_remove("FOCH_CWTOOLS_SCHEMA_DIR");
+		if let Some(dir) = override_dir {
+			command.env("FOCH_CWTOOLS_SCHEMA_DIR", dir);
+		}
+		let output = command.output().expect("run foch --version");
+		assert!(output.status.success(), "{output:?}");
+		String::from_utf8(output.stdout).expect("stdout utf8")
+	};
+	let embedded = format!(
+		"cwt-schema {} (embedded)",
+		foch::game::eu4::EMBEDDED_CWT_SCHEMA_ID
+	);
+
+	let plain = version(None);
+	assert!(plain.contains(&embedded), "stdout: {plain}");
+	assert!(!plain.contains("overridden"), "stdout: {plain}");
+
+	let overridden = version(Some("/maintainer/cwt"));
+	assert!(overridden.contains(&embedded), "stdout: {overridden}");
+	assert!(
+		overridden.contains("cwt-schema overridden by FOCH_CWTOOLS_SCHEMA_DIR=/maintainer/cwt"),
+		"stdout: {overridden}"
+	);
+}
+
+#[test]
 fn input_inspect_reads_manifest_path_mod() {
 	let tmp = TempDir::new().expect("tempdir");
 	let mod_root = tmp.path().join("local-mod");

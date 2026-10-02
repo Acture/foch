@@ -1,6 +1,7 @@
 mod store;
 
 use crate::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
+use crate::game::eu4::base::analysis_rules_version;
 use crate::game::eu4::script::documents::{
 	ParsedTextDocument, build_semantic_index_from_owned_documents,
 	discover_text_documents_from_paths, parse_discovered_text_documents,
@@ -82,8 +83,8 @@ fn load_or_build_mod_snapshot_with_cache(
 	{
 		let profile = cache.and_then(|cache| {
 			let mod_hash = owned_mod_hash.as_deref()?;
-			cache.touch_entry(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key);
-			cache.entry_profile(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key)
+			cache.touch_entry(mod_hash, snapshot_analysis_identity(), &disk_cache_game_key);
+			cache.entry_profile(mod_hash, snapshot_analysis_identity(), &disk_cache_game_key)
 		});
 		eprintln!(
 			"[merge] mod_snapshot: cache_hit mod_id={} source=process elapsed_ms={} compressed_bytes={} uncompressed_bytes={} documents={} scopes={} definitions={} references={}",
@@ -102,15 +103,18 @@ fn load_or_build_mod_snapshot_with_cache(
 	let cache_lookup_started = Instant::now();
 	if let (Some(cache), Some(mod_hash)) = (cache, owned_mod_hash.as_ref())
 		&& let Some(cached) =
-			cache.lookup(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key)
+			cache.lookup(mod_hash, snapshot_analysis_identity(), &disk_cache_game_key)
 	{
 		// A disk entry whose documents have no distinct game paths is corrupt,
 		// like one whose inventory fails validation in `lookup`: it is a miss,
 		// and the rebuild below replaces it.
 		match to_loaded_snapshot(cached, true, owned_mod_hash.clone()) {
 			Ok(snapshot) => {
-				let profile =
-					cache.entry_profile(mod_hash, env!("CARGO_PKG_VERSION"), &disk_cache_game_key);
+				let profile = cache.entry_profile(
+					mod_hash,
+					snapshot_analysis_identity(),
+					&disk_cache_game_key,
+				);
 				store_process_snapshot(process_cache_key.as_ref(), &snapshot);
 				eprintln!(
 					"[merge] mod_snapshot: cache_hit mod_id={} source=disk lookup_ms={} elapsed_ms={} compressed_bytes={} uncompressed_bytes={} documents={} scopes={} definitions={} references={}",
@@ -167,7 +171,7 @@ fn load_or_build_mod_snapshot_with_cache(
 	if let (Some(cache), Some(mod_hash)) = (cache, owned_mod_hash.as_ref()) {
 		let (returned_data, store_result) = cache.store_owned(
 			mod_hash,
-			env!("CARGO_PKG_VERSION"),
+			snapshot_analysis_identity(),
 			&disk_cache_game_key,
 			data,
 		);
@@ -209,6 +213,14 @@ fn load_or_build_mod_snapshot_with_cache(
 	)?;
 	store_process_snapshot(process_cache_key.as_ref(), &snapshot);
 	Ok(Some(snapshot))
+}
+
+/// What a stored snapshot's semantic index was computed with, besides its
+/// input: the tool build and every analysis rule set, the CWT schema among
+/// them. The ACF key alone would serve an index classified by another schema.
+fn snapshot_analysis_identity() -> &'static str {
+	static IDENTITY: OnceLock<String> = OnceLock::new();
+	IDENTITY.get_or_init(|| format!("{}-{}", env!("CARGO_PKG_VERSION"), analysis_rules_version()))
 }
 
 fn process_snapshot_cache_key(mod_hash: Option<&str>) -> Option<ProcessSnapshotCacheKey> {
@@ -490,6 +502,15 @@ mod tests {
 
 	fn game_path(text: &str) -> GamePathBuf {
 		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	#[test]
+	fn snapshot_key_carries_the_analysis_rules_and_cwt_schema() {
+		assert!(snapshot_analysis_identity().ends_with(analysis_rules_version()));
+		assert!(snapshot_analysis_identity().contains(&format!(
+			"-cwt-{}",
+			&crate::game::eu4::active_cwt_schema_id()[..16]
+		)));
 	}
 
 	#[test]
@@ -782,7 +803,7 @@ mod tests {
 			inventory_paths: vec![game_path(relative)],
 		};
 		cache
-			.store_owned(&mod_hash, env!("CARGO_PKG_VERSION"), "eu4", corrupt)
+			.store_owned(&mod_hash, snapshot_analysis_identity(), "eu4", corrupt)
 			.1
 			.expect("store corrupt entry");
 
@@ -812,7 +833,7 @@ mod tests {
 				.contains_key(&game_path(relative))
 		);
 		let replaced = cache
-			.lookup(&mod_hash, env!("CARGO_PKG_VERSION"), "eu4")
+			.lookup(&mod_hash, snapshot_analysis_identity(), "eu4")
 			.expect("the rebuild replaces the corrupt entry");
 		assert_eq!(
 			document_game_paths(&replaced.semantic_index.documents)

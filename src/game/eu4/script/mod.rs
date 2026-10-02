@@ -269,7 +269,7 @@ pub fn collect_localisation_definitions(
 pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 	let mut index = SemanticIndex::default();
 	let map_groups = collect_map_groups(files);
-	let cwt_rule_engine = super::cwt::rule_engine();
+	let cwt_rule_engine = Some(super::cwt::rule_engine());
 	for file in files {
 		index.documents.push(DocumentRecord {
 			mod_id: file.mod_id.clone(),
@@ -293,11 +293,13 @@ pub fn script_container_scope_kind(
 	ast_path: &[&str],
 ) -> Option<ScopeKind> {
 	let key = *ast_path.last()?;
-	super::cwt::rule_engine()
-		.and_then(|engine| {
-			schema_path_container_scope_kind(engine, file_kind.clone(), file_path, ast_path)
-		})
-		.or_else(|| hand_container_scope_fallback(file_kind, key))
+	schema_path_container_scope_kind(
+		super::cwt::rule_engine(),
+		file_kind.clone(),
+		file_path,
+		ast_path,
+	)
+	.or_else(|| hand_container_scope_fallback(file_kind, key))
 }
 
 fn build_file_index(

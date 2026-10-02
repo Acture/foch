@@ -46,13 +46,17 @@ pub fn canonicalize_numeric_values_with_active_schema(
 	relative_path: &GamePath,
 	file: &AstFile,
 ) -> AstFile {
-	canonicalize_numeric_values_at(relative_path, file, crate::game::eu4::cwt::rule_engine())
+	canonicalize_numeric_values_at(
+		relative_path,
+		file,
+		Some(crate::game::eu4::cwt::rule_engine()),
+	)
 }
 
 /// Rewrite every schema-typed number in `file` into its canonical spelling.
 ///
-/// A file whose path binds no root type, or a build with no schema installed,
-/// comes back unchanged.
+/// A file whose path binds no root type, or a call with no schema, comes back
+/// unchanged.
 pub(crate) fn canonicalize_numeric_values(file: &AstFile, schema: Option<&CwtQuery>) -> AstFile {
 	canonicalize_numeric_values_at(&file.path, file, schema)
 }
@@ -84,7 +88,11 @@ fn canonicalize_numeric_values_at(
 /// swamp the signal it is trying to read. Replacing byte ranges keeps the
 /// comparison about content.
 pub fn canonicalize_numeric_text(relative_path: &GamePath, source: &str) -> String {
-	canonicalize_numeric_text_with(relative_path, source, crate::game::eu4::cwt::rule_engine())
+	canonicalize_numeric_text_with(
+		relative_path,
+		source,
+		Some(crate::game::eu4::cwt::rule_engine()),
+	)
 }
 
 fn canonicalize_numeric_text_with(
@@ -238,7 +246,7 @@ mod tests {
 	use super::*;
 	use crate::game::eu4::script::emit::emit_clausewitz_statements;
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
-	use crate::game::schema::{CwtSchema, CwtSource};
+	use crate::game::schema::CwtSchema;
 
 	const SCHEMA: &str = r#"
 		types = {
@@ -259,14 +267,7 @@ mod tests {
 	fn schema() -> CwtSchema {
 		let root = TempDir::new().expect("create schema directory");
 		fs::write(root.path().join("things.cwt"), SCHEMA).expect("write schema");
-		CwtSchema::load_with_cache(
-			root.path(),
-			CwtSource::UserProvided {
-				path: root.path().to_path_buf(),
-			},
-			None,
-		)
-		.expect("load schema")
+		CwtSchema::load_with_cache(root.path(), None).expect("load schema")
 	}
 
 	fn canonicalize(path: &str, source: &str, schema: Option<&CwtQuery>) -> String {
@@ -534,9 +535,9 @@ mod coverage_probe {
 	}
 
 	#[test]
-	#[ignore = "P-695 coverage probe: needs EU4_ROOT and the vendored CWT schema"]
+	#[ignore = "P-695 coverage probe: needs EU4_ROOT"]
 	fn measure_coverage_against_vanilla() {
-		let schema = crate::game::eu4::cwt::rule_engine().expect("schema");
+		let schema = crate::game::eu4::cwt::rule_engine();
 		let root = PathBuf::from(std::env::var("EU4_ROOT").expect("EU4_ROOT"));
 		let mut files = Vec::new();
 		for directory in ["common", "events", "decisions", "missions"] {
