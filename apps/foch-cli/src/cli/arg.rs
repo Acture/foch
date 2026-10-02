@@ -155,9 +155,10 @@ pub struct MergeArgs {
 
 	/// Annotate merged definitions with their source mods using inline
 	/// comments plus `.foch/foch-provenance.json` and
-	/// `.foch/foch-merge-trace.json` sidecars. Diplomatic actions also expose
-	/// `Base:` / `Modified by:` provenance in generated in-game tooltip
-	/// localisation. Off by default; output is byte-identical when omitted.
+	/// `.foch/foch-merge-trace.json` sidecars. Supported GUI controls append
+	/// sources to their static tooltips; diplomatic actions expose `Base:` /
+	/// `Modified by:` in tooltip localisation. Off by default; output is
+	/// byte-identical when omitted.
 	#[arg(long)]
 	pub provenance: bool,
 

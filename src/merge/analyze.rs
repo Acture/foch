@@ -22,8 +22,9 @@ use crate::input::{
 use crate::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
 	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
-	MergeExecutionAttestation, MergePlanResult, MergeReport, MergeReportBaseSnapshot,
-	MergeReportScope, MergeReportStatus, MergeReportValidation,
+	MergeExecutionAttestation, MergePlanResult, MergeProvenanceArtifact, MergeProvenanceFile,
+	MergeReport, MergeReportBaseSnapshot, MergeReportScope, MergeReportStatus,
+	MergeReportValidation,
 };
 use crate::project::{AppliedDepOverride, Project, ResolutionDecision, ResolutionMap};
 use std::collections::{BTreeMap, BTreeSet};
@@ -975,10 +976,47 @@ fn write_provenance_artifact(out_dir: &Path, report: &MergeReport) -> Result<(),
 		}
 		return Ok(());
 	}
+	let mut files = BTreeMap::new();
+	for (relative, definitions) in &report.definition_provenance {
+		if relative.contains(['\\', ':'])
+			|| relative
+				.split('/')
+				.any(|part| part.is_empty() || matches!(part, "." | ".."))
+		{
+			return Err(MergeError::Validation {
+				path: Some(relative.clone()),
+				message: "provenance output path is not a safe relative path".to_string(),
+			});
+		}
+		let mut output_path = out_dir.to_path_buf();
+		for component in relative.split('/') {
+			output_path.push(component);
+			let metadata = fs::symlink_metadata(&output_path)?;
+			if metadata.is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
+				return Err(MergeError::Validation {
+					path: Some(relative.clone()),
+					message: "provenance output contains a symlink or special file".to_string(),
+				});
+			}
+		}
+		let content_hash = blake3::hash(&fs::read(&output_path)?).to_hex().to_string();
+		files.insert(
+			relative.clone(),
+			MergeProvenanceFile {
+				content_hash,
+				definitions: definitions.clone(),
+			},
+		);
+	}
+	let artifact = MergeProvenanceArtifact {
+		version: 1,
+		files,
+		mod_names: report.provenance_mod_names.clone(),
+	};
 	if let Some(parent) = path.parent() {
 		fs::create_dir_all(parent)?;
 	}
-	let bytes = serde_json::to_vec_pretty(&report.definition_provenance).map_err(|err| {
+	let bytes = serde_json::to_vec_pretty(&artifact).map_err(|err| {
 		MergeError::Io(io::Error::other(format!(
 			"failed to serialize provenance sidecar {}: {err}",
 			path.display()
@@ -1092,6 +1130,44 @@ mod tests {
 		let mut report = MergeReport::default();
 		update(&mut report);
 		report
+	}
+
+	#[test]
+	fn provenance_artifact_rejects_unsafe_output_paths() {
+		let temp = tempfile::TempDir::new().expect("temporary output");
+		for path in [
+			"../outside.txt",
+			"/absolute.txt",
+			"C:/outside.txt",
+			"common/../outside.txt",
+			"common\\outside.txt",
+			"common//outside.txt",
+			"",
+		] {
+			let report = report_with(|report| {
+				report.definition_provenance.insert(
+					path.to_string(),
+					BTreeMap::from([("effect".to_string(), vec!["mod_a".to_string()])]),
+				);
+			});
+			let error = write_provenance_artifact(temp.path(), &report)
+				.expect_err("unsafe paths must be rejected before reading output");
+			assert!(
+				matches!(error, MergeError::Validation { .. }),
+				"{path:?}: {error}"
+			);
+			assert!(!temp.path().join(MERGE_PROVENANCE_ARTIFACT_PATH).exists());
+		}
+	}
+
+	#[test]
+	fn provenance_artifact_removes_stale_sidecar_when_map_is_empty() {
+		let temp = tempfile::TempDir::new().expect("temporary output");
+		let sidecar = temp.path().join(MERGE_PROVENANCE_ARTIFACT_PATH);
+		fs::create_dir_all(sidecar.parent().expect("sidecar parent")).expect("metadata directory");
+		fs::write(&sidecar, b"stale provenance").expect("old sidecar");
+		write_provenance_artifact(temp.path(), &MergeReport::default()).expect("omit provenance");
+		assert!(!sidecar.exists());
 	}
 
 	#[test]

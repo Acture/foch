@@ -1021,6 +1021,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		dep_overrides_applied: Vec::new(),
 		playset_fingerprint: None,
 		definition_provenance: std::collections::BTreeMap::new(),
+		provenance_mod_names: std::collections::BTreeMap::new(),
 		merge_trace: std::collections::BTreeMap::new(),
 	};
 
@@ -1029,6 +1030,8 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	// `fatal_reason` is skipped when `None`, so a non-fatal report's JSON
 	// stays byte-identical to the pre-field contract.
 	assert!(value.get("fatal_reason").is_none());
+	assert!(value.get("definition_provenance").is_none());
+	assert!(value.get("provenance_mod_names").is_none());
 	assert_eq!(value["manual_conflict_count"], 2);
 	assert_eq!(value["unsupported_input_count"], 1);
 	assert_eq!(value["engine_failure_count"], 3);
