@@ -128,23 +128,30 @@ the legacy object store part of the current product path.
 ## Research Notes
 
 `notes/` references the existing `https://github.com/Acture/obsidian-vault.git`
-repository on `project/foch`. Initialize its pinned commit with
-`git submodule update --init --recursive notes`; private repository access is
-required. Read `notes/foch/首页.md` alongside the code status and Linear.
+repository on `project/foch`. Use the latest published branch contents by
+default. At session start, before reading project notes, preserve any local
+edits or unpublished commits, then refresh a clean checkout with
+`git submodule update --init --remote --checkout -- notes`. Private repository
+access is required; if refresh fails, report the stale/unavailable notes rather
+than silently using them as current. Read `notes/foch/首页.md` alongside the
+code status and Linear.
 
 Before editing, preserve any dirty notes, then run `git -C notes fetch origin`,
 `git -C notes switch project/foch`, and
 `git -C notes pull --ff-only origin project/foch`. Initialization may leave a
-detached HEAD; `.gitmodules` branch configuration is not a checkout or an
-automatic update. Edit only `notes/foch/**`. Follow the vault's existing
+detached HEAD; `.gitmodules` branch configuration and ordinary clone/pull do
+not automatically fetch the latest notes. A plain submodule update restores
+the recorded commit and is only for explicit historical reproduction.
+Edit only `notes/foch/**`. Follow the vault's existing
 `Workflow/研究工作流.md` for master integration and stop on conflicts rather
 than overwriting either side.
 
 Commit and successfully push the notes branch first. Only then stage `notes`
 and commit/push the Foch gitlink. Never point the parent at an unpublished notes
-commit. See the README's research-notes section for clone, pinned initialization,
-remote refresh, and editing commands. Keep one canonical instruction file here:
-`AGENTS.md` and `.github/copilot-instructions.md` remain symlinks to `CLAUDE.md`.
+commit. See the README's research-notes section for initialization, latest-branch
+refresh, historical reproduction, and editing commands. Keep one canonical
+instruction file here: `AGENTS.md` and `.github/copilot-instructions.md` remain
+symlinks to `CLAUDE.md`.
 
 ## Project Structure & Module Organization
 

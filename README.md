@@ -268,18 +268,25 @@ project branch. Public build instructions, measured status, numeric records,
 and raw evidence remain in this repository; building and testing do not require
 access to the private notes repository.
 
-For a new clone or worktree, restore the exact notes commit recorded by Foch:
+Use the latest published `project/foch` notes by default. After cloning,
+creating a worktree, or pulling Foch, refresh a clean notes worktree with:
 
 ```fish
-git submodule update --init --recursive notes
+git submodule update --init --remote --checkout -- notes
 ```
 
-Maintainers with access to all submodules can instead clone with
-`git clone --recurse-submodules https://github.com/Acture/foch.git`.
-Ordinary initialization pins the recorded commit and may leave `notes` in
-detached HEAD; the configured branch does not automatically advance that pin.
+Preserve local edits and unpublished commits before refreshing; do not force
+the checkout. If refresh fails, report that notes are stale instead of treating
+the cached checkout as current.
 
-To follow the project branch or start editing, use a clean notes worktree:
+Git still records a fixed commit in the parent. Plain `git clone`, `git pull`,
+and `git submodule update --init` do not fetch the latest notes automatically;
+even `git clone --recurse-submodules` needs the refresh above. The branch setting
+selects what `--remote` follows. Restoring the recorded commit is an explicit
+historical-reproduction operation: `git submodule update --init --checkout -- notes`.
+
+The refresh may leave a detached HEAD. Before editing, switch to the project
+branch and fast-forward it to the published notes:
 
 ```fish
 git -C notes fetch origin
@@ -304,11 +311,10 @@ git commit -m "Update Foch notes reference"
 git push
 ```
 
-For a read-only refresh, `git submodule update --remote --checkout -- notes`
-fetches the configured project's latest commit; review and commit the changed
-gitlink separately. `git submodule update --init notes` restores the version
-pinned by the parent instead. The [migration record](./notes/foch/迁移记录.md)
-lists the original paths and preserved document history.
+A refresh can change the gitlink shown by `git status`; review and commit that
+reference separately when adopting the update in Foch. The
+[migration record](./notes/foch/迁移记录.md) lists the original paths and
+preserved document history.
 
 ## License
 
