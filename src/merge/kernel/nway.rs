@@ -1168,6 +1168,29 @@ fn build_class_facts(
 	classes: &ClassMapping,
 	deltas: &BTreeMap<RevisionId, RevisionDelta>,
 ) -> BTreeMap<ClassId, NWayClassFacts> {
+	// Index each delta once: added ordered subtrees can contain many facts even
+	// when none of their endpoints correspond to the base.
+	let revision_changes = revisions
+		.iter()
+		.map(|revision| {
+			let delta = &deltas[&revision.id];
+			let moved = delta
+				.operations
+				.iter()
+				.filter_map(|operation| match operation {
+					DeltaOperation::Move { revision, .. } => Some(*revision),
+					_ => None,
+				})
+				.collect::<BTreeSet<_>>();
+			let reordered = delta
+				.ordering
+				.iter()
+				.filter(|fact| fact.before.base.is_some() && fact.after.base.is_some())
+				.flat_map(|fact| [fact.before.source, fact.after.source])
+				.collect::<BTreeSet<_>>();
+			(revision, moved, reordered)
+		})
+		.collect::<Vec<_>>();
 	classes
 		.classes()
 		.map(|class| {
@@ -1178,7 +1201,7 @@ fn build_class_facts(
 			let mut moved = SourceSet::default();
 			let mut reordered = SourceSet::default();
 			let mut deleted_by = Vec::new();
-			for revision in revisions {
+			for (revision, moved_nodes, reordered_nodes) in &revision_changes {
 				let Some(node) = class.get(revision.id) else {
 					if base_node.is_some() {
 						deleted_by.push(revision.id);
@@ -1194,22 +1217,10 @@ fn build_class_facts(
 					}) {
 					subtree_changed.insert(source);
 				}
-				if deltas[&revision.id].operations.iter().any(|operation| {
-					matches!(
-						operation,
-						DeltaOperation::Move {
-							revision: moved,
-							..
-						} if *moved == source
-					)
-				}) {
+				if moved_nodes.contains(&source) {
 					moved.insert(source);
 				}
-				if deltas[&revision.id].ordering.iter().any(|fact| {
-					fact.before.base.is_some()
-						&& fact.after.base.is_some()
-						&& (fact.before.source == source || fact.after.source == source)
-				}) {
+				if reordered_nodes.contains(&source) {
 					reordered.insert(source);
 				}
 			}
@@ -1332,6 +1343,104 @@ mod tests {
 				],
 			),
 			Err(NWayInputError::DuplicateRevision(RevisionId::new(1))),
+		);
+	}
+
+	#[test]
+	fn class_facts_track_both_reordered_endpoints_in_their_revision() {
+		let entry = |name: &str| TreeNode::leaf("entry", name).with_anchor("entry", name);
+		let base = root(vec![entry("a"), entry("b"), entry("c")]);
+		let reordered = root(vec![entry("b"), entry("a"), entry("c")]);
+		let unchanged = base.clone();
+		let revisions = [
+			MergeRevision::new(RevisionId::new(1), &reordered),
+			MergeRevision::new(RevisionId::new(2), &unchanged),
+		];
+		let correspondence = NWayCorrespondence::build(&base, &revisions).unwrap();
+		let children = &reordered.node(reordered.root()).unwrap().children;
+		for &node in &children[..2] {
+			let source = RevisionNode::new(RevisionId::new(1), node);
+			let class = correspondence.classes().class_of(source);
+			let facts = &correspondence.class_facts()[&class];
+			assert_eq!(facts.reordered, SourceSet::new([source]));
+			assert!(facts.moved.is_empty());
+		}
+		let untouched = correspondence
+			.classes()
+			.class_of(RevisionNode::new(RevisionId::new(1), children[2]));
+		assert!(
+			correspondence.class_facts()[&untouched]
+				.reordered
+				.is_empty()
+		);
+	}
+
+	#[test]
+	fn class_facts_ignore_ordering_with_inserted_endpoints() {
+		let entry = |name: &str| TreeNode::leaf("entry", name).with_anchor("entry", name);
+		let base = root(vec![entry("a"), entry("b")]);
+		let inserted = root(vec![entry("a"), entry("new"), entry("b")]);
+		let unchanged = base.clone();
+		let revisions = [
+			MergeRevision::new(RevisionId::new(1), &inserted),
+			MergeRevision::new(RevisionId::new(2), &unchanged),
+		];
+		let correspondence = NWayCorrespondence::build(&base, &revisions).unwrap();
+		assert_eq!(
+			correspondence.revision_deltas()[&RevisionId::new(1)]
+				.ordering
+				.len(),
+			2,
+		);
+		assert!(
+			correspondence
+				.class_facts()
+				.values()
+				.all(|facts| facts.reordered.is_empty()),
+		);
+	}
+
+	#[test]
+	#[ignore = "release performance regression; run with --release --ignored --nocapture"]
+	fn class_facts_large_added_ordered_subtree() {
+		if cfg!(debug_assertions) {
+			panic!("run this performance test with --release");
+		}
+		let base = root(Vec::new());
+		let revision = root(vec![TreeNode::branch(
+			"names",
+			(0..120_000)
+				.map(|index| TreeNode::leaf("name", format!("name_{index}")))
+				.collect(),
+		)]);
+		let matching = TreeMatcher::default().match_trees(&base, &revision);
+		let classes = ClassMapping::from_revision_matchings(
+			[(RevisionId::BASE, &base), (RevisionId::LEFT, &revision)],
+			[(RevisionId::BASE, RevisionId::LEFT, &matching)],
+		);
+		let delta = RevisionDelta::between(&base, RevisionId::LEFT, &revision, &matching);
+		assert_eq!(delta.ordering.len(), 119_999);
+		assert!(
+			delta
+				.ordering
+				.iter()
+				.all(|fact| fact.before.base.is_none() && fact.after.base.is_none()),
+		);
+		let deltas = BTreeMap::from([(RevisionId::LEFT, delta)]);
+		let started = Instant::now();
+		let facts = build_class_facts(
+			&base,
+			&[MergeRevision::new(RevisionId::LEFT, &revision)],
+			&classes,
+			&deltas,
+		);
+		let elapsed = started.elapsed();
+		eprintln!("class facts: {} classes in {elapsed:?}", facts.len());
+		assert_eq!(facts.len(), revision.len());
+		assert!(facts.values().all(|facts| facts.reordered.is_empty()));
+		assert!(
+			elapsed < Duration::from_secs(2),
+			"class facts repeatedly scanned added-node ordering: {elapsed:?}",
 		);
 	}
 
