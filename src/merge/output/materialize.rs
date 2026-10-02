@@ -4844,7 +4844,13 @@ mod tests {
 		assert_eq!(report.handler_resolutions.len(), 0);
 		assert_eq!(report.warnings.len(), 1);
 		assert!(report.warnings[0].contains("keep_existing_failed"));
-		assert!(report.warnings[0].contains(relative_path));
+		// The warning names the missing prior-output file in host spelling.
+		let missing = game_path(relative_path).to_path(&out_dir);
+		assert!(
+			report.warnings[0].contains(&missing.display().to_string()),
+			"{}",
+			report.warnings[0]
+		);
 	}
 
 	#[test]
