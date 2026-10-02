@@ -268,6 +268,8 @@ impl ProductMeasurementRunner {
 			.env("XDG_DATA_HOME", &xdg_data_home)
 			.env("XDG_CACHE_HOME", &xdg_cache_home)
 			.env("TMPDIR", &temp_root)
+			.env("TMP", &temp_root)
+			.env("TEMP", &temp_root)
 			.env("NO_COLOR", "1")
 			.current_dir(run_root.path())
 			.stdin(Stdio::null())
