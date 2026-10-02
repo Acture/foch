@@ -43,8 +43,12 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 `30aa902` (`Update quality harness for merge reviews`).
 
 This page is the repository handoff. Recheck Git and local inputs before using
-any checkpoint fact. Linear owns live execution; Notion holds the project
-narrative and research record.
+any checkpoint fact. Linear owns live execution. Migrated research, design and
+evaluation documents live in the `notes/` submodule's
+[Foch directory](../notes/foch/首页.md); see the
+[notes workflow](../README.md#research-and-design-notes) for access and updates.
+Measured status and raw evidence remain here. Notion-only narrative remains at
+its original page until separately migrated.
 
 ## CWT rule pack embedded in the binary (2026-09-29)
 
@@ -141,7 +145,7 @@ inventory or EU4 semantics. No product dependency or implementation changed.
 The comparison reproduced a physical-filename-to-semantic-key collision in the
 current helper. P-736 tracks its repair separately. Scope, pinned versions,
 observations, skipped cases, and reproduction artifacts are in the
-[VFS evaluation](vfs-evaluation.md). This helper-level evaluation adds no full
+[VFS evaluation](../notes/foch/docs/vfs-evaluation.md). This helper-level evaluation adds no full
 Workshop, acceptance-cohort, cross-platform, or performance result.
 
 A 2026-09-28 path-type follow-up established P-736's type boundary: keep native
@@ -1452,8 +1456,8 @@ do not reconstruct an execution backlog here.
 
 ## Fresh-agent runbook
 
-1. Read this page, [architecture](./architecture.md), and
-   [merge design](./merge-design.md).
+1. Read this page, [architecture](../notes/foch/docs/architecture.md), and
+   [merge design](../notes/foch/docs/merge-design.md).
 2. Inspect `git status --short --branch` and `git log -3 --oneline`. Preserve
    unrelated changes and append-only measurement history.
 3. Distinguish committed implementation, local worktree observation, recorded
@@ -1468,10 +1472,10 @@ do not reconstruct an execution backlog here.
 ## Reading order
 
 1. [README](../README.md)
-2. [Architecture](./architecture.md)
-3. [Merge design](./merge-design.md)
+2. [Architecture](../notes/foch/docs/architecture.md)
+3. [Merge design](../notes/foch/docs/merge-design.md)
 4. [Merge-quality dataset](./merge-quality-dataset.md)
-5. [Cache architecture](./cache-architecture.md)
+5. [Cache architecture](../notes/foch/docs/cache-architecture.md)
 6. [Project manifest](./foch-project-manifest.md)
 7. [Resolution DSL](./foch-toml-resolutions.md)
 8. [Known issues](../KNOWN_ISSUES.md)

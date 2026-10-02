@@ -109,9 +109,10 @@ the legacy object store part of the current product path.
 - Read `docs/project-status.md` before selecting work. It is the self-contained
   current handoff; re-check Git and local inputs because its checkpoint facts
   can age.
-- Check the Notion page **foch — Merge Corpus & Game Semantics** for current
-  ownership, decisions, and blockers when access is available. Keep stable
-  project background here and rolling results in project status and Notion.
+- Check Linear for active work and `notes/foch/首页.md` for migrated research,
+  design, and evaluation documents. `docs/project-status.md`, numerical ledgers,
+  and raw evidence remain in Foch. Notion-only narrative that has not been
+  migrated remains at its original page; do not write to Notion unless asked.
 - Distinguish committed implementation, a local worktree observation, a
   recorded test result, and an accepted product cohort. Never promote one into
   another.
@@ -121,8 +122,29 @@ the legacy object store part of the current product path.
 - Do not invent architectural names in status or planning documents before a
   corresponding code boundary and demonstrated need exist. Use terms already
   present in the source and reports.
-- Treat historical roadmaps, reviews, and probes as evidence only. They are not
-  the active backlog unless current status or Notion explicitly revives them.
+- Treat historical roadmaps, reviews, and probes as evidence only. Linear is
+  the active backlog.
+
+## Research Notes
+
+`notes/` references the existing `https://github.com/Acture/obsidian-vault.git`
+repository on `project/foch`. Initialize its pinned commit with
+`git submodule update --init --recursive notes`; private repository access is
+required. Read `notes/foch/首页.md` alongside the code status and Linear.
+
+Before editing, preserve any dirty notes, then run `git -C notes fetch origin`,
+`git -C notes switch project/foch`, and
+`git -C notes pull --ff-only origin project/foch`. Initialization may leave a
+detached HEAD; `.gitmodules` branch configuration is not a checkout or an
+automatic update. Edit only `notes/foch/**`. Follow the vault's existing
+`Workflow/研究工作流.md` for master integration and stop on conflicts rather
+than overwriting either side.
+
+Commit and successfully push the notes branch first. Only then stage `notes`
+and commit/push the Foch gitlink. Never point the parent at an unpublished notes
+commit. See the README's research-notes section for clone, pinned initialization,
+remote refresh, and editing commands. Keep one canonical instruction file here:
+`AGENTS.md` and `.github/copilot-instructions.md` remain symlinks to `CLAUDE.md`.
 
 ## Project Structure & Module Organization
 
@@ -142,8 +164,8 @@ JS packages live under `packages/`:
 - `packages/vscode-foch` — VS Code extension
 
 Use `tests/` and package-local `tests/fixtures/` for integration fixtures and
-corpus-style checks, `docs/` for architecture and status docs, and `scripts/`
-for operator workflow wrappers.
+corpus-style checks, `docs/` for product references, measured status and evidence,
+`notes/foch/` for research/design documents, and `scripts/` for operator workflows.
 
 ## Build, Test, and Development Commands
 
@@ -175,19 +197,22 @@ add a regression for the observed semantic cause, then run the owning package an
 CLI integration tests. Do not update expected corpus output merely to make a
 failure green; adjudicate why the product and the human compatch differ.
 
-Keep changing coverage status in `docs/project-status.md` and Notion. `AGENTS.md` should hold stable execution guidance, not rolling project baselines.
+Keep changing coverage status in `docs/project-status.md`; research interpretation belongs in `notes/foch/`. `AGENTS.md` should hold stable execution guidance, not rolling project baselines.
 
 ## Environment & Configuration
 
 Use `direnv` in the repo root and keep Node on the supported line: `>=22 <25`. Run `direnv allow` once after cloning. `node@25` is currently not a supported local development environment for `packages/tree-sitter-paradox`.
 
-Both submodules must be checked out before anything builds, and `git worktree add` checks out neither:
+Both build submodules must be checked out before anything builds, and `git worktree add` initializes none of the submodules:
 
 ```fish
 git submodule update --init packages/tree-sitter-paradox vendor/cwtools-eu4-config
 ```
 
 A missing `packages/tree-sitter-paradox` fails at manifest load. A missing or empty `vendor/cwtools-eu4-config` fails the root crate's build script, which compiles it into the embedded CWT rule pack; there is no schema-less build.
+
+The private `notes/` submodule is separate and optional for builds. CI and public
+source packages initialize only the two build submodules listed above.
 
 Three tests need privileges a restricted sandbox may withhold: `output_transaction_rejects_an_existing_unix_socket` binds a Unix socket, and `data_install_downloads_release_asset_from_manifest` and `page_fetch_is_frozen_and_reused_without_another_network_request` each open a local HTTP server. A sandbox denial there is an environment result, not a defect. Committing an analyzed merge also takes the installed base-snapshot lock under the user data directory; point `FOCH_DATA_DIR` at a cloned data directory when that path is not writable.
 

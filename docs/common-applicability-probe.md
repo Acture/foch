@@ -120,4 +120,4 @@ ID to `workshop-product-cases-v2.json`. The report must:
 
 There is no acceptance-rate threshold. The current measured matrix and
 remaining semantic decisions are recorded in
-[`research/2026-07-22-common-applicability.md`](./research/2026-07-22-common-applicability.md).
+[`research/2026-07-22-common-applicability.md`](../notes/foch/docs/research/2026-07-22-common-applicability.md).
