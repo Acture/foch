@@ -33,13 +33,17 @@ jobs:
             target: darwin-arm64
     defaults:
       run:
-        working-directory: packages/vscode-foch
+        working-directory: src/apps/vscode-foch
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
-          submodules: recursive
+          submodules: false
+
+      - name: Initialize public build submodules
+        working-directory: ${{ github.workspace }}
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master

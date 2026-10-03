@@ -5,7 +5,7 @@
     "": {
       "name": "foch-workspace",
     },
-    "apps/foch-desktop": {
+    "src/apps/foch-desktop": {
       "name": "@foch/desktop",
       "version": "0.0.1",
       "dependencies": {
@@ -35,7 +35,7 @@
         "vitest": "^4.1.10",
       },
     },
-    "packages/tree-sitter-paradox": {
+    "src/packages/tree-sitter-paradox": {
       "name": "tree-sitter-paradox",
       "version": "0.2.0",
       "dependencies": {
@@ -54,7 +54,7 @@
         "tree-sitter",
       ],
     },
-    "packages/vscode-foch": {
+    "src/apps/vscode-foch": {
       "name": "foch",
       "version": "0.1.0",
       "dependencies": {
@@ -165,7 +165,7 @@
 
     "@exodus/bytes": ["@exodus/bytes@1.15.1", "https://registry.npmjs.org/@exodus/bytes/-/bytes-1.15.1.tgz", { "peerDependencies": { "@noble/hashes": "^1.8.0 || ^2.0.0" }, "optionalPeers": ["@noble/hashes"] }, "sha1-sTvEZMoWLBer8IN/s6Ea6reeRdE="],
 
-    "@foch/desktop": ["@foch/desktop@workspace:apps/foch-desktop"],
+    "@foch/desktop": ["@foch/desktop@workspace:src/apps/foch-desktop"],
 
     "@humanfs/core": ["@humanfs/core@0.19.2", "https://registry.npmjs.org/@humanfs/core/-/core-0.19.2.tgz", { "dependencies": { "@humanfs/types": "^0.15.0" } }, "sha1-qCcsoDsqz0kmcCIrIyC2xCG/3mA="],
 
@@ -607,7 +607,7 @@
 
     "flatted": ["flatted@3.4.4", "https://registry.npmjs.org/flatted/-/flatted-3.4.4.tgz", {}, "sha1-ruyipQYwPwzuYcWebJ8qiNLyn8Y="],
 
-    "foch": ["foch@workspace:packages/vscode-foch"],
+    "foch": ["foch@workspace:src/apps/vscode-foch"],
 
     "foreground-child": ["foreground-child@3.3.1", "https://registry.npmjs.org/foreground-child/-/foreground-child-3.3.1.tgz", { "dependencies": { "cross-spawn": "^7.0.6", "signal-exit": "^4.0.1" } }, "sha512-gIXjKqtFuWEgzFRJA9WCQeSJLZDjgJUOMCMzxtvFq/37KojM1BFGufqsCy0r4qSQmYLsZYMeyRqzIWOMup03sw=="],
 
@@ -1065,7 +1065,7 @@
 
     "tree-sitter-cli": ["tree-sitter-cli@0.25.10", "https://registry.npmjs.org/tree-sitter-cli/-/tree-sitter-cli-0.25.10.tgz", { "bin": { "tree-sitter": "cli.js" } }, "sha512-KoebQguKMCIghisEOdA372TIbrUl0kdnfZ9YQIBRAeOvNSKe85XbU4LuFW7hduRUwJj0rAG7pX5wo9sZhbBF1g=="],
 
-    "tree-sitter-paradox": ["tree-sitter-paradox@workspace:packages/tree-sitter-paradox"],
+    "tree-sitter-paradox": ["tree-sitter-paradox@workspace:src/packages/tree-sitter-paradox"],
 
     "ts-api-utils": ["ts-api-utils@2.5.0", "https://registry.npmjs.org/ts-api-utils/-/ts-api-utils-2.5.0.tgz", { "peerDependencies": { "typescript": ">=4.8.4" } }, "sha1-Ss1KFV4ic0mQpe0f6el/ETvLN8E="],
 

@@ -1,0 +1,16 @@
+guiTypes = {
+	buttonType = {
+		name = "shared_button"
+		pdx_tooltip = "SHARED_TT"
+		orientation = "UPPER_LEFT"
+	}
+	instantTextBoxType = {
+		name = "beta_text"
+		text = "BETA_LABEL"
+		pdx_tooltip = "TEXT_HELP"
+	}
+	instantTextBoxType = {
+		name = "beta_implicit"
+		text = "RUNTIME_TEXT"
+	}
+}

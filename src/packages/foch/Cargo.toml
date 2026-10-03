@@ -1,0 +1,72 @@
+[package]
+name = "foch"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only AND GPL-3.0-only AND MIT"
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "EU4 mod analysis and merge toolkit"
+# Released as a complete workspace source archive with top-level vendor data.
+publish = false
+
+[dependencies]
+bincode.workspace = true
+blake3 = "1.5.5"
+chardetng.workspace = true
+console.workspace = true
+dirs.workspace = true
+encoding_rs.workspace = true
+filetime = "0.2"
+flate2.workspace = true
+globset.workspace = true
+jomini.workspace = true
+keyvalues-parser.workspace = true
+ref-cast = "1.0.27"
+regex.workspace = true
+relative-path = "2.0.1"
+rkyv.workspace = true
+rayon.workspace = true
+remove_dir_all.workspace = true
+reqwest.workspace = true
+rustix.workspace = true
+same-file.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+steamlocate.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+toml_edit = "0.23"
+tracing.workspace = true
+tree-sitter.workspace = true
+tree-sitter-paradox.workspace = true
+thiserror = "2.0"
+typed-path = "0.12"
+walkdir.workspace = true
+
+# build.rs compiles the vendored CWT config with the `src/game/schema` modules
+# it includes, so it needs exactly their dependencies.
+[build-dependencies]
+bincode.workspace = true
+chardetng.workspace = true
+encoding_rs.workspace = true
+ref-cast = "1.0.27"
+relative-path = "2.0.1"
+rkyv.workspace = true
+serde.workspace = true
+sha2.workspace = true
+tree-sitter.workspace = true
+tree-sitter-paradox.workspace = true
+walkdir.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+winreg.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"
+
+[features]
+test-utils = []

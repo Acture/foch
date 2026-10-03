@@ -65,7 +65,7 @@ A merge review unit is one of:
   module for a concrete EU4 content family.
 
 Exact-path overlap is neither necessary nor sufficient for a semantic conflict.
-The EU4 content-family registry in `src/game/eu4/content` decides discovery,
+The EU4 content-family registry in `src/packages/foch/src/game/eu4/content` decides discovery,
 module partition, key policy, ordering, base requirements, and supported merge
 behavior.
 
@@ -130,7 +130,7 @@ explicitly deferred unit.
 
 Reviewed static decisions live in `foch.toml` `[[resolutions]]`. Exact conflict
 IDs and files outrank pattern rules. Built-in handlers are dispatched by the
-root merge resolution registry. See
+main library’s merge resolution registry. See
 [foch-toml-resolutions.md](./foch-toml-resolutions.md).
 
 Foch never applies a broad last-writer policy merely because it would avoid a
@@ -198,6 +198,34 @@ withheld units, and handler outcomes.
 
 Provenance output is opt-in. When disabled, it must not perturb ordinary
 emitted bytes.
+
+With `--provenance`, `.foch/foch-provenance.json` is a version-1 object:
+`version: 1`, `files` keyed by output-relative path, and `mod_names` keyed by
+source ID. Each file contains `content_hash` (lowercase BLAKE3 of its exact final
+bytes) and `definitions` (merge key to adopted source IDs in playset precedence).
+Only surviving generated definitions and their source names are recorded. The
+report retains its existing `definition_provenance` map and adds
+`provenance_mod_names`; fingerprints belong to the frozen output artifact.
+
+Shared EU4 editor hover and `foch lsp` append these sources to schema help for
+unique top-level block definitions whose family uses assignment-key identity.
+Attribution requires matching final bytes and a buffer equal to the decoded
+disk file. The nearest lexical output/mod boundary is authoritative; directory
+links cannot switch outputs or relative file identities. Missing, corrupt,
+stale, ambiguous, or unsupported records leave schema help intact. Old raw-map
+sidecars remain readable with an explicit historical, unverified label.
+
+The same option appends provenance to supported GUI static tooltips in
+structurally merged `.gui` files under `interface/` and `common/interface/`.
+Named `iconType`, `instantTextBoxType`, `buttonType`, and `guiButtonType` controls
+can wrap `pdx_tooltip`; `guiButtonType` also supports `tooltipText`. Generated
+localisation retains `$ORIGINAL_KEY$` and adds `Merged from ...`, using the
+control's adopted subtree sources. Delayed tooltip fields remain unchanged.
+Missing tooltips are added only with verified base context and wholly mod-created
+ancestry; `--no-game-base` does not establish that absence. Dynamic, competing,
+unsupported fields or an unverified final-tree projection are left unchanged.
+Localisation is emitted only for surviving scripts through the same mechanism
+as diplomatic-condition provenance. See the [public verification record](./project-status.md#editor-and-gui-merge-provenance-2026-10-01); automated tests do not establish in-game rendering.
 
 ## Determinism and safety invariants
 

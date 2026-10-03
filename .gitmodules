@@ -1,6 +1,10 @@
 [submodule "tree-sitter-paradox"]
-	path = packages/tree-sitter-paradox
+	path = src/packages/tree-sitter-paradox
 	url = https://github.com/Acture/tree-sitter-paradox.git
 [submodule "vendor/cwtools-eu4-config"]
 	path = vendor/cwtools-eu4-config
 	url = https://github.com/cwtools/cwtools-eu4-config.git
+[submodule "notes"]
+	path = notes
+	url = https://github.com/Acture/obsidian-vault.git
+	branch = project/foch

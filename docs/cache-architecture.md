@@ -28,7 +28,7 @@ payloads are never decoded as current data and are not migrated implicitly.
 Keeping generations on open prevents a normal analysis from turning cache
 discovery into an unrelated destructive operation.
 
-Eviction is a lifecycle operation exposed by `src/platform/cache_store` and the
+Eviction is a lifecycle operation exposed by `src/packages/foch/src/platform/cache_store` and the
 `foch cache` commands. Operators can inspect stats/listing and explicitly clean
 by age, enforce a byte cap, or clear selected layers. Layer implementations own
 their payload validation and addresses; the platform layer only owns filesystem
@@ -73,7 +73,7 @@ schema and the binary embeds the pack; the `FOCH_CWTOOLS_SCHEMA_DIR`
 maintainer override is compiled fresh in every process, so an edit to the
 compiler cannot be masked by a pack an earlier build stored. `foch cache` still
 lists and cleans the `cwt-rules` entries earlier builds left. EU4
-interpretation remains in `src/game/eu4`; compiled CWT facts do not prove EU4
+interpretation remains in `src/packages/foch/src/game/eu4`; compiled CWT facts do not prove EU4
 runtime or merge semantics.
 
 Analysis output cached elsewhere depends on the schema through scope

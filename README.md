@@ -32,13 +32,13 @@ What is not established:
 - support for any Paradox game other than EU4; or
 - an interactive `MergeSession` API. Session work is deliberately deferred.
 
-Reusable CWT schema machinery lives under `src/game/schema`. That boundary is
+Reusable CWT schema machinery lives under `src/packages/foch/src/game/schema`. That boundary is
 intended to support future concrete game implementations, but today only
-`src/game/eu4` has verified loader and content-family behavior.
+`src/packages/foch/src/game/eu4` has verified loader and content-family behavior.
 
 Linear owns active milestones, issues, and dependencies. The repository records
 the verified implementation state in [the current checkpoint](./docs/project-status.md)
-and the stable execution contract in [the architecture](./docs/architecture.md).
+and the stable execution contract in [the architecture](docs/architecture.md).
 
 ## Build and try it
 
@@ -47,9 +47,10 @@ There is no released binary matching this source line. The crates.io
 foch` for this repository.
 
 ```fish
-git clone --recurse-submodules https://github.com/Acture/foch.git
+git clone https://github.com/Acture/foch.git
 cd foch
-cargo install --path apps/foch-cli
+git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
+cargo install --path src/apps/foch-cli
 ```
 
 Build and install the EU4 base-data snapshot, then inspect and merge a Launcher
@@ -160,13 +161,25 @@ Run `foch <command> --help` for authoritative options.
 
 ## Repository layout
 
-- `src/` — the root `foch` library: input, project, check, graph, simplify,
-  merge, platform, reusable schema machinery, and concrete EU4 behavior
-- `apps/foch-cli` — the `foch` executable, LSP, integration tests, and private
+- `src/packages/foch` — the main Rust library, with its own `src/`, `tests/`,
+  `fuzz/`, and `build.rs`
+- `src/apps/foch-cli` — the `foch` executable, LSP, integration tests, and test-only
   merge-quality harness
-- `apps/foch-desktop` — the Tauri desktop product, linked directly to `foch`
-- `packages/tree-sitter-paradox` — independently versioned grammar package
-- `packages/vscode-foch` — independently versioned VS Code extension
+- `src/apps/foch-desktop` — the Tauri desktop product, linked directly to `foch`
+- `src/packages/tree-sitter-paradox` — independently versioned grammar package
+- `src/apps/vscode-foch` — independently versioned VS Code extension
+- `src/tools/eu4-analysis` — maintainer tooling for extracting EU4 loading rules
+- `src/tools/foch-dev` — reusable repository checks and diagnostic workflows
+- `vendor/` — externally maintained CWT rules, pinned as a build submodule
+- `scripts/` — build, release, and repository maintenance workflows
+- `docs/` — current public usage, contributor guides, architecture, and status
+- `notes/research/` — private research, experimental interpretation, and design history
+  in the [unified notes repository](https://github.com/Acture/obsidian-vault/tree/project/foch)
+
+The root Cargo manifest is a virtual workspace. Foch's Rust library is built
+from the complete workspace, including `vendor/`; release source archives carry
+both public submodules and exclude private notes. It is not published as a
+standalone crates.io package.
 
 The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
 `tree-sitter-paradox` at `0.2.0`. Cache and report schema generations are
@@ -179,8 +192,8 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 bun install --frozen-lockfile
-bun run --cwd packages/tree-sitter-paradox test
-bun run --cwd packages/vscode-foch smoke
+bun run --cwd src/packages/tree-sitter-paradox test
+bun run --cwd src/apps/vscode-foch smoke
 ```
 
 EU4 CWT schemas are vendored at `vendor/cwtools-eu4-config`. The build
@@ -192,7 +205,7 @@ normal build.
 
 ### EU4 database loading rules
 
-Versioned rules live in [`src/game/eu4/content/rules`](./src/game/eu4/content/rules).
+Versioned rules live in [`src/packages/foch/src/game/eu4/content/rules`](./src/packages/foch/src/game/eu4/content/rules).
 Each rule states **which database reads which directory and filename pattern**:
 
 ```json
@@ -218,7 +231,7 @@ output, including with `--force`; this currently includes a static/event modifie
 database containing files from both directories. Base-only units without a mod
 contribution or namespace reset remain copy-through paths.
 
-[`tools/eu4-analysis`](./tools/eu4-analysis) extracts these relations from a
+[`src/tools/eu4-analysis`](./src/tools/eu4-analysis) extracts these relations from a
 symbol-bearing x86_64 Mach-O executable. It inventories loaders, follows each
 directory-loading call and its file filter, and resolves directory enum values
 from `CDirectorySettings`. Object-key discovery is not required to emit a
@@ -228,7 +241,7 @@ It requires Ghidra 12.1.3, JDK 21+, and `uv`. Set `GHIDRA_INSTALL_DIR` and
 `EU4_BINARY` to your local installation and executable, then run:
 
 ```fish
-uv run --directory tools/eu4-analysis python -m eu4_analysis discover \
+uv run --directory src/tools/eu4-analysis python -m eu4_analysis discover \
 	--binary "$EU4_BINARY" --game-version 1.37.5
 ```
 
@@ -245,18 +258,124 @@ prove coverage of all indirect loaders. Rule snapshots are embedded in the Foch
 library at build time; ordinary merges do not require Python or Ghidra.
 
 Run the module's tests without Ghidra using
-`uv run --directory tools/eu4-analysis python -m unittest discover -s tests`.
+`uv run --directory src/tools/eu4-analysis python -m unittest discover -s tests`.
+
+The same module's `builtins` command builds a candidate builtin symbol catalog
+from local CWT and wiki snapshots. It requires no Ghidra session. Supply explicit
+wiki files and an output destination; the CWT input defaults to the vendored
+snapshot. Relative arguments below are resolved from the tool directory:
+
+```fish
+uv run --directory src/tools/eu4-analysis python -m eu4_analysis builtins \
+	--wiki-effects /path/to/effects.md --wiki-conditions /path/to/conditions.md \
+	--wiki-scope /path/to/scope.md --output /tmp/eu4_builtin_catalog.json
+```
+
+`--irony-readme` adds optional source context. Game scanning is opt-in through
+`--game-root`; `--max-game-files` bounds that scan. Review the candidate before
+replacing `src/packages/foch/src/game/eu4/base/data/eu4_builtin_catalog.json`.
+Generation does not download sources or modify installed game files.
+
+## Repository maintenance tools
+
+[`foch-dev`](src/tools/foch-dev/README.md) provides importable Python modules and
+one maintenance command entrypoint:
+
+```fish
+uv run --locked --project src/tools/foch-dev python -m foch_dev check
+uv run --locked --project src/tools/foch-dev python -m foch_dev schema-hash
+```
+
+Its `smoke` and `compare` subcommands run diagnostic checks and compare summaries.
+Use `--help` for their inputs. These diagnostics are separate from `cargo acceptance`.
+Root `scripts/` holds hooks and release wrappers; the desktop app owns its
+Windows installer smoke script. Ordinary Foch users do not need these Python tools.
 
 ## Documentation
 
+- [Public documentation](./docs/README.md)
 - [Project status](./docs/project-status.md)
-- [Architecture](./docs/architecture.md)
-- [Merge design](./docs/merge-design.md)
+- [Architecture](docs/architecture.md)
+- [Merge design](docs/merge-design.md)
 - [`foch.toml` project manifest](./docs/foch-project-manifest.md)
 - [Resolution DSL](./docs/foch-toml-resolutions.md)
 - [VS Code/LSP preview](./docs/lsp-0.1-preview.md)
-- [Known issues](./KNOWN_ISSUES.md)
+- [Known issues](./docs/known-issues.md)
 - [Release checklist](./docs/RELEASE_CHECKLIST.md)
+
+### Private research notes
+
+`notes/` is a submodule of `https://github.com/Acture/obsidian-vault.git`,
+configured for `project/foch`. Its Foch entry is
+[`notes/首页.md`](./notes/首页.md). The project branch root is the notes root;
+research lives under `notes/research/`. Public usage, contributor and architecture
+documents and current measured status remain in Foch. Numeric records and raw
+evidence stay with their producing code or test harness. Superseded reports,
+release drafts and development history belong in notes, outside public docs.
+Reading public documentation, building and testing do not require private access.
+
+Use the latest published `project/foch` notes by default. After cloning,
+creating a worktree, or pulling Foch, refresh a clean notes worktree with:
+
+```fish
+git submodule update --init --remote --checkout -- notes
+```
+
+Preserve local edits and unpublished commits before refreshing; do not force
+the checkout. If refresh fails, report that notes are stale instead of treating
+the cached checkout as current.
+
+Git still records a fixed commit in the parent. Plain `git clone`, `git pull`,
+and `git submodule update --init` do not fetch the latest notes automatically;
+even `git clone --recurse-submodules` needs the refresh above. The branch setting
+selects what `--remote` follows. Restoring the recorded commit is an explicit
+historical-reproduction operation: `git submodule update --init --checkout -- notes`.
+
+The refresh may leave a detached HEAD. Before editing, switch to the project
+branch and fast-forward it to the published notes:
+
+```fish
+git -C notes fetch origin
+git -C notes switch project/foch
+git -C notes pull --ff-only origin project/foch
+```
+
+The first `switch` creates a local tracking branch when only
+`origin/project/foch` exists. Preserve local changes and resolve divergence
+before continuing. Edit only this project's branch; integration with the vault's
+`master` is managed in that repository.
+
+Install or refresh the notes repository's existing push checker once per clone
+using Git, Python 3.10+ and authenticated `gh`:
+
+```fish
+git -C notes fetch origin refs/heads/master:refs/remotes/origin/master
+and set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
+and git -C notes show origin/master:.github/scripts/install_push_hook.py > "$notes_common_gitdir/install_push_hook.py"
+and python3 "$notes_common_gitdir/install_push_hook.py" --repo notes --source-ref origin/master
+```
+
+After editing `notes/`, publish notes before updating Foch's reference:
+
+```fish
+git -C notes add -- research 首页.md
+git -C notes commit -m "Update Foch research notes"
+set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
+python3 "$notes_common_gitdir/hooks/notes-boundary/submit_project.py" --repo notes --branch project/foch
+# Continue only after the notes push succeeds.
+git add notes
+git commit -m "Update Foch notes reference"
+git push
+```
+
+The submission tool runs the vault's required remote boundary check before
+updating `project/foch`. A direct push of a new commit lacks that check. Follow
+the vault's [project integration guide](https://github.com/Acture/obsidian-vault/blob/master/项目接入.md)
+if the checker changes; do not disable hooks or branch protection.
+
+A refresh can change the gitlink shown by `git status`; review and commit that
+reference separately when adopting the update in Foch. Earlier document paths
+and content remain available in each repository's Git history.
 
 ## License
 

@@ -1,45 +1,31 @@
 # Foch Documentation
 
-This directory is the contributor map for Foch's current product state,
-architecture, and implementation contracts.
+Public documentation for using, building and contributing to Foch. No private
+notes access is required. Current product contracts live here; private research,
+experimental interpretation and historical design discussions live in the
+separate notes repository. Linear owns active work and dependencies.
 
-If you are new to the project, start with the current handoff below. It is
-self-contained. Linear owns active execution and dependencies; Notion owns the
-project narrative and research record. Neither is duplicated here.
+## Users
 
-## Start Here
+- [Project manifest](foch-project-manifest.md) — compose ordered inputs in `foch.toml`.
+- [Resolution reference](foch-toml-resolutions.md) — review and resolve conflicts.
+- [VS Code/LSP preview](lsp-0.1-preview.md) — editor setup and supported behavior.
+- [Known issues](known-issues.md) — public limitations.
 
-- [project-status.md](./project-status.md) — verified state, accepted evidence,
-  dirty-worktree warning, and fresh-agent runbook
-- [architecture.md](./architecture.md) — package and execution boundaries,
-  including the analyze/review/commit flow
-- [merge-design.md](./merge-design.md) — review units, conflict policy, and
-  commit contract
-- [merge-quality-dataset.md](./merge-quality-dataset.md) — fixed 14-case product
-  acceptance, input identity, evidence, and scoring contract
+## Contributors
 
-## User and Contributor Reference
+- [Architecture](architecture.md) — source layout and dependency boundaries.
+- [Merge contract](merge-design.md) — analyze, review and commit behavior.
+- [Cache architecture](cache-architecture.md) — identities and lifecycle.
+- [Development commands](../README.md#development) — build and quality checks.
+- [Release checklist](RELEASE_CHECKLIST.md) — packaging and release gates.
 
-- [foch-project-manifest.md](./foch-project-manifest.md) — declarative project
-  input composition
-- [foch-toml-resolutions.md](./foch-toml-resolutions.md) — reviewed conflict
-  resolutions and safety rules
-- [cache-architecture.md](./cache-architecture.md) — cache layers, identity, and
-  trust boundaries
-- [lsp-0.1-preview.md](./lsp-0.1-preview.md) — independently versioned VS
-  Code/LSP preview and editor scope
-- [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) — release gates
+## Status and acceptance
 
-## Historical and Auxiliary Evidence
+- [Project status](project-status.md) — current verified state and its limits.
+- [Merge-quality acceptance](merge-quality-dataset.md) — inputs, scoring and evidence contracts.
 
-These documents explain how earlier decisions were reached. They are not the
-active task queue and do not replace the current product acceptance gate.
-
-- [structured-merge-shadow.md](./structured-merge-shadow.md) — historical
-  GumTree/PCS rollout and Legacy/Structured comparison
-- [common-applicability-probe.md](./common-applicability-probe.md) — auxiliary
-  `common/<folder>` analysis, not product acceptance
-
-Files below `reviews/`, `research/`, and `superpowers/specs/` are retained
-historical evidence. Their old crate names and commands are not current
-architecture.
+The append-only Workshop measurement streams and raw probe evidence stay beside
+their runner in `src/apps/foch-cli/tests/merge_quality/data/`. Private research,
+superseded reports and development history belong in the notes repository.
+This directory contains current public documentation, not an archive.

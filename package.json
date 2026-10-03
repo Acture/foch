@@ -7,8 +7,8 @@
 	"packageManager": "bun@1.3.14",
 	"private": true,
 	"workspaces": [
-		"apps/foch-desktop",
-		"packages/tree-sitter-paradox",
-		"packages/vscode-foch"
+		"src/apps/foch-desktop",
+		"src/packages/tree-sitter-paradox",
+		"src/apps/vscode-foch"
 	]
 }

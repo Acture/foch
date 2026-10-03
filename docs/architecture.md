@@ -6,39 +6,44 @@ architecture.
 
 ## Repository layout
 
-The repository is a Cargo and Bun workspace, but the Rust domain model and
-orchestration now live in one primary package at the repository root.
+The repository is a Cargo and Bun workspace. The root Cargo manifest only
+configures the workspace. All maintained code lives below `src/`; the Rust domain
+model and orchestration remain one primary package at `src/packages/foch`.
+Its integration tests, independent cargo-fuzz package and build script live
+alongside its `src/`. External CWT rules remain in top-level `vendor/`; the
+build script compiles them into the binary. Source releases contain the entire
+workspace and its public submodules, without private notes.
 
-### Root `foch` library
+### Main `foch` library
 
 | Path | Responsibility |
 | --- | --- |
-| `src/model` | Shared reports, findings, identities, and serialization models |
-| `src/project` | `foch.toml`, dependency overrides, resolution policy, and project fingerprints |
-| `src/playset` | Launcher playsets, descriptors, dependencies, and Steam installation identity |
-| `src/input` | Read-only inspection, input resolution, inventories, and mod snapshots |
-| `src/game/schema` | Reusable CWT loading, compilation, querying, and rule evaluation |
-| `src/game/eu4` | Concrete EU4 parsing, content families, semantic indexing, base snapshots, and editor behavior |
-| `src/check` | Semantic checks and runtime overlap analysis |
-| `src/graph` | Definition, call, module, and mod dependency graph output |
-| `src/simplify` | Base-equivalent definition removal |
-| `src/merge` | Path planning, semantic-tree kernel, analysis, review ledger, resolution, and commit |
-| `src/platform` | Filesystem and cache lifecycle services |
+| `src/packages/foch/src/model` | Shared reports, findings, identities, and serialization models |
+| `src/packages/foch/src/project` | `foch.toml`, dependency overrides, resolution policy, and project fingerprints |
+| `src/packages/foch/src/playset` | Launcher playsets, descriptors, dependencies, and Steam installation identity |
+| `src/packages/foch/src/input` | Read-only inspection, input resolution, inventories, and mod snapshots |
+| `src/packages/foch/src/game/schema` | Reusable CWT loading, compilation, querying, and rule evaluation |
+| `src/packages/foch/src/game/eu4` | Concrete EU4 parsing, content families, semantic indexing, base snapshots, and editor behavior |
+| `src/packages/foch/src/check` | Semantic checks and runtime overlap analysis |
+| `src/packages/foch/src/graph` | Definition, call, module, and mod dependency graph output |
+| `src/packages/foch/src/simplify` | Base-equivalent definition removal |
+| `src/packages/foch/src/merge` | Path planning, semantic-tree kernel, analysis, review ledger, resolution, and commit |
+| `src/packages/foch/src/platform` | Filesystem and cache lifecycle services |
 
-`src/game/schema` is reusable infrastructure; it is not a supported game by
+`src/packages/foch/src/game/schema` is reusable infrastructure; it is not a supported game by
 itself. Foch remains EU4-only. A future game must add and verify its own loader,
 content-family, base-data, and merge behavior instead of treating CWT coverage
 as proof of compatibility.
 
 ### Applications and packages
 
-- `apps/foch-cli` owns the `foch` binary, `foch lsp`, CLI adapters, terminal
-  conflict UI, integration tests, and the private merge-quality harness.
-- `apps/foch-desktop` owns the Tauri/React player interface and IPC adapters.
+- `src/apps/foch-cli` owns the `foch` binary, `foch lsp`, CLI adapters, terminal
+  conflict UI, integration tests, and the test-only merge-quality harness.
+- `src/apps/foch-desktop` owns the Tauri/React player interface and IPC adapters.
   Its Rust backend links `foch` directly; it does not spawn or bundle the CLI.
-- `packages/tree-sitter-paradox` is the independently versioned grammar and a
+- `src/packages/tree-sitter-paradox` is the independently versioned grammar and a
   Cargo/Bun workspace member.
-- `packages/vscode-foch` is the independently versioned VS Code extension. It
+- `src/apps/vscode-foch` is the independently versioned VS Code extension. It
   launches a bundled `foch lsp` process.
 
 There are no current `foch-core`, `foch-syntax`, `foch-cwt`, `foch-language`,
@@ -57,13 +62,13 @@ vscode-foch -----> foch lsp
 foch -----------> tree-sitter-paradox
 ```
 
-Applications adapt the root library to a transport or UI. Domain behavior does
+Applications adapt the main library to a transport or UI. Domain behavior does
 not depend on CLI/Tauri types. Merge-quality code is test-only and exercises the
 same public product path rather than becoming another engine layer.
 
 ## Input flow
 
-1. `src/input` inspects a `dlc_load.json` or `[project]` manifest and resolves
+1. `src/packages/foch/src/input` inspects a `dlc_load.json` or `[project]` manifest and resolves
    the game root, ordered mod contributors, descriptors, and installed Steam
    identities.
 2. Inspection is read-only. It does not initialize configuration, update ACF
@@ -95,7 +100,7 @@ The public lifecycle is **inspect → analyze → review → confirm → commit*
 
 ### Analyze
 
-`src/merge/analyze.rs` performs all semantic work before the output target is
+`src/packages/foch/src/merge/analyze.rs` performs all semantic work before the output target is
 modified:
 
 1. resolve and inventory the exact input;
@@ -161,14 +166,14 @@ There is intentionally no commit/export command in this checkpoint.
 ## Cache boundary
 
 Persistent cache formats and payload identities are owned by their domain
-modules; `src/platform/cache_store` only provides filesystem lifecycle
+modules; `src/packages/foch/src/platform/cache_store` only provides filesystem lifecycle
 operations. Opening a current generation must not delete other generations.
 Eviction and clearing are explicit maintenance operations. See
-[cache-architecture.md](./cache-architecture.md).
+[cache-architecture.md](cache-architecture.md).
 
 ## Merge-quality acceptance
 
-The private harness under `apps/foch-cli/tests/merge_quality/` owns the fixed
+The test-only harness under `src/apps/foch-cli/tests/merge_quality/` owns the fixed
 14-case, 26-item Workshop denominator, append-only V2 records, evidence capture,
 scoring, and reports. The supported operator entrypoint is:
 
@@ -183,7 +188,7 @@ interrupted append-only run remains measurement history, not a baseline.
 
 ## Editor boundary
 
-The reusable CWT layer compiles schemas, while `src/game/eu4/editor` interprets
+The reusable CWT layer compiles schemas, while `src/packages/foch/src/game/eu4/editor` interprets
 them for EU4 diagnostics, completion, hover, and navigation. CWT rules remain
 evidence: runtime load order and merge semantics stay in concrete EU4 content
 families rather than in a generic schema package.

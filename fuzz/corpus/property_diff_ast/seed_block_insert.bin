@@ -1,8 +1,0 @@
-root = {
-	value = 1
-}
----
-root = {
-	value = 1
-	extra = yes
-}
