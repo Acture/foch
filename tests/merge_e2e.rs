@@ -994,7 +994,7 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 		"provenance comment must sit immediately above the definition; got:\n{merged_text}"
 	);
 
-	// The in-memory report and the on-disk sidecar both carry the same map.
+	// The sidecar binds the report's lineage to the exact committed output bytes.
 	let file_prov = result
 		.report
 		.definition_provenance
@@ -1015,8 +1015,48 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 		sidecar_text.contains("test_shared_effect"),
 		"sidecar should record the merged definition; got:\n{sidecar_text}"
 	);
+	let artifact: serde_json::Value = serde_json::from_str(&sidecar_text).expect("valid sidecar");
+	assert_eq!(
+		artifact["version"], 1,
+		"sidecar must declare its schema version"
+	);
+	let files = artifact["files"].as_object().expect("versioned files");
+	assert_eq!(files.len(), result.report.definition_provenance.len());
+	for (path, definitions) in &result.report.definition_provenance {
+		let bytes = fs::read(path.to_path(&out_dir)).expect("committed provenance script");
+		assert_eq!(
+			files[path.as_str()]["content_hash"],
+			blake3::hash(&bytes).to_hex().to_string()
+		);
+		assert_eq!(
+			files[path.as_str()]["definitions"],
+			serde_json::json!(definitions)
+		);
+	}
+	assert_eq!(
+		file_prov["test_shared_effect"],
+		["330001".to_string(), "330002".to_string()]
+	);
+	assert_eq!(
+		artifact["mod_names"],
+		serde_json::json!({"330001": "effect_a", "330002": "effect_b"})
+	);
+	assert_eq!(
+		serde_json::to_value(&result.report).expect("report JSON")["provenance_mod_names"],
+		artifact["mod_names"]
+	);
 
 	assert_structurally_sound(&out_dir);
+}
+
+#[test]
+fn eu4_provenance_off_omits_sidecar_and_report_metadata() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_union_scripted_effect", false);
+	assert_eq!(result.report.status, MergeReportStatus::Ready);
+	assert!(!out_dir.join(".foch/foch-provenance.json").exists());
+	let report = serde_json::to_value(&result.report).expect("report JSON");
+	assert!(report.get("definition_provenance").is_none());
+	assert!(report.get("provenance_mod_names").is_none());
 }
 
 #[test]
@@ -1242,6 +1282,210 @@ fn eu4_institutions_cross_file_module_overlays_without_replace_path() {
 			.iter()
 			.any(|path| path.as_str() == "common/institutions")
 	);
+}
+
+#[test]
+fn eu4_gui_provenance_appends_tooltips_from_each_surviving_widget() {
+	use std::collections::{BTreeMap, BTreeSet};
+
+	const FIXTURE: &str = "eu4_gui_provenance";
+	const SCRIPT: &str = "interface/test.gui";
+	let source_bytes = || {
+		walkdir::WalkDir::new(fixture_dir(FIXTURE))
+			.into_iter()
+			.map(|entry| entry.expect("GUI fixture entry"))
+			.filter(|entry| entry.file_type().is_file())
+			.map(|entry| (entry.path().to_path_buf(), fs::read(entry.path()).unwrap()))
+			.collect::<BTreeMap<_, _>>()
+	};
+	let original_sources = source_bytes();
+	let (plain, plain_dir) = run_merge_for_fixture(FIXTURE, false);
+	assert_eq!(plain.exit_code, 0, "{:#?}", plain.report);
+	assert_eq!(plain.report.status, MergeReportStatus::Ready);
+	// The expected rendering is authored from the union of the two inputs. Only
+	// checkout line endings are normalized; emitted bytes must stay canonical LF.
+	let expected = fs::read_to_string(expected_path(FIXTURE, SCRIPT))
+		.expect("expected unannotated GUI")
+		.replace("\r\n", "\n");
+	assert_eq!(
+		fs::read(plain_dir.join(SCRIPT)).unwrap(),
+		expected.as_bytes()
+	);
+	assert!(!plain_dir.join("localisation").exists());
+	assert!(!plain_dir.join(".foch/foch-provenance.json").exists());
+	let plain_widgets = gui_provenance_widget_fields(&plain_dir.join(SCRIPT));
+	let mut previous = None;
+	for _ in 0..2 {
+		let (result, out_dir) = run_merge_for_fixture_with_provenance(FIXTURE, false);
+		assert_eq!(result.exit_code, 0, "{:#?}", result.report);
+		assert_eq!(result.report.status, MergeReportStatus::Ready);
+		let script_bytes = fs::read(out_dir.join(SCRIPT)).expect("annotated GUI");
+		let widgets = gui_provenance_widget_fields(&out_dir.join(SCRIPT));
+		let mut expected_localisation = BTreeMap::new();
+		for (widget, channel, value) in [
+			(
+				"alpha_icon",
+				"pdx_tooltip",
+				"$ALPHA_TT$\\n\\nMerged from GUI Alpha",
+			),
+			(
+				"alpha_button",
+				"tooltipText",
+				"$ALPHA_BUTTON_TT$\\n\\nMerged from GUI Alpha",
+			),
+			(
+				"beta_text",
+				"pdx_tooltip",
+				"$TEXT_HELP$\\n\\nMerged from GUI Beta",
+			),
+			(
+				"shared_button",
+				"pdx_tooltip",
+				"$SHARED_TT$\\n\\nMerged from GUI Alpha, GUI Beta",
+			),
+		] {
+			let key = widgets[widget]
+				.get(channel)
+				.unwrap_or_else(|| panic!("missing {widget}.{channel}"));
+			assert!(
+				key.starts_with("FOCH_PROVENANCE_GUI_"),
+				"{widget}.{channel}: {key}"
+			);
+			assert!(
+				expected_localisation
+					.insert(key.clone(), value.to_string())
+					.is_none(),
+				"widgets must not share wrappers"
+			);
+		}
+		assert_eq!(
+			widgets["alpha_icon"]["pdx_tooltip_delayed"],
+			"ALPHA_DELAYED"
+		);
+		assert_eq!(
+			widgets["alpha_button"]["delayedTooltipText"],
+			"ALPHA_BUTTON_DELAYED"
+		);
+		// Without a verified vanilla ancestor, an absent field may still have an
+		// engine-provided tooltip; only authored immediate keys can be wrapped.
+		for skipped in [
+			"unsupported_window",
+			"competing_icon",
+			"dynamic_icon",
+			"beta_implicit",
+		] {
+			assert_eq!(
+				widgets[skipped], plain_widgets[skipped],
+				"unsafe or unsupported widget {skipped} must remain intact"
+			);
+		}
+		let localisation_files = walkdir::WalkDir::new(out_dir.join("localisation"))
+			.into_iter()
+			.map(|entry| entry.expect("generated localisation entry"))
+			.filter(|entry| entry.file_type().is_file())
+			.map(|entry| {
+				(
+					entry.path().strip_prefix(&out_dir).unwrap().to_path_buf(),
+					fs::read(entry.path()).unwrap(),
+				)
+			})
+			.collect::<BTreeMap<_, _>>();
+		assert_eq!(
+			localisation_files.len(),
+			1,
+			"one shared generated localisation file"
+		);
+		let localisation_bytes = localisation_files.values().next().unwrap();
+		assert!(localisation_bytes.starts_with(&[0xef, 0xbb, 0xbf]));
+		let localisation =
+			std::str::from_utf8(&localisation_bytes[3..]).expect("UTF-8 localisation");
+		for language in foch::game::eu4::content::EU4_LOCALISATION_LANGUAGE_HEADERS {
+			assert!(localisation.contains(&format!("{language}:\n")));
+		}
+		let mut actual_keys = BTreeSet::new();
+		for line in localisation
+			.lines()
+			.filter(|line| line.starts_with(" FOCH_PROVENANCE_GUI_"))
+		{
+			let (key, value) = line
+				.trim_start()
+				.split_once(":0 \"")
+				.expect("localisation key/value");
+			let value = value.strip_suffix('"').expect("quoted localisation value");
+			assert_eq!(
+				Some(value),
+				expected_localisation.get(key).map(String::as_str),
+				"localisation must belong to a surviving widget: {key}"
+			);
+			actual_keys.insert(key.to_string());
+		}
+		assert_eq!(actual_keys, expected_localisation.keys().cloned().collect());
+		let sidecar_bytes = fs::read(out_dir.join(".foch/foch-provenance.json")).expect("sidecar");
+		let sidecar: serde_json::Value = serde_json::from_slice(&sidecar_bytes).unwrap();
+		assert_eq!(sidecar["version"], 1);
+		assert_eq!(
+			sidecar["files"][SCRIPT]["content_hash"],
+			blake3::hash(&script_bytes).to_hex().to_string(),
+			"sidecar must hash post-injection bytes"
+		);
+		let current = (script_bytes, localisation_files, sidecar_bytes);
+		if let Some(previous) = previous.as_ref() {
+			assert_eq!(
+				&current, previous,
+				"repeatable GUI, localisation paths/bytes, and sidecar"
+			);
+		}
+		previous = Some(current);
+	}
+	assert_eq!(
+		source_bytes(),
+		original_sources,
+		"GUI source mods must remain read-only"
+	);
+}
+
+fn gui_provenance_widget_fields(
+	path: &Path,
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> {
+	use foch::game::eu4::script::parser::{AstStatement, AstValue};
+	let parsed = parse_clausewitz_file(path);
+	assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+	let widgets = parsed
+		.statements
+		.iter()
+		.find_map(|statement| match statement {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items, .. },
+				..
+			} if key == "guiTypes" => Some(items),
+			_ => None,
+		})
+		.expect("guiTypes container");
+	widgets
+		.iter()
+		.filter_map(|widget| {
+			let AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} = widget
+			else {
+				return None;
+			};
+			let fields = items
+				.iter()
+				.filter_map(|field| match field {
+					AstStatement::Assignment {
+						key,
+						value: AstValue::Scalar { value, .. },
+						..
+					} => Some((key.clone(), value.as_text())),
+					_ => None,
+				})
+				.collect::<std::collections::BTreeMap<_, _>>();
+			fields.get("name").cloned().map(|name| (name, fields))
+		})
+		.collect()
 }
 
 #[test]

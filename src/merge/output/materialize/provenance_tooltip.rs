@@ -448,7 +448,7 @@ fn explicit_tooltip_ref(items: &[AstStatement]) -> Option<(&ScalarValue, String)
 	None
 }
 
-fn is_safe_localisation_key(key: &str) -> bool {
+pub(super) fn is_safe_localisation_key(key: &str) -> bool {
 	!key.is_empty()
 		&& key
 			.bytes()
@@ -483,7 +483,7 @@ fn provenance_wrapper_key(
 	format!("{PROVENANCE_KEY_PREFIX}{}", hasher.finalize().to_hex())
 }
 
-fn display_name(source_id: &str, display_names: &HashMap<String, String>) -> String {
+pub(super) fn display_name(source_id: &str, display_names: &HashMap<String, String>) -> String {
 	let display = display_names
 		.get(source_id)
 		.map(String::as_str)

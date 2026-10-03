@@ -12,6 +12,7 @@ use crate::model::{
 	MergeReportConflictContributor,
 };
 
+use super::gui_provenance::materialize_gui_provenance_tooltips;
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
 use super::provenance_tooltip::materialize_condition_provenance_tooltips;
 use super::stale_detect::{
@@ -316,8 +317,9 @@ where
 			message,
 		})
 	})?;
-	let tooltip_output = materialize_condition_provenance_tooltips(
+	let gui_tooltip_output = materialize_gui_provenance_tooltips(
 		context.provenance,
+		context.vanilla_base_mode,
 		target_path,
 		merged_statements,
 		&dag_merge.semantic,
@@ -330,6 +332,25 @@ where
 			message,
 		})
 	})?;
+	let mut tooltip_output = materialize_condition_provenance_tooltips(
+		context.provenance,
+		target_path,
+		gui_tooltip_output.statements,
+		&dag_merge.semantic,
+		&merge_policies,
+		context.mod_display_names,
+	)
+	.map_err(|message| {
+		StructuralMergeFailure::Merge(MergeError::Validation {
+			subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
+			message,
+		})
+	})?;
+	// The GUI and diplomatic families are disjoint. Both keep localisation owned
+	// by this script so later pruning/external resolutions can discard it safely.
+	tooltip_output
+		.localisation
+		.extend(gui_tooltip_output.localisation);
 	let (merged_statements, provenance_localisation) = if context.provenance {
 		(
 			inject_provenance_comments(

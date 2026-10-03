@@ -1,19 +1,22 @@
 # Foch Documentation
 
-This directory is the contributor map for Foch's current product state,
-architecture, and implementation contracts.
+This directory holds Foch's public usage and acceptance contracts, measured
+project state, numerical records, and raw evidence. Research and design documents
+are maintained in the [project notes](../notes/foch/首页.md) submodule.
 
 If you are new to the project, start with the current handoff below. It is
-self-contained. Linear owns active execution and dependencies; Notion owns the
-project narrative and research record. Neither is duplicated here.
+self-contained. Linear owns active execution and dependencies. Migrated research
+and design live in `notes/foch/`; Notion-only material remains at its original
+page until separately migrated. See the [notes workflow](../README.md#research-and-design-notes)
+for initialization, updates, and committing notes before the parent gitlink.
 
 ## Start Here
 
 - [project-status.md](./project-status.md) — verified state, accepted evidence,
   dirty-worktree warning, and fresh-agent runbook
-- [architecture.md](./architecture.md) — package and execution boundaries,
+- [architecture.md](../notes/foch/docs/architecture.md) — package and execution boundaries,
   including the analyze/review/commit flow
-- [merge-design.md](./merge-design.md) — review units, conflict policy, and
+- [merge-design.md](../notes/foch/docs/merge-design.md) — review units, conflict policy, and
   commit contract
 - [merge-quality-dataset.md](./merge-quality-dataset.md) — fixed 14-case product
   acceptance, input identity, evidence, and scoring contract
@@ -24,7 +27,7 @@ project narrative and research record. Neither is duplicated here.
   input composition
 - [foch-toml-resolutions.md](./foch-toml-resolutions.md) — reviewed conflict
   resolutions and safety rules
-- [cache-architecture.md](./cache-architecture.md) — cache layers, identity, and
+- [cache-architecture.md](../notes/foch/docs/cache-architecture.md) — cache layers, identity, and
   trust boundaries
 - [lsp-0.1-preview.md](./lsp-0.1-preview.md) — independently versioned VS
   Code/LSP preview and editor scope
@@ -35,11 +38,12 @@ project narrative and research record. Neither is duplicated here.
 These documents explain how earlier decisions were reached. They are not the
 active task queue and do not replace the current product acceptance gate.
 
-- [structured-merge-shadow.md](./structured-merge-shadow.md) — historical
+- [structured-merge-shadow.md](../notes/foch/docs/structured-merge-shadow.md) — historical
   GumTree/PCS rollout and Legacy/Structured comparison
 - [common-applicability-probe.md](./common-applicability-probe.md) — auxiliary
   `common/<folder>` analysis, not product acceptance
 
-Files below `reviews/`, `research/`, and `superpowers/specs/` are retained
-historical evidence. Their old crate names and commands are not current
-architecture.
+Historical reviews, research explanations, specs and plans now live under
+`notes/foch/docs/` and `notes/foch/plan/`, with their history preserved. Their old
+crate names and commands are not current architecture. Raw JSON evidence below
+`docs/evidence/` and `docs/research/evidence/` remains in this repository.

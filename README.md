@@ -38,7 +38,7 @@ intended to support future concrete game implementations, but today only
 
 Linear owns active milestones, issues, and dependencies. The repository records
 the verified implementation state in [the current checkpoint](./docs/project-status.md)
-and the stable execution contract in [the architecture](./docs/architecture.md).
+and the stable execution contract in [the architecture](notes/foch/docs/architecture.md).
 
 ## Build and try it
 
@@ -47,8 +47,9 @@ There is no released binary matching this source line. The crates.io
 foch` for this repository.
 
 ```fish
-git clone --recurse-submodules https://github.com/Acture/foch.git
+git clone https://github.com/Acture/foch.git
 cd foch
+git submodule update --init --recursive packages/tree-sitter-paradox vendor/cwtools-eu4-config
 cargo install --path apps/foch-cli
 ```
 
@@ -167,6 +168,9 @@ Run `foch <command> --help` for authoritative options.
 - `apps/foch-desktop` — the Tauri desktop product, linked directly to `foch`
 - `packages/tree-sitter-paradox` — independently versioned grammar package
 - `packages/vscode-foch` — independently versioned VS Code extension
+- `docs/` — public usage, acceptance contracts, measured status, and evidence
+- `notes/foch/` — research, design, and evaluation documents in the private
+  [unified notes repository](https://github.com/Acture/obsidian-vault/tree/project/foch/foch)
 
 The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
 `tree-sitter-paradox` at `0.2.0`. Cache and report schema generations are
@@ -249,14 +253,72 @@ Run the module's tests without Ghidra using
 
 ## Documentation
 
+- [Research and design notes](./notes/foch/首页.md) (private repository access required)
 - [Project status](./docs/project-status.md)
-- [Architecture](./docs/architecture.md)
-- [Merge design](./docs/merge-design.md)
+- [Architecture](notes/foch/docs/architecture.md)
+- [Merge design](notes/foch/docs/merge-design.md)
 - [`foch.toml` project manifest](./docs/foch-project-manifest.md)
 - [Resolution DSL](./docs/foch-toml-resolutions.md)
 - [VS Code/LSP preview](./docs/lsp-0.1-preview.md)
 - [Known issues](./KNOWN_ISSUES.md)
 - [Release checklist](./docs/RELEASE_CHECKLIST.md)
+
+### Research and design notes
+
+`notes/` is a submodule of `https://github.com/Acture/obsidian-vault.git`,
+configured for `project/foch`. Its Foch entry is
+[`notes/foch/首页.md`](./notes/foch/首页.md). Only `foch/**` is edited on this
+project branch. Public build instructions, measured status, numeric records,
+and raw evidence remain in this repository; building and testing do not require
+access to the private notes repository.
+
+Use the latest published `project/foch` notes by default. After cloning,
+creating a worktree, or pulling Foch, refresh a clean notes worktree with:
+
+```fish
+git submodule update --init --remote --checkout -- notes
+```
+
+Preserve local edits and unpublished commits before refreshing; do not force
+the checkout. If refresh fails, report that notes are stale instead of treating
+the cached checkout as current.
+
+Git still records a fixed commit in the parent. Plain `git clone`, `git pull`,
+and `git submodule update --init` do not fetch the latest notes automatically;
+even `git clone --recurse-submodules` needs the refresh above. The branch setting
+selects what `--remote` follows. Restoring the recorded commit is an explicit
+historical-reproduction operation: `git submodule update --init --checkout -- notes`.
+
+The refresh may leave a detached HEAD. Before editing, switch to the project
+branch and fast-forward it to the published notes:
+
+```fish
+git -C notes fetch origin
+git -C notes switch project/foch
+git -C notes pull --ff-only origin project/foch
+```
+
+The first `switch` creates a local tracking branch when only
+`origin/project/foch` exists. Preserve local changes and resolve divergence
+before continuing. The vault's [existing workflow](./notes/Workflow/研究工作流.md)
+owns integration with its `master`; this repository installs no sync service.
+
+After editing `notes/foch/`, publish notes before updating Foch's reference:
+
+```fish
+git -C notes add -- foch
+git -C notes commit -m "Update Foch research notes"
+git -C notes push origin HEAD:project/foch
+# Continue only after the notes push succeeds.
+git add notes
+git commit -m "Update Foch notes reference"
+git push
+```
+
+A refresh can change the gitlink shown by `git status`; review and commit that
+reference separately when adopting the update in Foch. The
+[migration record](./notes/foch/迁移记录.md) lists the original paths and
+preserved document history.
 
 ## License
 

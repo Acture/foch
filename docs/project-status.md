@@ -1,6 +1,22 @@
 # Project Status
 
-Latest PR integration verification: 2026-10-02 on `e97c93c` plus `master`
+Latest PR conflict integration: 2026-10-04 on `7208eab` plus `master`
+at `988d0c8`. The editor's provenance hover, versioned and historical sidecars,
+and GUI tooltip materialization now use validated game-relative paths while
+physical reads and symlink checks keep native paths. UTF-16 hover positions,
+output-byte verification, source ordering and the upstream per-revision delta
+index are retained. Both branches' implementation and measurement histories
+are kept; their earlier cohort results belong to their recorded artifacts.
+
+All-target/all-feature workspace compilation, focused editor, GUI provenance,
+kernel, provenance-artifact and CLI hover tests, and the separate fuzz-workspace
+check passed. The new Unix filename regression keeps a literal backslash file
+distinct from its nested-path neighbor. Local validation logs, including the
+normal commit/push gates, are under `target/validation/p736-master-2026-10-04/`.
+The four local measurement streams are preserved outside the merge commit.
+A complete Workshop cohort has not been measured for this integrated artifact.
+
+Earlier PR integration verification: 2026-10-02 on `e97c93c` plus `master`
 at `c774b67` and the resolved path/CWT boundaries. The complete workspace
 suite passed 1,798 tests (20 ignored), including the socket/server tests.
 Formatting, strict all-target/all-feature workspace Clippy, all-target/all-feature
@@ -29,6 +45,28 @@ changes: `cargo test --workspace --no-fail-fast --quiet` passed 1,780 tests
 (19 ignored), including the three socket/server tests rerun outside the
 restricted sandbox. Rust formatting, strict workspace Clippy, and the separate
 fuzz-workspace all-target/all-feature check passed. See the P-736 entry below.
+
+Recorded P-830 branch verification: 2026-10-02 on `4e8862e` plus editor/GUI
+provenance changes, the Windows product-runner temporary-directory fix,
+platform-gated test helpers and N-way delta indexing: formatting and strict
+workspace Clippy passed. `cargo test --workspace --no-fail-fast` passed 1,613
+tests with 18 ignored on Windows, using an isolated `FOCH_DATA_DIR`.
+Fresh release root-library and integration tests passed 1,387 tests with 12
+ignored; the release-only performance regression also passed explicitly. The
+owning merge-quality harness passed 116 tests with 6 ignored. An earlier
+workspace run recorded 1,602 passed, 9 failed and 17 ignored; the fresh complete
+run supersedes those failures. Windows `TMP` and `TEMP` are now supplied
+alongside `TMPDIR` in the cleared product child environment, and the test-only
+helpers match their existing callers' platform conditions.
+See the P-830 entry below for the exact boundaries and verification.
+An explicitly user-requested `cargo acceptance` retry acquired all six missing
+inputs and used a matching rebuilt EU4 base snapshot, but its cold-cache preview
+exceeded the unchanged 300-second limit. The 14-case scoring phase did not start;
+no complete cohort was accepted for that branch artifact.
+After delta indexing, a bounded retry of the same cache gate again timed out:
+the culture unit completed in 124.89 seconds, but `map/positions.txt` remained
+in flight. This optimization does not establish complete product acceptance.
+
 Earlier worktree verification: 2026-09-29 on `049a9f0` plus the P-709 embedded
 CWT rule pack: strict workspace Clippy and formatting, and `cargo test
 --workspace --no-fail-fast` at 1,592 passed and 3 failed across all targets,
@@ -72,8 +110,206 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 `30aa902` (`Update quality harness for merge reviews`).
 
 This page is the repository handoff. Recheck Git and local inputs before using
-any checkpoint fact. Linear owns live execution; Notion holds the project
-narrative and research record.
+any checkpoint fact. Linear owns live execution. Migrated research, design and
+evaluation documents live in the `notes/` submodule's
+[Foch directory](../notes/foch/首页.md); see the
+[notes workflow](../README.md#research-and-design-notes) for access and updates.
+Measured status and raw evidence remain here. Notion-only narrative remains at
+its original page until separately migrated.
+
+## Editor and GUI merge provenance (2026-10-01)
+
+P-830 was redeveloped on the current root-library architecture after fetching
+and rebasing on `origin/master` (`4e8862e`, already current). The historical t5
+implementation was not replayed. These are branch verification results, not an
+accepted product cohort.
+
+The three commits were subsequently replayed onto `e0d6a1e` on 2026-10-03.
+Rust sources and game fixture bytes remain identical to the original PR head;
+research/design documents follow the current `notes/foch/` layout. The local
+results below describe the original verified branch, not a new acceptance run.
+
+Shared `game::eu4::editor::hover` and `foch lsp` now compose schema help with
+ordered adopted source names and IDs. Merge emits a version-1 provenance sidecar
+with BLAKE3 fingerprints of final bytes and source display names. Hover requires
+an unchanged decoded buffer and matching bytes; old raw-map sidecars are
+explicitly labeled historical and unverified. UTF-16/UTF-8 mapping, incremental
+document edits, sidecar replacement, output boundaries and source isolation are
+covered. Review reproduced and fixed two boundary errors: resolving a junction
+before choosing its output root, and unrelated ancestor metadata overriding a
+valid caller schema path.
+
+At the user's request, existing `--provenance` also appends sources to supported
+GUI static tooltips. It preserves the original localisation reference and delayed
+fields, uses each widget's adopted subtree, and retains generated localisation
+only for surviving scripts. Missing tooltips require a verified ancestor and
+complete mod-only origins; explicitly disabled base analysis cannot establish
+new-widget identity. Dynamic/competing fields and unverified final-tree mappings
+are left unchanged. [The GUI assessment](../notes/foch/docs/provenance-gui-assessment.md) records
+exact installed EU4 1.37.5 authored field evidence, supported widget types,
+preserved historical fixtures, and the outstanding manual runtime check.
+
+Verification:
+
+- Focused editor hover 14/14, UTF-16 positions 5/5, schema 57/57, LSP handlers
+  4/4, and actual `foch merge` to stdio `foch lsp` integration 1/1 passed.
+- GUI renderer 9/9 and all merge E2E tests 32 passed / 2 existing ignored.
+  GUI tests cover original/delayed text, independent contributors, disabled
+  output, unsafe-field abstention, generated localisation ownership, exact
+  final-byte fingerprints, repeatability and unchanged source fixtures.
+- Full workspace: 1,602 passed / 9 failed / 17 ignored. Eight existing CLI
+  tests attempted base locks under the user's Windows application-data directory;
+  all eight passed when rerun individually with a distinct temporary
+  `FOCH_DATA_DIR`. On 2026-10-02, `tiny_product_cli_to_pure_scorer_seam` reproduced
+  the ninth failure: the cleared child environment set only `TMPDIR`, so Windows
+  fell back to unwritable `C:\WINDOWS`. The runner now also sets `TMP` and `TEMP`
+  to its existing isolated temporary root. That regression passed, followed by
+  all 116 owning harness tests (6 ignored), formatting and strict CLI Clippy.
+- `cargo fmt --all --check` and `git diff --check` passed. Strict Clippy passed
+  for `foch --all-features --lib --test merge_e2e --test check_engine` and
+  `foch-cli --all-targets --all-features`. An earlier full workspace command
+  failed on six existing unused imports/functions in `merge/commit.rs` and its
+  tests; their baseline definitions were checked at HEAD. Before PR submission,
+  their conditions were aligned with the already-gated callers, retaining the
+  finalization helper used by Windows tests. Strict workspace Clippy now passes,
+  and a fresh full workspace run passes 1,613 tests with 18 ignored under an
+  isolated `FOCH_DATA_DIR`. Logs are `pr-workspace-clippy-20261002.log` and
+  `pr-workspace-tests-20261002.log` under the ignored input directory below.
+
+At the user's explicit request, `cargo acceptance` was run on 2026-10-01.
+Release compilation succeeded (67 seconds). The first invocation required
+`EU4_ROOT`; a second invocation set it to the installed
+`G:/SteamLibrary/steamapps/common/Europa Universalis IV`. That run exited 101
+in `workshop_product_cache_residency_gate`: Workshop item `1351632822` is absent
+from `appworkshop_236850.acf`. It did not reach the cache measurement or the
+14-case scoring phase and does not establish an accepted cohort.
+
+Checking both registered Steam libraries initially found six fixed inputs without an
+installed directory/ACF pair: `1351632822`, `1449952810`, `1796527319`,
+`3340627985`, `3414246813`, and `3437049148`. The denominator was not changed;
+the initial attempt left the append-only measurement files unchanged. Its log
+is `target/merge-quality/p830-acceptance-20261001/acceptance.log`. No EU4 launch
+was performed; runtime tooltip rendering still needs a manual game check.
+
+Follow-up input acquisition checked the local Foch caches and existing repository
+artifacts, then prepared SteamCMD under `target/merge-quality/p830-inputs/steamcmd`
+from Valve's official CDN. The executable's Authenticode signature was valid.
+Steam's Windows account metadata uses `AutoLogin` here; exactly one remembered
+account has it enabled. A bounded `@NoPromptForPassword 1` download attempt for
+the six missing IDs exited 5 with `Cached credentials not found`. Desktop Steam
+login was not reusable by this fresh SteamCMD installation.
+`target/merge-quality/p830-inputs/login-steamcmd.ps1` is a checked interactive
+helper with mobile-code support; the user authenticated directly in Valve's
+console. This helper does not read passwords or copy credential files.
+
+On 2026-10-02, SteamCMD reused its own authenticated session and downloaded all
+six items successfully (exit 0; 8,977,599,248 installed bytes). Their genuine
+`WorkshopItemsInstalled` and `WorkshopItemDetails` manifest/time pairs match.
+The separate library under `target/merge-quality/p830-inputs/workshop` and a
+metadata-only catalog referencing both existing Steam libraries provide all
+26 fixed inputs without editing Steam's configuration or source mod trees.
+Acquisition output is `target/merge-quality/p830-inputs/steamcmd/acquire-20261002.log`.
+
+The previous installed base used old schema/rules. A fresh read-only EU4 1.37.5
+probe built and installed a schema-14 snapshot in the isolated `base-data`
+directory: 8,986 documents, 8,405 Clausewitz files and zero parse issues, with
+`rules-v25-catalog-50e9e65bb87348d6-contracts-1a764f441951929f-cwt-5d636ca3ec1497a2`.
+The release harness was rebuilt after the Windows runner fix. The retry uses
+`target/merge-quality/p830-inputs/run-acceptance.ps1` to set process-scoped
+`EU4_ROOT`, `FOCH_CONFIG_DIR` and `FOCH_DATA_DIR`, then execute `cargo acceptance`.
+The retry failed in `workshop_product_cache_residency_gate` (test exit 101,
+310.52 seconds including teardown). Read-only input discovery and base loading
+succeeded, but the cold preview exceeded its unchanged 300,000 ms limit. The
+diagnostic tail recorded long-running `common/cultures/zzz_foch_cultures.txt`
+and `map/positions.txt` merge units; the culture unit eventually completed in
+243,959 ms, and progress reached at least 75,800 of 77,791 materialization units
+before termination. This is a runtime observation, not proof of a root cause or
+a provenance regression. Captured stderr is bounded and its beginning is absent.
+
+The full log is `target/merge-quality/p830-inputs/acceptance-20261002.log`, with
+a readable extracted timeout diagnostic in `cache-gate-timeout-20261002.txt`
+beside it. The warm-cache probe and fixed 14-case scoring phase did not start;
+all four append-only JSONL streams remain unchanged. No complete current
+cohort has been accepted, and no EU4 launch was performed. Investigate the
+long-running units with a bounded real-case probe before changing the gate.
+
+A focused read-only culture diagnosis followed on 2026-10-02. The vanilla,
+ESU (`1449952810`) and Warcraft Universalis (`1796527319`) culture inputs
+produce 206 top-level definitions and roughly 978,000 normalized nodes. Both
+mods declare `replace_path="common/cultures"`. Reading and parsing the culture
+files alone took 129 ms in the warm isolated probe. The existing
+`kernel::nway::build_class_facts` scans each revision's entire ordering vector
+for every node class, even when none of its ordering records have base
+endpoints. Its cost grows as nodes times ordering records. For the largest
+orc definition (168,811 classes), this phase took 6.1 seconds of a 7.4-second
+kernel call. The existing matcher/delta/PCS timings omit this phase, so their
+sum understates actual kernel time. At diagnosis this code was unchanged from HEAD.
+
+A second temporary release test exercised the production structural backend
+with the same culture files and real descriptors, assembled into in-memory
+module views. It succeeded in 42.75 seconds: engine 36.40, stale detection
+0.86, no-op comparison 2.14, provenance trace 0.31, and output emission 0.34
+seconds. GUI provenance was disabled, as in the acceptance invocation. This
+probe excludes full-playset input loading, cache work, module-view folding and
+other concurrent merge units; it is not an acceptance result. The gap from
+the observed 243.96-second full-run culture unit remains unexplained. Neither
+memory exhaustion nor a GUI provenance regression has been established.
+Logs are `culture-orc-profile-20261002.log`, `culture-module-profile-20261002.log`
+and `culture-finish-profile-20261002.log` under the same ignored input directory.
+Temporary probe sources and instrumentation were archived under
+`culture-diagnostic-sources/` and removed from production source. At that
+checkpoint no algorithm or acceptance limit had changed, and the measurement
+streams remained untouched.
+
+The user then requested optimization of the repeated scans. `build_class_facts`
+now indexes each revision's moved nodes and ordering endpoints once and uses
+set membership per class. It preserves revision order and requires both
+ordering endpoints to have base correspondence, exactly as before. This
+removes the classes-times-delta-records scans without changing merge selection
+or emitted bytes. A release-only ignored regression constructs 120,002 classes
+and 119,999 ordering facts for a newly added names subtree. Before the change,
+the facts phase failed its 2-second bound at 10.436 seconds; after the change
+it passed at 28.869 ms. Two ordinary unit regressions cover both reordered
+endpoints within their revision and abstention around inserted endpoints.
+
+The paired real culture-module probe took 34.262 seconds before indexing and
+24.361 seconds after it. Its per-definition joins fell from 16.954 to 7.752
+seconds. Both runs emitted exactly 6,925,587 bytes with BLAKE3
+`88d6d8717cb5c41ac67e2c7ced4ebcbac05ec35f219e07c1263d2860938d07f7`.
+These isolated module timings are not comparable to the earlier full-playset
+243.96-second unit or an accepted cohort. Logs are `culture-before-index-20261002.log`,
+`culture-after-index-20261002.log`, and `class-facts-after-index-20261002.log`;
+the comparison probe was archived and removed again. The global acceptance
+timeout and the fixed denominator were not changed.
+
+Post-optimization verification: `cargo test --locked --release -p foch --lib
+--tests` passed 1,387 tests with 12 ignored under an isolated `FOCH_DATA_DIR`;
+the ignored release performance regression was run explicitly and passed again
+at 30.798 ms. The CLI `merge_quality_corpus` harness passed 116 tests with
+6 ignored. Formatting, strict Clippy for the root library plus `merge_e2e` and
+`check_engine`, and strict CLI Clippy for all targets/features passed. Root
+test compilation still reports the six existing Windows unused-item warnings.
+Test logs are `index-root-tests-20261002.log` and `index-cli-tests-20261002.log`.
+After the final test-only lint cleanup, `cargo test --locked --release -p foch
+--lib class_facts -- --include-ignored --nocapture` passed all four focused
+regressions, including the large facts phase at 37.297 ms. Release Clippy for
+the root library and tests reported only the six existing Windows warnings;
+the optimized kernel and its tests introduced no additional diagnostics.
+
+A bounded retry of the original `workshop_product_cache_residency_gate` used
+the current release CLI, matching base snapshot, original three Workshop
+sources, default 1 GiB per-layer cache contract and unchanged 300-second timeout.
+It failed the cold preview after 311.23 seconds including teardown (exit 101).
+The culture unit completed in 124,889 ms, compared with 243,959 ms in the prior
+run; its 206 per-definition joins completed in 30,327 ms, compared with 67,365 ms
+previously. At the last captured progress, 75,838 of 77,791 units were applied
+and `map/positions.txt` was the only in-flight worker, with at least 216 seconds
+elapsed. This narrows the remaining acceptance blocker; it does not diagnose
+the position merge or prove that every full-run timing difference is from
+indexing. The warm probe and 14-case scoring remain unrun, and all four JSONL
+measurement streams are unchanged. The full retry log is
+`cache-gate-after-index-retry-20261002.log`, with decoded stderr in
+`cache-gate-after-index-timeout-20261002.txt`, under the ignored input directory.
 
 ## Typed game-relative paths (2026-10-01)
 
@@ -408,7 +644,7 @@ inventory or EU4 semantics. No product dependency or implementation changed.
 The comparison reproduced a physical-filename-to-semantic-key collision in the
 current helper. P-736 tracks its repair separately. Scope, pinned versions,
 observations, skipped cases, and reproduction artifacts are in the
-[VFS evaluation](vfs-evaluation.md). This helper-level evaluation adds no full
+[VFS evaluation](../notes/foch/docs/vfs-evaluation.md). This helper-level evaluation adds no full
 Workshop, acceptance-cohort, cross-platform, or performance result.
 
 A 2026-09-28 path-type follow-up established P-736's type boundary: keep native
@@ -1720,8 +1956,8 @@ do not reconstruct an execution backlog here.
 
 ## Fresh-agent runbook
 
-1. Read this page, [architecture](./architecture.md), and
-   [merge design](./merge-design.md).
+1. Read this page, [architecture](../notes/foch/docs/architecture.md), and
+   [merge design](../notes/foch/docs/merge-design.md).
 2. Inspect `git status --short --branch` and `git log -3 --oneline`. Preserve
    unrelated changes and append-only measurement history.
 3. Distinguish committed implementation, local worktree observation, recorded
@@ -1736,10 +1972,10 @@ do not reconstruct an execution backlog here.
 ## Reading order
 
 1. [README](../README.md)
-2. [Architecture](./architecture.md)
-3. [Merge design](./merge-design.md)
+2. [Architecture](../notes/foch/docs/architecture.md)
+3. [Merge design](../notes/foch/docs/merge-design.md)
 4. [Merge-quality dataset](./merge-quality-dataset.md)
-5. [Cache architecture](./cache-architecture.md)
+5. [Cache architecture](../notes/foch/docs/cache-architecture.md)
 6. [Project manifest](./foch-project-manifest.md)
 7. [Resolution DSL](./foch-toml-resolutions.md)
 8. [Known issues](../KNOWN_ISSUES.md)

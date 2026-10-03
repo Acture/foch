@@ -3,6 +3,7 @@
 mod analysis;
 mod cross_file_dedup;
 mod executor;
+mod gui_provenance;
 mod io;
 mod output_transaction;
 mod per_entry_noop;
@@ -477,6 +478,17 @@ pub(crate) fn materialize_analyzed_input(
 		&mut provenance_localisation_by_script,
 		&mut report,
 	);
+	report.provenance_mod_names = report
+		.definition_provenance
+		.values()
+		.flat_map(BTreeMap::values)
+		.flatten()
+		.filter_map(|mod_id| {
+			mod_display_names
+				.get(mod_id)
+				.map(|name| (mod_id.clone(), name.clone()))
+		})
+		.collect();
 	let mut generated_paths = prune_result.surviving_generated_paths;
 	if options.provenance
 		&& let Some(localisation_path) = write_surviving_provenance_localisation(
@@ -3452,6 +3464,52 @@ mod tests {
 		let bytes =
 			fs::read(out_dir.join(MERGE_REPORT_ARTIFACT_PATH)).expect("read merge report artifact");
 		serde_json::from_slice(&bytes).expect("deserialize merge report artifact")
+	}
+
+	#[test]
+	fn materialize_records_names_only_for_surviving_provenance() {
+		for with_scripts in [false, true] {
+			let temp = TempDir::new().expect("temp dir");
+			let playlist_path = temp.path().join("playlist.json");
+			let out_dir = temp.path().join("out");
+			write_dlc_load(
+				&playlist_path,
+				&[("111", "A"), ("222", "B"), ("333", "Unused")],
+			);
+			for (id, name) in [("111", "Effect A"), ("222", "Effect B"), ("333", "Texture")] {
+				write_descriptor(&temp.path().join(id), name);
+			}
+			write_file(&temp.path().join("333"), "gfx/test.dds", b"texture");
+			if with_scripts {
+				write_file(
+					&temp.path().join("111"),
+					"common/scripted_effects/a.txt",
+					"test_effect = { add_prestige = 1 }\n",
+				);
+				write_file(
+					&temp.path().join("222"),
+					"common/scripted_effects/b.txt",
+					"test_effect = { add_legitimacy = 1 }\n",
+				);
+			}
+			let mut options = no_base_options(false);
+			options.provenance = true;
+			let materialized =
+				run_materialization_with_review(request_for(&playlist_path), &out_dir, options);
+			let expected = if with_scripts {
+				BTreeMap::from([
+					("111".to_string(), "Effect A".to_string()),
+					("222".to_string(), "Effect B".to_string()),
+				])
+			} else {
+				BTreeMap::new()
+			};
+			assert_eq!(materialized.report.provenance_mod_names, expected);
+			assert_eq!(
+				materialized.report.definition_provenance.is_empty(),
+				!with_scripts
+			);
+		}
 	}
 
 	fn plan_entry_for<'a>(plan: &'a MergePlanResult, path: &str) -> &'a MergePlanEntry {

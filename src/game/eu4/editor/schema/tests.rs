@@ -202,6 +202,88 @@ fn schema_loader_reads_existing_fixture_pack() {
 }
 
 #[test]
+fn hover_uses_utf16_positions_after_unicode_text() {
+	let schema = load_lsp_schema();
+	let text = "country_event = { title = \"中文😀\" category = ADM }";
+	let hover = schema
+		.hover(
+			GamePath::new("events/sample.txt").unwrap(),
+			text,
+			EditorPosition {
+				line: 0,
+				character: 33,
+			},
+			None,
+		)
+		.expect("category hover after Chinese and emoji text");
+	assert!(hover.markdown.contains("**category**"));
+	assert_eq!(
+		hover.range,
+		EditorRange {
+			start: EditorPosition {
+				line: 0,
+				character: 33,
+			},
+			end: EditorPosition {
+				line: 0,
+				character: 41,
+			},
+		}
+	);
+}
+
+#[test]
+fn hover_uses_utf16_ranges_for_unicode_keys_with_crlf() {
+	let schema = load_inline_lsp_schema(
+		r#"
+		types = {
+			type[event] = {
+				path = "game/events"
+				## type_key_filter = sample_event
+			}
+		}
+		event = { 中文😀 = bool }
+		"#,
+	);
+	let text = "sample_event = {\r\n 中文😀 = yes\r\n}\r\n";
+	let expected = EditorRange {
+		start: EditorPosition {
+			line: 1,
+			character: 1,
+		},
+		end: EditorPosition {
+			line: 1,
+			character: 5,
+		},
+	};
+	for character in [1, 2, 3] {
+		let hover = schema
+			.hover(
+				GamePath::new("events/sample.txt").unwrap(),
+				text,
+				EditorPosition { line: 1, character },
+				None,
+			)
+			.expect("hover on Chinese characters and the emoji start");
+		assert!(hover.markdown.contains("**中文😀**"));
+		assert_eq!(hover.range, expected);
+	}
+	for character in [4, 5, 12, 13] {
+		assert!(
+			schema
+				.hover(
+					GamePath::new("events/sample.txt").unwrap(),
+					text,
+					EditorPosition { line: 1, character },
+					None,
+				)
+				.is_none(),
+			"no hover inside a surrogate pair, at the exclusive end, or beyond line content: {character}"
+		);
+	}
+}
+
+#[test]
 fn hover_renders_event_field_from_schema() {
 	let engine = load_lsp_schema();
 	let text = fixture_text("events/sample.txt");
