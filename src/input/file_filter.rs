@@ -1,13 +1,13 @@
 use crate::game::eu4::Eu4;
-use globset::{GlobSet, GlobSetBuilder};
-use std::path::Path;
+use crate::model::GamePath;
+use globset::{Candidate, GlobSet, GlobSetBuilder};
 
 /// Filter applied while walking mod roots and the base game install. Combines
 /// the game's authoritative content-root list (`Eu4::is_loadable_content_path`)
 /// with user-configured extra ignore globs from [`crate::Config`].
 ///
-/// Globs are matched (case-insensitive) against the slash-normalized relative
-/// path of each discovered file. The compiled [`GlobSet`] is built once and
+/// Globs are matched (case-insensitive) against the portable `/` text of each
+/// discovered file's [`GamePath`]. The compiled [`GlobSet`] is built once and
 /// reused for every walk to avoid repeated regex compilation.
 #[derive(Clone, Debug)]
 pub struct FileFilter {
@@ -27,6 +27,7 @@ impl FileFilter {
 			let glob = globset::GlobBuilder::new(pattern)
 				.case_insensitive(true)
 				.literal_separator(false)
+				.backslash_escape(true)
 				.build()
 				.map_err(|err| {
 					format!("failed to parse extra_ignore_patterns pattern \"{pattern}\": {err}")
@@ -59,29 +60,27 @@ impl FileFilter {
 	}
 
 	/// Returns `true` when the file at `relative` should be retained.
-	pub fn accepts(&self, relative: &Path) -> bool {
+	pub fn accepts(&self, relative: &GamePath) -> bool {
 		if !self.game.is_loadable_content_path(relative) {
 			return false;
 		}
 		if self.extra_ignore_pattern_count == 0 {
 			return true;
 		}
-		let normalized = normalize_for_match(relative);
-		!self.extra_ignore.is_match(&normalized)
+		// Match portable UTF-8 bytes without reinterpreting them as a host path.
+		!self
+			.extra_ignore
+			.is_match_candidate(&Candidate::from_bytes(relative.as_str()))
 	}
-}
-
-fn normalize_for_match(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::path::PathBuf;
+	use crate::model::GamePathBuf;
 
-	fn pf(p: &str) -> PathBuf {
-		PathBuf::from(p)
+	fn pf(p: &str) -> GamePathBuf {
+		GamePathBuf::parse(p).expect("valid game path")
 	}
 
 	#[test]
@@ -118,11 +117,40 @@ mod tests {
 		assert!(filter.accepts(&pf("common/countries/X.txt")));
 		assert!(!filter.accepts(&pf("README.md")));
 		assert!(!filter.accepts(&pf(".git/HEAD")));
+		assert!(
+			!filter.accepts(&pf("common")),
+			"a root name alone is not content"
+		);
+	}
+
+	#[test]
+	fn loadable_root_matches_the_top_component_ignoring_ascii_case() {
+		let filter = FileFilter::for_game(Eu4);
+		assert!(filter.accepts(&pf("Common/countries/X.txt")));
+		assert!(filter.accepts(&pf("EVENTS/x.txt")));
+		assert!(!filter.accepts(&pf("commonx/countries/X.txt")));
+		assert!(!filter.accepts(&pf("mod/common/countries/X.txt")));
+	}
+
+	#[test]
+	fn extra_pattern_matches_portable_text_across_separators() {
+		// `literal_separator(false)` lets `*` cross `/`, as before the typed path.
+		let filter = FileFilter::new(Eu4, &["common/*.bak".to_string()]).unwrap();
+		assert!(!filter.accepts(&pf("common/nested/deep/foo.bak")));
+		assert!(filter.accepts(&pf("events/nested/foo.bak")));
+	}
+
+	#[test]
+	fn extra_patterns_use_portable_glob_escapes_on_every_host() {
+		let filter: FileFilter =
+			FileFilter::new(Eu4, &[r"common/literal\*.txt".to_string()]).expect("glob");
+		assert!(!filter.accepts(&pf("common/literal*.txt")));
+		assert!(filter.accepts(&pf("common/literal_other.txt")));
 	}
 
 	#[test]
 	fn collect_relative_files_drops_filtered_paths() {
-		use crate::input::resolve::collect_relative_files;
+		use crate::input::resolve::{InventoryOwner, collect_relative_files};
 		use std::fs;
 		let dir = tempfile::tempdir().expect("tempdir");
 		let root = dir.path();
@@ -138,18 +166,15 @@ mod tests {
 
 		let filter =
 			FileFilter::new(Eu4, &["*.bak".to_string(), "**/.DS_Store".to_string()]).unwrap();
-		let files = collect_relative_files(root, &filter).expect("collect relative files");
-		let strs: Vec<String> = files
-			.iter()
-			.map(|p| p.to_string_lossy().replace('\\', "/"))
-			.collect();
-		assert_eq!(strs, vec!["common/countries/X.txt".to_string()]);
+		let files = collect_relative_files(root, &filter, InventoryOwner::Mod("x"))
+			.expect("collect relative files");
+		assert_eq!(files, vec![pf("common/countries/X.txt")]);
 	}
 
 	#[cfg(unix)]
 	#[test]
 	fn collect_relative_files_ignores_file_and_directory_symlinks() {
-		use crate::input::resolve::collect_relative_files;
+		use crate::input::resolve::{InventoryOwner, collect_relative_files};
 		use std::fs;
 		use std::os::unix::fs::symlink;
 
@@ -164,8 +189,9 @@ mod tests {
 		symlink(&regular, root.join("common/countries/linked.txt")).expect("create file symlink");
 		symlink(outside.join("events"), root.join("events")).expect("create directory symlink");
 
-		let files = collect_relative_files(&root, &FileFilter::for_game(Eu4))
-			.expect("collect relative files");
-		assert_eq!(files, vec![PathBuf::from("common/countries/regular.txt")]);
+		let files =
+			collect_relative_files(&root, &FileFilter::for_game(Eu4), InventoryOwner::BaseGame)
+				.expect("collect relative files");
+		assert_eq!(files, vec![pf("common/countries/regular.txt")]);
 	}
 }

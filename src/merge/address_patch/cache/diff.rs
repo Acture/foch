@@ -6,6 +6,7 @@
 //! per-mod index and to keep failed writes isolated.
 
 use crate::merge::patch::ClausewitzPatch;
+use crate::model::GamePath;
 use crate::platform::cache_store::CacheError;
 use crate::platform::cache_store::generation::{ensure as ensure_generation, generation_dir};
 use crate::platform::cache_store::{default_foch_cache_dir, write_atomically};
@@ -63,7 +64,7 @@ impl ModDiffCache {
 
 	pub fn lookup(
 		&self,
-		target_path: &str,
+		target_path: &GamePath,
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
@@ -86,7 +87,7 @@ impl ModDiffCache {
 
 	pub fn store(
 		&self,
-		target_path: &str,
+		target_path: &GamePath,
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
@@ -96,7 +97,7 @@ impl ModDiffCache {
 		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
 		let payload = StoredModDiff {
 			cache_version: MOD_DIFF_CACHE_VERSION.to_string(),
-			target_path: target_path.to_string(),
+			target_path: target_path.as_str().to_string(),
 			mod_hash: mod_hash.to_string(),
 			vanilla_hash: vanilla_hash.to_string(),
 			foch_version: foch_version.to_string(),
@@ -118,7 +119,7 @@ impl ModDiffCache {
 
 	fn lookup_inner(
 		&self,
-		target_path: &str,
+		target_path: &GamePath,
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
@@ -134,7 +135,7 @@ impl ModDiffCache {
 		let raw = fs::read(path).ok()?;
 		let stored = bincode::deserialize::<StoredModDiff>(&raw).ok()?;
 		if stored.cache_version != MOD_DIFF_CACHE_VERSION
-			|| stored.target_path != target_path
+			|| stored.target_path != target_path.as_str()
 			|| stored.mod_hash != mod_hash
 			|| stored.vanilla_hash != vanilla_hash
 			|| stored.foch_version != foch_version
@@ -147,7 +148,7 @@ impl ModDiffCache {
 
 	fn cache_file(
 		&self,
-		target_path: &str,
+		target_path: &GamePath,
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
@@ -182,7 +183,7 @@ pub fn reset_mod_diff_cache_stats() {
 
 fn cache_filename(
 	cache_version: &str,
-	target_path: &str,
+	target_path: &GamePath,
 	mod_hash: &str,
 	vanilla_hash: &str,
 	foch_version: &str,
@@ -207,14 +208,14 @@ fn cache_filename(
 }
 
 fn cache_key(
-	target_path: &str,
+	target_path: &GamePath,
 	mod_hash: &str,
 	vanilla_hash: &str,
 	foch_version: &str,
 	game_version: &str,
 ) -> String {
 	let mut hasher = blake3::Hasher::new();
-	update_hash_part(&mut hasher, target_path.as_bytes());
+	update_hash_part(&mut hasher, target_path.as_str().as_bytes());
 	update_hash_part(&mut hasher, mod_hash.as_bytes());
 	update_hash_part(&mut hasher, vanilla_hash.as_bytes());
 	update_hash_part(&mut hasher, foch_version.as_bytes());
@@ -257,6 +258,10 @@ mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
 
 	fn cache_dir(name: &str) -> PathBuf {
 		let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -308,12 +313,18 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-a",
+					"vanilla-a",
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.is_none()
 		);
 		cache
 			.store(
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
@@ -324,7 +335,13 @@ mod tests {
 
 		assert_eq!(
 			cache
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-a",
+					"vanilla-a",
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.expect("cache hit"),
 			patches
 		);
@@ -342,7 +359,7 @@ mod tests {
 
 		cache
 			.store(
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
@@ -352,7 +369,13 @@ mod tests {
 			.expect("store occurrence patch");
 
 		let restored = cache
-			.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
+			.lookup(
+				game_path("common/foo.txt"),
+				"mod-a",
+				"vanilla-a",
+				"0.1.0",
+				"eu4 1.37",
+			)
 			.expect("cache hit");
 		assert_eq!(restored, patches);
 		assert!(matches!(
@@ -375,7 +398,7 @@ mod tests {
 		let cache = ModDiffCache::open(&cache_dir("mod-diff-vanilla"));
 		cache
 			.store(
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
@@ -386,7 +409,13 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("common/foo.txt", "mod-a", "vanilla-b", "0.1.0", "eu4 1.37")
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-a",
+					"vanilla-b",
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.is_none()
 		);
 	}
@@ -396,7 +425,7 @@ mod tests {
 		let cache = ModDiffCache::open(&cache_dir("mod-diff-mod"));
 		cache
 			.store(
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
@@ -407,7 +436,13 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("common/foo.txt", "mod-b", "vanilla-a", "0.1.0", "eu4 1.37")
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-b",
+					"vanilla-a",
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.is_none()
 		);
 	}
@@ -417,7 +452,7 @@ mod tests {
 		let cache = ModDiffCache::open(&cache_dir("mod-diff-game-version"));
 		cache
 			.store(
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
@@ -428,7 +463,13 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37",)
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-a",
+					"vanilla-a",
+					"0.1.0",
+					"eu4 1.37",
+				)
 				.is_none()
 		);
 	}
@@ -437,7 +478,7 @@ mod tests {
 	fn mod_diff_cache_filename_encodes_cache_version() {
 		let current = cache_filename(
 			MOD_DIFF_CACHE_VERSION,
-			"common/foo.txt",
+			game_path("common/foo.txt"),
 			"mod-a",
 			"vanilla-a",
 			"0.1.0",
@@ -445,7 +486,7 @@ mod tests {
 		);
 		let bumped = cache_filename(
 			"6.0.1",
-			"common/foo.txt",
+			game_path("common/foo.txt"),
 			"mod-a",
 			"vanilla-a",
 			"0.1.0",
@@ -464,7 +505,7 @@ mod tests {
 		let patches = sample_patches();
 		ModDiffCache::open(&dir)
 			.store(
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
@@ -476,7 +517,13 @@ mod tests {
 		let reopened = ModDiffCache::open(&dir);
 		assert_eq!(
 			reopened
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-a",
+					"vanilla-a",
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.expect("cache hit after reopen"),
 			patches
 		);
@@ -490,7 +537,7 @@ mod tests {
 		let patches = sample_patches();
 		cache
 			.store(
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
@@ -520,7 +567,13 @@ mod tests {
 		assert!(unrelated_entry.exists());
 		assert_eq!(
 			reopened
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-a",
+					"vanilla-a",
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.expect("current generation survives cleanup"),
 			patches
 		);
@@ -529,7 +582,13 @@ mod tests {
 		assert!(unrelated_entry.exists());
 		assert!(
 			reopened_again
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
+				.lookup(
+					game_path("common/foo.txt"),
+					"mod-a",
+					"vanilla-a",
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.is_some()
 		);
 	}

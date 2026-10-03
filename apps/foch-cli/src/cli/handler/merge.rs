@@ -9,11 +9,14 @@ use foch::merge::{
 };
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
-use foch::playset::descriptor::load_descriptor;
+use foch::playset::descriptor::{
+	descriptor_path_text, escape_descriptor_value, load_launcher_descriptor,
+};
 use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -54,7 +57,10 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		&CancellationToken::new(),
 	)?;
 	let analysis = analyzed.analysis();
-	println!("{}", render_merge_review_text(&analyzed));
+	println!(
+		"{}",
+		render_merge_review_text(&analyzed, merge_args.review_all)
+	);
 	let plan_exit_code = merge_plan_exit_code(analysis.plan());
 	if analysis.plan().has_fatal_errors() {
 		return Ok(plan_exit_code);
@@ -88,7 +94,8 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	Ok(execution.exit_code)
 }
 
-fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
+fn render_merge_review_text(analyzed: &AnalyzedMerge, review_all: bool) -> String {
+	const UNITS_PER_DISPOSITION: usize = 20;
 	let analysis = analyzed.analysis();
 	let summary = analyzed.review_summary();
 	let status = match analysis.status() {
@@ -113,6 +120,7 @@ fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
 		}
 	}
 	output.push_str("review units:\n");
+	let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
 	for unit in analyzed.list_units() {
 		let disposition = match unit.disposition {
 			MergeDisposition::Safe => "safe",
@@ -122,6 +130,11 @@ fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
 			MergeDisposition::EngineFailure => "engine_failure",
 			MergeDisposition::Deferred => "deferred",
 		};
+		let count: &mut usize = counts.entry(disposition).or_default();
+		*count += 1;
+		if !review_all && *count > UNITS_PER_DISPOSITION {
+			continue;
+		}
 		let kind = match unit.kind {
 			MergeUnitKind::File => "file",
 			MergeUnitKind::DefinitionModule => "definition_module",
@@ -152,6 +165,18 @@ fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
 		for note in &unit.notes {
 			output.push_str(&format!("  note: {note}\n"));
 		}
+	}
+	if !review_all && counts.values().any(|count| *count > UNITS_PER_DISPOSITION) {
+		output.push_str("additional review units (not displayed):\n");
+		for (disposition, count) in counts {
+			if count > UNITS_PER_DISPOSITION {
+				output.push_str(&format!(
+					"  {} more {disposition} units\n",
+					count - UNITS_PER_DISPOSITION
+				));
+			}
+		}
+		output.push_str("Pass --review-all to display every unit before committing.\n");
 	}
 	output
 }
@@ -326,7 +351,7 @@ fn compute_fingerprint_for_playset(playset_path: &Path, local_config: &Project) 
 		}
 		let steam_id = entry.steam_id.clone()?;
 		let descriptor_path = playset_root.join("mod").join(format!("ugc_{steam_id}.mod"));
-		let version = load_descriptor(&descriptor_path)
+		let version = load_launcher_descriptor(&descriptor_path)
 			.ok()
 			.and_then(|descriptor| descriptor.version)?;
 		mods.push((steam_id, version));
@@ -342,7 +367,7 @@ fn compute_fingerprint_for_manifest(
 	request: &InputRequest,
 	local_config: &Project,
 ) -> Option<String> {
-	let manifest = resolve_product_input_manifest(request, None).ok()?;
+	let manifest = resolve_product_input_manifest(request).ok()?;
 	Some(compute_fingerprint_for_workshop_manifest(
 		&manifest,
 		local_config,
@@ -446,49 +471,44 @@ fn install_launcher_stub(
 	let mod_dir = paradox_data_path.join("mod");
 	fs::create_dir_all(&mod_dir)?;
 	let absolute_out = fs::canonicalize(out_dir).unwrap_or_else(|_| out_dir.to_path_buf());
-	let slug = launcher_stub_slug(out_dir);
+	let slug = launcher_stub_slug(out_dir)?;
 	let stub_path = mod_dir.join(format!("foch_{slug}.mod"));
 	let display_name = format!("foch merge ({slug})");
-	let descriptor_value =
-		strip_extended_length_prefix(&absolute_out.to_string_lossy()).replace('\\', "/");
+	let descriptor_value = descriptor_path_text(&absolute_out).map_err(|reason| {
+		format!(
+			"merged output {} cannot be named in a launcher descriptor: {reason}",
+			absolute_out.display()
+		)
+	})?;
 	let body = format!(
 		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
 		out_dir.display(),
-		escape_descriptor(&display_name),
-		escape_descriptor(&descriptor_value)
+		escape_descriptor_value(&display_name),
+		descriptor_value
 	);
 	fs::write(&stub_path, body)?;
-	let display_stub = strip_extended_length_prefix(&stub_path.to_string_lossy());
 	eprintln!(
-		"[foch] launcher stub installed at {display_stub}; enable it in the Paradox Launcher and disable the source mods to use the merge."
+		"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
+		stub_path.display()
 	);
 	Ok(())
 }
 
-/// Strip Windows extended-length path prefixes (`\\?\` / `\\?\UNC\`) so paths
-/// written into Paradox descriptors and printed to the user are loadable by
-/// the launcher and shell-friendly. Non-Windows / non-prefixed paths are
-/// returned verbatim.
-fn strip_extended_length_prefix(path: &str) -> String {
-	if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-		format!(r"\\{rest}")
-	} else if let Some(rest) = path.strip_prefix(r"\\?\") {
-		rest.to_string()
-	} else if let Some(rest) = path.strip_prefix("//?/UNC/") {
-		format!("//{rest}")
-	} else if let Some(rest) = path.strip_prefix("//?/") {
-		rest.to_string()
-	} else {
-		path.to_string()
-	}
-}
-
-fn launcher_stub_slug(out_dir: &Path) -> String {
-	let raw = out_dir
-		.file_name()
-		.map(|s| s.to_string_lossy().into_owned())
-		.unwrap_or_else(|| "merge".to_string());
-	raw.chars()
+/// The launcher stub's file name part, taken from the output directory's
+/// name. The stub is written at that name, so a name that is not UTF-8 is an
+/// error instead of being rendered lossily into some other stub's name.
+fn launcher_stub_slug(out_dir: &Path) -> Result<String, String> {
+	let raw = match out_dir.file_name() {
+		Some(name) => name.to_str().ok_or_else(|| {
+			format!(
+				"output directory name {} is not valid UTF-8, so it cannot name a launcher stub",
+				out_dir.display()
+			)
+		})?,
+		None => "merge",
+	};
+	Ok(raw
+		.chars()
 		.map(|c| {
 			if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
 				c
@@ -496,11 +516,7 @@ fn launcher_stub_slug(out_dir: &Path) -> String {
 				'_'
 			}
 		})
-		.collect()
-}
-
-fn escape_descriptor(value: &str) -> String {
-	value.replace('\\', "\\\\").replace('"', "\\\"")
+		.collect())
 }
 
 #[cfg(test)]
@@ -521,6 +537,115 @@ mod tests {
 		}])
 	}
 
+	/// The launcher stub names the merged output with the library's descriptor
+	/// encoder: reading the stub back yields the output directory. Both sides
+	/// are compared canonically, since Windows canonicalizes to a verbatim
+	/// `\\?\` prefix that the descriptor spells as the plain one.
+	#[test]
+	fn launcher_stub_names_the_merged_output_exactly() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let out_dir = temp.path().join("merged out Ölände");
+		fs::create_dir_all(&out_dir).expect("create output");
+		let paradox_dir = temp.path().join("paradox");
+
+		install_launcher_stub(&out_dir, &paradox_dir).expect("install stub");
+
+		let stub = paradox_dir.join("mod").join(format!(
+			"foch_{}.mod",
+			launcher_stub_slug(&out_dir).expect("UTF-8 output name")
+		));
+		let descriptor = load_launcher_descriptor(&stub).expect("read stub");
+		assert_eq!(
+			fs::canonicalize(descriptor.path.expect("stub path")).expect("canonical stub path"),
+			fs::canonicalize(&out_dir).expect("canonical output")
+		);
+	}
+
+	/// A directory the descriptor format has no `path` text for gets no stub,
+	/// rather than one naming another directory.
+	#[test]
+	fn launcher_stub_refuses_an_output_directory_holding_a_quote() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let out_dir = temp.path().join("merged \"out\"");
+		let paradox_dir = temp.path().join("paradox");
+
+		let error = install_launcher_stub(&out_dir, &paradox_dir)
+			.expect_err("a quote has no descriptor spelling")
+			.to_string();
+		assert!(error.contains("cannot be named"), "{error}");
+		assert_eq!(
+			fs::read_dir(paradox_dir.join("mod"))
+				.expect("mod dir")
+				.count(),
+			0
+		);
+	}
+
+	/// The stub's file name comes from the output directory's name, so a name
+	/// that is not UTF-8 is an error, never a lossy name another output could
+	/// also render to. In memory: some filesystems refuse such names. The
+	/// directory does not exist, so its descriptor `path` would be refused as
+	/// well; the install error must be the slug's, which is checked first.
+	#[cfg(unix)]
+	#[test]
+	fn launcher_stub_refuses_an_output_directory_name_that_is_not_utf8() {
+		use std::ffi::OsStr;
+		use std::os::unix::ffi::OsStrExt;
+
+		let temp = tempfile::tempdir().expect("temp dir");
+		let paradox_dir = temp.path().join("paradox");
+		for name in [&b"merged\xff"[..], &b"merged\xfe"[..]] {
+			let out_dir = temp.path().join(OsStr::from_bytes(name));
+			let error = launcher_stub_slug(&out_dir).expect_err("not UTF-8");
+			assert!(error.contains("cannot name a launcher stub"), "{error}");
+			let error = install_launcher_stub(&out_dir, &paradox_dir)
+				.expect_err("not UTF-8")
+				.to_string();
+			assert!(error.contains("cannot name a launcher stub"), "{error}");
+		}
+		assert_eq!(
+			fs::read_dir(paradox_dir.join("mod"))
+				.expect("mod dir")
+				.count(),
+			0,
+			"no stub is written"
+		);
+		assert_eq!(
+			launcher_stub_slug(Path::new("/")).as_deref(),
+			Ok("merge"),
+			"a directory without a name keeps the fallback"
+		);
+	}
+
+	/// A link whose own name is not UTF-8 can point at a UTF-8 directory, so
+	/// the descriptor `path` has text while the stub's name does not: the slug
+	/// alone refuses it. Linux only: macOS filesystems refuse such names.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn launcher_stub_refuses_a_link_name_that_is_not_utf8() {
+		use std::ffi::OsStr;
+		use std::os::unix::ffi::OsStrExt;
+
+		let temp = tempfile::tempdir().expect("temp dir");
+		let target = temp.path().join("merged");
+		fs::create_dir_all(&target).expect("create output");
+		let link = temp.path().join(OsStr::from_bytes(b"merged\xff"));
+		std::os::unix::fs::symlink(&target, &link).expect("link output");
+		let paradox_dir = temp.path().join("paradox");
+
+		let error = install_launcher_stub(&link, &paradox_dir)
+			.expect_err("a link name that is not UTF-8")
+			.to_string();
+		assert!(error.contains("cannot name a launcher stub"), "{error}");
+		assert_eq!(
+			fs::read_dir(paradox_dir.join("mod"))
+				.expect("mod dir")
+				.count(),
+			0,
+			"no stub is written"
+		);
+	}
+
 	#[test]
 	fn manifest_fingerprint_uses_ordered_acf_identity() {
 		let config = Project::default();
@@ -528,6 +653,32 @@ mod tests {
 		let second = compute_fingerprint_for_workshop_manifest(&workshop_manifest(2_002), &config);
 
 		assert_ne!(first, second);
+	}
+
+	/// The fingerprint reads each launcher descriptor's version only, so a
+	/// `replace_path` the mod's own descriptor would reject does not unset it.
+	#[test]
+	fn playset_fingerprint_ignores_a_launcher_descriptor_replace_path() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		std::fs::create_dir_all(temp.path().join("mod")).expect("create launcher mod dir");
+		let dlc_load = temp.path().join("dlc_load.json");
+		std::fs::write(
+			&dlc_load,
+			r#"{"enabled_mods":["mod/ugc_1001.mod"],"disabled_dlcs":[]}"#,
+		)
+		.expect("write dlc_load");
+		let descriptor = |extra: &str| {
+			std::fs::write(
+				temp.path().join("mod").join("ugc_1001.mod"),
+				format!("name=\"Named\"\nremote_file_id=\"1001\"\nversion=\"2.0\"\n{extra}"),
+			)
+			.expect("write launcher descriptor");
+			compute_fingerprint_for_playset(&dlc_load, &Project::default())
+		};
+
+		let plain = descriptor("");
+		assert!(plain.is_some());
+		assert_eq!(descriptor("replace_path=\"common/../events\"\n"), plain);
 	}
 
 	#[test]

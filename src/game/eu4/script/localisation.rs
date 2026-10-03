@@ -1,7 +1,13 @@
-use crate::model::{LocalisationDefinition, LocalisationDuplicate, ParseIssue};
+use crate::game::eu4::Eu4;
+use crate::input::{FileFilter, InventoryOwner, collect_relative_files_within, walk_within};
+use crate::model::{
+	GamePath, GamePathBuf, LocalisationDefinition, LocalisationDuplicate, ParseIssue,
+};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedLocalisationEntryData {
@@ -18,7 +24,7 @@ pub(crate) struct ParsedLocalisationFile {
 pub(crate) fn parse_localisation_file(
 	mod_id: &str,
 	absolute_path: &Path,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> ParsedLocalisationFile {
 	let mut entries = Vec::new();
 	let mut duplicates = Vec::new();
@@ -28,7 +34,7 @@ pub(crate) fn parse_localisation_file(
 		Err(err) => {
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				line: 1,
 				column: 1,
 				message: format!("unable to read localisation file: {err}"),
@@ -46,7 +52,7 @@ pub(crate) fn parse_localisation_file(
 		Err(message) => {
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				line: 1,
 				column: 1,
 				message,
@@ -89,7 +95,7 @@ pub(crate) fn parse_localisation_file(
 			if !header_issue_emitted {
 				parse_issues.push(ParseIssue {
 					mod_id: mod_id.to_string(),
-					path: relative_path.to_path_buf(),
+					path: relative_path.to_owned(),
 					line: line_no,
 					column: 1,
 					message: "missing or invalid localisation header".to_string(),
@@ -102,7 +108,7 @@ pub(crate) fn parse_localisation_file(
 		let Some(entry) = parse_localisation_entry_bytes(trimmed) else {
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				line: line_no,
 				column: 1,
 				message: "invalid localisation entry".to_string(),
@@ -114,7 +120,7 @@ pub(crate) fn parse_localisation_file(
 		let definition = LocalisationDefinition {
 			key: key.clone(),
 			mod_id: mod_id.to_string(),
-			path: relative_path.to_path_buf(),
+			path: relative_path.to_owned(),
 			line: line_no,
 			column,
 		};
@@ -123,7 +129,7 @@ pub(crate) fn parse_localisation_file(
 			duplicates.push(LocalisationDuplicate {
 				key,
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				first_line,
 				duplicate_line: line_no,
 			});
@@ -135,7 +141,7 @@ pub(crate) fn parse_localisation_file(
 	if saw_active_line && !header_seen && !header_issue_emitted {
 		parse_issues.push(ParseIssue {
 			mod_id: mod_id.to_string(),
-			path: relative_path.to_path_buf(),
+			path: relative_path.to_owned(),
 			line: 1,
 			column: 1,
 			message: "missing localisation header".to_string(),
@@ -149,51 +155,87 @@ pub(crate) fn parse_localisation_file(
 	}
 }
 
+/// The directories localisation is read from, named exactly.
+const LOCALISATION_DIRECTORIES: [&[&str]; 2] = [&["localisation"], &["common", "localisation"]];
+
+/// Localisation definitions of the mod at `root`: every `.yml`/`.yaml` file
+/// inside `localisation/` or `common/localisation/`. Only those directories
+/// are walked, with the shared inventory conversion, so a name there without
+/// a game path is an error as it is for the mod's inventory, and a name
+/// elsewhere does not affect localisation.
 pub(crate) fn collect_localisation_definitions_from_root(
 	mod_id: &str,
 	root: &Path,
+) -> io::Result<Vec<LocalisationDefinition>> {
+	let files = collect_relative_files_within(
+		root,
+		&LOCALISATION_DIRECTORIES,
+		&FileFilter::for_game(Eu4),
+		InventoryOwner::Mod(mod_id),
+	)?;
+	Ok(localisation_definitions_in_files(mod_id, root, &files))
+}
+
+/// The `.yml`/`.yaml` files in the directories
+/// [`collect_localisation_definitions_from_root`] walks, by physical path and
+/// before any game path is taken from them, with one error for each entry
+/// the walk cannot read. A caller that must keep the other files can skip a
+/// failing entry.
+pub fn walk_localisation_files(root: &Path) -> impl Iterator<Item = io::Result<PathBuf>> + '_ {
+	walk_within(root, &LOCALISATION_DIRECTORIES).filter_map(|entry| match entry {
+		Ok(entry) => (entry.file_type().is_file() && has_localisation_extension(entry.path()))
+			.then(|| Ok(entry.into_path())),
+		Err(error) => Some(Err(error)),
+	})
+}
+
+fn has_localisation_extension(path: &Path) -> bool {
+	path.extension()
+		.and_then(OsStr::to_str)
+		.is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
+}
+
+/// Localisation definitions in `files`, game paths of files under `root`,
+/// skipping any that is not a `.yml`/`.yaml` file inside a localisation
+/// directory. They are listed by path in component order, then by position.
+pub fn localisation_definitions_in_files(
+	mod_id: &str,
+	root: &Path,
+	files: &[GamePathBuf],
 ) -> Vec<LocalisationDefinition> {
+	let filter = FileFilter::for_game(Eu4);
 	let mut definitions = Vec::new();
-	for entry in walkdir::WalkDir::new(root)
-		.into_iter()
-		.filter_map(Result::ok)
-	{
-		if !entry.file_type().is_file() {
-			continue;
-		}
-		let absolute = entry.path();
-		let Some(relative) = absolute.strip_prefix(root).ok() else {
-			continue;
-		};
-		let normalized = relative.to_string_lossy().replace('\\', "/");
-		if !(normalized.starts_with("localisation/")
-			|| normalized.starts_with("common/localisation/"))
+	for relative in files {
+		if !filter.accepts(relative)
+			|| !LOCALISATION_DIRECTORIES
+				.iter()
+				.any(|directory| relative.is_inside(directory, str::eq))
 		{
 			continue;
 		}
-		let Some(ext) = absolute.extension().and_then(|value| value.to_str()) else {
-			continue;
-		};
-		if !matches!(ext.to_ascii_lowercase().as_str(), "yml" | "yaml") {
+		if !relative
+			.extension()
+			.is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "yml" | "yaml"))
+		{
 			continue;
 		}
-		let parsed = parse_localisation_file(mod_id, absolute, relative);
+		let parsed = parse_localisation_file(mod_id, &relative.to_path(root), relative);
 		definitions.extend(parsed.entries.into_iter().map(|item| item.definition));
 	}
 	definitions.sort_by(|lhs, rhs| {
 		(
-			lhs.path.clone(),
+			lhs.path.as_relative_path(),
 			lhs.line,
 			lhs.column,
-			lhs.key.clone(),
-			lhs.mod_id.clone(),
+			lhs.key.as_str(),
+			lhs.mod_id.as_str(),
 		)
 			.cmp(&(
-				rhs.path.clone(),
+				rhs.path.as_relative_path(),
 				rhs.line,
 				rhs.column,
-				rhs.key.clone(),
-				rhs.mod_id.clone(),
+				rhs.key.as_str(),
+				rhs.mod_id.as_str(),
 			))
 	});
 	definitions.dedup_by(|lhs, rhs| {
@@ -348,10 +390,130 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-	use super::parse_localisation_file;
+	use super::{collect_localisation_definitions_from_root, parse_localisation_file};
+	use crate::model::GamePath;
 	use std::fs;
-	use std::path::PathBuf;
+	use std::path::Path;
 	use tempfile::TempDir;
+
+	/// Writes a localisation file with one key at each of `relative`, spelled
+	/// with host separators under `root`.
+	fn write_localisation(root: &Path, files: &[(&str, &str)]) {
+		for (relative, key) in files {
+			let path = root.join(relative);
+			fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
+			fs::write(&path, format!("l_english:\n {key}:0 \"v\"\n")).expect("write file");
+		}
+	}
+
+	fn collected(root: &Path) -> Vec<(String, String)> {
+		collect_localisation_definitions_from_root("mod-a", root)
+			.expect("collect localisation")
+			.into_iter()
+			.map(|definition| (definition.path.into_string(), definition.key))
+			.collect()
+	}
+
+	#[test]
+	fn definitions_are_collected_from_both_directories_in_component_order() {
+		let tmp = TempDir::new().expect("temp dir");
+		write_localisation(
+			tmp.path(),
+			&[
+				("localisation/a-b_l_english.yml", "DASH"),
+				("localisation/a/b_l_english.yml", "NESTED"),
+				("common/localisation/x_l_english.yaml", "COMMON"),
+				("common/x_l_english.yml", "OUTSIDE"),
+				("events/y_l_english.yml", "OUTSIDE"),
+				("localisation/notes.txt", "NOT_YAML"),
+			],
+		);
+
+		// A directory sorts before a sibling file whose name extends its own
+		// with a character below `/`: the order definitions were always
+		// listed in, which byte order would reverse.
+		assert_eq!(
+			collected(tmp.path()),
+			vec![
+				(
+					"common/localisation/x_l_english.yaml".to_string(),
+					"COMMON".to_string()
+				),
+				(
+					"localisation/a/b_l_english.yml".to_string(),
+					"NESTED".to_string()
+				),
+				(
+					"localisation/a-b_l_english.yml".to_string(),
+					"DASH".to_string()
+				),
+			]
+		);
+	}
+
+	#[test]
+	fn localisation_directories_match_as_spelled() {
+		let tmp = TempDir::new().expect("temp dir");
+		write_localisation(tmp.path(), &[("Localisation/a_l_english.yml", "UPPER")]);
+
+		assert!(collected(tmp.path()).is_empty());
+	}
+
+	/// A name inside a localisation directory without a game path fails the
+	/// collection with the mod, the root and the file, as it fails the mod's
+	/// inventory. Non-UTF-8 names take the same conversion, which the
+	/// inventory walker's tests cover.
+	#[cfg(unix)]
+	#[test]
+	fn an_unportable_localisation_file_name_is_an_error() {
+		let tmp = TempDir::new().expect("temp dir");
+		write_localisation(
+			tmp.path(),
+			&[
+				("localisation/a_l_english.yml", "KEPT"),
+				(r"localisation/a\b_l_english.yml", "UNPORTABLE"),
+			],
+		);
+
+		let error = collect_localisation_definitions_from_root("mod-a", tmp.path())
+			.expect_err("a literal backslash has no game path")
+			.to_string();
+		assert!(error.starts_with("mod mod-a: "), "{error}");
+		assert!(
+			error.contains(&format!("under root {}", tmp.path().display())),
+			"{error}"
+		);
+		assert!(
+			error.contains(
+				&tmp.path()
+					.join("localisation")
+					.join(r"a\b_l_english.yml")
+					.display()
+					.to_string()
+			),
+			"{error}"
+		);
+	}
+
+	/// Only the localisation directories are walked, so an unportable name
+	/// anywhere else does not cost the mod its localisation.
+	#[cfg(unix)]
+	#[test]
+	fn an_unportable_name_outside_localisation_does_not_affect_it() {
+		let tmp = TempDir::new().expect("temp dir");
+		write_localisation(tmp.path(), &[("localisation/a_l_english.yml", "KEPT")]);
+		let elsewhere = tmp.path().join("gfx").join(r"a\b.dds");
+		fs::create_dir_all(elsewhere.parent().expect("parent")).expect("create dir");
+		fs::write(&elsewhere, b"dds").expect("write file");
+
+		assert_eq!(
+			collected(tmp.path()),
+			vec![(
+				"localisation/a_l_english.yml".to_string(),
+				"KEPT".to_string()
+			)]
+		);
+	}
 
 	#[test]
 	fn parser_accepts_gbk_value_bytes_without_utf8_lossy() {
@@ -366,7 +528,7 @@ mod tests {
 		let parsed = parse_localisation_file(
 			"mod",
 			&path,
-			PathBuf::from("localisation/test_l_english.yml").as_path(),
+			GamePath::new("localisation/test_l_english.yml").expect("valid game path"),
 		);
 		assert_eq!(parsed.entries.len(), 1);
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
@@ -383,7 +545,7 @@ mod tests {
 		let parsed = parse_localisation_file(
 			"mod",
 			&path,
-			PathBuf::from("localisation/languages.yml").as_path(),
+			GamePath::new("localisation/languages.yml").expect("valid game path"),
 		);
 		assert_eq!(parsed.entries.len(), 4);
 		assert!(
@@ -404,7 +566,7 @@ mod tests {
 		let parsed = parse_localisation_file(
 			"mod",
 			&path,
-			PathBuf::from("localisation/dupes_l_english.yml").as_path(),
+			GamePath::new("localisation/dupes_l_english.yml").expect("valid game path"),
 		);
 		assert_eq!(parsed.duplicates.len(), 1);
 		assert_eq!(parsed.duplicates[0].key, "FOO");
@@ -429,7 +591,7 @@ mod tests {
 		let parsed = parse_localisation_file(
 			"mod",
 			&path,
-			PathBuf::from("localisation/unclosed_l_english.yml").as_path(),
+			GamePath::new("localisation/unclosed_l_english.yml").expect("valid game path"),
 		);
 		let keys: Vec<_> = parsed
 			.entries
@@ -457,7 +619,7 @@ mod tests {
 		let parsed = parse_localisation_file(
 			"mod",
 			&path,
-			PathBuf::from("localisation/trailing_l_english.yml").as_path(),
+			GamePath::new("localisation/trailing_l_english.yml").expect("valid game path"),
 		);
 		assert_eq!(parsed.entries.len(), 1);
 		assert_eq!(parsed.entries[0].definition.key, "OPT2");

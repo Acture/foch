@@ -6,7 +6,7 @@ use foch::graph::{
 	run_module_report_for_request, write_module_report,
 };
 use foch::input::{Config, InputRequest};
-use foch::model::{MERGE_TRACE_ARTIFACT_PATH, MergeTraceEntry, SymbolKind};
+use foch::model::{GamePathBuf, MERGE_TRACE_ARTIFACT_PATH, MergeTraceEntry, SymbolKind};
 use std::collections::BTreeMap;
 
 const MODULE_REPORT_MAX_ITERS: usize = 20;
@@ -25,7 +25,8 @@ pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 		let trace_path = graph_args.out.join(MERGE_TRACE_ARTIFACT_PATH);
 		if trace_path.is_file() {
 			let trace_text = std::fs::read_to_string(&trace_path)?;
-			let trace: BTreeMap<String, BTreeMap<String, MergeTraceEntry>> =
+			// The trace is keyed by output game path; reading it validates them.
+			let trace: BTreeMap<GamePathBuf, BTreeMap<String, MergeTraceEntry>> =
 				serde_json::from_str(&trace_text)?;
 			report.merge_trace_edges = merge_trace_edges_from_trace(&trace);
 		}
@@ -138,22 +139,25 @@ mod tests {
 			.to_path_buf()
 	}
 
-	#[test]
-	fn modules_mode_writes_parseable_report_under_foch_dir() {
+	fn graph_handler_tempdir(prefix: &str) -> tempfile::TempDir {
 		let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 			.join("target")
 			.join("graph-handler");
 		std::fs::create_dir_all(&scratch_root).expect("create graph handler scratch root");
-		let temp_dir = Builder::new()
-			.prefix("modules-mode-")
+		Builder::new()
+			.prefix(prefix)
 			.tempdir_in(&scratch_root)
-			.expect("create graph handler tempdir");
-		let out = temp_dir.path().join("out");
+			.expect("create graph handler tempdir")
+	}
+
+	/// Writes a merge-trace sidecar under `out` with one entry keyed by
+	/// `output_path`, which is written as given, valid or not.
+	fn write_merge_trace(out: &std::path::Path, output_path: &str) {
 		let trace_path = out.join(MERGE_TRACE_ARTIFACT_PATH);
 		std::fs::create_dir_all(trace_path.parent().expect("trace path has parent"))
 			.expect("create trace dir");
 		let trace = BTreeMap::from([(
-			"common/scripted_effects/test.txt".to_string(),
+			output_path.to_string(),
 			BTreeMap::from([(
 				"test_shared_effect".to_string(),
 				MergeTraceEntry {
@@ -172,6 +176,9 @@ mod tests {
 			serde_json::to_string_pretty(&trace).expect("serialize trace"),
 		)
 		.expect("write trace");
+	}
+
+	fn minimal_playset() -> PathBuf {
 		let fixture = repository_root()
 			.join("tests")
 			.join("fixtures")
@@ -179,20 +186,33 @@ mod tests {
 			.join("eu4_minimal_passthrough")
 			.join("dlc_load.json");
 		assert!(fixture.is_file(), "playset fixture must exist: {fixture:?}");
+		fixture
+	}
+
+	fn modules_args(playset: PathBuf, out: PathBuf) -> GraphArgs {
+		GraphArgs {
+			playset_path: Some(playset),
+			out,
+			no_game_base: true,
+			modules: true,
+			mode: GraphModeArg::Calls,
+			scope: GraphScopeArg::All,
+			format: GraphArtifactFormatArg::Both,
+			root: None,
+			family: None,
+			definition_kinds: Vec::new(),
+		}
+	}
+
+	#[test]
+	fn modules_mode_writes_parseable_report_under_foch_dir() {
+		let temp_dir = graph_handler_tempdir("modules-mode-");
+		let out = temp_dir.path().join("out");
+		write_merge_trace(&out, "common/scripted_effects/test.txt");
+		let fixture = minimal_playset();
 
 		let exit_code = handle_graph(
-			&GraphArgs {
-				playset_path: Some(fixture.clone()),
-				out: out.clone(),
-				no_game_base: true,
-				modules: true,
-				mode: GraphModeArg::Calls,
-				scope: GraphScopeArg::All,
-				format: GraphArtifactFormatArg::Both,
-				root: None,
-				family: None,
-				definition_kinds: Vec::new(),
-			},
+			&modules_args(fixture.clone(), out.clone()),
 			Config::default(),
 		)
 		.expect("modules graph handler succeeds");
@@ -214,24 +234,40 @@ mod tests {
 		assert_eq!(edges[0]["policy"], "union");
 
 		let first_report = report_json;
-		handle_graph(
-			&GraphArgs {
-				playset_path: Some(fixture),
-				out: out.clone(),
-				no_game_base: true,
-				modules: true,
-				mode: GraphModeArg::Calls,
-				scope: GraphScopeArg::All,
-				format: GraphArtifactFormatArg::Both,
-				root: None,
-				family: None,
-				definition_kinds: Vec::new(),
-			},
-			Config::default(),
-		)
-		.expect("second modules graph handler succeeds");
+		handle_graph(&modules_args(fixture, out.clone()), Config::default())
+			.expect("second modules graph handler succeeds");
 		let second_report =
 			std::fs::read_to_string(&report_path).expect("read second module report");
 		assert_eq!(first_report, second_report);
+	}
+
+	/// The trace sidecar is keyed by output game path. A key that is not one
+	/// fails the run naming it, instead of becoming an edge for a file the
+	/// merge never wrote.
+	#[test]
+	fn modules_mode_rejects_a_merge_trace_key_that_is_not_a_game_path() {
+		for key in [
+			r"common\scripted_effects\test.txt",
+			"../test.txt",
+			"/common/test.txt",
+		] {
+			let temp_dir = graph_handler_tempdir("modules-mode-invalid-trace-");
+			let out = temp_dir.path().join("out");
+			write_merge_trace(&out, key);
+
+			let error = handle_graph(
+				&modules_args(minimal_playset(), out.clone()),
+				Config::default(),
+			)
+			.expect_err("an invalid trace key fails the modules run");
+
+			let message = error.to_string();
+			assert!(message.contains("invalid game path"), "{key}: {message}");
+			assert!(message.contains(key), "{key}: {message}");
+			assert!(
+				!out.join(".foch").join("module-report.json").exists(),
+				"{key}: no module report is written from an invalid trace"
+			);
+		}
 	}
 }

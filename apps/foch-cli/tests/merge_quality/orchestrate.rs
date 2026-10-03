@@ -1,6 +1,7 @@
 //! Deterministic scoring over an already generated product output tree.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -10,12 +11,14 @@ use crate::merge_quality::corpus::Case;
 use crate::merge_quality::score::{
 	Resolution, ScoreCache, ScoreFileRequest, SourceMod, classify_resolution, conflict_rel_paths,
 	reference_output_files, score_file_with_cache_and_basegame, scoring_reference_units,
+	validate_layer_replace_paths,
 };
 use foch::model::MergeReport;
 
 // ------------------------------------------------------------------ data model
 
-/// Per-file score record embedded in [`CaseResult`].
+/// Per-file score record embedded in [`CaseResult`]. `rel` is the scored
+/// game path as persisted text.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FileRecord {
 	pub rel: String,
@@ -36,7 +39,7 @@ pub struct FileRecord {
 impl FileRecord {
 	pub fn from_score(score: crate::merge_quality::score::FileScore) -> Self {
 		Self {
-			rel: score.rel,
+			rel: score.rel.into_string(),
 			source_mod_ids: score.source_mod_ids,
 			source_count: score.source_count,
 			multi_source: score.multi_source,
@@ -101,6 +104,8 @@ pub struct ScoreExistingOutputRequest<'a> {
 }
 
 /// Mechanical scores and derived human-resolution evidence for one case.
+/// `resolutions` is keyed by the scored game path as persisted text, the same
+/// text as [`FileRecord::rel`].
 pub struct ExistingOutputScore {
 	pub result: CaseResult,
 	pub resolutions: BTreeMap<String, Resolution>,
@@ -127,6 +132,14 @@ pub fn score_existing_output_with_cache(
 		.into());
 	}
 	let setup_started = Instant::now();
+	// A layer whose `replace_path` names no directory under the game root
+	// cannot be scored; say so instead of treating it as replacing nothing.
+	validate_layer_replace_paths(
+		std::iter::once(request.compatch_dir)
+			.chain(request.source_dirs.iter().map(PathBuf::as_path))
+			.chain([request.output_dir])
+			.chain(request.basegame_root),
+	)?;
 	let gt = reference_output_files(request.compatch_dir)?;
 	let scoring_units = scoring_reference_units(&gt);
 	let conflicts = conflict_rel_paths(request.report);
@@ -140,10 +153,10 @@ pub fn score_existing_output_with_cache(
 	let setup_ms = elapsed_ms(setup_started.elapsed());
 
 	let scoring_started = Instant::now();
-	let files: Vec<FileRecord> = scoring_units
+	let scores = scoring_units
 		.iter()
 		.map(|rel| {
-			let fs = score_file_with_cache_and_basegame(
+			score_file_with_cache_and_basegame(
 				&ScoreFileRequest {
 					rel,
 					source_mods: &source_mods,
@@ -153,11 +166,22 @@ pub fn score_existing_output_with_cache(
 				},
 				score_cache,
 				request.basegame_root,
-			);
-			FileRecord::from_score(fs)
+			)
 		})
-		.collect();
+		.collect::<io::Result<Vec<_>>>()?;
 	let scoring_ms = elapsed_ms(scoring_started.elapsed());
+	let mut resolutions = BTreeMap::new();
+	for score in scores.iter().filter(|score| score.multi_source) {
+		if let Some(resolution) = classify_resolution(
+			&score.rel,
+			&source_mods,
+			request.compatch_dir,
+			request.basegame_root,
+		)? {
+			resolutions.insert(score.rel.as_str().to_string(), resolution);
+		}
+	}
+	let files: Vec<FileRecord> = scores.into_iter().map(FileRecord::from_score).collect();
 
 	let multi_source_files = files.iter().filter(|file| file.multi_source).count();
 	let accepted_ground_truth_files = files.iter().filter(|file| file.accepted_ok).count();
@@ -187,19 +211,6 @@ pub fn score_existing_output_with_cache(
 	let total_ms = setup_ms
 		.saturating_add(request.merge_ms)
 		.saturating_add(scoring_ms);
-	let resolutions = files
-		.iter()
-		.filter(|file| file.multi_source)
-		.filter_map(|file| {
-			classify_resolution(
-				&file.rel,
-				&source_mods,
-				request.compatch_dir,
-				request.basegame_root,
-			)
-			.map(|resolution| (file.rel.clone(), resolution))
-		})
-		.collect();
 
 	let result = CaseResult {
 		compatch_id: request.case.compatch_id.clone(),

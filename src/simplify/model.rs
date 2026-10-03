@@ -1,3 +1,4 @@
+use crate::model::GamePathBuf;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -30,7 +31,7 @@ pub struct SimplifyReport {
 pub struct SimplifyRemovedItem {
 	pub symbol_kind: String,
 	pub name: String,
-	pub path: String,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 }
@@ -39,7 +40,7 @@ pub struct SimplifyRemovedItem {
 pub struct SimplifyKeptItem {
 	pub symbol_kind: String,
 	pub name: String,
-	pub path: String,
+	pub path: GamePathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub reason: String,

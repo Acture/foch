@@ -1,18 +1,21 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
 
-use crate::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
+use crate::game::eu4::script::parser::{
+	AstStatement, AstValue, ScriptSyntax, parse_clausewitz_statements,
+};
 use crate::game::schema::CwtQuery;
 use crate::game::schema::query::{CompiledComplexEnum, CompiledRuleField, CompiledRuleValue};
+use crate::model::GamePath;
 
+/// A workspace script, named by its game path.
 #[derive(Clone, Copy, Debug)]
 pub struct SchemaDocument<'a> {
-	path: &'a Path,
+	path: &'a GamePath,
 	text: &'a str,
 }
 
 impl<'a> SchemaDocument<'a> {
-	pub fn new(path: &'a Path, text: &'a str) -> Self {
+	pub fn new(path: &'a GamePath, text: &'a str) -> Self {
 		Self { path, text }
 	}
 }
@@ -22,8 +25,8 @@ pub struct SchemaWorkspace {
 	pub(super) complex_enums: HashMap<String, Vec<String>>,
 }
 
-struct ParsedSchemaDocument {
-	relative_path: PathBuf,
+struct ParsedSchemaDocument<'a> {
+	path: &'a GamePath,
 	statements: Vec<AstStatement>,
 }
 
@@ -31,10 +34,13 @@ pub(super) fn build(engine: &CwtQuery, documents: &[SchemaDocument<'_>]) -> Sche
 	let files = documents
 		.iter()
 		.map(|document| {
-			let parsed = parse_clausewitz_content(document.path.to_path_buf(), document.text);
+			let parsed = parse_clausewitz_statements(
+				ScriptSyntax::for_game_path(document.path),
+				document.text,
+			);
 			ParsedSchemaDocument {
-				relative_path: document.path.to_path_buf(),
-				statements: parsed.ast.statements,
+				path: document.path,
+				statements: parsed.statements,
 			}
 		})
 		.collect::<Vec<_>>();
@@ -43,13 +49,13 @@ pub(super) fn build(engine: &CwtQuery, documents: &[SchemaDocument<'_>]) -> Sche
 
 fn build_dynamic_schema_values(
 	engine: &CwtQuery,
-	files: &[ParsedSchemaDocument],
+	files: &[ParsedSchemaDocument<'_>],
 ) -> SchemaWorkspace {
 	let mut complex_enums = HashMap::new();
 	for complex_enum in engine.complex_enums() {
 		let mut values = BTreeSet::new();
 		for file in files {
-			if complex_enum_matches_file(complex_enum, file) {
+			if complex_enum.matches(file.path) {
 				collect_complex_enum_file_values(complex_enum, &file.statements, &mut values);
 			}
 		}
@@ -58,27 +64,6 @@ fn build_dynamic_schema_values(
 		}
 	}
 	SchemaWorkspace { complex_enums }
-}
-
-fn complex_enum_matches_file(
-	complex_enum: &CompiledComplexEnum,
-	file: &ParsedSchemaDocument,
-) -> bool {
-	let normalized = normalize_schema_relative_path(&file.relative_path);
-	if let Some(path) = complex_enum.normalized_file_path.as_deref() {
-		return normalized == path;
-	}
-	complex_enum
-		.normalized_path
-		.as_deref()
-		.is_some_and(|path| normalized == path || normalized.starts_with(&format!("{path}/")))
-}
-
-fn normalize_schema_relative_path(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.trim_matches('/')
-		.to_ascii_lowercase()
 }
 
 fn collect_complex_enum_file_values(

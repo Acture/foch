@@ -7,10 +7,13 @@ mod acceptance;
 #[path = "merge_quality/static_modifiers_probe.rs"]
 mod static_modifiers_probe;
 
+#[path = "merge_quality/positions_probe.rs"]
+mod positions_probe;
+
 #[path = "merge_quality/workshop_probe/mod.rs"]
 mod workshop_probe;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -19,7 +22,8 @@ use std::time::Duration;
 use crate::merge_quality::config::{DiscoveryOverrides, discover_eu4};
 use crate::merge_quality::corpus::Case;
 use crate::merge_quality::dataset::{
-	DatasetPaths, MeasurementRecord, MeasurementScope, SCORER_VERSION, TerminalStatus, read_jsonl,
+	DatasetPaths, FileResultRecord, MeasurementRecord, MeasurementScope, SCORER_VERSION,
+	TerminalStatus, read_jsonl,
 };
 use crate::merge_quality::lifecycle::{
 	MeasurementRequest, MeasurementRunner, TerminalMerge, WorkshopMeasureOptions,
@@ -31,13 +35,14 @@ use crate::merge_quality::orchestrate::{
 use crate::merge_quality::report::WorkshopReportCohort;
 use crate::merge_quality::runner::{
 	ProductMeasurementRunner, ProductPreviewObservation, RUNNER_PROTOCOL_VERSION,
+	completed_input_cache_diagnostics,
 };
 use crate::merge_quality::score::ScoreCache;
 use crate::merge_quality::workshop_inputs::WorkshopCaseManifest;
 use foch::model::{
-	MERGE_EXECUTION_ATTESTATION_SCHEMA, MERGE_REPORT_ARTIFACT_PATH, MergeBackendId,
-	MergeReportBaseSnapshot, MergeReportScope, MergeReportStatus, ProductInputManifest,
-	ProductInputMod,
+	GamePath, GamePathBuf, MERGE_EXECUTION_ATTESTATION_SCHEMA, MERGE_REPORT_ARTIFACT_PATH,
+	MergeBackendId, MergeReport, MergeReportBaseSnapshot, MergeReportScope, MergeReportStatus,
+	ProductInputManifest, ProductInputMod,
 };
 
 const WORKSHOP_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -173,6 +178,71 @@ fn tiny_product_cli_to_pure_scorer_seam() {
 		source_b_before,
 		"product runner must not mutate source B"
 	);
+}
+
+/// Scoring a case checks every runtime layer's `replace_path` before it
+/// scores a unit, so an invalid value in any layer is reported as the case's
+/// error. The definition-module unit below reads every layer's
+/// `replace_path`; without that check it would reach an unchecked layer.
+#[test]
+fn scoring_reports_an_invalid_replace_path_in_any_layer_before_scoring() {
+	for layer in ["source", "compatch", "output", "basegame"] {
+		let root = tempfile::tempdir().expect("scoring fixture root");
+		let source = root.path().join("source");
+		let compatch = root.path().join("compatch");
+		let output = root.path().join("output");
+		let basegame = root.path().join("basegame");
+		for dir in [&source, &compatch, &output, &basegame] {
+			fs::create_dir_all(dir).expect("create layer root");
+		}
+		write_file(
+			&source,
+			"common/governments/source.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_file(
+			&compatch,
+			"common/governments/human.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		let invalid = match layer {
+			"source" => &source,
+			"compatch" => &compatch,
+			"output" => &output,
+			_ => &basegame,
+		};
+		write_file(
+			invalid,
+			"descriptor.mod",
+			"name=\"bad\"\nreplace_path=\"C:/events\"\n",
+		);
+		let case = Case {
+			compatch_id: "invalid-replace-path".to_string(),
+			referenced_mods: vec!["910001".to_string()],
+			..Case::default()
+		};
+
+		let Err(error) = score_existing_output_with_cache(
+			&ScoreExistingOutputRequest {
+				case: &case,
+				compatch_dir: &compatch,
+				source_dirs: std::slice::from_ref(&source),
+				output_dir: &output,
+				report: &MergeReport::default(),
+				basegame_root: Some(&basegame),
+				merge_ms: 0,
+			},
+			&mut ScoreCache::new(),
+		) else {
+			panic!("{layer}: an invalid replace_path must fail the case");
+		};
+		let message = error.to_string();
+		assert!(message.contains("C:/events"), "{layer}: {message}");
+		assert!(
+			message.contains(&invalid.join("descriptor.mod").display().to_string()),
+			"{layer}: the error names the layer's descriptor: {message}"
+		);
+	}
 }
 
 #[test]
@@ -443,6 +513,47 @@ fn require_acceptance(expected: &str) {
 	);
 }
 
+#[test]
+fn cache_gate_scopes_cold_and_warm_checks_to_input_resolution() {
+	for cold in [true, false] {
+		let (hits, misses, event): (usize, usize, &str) = if cold {
+			(0, 3, "parse_done")
+		} else {
+			(3, 0, "disk_hit")
+		};
+		let mut diagnostics: String = String::new();
+		for mod_id in CACHE_GATE_SOURCE_IDS {
+			diagnostics.push_str(&format!(
+				"[merge] mod_snapshot: start mod_id={mod_id} files=1\n"
+			));
+			if cold {
+				diagnostics.push_str(&format!(
+					"[merge] mod_snapshot: parse_done mod_id={mod_id} elapsed_ms=1\n\
+					[merge] mod_snapshot: cache_store mod_id={mod_id} state=stored elapsed_ms=1\n"
+				));
+			} else {
+				diagnostics.push_str(&format!(
+					"[merge] mod_snapshot: cache_hit mod_id={mod_id} source=disk elapsed_ms=1\n"
+				));
+			}
+		}
+		diagnostics.push_str(&format!(
+			"[merge] resolve_input: done mods=3 mod_snapshot_cache_hits={hits} mod_snapshot_cache_misses={misses}\n\
+			[merge] mod_snapshot: start mod_id=validation_output files=1\n\
+			[merge] mod_snapshot: parse_done mod_id=validation_output elapsed_ms=1\n\
+			[merge] mod_snapshot: cache_store mod_id=validation_output state=skipped elapsed_ms=0\n"
+		));
+		let observation: ProductPreviewObservation = ProductPreviewObservation {
+			failure: None,
+			plan_output: "Foch Merge Review".to_string(),
+			cache_diagnostics: diagnostics,
+			output_exists: false,
+			report_exists: false,
+		};
+		assert_cache_gate_observation("fixture", &observation, hits, misses, event);
+	}
+}
+
 fn assert_cache_gate_observation(
 	phase: &str,
 	observation: &ProductPreviewObservation,
@@ -471,7 +582,8 @@ fn assert_cache_gate_observation(
 		!observation.report_exists,
 		"{phase} cache-gate preview must not commit a merge report"
 	);
-	let diagnostics = &observation.cache_diagnostics;
+	let diagnostics: &str = completed_input_cache_diagnostics(&observation.cache_diagnostics)
+		.unwrap_or_else(|error| panic!("{phase} cache-gate input diagnostics: {error}"));
 	assert!(
 		!diagnostics.contains("truncated"),
 		"{phase} cache diagnostics were truncated; refusing an incomplete assertion"
@@ -593,14 +705,20 @@ fn write_source_mod(root: &Path, id: &str, body: &str) {
 	write_file(root, "common/scripted_effects/source.txt", body);
 }
 
+/// Writes a fixture file at the game path `relative` under `root`.
 fn write_file(root: &Path, relative: &str, body: &str) {
-	let path = root.join(relative);
+	let path = GamePath::new(relative)
+		.expect("fixture path is a game path")
+		.to_path(root);
 	fs::create_dir_all(path.parent().expect("fixture file parent"))
 		.expect("create fixture file parent");
 	fs::write(path, body).expect("write fixture file");
 }
 
-fn capture_tree_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
+/// Every file under `root` by its host path relative to `root`: a byte
+/// snapshot for proving a source tree was not written, so files compare by
+/// physical identity.
+fn capture_tree_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 	walkdir::WalkDir::new(root)
 		.into_iter()
 		.map(|entry| entry.expect("walk source fixture"))
@@ -610,8 +728,7 @@ fn capture_tree_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
 				.path()
 				.strip_prefix(root)
 				.expect("source entry under fixture root")
-				.to_string_lossy()
-				.replace('\\', "/");
+				.to_path_buf();
 			let bytes = fs::read(entry.path()).expect("read source fixture file");
 			(relative, bytes)
 		})
@@ -674,6 +791,54 @@ fn assert_workshop_product_report(path: &Path, expected_cases: usize) {
 				Some("ready" | "partial_success")
 			)
 	}));
+}
+
+/// The committed measurement history names each file result by its game path
+/// as text, and hashes that text into `file_result_id`. The scorer now carries
+/// game paths, so every recorded path must be one whose canonical text is the
+/// recorded text byte for byte; then every id recomputed from it still holds.
+/// This reads the append-only records and never writes them.
+#[test]
+fn committed_file_result_paths_round_trip_through_game_paths() {
+	let paths = DatasetPaths::new(dataset_root());
+	let measurements =
+		read_jsonl::<MeasurementRecord>(&paths.measurements).expect("read committed measurements");
+	let measurements = measurements
+		.iter()
+		.map(|measurement| (measurement.measurement_id(), measurement))
+		.collect::<HashMap<_, _>>();
+	let file_results =
+		read_jsonl::<FileResultRecord>(&paths.file_results).expect("read committed file results");
+	assert!(
+		!file_results.is_empty(),
+		"committed file results are present"
+	);
+	for record in &file_results {
+		let path = GamePathBuf::try_from(record.relative_path.clone())
+			.unwrap_or_else(|error| panic!("{}: {error}", record.file_result_id));
+		assert_eq!(
+			path.as_str(),
+			record.relative_path,
+			"{}",
+			record.file_result_id
+		);
+		let measurement = measurements
+			.get(record.measurement_id.as_str())
+			.unwrap_or_else(|| panic!("{} has no measurement", record.file_result_id));
+		let recomputed = match measurement {
+			MeasurementRecord::V1 { .. } => FileResultRecord::new_v1(
+				record.measurement_id.clone(),
+				path.into_string(),
+				record.result.clone(),
+			),
+			MeasurementRecord::V2 { .. } => FileResultRecord::new_v2(
+				record.measurement_id.clone(),
+				path.into_string(),
+				record.result.clone(),
+			),
+		};
+		assert_eq!(recomputed, *record, "{}", record.file_result_id);
+	}
 }
 
 fn fixtures_root() -> PathBuf {

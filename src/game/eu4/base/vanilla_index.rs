@@ -87,7 +87,6 @@ fn symbol_kind_order(kind: SymbolKind) -> u8 {
 mod tests {
 	use super::*;
 	use crate::model::{MaybeScope, ScopeSet, test_support};
-	use std::path::PathBuf;
 
 	struct TestSource {
 		base: Option<SemanticIndex>,
@@ -112,7 +111,7 @@ mod tests {
 			module: "vanilla".to_string(),
 			local_name: local_name.to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/vanilla.txt"),
+			path: crate::model::GamePathBuf::parse("common/vanilla.txt").expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id: 0,

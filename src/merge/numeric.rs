@@ -23,13 +23,13 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::Path;
 
 use crate::game::eu4::coercion::{canonical_float_text, canonical_int_text};
 use crate::game::eu4::script::parser::{
-	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
+	AstFile, AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_statements,
 };
 use crate::game::schema::query::{CwtQuery, RuleContext, SchemaScalarType};
+use crate::model::GamePath;
 
 /// Rewrite every schema-typed number in `file` under the installed schema.
 ///
@@ -43,7 +43,7 @@ use crate::game::schema::query::{CwtQuery, RuleContext, SchemaScalarType};
 /// so an absolute path on disk matches nothing and every number is left as
 /// written. Callers that hold a scratch path must pass the game-relative one.
 pub fn canonicalize_numeric_values_with_active_schema(
-	relative_path: &Path,
+	relative_path: &GamePath,
 	file: &AstFile,
 ) -> AstFile {
 	canonicalize_numeric_values_at(
@@ -58,11 +58,11 @@ pub fn canonicalize_numeric_values_with_active_schema(
 /// A file whose path binds no root type, or a call with no schema, comes back
 /// unchanged.
 pub(crate) fn canonicalize_numeric_values(file: &AstFile, schema: Option<&CwtQuery>) -> AstFile {
-	canonicalize_numeric_values_at(&file.path.clone(), file, schema)
+	canonicalize_numeric_values_at(&file.path, file, schema)
 }
 
 fn canonicalize_numeric_values_at(
-	relative_path: &Path,
+	relative_path: &GamePath,
 	file: &AstFile,
 	schema: Option<&CwtQuery>,
 ) -> AstFile {
@@ -87,7 +87,7 @@ fn canonicalize_numeric_values_at(
 /// harness measures text similarity against a human patch — reformatting would
 /// swamp the signal it is trying to read. Replacing byte ranges keeps the
 /// comparison about content.
-pub fn canonicalize_numeric_text(relative_path: &Path, source: &str) -> String {
+pub fn canonicalize_numeric_text(relative_path: &GamePath, source: &str) -> String {
 	canonicalize_numeric_text_with(
 		relative_path,
 		source,
@@ -96,25 +96,26 @@ pub fn canonicalize_numeric_text(relative_path: &Path, source: &str) -> String {
 }
 
 fn canonicalize_numeric_text_with(
-	relative_path: &Path,
+	relative_path: &GamePath,
 	source: &str,
 	schema: Option<&CwtQuery>,
 ) -> String {
 	let Some(schema) = schema else {
 		return source.to_string();
 	};
-	let parsed = parse_clausewitz_content(relative_path.to_path_buf(), source);
+	let syntax = ScriptSyntax::for_game_path(relative_path);
+	let parsed = parse_clausewitz_statements(syntax, source);
 	if !parsed.diagnostics.is_empty() {
 		return source.to_string();
 	}
-	let mut file = parsed.ast;
+	let mut statements = parsed.statements;
 	let mut walker = NumericWalker {
 		schema,
 		file_path: relative_path,
 		contexts: HashMap::new(),
 		edits: Vec::new(),
 	};
-	walker.visit(&mut file.statements, &mut Vec::new());
+	walker.visit(&mut statements, &mut Vec::new());
 	let mut edits = walker.edits;
 	// Apply from the end so earlier offsets stay valid.
 	edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
@@ -129,7 +130,7 @@ fn canonicalize_numeric_text_with(
 
 struct NumericWalker<'a> {
 	schema: &'a CwtQuery,
-	file_path: &'a Path,
+	file_path: &'a GamePath,
 	/// Resolved rule contexts by ancestor key chain.
 	///
 	/// One entry per block the walk enters, not one per number: a definition
@@ -239,7 +240,6 @@ impl<'a> NumericWalker<'a> {
 #[cfg(test)]
 mod tests {
 	use std::fs;
-	use std::path::PathBuf;
 
 	use tempfile::TempDir;
 
@@ -271,7 +271,10 @@ mod tests {
 	}
 
 	fn canonicalize(path: &str, source: &str, schema: Option<&CwtQuery>) -> String {
-		let parsed = parse_clausewitz_content(PathBuf::from(path), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse(path).expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		let canonical = canonicalize_numeric_values(&parsed.ast, schema);
 		emit_clausewitz_statements(&canonical.statements).expect("emit")
@@ -408,7 +411,7 @@ mod tests {
 
 		let schema = schema();
 		let rewritten = canonicalize_numeric_text_with(
-			Path::new("common/things/example.txt"),
+			GamePath::new("common/things/example.txt").expect("valid game path"),
 			source,
 			Some(schema.facts()),
 		);
@@ -427,7 +430,7 @@ mod tests {
 		for source in ["a_thing = { untyped = 0.50 }\n", "not_parseable = {\n"] {
 			assert_eq!(
 				canonicalize_numeric_text_with(
-					Path::new("common/things/example.txt"),
+					GamePath::new("common/things/example.txt").expect("valid game path"),
 					source,
 					Some(schema().facts())
 				),
@@ -548,8 +551,9 @@ mod coverage_probe {
 			let Ok(source) = std::fs::read_to_string(file) else {
 				continue;
 			};
-			let relative = file.strip_prefix(&root).unwrap().to_path_buf();
-			let parsed = parse_clausewitz_content(relative, &source);
+			let relative = crate::model::GamePathBuf::from_physical(&root, file)
+				.expect("vanilla file has a game path");
+			let parsed = parse_clausewitz_content(&relative, &source);
 			if !parsed.diagnostics.is_empty() {
 				continue;
 			}

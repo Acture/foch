@@ -8,8 +8,7 @@ pub mod parser;
 
 use self::localisation::collect_localisation_definitions_from_root;
 use self::parser::{
-	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content,
-	parse_clausewitz_file,
+	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content, read_failure,
 };
 use super::analysis::param_contracts::{
 	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
@@ -31,10 +30,10 @@ use super::cwt::{
 pub use super::cwt::{iterator_scope_type, scope_changer_target_type, special_block_scope_kind};
 use crate::game::schema::query::CwtQuery;
 use crate::model::{
-	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, MaybeScope,
-	ParamBinding, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet,
-	ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
-	UiDefinition, base_scope,
+	AliasUsage, DocumentFamily, DocumentRecord, GamePath, GamePathBuf, KeyUsage,
+	LocalisationDefinition, MaybeScope, ParamBinding, ParseIssue, ResourceReference,
+	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, ScopeType, SemanticIndex, SourceSpan,
+	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition, base_scope,
 };
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -44,8 +43,12 @@ use std::sync::OnceLock;
 #[derive(Clone, Debug)]
 pub struct ParsedScriptFile {
 	pub mod_id: String,
-	pub path: PathBuf,
-	pub relative_path: PathBuf,
+	/// The file the script was read from, or `None` for a script that exists
+	/// only in memory, such as a folded definition module.
+	pub path: Option<PathBuf>,
+	/// The game path the script is loaded at, which identifies it to content
+	/// families, rules and every index built from it.
+	pub relative_path: GamePathBuf,
 	pub content_family: Option<&'static ContentFamilyDescriptor>,
 	pub file_kind: ScriptFileKind,
 	pub module_name: String,
@@ -68,7 +71,7 @@ pub(super) struct ParsedScriptWithInputIdentity {
 
 use parse_cache::parse_clausewitz_bytes_cached;
 
-pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
+pub fn classify_script_file(relative: &GamePath) -> ScriptFileKind {
 	eu4()
 		.classify_content_family(relative)
 		.map_or(ScriptFileKind::new("other"), |descriptor| {
@@ -107,100 +110,86 @@ fn collect_map_groups(files: &[ParsedScriptFile]) -> MapGroupLookup {
 	lookup
 }
 
-fn is_map_group_file(relative_path: &Path) -> bool {
-	let normalized = relative_path.to_string_lossy().replace('\\', "/");
+fn is_map_group_file(relative_path: &GamePath) -> bool {
 	matches!(
-		normalized.as_str(),
+		relative_path.as_str(),
 		"map/area.txt"
 			| "map/region.txt"
 			| "map/superregion.txt"
 			| "map/continent.txt"
 			| "map/provincegroup.txt"
-	) || normalized.starts_with("common/trade_companies/")
+	) || relative_path.is_inside(&["common", "trade_companies"], str::eq)
 }
 
-fn fallback_module_name(parts: &[&str]) -> String {
-	if parts.len() <= 1 {
-		return "other".to_string();
-	}
-	parts[..parts.len() - 1].join(".")
-}
-
-fn fallback_module_name_from_relative(relative: &Path) -> String {
-	let normalized = relative.to_string_lossy().replace('\\', "/");
-	let parts: Vec<&str> = normalized.split('/').collect();
-	fallback_module_name(&parts)
+/// The module of a file no content family names: its parent directories
+/// joined with `.`, or `other` directly under the root.
+fn fallback_module_name_from_relative(relative: &GamePath) -> String {
+	relative.parent().map_or_else(
+		|| "other".to_string(),
+		|parent| parent.iter().collect::<Vec<_>>().join("."),
+	)
 }
 
 fn qualify_symbol_name(module: &str, local: &str) -> String {
 	format!("eu4::{module}::{local}")
 }
 
-pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<ParsedScriptFile> {
-	parse_script_file_with_cache(mod_id, root, file, true)
+/// Reads and parses the script at `relative` under `root`. A read failure is
+/// reported as a parse issue of that script.
+pub fn parse_script_file(mod_id: &str, root: &Path, relative: &GamePath) -> ParsedScriptFile {
+	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, true).file
 }
 
 pub(super) fn parse_script_file_with_input_identity(
 	mod_id: &str,
 	root: &Path,
-	file: &Path,
-) -> Option<ParsedScriptWithInputIdentity> {
-	parse_script_file_with_cache_and_input_identity(mod_id, root, file, true)
+	relative: &GamePath,
+) -> ParsedScriptWithInputIdentity {
+	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, true)
 }
 
 pub(super) fn parse_script_file_without_cache_with_input_identity(
 	mod_id: &str,
 	root: &Path,
-	file: &Path,
-) -> Option<ParsedScriptWithInputIdentity> {
-	parse_script_file_with_cache_and_input_identity(mod_id, root, file, false)
+	relative: &GamePath,
+) -> ParsedScriptWithInputIdentity {
+	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, false)
 }
 
-/// Builds an AST-only parsed script from caller-supplied bytes.
-/// The file is never reopened and raw source text is not retained.
+/// Builds an AST-only parsed script from caller-supplied bytes of the script
+/// at `relative` under `root`. The file is never reopened and raw source text
+/// is not retained.
 pub fn parse_script_bytes_cached(
 	mod_id: &str,
 	root: &Path,
-	file: &Path,
+	relative: &GamePath,
 	bytes: &[u8],
-) -> Option<ParsedScriptFile> {
-	let relative = file.strip_prefix(root).ok()?.to_path_buf();
-	let (parsed, parse_cache_hit) = parse_clausewitz_bytes_cached(file, bytes);
-	Some(parsed_script_file_from_result(
+) -> ParsedScriptFile {
+	let (parsed, parse_cache_hit) = parse_clausewitz_bytes_cached(relative, bytes);
+	parsed_script_file_from_result(
 		mod_id,
-		file,
-		relative,
+		Some(relative.to_path(root)),
 		parsed,
 		parse_cache_hit,
 		String::new(),
-	))
-}
-
-fn parse_script_file_with_cache(
-	mod_id: &str,
-	root: &Path,
-	file: &Path,
-	use_cache: bool,
-) -> Option<ParsedScriptFile> {
-	parse_script_file_with_cache_and_input_identity(mod_id, root, file, use_cache)
-		.map(|parsed| parsed.file)
+	)
 }
 
 fn parse_script_file_with_cache_and_input_identity(
 	mod_id: &str,
 	root: &Path,
-	file: &Path,
+	relative: &GamePath,
 	use_cache: bool,
-) -> Option<ParsedScriptWithInputIdentity> {
-	let relative = file.strip_prefix(root).ok()?.to_path_buf();
-	let (parsed, parse_cache_hit, source, input_identity) = match std::fs::read(file) {
+) -> ParsedScriptWithInputIdentity {
+	let file = relative.to_path(root);
+	let (parsed, parse_cache_hit, source, input_identity) = match std::fs::read(&file) {
 		Ok(bytes) => {
 			let content_digest = blake3::hash(&bytes).to_hex().to_string();
 			let source = crate::game::eu4::text::decode_paradox_bytes(&bytes).into_owned();
 			let (parsed, parse_cache_hit) = if use_cache {
-				parse_clausewitz_bytes_cached(file, &bytes)
+				parse_clausewitz_bytes_cached(relative, &bytes)
 			} else {
-				(parse_clausewitz_content(file.to_path_buf(), &source), false)
+				(parse_clausewitz_content(relative, &source), false)
 			};
 			(
 				parsed,
@@ -212,29 +201,30 @@ fn parse_script_file_with_cache_and_input_identity(
 				}),
 			)
 		}
-		Err(_) => (parse_clausewitz_file(file), false, String::new(), None),
-	};
-	Some(ParsedScriptWithInputIdentity {
-		file: parsed_script_file_from_result(
-			mod_id,
-			file,
-			relative,
-			parsed,
-			parse_cache_hit,
-			source,
+		Err(err) => (
+			read_failure(&err).into_parse_result(relative.to_owned()),
+			false,
+			String::new(),
+			None,
 		),
+	};
+	ParsedScriptWithInputIdentity {
+		file: parsed_script_file_from_result(mod_id, Some(file), parsed, parse_cache_hit, source),
 		input_identity,
-	})
+	}
 }
 
+/// Semantic processing identifies content and resolves CWT rules by game
+/// path, which `parsed` carries in its AST; `path` is only where the source
+/// was read from.
 fn parsed_script_file_from_result(
 	mod_id: &str,
-	file: &Path,
-	relative: PathBuf,
+	path: Option<PathBuf>,
 	parsed: ParseResult,
 	parse_cache_hit: bool,
 	source: String,
 ) -> ParsedScriptFile {
+	let relative = parsed.ast.path.clone();
 	let content_family = eu4().classify_content_family(&relative);
 	let file_kind = content_family.map_or(ScriptFileKind::new("other"), |descriptor| {
 		descriptor.script_file_kind.clone()
@@ -255,28 +245,24 @@ fn parsed_script_file_from_result(
 		})
 		.collect();
 
-	// Semantic processing identifies content and resolves CWT rules by path, so
-	// the AST carries the game-relative path while `path` keeps the disk
-	// location for file access. A disk path classifies as `other` and
-	// normalizes to a different tree for the same content.
-	let mut ast = parsed.ast;
-	ast.path = relative.clone();
-
 	ParsedScriptFile {
 		mod_id: mod_id.to_string(),
-		path: file.to_path_buf(),
+		path,
 		relative_path: relative,
 		content_family,
 		file_kind,
 		module_name,
-		ast,
+		ast: parsed.ast,
 		source,
 		parse_issues,
 		parse_cache_hit,
 	}
 }
 
-pub fn collect_localisation_definitions(mod_id: &str, root: &Path) -> Vec<LocalisationDefinition> {
+pub fn collect_localisation_definitions(
+	mod_id: &str,
+	root: &Path,
+) -> std::io::Result<Vec<LocalisationDefinition>> {
 	collect_localisation_definitions_from_root(mod_id, root)
 }
 
@@ -303,7 +289,7 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 /// Resolve the semantic role of a concrete script block in the active EU4 CWT schema.
 pub fn script_container_scope_kind(
 	file_kind: ScriptFileKind,
-	file_path: &Path,
+	file_path: &GamePath,
 	ast_path: &[&str],
 ) -> Option<ScopeKind> {
 	let key = *ast_path.last()?;
@@ -400,7 +386,7 @@ fn is_top_level_event_definition(
 
 struct BuildContext<'a> {
 	mod_id: &'a str,
-	path: &'a Path,
+	path: &'a GamePath,
 	content_family: Option<&'static ContentFamilyDescriptor>,
 	file_kind: ScriptFileKind,
 	cwt_rule_engine: Option<&'a CwtQuery>,
@@ -465,7 +451,7 @@ fn walk_statements(
 						name: event_id,
 						module: ctx.module_name.to_string(),
 						mod_id: ctx.mod_id.to_string(),
-						path: ctx.path.to_path_buf(),
+						path: ctx.path.to_owned(),
 						line: key_span.start.line,
 						column: key_span.start.column,
 						scope_id,
@@ -486,7 +472,7 @@ fn walk_statements(
 						name: key.clone(),
 						module: ctx.module_name.to_string(),
 						mod_id: ctx.mod_id.to_string(),
-						path: ctx.path.to_path_buf(),
+						path: ctx.path.to_owned(),
 						line: key_span.start.line,
 						column: key_span.start.column,
 						scope_id,
@@ -521,7 +507,7 @@ fn walk_statements(
 							module: ctx.module_name.to_string(),
 							local_name: key.clone(),
 							mod_id: ctx.mod_id.to_string(),
-							path: ctx.path.to_path_buf(),
+							path: ctx.path.to_owned(),
 							line: key_span.start.line,
 							column: key_span.start.column,
 							scope_id: child_scope,
@@ -561,7 +547,7 @@ fn walk_statements(
 							name: key.clone(),
 							module: ctx.module_name.to_string(),
 							mod_id: ctx.mod_id.to_string(),
-							path: ctx.path.to_path_buf(),
+							path: ctx.path.to_owned(),
 							line: key_span.start.line,
 							column: key_span.start.column,
 							scope_id,
@@ -672,7 +658,7 @@ fn handle_event_block(
 			module: ctx.module_name.to_string(),
 			local_name: key.to_string(),
 			mod_id: ctx.mod_id.to_string(),
-			path: ctx.path.to_path_buf(),
+			path: ctx.path.to_owned(),
 			line: span.start.line,
 			column: span.start.column,
 			scope_id: event_scope,
@@ -715,7 +701,7 @@ fn record_key_usage(
 	index.key_usages.push(KeyUsage {
 		key: key.to_string(),
 		mod_id: ctx.mod_id.to_string(),
-		path: ctx.path.to_path_buf(),
+		path: ctx.path.to_owned(),
 		line: key_span.start.line,
 		column: key_span.start.column,
 		scope_id,
@@ -739,7 +725,7 @@ fn record_scalar_assignment(
 		key: key.to_string(),
 		value: value.as_text(),
 		mod_id: ctx.mod_id.to_string(),
-		path: ctx.path.to_path_buf(),
+		path: ctx.path.to_owned(),
 		line: key_span.start.line,
 		column: key_span.start.column,
 		scope_id,
@@ -764,7 +750,7 @@ fn record_ui_scalar_semantics(
 		index.ui_definitions.push(UiDefinition {
 			name: text.clone(),
 			mod_id: ctx.mod_id.to_string(),
-			path: ctx.path.to_path_buf(),
+			path: ctx.path.to_owned(),
 			line: key_span.start.line,
 			column: key_span.start.column,
 		});
@@ -775,7 +761,7 @@ fn record_ui_scalar_semantics(
 			key: key.to_string(),
 			value: text,
 			mod_id: ctx.mod_id.to_string(),
-			path: ctx.path.to_path_buf(),
+			path: ctx.path.to_owned(),
 			line: key_span.start.line,
 			column: key_span.start.column,
 		});
@@ -809,7 +795,7 @@ fn push_resource_reference(
 		key: key.to_string(),
 		value: value.to_string(),
 		mod_id: ctx.mod_id.to_string(),
-		path: ctx.path.to_path_buf(),
+		path: ctx.path.to_owned(),
 		line: key_span.start.line,
 		column: key_span.start.column,
 	});
@@ -976,7 +962,7 @@ fn record_ui_block_semantics(
 	index.ui_definitions.push(UiDefinition {
 		name,
 		mod_id: ctx.mod_id.to_string(),
-		path: ctx.path.to_path_buf(),
+		path: ctx.path.to_owned(),
 		line: key_span.start.line,
 		column: key_span.start.column,
 	});
@@ -992,7 +978,7 @@ fn record_alias_usage(
 	index.alias_usages.push(AliasUsage {
 		alias: alias.to_string(),
 		mod_id: ctx.mod_id.to_string(),
-		path: ctx.path.to_path_buf(),
+		path: ctx.path.to_owned(),
 		line: span.start.line,
 		column: span.start.column,
 		scope_id,
@@ -1016,7 +1002,7 @@ fn record_alias_tokens_from_value(
 		index.alias_usages.push(AliasUsage {
 			alias: alias.as_str().to_string(),
 			mod_id: ctx.mod_id.to_string(),
-			path: ctx.path.to_path_buf(),
+			path: ctx.path.to_owned(),
 			line: span.start.line,
 			column: span.start.column,
 			scope_id,
@@ -1670,20 +1656,16 @@ fn is_map_group_scope_key(
 	true
 }
 
-fn province_name_table_id(path: &Path) -> Option<String> {
-	path.file_stem()
-		.and_then(|stem| stem.to_str())
-		.map(std::string::ToString::to_string)
+fn province_name_table_id(path: &GamePath) -> Option<String> {
+	path.file_stem().map(str::to_string)
 }
 
-fn random_map_tile_id(path: &Path) -> Option<String> {
-	path.file_stem()
-		.and_then(|stem| stem.to_str())
-		.map(std::string::ToString::to_string)
+fn random_map_tile_id(path: &GamePath) -> Option<String> {
+	path.file_stem().map(str::to_string)
 }
 
-fn random_name_table_id(path: &Path) -> Option<String> {
-	match path.file_stem().and_then(|stem| stem.to_str()) {
+fn random_name_table_id(path: &GamePath) -> Option<String> {
+	match path.file_stem() {
 		Some("RandomLandNames") => Some("random_land_names".to_string()),
 		Some("RandomSeaNames") => Some("random_sea_names".to_string()),
 		Some("RandomLakeNames") => Some("random_lake_names".to_string()),
@@ -1713,7 +1695,7 @@ struct ScopeArgs<'a> {
 	this_type: MaybeScope,
 	aliases: HashMap<String, MaybeScope>,
 	mod_id: &'a str,
-	path: &'a Path,
+	path: &'a GamePath,
 	line: usize,
 	key: &'a str,
 }
@@ -1738,7 +1720,7 @@ fn push_scope(args: ScopeArgs<'_>) -> usize {
 		this_type,
 		aliases,
 		mod_id: mod_id.to_string(),
-		path: path.to_path_buf(),
+		path: path.to_owned(),
 		span: SourceSpan { line, column: 1 },
 		key: key.to_string(),
 	});
@@ -1950,7 +1932,7 @@ fn line_from_stmt(stmt: Option<&AstStatement>) -> usize {
 fn find_scripted_effect_definition(
 	index: &SemanticIndex,
 	mod_id: &str,
-	path: &Path,
+	path: &GamePath,
 	name: &str,
 ) -> Option<usize> {
 	index.definitions.iter().position(|item| {

@@ -37,8 +37,8 @@ fn parse_mod_file(steam_id: &str, relative: &str) -> ParsedScriptFile {
 		"Workshop file not found: {} (is the mod installed?)",
 		file.display()
 	);
-	parse_script_file(steam_id, &root, &file)
-		.unwrap_or_else(|| panic!("Failed to parse {}", file.display()))
+	let relative = crate::model::GamePath::new(relative).expect("valid game path");
+	parse_script_file(steam_id, &root, relative)
 }
 
 /// Count top-level Assignment statements (blocks only — these are the
@@ -256,7 +256,7 @@ fn patch_p1_funding_event_modifiers() {
 		);
 		if let Some(fb) = &alternate {
 			println!("Primary file not found; using alternate: {fb}");
-			run_funding_convergence_test(funding_steam_id, simplified_steam_id, fb);
+			run_funding_convergence_test(funding_steam_id, simplified_steam_id, fb.as_str());
 		} else {
 			panic!(
 				"No overlapping event_modifiers file found between {} and {}",
@@ -269,17 +269,24 @@ fn patch_p1_funding_event_modifiers() {
 	run_funding_convergence_test(funding_steam_id, simplified_steam_id, rel_path);
 }
 
-fn find_first_overlapping_file(steam_a: &str, steam_b: &str, subdir: &str) -> Option<String> {
-	let dir_a = mod_root(steam_a).join(subdir);
+fn find_first_overlapping_file(
+	steam_a: &str,
+	steam_b: &str,
+	subdir: &str,
+) -> Option<crate::model::GamePathBuf> {
+	let root_a = mod_root(steam_a);
+	let dir_a = root_a.join(subdir);
 	let dir_b = mod_root(steam_b).join(subdir);
 	if !dir_a.exists() || !dir_b.exists() {
 		return None;
 	}
 	for entry in std::fs::read_dir(&dir_a).ok()? {
 		let entry = entry.ok()?;
-		let name = entry.file_name();
-		if dir_b.join(&name).exists() {
-			return Some(format!("{subdir}/{}", name.to_string_lossy()));
+		if dir_b.join(entry.file_name()).exists() {
+			return Some(
+				crate::model::GamePathBuf::from_physical(&root_a, &entry.path())
+					.expect("workshop file has a game path"),
+			);
 		}
 	}
 	None
@@ -436,21 +443,15 @@ fn namespace_detects_cross_file_conflicts_in_real_playlist() {
 		for entry in &entries {
 			let file_path = entry.path();
 			let root = mod_root(steam_id);
-			let rel = file_path
-				.strip_prefix(&root)
-				.unwrap()
-				.to_string_lossy()
-				.to_string();
-
-			let Some(parsed) = parse_script_file(steam_id, &root, &file_path) else {
-				continue;
-			};
+			let relative = crate::model::GamePathBuf::from_physical(&root, &file_path)
+				.expect("workshop file has a game path");
+			let parsed = parse_script_file(steam_id, &root, &relative);
 
 			let keys = extract_assignment_keys(&parsed.ast.statements);
 			for key in keys {
 				index.entries.entry(key).or_default().push(KeyContributor {
 					mod_id: steam_id.to_string(),
-					file_path: rel.clone(),
+					file_path: relative.clone(),
 					precedence,
 					is_base_game: false,
 				});

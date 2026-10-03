@@ -10,7 +10,8 @@ use foch::merge::{
 	analyze_merge, run_merge_for_evaluation, run_merge_with_options,
 };
 use foch::model::{
-	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
+	ConflictKind, GamePath, GamePathBuf, MergeReportStatus, MergeTraceDecision, MergeTraceEntry,
+	MergeTracePolicy,
 };
 use foch::playset::descriptor::load_descriptor;
 use foch::project::compute_conflict_id;
@@ -44,12 +45,13 @@ fn fixture_dir(name: &str) -> PathBuf {
 	playsets_root().join(name)
 }
 
-fn rel_path(rel: &str) -> PathBuf {
-	rel.split('/').collect()
+/// A fixture's game path, spelled in `/` syntax.
+fn game_path(rel: &str) -> &GamePath {
+	GamePath::new(rel).expect("fixture path is a game path")
 }
 
 fn expected_path(name: &str, rel: &str) -> PathBuf {
-	fixture_dir(name).join("expected").join(rel_path(rel))
+	game_path(rel).to_path(fixture_dir(name).join("expected"))
 }
 
 // Reads a fixture playset from `tests/fixtures/playsets/<name>/`,
@@ -244,8 +246,14 @@ fn copy_dir_recursive(source: &Path, destination: &Path) {
 	}
 }
 
+/// A host path as the text a foch.toml `use_file` holds.
 fn toml_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
+	path.to_str().expect("a temp path is UTF-8").to_owned()
+}
+
+/// `path` as a quoted TOML string.
+fn toml_path_value(path: &Path) -> String {
+	toml::Value::String(toml_path(path)).to_string()
 }
 
 // Recursively scans output dir and asserts every structural EU4 .txt script file
@@ -297,11 +305,11 @@ fn is_structural_text_file(root: &Path, path: &Path) -> bool {
 	let Some(Component::Normal(top)) = relative.components().next() else {
 		return false;
 	};
-	let top = top.to_string_lossy().to_ascii_lowercase();
-	matches!(
-		top.as_str(),
-		"common" | "events" | "missions" | "decisions" | "history"
-	)
+	top.to_str().is_some_and(|top| {
+		["common", "events", "missions", "decisions", "history"]
+			.iter()
+			.any(|root| top.eq_ignore_ascii_case(root))
+	})
 }
 
 fn assert_balanced_braces(path: &Path, content: &str) {
@@ -405,7 +413,7 @@ fn assert_reparses_cleanly(path: &Path) {
 // at `tests/fixtures/playsets/<name>/expected/<rel>`.
 // Honours BLESS_SNAPSHOTS=1 by copying the actual output to the expected tree.
 fn assert_matches_golden(name: &str, out_dir: &Path, rel: &str) {
-	let actual = out_dir.join(rel_path(rel));
+	let actual = game_path(rel).to_path(out_dir);
 	let expected = expected_path(name, rel);
 
 	if env::var_os("BLESS_SNAPSHOTS").is_some() {
@@ -599,11 +607,8 @@ workshop_identity = { app_id = 236850, workshop_id = "200001", manifest_id = "30
 }
 
 fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Path, rel: &str) {
-	let input = fixture_dir(name)
-		.join("mods")
-		.join(mod_name)
-		.join(rel_path(rel));
-	let actual = out_dir.join(rel_path(rel));
+	let input = game_path(rel).to_path(fixture_dir(name).join("mods").join(mod_name));
+	let actual = game_path(rel).to_path(out_dir);
 	let input_bytes = fs::read(&input)
 		.unwrap_or_else(|err| panic!("failed to read fixture input {}: {err}", input.display()));
 	let actual_bytes = fs::read(&actual)
@@ -994,10 +999,7 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 		.report
 		.definition_provenance
 		.iter()
-		.find(|(path, _)| {
-			path.replace('\\', "/")
-				.ends_with("scripted_effects/zzz_foch_scripted_effects.txt")
-		})
+		.find(|(path, _)| path.ends_with("scripted_effects/zzz_foch_scripted_effects.txt"))
 		.map(|(_, defs)| defs)
 		.expect("report has provenance for the merged file");
 	assert_eq!(
@@ -1021,12 +1023,15 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 	let files = artifact["files"].as_object().expect("versioned files");
 	assert_eq!(files.len(), result.report.definition_provenance.len());
 	for (path, definitions) in &result.report.definition_provenance {
-		let bytes = fs::read(out_dir.join(path)).expect("committed provenance script");
+		let bytes = fs::read(path.to_path(&out_dir)).expect("committed provenance script");
 		assert_eq!(
-			files[path]["content_hash"],
+			files[path.as_str()]["content_hash"],
 			blake3::hash(&bytes).to_hex().to_string()
 		);
-		assert_eq!(files[path]["definitions"], serde_json::json!(definitions));
+		assert_eq!(
+			files[path.as_str()]["definitions"],
+			serde_json::json!(definitions)
+		);
 	}
 	assert_eq!(
 		file_prov["test_shared_effect"],
@@ -1069,10 +1074,7 @@ fn eu4_merge_trace_records_union_scripted_effect() {
 		.report
 		.merge_trace
 		.iter()
-		.find(|(path, _)| {
-			path.replace('\\', "/")
-				.ends_with("scripted_effects/zzz_foch_scripted_effects.txt")
-		})
+		.find(|(path, _)| path.ends_with("scripted_effects/zzz_foch_scripted_effects.txt"))
 		.map(|(_, defs)| defs)
 		.expect("report has merge trace for the merged file");
 	let entry = trace
@@ -1232,12 +1234,13 @@ fn eu4_governments_cross_file_module_emits_union_once() {
 		load_descriptor(&out_dir.join("descriptor.mod")).expect("parse generated descriptor");
 	assert_eq!(
 		generated_descriptor.replace_path,
-		vec!["common/governments".to_string()]
+		vec![GamePathBuf::parse("common/governments").expect("valid game path")]
 	);
 
-	let parsed_output = parse_script_file("generated", &out_dir, &merged_path)
-		.expect("parse generated governments module");
-	let relative = Path::new("common/governments/zzz_foch_governments.txt");
+	let relative =
+		GamePath::new("common/governments/zzz_foch_governments.txt").expect("valid game path");
+	assert_eq!(relative.to_path(&out_dir), merged_path);
+	let parsed_output = parse_script_file("generated", &out_dir, relative);
 	let descriptor = eu4()
 		.classify_content_family(relative)
 		.expect("governments descriptor");
@@ -1277,7 +1280,7 @@ fn eu4_institutions_cross_file_module_overlays_without_replace_path() {
 		!generated_descriptor
 			.replace_path
 			.iter()
-			.any(|path| path == "common/institutions")
+			.any(|path| path.as_str() == "common/institutions")
 	);
 }
 
@@ -1448,7 +1451,6 @@ fn gui_provenance_widget_fields(
 	let parsed = parse_clausewitz_file(path);
 	assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 	let widgets = parsed
-		.ast
 		.statements
 		.iter()
 		.find_map(|statement| match statement {
@@ -1708,7 +1710,7 @@ fn eu4_case_insensitive_explicit_defer_is_reviewed_without_a_forced_marker() {
 	);
 	let units = analyzed.list_units();
 	assert_eq!(units.len(), 1, "fixture must produce one review unit");
-	assert_eq!(units[0].path, target);
+	assert_eq!(units[0].path.as_str(), target);
 	assert_eq!(units[0].disposition, MergeDisposition::Deferred);
 	assert_eq!(units[0].output_path, None);
 	assert_eq!(analyzed.review_summary().deferred, 1);
@@ -1718,7 +1720,7 @@ fn eu4_case_insensitive_explicit_defer_is_reviewed_without_a_forced_marker() {
 
 	assert_eq!(result.report.status, MergeReportStatus::PartialSuccess);
 	assert!(
-		!out_dir.join(rel_path(target)).exists(),
+		!game_path(target).to_path(&out_dir).exists(),
 		"--force must not turn an explicit defer into a manual marker"
 	);
 }
@@ -1778,20 +1780,24 @@ handler = "DeFeR"
 	);
 	let units = analyzed.list_units();
 	assert_eq!(units.len(), 1, "fixture must produce one review unit");
-	assert_eq!(units[0].path, target);
+	assert_eq!(units[0].path.as_str(), target);
 	assert_eq!(
 		units[0].disposition,
 		MergeDisposition::NeedsUserChoice,
 		"one explicit defer must not hide the unrelated unresolved leaf"
 	);
-	assert_eq!(units[0].output_path.as_deref(), Some(target));
+	assert_eq!(
+		units[0].output_path.as_ref().map(|path| path.as_str()),
+		Some(target)
+	);
 	assert_eq!(analyzed.review_summary().needs_user_choice, 1);
 	let result = analyzed
 		.commit(CommitAuthorization::EmptyTargetOnly)
 		.expect("commit mixed defer analysis");
 
 	assert_eq!(result.report.status, MergeReportStatus::PartialSuccess);
-	let marker = fs::read_to_string(out_dir.join(rel_path(target))).expect("read manual marker");
+	let marker =
+		fs::read_to_string(game_path(target).to_path(&out_dir)).expect("read manual marker");
 	assert!(marker.starts_with("FOCH_MERGE_CONFLICT"));
 	assert!(marker.contains("primary_culture"));
 }
@@ -1996,9 +2002,9 @@ fn eu4_use_file_resolution_replaces_output_file_end_to_end() {
 		format!(
 			r#"[[resolutions]]
 file = "history/countries/TES - Test.txt"
-use_file = "{}"
+use_file = {}
 "#,
-			toml_path(&external_file)
+			toml_path_value(&external_file)
 		),
 	)
 	.expect("write use_file config");
@@ -2202,16 +2208,20 @@ fn eu4_conflict_id_use_file_does_not_mask_second_unresolved_leaf_conflict() {
 	)
 	.expect("write external resolution file");
 	let target_rel = "history/countries/TES - Test.txt";
-	let religion_conflict_id = compute_conflict_id(Path::new(target_rel), "", "religion");
+	let religion_conflict_id = compute_conflict_id(
+		foch::model::GamePath::new(target_rel).expect("valid game path"),
+		"",
+		"religion",
+	);
 	let config_path = temp_dir.path().join("foch.one-conflict-use-file.toml");
 	fs::write(
 		&config_path,
 		format!(
 			r#"[[resolutions]]
 conflict_id = "{religion_conflict_id}"
-use_file = "{}"
+use_file = {}
 "#,
-			toml_path(&external_file)
+			toml_path_value(&external_file)
 		),
 	)
 	.expect("write conflict_id use_file config");
@@ -2262,7 +2272,7 @@ use_file = "{}"
 	);
 	assert!(
 		{
-			let output_text = fs::read_to_string(out_dir.join(rel_path(target_rel)))
+			let output_text = fs::read_to_string(game_path(target_rel).to_path(&out_dir))
 				.expect("read partial output file");
 			output_text.contains("FOCH_MERGE_CONFLICT")
 				&& output_text.contains("primary_culture")
@@ -2348,7 +2358,9 @@ fn structured_merge_allows_an_explicit_empty_base() {
 			playset_fingerprint: None,
 			provenance: false,
 			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
-			retained_paths: Some(["events/test_events.txt".to_string()].into()),
+			retained_paths: Some(
+				[GamePathBuf::parse("events/test_events.txt").expect("valid game path")].into(),
+			),
 		},
 		MergeBackendId::GumtreePcsNway,
 	)
@@ -2399,7 +2411,9 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 			playset_fingerprint: None,
 			provenance: false,
 			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
-			retained_paths: Some(["events/foo.txt".to_string()].into()),
+			retained_paths: Some(
+				[GamePathBuf::parse("events/foo.txt").expect("valid game path")].into(),
+			),
 		},
 		MergeBackendId::GumtreePcsNway,
 	)

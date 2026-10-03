@@ -16,6 +16,7 @@ use foch::merge::{
 	AnalyzedMerge, CancellationToken, CommitAuthorization, CommitResult, MergeAnalysisOptions,
 	MergeDisposition, NoopProgressObserver, analyze_merge,
 };
+use foch::model::GamePathBuf;
 use foch::project::{Project, ProjectConfig, ProjectMod};
 
 use super::merge_quality::config::{DiscoveryOverrides, Eu4Discovery, discover_eu4};
@@ -94,13 +95,19 @@ fn workshop_static_modifiers_product_probe() {
 		)
 		.collect();
 	// Only this small content family is byte-checked. ACF remains Workshop identity.
-	let before: Vec<BTreeMap<String, Vec<u8>>> = roots
+	let family: GamePathBuf = GamePathBuf::parse(FAMILY).expect("family directory is a game path");
+	let before: Vec<BTreeMap<PathBuf, Vec<u8>>> = roots
 		.iter()
-		.map(|root| capture_tree_bytes(&root.join(FAMILY)))
+		.map(|root| capture_tree_bytes(&family.to_path(root)))
 		.collect();
-	let retained: BTreeSet<String> = before
+	let retained: BTreeSet<GamePathBuf> = before
 		.iter()
-		.flat_map(|files| files.keys().map(|path| format!("{FAMILY}/{path}")))
+		.flat_map(BTreeMap::keys)
+		.map(|path| {
+			family.join(
+				&GamePathBuf::from_native_relative(path).expect("retained file has a game path"),
+			)
+		})
 		.collect();
 	let input: InputVersionRecord = case
 		.input_version(&discovery.game_version, discovery.steam_build_id)
@@ -155,8 +162,11 @@ fn workshop_static_modifiers_product_probe() {
 		.expect("commit bounded analyzed result");
 	let mut definitions: BTreeMap<String, Vec<BTreeMap<String, String>>> = BTreeMap::new();
 	if disposition == MergeDisposition::Safe {
-		let parsed: ParsedScriptFile =
-			parse_script_file("probe", &out, &out.join(OUTPUT)).expect("reparse generated module");
+		let parsed: ParsedScriptFile = parse_script_file(
+			"probe",
+			&out,
+			foch::model::GamePath::new(OUTPUT).expect("valid game path"),
+		);
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		for statement in &parsed.ast.statements {
 			if let AstStatement::Assignment {
@@ -185,9 +195,9 @@ fn workshop_static_modifiers_product_probe() {
 			"unsafe module must remain omitted"
 		);
 	}
-	let after: Vec<BTreeMap<String, Vec<u8>>> = roots
+	let after: Vec<BTreeMap<PathBuf, Vec<u8>>> = roots
 		.iter()
-		.map(|root| capture_tree_bytes(&root.join(FAMILY)))
+		.map(|root| capture_tree_bytes(&family.to_path(root)))
 		.collect();
 	assert_eq!(before, after, "source family bytes must remain unchanged");
 	case.validate_unchanged(&discovery.workshop)
@@ -229,7 +239,8 @@ fn workshop_static_modifiers_product_probe() {
 		);
 	}
 	assert_eq!(
-		result.report.definition_provenance[OUTPUT]["prestige"],
+		result.report.definition_provenance
+			[foch::model::GamePath::new(OUTPUT).expect("valid game path")]["prestige"],
 		["3342969370", "2164202838"]
 	);
 }

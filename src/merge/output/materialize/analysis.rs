@@ -25,8 +25,8 @@ use crate::merge::planning::module_view::{
 	CrossFileModuleViewError, build_cross_file_module_views,
 };
 use crate::model::{
-	DeferredUnitReason, DepMisuseFinding, MergeModuleOutput, MergePlanEntry, MergePlanStrategy,
-	MergePlanTarget,
+	DeferredUnitReason, DepMisuseFinding, GamePath, MergeModuleOutput, MergePlanEntry,
+	MergePlanStrategy, MergePlanTarget,
 };
 use crate::project::{DepOverride, ResolutionMap};
 
@@ -155,7 +155,7 @@ pub(super) fn working_set_estimate(input: &ResolvedInput, entry: &MergePlanEntry
 		.iter()
 		.filter_map(|path| input.file_inventory.get(path))
 		.flatten()
-		.filter_map(|contributor| fs::metadata(&contributor.absolute_path).ok())
+		.filter_map(|contributor| fs::metadata(contributor.absolute_path()).ok())
 		.map(|metadata| metadata.len())
 		.sum();
 	input_bytes.saturating_mul(WORKING_SET_PER_INPUT_BYTE)
@@ -195,16 +195,19 @@ fn analyze_structural_unit(
 	entry: &MergePlanEntry,
 	prompt: InteractivePrompt<'_>,
 ) -> UnitAnalysis {
-	let path: &str = entry.output_path();
-	let contributors: Option<&[ResolvedInputContributor]> =
-		context.input.file_inventory.get(path).map(Vec::as_slice);
+	let game_path: &GamePath = entry.output_path();
+	let contributors: Option<&[ResolvedInputContributor]> = context
+		.input
+		.file_inventory
+		.get(game_path)
+		.map(Vec::as_slice);
 	let descriptor: Option<&ContentFamilyDescriptor> =
-		context.profile.classify_content_family(Path::new(path));
+		context.profile.classify_content_family(game_path);
 	let vanilla_base_mode: VanillaBaseMode = effective_vanilla_base_mode(
 		descriptor,
 		contributors,
 		VanillaBaseMode::from_include_game_base(context.include_game_base),
-		context.input.verified_absent_base_paths.contains(path),
+		context.input.verified_absent_base_paths.contains(game_path),
 	);
 	// Applying validates the unit first and fails the whole merge when it is
 	// rejected. A rejected unit must not reach the backend here, where it could
@@ -225,7 +228,7 @@ fn analyze_structural_unit(
 	}
 	UnitAnalysis::File(analyze_file(
 		context,
-		path,
+		game_path,
 		contributors,
 		descriptor,
 		vanilla_base_mode,
@@ -235,7 +238,7 @@ fn analyze_structural_unit(
 
 fn analyze_file(
 	context: &UnitAnalysisContext<'_>,
-	path: &str,
+	path: &GamePath,
 	contributors: Option<&[ResolvedInputContributor]>,
 	descriptor: Option<&ContentFamilyDescriptor>,
 	vanilla_base_mode: VanillaBaseMode,
@@ -315,13 +318,13 @@ fn analyze_module_namespace(
 	namespace: &MergeModuleOutput,
 	prompt: InteractivePrompt<'_>,
 ) -> NamespaceAnalysis {
-	let output_path: &str = namespace.output_path.as_str();
+	let output_path: &GamePath = namespace.output_path();
 	eprintln!("[merge] definition module: start {output_path}");
 	// The descriptor comes from this namespace's own output path: the
 	// extractors dispatch on the directory a definition was read from.
 	let Some(descriptor) = context
 		.profile
-		.classify_content_family(Path::new(output_path))
+		.classify_content_family(namespace.output_path())
 	else {
 		return NamespaceAnalysis::Failed(
 			DeferredUnitReason::EngineFailure,

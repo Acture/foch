@@ -1,6 +1,52 @@
 # Project Status
 
-Recorded branch verification: 2026-10-02 on `4e8862e` plus P-830 editor/GUI
+Latest PR conflict integration: 2026-10-04 on `7208eab` plus `master`
+at `988d0c8`. The editor's provenance hover, versioned and historical sidecars,
+and GUI tooltip materialization now use validated game-relative paths while
+physical reads and symlink checks keep native paths. UTF-16 hover positions,
+output-byte verification, source ordering and the upstream per-revision delta
+index are retained. Both branches' implementation and measurement histories
+are kept; their earlier cohort results belong to their recorded artifacts.
+
+All-target/all-feature workspace compilation, focused editor, GUI provenance,
+kernel, provenance-artifact and CLI hover tests, and the separate fuzz-workspace
+check passed. The new Unix filename regression keeps a literal backslash file
+distinct from its nested-path neighbor. Local validation logs, including the
+normal commit/push gates, are under `target/validation/p736-master-2026-10-04/`.
+The four local measurement streams are preserved outside the merge commit.
+A complete Workshop cohort has not been measured for this integrated artifact.
+
+Earlier PR integration verification: 2026-10-02 on `e97c93c` plus `master`
+at `c774b67` and the resolved path/CWT boundaries. The complete workspace
+suite passed 1,798 tests (20 ignored), including the socket/server tests.
+Formatting, strict all-target/all-feature workspace Clippy, all-target/all-feature
+workspace compilation, and the separate fuzz-workspace check passed. Logs are
+under `target/validation/p736-pr-integration/`. A complete Workshop cohort has
+not been measured for this integrated artifact; the recorded acceptance below
+belongs to the earlier artifact.
+
+Latest recorded product acceptance: 2026-10-02 on `e97c93c`, before integrating
+the newer `master` for the P-736 PR. The unchanged `cargo acceptance` exited 0:
+its cold/warm cache gate passed, and all 14 fixed cases completed (2 `ready`, 12
+`partial_success`). This is an accepted local cohort for the recorded product
+artifact, not universal merge correctness or in-game playability. The detailed
+semantic scores and exact cohort identity are recorded below.
+
+Earlier worktree verification: 2026-10-02 on that pre-integration source artifact:
+`cargo test --workspace --no-fail-fast --quiet` passed 1,785 tests (22 ignored),
+including the local socket/server tests. Rust formatting and strict workspace
+Clippy passed. The two ignored kernel scale regressions and the ignored
+separate-process cold/warm real-file probe were also run explicitly and passed.
+The full workspace log is
+`target/validation/p736-timeout-fix/workspace-tests-delivery.log`.
+
+Earlier worktree verification: 2026-10-01 on `2fa8588` plus the P-736 completion
+changes: `cargo test --workspace --no-fail-fast --quiet` passed 1,780 tests
+(19 ignored), including the three socket/server tests rerun outside the
+restricted sandbox. Rust formatting, strict workspace Clippy, and the separate
+fuzz-workspace all-target/all-feature check passed. See the P-736 entry below.
+
+Recorded P-830 branch verification: 2026-10-02 on `4e8862e` plus editor/GUI
 provenance changes, the Windows product-runner temporary-directory fix,
 platform-gated test helpers and N-way delta indexing: formatting and strict
 workspace Clippy passed. `cargo test --workspace --no-fail-fast` passed 1,613
@@ -16,7 +62,7 @@ See the P-830 entry below for the exact boundaries and verification.
 An explicitly user-requested `cargo acceptance` retry acquired all six missing
 inputs and used a matching rebuilt EU4 base snapshot, but its cold-cache preview
 exceeded the unchanged 300-second limit. The 14-case scoring phase did not start;
-no current complete cohort is accepted.
+no complete cohort was accepted for that branch artifact.
 After delta indexing, a bounded retry of the same cache gate again timed out:
 the culture unit completed in 124.89 seconds, but `map/positions.txt` remained
 in flight. This optimization does not establish complete product acceptance.
@@ -265,6 +311,243 @@ measurement streams are unchanged. The full retry log is
 `cache-gate-after-index-retry-20261002.log`, with decoded stderr in
 `cache-gate-after-index-timeout-20261002.txt`, under the ignored input directory.
 
+## Typed game-relative paths (2026-10-01)
+
+The PR integrates the newer embedded CWT rule pack from `master`. Build-time
+compilation includes the same game-path and rule-path modules as runtime
+matching. The embedded pack, fatal invalid overrides, no-rule-file rejection,
+deterministic schema-file ordering and LF/CRLF byte equivalence are retained
+and covered by the integration suite. Snapshot lookups, profiles and corrupt
+entry rebuild tests use the active analysis-rule identity throughout.
+
+P-736. `GamePath` / `GamePathBuf` wrap `relative-path` with one validated
+game-root namespace. Inventory keys, ASTs, semantic records, database and CWT
+rules, merge inputs and outputs, resolution files, and cache lookups now carry
+these types. Physical roots and I/O paths remain native `Path` / `PathBuf`.
+Converting a discovered file requires its explicit mod/game root; resolving it
+back to disk requires that root again. Mod order and declared dependencies
+remain semantic inputs.
+
+All constructors and Serde/rkyv readers validate canonical relative paths.
+Absolute paths, platform prefixes, parent components, literal backslashes,
+NUL and non-UTF-8 names cannot silently become another file's logical key.
+Inventory failures retain the owning mod and physical path. The editor reports
+an unsupported script/localisation filename on that file and continues indexing
+other files; merge input resolution fails instead of omitting it.
+
+Descriptor path values are read from their original scalar bytes, before text
+escape decoding can erase backslashes. `replace_path` has an explicit Windows
+path grammar, parsed by `typed-path`; a root separator is relative to the game
+root, while drive/UNC/device prefixes and parents fail. Launcher `path` uses
+host syntax and never guesses another platform's separators. Generated
+descriptors reject physical names they cannot represent. Rule globs consume
+the validated portable bytes, with the same escape syntax on every host.
+
+Persisted logical paths remain text at the encoding boundary and are validated
+on read. The parse cache is now `12.0.0`, the mod snapshot cache `11.0.0`, and
+Workshop semantic-snapshot keys use the `v2` namespace. Existing base snapshots
+keep their wire layout; decoded documents recover their physical paths from
+the current game root and their validated logical paths. Byte order is retained
+where inventories and output order used it, and component order where document
+indexing used it. Module contributor precedence is unchanged; equal-precedence
+source paths are compared as native paths before rendering, so lossy display
+text never decides their order.
+
+Regression coverage includes actual Unix files named `a\b.txt` beside
+`a/b.txt`, in-memory non-UTF-8 paths (kept distinct from disk evidence), explicit
+root round trips, foreign descriptor syntax, rejected serialized paths,
+cache identity, playset order, CWT/database selection, and the real CLI input
+and merge boundaries.
+
+Validation: `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+`cargo test --workspace --no-fail-fast --quiet`, and
+`cargo check --manifest-path fuzz/Cargo.toml --all-targets --all-features`.
+All passed. The workspace suite includes 1,435 root unit tests, 49 CLI
+integration tests and 130 quality-harness fixture tests; the full total is
+1,780 passed and 19 ignored. The initial restricted run failed only the three
+known local socket/server tests, and the complete rerun with those privileges
+passed. Local logs are under `target/validation/p736-2026-10-01/`.
+
+This is an implementation and fixture-validation checkpoint. Windows-specific
+tests are included but require a Windows runner; the local validation host is
+macOS. The initial real acceptance attempt below did not pass; the follow-on
+fixes and successful complete rerun are recorded after it.
+
+### Windows CI cache-directory probes (2026-10-03)
+
+The Windows job for `e9962d7` failed the snapshot rebuild regression: the
+semantic snapshot rebuilt correctly but recorded five parser-cache hits and one
+miss instead of six hits. The source tree was restored before the rebuild and
+the semantic-cache hit had already passed. The captured run is
+`https://github.com/Acture/foch/actions/runs/37031345812/job/110922833516`.
+The later `7b855a2` diagnostic retains the assertion and names each expected
+parser-cache entry before and after rebuilding.
+
+Cache-root selection checked writability with a shared `.foch-write-test`
+filename for every parallel reader. Failure to open that one name caused a
+reader to select the repository fallback even when the cache directory was
+writable, so independently resolved reads and writes could use different
+roots. A portable collision regression reproduced the incorrect rejection on
+the old code. Each probe now uses its own `NamedTempFile`; existing entries
+are preserved and each probe cleans up its own temporary file.
+
+Both the collision regression and eight-worker concurrent probing passed,
+alongside all seven cache-store tests. The focused snapshot regression retained
+its six-hit, zero-miss assertion and passed. Formatting and strict workspace
+Clippy passed. Logs are under `target/validation/p736-ci-cache/`; the complete
+push gate is captured in `push.log`, and the Windows outcome is tracked on
+PR #69. This local checkpoint reproduces the root-selection defect without
+claiming that the earlier Windows log identified the missing file or the sole
+cause of that failure. The recorded Workshop cohort still belongs to the
+earlier artifact above.
+
+### Fixed Workshop acceptance attempt after P-736 (2026-10-01)
+
+Ran the unchanged `cargo acceptance` on committed source `840cd70`, with the
+normal cache cap and timeouts. All 26 required Workshop directories were
+present in the default Steam library; this directory check alone is not ACF
+identity validation. The cache-gate harness resolved its fixed compatch
+`1351632822`, sources `1449952810`, `1796527319`, `2016264376`, and installed
+EU4 base before starting the real product preview.
+
+The command exited **101**. `workshop_product_cache_residency_gate` failed
+because its cold preview exceeded **300,000 ms**; the stage finished after
+309.28 seconds including termination and cleanup. The captured stderr ended
+at `applied=75697/77633`, `in flight=1`, with `map/positions.txt` on
+`foch-merge-2` still running. The last complete heartbeat retained in the
+bounded diagnostic reports that unit at 141.2 seconds; it is not the unit's
+final duration. The captured diagnostic is truncated, so it does not establish
+a specific algorithmic cause or a regression introduced by the path migration.
+
+The warm-cache preview and `workshop_product_corpus_acceptance` were **not
+executed**. This attempt establishes no completed cohort, quality baseline, or
+in-game result. Do not increase the timeout or bypass the cache gate to call
+it passed; first reproduce and profile the observed file-level bottleneck.
+The maintainer explicitly requested that the current executor resolve this
+failure as part of P-736. P-736 was reopened and P-835 canceled, keeping the
+failed acceptance in the current task.
+
+Evidence is local under `target/validation/p736-acceptance-2026-10-01/`:
+`acceptance.log`, decoded `failure-diagnostics.txt`, `exit-code.txt`, source and
+executable identities, and the pre-run JSONL hashes/counts. All four tracked
+measurement streams match their pre-run SHA-256 values exactly; this gate
+failure appended no cohort records. The new run evidence and this status
+update were initially local. The failed-run artifacts remain local measurement
+history alongside the eventual successful run below.
+
+### Cold-preview timeout investigation (2026-10-02)
+
+The unchanged fixed cache gate reproduced the timeout. Two late CPU samples
+showed the structural-file merge spending the entire sampled worker interval
+building `NWayCorrespondence` class facts. `build_class_facts` scanned a
+revision's complete operation and ordering lists for each node class. That
+quadratic work predates P-736 (the kernel is unchanged by the path migration).
+This identifies an existing bottleneck, without measuring the migration's
+effect on the other stages.
+
+A release-mode regression with 101,001 nodes, scalar updates and reversed
+sibling groups spent 22.2097 seconds constructing class facts before the fix,
+failing its five-second bound. Indexing moved and reordered revision nodes
+once reduced the same step to 32.961 ms. The index retains revision identity
+and only marks an ordering edge when both endpoints existed in the base;
+inserting a new neighbor is not a reorder. Class-fact construction is now also
+included in the existing mapping timing. Focused movement/deletion and
+insertion/reordering regressions passed alongside the scale test. This is
+focused performance evidence. Formatting, strict workspace Clippy, 85 kernel
+tests, and the complete workspace suite passed (1,781 passed, 20 ignored).
+Full product acceptance was still pending at that intermediate checkpoint.
+
+Re-running `cargo acceptance` after that first optimization still exceeded the
+cold-preview limit. Two subsequent CPU samples located the next hot operation:
+`apply_source_selection` repeatedly filtered the entire conflict/decision
+vectors for each selected class. A separate release regression with 20,000
+conflicts spent 52.8441 seconds in policy application and failed its two-second
+bound. The follow-on change indexes records by affected class and removes them
+through shared slots, preserving record order and multi-class conflict removal.
+The same policy step now takes 31.958 ms; all 88 kernel tests, including both
+scale regressions, passed. Formatting, strict workspace Clippy, and the complete
+workspace suite passed on both optimizations (1,782 passed, 21 ignored).
+
+The next unchanged acceptance run completed the cold preview within its
+original timeout, but failed the bounded stdout assertion: the CLI expanded
+every review unit and exceeded the runner's 4 MiB capture. The cache stage
+finished after 253.66 seconds; its warm preview and the product cohort had not
+started. This is a separate presentation defect to fix under P-736, keeping
+the capture limit and complete semantic analysis unchanged. The default review
+now shows counts and the first 20 units of each disposition, with explicit
+omission counts and `--review-all` for the complete pre-commit review. A CLI
+regression verifies the limits independently for copy and unsupported units,
+full-detail access, and no output writes in either preview mode. Formatting,
+strict workspace Clippy, and all workspace tests passed (1,783 passed, 21
+ignored).
+
+The following run completed its cold preview in 249.15 seconds and passed the
+bounded-output check. It then exposed a cache-gate scope error: all three
+Workshop source snapshots were stored, but the gate also required the temporary
+generated-output validation mod to be stored. That mod has no Workshop cache
+identity and intentionally reports `state=skipped`. Both the cache gate and
+cohort diagnostic parser now delimit source diagnostics at the initial
+`resolve_input: done` boundary, before generated-output revalidation. They still
+reject missing/duplicate boundaries, incomplete capture, skipped or failed
+source stores, process-only hits, missing source IDs, and repeated cohort cold
+builds. Cold and warm regression fixtures cover the validation suffix; the
+runner protocol advances to `foch-cli-committable-merge-report-v7`. Product cache
+behavior, capture bounds, timeouts, and the fixed cohort remain unchanged.
+No failed attempt has appended or rewritten the four measurement streams.
+
+With the diagnostic boundary fix, the cold cache gate passed and execution
+reached the warm preview for the first time. The warm preview exceeded its
+unchanged five-minute limit; the combined cache stage ended after 623.36
+seconds, before any cohort case. A late sample placed the active worker in
+tree matching for `map/positions.txt`. The host was also under high load, so
+this sample alone does not establish cold/warm semantic drift or an isolated
+algorithmic cause. A retained-path, separate-process cold/warm probe then
+completed with the same ordered ACF inputs and a shared isolated cache. Cold
+analysis took 207.69 seconds, including 138.28 seconds resolving input; warm
+analysis took 38.88 seconds, with all three source snapshots read from disk
+and input resolution taking 8.06 seconds. The structural-file step took 66.68
+and 29.92 seconds respectively. Both returned the same `needs_user_choice`
+unit, with byte-identical complete reports (SHA-256
+`31daefe91e2be5df0274254cc9c74919582664f275336334ba659ffb2ec5c737`).
+This focused observation found no semantic cache drift. Host load had fallen
+substantially by the warm probe; it does not prove the sole cause of the prior
+full-preview timeout.
+
+The next complete entrypoint run passed the cold and warm cache gate in 335.36
+seconds combined, retaining the original per-preview timeout and cache cap.
+It resolved all 26 fixed Workshop items and completed all 14 product cases,
+with no terminal merge failures. The cohort stage took 1,224.88 seconds;
+the whole entrypoint finished in 1,560.31 seconds and exited 0. All cases were
+new measurements, not cached replays. Two cases returned `ready` and twelve
+returned `partial_success`.
+
+The complete local report is
+`target/merge-quality/workshop-product-corpus/dbd883ee84d73ae176d96dc1e22538518810d067f495f7cc21df6b56812a8b5f/baseline.json`.
+It records `baseline_complete=true`, scorer `2.1.0`, runner
+`foch-cli-committable-merge-report-v7`, backend `gumtree-pcs-nway`, scope
+`full_product_merge`, and product executable BLAKE3
+`6b7b260b79f1b279ca591c2d752cceb0e5dac5eec844928214bddb82de1d373d`.
+The reference-output denominator is 184 files, with 11 accepted; the
+multi-source denominator is 69 files, with 9 accepted. The remaining
+multi-source verdicts are 19 `conflict_withheld`, 27 `diverges_ast`, 2
+`diverges_structure`, and 12 `drops_content`. Passing the fixed acceptance
+gate does not turn these differences into correct merges, nor establish
+in-game playability. Human compatches remain comparison evidence.
+
+The run appended 14 records each to observations, input versions and
+measurements, and 184 file-result rows. Hashing each pre-run prefix confirmed
+all historical records unchanged. These append-only measurement changes and
+the local evidence bundles remain unstaged, pending the maintainer's explicit
+decision; they are not part of the source delivery. The acceptance log,
+executable hashes and prefix verification are under
+`target/validation/p736-timeout-fix/` (`acceptance-fifth.log`,
+`executables-fifth.sha256`, `records-prefix-final.log`).
+
+Local reproduction logs, CPU samples and before/after test results are under
+`target/validation/p736-timeout-fix/`. The explicitly ignored scale test is
+`cargo test --release -p foch --lib large_class_facts_do_not_rescan_revision_edits -- --ignored --nocapture`.
+
 ## CWT rule pack embedded in the binary (2026-09-29)
 
 P-709, the blocker P-695 derived. `load_schema()` searched
@@ -279,8 +562,9 @@ input); and an override that failed to load became no schema through `.ok()`.
 
 `build.rs` now compiles the vendored config with the library's own
 `src/game/schema` modules, included by path because a build script cannot link
-the crate it builds and those five files depend on nothing else in it. The
-binary embeds the pack; `load_schema()` decodes it, and
+the crate it builds. P-736 also includes the same game-path and rule-path
+modules in the build script, so the compiler and runtime share the validated
+path boundary. The binary embeds the pack; `load_schema()` decodes it, and
 `FOCH_CWTOOLS_SCHEMA_DIR` (set but empty counts as unset) compiles another
 directory instead, uncached in every process, or panics naming itself; `foch
 lsp` then fails `initialize` rather than serving half a workspace. A directory
@@ -367,8 +651,9 @@ A 2026-09-28 path-type follow-up established P-736's type boundary: keep native
 `Path/PathBuf` for physical I/O and adopt `relative-path` for portable
 game-relative identities; use `typed-path` as needed for foreign descriptor
 parsing. The evaluation records tested API behavior and the validation required
-at construction, deserialization, and host-path conversion. P-736 remains the
-unimplemented repair; no dependency or production code has changed.
+at construction, deserialization, and host-path conversion. At that checkpoint
+P-736 was still unimplemented; the completed repair and validation are recorded
+above.
 
 ## Numeric equivalence under the game's field coercion (2026-09-22)
 

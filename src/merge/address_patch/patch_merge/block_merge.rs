@@ -7,7 +7,6 @@ use crate::merge::boolean::combine_boolean_or_bodies;
 use crate::merge::gui::synthesize_scroll_stack;
 use crate::merge::semantic_fingerprint::{statement_fingerprint, value_fingerprint};
 
-use super::super::super::conflict_handler::DeferHandler;
 use super::super::patch::{AstPath, ClausewitzPatch, ast_statements_semantically_equal};
 use super::address::patch_address;
 use super::{
@@ -406,8 +405,7 @@ pub(super) fn try_recursive_block_merge(
 	// Recursively resolve nested patches with the same policies.
 	sort_recursive_candidates(&mut mod_patches);
 	let patch_origins = recursive_patch_origins(&mod_patches, policies);
-	let mut handler = DeferHandler;
-	let nested = merge_patch_sets(mod_patches, policies, &mut handler).ok()?;
+	let nested = merge_patch_sets(mod_patches, policies).ok()?;
 	stats.accumulate(&nested.stats);
 
 	if !nested.conflicts.is_empty() {
@@ -577,8 +575,7 @@ pub(super) fn try_recursive_remove_replace_merge(
 
 	sort_recursive_candidates(&mut branch_patches);
 	let patch_origins = recursive_patch_origins(&branch_patches, policies);
-	let mut handler = DeferHandler;
-	let nested = merge_patch_sets(branch_patches, policies, &mut handler).ok()?;
+	let nested = merge_patch_sets(branch_patches, policies).ok()?;
 	stats.accumulate(&nested.stats);
 	if !nested.conflicts.is_empty() {
 		let reasons = nested
@@ -716,8 +713,7 @@ pub(super) fn try_recursive_insert_merge(
 
 	sort_recursive_candidates(&mut mod_patches);
 	let patch_origins = recursive_patch_origins(&mod_patches, policies);
-	let mut handler = DeferHandler;
-	let nested = merge_patch_sets(mod_patches, policies, &mut handler).ok()?;
+	let nested = merge_patch_sets(mod_patches, policies).ok()?;
 	stats.accumulate(&nested.stats);
 
 	if !nested.conflicts.is_empty() {

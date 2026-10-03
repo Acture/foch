@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +12,7 @@ use crate::game::eu4::content::NamedContainerPolicy;
 use crate::game::eu4::content::{DivergentBlockPolicy, ScalarMergePolicy};
 use crate::game::eu4::content::{ListMergePolicy, MergeKeySource, MergePolicies};
 use crate::game::eu4::script::parser::{AstStatement, AstValue};
-use crate::model::HandlerResolutionRecord;
+use crate::model::{GamePath, GamePathBuf, HandlerResolutionRecord};
 
 #[cfg(test)]
 use super::super::conflict_handler::ConflictDecision;
@@ -76,8 +75,9 @@ pub struct PatchMergeResult {
 	pub stats: PatchMergeStats,
 	pub handler_resolved_count: usize,
 	pub handler_resolutions: Vec<HandlerResolutionRecord>,
-	pub external_file_resolutions: HashMap<PathBuf, ExternalFileResolution>,
-	pub keep_existing_paths: HashSet<PathBuf>,
+	/// Whole-file decisions, keyed by the output file they replace.
+	pub external_file_resolutions: HashMap<GamePathBuf, ExternalFileResolution>,
+	pub keep_existing_paths: HashSet<GamePathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -173,23 +173,37 @@ use resolve::resolve_address;
 // Main entry point
 // ---------------------------------------------------------------------------
 
-/// Merge multiple mod patch sets into a single resolved set.
+/// Merge multiple mod patch sets into a single resolved set, leaving every
+/// conflict unresolved.
+///
+/// Nested block merges use this. A conflict inside a block is reported to the
+/// enclosing merge, which decides it for the file it is in, so nothing here
+/// names a file or asks a handler.
 ///
 /// `mod_patches`: Vec of `(mod_id, precedence, patches)` for each mod.
 /// `policies`: The content family's merge policies for auto-resolution.
 pub fn merge_patch_sets(
 	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	policies: &MergePolicies,
-	handler: &mut dyn ConflictHandler,
 ) -> Result<PatchMergeResult, MergeError> {
-	merge_patch_sets_for_file(mod_patches, policies, handler, None)
+	merge_patch_sets_with(mod_patches, policies, None)
 }
 
+/// Merge the patch sets of `current_file`, letting `handler` decide each
+/// conflict. Conflict ids and whole-file decisions name `current_file`.
 pub(crate) fn merge_patch_sets_for_file(
-	mut mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
-	current_file: Option<&Path>,
+	current_file: &GamePath,
+) -> Result<PatchMergeResult, MergeError> {
+	merge_patch_sets_with(mod_patches, policies, Some((handler, current_file)))
+}
+
+fn merge_patch_sets_with(
+	mut mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	policies: &MergePolicies,
+	mut arbiter: Option<(&mut dyn ConflictHandler, &GamePath)>,
 ) -> Result<PatchMergeResult, MergeError> {
 	let mut result = PatchMergeResult::default();
 	sort_contributors(&mut mod_patches);
@@ -325,35 +339,44 @@ pub(crate) fn merge_patch_sets_for_file(
 		+ cross_kind_conflicts.len();
 	let mut current_conflict = 0;
 
+	let mut decide = |result: &mut PatchMergeResult,
+	                  address: PatchAddress,
+	                  patches: Vec<AttributedPatch>,
+	                  reason: String|
+	 -> Result<(), MergeError> {
+		let Some((handler, current_file)) = arbiter.as_mut() else {
+			result.conflicts.push(PatchResolution::Conflict {
+				address,
+				patches,
+				reason,
+			});
+			return Ok(());
+		};
+		current_conflict += 1;
+		handler.set_conflict_progress(current_conflict, total_conflicts);
+		apply_conflict_decision(
+			result,
+			&mut **handler,
+			current_file,
+			address,
+			patches,
+			reason,
+		)
+	};
 	for resolution in pending_resolutions {
 		match resolution {
 			PatchResolution::Conflict {
 				address,
 				patches,
 				reason,
-			} => {
-				current_conflict += 1;
-				handler.set_conflict_progress(current_conflict, total_conflicts);
-				apply_conflict_decision(
-					&mut result,
-					handler,
-					current_file,
-					address,
-					patches,
-					reason,
-				)?;
-			}
+			} => decide(&mut result, address, patches, reason)?,
 			resolution => result.resolved.push(resolution),
 		}
 	}
 
 	for cross_kind in cross_kind_conflicts {
-		current_conflict += 1;
-		handler.set_conflict_progress(current_conflict, total_conflicts);
-		apply_conflict_decision(
+		decide(
 			&mut result,
-			handler,
-			current_file,
 			cross_kind.address,
 			cross_kind.patches,
 			cross_kind.reason,

@@ -12,7 +12,7 @@ use crate::game::eu4::content::eu4;
 use crate::input::request::{CheckOptions, InputRequest};
 use crate::input::{
 	InputResolveErrorKind, LoadedModSnapshot, ResolvedInput, ResolvedInputContributor,
-	normalize_relative_path, resolve_input,
+	resolve_input,
 };
 use crate::merge::dag::{ModDag, ModId, build_mod_dag};
 use crate::merge::namespace::{
@@ -20,8 +20,8 @@ use crate::merge::namespace::{
 };
 use crate::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
-	Finding, FindingChannel, ParseFamilyStats, ParseIssueReportItem, SemanticIndex, Severity,
-	SymbolDefinition,
+	Finding, FindingChannel, GamePathBuf, ParseFamilyStats, ParseIssueReportItem, SemanticIndex,
+	Severity, SymbolDefinition,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
@@ -120,7 +120,8 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 					channel: FindingChannel::Strict,
 					message: "failed to parse Playset JSON".to_string(),
 					mod_id: None,
-					path: Some(err.path),
+					path: None,
+					source_file: Some(err.path),
 					evidence: Some(err.message),
 					line: None,
 					column: None,
@@ -397,7 +398,7 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 		.iter()
 		.map(|item| {
 			(
-				(item.mod_id.clone(), normalize_relative_path(&item.path)),
+				(item.mod_id.as_str(), item.path.as_game_path()),
 				item.family,
 			)
 		})
@@ -405,26 +406,23 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 	let mut items: Vec<ParseIssueReportItem> = index
 		.parse_issues
 		.iter()
-		.map(|issue| {
-			let normalized_path = normalize_relative_path(&issue.path);
-			ParseIssueReportItem {
-				family: family_lookup
-					.get(&(issue.mod_id.clone(), normalized_path.clone()))
-					.copied()
-					.unwrap_or(DocumentFamily::Clausewitz),
-				mod_id: issue.mod_id.clone(),
-				path: normalized_path.into(),
-				line: issue.line,
-				column: issue.column,
-				message: issue.message.clone(),
-			}
+		.map(|issue| ParseIssueReportItem {
+			family: family_lookup
+				.get(&(issue.mod_id.as_str(), issue.path.as_game_path()))
+				.copied()
+				.unwrap_or(DocumentFamily::Clausewitz),
+			mod_id: issue.mod_id.clone(),
+			path: issue.path.clone(),
+			line: issue.line,
+			column: issue.column,
+			message: issue.message.clone(),
 		})
 		.collect();
 	items.sort_by(|lhs, rhs| {
 		(
 			format!("{:?}", lhs.family),
 			lhs.mod_id.as_str(),
-			lhs.path.as_os_str(),
+			&lhs.path,
 			lhs.line,
 			lhs.column,
 			lhs.message.as_str(),
@@ -432,7 +430,7 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 			.cmp(&(
 				format!("{:?}", rhs.family),
 				rhs.mod_id.as_str(),
-				rhs.path.as_os_str(),
+				&rhs.path,
 				rhs.line,
 				rhs.column,
 				rhs.message.as_str(),
@@ -450,7 +448,7 @@ const NAMESPACE_CHECK_FAMILIES: &[&str] = &["common/scripted_effects", "common/s
 /// where two mods silently redefining the same key is a common source of
 /// broken gameplay.
 fn check_namespace_conflicts(
-	file_inventory: &BTreeMap<String, Vec<ResolvedInputContributor>>,
+	file_inventory: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 	mod_dag: &ModDag,
 ) -> Vec<Finding> {
 	let profile = eu4();
@@ -506,7 +504,8 @@ fn check_namespace_conflicts(
 				channel: FindingChannel::Advisory,
 				message: format!("duplicate key is defined by {} sibling mods", leaves.len()),
 				mod_id: Some(primary.mod_id.clone()),
-				path: Some(std::path::PathBuf::from(&primary.file_path)),
+				path: Some(primary.file_path.clone()),
+				source_file: None,
 				evidence: Some(evidence),
 				line: None,
 				column: None,

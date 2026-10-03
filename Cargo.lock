@@ -1339,7 +1339,9 @@ dependencies = [
  "keyvalues-parser",
  "libc",
  "rayon",
+ "ref-cast",
  "regex",
+ "relative-path",
  "remove_dir_all",
  "reqwest 0.12.28",
  "rkyv",
@@ -1357,6 +1359,7 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "tree-sitter-paradox",
+ "typed-path",
  "walkdir",
  "windows-sys 0.61.2",
  "winreg 0.55.0",
@@ -3857,6 +3860,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "relative-path"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "remove_dir_all"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5516,6 +5528,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
 
 [[package]]
 name = "typeid"

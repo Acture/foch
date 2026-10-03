@@ -4,19 +4,18 @@ use super::{
 	parse_script_file_with_input_identity, parse_script_file_without_cache_with_input_identity,
 };
 use crate::model::{
-	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
-	LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
+	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, GamePath, GamePathBuf, JsonProperty,
+	LocalisationDefinition, LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
 };
 use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 #[derive(Clone, Debug)]
 pub struct DiscoveredTextDocument {
 	pub absolute_path: PathBuf,
-	pub relative_path: PathBuf,
+	pub relative_path: GamePathBuf,
 	pub family: DocumentFamily,
 }
 
@@ -31,7 +30,7 @@ pub enum ParsedTextDocument {
 #[derive(Clone, Debug)]
 pub struct ParsedLocalisationDocument {
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub entries: Vec<LocalisationDefinition>,
 	pub duplicates: Vec<LocalisationDuplicate>,
 	pub parse_issues: Vec<ParseIssue>,
@@ -40,7 +39,7 @@ pub struct ParsedLocalisationDocument {
 #[derive(Clone, Debug)]
 pub struct ParsedCsvDocument {
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub rows: Vec<CsvRow>,
 	pub parse_issues: Vec<ParseIssue>,
 }
@@ -48,7 +47,7 @@ pub struct ParsedCsvDocument {
 #[derive(Clone, Debug)]
 pub struct ParsedJsonDocument {
 	pub mod_id: String,
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub properties: Vec<JsonProperty>,
 	pub parse_issues: Vec<ParseIssue>,
 }
@@ -64,7 +63,7 @@ pub struct ParsedDocumentBatch {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedDocumentInputIdentity {
-	pub relative_path: PathBuf,
+	pub relative_path: GamePathBuf,
 	pub size_bytes: u64,
 	pub content_digest: String,
 }
@@ -76,39 +75,12 @@ enum CsvSchema {
 	Eu4Definition,
 }
 
-pub fn discover_text_documents(root: &Path) -> Vec<DiscoveredTextDocument> {
-	let mut docs = Vec::new();
-
-	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-		if !entry.file_type().is_file() {
-			continue;
-		}
-
-		let path = entry.path();
-		let Some(relative_path) = path.strip_prefix(root).ok() else {
-			continue;
-		};
-		if is_excluded_text_path(relative_path) {
-			continue;
-		}
-		let Some(family) = classify_document_family(relative_path) else {
-			continue;
-		};
-
-		docs.push(DiscoveredTextDocument {
-			absolute_path: path.to_path_buf(),
-			relative_path: relative_path.to_path_buf(),
-			family,
-		});
-	}
-
-	docs.sort_by(|lhs, rhs| lhs.relative_path.cmp(&rhs.relative_path));
-	docs
-}
-
+/// Selects the text documents among `relative_paths`, the validated inventory
+/// of `root` or a subset of it, that exist as files. Each physical path is the
+/// game path resolved under `root`.
 pub fn discover_text_documents_from_paths(
 	root: &Path,
-	relative_paths: &[PathBuf],
+	relative_paths: &[GamePathBuf],
 ) -> Vec<DiscoveredTextDocument> {
 	let mut docs = Vec::new();
 	for relative_path in relative_paths {
@@ -118,7 +90,7 @@ pub fn discover_text_documents_from_paths(
 		let Some(family) = classify_document_family(relative_path) else {
 			continue;
 		};
-		let absolute_path = root.join(relative_path);
+		let absolute_path = relative_path.to_path(root);
 		if !absolute_path.is_file() {
 			continue;
 		}
@@ -128,7 +100,14 @@ pub fn discover_text_documents_from_paths(
 			family,
 		});
 	}
-	docs.sort_by(|lhs, rhs| lhs.relative_path.cmp(&rhs.relative_path));
+	// Documents are parsed and indexed in component order, and scope ids and
+	// persisted record order follow it. It differs from byte order when a name
+	// sorts below `/`, as `common/defines.lua` does against `common/defines/`.
+	docs.sort_by(|lhs, rhs| {
+		lhs.relative_path
+			.as_relative_path()
+			.cmp(rhs.relative_path.as_relative_path())
+	});
 	docs
 }
 
@@ -162,15 +141,15 @@ fn parse_discovered_text_documents_with(
 	mod_id: &str,
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
-	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptWithInputIdentity>,
+	parse_script: fn(&str, &Path, &GamePath) -> ParsedScriptWithInputIdentity,
 ) -> ParsedDocumentBatch {
-	let parsed: Vec<Option<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)>> = documents
+	let parsed: Vec<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)> = documents
 		.par_iter()
 		.map(|doc| parse_text_document_with(mod_id, root, doc, parse_script))
 		.collect();
 
 	let mut batch = ParsedDocumentBatch::default();
-	for (doc, input_identity) in parsed.into_iter().flatten() {
+	for (doc, input_identity) in parsed {
 		match document_parse_details(&doc) {
 			DocumentParseDetails::Clausewitz {
 				parse_issue_count,
@@ -359,8 +338,10 @@ pub fn build_semantic_index_from_owned_documents(
 }
 
 fn sort_and_dedup_document_records(documents: &mut Vec<DocumentRecord>) {
+	// Component order, as in discovery.
 	documents.sort_by(|lhs, rhs| {
-		(lhs.path.clone(), lhs.mod_id.clone()).cmp(&(rhs.path.clone(), rhs.mod_id.clone()))
+		(lhs.path.as_relative_path(), lhs.mod_id.as_str())
+			.cmp(&(rhs.path.as_relative_path(), rhs.mod_id.as_str()))
 	});
 	documents.dedup_by(|lhs, rhs| {
 		lhs.path == rhs.path
@@ -370,12 +351,10 @@ fn sort_and_dedup_document_records(documents: &mut Vec<DocumentRecord>) {
 	});
 }
 
-/// Classify one relative path into a supported text-document parser family.
-pub fn classify_document_family(relative_path: &Path) -> Option<DocumentFamily> {
-	let ext = relative_path
-		.extension()
-		.and_then(|value| value.to_str())
-		.map(|value| value.to_ascii_lowercase())?;
+/// Classify one game path into a supported text-document parser family. The
+/// extension matches in any case.
+pub fn classify_document_family(relative_path: &GamePath) -> Option<DocumentFamily> {
+	let ext = relative_path.extension()?.to_ascii_lowercase();
 
 	match ext.as_str() {
 		"txt" | "gui" | "gfx" | "asset" => Some(DocumentFamily::Clausewitz),
@@ -388,70 +367,70 @@ pub fn classify_document_family(relative_path: &Path) -> Option<DocumentFamily> 
 	}
 }
 
-pub fn is_clausewitz_defines_path(relative_path: &Path) -> bool {
-	let normalized = relative_path
-		.to_string_lossy()
-		.replace('\\', "/")
-		.to_ascii_lowercase();
-	normalized == "common/defines.lua" || normalized.starts_with("common/defines/")
+/// `common/defines.lua` or a file inside `common/defines/`, ignoring ASCII
+/// case in every component.
+pub fn is_clausewitz_defines_path(relative_path: &GamePath) -> bool {
+	relative_path
+		.as_str()
+		.eq_ignore_ascii_case("common/defines.lua")
+		|| relative_path.is_inside(&["common", "defines"], str::eq_ignore_ascii_case)
 }
 
 fn parse_text_document_with(
 	mod_id: &str,
 	root: &Path,
 	doc: &DiscoveredTextDocument,
-	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptWithInputIdentity>,
-) -> Option<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)> {
+	parse_script: fn(&str, &Path, &GamePath) -> ParsedScriptWithInputIdentity,
+) -> (ParsedTextDocument, Option<ParsedDocumentInputIdentity>) {
 	match doc.family {
 		DocumentFamily::Clausewitz => {
-			parse_script(mod_id, root, &doc.absolute_path).map(|parsed| {
-				let input_identity =
-					parsed
-						.input_identity
-						.map(|identity| ParsedDocumentInputIdentity {
-							relative_path: doc.relative_path.clone(),
-							size_bytes: identity.size_bytes,
-							content_digest: identity.content_digest,
-						});
-				(ParsedTextDocument::Clausewitz(parsed.file), input_identity)
-			})
+			let parsed = parse_script(mod_id, root, &doc.relative_path);
+			let input_identity =
+				parsed
+					.input_identity
+					.map(|identity| ParsedDocumentInputIdentity {
+						relative_path: doc.relative_path.clone(),
+						size_bytes: identity.size_bytes,
+						content_digest: identity.content_digest,
+					});
+			(ParsedTextDocument::Clausewitz(parsed.file), input_identity)
 		}
-		DocumentFamily::Localisation => Some((
+		DocumentFamily::Localisation => (
 			ParsedTextDocument::Localisation(parse_localisation_document(
 				mod_id,
 				&doc.absolute_path,
 				&doc.relative_path,
 			)),
 			None,
-		)),
-		DocumentFamily::Csv => Some((
+		),
+		DocumentFamily::Csv => (
 			ParsedTextDocument::Csv(parse_csv_document(
 				mod_id,
 				&doc.absolute_path,
 				&doc.relative_path,
 			)),
 			None,
-		)),
-		DocumentFamily::Json => Some((
+		),
+		DocumentFamily::Json => (
 			ParsedTextDocument::Json(parse_json_document(
 				mod_id,
 				&doc.absolute_path,
 				&doc.relative_path,
 			)),
 			None,
-		)),
+		),
 	}
 }
 
 fn parse_localisation_document(
 	mod_id: &str,
 	absolute_path: &Path,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> ParsedLocalisationDocument {
 	let parsed = parse_localisation_file(mod_id, absolute_path, relative_path);
 	ParsedLocalisationDocument {
 		mod_id: mod_id.to_string(),
-		path: relative_path.to_path_buf(),
+		path: relative_path.to_owned(),
 		entries: parsed
 			.entries
 			.iter()
@@ -465,7 +444,7 @@ fn parse_localisation_document(
 fn parse_csv_document(
 	mod_id: &str,
 	absolute_path: &Path,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> ParsedCsvDocument {
 	let mut rows = Vec::new();
 	let mut parse_issues = Vec::new();
@@ -474,14 +453,14 @@ fn parse_csv_document(
 		Err(err) => {
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				line: 1,
 				column: 1,
 				message: format!("unable to read csv file: {err}"),
 			});
 			return ParsedCsvDocument {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				rows,
 				parse_issues,
 			};
@@ -516,7 +495,7 @@ fn parse_csv_document(
 		{
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				line: line_no,
 				column: 1,
 				message: format!(
@@ -533,7 +512,7 @@ fn parse_csv_document(
 		rows.push(CsvRow {
 			identity,
 			mod_id: mod_id.to_string(),
-			path: relative_path.to_path_buf(),
+			path: relative_path.to_owned(),
 			line: line_no,
 			column: 1,
 		});
@@ -541,7 +520,7 @@ fn parse_csv_document(
 
 	ParsedCsvDocument {
 		mod_id: mod_id.to_string(),
-		path: relative_path.to_path_buf(),
+		path: relative_path.to_owned(),
 		rows,
 		parse_issues,
 	}
@@ -551,9 +530,8 @@ fn decode_csv_bytes(raw: &[u8]) -> String {
 	crate::game::eu4::text::decode_paradox_bytes(raw).into_owned()
 }
 
-fn csv_schema_for(relative_path: &Path) -> CsvSchema {
-	let normalized = relative_path.to_string_lossy().replace('\\', "/");
-	match normalized.as_str() {
+fn csv_schema_for(relative_path: &GamePath) -> CsvSchema {
+	match relative_path.as_str() {
 		"map/adjacencies.csv" => CsvSchema::Eu4Adjacencies,
 		"map/definition.csv" => CsvSchema::Eu4Definition,
 		_ => CsvSchema::Generic,
@@ -601,7 +579,7 @@ fn validate_csv_columns(
 fn parse_json_document(
 	mod_id: &str,
 	absolute_path: &Path,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> ParsedJsonDocument {
 	let mut properties = Vec::new();
 	let mut parse_issues = Vec::new();
@@ -610,14 +588,14 @@ fn parse_json_document(
 		Err(err) => {
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				line: 1,
 				column: 1,
 				message: format!("unable to read json file: {err}"),
 			});
 			return ParsedJsonDocument {
 				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
+				path: relative_path.to_owned(),
 				properties,
 				parse_issues,
 			};
@@ -628,7 +606,7 @@ fn parse_json_document(
 		Ok(json) => collect_json_properties(&json, "$", mod_id, relative_path, &mut properties),
 		Err(err) => parse_issues.push(ParseIssue {
 			mod_id: mod_id.to_string(),
-			path: relative_path.to_path_buf(),
+			path: relative_path.to_owned(),
 			line: err.line(),
 			column: err.column(),
 			message: err.to_string(),
@@ -637,7 +615,7 @@ fn parse_json_document(
 
 	ParsedJsonDocument {
 		mod_id: mod_id.to_string(),
-		path: relative_path.to_path_buf(),
+		path: relative_path.to_owned(),
 		properties,
 		parse_issues,
 	}
@@ -647,7 +625,7 @@ fn collect_json_properties(
 	value: &JsonValue,
 	base_path: &str,
 	mod_id: &str,
-	relative_path: &Path,
+	relative_path: &GamePath,
 	out: &mut Vec<JsonProperty>,
 ) {
 	match value {
@@ -657,7 +635,7 @@ fn collect_json_properties(
 				out.push(JsonProperty {
 					key_path: next.clone(),
 					mod_id: mod_id.to_string(),
-					path: relative_path.to_path_buf(),
+					path: relative_path.to_owned(),
 					line: 1,
 					column: 1,
 				});
@@ -705,42 +683,31 @@ fn split_csv_line(line: &str, delimiter: char) -> Vec<String> {
 	out
 }
 
-fn is_excluded_text_path(relative_path: &Path) -> bool {
-	let normalized = relative_path.to_string_lossy().replace('\\', "/");
-	for prefix in [
-		"licenses/",
-		"patchnotes/",
-		"ebook/",
-		"legal_notes/",
-		"builtin_dlc/",
-		"dlc_metadata/",
-		"hints/",
-	] {
-		if normalized.starts_with(prefix) {
+/// Loadable files the game does not read as text documents: anything inside
+/// `dlc_metadata/` or `hints/` (named exactly), and a few metadata files by
+/// name (ignoring ASCII case). Inventories come from the input walker, which
+/// has already left out every top-level directory that is not a loadable root
+/// (`licenses/`, `patchnotes/` and the like) and every file directly under the
+/// root.
+fn is_excluded_text_path(relative_path: &GamePath) -> bool {
+	for directory in ["dlc_metadata", "hints"] {
+		if relative_path.is_inside(&[directory], str::eq) {
 			return true;
 		}
 	}
-	let file_name = relative_path
-		.file_name()
-		.and_then(|value| value.to_str())
-		.map(|value| value.to_ascii_lowercase());
-	if file_name.as_deref().is_some_and(|value| {
-		matches!(
-			value,
-			"steam.txt"
-				| "描述.txt" | "thirdpartylicenses.txt"
-				| "checksum_manifest.txt"
-				| "clausewitz_branch.txt"
-				| "clausewitz_rev.txt"
-				| "eu4_branch.txt"
-				| "eu4_rev.txt"
-				| "launcher-settings.json"
-				| "settings-layout.json"
-		)
-	}) {
-		return true;
-	}
-	false
+	matches!(
+		relative_path.file_name().to_ascii_lowercase().as_str(),
+		"steam.txt"
+			| "描述.txt"
+			| "thirdpartylicenses.txt"
+			| "checksum_manifest.txt"
+			| "clausewitz_branch.txt"
+			| "clausewitz_rev.txt"
+			| "eu4_branch.txt"
+			| "eu4_rev.txt"
+			| "launcher-settings.json"
+			| "settings-layout.json"
+	)
 }
 
 fn record_family_parse_details(
@@ -801,140 +768,229 @@ fn document_parse_details(doc: &ParsedTextDocument) -> DocumentParseDetails {
 mod tests {
 	use super::{
 		build_semantic_index_from_documents, build_semantic_index_from_owned_documents,
-		classify_document_family, discover_text_documents, parse_csv_document,
-		parse_discovered_text_documents, parse_localisation_document,
+		classify_document_family, discover_text_documents_from_paths, is_excluded_text_path,
+		parse_csv_document, parse_discovered_text_documents, parse_localisation_document,
 	};
-	use crate::model::DocumentFamily;
+	use crate::game::eu4::Eu4;
+	use crate::input::{FileFilter, InventoryOwner, collect_relative_files};
+	use crate::model::{DocumentFamily, GamePath, GamePathBuf};
 	use std::fs;
-	use std::path::Path;
 	use tempfile::TempDir;
+
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
+	/// Writes each file under `root` and returns the root's inventory as the
+	/// input walker produces it, which is what discovery is given.
+	fn write_inventory(root: &std::path::Path, files: &[(&str, &[u8])]) -> Vec<GamePathBuf> {
+		for (relative, contents) in files {
+			let physical = GamePath::new(relative)
+				.expect("valid game path")
+				.to_path(root);
+			fs::create_dir_all(physical.parent().expect("parent")).expect("create parent");
+			fs::write(&physical, contents).expect("write file");
+		}
+		collect_relative_files(root, &FileFilter::for_game(Eu4), InventoryOwner::Mod("mod"))
+			.expect("walk inventory")
+	}
+
+	fn discovered_paths(root: &std::path::Path, inventory: &[GamePathBuf]) -> Vec<String> {
+		discover_text_documents_from_paths(root, inventory)
+			.into_iter()
+			.map(|doc| {
+				assert_eq!(doc.absolute_path, doc.relative_path.to_path(root));
+				doc.relative_path.into_string()
+			})
+			.collect()
+	}
 
 	#[test]
 	fn classify_supported_text_families() {
 		assert_eq!(
-			classify_document_family(Path::new("events/a.txt")),
+			classify_document_family(game_path("events/a.txt")),
 			Some(DocumentFamily::Clausewitz)
 		);
 		assert_eq!(
-			classify_document_family(Path::new("interface/a.gui")),
+			classify_document_family(game_path("interface/a.gui")),
 			Some(DocumentFamily::Clausewitz)
 		);
 		assert_eq!(
-			classify_document_family(Path::new("localisation/test_l_english.yml")),
+			classify_document_family(game_path("localisation/test_l_english.yml")),
 			Some(DocumentFamily::Localisation)
 		);
 		assert_eq!(
-			classify_document_family(Path::new("common/data.csv")),
+			classify_document_family(game_path("common/data.csv")),
 			Some(DocumentFamily::Csv)
 		);
 		assert_eq!(
-			classify_document_family(Path::new("common/settings.json")),
+			classify_document_family(game_path("common/settings.json")),
 			Some(DocumentFamily::Json)
 		);
 		assert_eq!(
-			classify_document_family(Path::new("common/defines/00_test.lua")),
+			classify_document_family(game_path("common/defines/00_test.lua")),
 			Some(DocumentFamily::Clausewitz)
 		);
 		assert_eq!(
-			classify_document_family(Path::new("common/defines.lua")),
+			classify_document_family(game_path("common/defines.lua")),
 			Some(DocumentFamily::Clausewitz)
 		);
 		assert_eq!(
-			classify_document_family(Path::new("script/shader.lua")),
+			classify_document_family(game_path("script/shader.lua")),
 			None
 		);
 	}
 
 	#[test]
-	fn discovery_finds_descriptor_and_ui_files() {
-		let tmp = TempDir::new().expect("temp dir");
-		fs::create_dir_all(tmp.path().join("interface")).expect("create interface");
-		fs::write(tmp.path().join("descriptor.mod"), "name=\"a\"").expect("write descriptor");
-		fs::write(
-			tmp.path().join("interface").join("main.gui"),
-			"windowType = { }",
-		)
-		.expect("write ui");
+	fn defines_paths_match_in_any_case_but_only_under_common() {
+		for text in [
+			"common/defines.lua",
+			"Common/Defines.LUA",
+			"common/defines/00_defines.lua",
+			"COMMON/DEFINES/nested/x.lua",
+		] {
+			assert_eq!(
+				classify_document_family(game_path(text)),
+				Some(DocumentFamily::Clausewitz),
+				"{text}"
+			);
+		}
+		for text in [
+			"common/defines",
+			"events/defines.lua",
+			"common/definesx/a.lua",
+		] {
+			assert_eq!(classify_document_family(game_path(text)), None, "{text}");
+		}
+	}
 
-		let docs = discover_text_documents(tmp.path());
-		assert!(
-			docs.iter()
-				.any(|doc| doc.relative_path == Path::new("descriptor.mod"))
+	#[test]
+	fn discovery_finds_ui_files_but_not_the_descriptor() {
+		let tmp = TempDir::new().expect("temp dir");
+		let inventory = write_inventory(
+			tmp.path(),
+			&[
+				("descriptor.mod", b"name=\"a\""),
+				("interface/main.gui", b"windowType = { }"),
+			],
 		);
-		assert!(
-			docs.iter()
-				.any(|doc| doc.relative_path == Path::new("interface/main.gui"))
+
+		assert_eq!(
+			discovered_paths(tmp.path(), &inventory),
+			vec!["interface/main.gui"]
 		);
 	}
 
 	#[test]
-	fn discovery_excludes_noise_prefixes() {
+	fn discovery_skips_inventory_paths_that_are_not_files() {
 		let tmp = TempDir::new().expect("temp dir");
-		fs::create_dir_all(tmp.path().join("licenses")).expect("create licenses");
-		fs::create_dir_all(tmp.path().join("patchnotes")).expect("create patchnotes");
-		fs::create_dir_all(tmp.path().join("builtin_dlc")).expect("create builtin dlc");
-		fs::create_dir_all(tmp.path().join("dlc_metadata")).expect("create dlc metadata");
-		fs::create_dir_all(tmp.path().join("hints")).expect("create hints");
-		fs::create_dir_all(tmp.path().join("events")).expect("create events");
-		fs::write(tmp.path().join("licenses").join("LUA.txt"), "license").expect("write license");
-		fs::write(tmp.path().join("patchnotes").join("1.0.txt"), "patchnotes")
-			.expect("write patchnotes");
-		fs::write(
-			tmp.path().join("builtin_dlc").join("builtin_dlc.txt"),
-			"dlc",
-		)
-		.expect("write builtin dlc");
-		fs::write(
-			tmp.path().join("dlc_metadata").join("metadata.txt"),
-			"metadata",
-		)
-		.expect("write dlc metadata");
-		fs::write(tmp.path().join("hints").join("tips.txt"), "hint").expect("write hints");
-		fs::write(
-			tmp.path().join("events").join("real.txt"),
-			"namespace = test",
-		)
-		.expect("write event");
+		let mut inventory =
+			write_inventory(tmp.path(), &[("events/real.txt", b"namespace = test")]);
+		inventory.push(GamePathBuf::parse("events/missing.txt").expect("valid game path"));
 
-		let docs = discover_text_documents(tmp.path());
-		assert_eq!(docs.len(), 1);
-		assert_eq!(docs[0].relative_path, Path::new("events/real.txt"));
+		assert_eq!(
+			discovered_paths(tmp.path(), &inventory),
+			vec!["events/real.txt"]
+		);
+	}
+
+	#[test]
+	fn discovery_excludes_noise_directories() {
+		let tmp = TempDir::new().expect("temp dir");
+		let inventory = write_inventory(
+			tmp.path(),
+			&[
+				// Not loadable roots: the walker never lists them.
+				("licenses/LUA.txt", b"license"),
+				("patchnotes/1.0.txt", b"patchnotes"),
+				("ebook/a.txt", b"ebook"),
+				("legal_notes/a.txt", b"legal"),
+				("builtin_dlc/builtin_dlc.txt", b"dlc"),
+				// Loadable roots that are not text documents.
+				("dlc_metadata/metadata.txt", b"metadata"),
+				("hints/tips.txt", b"hint"),
+				("events/real.txt", b"namespace = test"),
+			],
+		);
+
+		assert_eq!(
+			discovered_paths(tmp.path(), &inventory),
+			vec!["events/real.txt"]
+		);
+	}
+
+	#[test]
+	fn noise_directories_match_exactly_and_metadata_names_in_any_case() {
+		for (text, excluded) in [
+			("hints/tips.txt", true),
+			("dlc_metadata/metadata.txt", true),
+			("Hints/kept.txt", false),
+			("common/hints/kept.txt", false),
+			("common/steam.txt", true),
+			("interface/ThirdPartyLicenses.txt", true),
+			("common/描述.txt", true),
+			("common/launcher-settings.json", true),
+			("common/steam_events.txt", false),
+		] {
+			assert_eq!(is_excluded_text_path(game_path(text)), excluded, "{text}");
+		}
 	}
 
 	#[test]
 	fn discovery_excludes_known_description_text_files() {
 		let tmp = TempDir::new().expect("temp dir");
-		fs::create_dir_all(tmp.path().join("events")).expect("create events");
-		fs::write(tmp.path().join("steam.txt"), "steam bbcode").expect("write steam");
-		fs::write(tmp.path().join("描述.txt"), "mod description").expect("write desc");
-		fs::write(
-			tmp.path().join("ThirdPartyLicenses.txt"),
-			"third party licenses",
-		)
-		.expect("write third-party licenses");
-		fs::write(tmp.path().join("checksum_manifest.txt"), "checksums")
-			.expect("write checksum manifest");
-		fs::write(tmp.path().join("clausewitz_branch.txt"), "branch")
-			.expect("write clausewitz branch");
-		fs::write(tmp.path().join("clausewitz_rev.txt"), "rev").expect("write clausewitz rev");
-		fs::write(tmp.path().join("eu4_branch.txt"), "branch").expect("write eu4 branch");
-		fs::write(tmp.path().join("eu4_rev.txt"), "rev").expect("write eu4 rev");
-		fs::write(
-			tmp.path().join("launcher-settings.json"),
-			"{\"launcher\":true}",
-		)
-		.expect("write launcher settings");
-		fs::write(tmp.path().join("settings-layout.json"), "{\"layout\":true}")
-			.expect("write settings layout");
-		fs::write(
-			tmp.path().join("events").join("real.txt"),
-			"namespace = test",
-		)
-		.expect("write event");
+		let inventory = write_inventory(
+			tmp.path(),
+			&[
+				// Directly under the root: the walker never lists them.
+				("steam.txt", b"steam bbcode"),
+				("描述.txt", b"mod description"),
+				("launcher-settings.json", b"{\"launcher\":true}"),
+				// Inside a loadable root: excluded by name.
+				("common/steam.txt", b"steam bbcode"),
+				("common/描述.txt", b"mod description"),
+				("common/ThirdPartyLicenses.txt", b"third party licenses"),
+				("common/checksum_manifest.txt", b"checksums"),
+				("common/clausewitz_branch.txt", b"branch"),
+				("common/clausewitz_rev.txt", b"rev"),
+				("common/eu4_branch.txt", b"branch"),
+				("common/eu4_rev.txt", b"rev"),
+				("common/launcher-settings.json", b"{\"launcher\":true}"),
+				("common/settings-layout.json", b"{\"layout\":true}"),
+				("events/real.txt", b"namespace = test"),
+			],
+		);
 
-		let docs = discover_text_documents(tmp.path());
-		assert_eq!(docs.len(), 1);
-		assert_eq!(docs[0].relative_path, Path::new("events/real.txt"));
+		assert_eq!(
+			discovered_paths(tmp.path(), &inventory),
+			vec!["events/real.txt"]
+		);
+	}
+
+	#[test]
+	fn discovery_orders_documents_by_component() {
+		let tmp = TempDir::new().expect("temp dir");
+		let inventory = write_inventory(
+			tmp.path(),
+			&[
+				("common/defines.lua", b"NDefines = {}"),
+				("common/defines/00_defines.lua", b"NDefines = {}"),
+				("events/a-b.txt", b"namespace = a"),
+				("events/a/b.txt", b"namespace = b"),
+			],
+		);
+
+		// A directory sorts before a sibling file whose name extends its own
+		// with a character below `/`: the order documents were always indexed in.
+		assert_eq!(
+			discovered_paths(tmp.path(), &inventory),
+			vec![
+				"common/defines/00_defines.lua",
+				"common/defines.lua",
+				"events/a/b.txt",
+				"events/a-b.txt",
+			]
+		);
 	}
 
 	#[test]
@@ -949,7 +1005,7 @@ mod tests {
 		.expect("write loc");
 
 		let parsed =
-			parse_localisation_document("mod", &path, Path::new("localisation/test_l_english.yml"));
+			parse_localisation_document("mod", &path, game_path("localisation/test_l_english.yml"));
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		assert_eq!(parsed.entries.len(), 1);
 		assert_eq!(parsed.entries[0].key, "example.key");
@@ -963,7 +1019,7 @@ mod tests {
 		fs::write(&path, "l_english:\nexample.key:0 Tooltip without quotes\n").expect("write loc");
 
 		let parsed =
-			parse_localisation_document("mod", &path, Path::new("localisation/bad_l_english.yml"));
+			parse_localisation_document("mod", &path, game_path("localisation/bad_l_english.yml"));
 		assert_eq!(parsed.entries.len(), 0);
 		assert_eq!(parsed.parse_issues.len(), 1);
 	}
@@ -980,7 +1036,7 @@ mod tests {
 		.expect("write loc");
 
 		let parsed =
-			parse_localisation_document("mod", &path, Path::new("localisation/languages.yml"));
+			parse_localisation_document("mod", &path, game_path("localisation/languages.yml"));
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		assert_eq!(parsed.entries.len(), 2);
 	}
@@ -993,7 +1049,7 @@ mod tests {
 		fs::write(&path, "# comment only\n# l_german:\n").expect("write loc");
 
 		let parsed =
-			parse_localisation_document("mod", &path, Path::new("localisation/empty_l_german.yml"));
+			parse_localisation_document("mod", &path, game_path("localisation/empty_l_german.yml"));
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		assert!(parsed.entries.is_empty());
 	}
@@ -1009,7 +1065,7 @@ mod tests {
 		)
 		.expect("write csv");
 
-		let parsed = parse_csv_document("mod", &path, Path::new("map/adjacencies.csv"));
+		let parsed = parse_csv_document("mod", &path, game_path("map/adjacencies.csv"));
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		assert_eq!(parsed.rows.len(), 2);
 	}
@@ -1021,7 +1077,7 @@ mod tests {
 		fs::create_dir_all(path.parent().expect("csv parent")).expect("create csv dir");
 		fs::write(&path, b"Name;Value\nMalm\xf6;1\n").expect("write csv");
 
-		let parsed = parse_csv_document("mod", &path, Path::new("common/names.csv"));
+		let parsed = parse_csv_document("mod", &path, game_path("common/names.csv"));
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		assert_eq!(parsed.rows[1].identity, "Malmö");
 	}
@@ -1037,7 +1093,7 @@ mod tests {
 		)
 		.expect("write csv");
 
-		let parsed = parse_csv_document("mod", &path, Path::new("map/definition.csv"));
+		let parsed = parse_csv_document("mod", &path, game_path("map/definition.csv"));
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 		assert_eq!(parsed.rows.len(), 3);
 	}
@@ -1053,7 +1109,7 @@ mod tests {
 		)
 		.expect("write csv");
 
-		let parsed = parse_csv_document("mod", &path, Path::new("map/definition.csv"));
+		let parsed = parse_csv_document("mod", &path, game_path("map/definition.csv"));
 		assert_eq!(parsed.parse_issues.len(), 2, "{:?}", parsed.parse_issues);
 	}
 
@@ -1084,7 +1140,14 @@ mod tests {
 		)
 		.expect("write json");
 
-		let discovered = discover_text_documents(tmp.path());
+		let inventory = [
+			"common/data.csv",
+			"common/settings.json",
+			"events/test.txt",
+			"localisation/test_l_english.yml",
+		]
+		.map(|text| GamePathBuf::parse(text).expect("valid game path"));
+		let discovered = discover_text_documents_from_paths(tmp.path(), &inventory);
 		let mut batch = parse_discovered_text_documents("mod-a", tmp.path(), &discovered);
 		let duplicate_clausewitz = batch
 			.documents
@@ -1105,5 +1168,41 @@ mod tests {
 			4,
 			"duplicate record behavior changed"
 		);
+	}
+	/// Document records are listed in component order whatever order the
+	/// documents arrive in: it is the order persisted snapshots record them
+	/// in, and byte order would reverse both pairs here.
+	#[test]
+	fn index_documents_are_in_component_order() {
+		let tmp = TempDir::new().expect("temp dir");
+		let inventory = write_inventory(
+			tmp.path(),
+			&[
+				("common/defines.lua", b"NDefines = {}"),
+				("common/defines/00_defines.lua", b"NDefines = {}"),
+				("events/a-b.txt", b"namespace = a"),
+				("events/a/b.txt", b"namespace = b"),
+			],
+		);
+		let discovered = discover_text_documents_from_paths(tmp.path(), &inventory);
+		let mut batch = parse_discovered_text_documents("mod-a", tmp.path(), &discovered);
+		batch.documents.reverse();
+		let expected = vec![
+			"common/defines/00_defines.lua",
+			"common/defines.lua",
+			"events/a/b.txt",
+			"events/a-b.txt",
+		];
+
+		let borrowed = build_semantic_index_from_documents(&batch.documents);
+		let owned = build_semantic_index_from_owned_documents(batch.documents);
+		for index in [borrowed, owned] {
+			let paths = index
+				.documents
+				.iter()
+				.map(|document| document.path.as_str())
+				.collect::<Vec<_>>();
+			assert_eq!(paths, expected);
+		}
 	}
 }

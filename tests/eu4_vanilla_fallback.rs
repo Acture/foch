@@ -4,7 +4,6 @@ use foch::model::{
 	AnalysisMode, MaybeScope, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind,
 	SymbolReference, base_scope,
 };
-use std::path::PathBuf;
 
 fn reference(kind: SymbolKind, name: &str) -> SymbolReference {
 	SymbolReference {
@@ -12,7 +11,8 @@ fn reference(kind: SymbolKind, name: &str) -> SymbolReference {
 		name: name.to_string(),
 		module: "mod_module".to_string(),
 		mod_id: "test_mod".to_string(),
-		path: PathBuf::from("common/scripted_effects/test.txt"),
+		path: foch::model::GamePathBuf::parse("common/scripted_effects/test.txt")
+			.expect("valid game path"),
 		line: 3,
 		column: 2,
 		scope_id: 0,
@@ -29,7 +29,8 @@ fn definition(kind: SymbolKind, name: &str, local_name: &str) -> SymbolDefinitio
 		module: "vanilla".to_string(),
 		local_name: local_name.to_string(),
 		mod_id: "__game__eu4".to_string(),
-		path: PathBuf::from("common/scripted_effects/vanilla.txt"),
+		path: foch::model::GamePathBuf::parse("common/scripted_effects/vanilla.txt")
+			.expect("valid game path"),
 		line: 1,
 		column: 1,
 		scope_id: 0,

@@ -34,7 +34,7 @@ pub use analyze::{
 	run_merge_with_options,
 };
 pub use commit::{CommitAuthorization, CommitResult, ReplacementTarget};
-pub use error::MergeError;
+pub use error::{MergeError, MergeErrorSubject};
 pub use kernel_adapter::{MergeBackendDescriptor, MergeBackendId};
 #[allow(unused_imports)]
 pub(crate) use output::{localisation_merge, materialize, stale_vanilla};

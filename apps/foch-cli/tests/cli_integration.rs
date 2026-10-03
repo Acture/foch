@@ -86,10 +86,18 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 	);
 }
 
+/// A test path as an argument, environment or configuration value. Test
+/// directories are UTF-8; one that is not fails the test instead of being
+/// rendered as some other path.
+fn path_text(path: &Path) -> &str {
+	path.to_str().expect("UTF-8 test path")
+}
+
+/// The text between the quotes of a descriptor `path` value, written by the
+/// descriptor format's own encoder.
 fn descriptor_path_value(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.replace('"', "\\\"")
+	foch::playset::descriptor::descriptor_path_text(path)
+		.expect("a fixture directory has descriptor text")
 }
 
 fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
@@ -223,7 +231,7 @@ fn game_path_config(game_root: &Path) -> String {
 	let mut game_path = toml::Table::new();
 	game_path.insert(
 		"eu4".into(),
-		toml::Value::String(game_root.to_string_lossy().into_owned()),
+		toml::Value::String(path_text(game_root).to_owned()),
 	);
 	config.insert("game_path".into(), toml::Value::Table(game_path));
 	toml::to_string(&config).expect("serialize game path config")
@@ -237,7 +245,7 @@ fn steam_root_config(steam_root: &Path) -> String {
 	let mut config = toml::Table::new();
 	config.insert(
 		"steam_root_path".into(),
-		toml::Value::String(steam_root.to_string_lossy().into_owned()),
+		toml::Value::String(path_text(steam_root).to_owned()),
 	);
 	toml::to_string(&config).expect("serialize steam root config")
 }
@@ -380,7 +388,7 @@ path = "local-mod"
 	)
 	.expect("write manifest");
 
-	let manifest_arg = manifest.to_string_lossy().to_string();
+	let manifest_arg = path_text(&manifest).to_owned();
 	let (code, stdout, stderr) = run_foch(&["input", "inspect", manifest_arg.as_str()], tmp.path());
 
 	assert_eq!(code, 0, "stderr: {stderr}");
@@ -455,6 +463,115 @@ fn merge_rejects_missing_enabled_inputs_before_base_loading_or_export() {
 	assert_eq!(code, 0, "{stdout}\n{stderr}");
 }
 
+/// A mod holding both `common/a/b.txt` and a file literally named
+/// `common/a\b.txt` stops the merge before anything is written: the second
+/// name has no portable game path, and folding it onto the first would merge
+/// two files as one. Only a Unix host can create the second name.
+#[cfg(unix)]
+#[test]
+fn merge_stops_on_a_mod_file_whose_name_has_no_game_path() {
+	let tmp: TempDir = TempDir::new().expect("temp dir");
+	let mod_root: PathBuf = tmp.path().join("alias_mod");
+	write_descriptor(&mod_root, "Alias Mod");
+	write_script_file(&mod_root, "common/a/b.txt", "nested = yes\n");
+	let literal: PathBuf = mod_root.join("common").join(r"a\b.txt");
+	fs::write(&literal, "literal = yes\n").expect("write literal-backslash file");
+	let manifest: PathBuf = tmp.path().join("foch.toml");
+	// The id differs from the directory name, so only the inventory walker's
+	// own diagnostic can name `alias_id`.
+	fs::write(
+		&manifest,
+		"[project]\ngame = 'eu4'\n[[project.mods]]\nid = 'alias_id'\npath = 'alias_mod'\n",
+	)
+	.expect("write manifest");
+
+	for confirm in [false, true] {
+		let out: PathBuf = tmp.path().join(format!("out-{confirm}"));
+		let mut args: Vec<&str> = vec![
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+		];
+		if confirm {
+			args.push("--confirm");
+		}
+		let (code, stdout, stderr): (i32, String, String) = run_foch(&args, tmp.path());
+		assert_eq!(code, 1, "{stdout}\n{stderr}");
+		for expected in [
+			"mod alias_id: ".to_string(),
+			literal.display().to_string(),
+			"no portable game path".to_string(),
+		] {
+			assert!(stderr.contains(&expected), "{expected} not in {stderr}");
+		}
+		assert!(!out.exists(), "an unportable input must not publish output");
+	}
+}
+
+/// The merged descriptor's `path` is read back without escapes, so an output
+/// directory whose name holds a `"` has no spelling there: the merge stops
+/// before publishing instead of writing a descriptor that names another
+/// directory. A clean single-mod merge, so nothing else stops it.
+#[cfg(unix)]
+#[test]
+fn merge_stops_on_an_output_directory_a_descriptor_cannot_name() {
+	let tmp: TempDir = TempDir::new().expect("temp dir");
+	let mod_root: PathBuf = tmp.path().join("present");
+	write_descriptor(&mod_root, "Present");
+	write_script_file(
+		&mod_root,
+		"common/scripted_effects/test.txt",
+		"present = { add_prestige = 1 }\n",
+	);
+	let manifest: PathBuf = tmp.path().join("foch.toml");
+	fs::write(
+		&manifest,
+		"[project]\ngame = 'eu4'\n[[project.mods]]\npath = 'present'\n",
+	)
+	.expect("write manifest");
+
+	for confirm in [false, true] {
+		let out: PathBuf = tmp.path().join(format!("merged \"{confirm}\""));
+		let mut args: Vec<&str> = vec![
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+		];
+		if confirm {
+			args.push("--confirm");
+		}
+		let (code, stdout, stderr): (i32, String, String) = run_foch(&args, tmp.path());
+		assert_eq!(code, 1, "{stdout}\n{stderr}");
+		assert!(
+			stderr.contains("cannot be named in a descriptor"),
+			"{stderr}"
+		);
+		assert!(!out.exists(), "an unnameable output must not be published");
+	}
+	// The same merge into a nameable directory publishes it.
+	let out: PathBuf = tmp.path().join("merged");
+	let (code, stdout, stderr): (i32, String, String) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+			"--confirm",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(out.join("descriptor.mod").is_file());
+}
+
 #[test]
 fn input_inspect_does_not_initialize_configuration() {
 	let tmp = TempDir::new().expect("tempdir");
@@ -478,7 +595,7 @@ path = "local-mod"
 		.env("FOCH_CONFIG_DIR", &config_dir)
 		.env("HOME", tmp.path().join("home"))
 		.env("FOCH_CACHE_ROOT", tmp.path().join("cache"))
-		.args(["input", "inspect", project.to_string_lossy().as_ref()])
+		.args(["input", "inspect", path_text(&project)])
 		.output()
 		.expect("run input inspect");
 
@@ -494,7 +611,7 @@ path = "local-mod"
 }
 
 fn build_base_data_install(config_dir: &Path, game_root: &Path) {
-	let game_root_str = game_root.display().to_string();
+	let game_root_str = path_text(game_root).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"data",
@@ -512,8 +629,8 @@ fn build_base_data_install(config_dir: &Path, game_root: &Path) {
 }
 
 fn build_release_assets(config_dir: &Path, game_root: &Path, output_dir: &Path) {
-	let game_root_str = game_root.display().to_string();
-	let output_dir_str = output_dir.display().to_string();
+	let game_root_str = path_text(game_root).to_owned();
+	let output_dir_str = path_text(output_dir).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"data",
@@ -656,10 +773,10 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 			.join("dag-base")
 			.join("v12.0.0")
 			.join("dag-base-entry.bin"),
-		cwt_rules: root.join("cwt-rules").join("v0.11.0").join("cwt-entry.bin"),
+		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v11.0.0")
+			.join("v12.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),
@@ -680,7 +797,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 }
 
 fn cache_env_values(root: &Path) -> Vec<(String, String)> {
-	vec![("FOCH_CACHE_ROOT".to_string(), root.display().to_string())]
+	vec![("FOCH_CACHE_ROOT".to_string(), path_text(root).to_owned())]
 }
 
 fn read_json_file(path: &Path) -> serde_json::Value {
@@ -716,7 +833,7 @@ fn cache_commands_stats_where_and_clean_noop() {
 fn missing_playset_path_returns_exit_1() {
 	let tmp = TempDir::new().expect("temp dir");
 	let missing = tmp.path().join("missing.json");
-	let missing_string = missing.display().to_string();
+	let missing_string = path_text(&missing).to_owned();
 	let args = ["check", missing_string.as_str()];
 
 	let (code, stdout, _stderr) = run_foch(&args, tmp.path());
@@ -732,7 +849,7 @@ fn strict_mode_returns_exit_2_when_findings_exist() {
 	write_dlc_load(&playlist_path, &[("4001", "A"), ("4001", "B")]);
 	write_descriptor(&tmp.path().join("4001"), "mod-a");
 
-	let playlist_str = playlist_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
 	let args = ["check", playlist_str.as_str(), "--strict", "--no-game-base"];
 	let (code, stdout, _stderr) = run_foch(&args, tmp.path());
 
@@ -749,8 +866,8 @@ fn check_json_output_can_be_deserialized() {
 	write_dlc_load(&playlist_path, &[("5001", "A")]);
 	write_descriptor(&tmp.path().join("5001"), "mod-a");
 
-	let playlist_str = playlist_path.display().to_string();
-	let output_str = output_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let output_str = path_text(&output_path).to_owned();
 	let args = [
 		"check",
 		playlist_str.as_str(),
@@ -769,13 +886,72 @@ fn check_json_output_can_be_deserialized() {
 	assert!(parsed.get("findings").is_some());
 }
 
+/// A finding about a script names its file by game path under `path`, as it
+/// always has. A finding about an input file (here a descriptor) leaves
+/// `path` null and names the physical file under `source_file`.
+#[test]
+fn check_json_findings_keep_game_paths_and_input_files_apart() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let output_path = tmp.path().join("result.json");
+
+	write_dlc_load(&playlist_path, &[("5101", "A"), ("5102", "B")]);
+	let mod_a = tmp.path().join("5101");
+	let mod_b = tmp.path().join("5102");
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor_with_dependencies(&mod_b, "mod-b", &["absent-mod"]);
+	write_script_file(&mod_a, "common/shared.txt", "a = 1\n");
+	write_script_file(&mod_b, "common/shared.txt", "a = 2\n");
+
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let output_str = path_text(&output_path).to_owned();
+	let args = [
+		"check",
+		playlist_str.as_str(),
+		"--format",
+		"json",
+		"--output",
+		output_str.as_str(),
+		"--no-game-base",
+	];
+	let (code, _stdout, stderr) = run_foch(&args, tmp.path());
+	assert_eq!(code, 0, "{stderr}");
+
+	let content = fs::read_to_string(output_path).expect("read json output");
+	let parsed: serde_json::Value = serde_json::from_str(&content).expect("deserialize result");
+	let findings = parsed["findings"].as_array().expect("findings array");
+	let finding = |rule_id: &str| {
+		findings
+			.iter()
+			.find(|finding| finding["rule_id"] == rule_id)
+			.unwrap_or_else(|| panic!("no {rule_id} finding in {content}"))
+	};
+
+	let conflict = finding("file-overwrite-conflict");
+	assert_eq!(conflict["path"], "common/shared.txt");
+	assert!(conflict.get("source_file").is_none(), "{conflict}");
+
+	let dependency = finding("missing-mod-dependency");
+	assert!(dependency["path"].is_null(), "{dependency}");
+	let source_file = Path::new(
+		dependency["source_file"]
+			.as_str()
+			.expect("the descriptor is named"),
+	);
+	assert!(
+		source_file.ends_with(Path::new("5102").join("descriptor.mod")),
+		"{}",
+		source_file.display()
+	);
+}
+
 #[test]
 fn check_rejects_removed_graph_flags() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	write_dlc_load(&playlist_path, &[]);
 
-	let playlist_str = playlist_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
 	let args = ["check", playlist_str.as_str(), "--graph-out", "graph.json"];
 
 	let (code, _stdout, stderr) = run_foch(&args, tmp.path());
@@ -810,8 +986,8 @@ fn graph_command_resolves_runtime_calls_even_without_declared_dependency() {
 	)
 	.expect("write effect");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"graph",
@@ -886,8 +1062,8 @@ fn graph_command_exports_declared_dependency_and_symbol_tree() {
 	)
 	.expect("write effect");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"graph",
@@ -968,8 +1144,8 @@ fn graph_modules_command_writes_module_report() {
 		"shared_effect = { log = provider }\n",
 	);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let report_path = out_dir.join(".foch").join("module-report.json");
 	let (code, stdout, stderr) = run_foch(
 		&[
@@ -1006,8 +1182,8 @@ fn semantic_graph_requires_family_argument() {
 	let out_dir = tmp.path().join("graphs");
 	write_dlc_load(&playlist_path, &[]);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"graph",
@@ -1047,8 +1223,8 @@ fn semantic_graph_writes_family_json_and_html() {
 	)
 	.expect("write holy order");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"graph",
@@ -1116,8 +1292,8 @@ fn semantic_graph_real_minimized_playlist_emits_progress_and_real_nodes() {
 		.join("eu4_real_minimized")
 		.join("playlist.json");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"graph",
@@ -1239,8 +1415,8 @@ fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_ca
 	write_game_path_config(tmp.path(), &game_root);
 	build_base_data_install(tmp.path(), &game_root);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"simplify",
@@ -1302,7 +1478,7 @@ fn simplify_command_in_place_removes_empty_files() {
 	write_game_path_config(tmp.path(), &game_root);
 	build_base_data_install(tmp.path(), &game_root);
 
-	let playlist_str = playlist_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"simplify",
@@ -1345,8 +1521,8 @@ fn merge_preview_returns_exit_0_when_plan_has_manual_conflicts() {
 	write_descriptor(&tmp.path().join("7252"), "mod-b");
 	stage_structural_manual_conflict(&tmp.path().join("7251"), &tmp.path().join("7252"));
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"merge",
@@ -1369,6 +1545,80 @@ fn merge_preview_returns_exit_0_when_plan_has_manual_conflicts() {
 }
 
 #[test]
+fn merge_preview_limits_each_disposition_and_can_show_every_unit() {
+	let tmp: TempDir = TempDir::new().expect("temp dir");
+	let playlist_path: PathBuf = tmp.path().join("playlist.json");
+	let out_dir: PathBuf = tmp.path().join("merged-out");
+	let mod_a: PathBuf = tmp.path().join("7251");
+	let mod_b: PathBuf = tmp.path().join("7252");
+	write_dlc_load(&playlist_path, &[("7251", "A"), ("7252", "B")]);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	stage_structural_manual_conflict(&mod_a, &mod_b);
+	fs::create_dir_all(mod_a.join("gfx")).expect("create gfx dir");
+	for index in 0..25 {
+		fs::write(mod_a.join(format!("gfx/copy-{index:02}.dds")), [0, 1, 2])
+			.expect("write copied asset");
+	}
+	for mod_root in [&mod_a, &mod_b] {
+		for index in 0..24 {
+			fs::copy(
+				mod_root.join("events/conflict.txt"),
+				mod_root.join(format!("events/z-conflict-{index:02}.txt")),
+			)
+			.expect("write additional unsupported unit");
+		}
+	}
+	let mut args: Vec<&str> = vec![
+		"merge",
+		path_text(&playlist_path),
+		"--out",
+		path_text(&out_dir),
+		"--no-game-base",
+		"--non-interactive",
+	];
+	let (code, stdout, stderr) = run_foch(&args, tmp.path());
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert_eq!(stdout.matches("- [copy]").count(), 20, "{stdout}");
+	assert_eq!(
+		stdout.matches("- [unsupported_input]").count(),
+		20,
+		"{stdout}"
+	);
+	assert!(stdout.contains("  copy: 25"), "{stdout}");
+	assert!(stdout.contains("  unsupported_input: 25"), "{stdout}");
+	assert!(
+		stdout.contains("[unsupported_input] events/conflict.txt"),
+		"{stdout}"
+	);
+	assert!(stdout.contains("5 more copy units"), "{stdout}");
+	assert!(
+		stdout.contains("5 more unsupported_input units"),
+		"{stdout}"
+	);
+	assert!(stdout.contains("--review-all"), "{stdout}");
+	assert!(!stdout.contains("gfx/copy-24.dds"), "{stdout}");
+	assert!(!out_dir.exists(), "preview must not create --out");
+
+	args.push("--review-all");
+	let (code, stdout, stderr) = run_foch(&args, tmp.path());
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert_eq!(stdout.matches("- [copy]").count(), 25, "{stdout}");
+	assert_eq!(
+		stdout.matches("- [unsupported_input]").count(),
+		25,
+		"{stdout}"
+	);
+	assert!(stdout.contains("gfx/copy-24.dds"), "{stdout}");
+	assert!(
+		stdout.contains("[unsupported_input] events/conflict.txt"),
+		"{stdout}"
+	);
+	assert!(!stdout.contains("more copy units"), "{stdout}");
+	assert!(!out_dir.exists(), "full review must not create --out");
+}
+
+#[test]
 fn merge_command_defaults_to_plan_without_writing_output() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
@@ -1380,8 +1630,8 @@ fn merge_command_defaults_to_plan_without_writing_output() {
 	fs::create_dir_all(mod_root.join("common")).expect("create common dir");
 	fs::write(mod_root.join("common").join("only.txt"), "from-a\n").expect("write file");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"merge",
@@ -1414,8 +1664,8 @@ fn merge_command_generates_output_tree_and_returns_exit_0_for_clean_playset() {
 	fs::create_dir_all(mod_root.join("common")).expect("create common dir");
 	fs::write(mod_root.join("common").join("only.txt"), "from-a\n").expect("write file");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, _stderr) = run_foch(
 		&[
 			"merge",
@@ -1488,8 +1738,8 @@ fn merge_command_ignore_dep_drops_declared_edge_and_reports_override() {
 	write_script_file(&mod_a, relative_path, "effect_a = { log = a }\n");
 	write_script_file(&mod_b, relative_path, "effect_b = { log = b }\n");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"merge",
@@ -1529,8 +1779,8 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 		&tmp.path().join("9103"),
 	);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, _stderr) = run_foch(
 		&[
 			"merge",
@@ -1570,8 +1820,8 @@ fn merge_command_force_writes_placeholder_only_for_genuine_user_choice() {
 		&tmp.path().join("9103"),
 	);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, _stderr) = run_foch(
 		&[
 			"merge",
@@ -1609,8 +1859,8 @@ fn merge_command_non_interactive_does_not_enable_tui_prompting() {
 		&tmp.path().join("9103"),
 	);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"merge",
@@ -1645,8 +1895,8 @@ fn merge_command_cli_prompt_selects_simple_prompt_handler() {
 		&tmp.path().join("9103"),
 	);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"merge",
@@ -1685,8 +1935,8 @@ fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
 		&tmp.path().join("9103"),
 	);
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, stderr) = run_foch(
 		&[
 			"merge",
@@ -1736,8 +1986,8 @@ fn merge_command_defers_unsupported_input_and_exports_safe_files() {
 	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
 	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, _stderr) = run_foch(
 		&[
 			"merge",
@@ -1783,8 +2033,8 @@ fn merge_command_force_mode_does_not_override_unsupported_input() {
 	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
 	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, _stderr) = run_foch(
 		&[
 			"merge",
@@ -1851,8 +2101,8 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 	)
 	.expect("write localisation");
 
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let out_str = path_text(&out_dir).to_owned();
 	let (code, stdout, _stderr) = run_foch(
 		&[
 			"merge",
@@ -1895,7 +2145,7 @@ fn default_base_game_mode_fails_when_game_root_is_missing() {
 	fs::create_dir_all(&config_dir).expect("create config dir");
 	write_no_auto_detect_config(&config_dir);
 
-	let playlist_str = playlist_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
 	let (code, stdout, _stderr) =
 		run_foch_with_env(&["check", playlist_str.as_str()], &config_dir, &[]);
 	assert_eq!(code, 1);
@@ -1913,7 +2163,7 @@ fn no_game_base_opt_out_allows_check_without_game_root() {
 	fs::create_dir_all(&config_dir).expect("create config dir");
 	write_no_auto_detect_config(&config_dir);
 
-	let playlist_str = playlist_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
 	let (code, stdout, _stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
 		&config_dir,
@@ -1939,8 +2189,8 @@ fn check_parse_issue_report_writes_family_annotated_json() {
 	)
 	.expect("write broken localisation");
 
-	let playlist_str = playlist_path.display().to_string();
-	let report_str = report_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let report_str = path_text(&report_path).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"check",
@@ -1979,8 +2229,8 @@ fn no_game_base_without_detectable_version_skips_mod_snapshot_cache() {
 	)
 	.expect("write event");
 
-	let playlist_str = playlist_path.display().to_string();
-	let cache_root_str = cache_root.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let cache_root_str = path_text(&cache_root).to_owned();
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
 		tmp.path(),
@@ -2006,8 +2256,8 @@ fn check_no_game_base_does_not_persist_unversioned_mod_snapshot_cache() {
 	)
 	.expect("write event");
 
-	let playlist_str = playlist_path.display().to_string();
-	let cache_root_str = cache_root.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let cache_root_str = path_text(&cache_root).to_owned();
 	let envs = [("FOCH_CACHE_ROOT", cache_root_str.as_str())];
 
 	let (code, _stdout, stderr) = run_foch_with_env(
@@ -2180,8 +2430,8 @@ fn check_uses_installed_base_data_to_resolve_base_symbols() {
 	write_game_path_config(tmp.path(), &game_root);
 	build_base_data_install(tmp.path(), &game_root);
 
-	let playlist_str = playlist_path.display().to_string();
-	let output_str = output_path.display().to_string();
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let output_str = path_text(&output_path).to_owned();
 	let (code, _stdout, _stderr) = run_foch(
 		&[
 			"check",
@@ -2262,9 +2512,9 @@ fn data_build_emits_progress_and_profile_output() {
 	)
 	.expect("write localisation");
 
-	let game_root_str = game_root.display().to_string();
-	let output_dir_str = output_dir.display().to_string();
-	let profile_str = profile_path.display().to_string();
+	let game_root_str = path_text(&game_root).to_owned();
+	let output_dir_str = path_text(&output_dir).to_owned();
+	let profile_str = path_text(&profile_path).to_owned();
 	let (code, _stdout, stderr) = run_foch(
 		&[
 			"data",

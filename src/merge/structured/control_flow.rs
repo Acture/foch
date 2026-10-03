@@ -1422,7 +1422,6 @@ fn value_key(value: &AstValue) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use crate::game::eu4::content::MergePolicies;
 	use crate::game::eu4::script::parser::{
@@ -1437,7 +1436,10 @@ mod tests {
 	use super::super::{canonicalize_clausewitz_file, merge_clausewitz_files};
 
 	fn parse(source: &str) -> AstFile {
-		let parsed = parse_clausewitz_content(PathBuf::from("common/test.txt"), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
 	}

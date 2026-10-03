@@ -195,7 +195,9 @@ impl NWayCorrespondence {
 			);
 		}
 		let delta_ns = nanos(delta_started.elapsed());
+		let facts_started = Instant::now();
 		let class_facts = build_class_facts(base, revisions, &classes, &revision_deltas);
+		let mapping_ns = mapping_ns.saturating_add(nanos(facts_started.elapsed()));
 
 		Ok((
 			Self {
@@ -1475,6 +1477,235 @@ mod tests {
 		assert_eq!(facts.deleted_by, vec![RevisionId::new(1)]);
 		assert_eq!(facts.present.len(), 1);
 		assert_eq!(facts.moved.len(), 1);
+	}
+
+	#[test]
+	fn class_facts_distinguish_reordering_from_insertion_per_revision() {
+		let entry = |name: &str| TreeNode::leaf("entry", name).with_anchor("entry", name);
+		let base: NormalizedTree = root(vec![entry("a"), entry("b"), entry("c")]);
+		let reordered: NormalizedTree = root(vec![entry("c"), entry("a"), entry("b")]);
+		let inserted: NormalizedTree = root(vec![entry("a"), entry("new"), entry("b"), entry("c")]);
+		let revisions: [MergeRevision<'_>; 2] = [
+			MergeRevision::new(RevisionId::LEFT, &reordered),
+			MergeRevision::new(RevisionId::RIGHT, &inserted),
+		];
+		let correspondence: NWayCorrespondence =
+			NWayCorrespondence::build(&base, &revisions).unwrap();
+		for (node_id, node) in reordered.nodes() {
+			let source: RevisionNode = RevisionNode::new(RevisionId::LEFT, node_id);
+			let facts: &NWayClassFacts =
+				&correspondence.class_facts[&correspondence.classes.class_of(source)];
+			assert_eq!(
+				facts.reordered.iter().any(|node| *node == source),
+				matches!(node.value.as_deref(), Some("a" | "c")),
+			);
+			assert!(facts.moved.is_empty());
+		}
+		for (node_id, _) in inserted.nodes() {
+			let source: RevisionNode = RevisionNode::new(RevisionId::RIGHT, node_id);
+			let facts: &NWayClassFacts =
+				&correspondence.class_facts[&correspondence.classes.class_of(source)];
+			assert!(!facts.reordered.iter().any(|node| *node == source));
+			assert!(facts.moved.is_empty());
+		}
+	}
+
+	#[test]
+	#[ignore = "bounded performance regression; run in release mode"]
+	fn large_class_facts_do_not_rescan_revision_edits() {
+		let tree = |changed: bool| -> NormalizedTree {
+			root(
+				(0..1_000)
+					.map(|group| {
+						TreeNode::branch(
+							"group",
+							(0..100)
+								.map(|offset| {
+									let index: usize = if changed { 99 - offset } else { offset };
+									TreeNode::leaf("entry", if changed { "new" } else { "old" })
+										.with_anchor("entry", format!("{group}/{index}"))
+								})
+								.collect(),
+						)
+						.with_anchor("group", group.to_string())
+					})
+					.collect(),
+			)
+		};
+		let base: NormalizedTree = tree(false);
+		let changed: NormalizedTree = tree(true);
+		let matching: Matching = TreeMatcher::default().match_trees(&base, &changed);
+		let classes: ClassMapping = ClassMapping::from_revision_matchings(
+			[(RevisionId::BASE, &base), (RevisionId::LEFT, &changed)],
+			[(RevisionId::BASE, RevisionId::LEFT, &matching)],
+		);
+		let deltas: BTreeMap<RevisionId, RevisionDelta> = BTreeMap::from([(
+			RevisionId::LEFT,
+			RevisionDelta::between(&base, RevisionId::LEFT, &changed, &matching),
+		)]);
+		let started: Instant = Instant::now();
+		let facts: BTreeMap<ClassId, NWayClassFacts> = build_class_facts(
+			&base,
+			&[MergeRevision::new(RevisionId::LEFT, &changed)],
+			&classes,
+			&deltas,
+		);
+		let elapsed: Duration = started.elapsed();
+		eprintln!("class facts for {} nodes: {elapsed:?}", changed.len());
+		assert_eq!(facts.len(), changed.len());
+		assert_eq!(
+			facts
+				.values()
+				.filter(|fact| !fact.reordered.is_empty())
+				.count(),
+			100_000
+		);
+		assert!(facts.values().all(|fact| fact.moved.is_empty()));
+		assert!(
+			elapsed < Duration::from_secs(5),
+			"class facts took {elapsed:?}"
+		);
+	}
+
+	#[test]
+	fn policy_cleanup_preserves_structural_conflicts_and_record_order() {
+		struct SelectA;
+		impl MergePolicy for SelectA {
+			fn resolve_nway_divergent_node(&self, context: NWayClassContext<'_>) -> PolicyDecision {
+				if context.base.unwrap().node.anchor.as_ref().unwrap().value == "a" {
+					PolicyDecision::Select(RevisionId::RIGHT)
+				} else {
+					PolicyDecision::Unresolved
+				}
+			}
+		}
+		let tree = |value: &str| -> NormalizedTree {
+			root(
+				["a", "b", "c"]
+					.map(|name| TreeNode::leaf("entry", value).with_anchor("entry", name))
+					.to_vec(),
+			)
+		};
+		let base: NormalizedTree = tree("base");
+		let left: NormalizedTree = tree("left");
+		let right: NormalizedTree = tree("right");
+		let revisions: [MergeRevision<'_>; 2] = [
+			MergeRevision::new(RevisionId::LEFT, &left),
+			MergeRevision::new(RevisionId::RIGHT, &right),
+		];
+		let correspondence: NWayCorrespondence =
+			NWayCorrespondence::build(&base, &revisions).unwrap();
+		let mut plan: NWaySelectionPlan =
+			correspondence.conservative_class_selection(&base, &revisions);
+		let a: RevisionNode = RevisionNode::new(RevisionId::RIGHT, NodeId::new(1));
+		let b: RevisionNode = RevisionNode::new(RevisionId::RIGHT, NodeId::new(2));
+		let c: RevisionNode = RevisionNode::new(RevisionId::RIGHT, NodeId::new(3));
+		let c_conflict: StructuralConflictDraft = plan.conflicts.pop().unwrap();
+		plan.conflicts = vec![
+			StructuralConflictDraft::new(
+				ConflictKind::Policy,
+				None,
+				None,
+				SourceSet::new([a, b]),
+				Vec::new(),
+				"shared a/b".into(),
+			),
+			StructuralConflictDraft::new(
+				ConflictKind::MoveMove,
+				None,
+				Some(RevisionNode::new(RevisionId::BASE, NodeId::new(1))),
+				SourceSet::default(),
+				Vec::new(),
+				"structural a".into(),
+			),
+			c_conflict.clone(),
+		];
+		let decision = |source: RevisionNode| -> MergeDecisionEvidence {
+			MergeDecisionEvidence {
+				affected_class: correspondence.classes.class_of(source),
+				policy: MergePolicyKind::DivergentNode,
+				reason: MergeDecisionReason::ExplicitDomainRule,
+				contributors: SourceSet::new([source]),
+				result: MergeDecisionResult::SelectSource { source },
+			}
+		};
+		let c_decision: MergeDecisionEvidence = decision(c);
+		plan.decisions = vec![decision(a), c_decision.clone(), decision(a)];
+		crate::merge::kernel::nway_policy::apply_nway_policy(
+			&base,
+			&revisions,
+			&correspondence,
+			&SelectA,
+			&mut plan,
+		);
+		assert_eq!(plan.conflicts.len(), 3);
+		assert_eq!(plan.conflicts[0].detail, "structural a");
+		assert_eq!(plan.conflicts[1], c_conflict);
+		assert_eq!(plan.conflicts[2].kind, ConflictKind::Policy);
+		assert!(
+			plan.conflicts[2]
+				.revisions
+				.iter()
+				.any(|source| *source == b)
+		);
+		assert_eq!(plan.decisions.len(), 2);
+		assert_eq!(plan.decisions[0], c_decision);
+		assert_eq!(
+			plan.decisions[1].affected_class,
+			correspondence.classes.class_of(a)
+		);
+	}
+
+	#[test]
+	#[ignore = "bounded performance regression; run in release mode"]
+	fn large_policy_selection_does_not_rescan_unrelated_conflicts() {
+		struct SelectLast;
+		impl MergePolicy for SelectLast {
+			fn resolve_nway_divergent_node(&self, _: NWayClassContext<'_>) -> PolicyDecision {
+				PolicyDecision::Select(RevisionId::RIGHT)
+			}
+		}
+		let tree = |value: &str| -> NormalizedTree {
+			root(
+				(0..20_000)
+					.map(|index| {
+						TreeNode::leaf("entry", value).with_anchor("entry", index.to_string())
+					})
+					.collect(),
+			)
+		};
+		let base: NormalizedTree = tree("base");
+		let left: NormalizedTree = tree("left");
+		let right: NormalizedTree = tree("right");
+		let revisions: [MergeRevision<'_>; 2] = [
+			MergeRevision::new(RevisionId::LEFT, &left),
+			MergeRevision::new(RevisionId::RIGHT, &right),
+		];
+		let correspondence: NWayCorrespondence =
+			NWayCorrespondence::build(&base, &revisions).unwrap();
+		let mut plan: NWaySelectionPlan =
+			correspondence.conservative_class_selection(&base, &revisions);
+		assert_eq!(plan.conflicts.len(), 20_000);
+		let started: Instant = Instant::now();
+		crate::merge::kernel::nway_policy::apply_nway_policy(
+			&base,
+			&revisions,
+			&correspondence,
+			&SelectLast,
+			&mut plan,
+		);
+		let elapsed: Duration = started.elapsed();
+		eprintln!("policy selection for 20000 conflicts: {elapsed:?}");
+		assert!(plan.conflicts.is_empty());
+		assert_eq!(plan.decisions.len(), 20_000);
+		assert!(plan.decisions.iter().all(|decision| matches!(
+			decision.result,
+			MergeDecisionResult::SelectSource { source } if source.revision == RevisionId::RIGHT
+		)));
+		assert!(
+			elapsed < Duration::from_secs(2),
+			"policy selection took {elapsed:?}"
+		);
 	}
 
 	#[test]

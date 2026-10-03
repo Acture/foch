@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 use std::fmt::{self, Display, Formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
+use walkdir::WalkDir;
 
-use super::compile::{CwtSchemaGraph, cwt_files};
+use super::compile::CwtSchemaGraph;
 use super::error::CwtLoadError;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -90,13 +91,116 @@ pub(crate) fn normalize_line_endings(bytes: &[u8]) -> Cow<'_, [u8]> {
 	Cow::Owned(normalized)
 }
 
+/// Every `.cwt` file below `root`, in schema file order. Both the schema id
+/// and compilation follow that order, and compilation lets a later file
+/// override an earlier one. A directory that cannot be read fails the load.
+pub(crate) fn cwt_files(root: &Path) -> Result<Vec<PathBuf>, CwtLoadError> {
+	let mut files = Vec::new();
+	for entry in WalkDir::new(root) {
+		let entry = entry.map_err(|error| {
+			let path = error
+				.path()
+				.map_or_else(|| root.to_path_buf(), Path::to_path_buf);
+			CwtLoadError::Io {
+				path,
+				source: error.into(),
+			}
+		})?;
+		if entry.file_type().is_file()
+			&& entry.path().extension().and_then(|ext| ext.to_str()) == Some("cwt")
+		{
+			files.push(entry.into_path());
+		}
+	}
+	if files.is_empty() {
+		return Err(CwtLoadError::NoRuleFiles {
+			root: root.to_path_buf(),
+		});
+	}
+	files.sort_by_cached_key(|path| (schema_file_order_key(root, path), path.clone()));
+	Ok(files)
+}
+
+/// Schema files are ordered by their names below `root`, ASCII case folded
+/// and joined with `/`, compared bytewise, so `a.cwt` precedes `a/b.cwt` and
+/// `B.cwt` sorts as `b.cwt`. Names that differ only in case fall back to the
+/// order of their exact paths, so the order is total. The key is built from
+/// the names' bytes; it orders files and never names one.
+fn schema_file_order_key(root: &Path, path: &Path) -> Vec<u8> {
+	let relative = path.strip_prefix(root).unwrap_or(path);
+	let mut key = Vec::new();
+	for (index, name) in relative.iter().enumerate() {
+		if index > 0 {
+			key.push(b'/');
+		}
+		key.extend(name.as_encoded_bytes().iter().map(u8::to_ascii_lowercase));
+	}
+	key
+}
+
 #[cfg(test)]
 mod tests {
 	use std::fs;
+	use std::path::Path;
 
-	use super::{CwtSchemaId, cwt_schema_id_from_dir};
+	use super::{CwtSchemaId, cwt_files, cwt_schema_id_from_dir};
 	use crate::game::schema::error::CwtLoadError;
 
+	fn relative_names(root: &Path) -> Vec<String> {
+		cwt_files(root)
+			.expect("walk schema files")
+			.iter()
+			.map(|path| {
+				let relative = path.strip_prefix(root).expect("below the root");
+				relative
+					.iter()
+					.map(|name| name.to_str().expect("UTF-8 fixture name"))
+					.collect::<Vec<_>>()
+					.join("/")
+			})
+			.collect()
+	}
+
+	/// The order compilation and the schema id follow: names below the root,
+	/// ASCII case folded, compared as `/`-joined text. A file sorts before a
+	/// directory sharing its stem (`.` is below `/`), and case does not move
+	/// a name.
+	#[test]
+	fn schema_files_are_ordered_by_their_case_folded_names_below_the_root() {
+		let root = tempfile::tempdir().unwrap();
+		for relative in ["c.cwt", "B.cwt", "a/b.cwt", "a.cwt", "a-b.cwt", "a/x.txt"] {
+			let path = root.path().join(relative);
+			fs::create_dir_all(path.parent().unwrap()).unwrap();
+			fs::write(path, b"types = { }\n").unwrap();
+		}
+
+		assert_eq!(
+			relative_names(root.path()),
+			["a-b.cwt", "a.cwt", "a/b.cwt", "B.cwt", "c.cwt"]
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn an_unreadable_schema_directory_fails_the_walk() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let root = tempfile::tempdir().unwrap();
+		fs::write(root.path().join("rules.cwt"), b"types = { }\n").unwrap();
+		let locked = root.path().join("locked");
+		fs::create_dir(&locked).unwrap();
+		fs::write(locked.join("hidden.cwt"), b"types = { }\n").unwrap();
+		fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+		let result = cwt_files(root.path());
+		fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+		let error = result.expect_err("a schema directory that cannot be read");
+		assert!(
+			matches!(&error, CwtLoadError::Io { path, .. } if path == &locked),
+			"{error}"
+		);
+	}
 	#[test]
 	fn schema_id_round_trips_through_hex() {
 		let dir = tempfile::tempdir().unwrap();

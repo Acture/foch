@@ -2,22 +2,26 @@ use foch::check::{run_checks, run_checks_with_options};
 use foch::input::{CheckOptions, Config, InputRequest};
 use foch::merge::{CancellationToken, MergeAnalysisOptions, NoopProgressObserver, analyze_merge};
 use foch::model::{
-	CheckResult, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
-	MergeReportStatus, MergeReportValidation, Severity,
+	CheckResult, Finding, GamePath, GamePathBuf, MergePlanEntry, MergePlanResult,
+	MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportStatus, MergeReportValidation,
+	Severity,
 };
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
+/// The text between the quotes of a descriptor `path` value, written by the
+/// descriptor format's own encoder.
 fn descriptor_path_value(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.replace('"', "\\\"")
+	foch::playset::descriptor::descriptor_path_text(path)
+		.expect("a fixture directory has descriptor text")
 }
 
 fn vdf_path_value(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "\\\\")
+	path.to_str()
+		.expect("UTF-8 fixture path")
+		.replace('\\', "\\\\")
 }
 
 fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
@@ -105,8 +109,33 @@ fn plan_entry_for<'a>(result: &'a MergePlanResult, path: &str) -> &'a MergePlanE
 	result
 		.paths
 		.iter()
-		.find(|entry| entry.output_path() == path)
+		.find(|entry| entry.output_path().as_str() == path)
 		.expect("merge plan entry exists")
+}
+
+fn game_path(text: &str) -> GamePathBuf {
+	GamePathBuf::parse(text).expect("valid game path")
+}
+
+fn finding<'a>(result: &'a CheckResult, rule_id: &str) -> &'a Finding {
+	result
+		.findings
+		.iter()
+		.find(|finding| finding.rule_id == rule_id)
+		.unwrap_or_else(|| panic!("no {rule_id} finding in {:?}", result.findings))
+}
+
+/// A finding about an input file names it physically in `source_file` and
+/// has no game path.
+fn assert_names_input_file(finding: &Finding, expected: &Path) {
+	assert_eq!(finding.path, None, "{finding:?}");
+	let source_file = finding.source_file.as_deref().expect("an input file");
+	assert_eq!(
+		fs::canonicalize(source_file.parent().expect("parent")).expect("canonical parent"),
+		fs::canonicalize(expected.parent().expect("parent")).expect("canonical parent"),
+		"{finding:?}"
+	);
+	assert_eq!(source_file.file_name(), expected.file_name(), "{finding:?}");
 }
 
 fn run_checks_no_base(request: InputRequest) -> CheckResult {
@@ -159,12 +188,7 @@ fn invalid_json_creates_playset_parse_error() {
 	fs::write(&playlist_path, "{broken").expect("write broken json");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "playset-parse-error")
-	);
+	assert_names_input_file(finding(&result, "playset-parse-error"), &playlist_path);
 }
 
 #[test]
@@ -177,12 +201,7 @@ fn duplicate_steam_id_creates_duplicate_playset_entry() {
 	write_descriptor(&temp.path().join("1001"), "mod-a", &[]);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "duplicate-playset-entry")
-	);
+	assert_names_input_file(finding(&result, "duplicate-playset-entry"), &playlist_path);
 }
 
 #[test]
@@ -194,11 +213,9 @@ fn missing_descriptor_creates_mod_descriptor_error() {
 	fs::create_dir_all(temp.path().join("1002")).expect("create mod dir");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "mod-descriptor-error")
+	assert_names_input_file(
+		finding(&result, "mod-descriptor-error"),
+		&temp.path().join("1002").join("descriptor.mod"),
 	);
 }
 
@@ -220,12 +237,12 @@ fn file_conflict_creates_file_overwrite_conflict() {
 	fs::write(mod_b.join("common").join("shared.txt"), "from-b").expect("write file");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "file-overwrite-conflict")
+	let conflict = finding(&result, "file-overwrite-conflict");
+	assert_eq!(
+		conflict.path.as_deref().map(GamePath::as_str),
+		Some("common/shared.txt")
 	);
+	assert_eq!(conflict.source_file, None);
 }
 
 #[test]
@@ -239,11 +256,9 @@ fn missing_dependency_creates_missing_mod_dependency() {
 	write_descriptor(&mod_a, "mod-a", &["mod-b"]);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| f.rule_id == "missing-mod-dependency")
+	assert_names_input_file(
+		finding(&result, "missing-mod-dependency"),
+		&mod_a.join("descriptor.mod"),
 	);
 }
 
@@ -726,8 +741,8 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 			input_paths,
 			outputs,
 			..
-		} if input_paths == &["common/scripted_effects/effects.txt"]
-			&& outputs[0].replace_prefix.is_none()
+		} if input_paths == &[game_path("common/scripted_effects/effects.txt")]
+			&& outputs[0].replace_prefix().is_none()
 	));
 	assert_eq!(
 		entry.winner.as_ref().expect("winner").mod_id,
@@ -769,7 +784,7 @@ fn merge_plan_groups_opted_in_governments_module_across_filenames() {
 	assert_eq!(result.strategies.structural_merge, 1, "plan: {result:#?}");
 	assert_eq!(result.paths.len(), 1, "plan: {result:#?}");
 	assert_eq!(
-		result.paths[0].output_path(),
+		result.paths[0].output_path().as_str(),
 		"common/governments/zzz_foch_governments.txt"
 	);
 	let MergePlanTarget::Module {
@@ -782,7 +797,7 @@ fn merge_plan_groups_opted_in_governments_module_across_filenames() {
 	};
 	assert_eq!(input_paths.len(), 2);
 	assert_eq!(
-		outputs[0].replace_prefix.as_deref(),
+		outputs[0].replace_prefix().map(GamePath::as_str),
 		Some("common/governments")
 	);
 }
@@ -808,9 +823,9 @@ fn merge_plan_keeps_single_governments_file_as_a_complete_module_target() {
 			input_paths,
 			outputs,
 			..
-		} if input_paths == &["common/governments/only.txt"]
-			&& outputs[0].output_path == "common/governments/zzz_foch_governments.txt"
-			&& outputs[0].replace_prefix.as_deref() == Some("common/governments")
+		} if input_paths == &[game_path("common/governments/only.txt")]
+			&& outputs[0].output_path().as_str() == "common/governments/zzz_foch_governments.txt"
+			&& outputs[0].replace_prefix().map(GamePath::as_str) == Some("common/governments")
 	));
 }
 
@@ -843,11 +858,11 @@ fn merge_plan_closes_common_institutions_across_filenames_without_replace_path()
 			outputs,
 			..
 		} if input_paths == &[
-			"common/institutions/00_Core.txt",
-			"common/institutions/00_ME_Override.txt",
+			game_path("common/institutions/00_Core.txt"),
+			game_path("common/institutions/00_ME_Override.txt"),
 		]
-			&& outputs[0].output_path == "common/institutions/zzz_foch_institutions.txt"
-			&& outputs[0].replace_prefix.is_none()
+			&& outputs[0].output_path().as_str() == "common/institutions/zzz_foch_institutions.txt"
+			&& outputs[0].replace_prefix().is_none()
 	));
 }
 

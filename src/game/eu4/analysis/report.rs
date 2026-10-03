@@ -600,7 +600,13 @@ fn render_finding(finding: &Finding, color: bool) -> String {
 	let path = finding
 		.path
 		.as_ref()
-		.map(|value| value.display().to_string())
+		.map(ToString::to_string)
+		.or_else(|| {
+			finding
+				.source_file
+				.as_ref()
+				.map(|value| value.display().to_string())
+		})
 		.unwrap_or_else(|| "<none>".to_string());
 	let mod_id = finding
 		.mod_id
@@ -651,7 +657,13 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 	// primary would understate the plan.
 	format!(
 		"[{strategy}] path={} winner={} contributors={}{}",
-		entry.target.output_paths().join(", "),
+		entry
+			.target
+			.output_paths()
+			.iter()
+			.map(|path| path.as_str())
+			.collect::<Vec<_>>()
+			.join(", "),
 		winner,
 		contributors,
 		notes
@@ -679,6 +691,7 @@ mod tests {
 			message: "synthetic finding".to_string(),
 			mod_id: None,
 			path: None,
+			source_file: None,
 			evidence: None,
 			line: None,
 			column: None,
@@ -726,6 +739,34 @@ mod tests {
 		assert!(summary.find("alpha-rule") < summary.find("beta-rule"));
 	}
 
+	/// A script finding shows its game path; a finding about an input file
+	/// shows that file's physical path, as it did before `path` split.
+	#[test]
+	fn rendered_findings_name_the_game_path_or_else_the_input_file() {
+		let mut script = finding("script-rule", Severity::Warning, FindingChannel::Advisory);
+		script.path = Some(crate::model::GamePathBuf::parse("events/x.txt").expect("valid"));
+		assert!(
+			render_finding(&script, false).contains(" path=events/x.txt "),
+			"{}",
+			render_finding(&script, false)
+		);
+
+		let playlist = std::env::temp_dir().join("playlist.json");
+		let mut input = finding("input-rule", Severity::Error, FindingChannel::Strict);
+		input.source_file = Some(playlist.clone());
+		let rendered = render_finding(&input, false);
+		assert!(
+			rendered.contains(&format!(" path={} ", playlist.display())),
+			"{rendered}"
+		);
+
+		let rendered = render_finding(
+			&finding("bare-rule", Severity::Info, FindingChannel::Advisory),
+			false,
+		);
+		assert!(rendered.contains(" path=<none> "), "{rendered}");
+	}
+
 	#[test]
 	fn render_text_appends_empty_findings_summary() {
 		let output = render_text(&CheckResult::default(), false, ChannelMode::All);
@@ -755,7 +796,8 @@ mod tests {
 		crate::model::StaleVanillaTargetDescriptor {
 			mod_id: mod_id.to_string(),
 			mod_version: "1.0".to_string(),
-			file_path: "common/example.txt".to_string(),
+			file_path: crate::model::GamePathBuf::parse("common/example.txt")
+				.expect("valid game path"),
 			patch_kind: "replace".to_string(),
 			target_path: vec!["root".to_string()],
 			target_key: None,
@@ -891,7 +933,8 @@ mod tests {
 	fn render_merge_report_text_includes_conflict_kinds() {
 		let report = MergeReport {
 			conflict_resolutions: vec![crate::model::MergeReportConflictResolution {
-				path: "history/countries/TES - Test.txt".to_string(),
+				path: crate::model::GamePathBuf::parse("history/countries/TES - Test.txt")
+					.expect("valid game path"),
 				reason: "manual resolution required".to_string(),
 				deferred_reason: crate::model::DeferredUnitReason::NeedsUserChoice,
 				kind: Some(ConflictKind::SchemaCardinalityViolation),

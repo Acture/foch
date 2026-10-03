@@ -1,4 +1,5 @@
 use semver::Version;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -55,14 +56,9 @@ static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// concurrently, and two writers of the same entry must not truncate or rename
 /// one temporary file under each other; the last complete rename wins.
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-	let extension: String = path
-		.extension()
-		.map(|extension| extension.to_string_lossy().into_owned())
-		.unwrap_or_default();
 	let (temporary, mut file) = loop {
 		let sequence: u64 = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-		let temporary: PathBuf =
-			path.with_extension(format!("{extension}.{}.{sequence}.tmp", std::process::id()));
+		let temporary: PathBuf = temporary_sibling(path, sequence);
 		match OpenOptions::new()
 			.write(true)
 			.create_new(true)
@@ -81,6 +77,14 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 		let _ = fs::remove_file(&temporary);
 	}
 	written
+}
+
+/// `path` with `.<pid>.<sequence>.tmp` appended to its extension. The
+/// extension is extended as it is, never re-spelled as text.
+fn temporary_sibling(path: &Path, sequence: u64) -> PathBuf {
+	let mut extension: OsString = path.extension().unwrap_or_default().to_os_string();
+	extension.push(format!(".{}.{sequence}.tmp", std::process::id()));
+	path.with_extension(extension)
 }
 
 pub fn cache_cap_bytes() -> u64 {
@@ -117,17 +121,9 @@ pub fn default_foch_cache_dir() -> PathBuf {
 }
 
 fn ensure_writable_dir(path: &Path) -> bool {
-	if fs::create_dir_all(path).is_err() {
-		return false;
-	}
-	let probe = path.join(".foch-write-test");
-	match fs::write(&probe, b"") {
-		Ok(()) => {
-			let _ = fs::remove_file(probe);
-			true
-		}
-		Err(_) => false,
-	}
+	// A shared probe name can be unavailable while another reader creates or
+	// removes it, changing the cache root despite the directory being writable.
+	fs::create_dir_all(path).is_ok() && tempfile::NamedTempFile::new_in(path).is_ok()
 }
 
 fn repo_fallback_cache_root_dir() -> PathBuf {
@@ -138,7 +134,46 @@ fn repo_fallback_cache_root_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-	use super::{cache_version_namespace, repo_fallback_cache_root_dir};
+	use super::{cache_version_namespace, ensure_writable_dir, repo_fallback_cache_root_dir};
+
+	#[test]
+	fn a_probe_name_collision_does_not_hide_a_writable_directory() {
+		let root: tempfile::TempDir = tempfile::tempdir().expect("cache root");
+		// An existing entry can make one fixed probe name unavailable even
+		// though other files can still be created in the directory.
+		let existing: std::path::PathBuf = root.path().join(".foch-write-test");
+		std::fs::create_dir(&existing).expect("occupy the former probe name");
+		assert!(ensure_writable_dir(root.path()));
+		assert!(
+			existing.is_dir(),
+			"the probe must preserve existing entries"
+		);
+	}
+
+	#[test]
+	fn concurrent_writability_checks_preserve_one_cache_directory() {
+		let root: tempfile::TempDir = tempfile::tempdir().expect("cache root");
+		let barrier: std::sync::Barrier = std::sync::Barrier::new(8);
+		std::thread::scope(|scope| {
+			for _ in 0..8 {
+				let directory: &std::path::Path = root.path();
+				let barrier: &std::sync::Barrier = &barrier;
+				scope.spawn(move || {
+					barrier.wait();
+					for _ in 0..32 {
+						assert!(ensure_writable_dir(directory));
+					}
+				});
+			}
+		});
+		assert_eq!(
+			std::fs::read_dir(root.path())
+				.expect("list cache root")
+				.count(),
+			0,
+			"writability checks must clean up their temporary files"
+		);
+	}
 
 	#[test]
 	fn cache_namespaces_require_semver() {
@@ -162,6 +197,38 @@ mod tests {
 			std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
 				.join("target")
 				.join("foch-cache")
+		);
+	}
+
+	#[test]
+	fn a_temporary_sibling_extends_the_extension_it_replaces() {
+		let pid: u32 = std::process::id();
+		for (path, expected) in [
+			("cache/entry.bin", format!("cache/entry.bin.{pid}.7.tmp")),
+			("cache/entry", format!("cache/entry..{pid}.7.tmp")),
+		] {
+			assert_eq!(
+				super::temporary_sibling(std::path::Path::new(path), 7),
+				std::path::PathBuf::from(expected),
+				"{path}"
+			);
+		}
+	}
+
+	/// In memory: some filesystems refuse names that are not UTF-8.
+	#[cfg(unix)]
+	#[test]
+	fn a_temporary_sibling_keeps_an_extension_that_is_not_utf8() {
+		use std::ffi::OsStr;
+		use std::os::unix::ffi::OsStrExt;
+
+		let path = std::path::Path::new(OsStr::from_bytes(b"cache/entry.\xff"));
+		let expected = format!(".{}.7.tmp", std::process::id());
+		let mut bytes: Vec<u8> = b"cache/entry.\xff".to_vec();
+		bytes.extend_from_slice(expected.as_bytes());
+		assert_eq!(
+			super::temporary_sibling(path, 7).as_os_str(),
+			OsStr::from_bytes(&bytes)
 		);
 	}
 

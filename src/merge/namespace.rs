@@ -11,9 +11,9 @@ use crate::game::eu4::script::parser::{AstStatement, AstValue};
 use crate::game::eu4::script::{ParsedScriptFile, is_decision_container_key};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 
 use crate::input::ResolvedInputContributor;
+use crate::model::GamePathBuf;
 
 use super::normalize::normalize_defines_file;
 
@@ -21,7 +21,7 @@ use super::normalize::normalize_defines_file;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyContributor {
 	pub mod_id: String,
-	pub file_path: String,
+	pub file_path: GamePathBuf,
 	pub precedence: usize,
 	pub is_base_game: bool,
 }
@@ -200,7 +200,7 @@ fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option
 pub(crate) fn build_family_key_index(
 	family_id: &str,
 	merge_key_source: MergeKeySource,
-	contributors_by_path: &BTreeMap<String, Vec<ResolvedInputContributor>>,
+	contributors_by_path: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 	_profile: &Eu4,
 ) -> FamilyKeyIndex {
 	let mut index = FamilyKeyIndex {
@@ -208,22 +208,19 @@ pub(crate) fn build_family_key_index(
 		..Default::default()
 	};
 
-	for (rel_path, contributors) in contributors_by_path {
+	for contributors in contributors_by_path.values() {
 		for contributor in contributors {
 			let parsed = crate::game::eu4::script::parse_script_file(
 				&contributor.mod_id,
 				&contributor.root_path,
-				&contributor.absolute_path,
+				&contributor.relative_path,
 			);
-			let Some(parsed) = parsed else {
-				continue;
-			};
 
 			let keys = extract_keys(&parsed, merge_key_source);
 			for key in keys {
 				index.entries.entry(key).or_default().push(KeyContributor {
 					mod_id: contributor.mod_id.clone(),
-					file_path: rel_path.clone(),
+					file_path: contributor.relative_path.clone(),
 					precedence: contributor.precedence,
 					is_base_game: contributor.is_base_game,
 				});
@@ -265,15 +262,14 @@ pub fn detect_key_conflicts(index: &FamilyKeyIndex) -> Vec<FamilyKeyConflict> {
 ///
 /// Returns `family_id → { relative_path → contributors }`.
 pub(crate) fn group_by_family(
-	file_inventory: &BTreeMap<String, Vec<ResolvedInputContributor>>,
+	file_inventory: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 	profile: &Eu4,
-) -> HashMap<String, BTreeMap<String, Vec<ResolvedInputContributor>>> {
-	let mut grouped: HashMap<String, BTreeMap<String, Vec<ResolvedInputContributor>>> =
+) -> HashMap<String, BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>> {
+	let mut grouped: HashMap<String, BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>> =
 		HashMap::new();
 
 	for (rel_path, contributors) in file_inventory {
-		let path = Path::new(rel_path);
-		if let Some(descriptor) = profile.classify_content_family(path) {
+		if let Some(descriptor) = profile.classify_content_family(rel_path) {
 			grouped
 				.entry(descriptor.id.as_str().to_string())
 				.or_default()
@@ -292,7 +288,8 @@ mod tests {
 	fn make_contributor(mod_id: &str, precedence: usize, is_base_game: bool) -> KeyContributor {
 		KeyContributor {
 			mod_id: mod_id.to_string(),
-			file_path: format!("common/test/{mod_id}.txt"),
+			file_path: GamePathBuf::parse(&format!("common/test/{mod_id}.txt"))
+				.expect("valid game path"),
 			precedence,
 			is_base_game,
 		}
@@ -334,13 +331,15 @@ mod tests {
 				vec![
 					KeyContributor {
 						mod_id: "mod_a".to_string(),
-						file_path: "common/scripted_triggers/shared.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/shared.txt")
+							.expect("valid game path"),
 						precedence: 1,
 						is_base_game: false,
 					},
 					KeyContributor {
 						mod_id: "mod_b".to_string(),
-						file_path: "common/scripted_triggers/shared.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/shared.txt")
+							.expect("valid game path"),
 						precedence: 2,
 						is_base_game: false,
 					},
@@ -363,13 +362,15 @@ mod tests {
 				vec![
 					KeyContributor {
 						mod_id: "mod_a".to_string(),
-						file_path: "common/scripted_triggers/a.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/a.txt")
+							.expect("valid game path"),
 						precedence: 1,
 						is_base_game: false,
 					},
 					KeyContributor {
 						mod_id: "mod_b".to_string(),
-						file_path: "common/scripted_triggers/b.txt".to_string(),
+						file_path: GamePathBuf::parse("common/scripted_triggers/b.txt")
+							.expect("valid game path"),
 						precedence: 2,
 						is_base_game: false,
 					},
@@ -436,16 +437,17 @@ mod tests {
 		use crate::game::eu4::content::eu4;
 
 		let profile = eu4();
-		let mut inventory: BTreeMap<String, Vec<ResolvedInputContributor>> = BTreeMap::new();
+		let mut inventory: BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>> = BTreeMap::new();
 
-		let trigger_path = "common/scripted_triggers/my_mod.txt";
-		let effect_path = "common/scripted_effects/my_mod.txt";
-		let unclassified_path = "some/random/file.txt";
+		let game_path = |text: &str| GamePathBuf::parse(text).expect("valid game path");
+		let trigger_path = game_path("common/scripted_triggers/my_mod.txt");
+		let effect_path = game_path("common/scripted_effects/my_mod.txt");
+		let unclassified_path = game_path("some/random/file.txt");
 
-		let dummy_contributor = ResolvedInputContributor {
+		let contributor = |relative_path: &GamePathBuf| ResolvedInputContributor {
 			mod_id: "test_mod".to_string(),
 			root_path: PathBuf::from("/mods/test"),
-			absolute_path: PathBuf::from("/mods/test/common/scripted_triggers/my_mod.txt"),
+			relative_path: relative_path.clone(),
 			precedence: 1,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -453,28 +455,16 @@ mod tests {
 			mod_hash: Some("hash-test_mod".to_string()),
 		};
 
-		inventory.insert(trigger_path.to_string(), vec![dummy_contributor.clone()]);
-		inventory.insert(
-			effect_path.to_string(),
-			vec![ResolvedInputContributor {
-				absolute_path: PathBuf::from("/mods/test/common/scripted_effects/my_mod.txt"),
-				..dummy_contributor.clone()
-			}],
-		);
-		inventory.insert(
-			unclassified_path.to_string(),
-			vec![ResolvedInputContributor {
-				absolute_path: PathBuf::from("/mods/test/some/random/file.txt"),
-				..dummy_contributor
-			}],
-		);
+		for path in [&trigger_path, &effect_path, &unclassified_path] {
+			inventory.insert(path.clone(), vec![contributor(path)]);
+		}
 
 		let grouped = group_by_family(&inventory, profile);
 
 		// Unclassified paths should not appear in any family
 		for paths in grouped.values() {
 			assert!(
-				!paths.contains_key(unclassified_path),
+				!paths.contains_key(&unclassified_path),
 				"unclassified path should not appear in any family"
 			);
 		}
@@ -482,7 +472,7 @@ mod tests {
 		// scripted_triggers and scripted_effects should each have one entry
 		let trigger_family = grouped
 			.values()
-			.find(|paths| paths.contains_key(trigger_path));
+			.find(|paths| paths.contains_key(&trigger_path));
 		assert!(
 			trigger_family.is_some(),
 			"scripted_triggers path should be grouped"
@@ -490,7 +480,7 @@ mod tests {
 
 		let effect_family = grouped
 			.values()
-			.find(|paths| paths.contains_key(effect_path));
+			.find(|paths| paths.contains_key(&effect_path));
 		assert!(
 			effect_family.is_some(),
 			"scripted_effects path should be grouped"

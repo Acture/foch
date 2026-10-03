@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use crate::model::GamePathBuf;
 
 #[derive(Debug, Clone)]
 pub struct CandidateView {
@@ -11,7 +11,8 @@ pub struct CandidateView {
 
 #[derive(Debug, Clone)]
 pub struct ConflictView {
-	pub file_path: PathBuf,
+	/// The output file the conflict is in.
+	pub file_path: GamePathBuf,
 	pub address_path: Vec<String>,
 	pub address_key: String,
 	pub conflict_id: String,
@@ -44,7 +45,7 @@ mod tests {
 	#[test]
 	fn handler_can_decide_from_conflict_view_alone() {
 		let view = ConflictView {
-			file_path: PathBuf::from("common/example.txt"),
+			file_path: GamePathBuf::parse("common/example.txt").expect("valid game path"),
 			address_path: vec!["root".to_string()],
 			address_key: "owner".to_string(),
 			conflict_id: "abc123".to_string(),
