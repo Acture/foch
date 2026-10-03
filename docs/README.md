@@ -10,7 +10,7 @@ separate notes repository. Linear owns active work and dependencies.
 - [Project manifest](foch-project-manifest.md) — compose ordered inputs in `foch.toml`.
 - [Resolution reference](foch-toml-resolutions.md) — review and resolve conflicts.
 - [VS Code/LSP preview](lsp-0.1-preview.md) — editor setup and supported behavior.
-- [Known issues](../KNOWN_ISSUES.md) — public limitations.
+- [Known issues](known-issues.md) — public limitations.
 
 ## Contributors
 
@@ -31,3 +31,11 @@ separate notes repository. Linear owns active work and dependencies.
 The append-only Workshop measurement streams stay beside their runner in
 `src/apps/foch-cli/tests/merge_quality/data/`. Research notes reference these
 records; moving directories must not change their bytes or acceptance scope.
+
+## Archived release material
+
+These documents preserve earlier public release material, not current product
+claims or instructions:
+
+- [Alpha limitations at a37ffb8](archive/known-limitations.md).
+- [Archived alpha announcement draft](archive/alpha-announcement.md).

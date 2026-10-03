@@ -1718,7 +1718,7 @@ do not reconstruct an execution backlog here.
 5. [Cache architecture](./cache-architecture.md)
 6. [Project manifest](./foch-project-manifest.md)
 7. [Resolution DSL](./foch-toml-resolutions.md)
-8. [Known issues](../KNOWN_ISSUES.md)
+8. [Known issues](known-issues.md)
 
 The structured-merge shadow, common-applicability probe, reviews, and research
 notes are historical or auxiliary evidence. They are not the active backlog or

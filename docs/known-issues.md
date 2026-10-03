@@ -19,7 +19,7 @@ not errors that Foch should silently override. Analysis computes structural
 leaf outcomes before confirmation, so they can be reviewed without writing the
 target directory.
 
-**Workaround:** copy [`examples/eu4-default-foch.toml`](./examples/eu4-default-foch.toml) next to `dlc_load.json`, or write narrow `[[resolutions]]` rules using the DSL in [`docs/foch-toml-resolutions.md`](./docs/foch-toml-resolutions.md). Avoid global `last_writer` rules unless you explicitly want load-order semantics everywhere.
+**Workaround:** copy [`examples/eu4-default-foch.toml`](../examples/eu4-default-foch.toml) next to `dlc_load.json`, or write narrow `[[resolutions]]` rules using the DSL in [`foch-toml-resolutions.md`](foch-toml-resolutions.md). Avoid global `last_writer` rules unless you explicitly want load-order semantics everywhere.
 
 ## Localisation and legacy encodings can still mojibake
 

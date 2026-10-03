@@ -1,5 +1,8 @@
 # 已知限制
 
+> 历史归档：本文保留 `a37ffb8` 附近的测量、判断与命令，不代表当前产品状态。
+> 当前入口见[已知问题](../known-issues.md)和[项目状态](../project-status.md)。
+
 本文记录 post-F6c + F1b-comments alpha 在 `a37ffb8` 附近的真实边界。目标读者是准备把 foch 放进 EU4 merge pipeline 的 power user / mod author。
 
 口径：以 N=37 EU4 playset probe 为主。`conflict_resolutions[]` 是 26 条 path-level residual 记录；单条记录内部可能含多个 AST address 级 conflict。
@@ -24,7 +27,7 @@
 
 ## 2. ContentFamily 覆盖
 
-foch 的 analyzer 与 merge 覆盖由 EU4 `GameProfile` 中的 `ContentFamilyDescriptor` 注册驱动。当前 source of truth 是 [`crates/foch-language/src/analyzer/eu4_profile.rs`](./crates/foch-language/src/analyzer/eu4_profile.rs) 的 `EU4_CONTENT_FAMILIES`。
+foch 的 analyzer 与 merge 覆盖由 EU4 `GameProfile` 中的 `ContentFamilyDescriptor` 注册驱动。当前 source of truth 是 [`crates/foch-language/src/analyzer/eu4_profile.rs`](https://github.com/Acture/foch/blob/a37ffb8ff89649a19023b32ac6e0f7678ed40265/crates/foch-language/src/analyzer/eu4_profile.rs) 的 `EU4_CONTENT_FAMILIES`。
 
 | 限制 | 当前状态 | 现在可做 | 跟踪 |
 |---|---|---|---|
@@ -53,14 +56,14 @@ foch 的 analyzer 与 merge 覆盖由 EU4 `GameProfile` 中的 `ContentFamilyDes
 
 | 限制 | 当前状态 | 用户影响 | 现在可做 | 来源 | 跟踪 |
 |---|---|---|---|---|---|
-| `foch merge --config PATH` 未贯穿到 merge engine | CLI flag 可解析，但 merge engine 读取 resolution 时仍调用 `FochConfig::try_load(playset_root)`，没有使用 CLI 指定 path。 | 你以为加载了某个 `foch.toml`，实际 resolution 可能来自 playset 旁边或用户默认路径。 | 把目标 `foch.toml` 放到 playset/root 期望位置；或设置 `FOCH_CONFIG_DIR`；或临时调整 `~/.config/foch/foch.toml`。运行后检查 `.foch/foch-merge-report.json`。 | [`crates/foch-engine/src/merge/execute.rs`](./crates/foch-engine/src/merge/execute.rs) `load_resolution_map()` | config plumbing bug |
+| `foch merge --config PATH` 未贯穿到 merge engine | CLI flag 可解析，但 merge engine 读取 resolution 时仍调用 `FochConfig::try_load(playset_root)`，没有使用 CLI 指定 path。 | 你以为加载了某个 `foch.toml`，实际 resolution 可能来自 playset 旁边或用户默认路径。 | 把目标 `foch.toml` 放到 playset/root 期望位置；或设置 `FOCH_CONFIG_DIR`；或临时调整 `~/.config/foch/foch.toml`。运行后检查 `.foch/foch-merge-report.json`。 | [`crates/foch-engine/src/merge/execute.rs`](https://github.com/Acture/foch/blob/a37ffb8ff89649a19023b32ac6e0f7678ed40265/crates/foch-engine/src/merge/execute.rs) `load_resolution_map()` | config plumbing bug |
 
 ## 6. UI / UX gaps
 
 | 限制 | 当前状态 | 用户影响 | 现在可做 | 跟踪 |
 |---|---|---|---|---|
 | TUI conflict resolver | 未随 HEAD 发布。UI1 alpha P0 仍待完成。 | 不能像 Irony Merge Viewer 那样在树形 UI 中逐块 copy / edit / resolve。 | 在 TTY 中运行 `foch merge` 使用默认交互；或手写 `foch.toml [[resolutions]]`。 | UI1 |
-| VS Code merge UI | [`src/apps/vscode-foch`](./src/apps/vscode-foch) 已存在，主要是 LSP / diagnostics / completion / goto definition。未接入 merge conflict workflow。 | 可编辑与诊断脚本，但不能在 VS Code 内完成 merge 仲裁闭环。 | 用 CLI 生成报告，再在编辑器里人工查看相关文件。 | VS Code merge UI |
+| VS Code merge UI | [`packages/vscode-foch`](https://github.com/Acture/foch/tree/a37ffb8ff89649a19023b32ac6e0f7678ed40265/packages/vscode-foch) 已存在，主要是 LSP / diagnostics / completion / goto definition。未接入 merge conflict workflow。 | 可编辑与诊断脚本，但不能在 VS Code 内完成 merge 仲裁闭环。 | 用 CLI 生成报告，再在编辑器里人工查看相关文件。 | VS Code merge UI |
 | GUI / desktop app | 未实现。 | 没有 collection manager、drag/drop load order、图形化 patch mod 管理。 | 继续使用 Paradox Launcher / Irony 管理 playset；用 foch 做分析与 deterministic merge。 | GUI backlog |
 | 非 TTY 场景 | 默认交互只在 TTY 下启用；非 TTY 或 `--non-interactive` 会 defer，不会卡住 CI。 | CI 中 unresolved conflict 仍需预置 resolution。 | 预写 `foch.toml` resolution，或在有 TTY 时传 `--non-interactive` 强制批处理。 | UI1 / CI workflow |
 

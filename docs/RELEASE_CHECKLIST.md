@@ -28,5 +28,5 @@ the maintainer must take over those parts of the release workflow.
     `bun run --cwd src/apps/vscode-foch package:vsix`
 14. ☐ Create the GitHub Release with binaries and the extension VSIX.
 15. ☐ Write a fresh announcement from the verified release state.
-    [`ALPHA_ANNOUNCEMENT.md`](../ALPHA_ANNOUNCEMENT.md) is archived historical
+    [The earlier announcement draft](archive/alpha-announcement.md) is archived historical
     material and must not be posted as-is.

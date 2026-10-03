@@ -11,6 +11,6 @@ current product contract, so they have been removed.
 
 Use these sources before writing a new announcement:
 
-- [project status](./docs/project-status.md) for the current verified state;
-- [release checklist](./docs/RELEASE_CHECKLIST.md) for release gates; and
-- [README](./README.md) for current user-facing commands and limitations.
+- [project status](../project-status.md) for the current verified state;
+- [release checklist](../RELEASE_CHECKLIST.md) for release gates; and
+- [README](../../README.md) for current user-facing commands and limitations.

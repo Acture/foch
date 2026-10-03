@@ -264,7 +264,7 @@ Run the module's tests without Ghidra using
 - [`foch.toml` project manifest](./docs/foch-project-manifest.md)
 - [Resolution DSL](./docs/foch-toml-resolutions.md)
 - [VS Code/LSP preview](./docs/lsp-0.1-preview.md)
-- [Known issues](./KNOWN_ISSUES.md)
+- [Known issues](./docs/known-issues.md)
 - [Release checklist](./docs/RELEASE_CHECKLIST.md)
 
 ### Private research notes

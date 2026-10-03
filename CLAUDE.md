@@ -182,6 +182,11 @@ public documentation and evidence, `notes/research/` for private research and
 design history, and `scripts/` for operator workflows. Release source archives
 must include both public build submodules and work without `.git` or `notes/`.
 
+Public known issues and release guidance belong in `docs/`; historical public
+release material belongs in `docs/archive/` with an explicit archive notice.
+Keep the README, canonical agent instructions and license/notice files at the
+repository root.
+
 ## Build, Test, and Development Commands
 
 - `cargo fmt --all --check` — verify Rust formatting
