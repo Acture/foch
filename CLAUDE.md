@@ -243,3 +243,19 @@ Run `bash scripts/install-hooks.sh` once after cloning to install the local git 
 ## Commit & Pull Request Guidelines
 
 Follow the existing commit style: short, imperative subjects such as `Promote low-risk common mechanics roots` or `Split and promote random map content families`. Keep one logical change per commit. PRs should include a concise summary, linked Notion task or decision when applicable, validation commands run, and any probe delta (`parse_only` / `semantic_complete`) when analyzer coverage changes. Add screenshots only for `src/apps/vscode-foch` UI changes. Do not add AI co-author trailers.
+
+
+## Project notes submission
+
+`docs/` is reserved for public documentation. Private research notes live in `notes/`, which tracks `project/foch` in `Acture/obsidian-vault`; start at `notes/首页.md`. This checkout's root contains only this project's notes. Master places these notes under `foch/`. Keep automation and vault configuration on master. Preserve existing local edits when updating a checkout.
+
+Install or refresh the trusted submission tools in Git metadata, including in new clones:
+
+```fish
+git -C notes fetch origin refs/heads/master:refs/remotes/origin/master
+set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
+git -C notes show origin/master:.github/scripts/install_push_hook.py > "$notes_common_gitdir/install_push_hook.py"
+python3 "$notes_common_gitdir/install_push_hook.py" --repo notes --source-ref origin/master
+```
+
+After committing specific note files, submit through `python3 "$notes_common_gitdir/hooks/notes-boundary/submit_project.py" --repo notes`. The remote requires `notes-boundary/root/foch` from GitHub Actions. Only after successful submission should this repository commit and push the `notes` gitlink. See the central repository's `项目接入.md` for initialization, updates and conflict handling.
