@@ -500,7 +500,7 @@ def verify_desktop_contract(repo_root: Path, packages: list[CargoPackage]) -> No
 	)
 	if desktop is None:
 		raise SystemExit("foch-desktop Cargo package is missing")
-	desktop_root = repo_root / "apps" / "foch-desktop"
+	desktop_root: Path = repo_root / "src" / "apps" / "foch-desktop"
 	verify_desktop_rust_dependencies(desktop)
 	verify_desktop_frontend_dependencies(desktop_root)
 	verify_tauri_config(desktop_root / "src-tauri")

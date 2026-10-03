@@ -14,8 +14,8 @@ calm editing loop: bounded diagnostics, schema-aware assistance, navigation,
 and contributor context.
 
 Foch consumes CWT data, including `cwtools-eu4-config`, but does not embed the
-CWTools extension or validator engine. `src/game/schema` parses and compiles the
-reusable schema language; `src/game/eu4/editor` interprets it for EU4. CWT
+CWTools extension or validator engine. `src/packages/foch/src/game/schema` parses and compiles the
+reusable schema language; `src/packages/foch/src/game/eu4/editor` interprets it for EU4. CWT
 coverage alone does not establish runtime or merge semantics.
 
 | Axis | Foch 0.1 LSP |
@@ -52,8 +52,8 @@ Current gates:
 ```fish
 cargo test -p foch-cli lsp
 cargo test --workspace
-bun run --cwd packages/vscode-foch test
-bun run --cwd packages/vscode-foch package:vsix
+bun run --cwd src/apps/vscode-foch test
+bun run --cwd src/apps/vscode-foch package:vsix
 ```
 
 ## Non-goals for 0.1
@@ -79,8 +79,8 @@ current product flow.
 
 ## Future games
 
-Reusable CWT machinery already lives in `src/game/schema`. A second game must
-still add a concrete `src/game/<game>` implementation with fixtures for:
+Reusable CWT machinery already lives in `src/packages/foch/src/game/schema`. A second game must
+still add a concrete `src/packages/foch/src/game/<game>` implementation with fixtures for:
 
 - root discovery and loader order;
 - content families and definition-module boundaries;
@@ -93,7 +93,7 @@ or parse-only demo must not be presented as supported game behavior.
 
 ## Contributor workflow
 
-1. Read this page, `packages/vscode-foch/README.md`, and
+1. Read this page, `src/apps/vscode-foch/README.md`, and
    `docs/project-status.md`.
 2. Check `git status --short --branch`; do not stage generated VSIX, binary, or
    `dist/` artifacts.
@@ -103,12 +103,12 @@ or parse-only demo must not be presented as supported game behavior.
 
 Useful source references:
 
-- `apps/foch-cli/src/lsp.rs` — server capabilities and tests
-- `src/game/schema` — reusable CWT syntax/query machinery
-- `src/game/eu4/editor` — concrete EU4 schema interpretation
-- `packages/vscode-foch/extension.js` — client wiring and commands
-- `packages/vscode-foch/scripts/smoke-test.js` — release-surface smoke
-- `packages/vscode-foch/package.json` — Marketplace metadata and settings
+- `src/apps/foch-cli/src/lsp.rs` — server capabilities and tests
+- `src/packages/foch/src/game/schema` — reusable CWT syntax/query machinery
+- `src/packages/foch/src/game/eu4/editor` — concrete EU4 schema interpretation
+- `src/apps/vscode-foch/extension.js` — client wiring and commands
+- `src/apps/vscode-foch/scripts/smoke-test.js` — release-surface smoke
+- `src/apps/vscode-foch/package.json` — Marketplace metadata and settings
 
 ## Read-only automation boundary
 

@@ -2,7 +2,7 @@
 
 `[[resolutions]]` records reviewed structural-conflict policy for `foch merge`.
 The authoritative schema, validation, lookup map, and match parser live in
-`src/project/mod.rs`; runtime handlers live under `src/merge/resolution/`.
+`src/packages/foch/src/project/mod.rs`; runtime handlers live under `src/packages/foch/src/merge/resolution/`.
 
 Use narrow rules for conflicts you understand. A broad rule can deliberately
 turn large parts of a playset into load-order behavior.
@@ -183,7 +183,7 @@ merge` may install the ratatui handler only when stdin/stdout are TTYs and
 `--non-interactive` is absent. `--cli-prompt` selects the simple prompt.
 Without a suitable TTY, the conflict remains a `needs_user_choice` review unit.
 
-The TUI adapter is `apps/foch-cli/src/tui/conflict_handler.rs`.
+The TUI adapter is `src/apps/foch-cli/src/tui/conflict_handler.rs`.
 
 | Key | Action |
 | --- | --- |
@@ -213,6 +213,6 @@ Persisted terminal decisions use the same `[[resolutions]]` schema.
 | A saved candidate no longer resolves | Inspect the current candidate sequence and replace/remove the stale exact rule. |
 | `keep_existing_failed` | Ensure the target file exists, use `use_file`, or remove the keep-existing rule. |
 
-Schema errors originate in `src/project/mod.rs`; runtime decision behavior is
-implemented in `src/merge/resolution/`, and materialization behavior is in
-`src/merge/output/materialize/`.
+Schema errors originate in `src/packages/foch/src/project/mod.rs`; runtime decision behavior is
+implemented in `src/packages/foch/src/merge/resolution/`, and materialization behavior is in
+`src/packages/foch/src/merge/output/materialize/`.

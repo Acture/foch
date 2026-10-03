@@ -27,7 +27,7 @@ jobs:
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 
       - name: Set up Python
         uses: actions/setup-python@v6

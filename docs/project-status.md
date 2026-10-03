@@ -1,5 +1,30 @@
 # Project Status
 
+## Repository layout and documentation boundary (2026-10-04)
+
+OSS-293 moves maintained code under `src/`: applications in `src/apps`, the
+single Foch library and grammar in `src/packages`, and PyGhidra maintenance
+code in `src/tools`. The library owns its tests, fuzz workspace and build script.
+The root Cargo manifest is a virtual workspace; external CWT rules remain in
+top-level `vendor/` and are still required to build the embedded schema.
+
+`docs/` is the public documentation home, including current architecture, merge
+and cache contracts. Private research, design history and the retired common
+applicability protocol live under `notes/research/`. The notes project branch
+uses its root directly; `notes/首页.md` is its entry. Original measurements,
+raw evidence, fixtures and versioned rules remain in this repository. Their
+Git blobs were compared across the move and remain identical. Obsolete fuzz
+seeds and local research caches were preserved outside the tracked source tree.
+
+This is a layout change, not a new semantic or Workshop acceptance result.
+Rust workspace tests, strict Clippy and formatting, the independent fuzz check,
+grammar test, desktop frontend checks/build, VS Code smoke and PyGhidra unit
+tests pass at the migrated paths. A complete source copy without `.git` or
+private notes also builds and installs the CLI with the same embedded CWT schema
+identity. Final delivery and clone verification are tracked in OSS-293.
+
+## Earlier product verification
+
 Recorded branch verification: 2026-10-02 on `4e8862e` plus P-830 editor/GUI
 provenance changes, the Windows product-runner temporary-directory fix,
 platform-gated test helpers and N-way delta indexing: formatting and strict
@@ -66,8 +91,8 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution. Migrated research, design and
 evaluation documents live in the `notes/` submodule's
-[Foch directory](../notes/foch/首页.md); see the
-[notes workflow](../README.md#research-and-design-notes) for access and updates.
+[Foch directory](../notes/首页.md); see the
+[notes workflow](../README.md#private-research-notes) for access and updates.
 Measured status and raw evidence remain here. Notion-only narrative remains at
 its original page until separately migrated.
 
@@ -80,7 +105,7 @@ accepted product cohort.
 
 The three commits were subsequently replayed onto `e0d6a1e` on 2026-10-03.
 Rust sources and game fixture bytes remain identical to the original PR head;
-research/design documents follow the current `notes/foch/` layout. The local
+research/design documents follow the current `notes/` layout. The local
 results below describe the original verified branch, not a new acceptance run.
 
 Shared `game::eu4::editor::hover` and `foch lsp` now compose schema help with
@@ -99,7 +124,7 @@ fields, uses each widget's adopted subtree, and retains generated localisation
 only for surviving scripts. Missing tooltips require a verified ancestor and
 complete mod-only origins; explicitly disabled base analysis cannot establish
 new-widget identity. Dynamic/competing fields and unverified final-tree mappings
-are left unchanged. [The GUI assessment](../notes/foch/docs/provenance-gui-assessment.md) records
+are left unchanged. [The GUI assessment](../notes/research/provenance-gui-assessment.md) records
 exact installed EU4 1.37.5 authored field evidence, supported widget types,
 preserved historical fixtures, and the outstanding manual runtime check.
 
@@ -278,7 +303,7 @@ maintainer cache held its 151-byte pack keyed `e3b0c442…`, the SHA-256 of no
 input); and an override that failed to load became no schema through `.ok()`.
 
 `build.rs` now compiles the vendored config with the library's own
-`src/game/schema` modules, included by path because a build script cannot link
+`src/packages/foch/src/game/schema` modules, included by path because a build script cannot link
 the crate it builds and those five files depend on nothing else in it. The
 binary embeds the pack; `load_schema()` decodes it, and
 `FOCH_CWTOOLS_SCHEMA_DIR` (set but empty counts as unset) compiles another
@@ -360,7 +385,7 @@ inventory or EU4 semantics. No product dependency or implementation changed.
 The comparison reproduced a physical-filename-to-semantic-key collision in the
 current helper. P-736 tracks its repair separately. Scope, pinned versions,
 observations, skipped cases, and reproduction artifacts are in the
-[VFS evaluation](../notes/foch/docs/vfs-evaluation.md). This helper-level evaluation adds no full
+[VFS evaluation](../notes/research/vfs-evaluation.md). This helper-level evaluation adds no full
 Workshop, acceptance-cohort, cross-platform, or performance result.
 
 A 2026-09-28 path-type follow-up established P-736's type boundary: keep native
@@ -383,7 +408,7 @@ The reader. `CToken::ReadValue(CFixedPoint&)` takes the integer part with
 `sscanf("%i")`, copies at most three fraction digits into a `"000"` buffer and
 scales the integer by 1000 — three decimals, truncated, never rounded.
 `CToken::GetInt` is `atoi`. The finer `GetFloat64` at 1/32768 has two callers,
-neither a script path. That is modelled in `src/game/eu4/coercion.rs`, with the
+neither a script path. That is modelled in `src/packages/foch/src/game/eu4/coercion.rs`, with the
 evidence restated in the module's own doc comment rather than cited, because
 the P-687 findings directory lived under `target/` and is gone.
 
@@ -397,7 +422,7 @@ follows it. The first implementation followed the issue and resolved
 equivalence inside `resolve_nway_divergent_node`; the maintainer redirected it
 to semantic normalization, and that is what shipped.
 
-`canonicalize_numeric_values` (`src/merge/numeric.rs`) rewrites the AST before
+`canonicalize_numeric_values` (`src/packages/foch/src/merge/numeric.rs`) rewrites the AST before
 the merge, beside `canonicalize_boolean_or_definitions` and ahead of it, since
 that pass deduplicates disjuncts by exact scalar text. The AST is what every
 identity is derived from — `assignment_anchor` and `value_fingerprint` read
@@ -447,8 +472,8 @@ where the meaning is known.
 
 Two supporting fixes came out of it and are worth keeping separate.
 `SchemaScalarType` and its range parsing were private to
-`src/game/eu4/editor/schema/interpret.rs`; they are CWT vocabulary rather than
-EU4 interpretation and now live in `src/game/schema/query.rs`, shared with the
+`src/packages/foch/src/game/eu4/editor/schema/interpret.rs`; they are CWT vocabulary rather than
+EU4 interpretation and now live in `src/packages/foch/src/game/schema/query.rs`, shared with the
 LSP. `SchemaScalarType::matches` stayed behind as
 `schema_scalar_type_matches`, because schema conformance is deliberately
 stricter than what the game reads and conflating them would fold `123abc` into
@@ -507,16 +532,16 @@ module-view path was canonicalized too, which is how that third scorer path was
 found.
 
 Regressions: `text_similarity_ignores_how_a_number_is_spelled` pins the
-scorer's text path. Fourteen unit tests in `src/game/eu4/coercion.rs`, including one
+scorer's text path. Fourteen unit tests in `src/packages/foch/src/game/eu4/coercion.rs`, including one
 proving fixed-point equality is never coarser than integer equality — so a
 wrong field type cannot turn a real difference into an equivalence — and one
 proving the canonical spelling is idempotent, since the transform runs on
-output it produced earlier. Twelve in `src/merge/numeric.rs` for the transform and
+output it produced earlier. Twelve in `src/packages/foch/src/merge/numeric.rs` for the transform and
 its abstain cases, two of them proving the text rewrite moves the numbers and
 nothing else. Eleven in `merge::structured::tests::game_value_equivalence`
 for the product verdict, including `how_a_value_is_spelled_changes_nothing_downstream`,
 which pins the real property: under any policy, `0.5`/`0.50` produces the same
-verdict and the same output as `0.5`/`0.5`. Two in `src/game/eu4/cwt/merge.rs`
+verdict and the same output as `0.5`/`0.5`. Two in `src/packages/foch/src/game/eu4/cwt/merge.rs`
 for the alias fix. And `merge_reads_one_value_written_two_ways_as_one_value` in
 the CLI integration suite, which is the end-to-end proof that the schema
 binding reaches the real pipeline — the canonicalization keys off the
@@ -668,7 +693,7 @@ of `GetFloat64`, the last two both save-data paths) survives in the P-695
 Linear thread and in the prose above; the disassembly itself would have to be
 retaken to re-derive it.
 
-Regressions: five unit tests in `src/merge/boolean.rs` cover the transform
+Regressions: five unit tests in `src/packages/foch/src/merge/boolean.rs` cover the transform
 itself (comment-blind shape, comment survival, comment-only body, both scalar
 spellings kept, genuine duplicates still collapsed, and the simplify path
 keeping a comment through an `AND` unwrap), and
@@ -729,7 +754,7 @@ compared and the synthetic one-statement file keeps the statement at its real
 depth.
 
 Reach, stated separately from the defect. The decision has one production call
-site, `src/merge/output/materialize/per_entry_noop.rs`. The semantic backend
+site, `src/packages/foch/src/merge/output/materialize/per_entry_noop.rs`. The semantic backend
 (`MergeBackendId::GumtreePcsNway`, the default) skips
 `drop_per_entry_noop_duplicates` whenever `preserves_complete_tree_module`
 holds, and `enable_common_definition_modules` makes all three gate-passing
@@ -793,9 +818,9 @@ rejected the join.
 
 The repair applies the existing relative-path contract at the two entrypoints
 that construct a `ParsedScriptFile`, not at the site that reported the error:
-`parsed_script_file_from_result` in `src/game/eu4/script/mod.rs` and
+`parsed_script_file_from_result` in `src/packages/foch/src/game/eu4/script/mod.rs` and
 `StoredParsedScriptFile::into_parsed_script_file` in
-`src/game/eu4/base/snapshot/parsed_scripts.rs`. `ParsedScriptFile.path` still
+`src/packages/foch/src/game/eu4/base/snapshot/parsed_scripts.rs`. `ParsedScriptFile.path` still
 holds the disk location, and `rebase_parsed_documents` is deliberately
 unchanged. Both entrypoints are needed: `InputScriptCache` fills `loaded` from
 the base snapshot and `lazy` from on-disk mod files, so fixing either alone
@@ -819,7 +844,7 @@ under the P-609 masks.
 This changes normalization for every structured merge, not only the files that
 were failing. Merge inputs and the vanilla ancestor now canonicalize under their
 real content family, so the no-op-against-vanilla check in
-`src/merge/output/materialize/structural.rs` and stale-vanilla-target detection
+`src/packages/foch/src/merge/output/materialize/structural.rs` and stale-vanilla-target detection
 run under that policy too, and a full-page file count can differ from
 `run-mrGKJR`. Newly built base snapshots encode a relative `StoredAstFile.path`,
 so `data build eu4` output bytes change for identical game content. Nothing a
@@ -829,7 +854,7 @@ Out of scope and untouched: the other 12 engine failures in that report (one
 missing non-empty vanilla base, two cross-file module failures, nine
 control-flow/event-join failures) and the pre-existing empty-path normalization
 in `clausewitz_statements_semantically_equivalent`
-(`src/merge/structured/merge.rs:300`), which is the same defect class and is
+(`src/packages/foch/src/merge/structured/merge.rs:300`), which is the same defect class and is
 tracked separately as P-658.
 
 Regressions: `parsing_from_an_absolute_root_keeps_the_relative_path_in_the_ast`
@@ -864,7 +889,7 @@ not what is written. Commits:
 
 - `02b1d01` — split each unit into analysis, which reads only frozen inputs, and
   apply, which does every output write and every report and review change.
-- `d01370e` — `run_units` in `src/merge/output/materialize/executor.rs`: scoped
+- `d01370e` — `run_units` in `src/packages/foch/src/merge/output/materialize/executor.rs`: scoped
   workers (`foch-merge-N`, 64 MiB stacks like the CLI main thread) take plan
   indices in order; the calling thread applies results strictly by index. The
   first error or panic in plan order ends the run, cancellation is checked before
@@ -937,7 +962,7 @@ Validation on `4b8444c`: `cargo fmt --all --check`, strict workspace Clippy and
 except the three that need local sockets or HTTP servers, which pass outside the
 sandbox; the pre-push `cargo test --workspace` gate passed outside it. The two
 Workshop probe tests also pass with an empty `HOME`, which reproduces the CI
-failure `e8b163e` fixes. The Windows memory query in `src/platform/memory.rs` is not
+failure `e8b163e` fixes. The Windows memory query in `src/packages/foch/src/platform/memory.rs` is not
 compiled locally. Evidence, harness and per-unit tables are in
 `target/validation/p609-parallel-2026-09-19/` (`summary.md`, run logs, reports,
 `*-w1-mem.units.tsv`, `local_parallel_probe.rs`, `run.sh`, `compare.sh`).
@@ -1143,7 +1168,7 @@ silently defaults to anonymous when account discovery fails. Account selection
 is needed only when inputs require downloading.
 It reuses frozen selections and installed inputs on subsequent runs, preserves
 each attempt's logs/results, bounds subprocess time, and refuses incomplete
-inputs. See the [usage guide](../apps/foch-cli/tests/merge_quality/README.md#automatic-newest-page-exploration).
+inputs. See the [usage guide](../src/apps/foch-cli/tests/merge_quality/README.md#automatic-newest-page-exploration).
 The earlier `download.fish` handoff below is superseded by this complete workflow.
 
 P-603 is fixed locally at the public input-inventory boundary: unavailable
@@ -1229,7 +1254,7 @@ compatible. Declared dependencies must remain visible; do not silently remove
 missing inputs or invent order overrides. The fixed product cohort is unchanged.
 
 The selection is frozen in
-[`workshop-recent-page1-2026-09-15.json`](../apps/foch-cli/tests/merge_quality/fixtures/workshop-recent-page1-2026-09-15.json),
+[`workshop-recent-page1-2026-09-15.json`](../src/apps/foch-cli/tests/merge_quality/fixtures/workshop-recent-page1-2026-09-15.json),
 including the query URL, collection time, raw-page SHA-256, ranks, IDs, titles,
 published/updated times, and advertised file sizes. It contains 30 items totaling
 3,129,671,385 advertised bytes (about 3.13 GB, not measured download traffic).
@@ -1404,11 +1429,11 @@ Workshop acceptance or in-game test was run.
 A worktree needs both submodules before its tests mean anything. `git worktree
 add` checks out neither, and an absent `vendor/cwtools-eu4-config` fails 13
 schema, CWT, script, structured-merge and corpus tests that have nothing
-obviously to do with CWT, while an absent `packages/tree-sitter-paradox` breaks
+obviously to do with CWT, while an absent `src/packages/tree-sitter-paradox` breaks
 the build outright. Run this once in a new worktree:
 
 ```fish
-git submodule update --init packages/tree-sitter-paradox vendor/cwtools-eu4-config
+git submodule update --init src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 ```
 
 Two tests additionally need privileges a restricted sandbox may withhold:
@@ -1441,7 +1466,7 @@ The order in which that loader reads the two directories is **not recorded**.
 An earlier revision of this page claimed the static directory is read first;
 nothing supports it. The extractor collects selections into a `set` and emits
 them sorted by directory name
-(`tools/eu4-analysis/eu4_analysis/load_rules.py:120`, `:172-183`), so the JSON
+(`src/tools/eu4-analysis/eu4_analysis/load_rules.py:120`, `:172-183`), so the JSON
 array order is a sorted dump, and for `CStaticModifierDataBase` it is
 `event_modifiers` then `static_modifiers` — the reverse of the removed claim.
 Read order must not be inferred from array position. Trace order does exist in
@@ -1504,18 +1529,18 @@ shape:
 
 - the root `foch` package owns shared models plus input, check, graph, simplify,
   merge, and platform behavior;
-- reusable CWT machinery lives under `src/game/schema`;
+- reusable CWT machinery lives under `src/packages/foch/src/game/schema`;
 - concrete loader, parser, content-family, base-data, and editor behavior lives
-  under `src/game/eu4`;
+  under `src/packages/foch/src/game/eu4`;
 - the semantic-tree kernel and higher-level merge orchestration live under
-  `src/merge`;
+  `src/packages/foch/src/merge`;
 - the full merge-output cache was removed and owner-specific caches moved next
   to the input, schema, parser, or merge behavior that defines their identity;
 - merge execution is split into complete read-only analysis and guarded commit;
 - the desktop frontend has the typed six-command client, input-readiness view,
   analysis progress/cancellation UI, and searchable paginated review browser;
-- the CLI is under `apps/foch-cli`, the desktop under `apps/foch-desktop`, and
-  the merge-quality harness under `apps/foch-cli/tests/merge_quality`; and
+- the CLI is under `src/apps/foch-cli`, the desktop under `src/apps/foch-desktop`, and
+  the merge-quality harness under `src/apps/foch-cli/tests/merge_quality`; and
 - the superseded `foch-core`, `foch-syntax`, `foch-cwt`, `foch-language`,
   `foch-engine`, `foch-merge-kernel`, and `foch-merge-quality` packages are gone.
 
@@ -1571,9 +1596,9 @@ cargo fmt --all --check
 cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo check --manifest-path fuzz/Cargo.toml --all-targets --all-features
+cargo check --manifest-path src/packages/foch/fuzz/Cargo.toml --all-targets --all-features
 git diff --check
-node --check packages/vscode-foch/extension.js
+node --check src/apps/vscode-foch/extension.js
 ```
 
 The final full test run passed with these principal counts:
@@ -1634,10 +1659,10 @@ run.
 | Path | Responsibility |
 | --- | --- |
 | `src/` | Root `foch` library and concrete EU4 implementation |
-| `apps/foch-cli` | `foch`, `foch lsp`, CLI integration tests, merge-quality harness |
-| `apps/foch-desktop` | Player-facing Tauri application linked directly to `foch` |
-| `packages/tree-sitter-paradox` | Independently versioned grammar |
-| `packages/vscode-foch` | Independently versioned VS Code extension using `foch lsp` |
+| `src/apps/foch-cli` | `foch`, `foch lsp`, CLI integration tests, merge-quality harness |
+| `src/apps/foch-desktop` | Player-facing Tauri application linked directly to `foch` |
+| `src/packages/tree-sitter-paradox` | Independently versioned grammar |
+| `src/apps/vscode-foch` | Independently versioned VS Code extension using `foch lsp` |
 
 ## What is not yet proven
 
@@ -1652,7 +1677,7 @@ run.
 
 ## Measurement records
 
-The V2 JSONL files under `apps/foch-cli/tests/merge_quality/data/` are
+The V2 JSONL files under `src/apps/foch-cli/tests/merge_quality/data/` are
 append-only and resumable per case. An interrupted cohort is valid measurement
 history but not an accepted baseline. Only a complete cohort for the current
 product artifact, runner, kernel, scope, and scorer may support a quality
@@ -1671,8 +1696,8 @@ do not reconstruct an execution backlog here.
 
 ## Fresh-agent runbook
 
-1. Read this page, [architecture](../notes/foch/docs/architecture.md), and
-   [merge design](../notes/foch/docs/merge-design.md).
+1. Read this page, [architecture](./architecture.md), and
+   [merge design](./merge-design.md).
 2. Inspect `git status --short --branch` and `git log -3 --oneline`. Preserve
    unrelated changes and append-only measurement history.
 3. Distinguish committed implementation, local worktree observation, recorded
@@ -1687,10 +1712,10 @@ do not reconstruct an execution backlog here.
 ## Reading order
 
 1. [README](../README.md)
-2. [Architecture](../notes/foch/docs/architecture.md)
-3. [Merge design](../notes/foch/docs/merge-design.md)
+2. [Architecture](./architecture.md)
+3. [Merge design](./merge-design.md)
 4. [Merge-quality dataset](./merge-quality-dataset.md)
-5. [Cache architecture](../notes/foch/docs/cache-architecture.md)
+5. [Cache architecture](./cache-architecture.md)
 6. [Project manifest](./foch-project-manifest.md)
 7. [Resolution DSL](./foch-toml-resolutions.md)
 8. [Known issues](../KNOWN_ISSUES.md)

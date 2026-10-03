@@ -60,7 +60,7 @@ foch 的 analyzer 与 merge 覆盖由 EU4 `GameProfile` 中的 `ContentFamilyDes
 | 限制 | 当前状态 | 用户影响 | 现在可做 | 跟踪 |
 |---|---|---|---|---|
 | TUI conflict resolver | 未随 HEAD 发布。UI1 alpha P0 仍待完成。 | 不能像 Irony Merge Viewer 那样在树形 UI 中逐块 copy / edit / resolve。 | 在 TTY 中运行 `foch merge` 使用默认交互；或手写 `foch.toml [[resolutions]]`。 | UI1 |
-| VS Code merge UI | [`packages/vscode-foch`](./packages/vscode-foch) 已存在，主要是 LSP / diagnostics / completion / goto definition。未接入 merge conflict workflow。 | 可编辑与诊断脚本，但不能在 VS Code 内完成 merge 仲裁闭环。 | 用 CLI 生成报告，再在编辑器里人工查看相关文件。 | VS Code merge UI |
+| VS Code merge UI | [`src/apps/vscode-foch`](./src/apps/vscode-foch) 已存在，主要是 LSP / diagnostics / completion / goto definition。未接入 merge conflict workflow。 | 可编辑与诊断脚本，但不能在 VS Code 内完成 merge 仲裁闭环。 | 用 CLI 生成报告，再在编辑器里人工查看相关文件。 | VS Code merge UI |
 | GUI / desktop app | 未实现。 | 没有 collection manager、drag/drop load order、图形化 patch mod 管理。 | 继续使用 Paradox Launcher / Irony 管理 playset；用 foch 做分析与 deterministic merge。 | GUI backlog |
 | 非 TTY 场景 | 默认交互只在 TTY 下启用；非 TTY 或 `--non-interactive` 会 defer，不会卡住 CI。 | CI 中 unresolved conflict 仍需预置 resolution。 | 预写 `foch.toml` resolution，或在有 TTY 时传 `--non-interactive` 强制批处理。 | UI1 / CI workflow |
 

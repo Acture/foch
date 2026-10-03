@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 RESERVED_KEYWORDS = [
@@ -111,7 +111,8 @@ def detect_game_root() -> Optional[Path]:
 
     home = Path.home()
     candidates = [
-        home / "Library/Application Support/Steam/steamapps/common/Europa Universalis IV",
+        home
+        / "Library/Application Support/Steam/steamapps/common/Europa Universalis IV",
         home / ".steam/steam/steamapps/common/Europa Universalis IV",
         home / ".local/share/Steam/steamapps/common/Europa Universalis IV",
         Path("C:/Program Files (x86)/Steam/steamapps/common/Europa Universalis IV"),
@@ -331,7 +332,9 @@ def build_catalog(
     assignment_counts: Counter = Counter()
     scanned_files = 0
     if game_root is not None and game_root.is_dir():
-        assignment_counts, scanned_files = scan_game_assignment_counts(game_root, max_game_files)
+        assignment_counts, scanned_files = scan_game_assignment_counts(
+            game_root, max_game_files
+        )
 
     attach_game_counts(merged_triggers, assignment_counts)
     attach_game_counts(merged_effects, assignment_counts)
@@ -343,7 +346,12 @@ def build_catalog(
 
     game_only_candidates = []
     for name, count in assignment_counts.most_common(400):
-        if name in known_symbols or name in reserved or name in contextual or name in aliases:
+        if (
+            name in known_symbols
+            or name in reserved
+            or name in contextual
+            or name in aliases
+        ):
             continue
         if name.isupper():
             continue
@@ -351,13 +359,15 @@ def build_catalog(
         if len(game_only_candidates) >= 120:
             break
 
-    scope_summary = wiki_scope.read_text(encoding="utf-8", errors="replace").splitlines()[:40]
+    scope_summary = wiki_scope.read_text(
+        encoding="utf-8", errors="replace"
+    ).splitlines()[:40]
     irony_summary = []
     if irony_readme.is_file():
         lines = irony_readme.read_text(encoding="utf-8", errors="replace").splitlines()
-        irony_summary = [line for line in lines if "CWTools" in line or "Special thanks" in line][
-            :8
-        ]
+        irony_summary = [
+            line for line in lines if "CWTools" in line or "Special thanks" in line
+        ][:8]
 
     return {
         "version": 1,
@@ -431,7 +441,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("src/game/eu4/base/data/eu4_builtin_catalog.json"),
+        default=Path(
+            "src/packages/foch/src/game/eu4/base/data/eu4_builtin_catalog.json"
+        ),
     )
     return parser.parse_args()
 

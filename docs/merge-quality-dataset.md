@@ -1,7 +1,7 @@
 # Merge-quality dataset
 
 The current merge-quality harness is private test support for the public
-`foch` executable. It lives under `apps/foch-cli/tests/merge_quality/`; there is
+`foch` executable. It lives under `src/apps/foch-cli/tests/merge_quality/`; there is
 no production merge-quality crate or binary.
 
 ## Product acceptance
@@ -32,7 +32,7 @@ rejection of a raw invocation without the alias's authorization. This was an
 orchestration check; it did not run or record a Workshop cohort.
 
 The denominator is the committed
-`apps/foch-cli/tests/merge_quality/fixtures/workshop-product-cases-v2.json`:
+`src/apps/foch-cli/tests/merge_quality/fixtures/workshop-product-cases-v2.json`:
 14 logical cases and 26 unique Workshop items. The manifest digest and both
 counts are tested. Missing local items, unavailable manifest IDs, malformed ACF
 data, ambiguous cross-library installs, or input drift fail the prerequisite;
@@ -48,7 +48,7 @@ For automatic exploratory testing of the newest Workshop page, use
 SteamCMD, verifies ACF identities, prepares base data, runs the actual merge, and
 records outputs or failure diagnostics. Its selection and per-attempt reports
 live under `target/workshop-probe`; it does not append exploratory results to the
-fixed-cohort streams. See the [probe guide](../apps/foch-cli/tests/merge_quality/README.md#automatic-newest-page-exploration)
+fixed-cohort streams. See the [probe guide](../src/apps/foch-cli/tests/merge_quality/README.md#automatic-newest-page-exploration)
 for authentication, resuming, artifact paths, and the evidence boundary.
 
 For each Steam library, discovery pairs:
@@ -79,7 +79,7 @@ closed and produces no completed measurement/evidence pair.
 
 ## Append-only records
 
-The tracked streams under `apps/foch-cli/tests/merge_quality/data/` are:
+The tracked streams under `src/apps/foch-cli/tests/merge_quality/data/` are:
 
 | File | Contents |
 | --- | --- |

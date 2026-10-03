@@ -25,12 +25,12 @@ none substitutes for product merge evidence.
 - EU4 is the only supported game. Do not imply support for other
   Paradox games until their loader behavior and content families are verified.
 - Reusable CWT parsing, compilation, and rule evaluation belong in
-  `src/game/schema`. Concrete EU4 interpretation belongs in `src/game/eu4`,
+  `src/packages/foch/src/game/schema`. Concrete EU4 interpretation belongs in `src/packages/foch/src/game/eu4`,
   with `ContentFamilyDescriptor` as the analyzer behavior boundary. CWT
   schemas are useful evidence, but they do not by themselves prove runtime
   load or merge semantics.
 - The CWT schema decides output bytes (numeric canonicalization reads its
-  field types), so `build.rs` compiles `vendor/cwtools-eu4-config` into a rule
+  field types), so `src/packages/foch/build.rs` compiles `vendor/cwtools-eu4-config` into a rule
   pack the binary embeds, and its `cwt_schema_id` enters
   `analysis_rules_version`, the mod-snapshot cache key, `foch --version` and
   the merge-quality scorer identity. `FOCH_CWTOOLS_SCHEMA_DIR` is a
@@ -63,7 +63,7 @@ none substitutes for product merge evidence.
   is an explicit audit with its I/O cost stated up front, not a hidden merge or
   acceptance prerequisite.
 - The only command-line executable is `foch`; the language server is `foch
-  lsp`. The separate `foch-desktop` application links the root `foch` library
+  lsp`. The separate `foch-desktop` application links the main `foch` library
   directly and must not spawn or bundle the CLI. Parser-maintainer tools are
   feature-gated examples. Merge-quality workflows belong in the CLI's exact
   integration-test harness, not a production library or separate binary.
@@ -92,7 +92,7 @@ Agents should use focused fixtures and bounded real-case probes while
 developing, then hand off the Cargo command instead of launching it
 unannounced.
 
-The V2 JSONL streams under `apps/foch-cli/tests/merge_quality/data/` are
+The V2 JSONL streams under `src/apps/foch-cli/tests/merge_quality/data/` are
 append-only and intentionally resumable per case. An interrupted partial cohort
 is valid measurement history, not corruption, but it is not an accepted
 baseline. Only a complete cohort for the current product artifact, runner,
@@ -109,9 +109,10 @@ the legacy object store part of the current product path.
 - Read `docs/project-status.md` before selecting work. It is the self-contained
   current handoff; re-check Git and local inputs because its checkpoint facts
   can age.
-- Check Linear for active work and `notes/foch/首页.md` for migrated research,
-  design, and evaluation documents. `docs/project-status.md`, numerical ledgers,
-  and raw evidence remain in Foch. Notion-only narrative that has not been
+- Check Linear for active work. `docs/` owns public usage, contributor guidance,
+  current architecture, measured status and raw evidence. `notes/首页.md` is
+  the entry to private research and design history in `notes/research/`.
+  Notion-only narrative that has not been
   migrated remains at its original page; do not write to Notion unless asked.
 - Distinguish committed implementation, a local worktree observation, a
   recorded test result, and an accepted product cohort. Never promote one into
@@ -133,7 +134,7 @@ default. At session start, before reading project notes, preserve any local
 edits or unpublished commits, then refresh a clean checkout with
 `git submodule update --init --remote --checkout -- notes`. Private repository
 access is required; if refresh fails, report the stale/unavailable notes rather
-than silently using them as current. Read `notes/foch/首页.md` alongside the
+than silently using them as current. Read `notes/首页.md` alongside the
 code status and Linear.
 
 Before editing, preserve any dirty notes, then run `git -C notes fetch origin`,
@@ -142,10 +143,14 @@ Before editing, preserve any dirty notes, then run `git -C notes fetch origin`,
 detached HEAD; `.gitmodules` branch configuration and ordinary clone/pull do
 not automatically fetch the latest notes. A plain submodule update restores
 the recorded commit and is only for explicit historical reproduction.
-Edit only `notes/foch/**`. Follow the vault's existing
-`Workflow/研究工作流.md` for master integration and stop on conflicts rather
-than overwriting either side.
+The project branch root is the notes root; edit its `research/` and project
+entry directly. Master integration belongs to the notes repository. Preserve
+both sides of any conflict; do not overwrite or reset unpublished work.
 
+Install or refresh the master-owned notes hook using the README commands.
+Submit notes through the installed `hooks/notes-boundary/submit_project.py`:
+the vault requires a remote boundary check before a new project commit can be
+pushed. Do not bypass hooks or branch protection.
 Commit and successfully push the notes branch first. Only then stage `notes`
 and commit/push the Foch gitlink. Never point the parent at an unpublished notes
 commit. See the README's research-notes section for initialization, latest-branch
@@ -157,22 +162,25 @@ symlinks to `CLAUDE.md`.
 
 `foch` is a workspace monorepo with one primary Rust library:
 
-- `src/` — project/input models, check/graph/simplify orchestration, merge
+- `src/packages/foch/src/` — project/input models, check/graph/simplify orchestration, merge
   analysis/review/commit, platform services, reusable CWT schema machinery, and
   concrete EU4 semantics
-- `apps/foch-cli` — the `foch` binary, `foch lsp`, CLI integration tests,
+- `src/apps/foch-cli` — the `foch` binary, `foch lsp`, CLI integration tests,
   fixed-corpus merge-quality harness, and feature-gated maintainer examples
-- `apps/foch-desktop` — the player-facing Tauri application, linked directly to
-  the root library without a CLI sidecar
+- `src/apps/foch-desktop` — the player-facing Tauri application, linked directly to
+  the main library without a CLI sidecar
 
-JS packages live under `packages/`:
+- `src/packages/tree-sitter-paradox` — grammar package
+- `src/apps/vscode-foch` — VS Code extension
+- `src/tools/eu4-analysis` — PyGhidra-based maintainer analysis
+- `vendor/cwtools-eu4-config` — external build input, compiled into the binary
 
-- `packages/tree-sitter-paradox` — grammar package
-- `packages/vscode-foch` — VS Code extension
-
-Use `tests/` and package-local `tests/fixtures/` for integration fixtures and
-corpus-style checks, `docs/` for product references, measured status and evidence,
-`notes/foch/` for research/design documents, and `scripts/` for operator workflows.
+The root Cargo manifest only configures the workspace. The main library's
+`tests/`, `fuzz/` and `build.rs` live in `src/packages/foch/`. Keep fuzz as an
+independent cargo-fuzz workspace. Use package-local test fixtures, `docs/` for
+public documentation and evidence, `notes/research/` for private research and
+design history, and `scripts/` for operator workflows. Release source archives
+must include both public build submodules and work without `.git` or `notes/`.
 
 ## Build, Test, and Development Commands
 
@@ -180,8 +188,8 @@ corpus-style checks, `docs/` for product references, measured status and evidenc
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — strict Rust linting
 - `cargo test --workspace` — run the Rust test suite
 - `bun install --frozen-lockfile` — install workspace JS dependencies
-- `bun run --cwd packages/tree-sitter-paradox test` — test the grammar package
-- `bun run --cwd packages/vscode-foch smoke` — smoke-test the VS Code extension
+- `bun run --cwd src/packages/tree-sitter-paradox test` — test the grammar package
+- `bun run --cwd src/apps/vscode-foch smoke` — smoke-test the VS Code extension
 - `set EU4_ROOT "$HOME/Library/Application Support/Steam/steamapps/common/Europa Universalis IV"; target/debug/foch data build eu4 --from-game-path "$EU4_ROOT" --game-version auto --output-dir /tmp/foch-probe` — default macOS Steam probe command to hand off after analyzer changes
 
 ## Coding Style & Naming Conventions
@@ -204,19 +212,19 @@ add a regression for the observed semantic cause, then run the owning package an
 CLI integration tests. Do not update expected corpus output merely to make a
 failure green; adjudicate why the product and the human compatch differ.
 
-Keep changing coverage status in `docs/project-status.md`; research interpretation belongs in `notes/foch/`. `AGENTS.md` should hold stable execution guidance, not rolling project baselines.
+Keep changing coverage status in `docs/project-status.md`; research interpretation belongs in `notes/`. `AGENTS.md` should hold stable execution guidance, not rolling project baselines.
 
 ## Environment & Configuration
 
-Use `direnv` in the repo root and keep Node on the supported line: `>=22 <25`. Run `direnv allow` once after cloning. `node@25` is currently not a supported local development environment for `packages/tree-sitter-paradox`.
+Use `direnv` in the repo root and keep Node on the supported line: `>=22 <25`. Run `direnv allow` once after cloning. `node@25` is currently not a supported local development environment for `src/packages/tree-sitter-paradox`.
 
 Both build submodules must be checked out before anything builds, and `git worktree add` initializes none of the submodules:
 
 ```fish
-git submodule update --init packages/tree-sitter-paradox vendor/cwtools-eu4-config
+git submodule update --init src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 ```
 
-A missing `packages/tree-sitter-paradox` fails at manifest load. A missing or empty `vendor/cwtools-eu4-config` fails the root crate's build script, which compiles it into the embedded CWT rule pack; there is no schema-less build.
+A missing `src/packages/tree-sitter-paradox` fails at manifest load. A missing or empty `vendor/cwtools-eu4-config` fails the main library's build script, which compiles it into the embedded CWT rule pack; there is no schema-less build.
 
 The private `notes/` submodule is separate and optional for builds. CI and public
 source packages initialize only the two build submodules listed above.
@@ -229,4 +237,4 @@ Run `bash scripts/install-hooks.sh` once after cloning to install the local git 
 
 ## Commit & Pull Request Guidelines
 
-Follow the existing commit style: short, imperative subjects such as `Promote low-risk common mechanics roots` or `Split and promote random map content families`. Keep one logical change per commit. PRs should include a concise summary, linked Notion task or decision when applicable, validation commands run, and any probe delta (`parse_only` / `semantic_complete`) when analyzer coverage changes. Add screenshots only for `packages/vscode-foch` UI changes. Do not add AI co-author trailers.
+Follow the existing commit style: short, imperative subjects such as `Promote low-risk common mechanics roots` or `Split and promote random map content families`. Keep one logical change per commit. PRs should include a concise summary, linked Notion task or decision when applicable, validation commands run, and any probe delta (`parse_only` / `semantic_complete`) when analyzer coverage changes. Add screenshots only for `src/apps/vscode-foch` UI changes. Do not add AI co-author trailers.

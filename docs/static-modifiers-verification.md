@@ -26,7 +26,7 @@ changed.
 
 The first conflict regression also found that an unchanged `vanilla` mod was
 offered alongside `tax` and `up` as a final candidate. P-556 fixes candidate
-construction in `src/merge/kernel/nway.rs` for divergent values and delete/modify
+construction in `src/packages/foch/src/merge/kernel/nway.rs` for divergent values and delete/modify
 conflicts. Complete revision evidence and the ancestor remain available;
 unchanged carriers are excluded from choices, while equivalent actual changes,
 changed surviving subtrees and deletion tombstones remain. The product report
@@ -50,7 +50,7 @@ as the Windows product-path gate.
 Every row runs twice through public analysis/commit and twice through CLI
 preview/confirmation. The public test installs an explicit synthetic EU4
 snapshot in an isolated process. CLI tests build it through `foch data build`.
-Both use the committed [fixture](../tests/fixtures/static_modifiers/README.md).
+Both use the committed [fixture](../src/packages/foch/tests/fixtures/static_modifiers/README.md).
 
 | Scenario | Expected result |
 | --- | --- |

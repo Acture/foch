@@ -1,49 +1,33 @@
 # Foch Documentation
 
-This directory holds Foch's public usage and acceptance contracts, measured
-project state, numerical records, and raw evidence. Research and design documents
-are maintained in the [project notes](../notes/foch/首页.md) submodule.
+Public documentation for using, building and contributing to Foch. No private
+notes access is required. Current product contracts live here; private research,
+experimental interpretation and historical design discussions live in the
+separate notes repository. Linear owns active work and dependencies.
 
-If you are new to the project, start with the current handoff below. It is
-self-contained. Linear owns active execution and dependencies. Migrated research
-and design live in `notes/foch/`; Notion-only material remains at its original
-page until separately migrated. See the [notes workflow](../README.md#research-and-design-notes)
-for initialization, updates, and committing notes before the parent gitlink.
+## Users
 
-## Start Here
+- [Project manifest](foch-project-manifest.md) — compose ordered inputs in `foch.toml`.
+- [Resolution reference](foch-toml-resolutions.md) — review and resolve conflicts.
+- [VS Code/LSP preview](lsp-0.1-preview.md) — editor setup and supported behavior.
+- [Known issues](../KNOWN_ISSUES.md) — public limitations.
 
-- [project-status.md](./project-status.md) — verified state, accepted evidence,
-  dirty-worktree warning, and fresh-agent runbook
-- [architecture.md](../notes/foch/docs/architecture.md) — package and execution boundaries,
-  including the analyze/review/commit flow
-- [merge-design.md](../notes/foch/docs/merge-design.md) — review units, conflict policy, and
-  commit contract
-- [merge-quality-dataset.md](./merge-quality-dataset.md) — fixed 14-case product
-  acceptance, input identity, evidence, and scoring contract
+## Contributors
 
-## User and Contributor Reference
+- [Architecture](architecture.md) — source layout and dependency boundaries.
+- [Merge contract](merge-design.md) — analyze, review and commit behavior.
+- [Cache architecture](cache-architecture.md) — identities and lifecycle.
+- [Development commands](../README.md#development) — build and quality checks.
+- [Release checklist](RELEASE_CHECKLIST.md) — packaging and release gates.
 
-- [foch-project-manifest.md](./foch-project-manifest.md) — declarative project
-  input composition
-- [foch-toml-resolutions.md](./foch-toml-resolutions.md) — reviewed conflict
-  resolutions and safety rules
-- [cache-architecture.md](../notes/foch/docs/cache-architecture.md) — cache layers, identity, and
-  trust boundaries
-- [lsp-0.1-preview.md](./lsp-0.1-preview.md) — independently versioned VS
-  Code/LSP preview and editor scope
-- [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) — release gates
+## Status and evidence
 
-## Historical and Auxiliary Evidence
+- [Project status](project-status.md) — measured checkpoints and their limits.
+- [Merge-quality acceptance](merge-quality-dataset.md) — inputs, scoring and evidence contracts.
+- [Static-modifier verification](static-modifiers-verification.md) — focused product evidence.
+- [Historical AST-diff results](merge-quality-ast-diff.md) — retained historical measurements.
+- [Raw evidence](evidence/) — recorded artifacts, including historical applicability observations.
 
-These documents explain how earlier decisions were reached. They are not the
-active task queue and do not replace the current product acceptance gate.
-
-- [structured-merge-shadow.md](../notes/foch/docs/structured-merge-shadow.md) — historical
-  GumTree/PCS rollout and Legacy/Structured comparison
-- [common-applicability-probe.md](./common-applicability-probe.md) — auxiliary
-  `common/<folder>` analysis, not product acceptance
-
-Historical reviews, research explanations, specs and plans now live under
-`notes/foch/docs/` and `notes/foch/plan/`, with their history preserved. Their old
-crate names and commands are not current architecture. Raw JSON evidence below
-`docs/evidence/` and `docs/research/evidence/` remains in this repository.
+The append-only Workshop measurement streams stay beside their runner in
+`src/apps/foch-cli/tests/merge_quality/data/`. Research notes reference these
+records; moving directories must not change their bytes or acceptance scope.

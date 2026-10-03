@@ -23,9 +23,9 @@ the maintainer must take over those parts of the release workflow.
 11. ☐ Manually build the macOS Intel binary on an Intel Mac; this requires the
     maintainer-side toolchain and hardware.
 12. ☐ Smoke-test the VS Code extension package:
-    `bun run --cwd packages/vscode-foch test`
+    `bun run --cwd src/apps/vscode-foch test`
 13. ☐ Build the VS Code extension package:
-    `bun run --cwd packages/vscode-foch package:vsix`
+    `bun run --cwd src/apps/vscode-foch package:vsix`
 14. ☐ Create the GitHub Release with binaries and the extension VSIX.
 15. ☐ Write a fresh announcement from the verified release state.
     [`ALPHA_ANNOUNCEMENT.md`](../ALPHA_ANNOUNCEMENT.md) is archived historical

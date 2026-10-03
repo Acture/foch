@@ -1,0 +1,4 @@
+target/
+corpus/*/*
+!corpus/*/seed_*.bin
+artifacts/

@@ -8,7 +8,7 @@ foch currently implements one concrete game: Europa Universalis IV. CK3,
 Victoria 3, Stellaris, Hearts of Iron IV, and other Clausewitz titles need their
 own verified loader behavior, content-family registry, base-data model, merge
 keys, and resource extraction before they can be trusted. Reusable CWT support
-under `src/game/schema` is not game support by itself.
+under `src/packages/foch/src/game/schema` is not game support by itself.
 
 **Workaround:** treat foch as EU4-only for this alpha. Contributors adding a new game should start with narrow content-family descriptors, fixtures, and base-data coverage probes.
 
@@ -25,7 +25,7 @@ target directory.
 
 The alpha decodes Paradox text through `decode_paradox_bytes`, with UTF-8/BOM handling plus GB18030, GBK, Big5/CJK detection, and Windows-1252 fallback via `chardetng`/`encoding_rs`. That covers common EU4 and translation-mod cases, but exotic or malformed encodings can still display as mojibake.
 
-**Workaround:** keep suspicious localisation files under review, report minimal byte samples, and extend the `decode_paradox_bytes` funnel in `src/game/eu4/text.rs` when a repeatable encoding family appears.
+**Workaround:** keep suspicious localisation files under review, report minimal byte samples, and extend the `decode_paradox_bytes` funnel in `src/packages/foch/src/game/eu4/text.rs` when a repeatable encoding family appears.
 
 ## Two total-conversion cases have a cold-path outlier
 
@@ -36,7 +36,7 @@ them was stopped after more than 6m39s while Foch inspected many base-game
 content folders those mods replace. This is not a representative runtime
 baseline for ordinary mods.
 
-**Workaround:** use a release binary or `cargo install --path apps/foch-cli`,
+**Workaround:** use a release binary or `cargo install --path src/apps/foch-cli`,
 keep parser and semantic caches enabled, inspect them with `foch cache stats` /
 `foch cache list`, and reserve debug cold runs for engine debugging.
 

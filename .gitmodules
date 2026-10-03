@@ -1,5 +1,5 @@
 [submodule "tree-sitter-paradox"]
-	path = packages/tree-sitter-paradox
+	path = src/packages/tree-sitter-paradox
 	url = https://github.com/Acture/tree-sitter-paradox.git
 [submodule "vendor/cwtools-eu4-config"]
 	path = vendor/cwtools-eu4-config

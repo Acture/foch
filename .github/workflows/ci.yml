@@ -41,7 +41,7 @@ jobs:
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 
       - name: Install Tauri Linux dependencies
         run: |
@@ -84,7 +84,7 @@ jobs:
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 
       - name: Install Tauri Linux dependencies
         if: runner.os == 'Linux'
@@ -109,7 +109,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: packages/tree-sitter-paradox
+        working-directory: src/packages/tree-sitter-paradox
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -118,7 +118,7 @@ jobs:
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -164,7 +164,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: packages/vscode-foch
+        working-directory: src/apps/vscode-foch
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -173,7 +173,7 @@ jobs:
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -222,7 +222,7 @@ jobs:
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -247,17 +247,17 @@ jobs:
 
       - name: Check desktop frontend
         run: |
-          bun run --cwd apps/foch-desktop format:check
-          bun run --cwd apps/foch-desktop lint
-          bun run --cwd apps/foch-desktop typecheck
-          bun run --cwd apps/foch-desktop test
-          bun run --cwd apps/foch-desktop build
+          bun run --cwd src/apps/foch-desktop format:check
+          bun run --cwd src/apps/foch-desktop lint
+          bun run --cwd src/apps/foch-desktop typecheck
+          bun run --cwd src/apps/foch-desktop test
+          bun run --cwd src/apps/foch-desktop build
 
       - name: Test desktop backend
         run: cargo test --locked -p foch-desktop
 
       - name: Build NSIS development installer
-        run: bun run --cwd apps/foch-desktop tauri build --bundles nsis
+        run: bun run --cwd src/apps/foch-desktop tauri build --bundles nsis
 
       - name: Smoke test installed desktop package
         shell: pwsh

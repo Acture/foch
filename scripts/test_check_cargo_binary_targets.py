@@ -32,7 +32,7 @@ def cargo_dependency(
 def desktop_package(*extra_dependencies: CargoDependency) -> CargoPackage:
 	return CargoPackage(
 		name="foch-desktop",
-		manifest_path="apps/foch-desktop/src-tauri/Cargo.toml",
+		manifest_path="src/apps/foch-desktop/src-tauri/Cargo.toml",
 		targets=[],
 		dependencies=[
 			cargo_dependency("foch"),
