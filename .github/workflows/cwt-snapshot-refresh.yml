@@ -34,12 +34,15 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Install maintenance package
+        run: python -m pip install --no-deps ./src/tools/foch-dev
+
       - name: Capture current schema state
         id: before
         run: |
           set -euo pipefail
           echo "submodule_sha=$(git -C vendor/cwtools-eu4-config rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "schema_hash=$(python scripts/cwt_snapshot_hash.py)" >> "$GITHUB_OUTPUT"
+          echo "schema_hash=$(python -m foch_dev schema-hash)" >> "$GITHUB_OUTPUT"
 
       - name: Refresh vendored schema
         id: refresh
@@ -49,7 +52,7 @@ jobs:
 
           before_sha="${{ steps.before.outputs.submodule_sha }}"
           after_sha="$(git -C vendor/cwtools-eu4-config rev-parse HEAD)"
-          after_hash="$(python scripts/cwt_snapshot_hash.py)"
+          after_hash="$(python -m foch_dev schema-hash)"
           short_sha="${after_sha:0:12}"
           changed=false
 

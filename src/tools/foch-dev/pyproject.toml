@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "foch-dev"
+version = "0.1.0"
+description = "Internal Foch repository checks and diagnostic workflows"
+requires-python = ">=3.11"
+classifiers = ["Private :: Do Not Upload"]
+
+[dependency-groups]
+dev = ["ruff>=0.6.7", "ty>=0.0.82"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["foch_dev"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+indent-style = "tab"

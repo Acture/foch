@@ -1,4 +1,4 @@
-"""Inspect EU4 functions or discover candidate family rules with PyGhidra."""
+"""Discover EU4 loading rules, inspect functions, or build a builtin catalog."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import builtins
+from .builtins import BuiltinOptions
 from .catalog import CatalogDiscovery, CatalogReport, discover_catalog
 from .families import DEFAULT_BOOTSTRAP, Discovery, FamilyQuery, discover_family
 from .ghidra import GhidraSession, validate_output_directory
@@ -43,11 +45,17 @@ def label(value: str) -> str:
 	return value
 
 
-def parse_args(argv: list[str] | None = None) -> Options:
+def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 	parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
 	commands = parser.add_subparsers(dest="command", required=True)
 	discover = commands.add_parser(
 		"discover", help="Discover all loader candidates and infer family rules"
+	)
+	builtins.add_arguments(
+		commands.add_parser(
+			"builtins",
+			help="Build a builtin symbol catalog from explicit local sources",
+		)
 	)
 	inspect = commands.add_parser("inspect", help="Export one function and its calls")
 	for command in (discover, inspect):
@@ -85,6 +93,21 @@ def parse_args(argv: list[str] | None = None) -> Options:
 		"--symbol", required=True, help="Glob matching one function address"
 	)
 	args: argparse.Namespace = parser.parse_args(argv)
+	if args.command == "builtins":
+		if args.max_game_files < 0:
+			parser.error("--max-game-files cannot be negative")
+		if args.max_game_files and args.game_root is None:
+			parser.error("--max-game-files requires --game-root")
+		return BuiltinOptions(
+			args.cwtools_dir,
+			args.wiki_effects,
+			args.wiki_conditions,
+			args.wiki_scope,
+			args.output,
+			args.irony_readme,
+			args.game_root,
+			args.max_game_files,
+		)
 	if args.ghidra is None:
 		parser.error("set --ghidra or GHIDRA_INSTALL_DIR")
 	if args.timeout <= 0:
@@ -134,7 +157,10 @@ def write_json(path: Path, value: object) -> None:
 	LOGGER.info("Wrote %s", path)
 
 
-def run(options: Options) -> None:
+def run(options: Options | BuiltinOptions) -> None:
+	if isinstance(options, BuiltinOptions):
+		builtins.run(options)
+		return
 	if options.rules_directory is not None:
 		validate_output_directory(
 			options.binary, options.installation, options.rules_directory

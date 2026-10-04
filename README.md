@@ -165,6 +165,7 @@ Run `foch <command> --help` for authoritative options.
 - `src/packages/tree-sitter-paradox` — independently versioned grammar package
 - `src/apps/vscode-foch` — independently versioned VS Code extension
 - `src/tools/eu4-analysis` — maintainer tooling for extracting EU4 loading rules
+- `src/tools/foch-dev` — reusable repository checks and diagnostic workflows
 - `vendor/` — externally maintained CWT rules, pinned as a build submodule
 - `scripts/` — build, release, and repository maintenance workflows
 - `docs/` — current public usage, contributor guides, architecture, and status
@@ -254,6 +255,37 @@ library at build time; ordinary merges do not require Python or Ghidra.
 
 Run the module's tests without Ghidra using
 `uv run --directory src/tools/eu4-analysis python -m unittest discover -s tests`.
+
+The same module's `builtins` command builds a candidate builtin symbol catalog
+from local CWT and wiki snapshots. It requires no Ghidra session. Supply explicit
+wiki files and an output destination; the CWT input defaults to the vendored
+snapshot. Relative arguments below are resolved from the tool directory:
+
+```fish
+uv run --directory src/tools/eu4-analysis python -m eu4_analysis builtins \
+	--wiki-effects /path/to/effects.md --wiki-conditions /path/to/conditions.md \
+	--wiki-scope /path/to/scope.md --output /tmp/eu4_builtin_catalog.json
+```
+
+`--irony-readme` adds optional source context. Game scanning is opt-in through
+`--game-root`; `--max-game-files` bounds that scan. Review the candidate before
+replacing `src/packages/foch/src/game/eu4/base/data/eu4_builtin_catalog.json`.
+Generation does not download sources or modify installed game files.
+
+## Repository maintenance tools
+
+[`foch-dev`](src/tools/foch-dev/README.md) provides importable Python modules and
+one maintenance command entrypoint:
+
+```fish
+uv run --locked --project src/tools/foch-dev python -m foch_dev check
+uv run --locked --project src/tools/foch-dev python -m foch_dev schema-hash
+```
+
+Its `smoke` and `compare` subcommands run diagnostic checks and compare summaries.
+Use `--help` for their inputs. These diagnostics are separate from `cargo acceptance`.
+Root `scripts/` holds hooks and release wrappers; the desktop app owns its
+Windows installer smoke script. Ordinary Foch users do not need these Python tools.
 
 ## Documentation
 

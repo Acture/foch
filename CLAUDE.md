@@ -173,7 +173,8 @@ symlinks to `CLAUDE.md`.
 
 - `src/packages/tree-sitter-paradox` — grammar package
 - `src/apps/vscode-foch` — VS Code extension
-- `src/tools/eu4-analysis` — PyGhidra-based maintainer analysis
+- `src/tools/eu4-analysis` — PyGhidra analysis and builtin catalog generation
+- `src/tools/foch-dev` — internal Python package for repository contracts and diagnostics
 - `vendor/cwtools-eu4-config` — external build input, compiled into the binary
 
 The root Cargo manifest only configures the workspace. The main library's
@@ -191,7 +192,19 @@ Local manual merge outputs belong under `target/manual-merges/`, not the root.
 Keep the README, canonical agent instructions and license/notice files at the
 repository root.
 
+Reusable maintenance logic belongs in `src/tools/foch-dev`, with typed APIs and
+`python -m foch_dev` subcommands. Keep root scripts limited to hooks and release
+orchestration; platform installer smoke belongs to the owning application.
+EU4 catalog generation is `python -m eu4_analysis builtins`, with explicit local
+source paths and opt-in game scanning. Neither tool belongs in the production
+Rust library or the Workshop acceptance harness. See the tool README for commands.
+
 ## Build, Test, and Development Commands
+
+- `uv run --locked --project src/tools/foch-dev python -m foch_dev check` — repository contracts
+- `uv run --locked --project src/tools/foch-dev python -m unittest discover -s src/tools/foch-dev/tests` — maintenance unit tests
+- `uv run --locked --project src/tools/foch-dev ruff check src/tools/foch-dev` and `ruff format --check src/tools/foch-dev` — maintenance lint/format (run both through the same uv environment)
+- `uv run --locked --project src/tools/foch-dev ty check src/tools/foch-dev` — maintenance type check
 
 - `cargo fmt --all --check` — verify Rust formatting
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — strict Rust linting
