@@ -27,6 +27,5 @@ the maintainer must take over those parts of the release workflow.
 13. ☐ Build the VS Code extension package:
     `bun run --cwd src/apps/vscode-foch package:vsix`
 14. ☐ Create the GitHub Release with binaries and the extension VSIX.
-15. ☐ Write a fresh announcement from the verified release state.
-    [The earlier announcement draft](archive/alpha-announcement.md) is archived historical
-    material and must not be posted as-is.
+15. ☐ Write an announcement from the verified release state and current public
+    documentation.

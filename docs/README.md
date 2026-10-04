@@ -20,22 +20,12 @@ separate notes repository. Linear owns active work and dependencies.
 - [Development commands](../README.md#development) — build and quality checks.
 - [Release checklist](RELEASE_CHECKLIST.md) — packaging and release gates.
 
-## Status and evidence
+## Status and acceptance
 
-- [Project status](project-status.md) — measured checkpoints and their limits.
+- [Project status](project-status.md) — current verified state and its limits.
 - [Merge-quality acceptance](merge-quality-dataset.md) — inputs, scoring and evidence contracts.
-- [Static-modifier verification](static-modifiers-verification.md) — focused product evidence.
-- [Historical AST-diff results](merge-quality-ast-diff.md) — retained historical measurements.
-- [Raw evidence](evidence/) — recorded artifacts, including historical applicability observations.
 
-The append-only Workshop measurement streams stay beside their runner in
-`src/apps/foch-cli/tests/merge_quality/data/`. Research notes reference these
-records; moving directories must not change their bytes or acceptance scope.
-
-## Archived release material
-
-These documents preserve earlier public release material, not current product
-claims or instructions:
-
-- [Alpha limitations at a37ffb8](archive/known-limitations.md).
-- [Archived alpha announcement draft](archive/alpha-announcement.md).
+The append-only Workshop measurement streams and raw probe evidence stay beside
+their runner in `src/apps/foch-cli/tests/merge_quality/data/`. Private research,
+superseded reports and development history belong in the notes repository.
+This directory contains current public documentation, not an archive.

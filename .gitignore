@@ -9,7 +9,6 @@ src/apps/vscode-foch/dist/
 src/apps/vscode-foch/*.vsix
 .direnv/
 /output/
-test_merge
 local_merge/
 
 # Local secrets (Steam Web API key for the merge-quality harness, etc.) — never commit

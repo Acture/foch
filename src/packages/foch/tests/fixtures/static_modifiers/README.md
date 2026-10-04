@@ -27,5 +27,9 @@ are checked; exit status alone is not acceptance.
 These cases establish Foch's behavior under the existing family descriptor and
 dependency DAG. They do not independently verify EU4 runtime duplicate-definition
 or filename precedence rules, or prove that arbitrary numeric changes are
-compatible. See `docs/static-modifiers-verification.md` for the observed failure,
-fix, real-input boundary and validation commands.
+compatible. Run the focused public-entrypoint gates from the workspace root:
+
+```fish
+cargo test -p foch --test merge_static_modifiers
+cargo test -p foch-cli --test cli_integration static_modifiers_cli
+```

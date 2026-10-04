@@ -109,8 +109,9 @@ the legacy object store part of the current product path.
 - Read `docs/project-status.md` before selecting work. It is the self-contained
   current handoff; re-check Git and local inputs because its checkpoint facts
   can age.
-- Check Linear for active work. `docs/` owns public usage, contributor guidance,
-  current architecture, measured status and raw evidence. `notes/首页.md` is
+- Check Linear for active work. `docs/` owns current public usage, contributor
+  guidance, architecture and measured status. Raw evidence stays with its
+  producing code or test harness. `notes/首页.md` is
   the entry to private research and design history in `notes/research/`.
   Notion-only narrative that has not been
   migrated remains at its original page; do not write to Notion unless asked.
@@ -178,12 +179,15 @@ symlinks to `CLAUDE.md`.
 The root Cargo manifest only configures the workspace. The main library's
 `tests/`, `fuzz/` and `build.rs` live in `src/packages/foch/`. Keep fuzz as an
 independent cargo-fuzz workspace. Use package-local test fixtures, `docs/` for
-public documentation and evidence, `notes/research/` for private research and
+current public documentation, `notes/research/` for private research and
 design history, and `scripts/` for operator workflows. Release source archives
 must include both public build submodules and work without `.git` or `notes/`.
 
-Public known issues and release guidance belong in `docs/`; historical public
-release material belongs in `docs/archive/` with an explicit archive notice.
+Public known issues and release guidance belong in `docs/`. Superseded reports,
+release drafts and development history belong in `notes/research/`, not a public
+documentation archive. Keep `docs/project-status.md` concise and current; move
+past checkpoints into notes. Raw measurements remain in the code repository.
+Local manual merge outputs belong under `target/manual-merges/`, not the root.
 Keep the README, canonical agent instructions and license/notice files at the
 repository root.
 

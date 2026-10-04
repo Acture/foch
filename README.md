@@ -167,7 +167,7 @@ Run `foch <command> --help` for authoritative options.
 - `src/tools/eu4-analysis` — maintainer tooling for extracting EU4 loading rules
 - `vendor/` — externally maintained CWT rules, pinned as a build submodule
 - `scripts/` — build, release, and repository maintenance workflows
-- `docs/` — public usage, contributor guides, architecture, status, and evidence
+- `docs/` — current public usage, contributor guides, architecture, and status
 - `notes/research/` — private research, experimental interpretation, and design history
   in the [unified notes repository](https://github.com/Acture/obsidian-vault/tree/project/foch)
 
@@ -273,7 +273,9 @@ Run the module's tests without Ghidra using
 configured for `project/foch`. Its Foch entry is
 [`notes/首页.md`](./notes/首页.md). The project branch root is the notes root;
 research lives under `notes/research/`. Public usage, contributor and architecture
-documents, measured status, numeric records and raw evidence remain in Foch.
+documents and current measured status remain in Foch. Numeric records and raw
+evidence stay with their producing code or test harness. Superseded reports,
+release drafts and development history belong in notes, outside public docs.
 Reading public documentation, building and testing do not require private access.
 
 Use the latest published `project/foch` notes by default. After cloning,
