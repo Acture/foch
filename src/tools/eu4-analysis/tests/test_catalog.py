@@ -4,11 +4,12 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from test_analysis import FakeAnalysis, database, function
+
 from eu4_analysis.__main__ import CatalogQuery, Options, parse_args
 from eu4_analysis.catalog import CatalogDiscovery, CatalogReport, discover_catalog
 from eu4_analysis.models import Function, FunctionEvidence
 from eu4_analysis.symbols import MemberName, member_name, registration_record
-from test_analysis import FakeAnalysis, database, function
 
 
 def symbol(owner: str, method: str, parameters: str = "v") -> str:
@@ -70,7 +71,7 @@ class BrokenAnalysis(FakeAnalysis):
 
 class CatalogTests(unittest.TestCase):
 	def test_default_command_discovers_all_without_registry_or_record(self) -> None:
-		options: Options = parse_args(
+		options = parse_args(
 			[
 				"discover",
 				"--binary",
@@ -81,6 +82,7 @@ class CatalogTests(unittest.TestCase):
 				"test",
 			]
 		)
+		assert isinstance(options, Options)
 		self.assertIsInstance(options.query, CatalogQuery)
 		assert isinstance(options.query, CatalogQuery)
 		self.assertIsNone(options.query.limit)

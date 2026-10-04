@@ -7,7 +7,6 @@ import tomllib
 from pathlib import Path
 from typing import TypedDict, cast
 
-
 CargoTarget = TypedDict(
 	"CargoTarget",
 	{
@@ -160,7 +159,7 @@ def custom_harness_targets(manifest_path: Path) -> list[str]:
 def json_object(path: Path) -> dict[str, object]:
 	value = json.loads(path.read_text(encoding="utf-8"))
 	if not isinstance(value, dict):
-		raise SystemExit(f"{path} must contain a JSON object")
+		raise ValueError(f"{path} must contain a JSON object")
 	return cast(dict[str, object], value)
 
 
@@ -184,7 +183,7 @@ def verify_desktop_rust_dependencies(desktop: CargoPackage) -> None:
 		if dependency["kind"] is None and dependency["target"] is None
 	}
 	if not REQUIRED_DESKTOP_RUNTIME_CRATES.issubset(runtime_dependencies):
-		raise SystemExit(
+		raise ValueError(
 			"foch-desktop must have unconditional runtime dependencies on "
 			f"{sorted(REQUIRED_DESKTOP_RUNTIME_CRATES)}; found {sorted(runtime_dependencies)}"
 		)
@@ -207,7 +206,7 @@ def verify_desktop_rust_dependencies(desktop: CargoPackage) -> None:
 		elif name == "tokio" and "process" in dependency["features"]:
 			forbidden.append(f"{dependency_description(dependency)}, feature=process")
 	if forbidden:
-		raise SystemExit(
+		raise ValueError(
 			"foch-desktop APP-001 has forbidden Rust dependencies: "
 			+ ", ".join(sorted(forbidden))
 		)
@@ -218,14 +217,14 @@ def frontend_dependency_names(package: dict[str, object], path: Path) -> set[str
 	for section in FRONTEND_DEPENDENCY_SECTIONS:
 		raw_dependencies = package.get(section, {})
 		if not isinstance(raw_dependencies, dict):
-			raise SystemExit(f"{path}:{section} must be an object")
+			raise ValueError(f"{path}:{section} must be an object")
 		dependencies.update(str(name) for name in raw_dependencies)
 	for section in FRONTEND_BUNDLED_DEPENDENCY_SECTIONS:
 		raw_dependencies = package.get(section, [])
 		if not isinstance(raw_dependencies, list) or not all(
 			isinstance(name, str) for name in raw_dependencies
 		):
-			raise SystemExit(f"{path}:{section} must be a string array")
+			raise ValueError(f"{path}:{section} must be a string array")
 		dependencies.update(cast(list[str], raw_dependencies))
 	return dependencies
 
@@ -247,7 +246,7 @@ def verify_desktop_frontend_dependencies(desktop_root: Path) -> None:
 		or name in {"@tauri-apps/api/process", "@tauri-apps/api/shell"}
 	)
 	if forbidden:
-		raise SystemExit(
+		raise ValueError(
 			"foch-desktop APP-001 has forbidden frontend dependencies: "
 			+ ", ".join(forbidden)
 		)
@@ -259,7 +258,7 @@ def tauri_config_paths(src_tauri: Path) -> list[Path]:
 	)
 	unsupported = [path for path in paths if path.suffix not in {".json", ".toml"}]
 	if unsupported:
-		raise SystemExit(
+		raise ValueError(
 			"desktop contract validator cannot inspect Tauri config files: "
 			+ ", ".join(str(path) for path in unsupported)
 		)
@@ -280,49 +279,49 @@ def normalized_config_key(key: object) -> str:
 def verify_tauri_config(src_tauri: Path) -> None:
 	base_config_path = src_tauri / "tauri.conf.json"
 	if not base_config_path.is_file():
-		raise SystemExit("foch-desktop tauri.conf.json is missing")
+		raise ValueError("foch-desktop tauri.conf.json is missing")
 	base_config = json_object(base_config_path)
 	if base_config.get("identifier") != "dev.acture.foch":
-		raise SystemExit("foch-desktop bundle identifier must be dev.acture.foch")
+		raise ValueError("foch-desktop bundle identifier must be dev.acture.foch")
 
 	for path in tauri_config_paths(src_tauri):
 		config = config_object(path)
 		bundle = config.get("bundle", {})
 		if not isinstance(bundle, dict):
-			raise SystemExit(f"{path}:bundle must be an object")
+			raise ValueError(f"{path}:bundle must be an object")
 		forbidden_bundle_keys = sorted(
 			str(key)
 			for key in bundle
 			if normalized_config_key(key) in {"externalbin", "resources"}
 		)
 		if forbidden_bundle_keys:
-			raise SystemExit(
+			raise ValueError(
 				f"{path} must not bundle sidecars, CLI binaries, or resources; found "
 				+ ", ".join(forbidden_bundle_keys)
 			)
 
 		plugins = config.get("plugins", {})
 		if not isinstance(plugins, dict):
-			raise SystemExit(f"{path}:plugins must be an object")
+			raise ValueError(f"{path}:plugins must be an object")
 		forbidden_plugins = sorted(
 			str(name)
 			for name in plugins
 			if str(name) not in ALLOWED_DESKTOP_FRONTEND_TAURI_PLUGINS
 		)
 		if forbidden_plugins:
-			raise SystemExit(
+			raise ValueError(
 				f"{path} must not configure Tauri plugins in APP-001; found "
 				+ ", ".join(forbidden_plugins)
 			)
 
 		app = config.get("app", {})
 		if not isinstance(app, dict):
-			raise SystemExit(f"{path}:app must be an object")
+			raise ValueError(f"{path}:app must be an object")
 		security = app.get("security", {})
 		if not isinstance(security, dict):
-			raise SystemExit(f"{path}:app.security must be an object")
+			raise ValueError(f"{path}:app.security must be an object")
 		if security.get("capabilities", []) != []:
-			raise SystemExit(f"{path}: inline Tauri capabilities must remain empty")
+			raise ValueError(f"{path}: inline Tauri capabilities must remain empty")
 
 
 def capability_object(path: Path) -> dict[str, object]:
@@ -338,14 +337,14 @@ def verify_tauri_capabilities(src_tauri: Path) -> None:
 	capabilities_root = src_tauri / "capabilities"
 	default_path = capabilities_root / "default.json"
 	if not default_path.is_file():
-		raise SystemExit("foch-desktop default Tauri capability is missing")
+		raise ValueError("foch-desktop default Tauri capability is missing")
 	paths = sorted(
 		set(capabilities_root.glob("*.json")) | set(capabilities_root.glob("*.toml"))
 	)
 	for path in paths:
 		capability = capability_object(path)
 		if capability.get("permissions") != []:
-			raise SystemExit(
+			raise ValueError(
 				f"foch-desktop APP-001 capability must remain empty: {path}"
 			)
 
@@ -487,7 +486,7 @@ def source_violations(desktop_root: Path) -> list[str]:
 def verify_desktop_sources(desktop_root: Path) -> None:
 	violations = source_violations(desktop_root)
 	if violations:
-		raise SystemExit(
+		raise ValueError(
 			"foch-desktop APP-001 source must not launch or bundle processes:\n"
 			+ "\n".join(violations)
 		)
@@ -499,7 +498,7 @@ def verify_desktop_contract(repo_root: Path, packages: list[CargoPackage]) -> No
 		None,
 	)
 	if desktop is None:
-		raise SystemExit("foch-desktop Cargo package is missing")
+		raise ValueError("foch-desktop Cargo package is missing")
 	desktop_root: Path = repo_root / "src" / "apps" / "foch-desktop"
 	verify_desktop_rust_dependencies(desktop)
 	verify_desktop_frontend_dependencies(desktop_root)
@@ -508,8 +507,7 @@ def verify_desktop_contract(repo_root: Path, packages: list[CargoPackage]) -> No
 	verify_desktop_sources(desktop_root)
 
 
-def main() -> None:
-	repo_root = Path(__file__).resolve().parent.parent
+def verify_repository(repo_root: Path) -> None:
 	result = subprocess.run(
 		[
 			"cargo",
@@ -535,7 +533,7 @@ def main() -> None:
 		)
 	)
 	if actual != EXPECTED_BINARIES:
-		raise SystemExit(
+		raise ValueError(
 			"Cargo binaries must be exactly the foch CLI and foch-desktop app; "
 			f"expected {EXPECTED_BINARIES}, found {actual}"
 		)
@@ -548,7 +546,7 @@ def main() -> None:
 		)
 	)
 	if examples != EXPECTED_EXAMPLES:
-		raise SystemExit(
+		raise ValueError(
 			"Cargo examples must be the exact dev-tools allowlist; "
 			f"expected {EXPECTED_EXAMPLES}, found {examples}"
 		)
@@ -558,11 +556,7 @@ def main() -> None:
 		for target in custom_harness_targets(Path(package["manifest_path"]))
 	]
 	if custom_harnesses:
-		raise SystemExit(
+		raise ValueError(
 			"custom Cargo test/bench harnesses are forbidden: "
 			+ ", ".join(custom_harnesses)
 		)
-
-
-if __name__ == "__main__":
-	main()

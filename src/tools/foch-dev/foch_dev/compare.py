@@ -1,16 +1,29 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
 
-Summary = dict[str, Any]
+from .models import Summary, load_summary
+
+
+@dataclass(frozen=True)
+class CompareOptions:
+	baseline: Path
+	candidate: Path
+	rules: tuple[str, ...] = ()
+	gate_rule: str | None = None
+	min_absolute_drop: int | None = None
+	min_relative_drop: float | None = None
+	max_top_path_share: float | None = None
+	top_path_limit: int = 5
+	allow_nonzero_exit: bool = False
+	allow_fatal_errors: bool = False
+	output: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -47,13 +60,7 @@ class GateCheck:
 	details: str
 
 
-def parse_args() -> argparse.Namespace:
-	parser: argparse.ArgumentParser = argparse.ArgumentParser(
-		description=(
-			"Compare two eu4_real_smoke summaries and optionally enforce an issue "
-			"exit gate."
-		),
-	)
+def add_arguments(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument("baseline", type=Path, help="Baseline *-summary.json path")
 	parser.add_argument("candidate", type=Path, help="Candidate *-summary.json path")
 	parser.add_argument(
@@ -115,54 +122,20 @@ def parse_args() -> argparse.Namespace:
 		default=None,
 		help="Optional JSON output path for the comparison report.",
 	)
-	return parser.parse_args()
-
-
-def load_summary(path: Path) -> Summary:
-	try:
-		return json.loads(path.read_text(encoding="utf-8"))
-	except FileNotFoundError as err:
-		raise SystemExit(f"summary file not found: {path}") from err
-	except json.JSONDecodeError as err:
-		raise SystemExit(f"summary file is not valid JSON: {path}: {err}") from err
-
-
-def coerce_int(value: Any) -> int:
-	if isinstance(value, bool):
-		return int(value)
-	if isinstance(value, int):
-		return value
-	if isinstance(value, float):
-		return int(value)
-	if isinstance(value, str):
-		try:
-			return int(value)
-		except ValueError:
-			return 0
-	return 0
 
 
 def ordered_rules(baseline: Summary, candidate: Summary) -> list[str]:
-	ordered: list[str] = []
-	seen: set[str] = set()
-	for summary in (baseline, candidate):
-		for section in ("focus_rules", "secondary_rules"):
-			raw_values: Any = summary.get(section, [])
-			if not isinstance(raw_values, list):
-				continue
-			for value in raw_values:
-				rule: str = str(value).strip()
-				if rule and rule not in seen:
-					seen.add(rule)
-					ordered.append(rule)
-		raw_counts: Any = summary.get("target_counts", {})
-		if isinstance(raw_counts, dict):
-			for key in raw_counts:
-				rule = str(key).strip()
-				if rule and rule not in seen:
-					seen.add(rule)
-					ordered.append(rule)
-	return ordered
+	return list(
+		dict.fromkeys(
+			rule
+			for summary in (baseline, candidate)
+			for rule in (
+				*summary["focus_rules"],
+				*summary["secondary_rules"],
+				*summary["target_counts"],
+			)
+		)
+	)
 
 
 def selected_rules(
@@ -175,24 +148,19 @@ def selected_rules(
 
 
 def run_status(label: str, path: Path, summary: Summary) -> RunStatus:
-	global_counts: Any = summary.get("global_counts", {})
-	if not isinstance(global_counts, dict):
-		global_counts = {}
+	global_counts: dict[str, int] = summary["global_counts"]
 	return RunStatus(
 		label=label,
 		path=str(path),
-		check_exit_code=coerce_int(summary.get("check_exit_code", 0)),
-		fatal_errors=coerce_int(global_counts.get("fatal_errors", 0)),
-		strict_findings=coerce_int(global_counts.get("strict_findings", 0)),
-		advisory_findings=coerce_int(global_counts.get("advisory_findings", 0)),
+		check_exit_code=summary.get("check_exit_code", 0),
+		fatal_errors=global_counts["fatal_errors"],
+		strict_findings=global_counts["strict_findings"],
+		advisory_findings=global_counts["advisory_findings"],
 	)
 
 
 def rule_count(summary: Summary, rule: str) -> int:
-	raw_counts: Any = summary.get("target_counts", {})
-	if not isinstance(raw_counts, dict):
-		return 0
-	return coerce_int(raw_counts.get(rule, 0))
+	return summary["target_counts"].get(rule, 0)
 
 
 def build_rule_deltas(
@@ -220,19 +188,11 @@ def build_rule_deltas(
 
 def path_counts(summary: Summary, rule: str) -> Counter[str]:
 	counts: Counter[str] = Counter()
-	raw_focus_by_path: Any = summary.get("focus_by_path", [])
-	if not isinstance(raw_focus_by_path, list):
-		return counts
-	for item in raw_focus_by_path:
-		if not isinstance(item, dict):
-			continue
-		path: str = str(item.get("path", "")).strip()
-		raw_rule_counts: Any = item.get("counts", {})
-		if not path or not isinstance(raw_rule_counts, dict):
-			continue
-		rule_count_value: int = coerce_int(raw_rule_counts.get(rule, 0))
-		if rule_count_value > 0:
-			counts[path] = rule_count_value
+	for item in summary["focus_by_path"]:
+		path: str = item["path"].strip()
+		count: int = item["counts"].get(rule, 0)
+		if path and count > 0:
+			counts[path] = count
 	return counts
 
 
@@ -287,11 +247,22 @@ def format_share(value: float | None) -> str:
 
 
 def build_gate_checks(
-	args: argparse.Namespace,
+	args: CompareOptions,
 	baseline_summary: Summary,
 	candidate_summary: Summary,
 ) -> list[GateCheck]:
-	checks: list[GateCheck] = []
+	checks: list[GateCheck] = [
+		GateCheck(
+			"baseline output",
+			not baseline_summary.get("error"),
+			baseline_summary.get("error", "valid"),
+		),
+		GateCheck(
+			"candidate output",
+			not candidate_summary.get("error"),
+			candidate_summary.get("error", "valid"),
+		),
+	]
 	candidate_status: RunStatus = run_status(
 		"candidate", args.candidate, candidate_summary
 	)
@@ -449,7 +420,7 @@ def build_report_json(
 	path_deltas_by_rule: dict[str, list[PathDelta]],
 	path_share_by_rule: dict[str, dict[str, float | None]],
 	gate_checks: list[GateCheck],
-) -> dict[str, Any]:
+) -> dict[str, object]:
 	return {
 		"baseline": asdict(baseline_status),
 		"candidate": asdict(candidate_status),
@@ -468,16 +439,15 @@ def build_report_json(
 	}
 
 
-def main() -> int:
-	args: argparse.Namespace = parse_args()
+def run(args: CompareOptions) -> int:
 	if args.top_path_limit <= 0:
-		raise SystemExit("--top-path-limit must be greater than 0")
+		raise ValueError("--top-path-limit must be greater than 0")
 	if args.gate_rule is None and (
 		args.min_absolute_drop is not None
 		or args.min_relative_drop is not None
 		or args.max_top_path_share is not None
 	):
-		raise SystemExit(
+		raise ValueError(
 			"--gate-rule is required when using --min-absolute-drop, "
 			"--min-relative-drop, or --max-top-path-share"
 		)
@@ -486,7 +456,7 @@ def main() -> int:
 	candidate_summary: Summary = load_summary(args.candidate)
 	rules: list[str] = selected_rules(args.rules, baseline_summary, candidate_summary)
 	if not rules:
-		raise SystemExit("no comparable rules found in the provided summaries")
+		raise ValueError("no comparable rules found in the provided summaries")
 	if args.gate_rule and args.gate_rule not in rules:
 		rules.append(args.gate_rule)
 
@@ -525,7 +495,7 @@ def main() -> int:
 	sys.stdout.write(report_text)
 
 	if args.output is not None:
-		report: dict[str, Any] = build_report_json(
+		report: dict[str, object] = build_report_json(
 			baseline_status,
 			candidate_status,
 			rule_deltas,
@@ -542,7 +512,3 @@ def main() -> int:
 	if gate_checks and not all(check.passed for check in gate_checks):
 		return 2
 	return 0
-
-
-if __name__ == "__main__":
-	raise SystemExit(main())

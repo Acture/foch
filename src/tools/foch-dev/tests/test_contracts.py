@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_cargo_binary_targets import (
+from foch_dev.contracts import (
 	CargoDependency,
 	CargoPackage,
 	source_violations,
@@ -48,13 +48,13 @@ class DesktopContractTests(unittest.TestCase):
 			cargo_dependency("foch-cli", kind="dev", target="cfg(windows)")
 		)
 
-		with self.assertRaisesRegex(SystemExit, "foch-cli"):
+		with self.assertRaisesRegex(ValueError, "foch-cli"):
 			verify_desktop_rust_dependencies(package)
 
 	def test_rejects_tokio_process_feature(self) -> None:
 		package = desktop_package(cargo_dependency("tokio", features=["process"]))
 
-		with self.assertRaisesRegex(SystemExit, "feature=process"):
+		with self.assertRaisesRegex(ValueError, "feature=process"):
 			verify_desktop_rust_dependencies(package)
 
 	def test_rejects_frontend_plugin_from_dev_dependencies(self) -> None:
@@ -65,7 +65,7 @@ class DesktopContractTests(unittest.TestCase):
 				encoding="utf-8",
 			)
 
-			with self.assertRaisesRegex(SystemExit, "plugin-shell"):
+			with self.assertRaisesRegex(ValueError, "plugin-shell"):
 				verify_desktop_frontend_dependencies(desktop_root)
 
 	def test_source_scan_rejects_process_api_but_ignores_test_module(self) -> None:
