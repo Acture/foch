@@ -4,20 +4,24 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use super::position::{byte_offset, range_from_span};
 use super::schema::{EditorPosition, EditorSchema, SchemaHover, SchemaWorkspace};
 use crate::game::eu4::content::{MergeKeySource, eu4};
-use crate::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
+use crate::game::eu4::script::parser::{
+	AstStatement, AstValue, ScriptSyntax, parse_clausewitz_statements,
+};
 use crate::game::eu4::text::decode_paradox_bytes;
-use crate::model::{MERGE_PROVENANCE_ARTIFACT_PATH, MergeProvenanceArtifact};
+use crate::model::{
+	GamePath, GamePathBuf, MERGE_PROVENANCE_ARTIFACT_PATH, MergeProvenanceArtifact,
+};
 
 // Keep a damaged or unrelated sidecar from allocating unbounded hover memory.
 const MAX_SIDECAR_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCRIPT_BYTES: u64 = 32 * 1024 * 1024;
 
-type DefinitionSources = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+type DefinitionSources = BTreeMap<GamePathBuf, BTreeMap<String, Vec<String>>>;
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -33,7 +37,7 @@ enum SourcesArtifact {
 /// bytes. Legacy sidecars lack fingerprints and are explicitly historical.
 pub fn document_hover(
 	file_path: &Path,
-	schema_path: Option<&Path>,
+	schema_path: Option<&GamePath>,
 	text: &str,
 	position: EditorPosition,
 	schema: Option<&EditorSchema>,
@@ -66,7 +70,7 @@ pub fn document_hover(
 struct OutputLocation {
 	root: PathBuf,
 	file: PathBuf,
-	relative: PathBuf,
+	relative: GamePathBuf,
 }
 
 fn output_location(file_path: &Path) -> Option<OutputLocation> {
@@ -84,6 +88,7 @@ fn output_location(file_path: &Path) -> Option<OutputLocation> {
 			if file.strip_prefix(&root).ok()? != relative {
 				return None;
 			}
+			let relative: GamePathBuf = GamePathBuf::from_physical(&root, &file).ok()?;
 			return Some(OutputLocation {
 				root,
 				relative,
@@ -104,12 +109,11 @@ fn provenance_hover(
 		return None;
 	}
 	let offset = byte_offset(text, position)?;
-	let parsed = parse_clausewitz_content(location.relative.clone(), text);
-	if !parsed.diagnostics.is_empty() || !complete_blocks(&parsed.ast.statements, text) {
+	let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(&location.relative), text);
+	if !parsed.diagnostics.is_empty() || !complete_blocks(&parsed.statements, text) {
 		return None;
 	}
 	let (key, span) = parsed
-		.ast
 		.statements
 		.iter()
 		.find_map(|statement| match statement {
@@ -122,7 +126,6 @@ fn provenance_hover(
 			_ => None,
 		})?;
 	if parsed
-		.ast
 		.statements
 		.iter()
 		.filter(
@@ -133,7 +136,6 @@ fn provenance_hover(
 	{
 		return None;
 	}
-	let path_key = relative_path_key(&location.relative)?;
 	let sidecar_path = fs::canonicalize(location.root.join(MERGE_PROVENANCE_ARTIFACT_PATH)).ok()?;
 	if !sidecar_path.starts_with(&location.root) {
 		return None;
@@ -170,7 +172,7 @@ fn provenance_hover(
 			if artifact.version != 1 {
 				return None;
 			}
-			let file = artifact.files.get(&path_key)?;
+			let file = artifact.files.get(&location.relative)?;
 			if file.content_hash != blake3::hash(&disk_bytes).to_hex().as_str() {
 				return None;
 			}
@@ -180,7 +182,7 @@ fn provenance_hover(
 			if script_metadata.modified().ok()? > sidecar_metadata.modified().ok()? {
 				return None;
 			}
-			(sources.get(&path_key)?.get(key)?, None)
+			(sources.get(&location.relative)?.get(key)?, None)
 		}
 	};
 	if mods.is_empty() || mods.iter().any(|source| source.trim().is_empty()) {
@@ -238,19 +240,6 @@ fn complete_blocks(statements: &[AstStatement], text: &str) -> bool {
 				end < span.end.offset
 			}) && complete_blocks(items, text)
 	})
-}
-
-fn relative_path_key(path: &Path) -> Option<String> {
-	path.components()
-		.map(|component| {
-			let Component::Normal(component) = component else {
-				return None;
-			};
-			let component = component.to_str()?;
-			(!component.contains('\\')).then_some(component)
-		})
-		.collect::<Option<Vec<_>>>()
-		.map(|parts| parts.join("/"))
 }
 
 fn escape_markdown(value: &str) -> String {

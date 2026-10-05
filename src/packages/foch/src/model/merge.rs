@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::analysis::Severity;
+use super::{GamePath, GamePathBuf};
 use crate::playset::steam::WorkshopInstallIdentity;
 use crate::project::AppliedDepOverride;
 
@@ -16,7 +17,7 @@ pub const MERGE_TRACE_ARTIFACT_PATH: &str = ".foch/foch-merge-trace.json";
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergeProvenanceArtifact {
 	pub version: u32,
-	pub files: BTreeMap<String, MergeProvenanceFile>,
+	pub files: BTreeMap<GamePathBuf, MergeProvenanceFile>,
 	pub mod_names: BTreeMap<String, String>,
 }
 
@@ -42,9 +43,13 @@ pub enum MergePlanStrategy {
 	ManualConflict,
 }
 
+/// One contributor to a planned unit. `mod_id`, `precedence` and
+/// `is_base_game` identify it; `source_path` only renders its physical file for
+/// people and must not be compared, parsed or joined.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergePlanContributor {
 	pub mod_id: String,
+	/// The physical source file, rendered for display.
 	pub source_path: String,
 	pub precedence: usize,
 	pub is_base_game: bool,
@@ -64,26 +69,107 @@ pub struct MergeUnitId {
 /// dispatch on the directory a definition was read from. Consolidating a
 /// database into a single file would apply one directory's semantics to all of
 /// them.
+///
+/// The namespace is always the directory holding the output, so an output
+/// directly under the game root cannot be built, and reading back one whose
+/// `namespace_prefix` is not its output's directory fails.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "RawMergeModuleOutput")]
 pub struct MergeModuleOutput {
-	pub output_path: String,
-	pub namespace_prefix: String,
+	output_path: GamePathBuf,
+	namespace_prefix: GamePathBuf,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub replace_prefix: Option<String>,
+	replace_prefix: Option<GamePathBuf>,
+}
+
+/// A [`MergeModuleOutput`] as persisted, before its namespace is checked.
+#[derive(Deserialize)]
+struct RawMergeModuleOutput {
+	output_path: GamePathBuf,
+	namespace_prefix: GamePathBuf,
+	#[serde(default)]
+	replace_prefix: Option<GamePathBuf>,
+}
+
+impl TryFrom<RawMergeModuleOutput> for MergeModuleOutput {
+	type Error = String;
+
+	fn try_from(raw: RawMergeModuleOutput) -> Result<Self, String> {
+		let output = Self::new(raw.output_path, raw.replace_prefix)
+			.ok_or("a definition module output lies inside a namespace directory")?;
+		if output.namespace_prefix != raw.namespace_prefix {
+			return Err(format!(
+				"namespace {} is not the directory holding output {}",
+				raw.namespace_prefix, output.output_path
+			));
+		}
+		Ok(output)
+	}
 }
 
 impl MergeModuleOutput {
-	/// One output whose namespace is the directory holding `output_path`.
-	pub fn new(output_path: impl Into<String>, replace_prefix: Option<String>) -> Self {
-		let output_path: String = output_path.into();
-		let namespace_prefix: String = output_path
-			.rsplit_once('/')
-			.map_or(String::new(), |(parent, _)| parent.to_string());
-		Self {
+	/// One output whose namespace is the directory holding `output_path`, or
+	/// `None` for a file directly under the root: a definition module is a
+	/// directory, and the root is not one a module can own.
+	pub fn new(output_path: GamePathBuf, replace_prefix: Option<GamePathBuf>) -> Option<Self> {
+		let namespace_prefix = output_path.parent()?.to_owned();
+		Some(Self {
 			output_path,
 			namespace_prefix,
 			replace_prefix,
-		}
+		})
+	}
+
+	/// The file this namespace's merged definitions are written to.
+	pub fn output_path(&self) -> &GamePath {
+		&self.output_path
+	}
+
+	/// The directory holding [`Self::output_path`], whose files are the
+	/// namespace's inputs.
+	pub fn namespace_prefix(&self) -> &GamePath {
+		&self.namespace_prefix
+	}
+
+	/// The `replace_path` the generated descriptor declares for this
+	/// namespace, if the merge replaces it.
+	pub fn replace_prefix(&self) -> Option<&GamePath> {
+		self.replace_prefix.as_deref()
+	}
+}
+
+/// The files a definition module writes, one per namespace, ordered by output
+/// path. There is always at least one: the first is the unit's primary path,
+/// its review path, staging identity and plan ordering. It serializes as the
+/// plain list, and reading back an empty list fails.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "Vec<MergeModuleOutput>")]
+pub struct MergeModuleOutputs(Vec<MergeModuleOutput>);
+
+impl MergeModuleOutputs {
+	/// `None` when there is no output at all.
+	pub fn new(outputs: Vec<MergeModuleOutput>) -> Option<Self> {
+		(!outputs.is_empty()).then_some(Self(outputs))
+	}
+
+	pub fn primary(&self) -> &MergeModuleOutput {
+		&self.0[0]
+	}
+}
+
+impl TryFrom<Vec<MergeModuleOutput>> for MergeModuleOutputs {
+	type Error = &'static str;
+
+	fn try_from(outputs: Vec<MergeModuleOutput>) -> Result<Self, Self::Error> {
+		Self::new(outputs).ok_or("a definition module writes at least one output")
+	}
+}
+
+impl std::ops::Deref for MergeModuleOutputs {
+	type Target = [MergeModuleOutput];
+
+	fn deref(&self) -> &[MergeModuleOutput] {
+		&self.0
 	}
 }
 
@@ -91,39 +177,31 @@ impl MergeModuleOutput {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MergePlanTarget {
 	File {
-		path: String,
+		path: GamePathBuf,
 	},
 	Module {
 		id: MergeUnitId,
-		input_paths: Vec<String>,
-		/// Ordered by output path, never empty. The first output is the unit's
-		/// primary path: its review path, staging identity and plan ordering.
-		outputs: Vec<MergeModuleOutput>,
+		input_paths: Vec<GamePathBuf>,
+		outputs: MergeModuleOutputs,
 	},
 }
 
 impl MergePlanTarget {
-	/// The unit's primary output path. Modules are constructed with at least
-	/// one output; a plan deserialized without one is rejected by
-	/// [`crate::merge::review::UnitOutcomeLedger::from_plan`].
-	pub fn output_path(&self) -> &str {
+	/// The unit's primary output path.
+	pub fn output_path(&self) -> &GamePath {
 		match self {
 			Self::File { path } => path,
-			Self::Module { outputs, .. } => outputs
-				.first()
-				.map(|output| output.output_path.as_str())
-				.unwrap_or_default(),
+			Self::Module { outputs, .. } => outputs.primary().output_path(),
 		}
 	}
 
 	/// Every path this unit writes, in plan order.
-	pub fn output_paths(&self) -> Vec<&str> {
+	pub fn output_paths(&self) -> Vec<&GamePath> {
 		match self {
-			Self::File { path } => vec![path.as_str()],
-			Self::Module { outputs, .. } => outputs
-				.iter()
-				.map(|output| output.output_path.as_str())
-				.collect(),
+			Self::File { path } => vec![path],
+			Self::Module { outputs, .. } => {
+				outputs.iter().map(MergeModuleOutput::output_path).collect()
+			}
 		}
 	}
 
@@ -141,7 +219,7 @@ impl MergePlanTarget {
 		}
 	}
 
-	pub fn input_paths(&self) -> &[String] {
+	pub fn input_paths(&self) -> &[GamePathBuf] {
 		match self {
 			Self::File { path } => std::slice::from_ref(path),
 			Self::Module { input_paths, .. } => input_paths,
@@ -149,36 +227,26 @@ impl MergePlanTarget {
 	}
 
 	/// Inputs belonging to one of this unit's output namespaces, in plan order.
-	pub fn namespace_input_paths(&self, namespace_prefix: &str) -> Vec<&str> {
+	///
+	/// Definition modules are flat: EU4 reads the directory itself, not a tree
+	/// below it, so `common/static_modifiers/nested/a.txt` is not an input of
+	/// the `common/static_modifiers` namespace.
+	pub fn namespace_input_paths(&self, namespace_prefix: &GamePath) -> Vec<&GamePath> {
 		self.input_paths()
 			.iter()
-			.filter(|path| path_is_within_namespace(path, namespace_prefix))
-			.map(String::as_str)
+			.filter(|path| path.is_child_of(namespace_prefix))
+			.map(GamePathBuf::as_game_path)
 			.collect()
 	}
 
 	/// The primary output's `replace_path` prefix. Use [`Self::module_outputs`]
 	/// when every namespace's prefix matters.
-	pub fn replace_prefix(&self) -> Option<&str> {
+	pub fn replace_prefix(&self) -> Option<&GamePath> {
 		match self {
 			Self::File { .. } => None,
-			Self::Module { outputs, .. } => outputs
-				.first()
-				.and_then(|output| output.replace_prefix.as_deref()),
+			Self::Module { outputs, .. } => outputs.primary().replace_prefix(),
 		}
 	}
-}
-
-/// True when `path` names a file directly inside `namespace_prefix`.
-///
-/// Definition modules are flat: EU4 reads the directory itself, not a tree
-/// below it, so `common/static_modifiers/nested/a.txt` is not a module input.
-pub fn path_is_within_namespace(path: &str, namespace_prefix: &str) -> bool {
-	let path: String = path.replace('\\', "/");
-	let prefix: String = namespace_prefix.trim_matches('/').replace('\\', "/");
-	path.strip_prefix(&prefix)
-		.and_then(|rest| rest.strip_prefix('/'))
-		.is_some_and(|tail| !tail.is_empty() && !tail.contains('/'))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -192,7 +260,7 @@ pub struct MergePlanEntry {
 }
 
 impl MergePlanEntry {
-	pub fn output_path(&self) -> &str {
+	pub fn output_path(&self) -> &GamePath {
 		self.target.output_path()
 	}
 }
@@ -201,11 +269,26 @@ impl MergePlanEntry {
 mod tests {
 	use super::{
 		MERGE_EXECUTION_ATTESTATION_SCHEMA, MergeBackendId, MergeExecutionAttestation,
-		MergeModuleOutput, MergePlanEntry, MergePlanStrategy, MergePlanTarget,
+		MergeModuleOutput, MergeModuleOutputs, MergePlanContributor, MergePlanEntry,
+		MergePlanResult, MergePlanStrategies, MergePlanStrategy, MergePlanTarget,
 		MergeReportBaseSnapshot, MergeReportScope, MergeUnitId, ProductInputManifest,
 		ProductInputMod,
 	};
+	use crate::model::{GamePath, GamePathBuf};
 	use crate::playset::steam::{SteamId, WorkshopInstallIdentity};
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn output(output_path: &str, replace_prefix: Option<&str>) -> MergeModuleOutput {
+		MergeModuleOutput::new(game_path(output_path), replace_prefix.map(game_path))
+			.expect("output inside a namespace directory")
+	}
+
+	fn outputs(outputs: Vec<MergeModuleOutput>) -> MergeModuleOutputs {
+		MergeModuleOutputs::new(outputs).expect("at least one output")
+	}
 
 	#[test]
 	fn module_target_serializes_every_required_runtime_field() {
@@ -215,11 +298,11 @@ mod tests {
 					family_id: "governments".to_string(),
 					module_name: "governments".to_string(),
 				},
-				input_paths: vec!["common/governments/00_governments.txt".to_string()],
-				outputs: vec![MergeModuleOutput::new(
-					"common/governments/zzz_foch_governments.txt".to_string(),
-					Some("common/governments".to_string()),
-				)],
+				input_paths: vec![game_path("common/governments/00_governments.txt")],
+				outputs: outputs(vec![output(
+					"common/governments/zzz_foch_governments.txt",
+					Some("common/governments"),
+				)]),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -241,13 +324,239 @@ mod tests {
 		assert_eq!(outputs[0]["replace_prefix"], "common/governments");
 	}
 
+	/// Plan paths are typed, but the persisted plan is the same text: every
+	/// path serializes as its canonical string, exactly as the text fields it
+	/// replaced did.
+	#[test]
+	fn a_representative_plan_serializes_to_the_same_json_text() {
+		let contributor =
+			|mod_id: &str, source_path: &str, precedence: usize| MergePlanContributor {
+				mod_id: mod_id.to_string(),
+				source_path: source_path.to_string(),
+				precedence,
+				is_base_game: precedence == 0,
+			};
+		let plan = MergePlanResult {
+			game: "eu4".to_string(),
+			playset_name: "playset".to_string(),
+			generated_at: "1".to_string(),
+			include_game_base: true,
+			strategies: MergePlanStrategies {
+				total_paths: 2,
+				last_writer_overlay: 1,
+				structural_merge: 1,
+				..MergePlanStrategies::default()
+			},
+			paths: vec![
+				MergePlanEntry {
+					target: MergePlanTarget::Module {
+						id: MergeUnitId {
+							family_id: "CStaticModifierDataBase".to_string(),
+							module_name: "CStaticModifierDataBase".to_string(),
+						},
+						input_paths: vec![
+							game_path("common/event_modifiers/a.txt"),
+							game_path("common/static_modifiers/b.txt"),
+						],
+						outputs: outputs(vec![
+							output("common/event_modifiers/zzz_foch_event_modifiers.txt", None),
+							output(
+								"common/static_modifiers/zzz_foch_static_modifiers.txt",
+								Some("common/static_modifiers"),
+							),
+						]),
+					},
+					strategy: MergePlanStrategy::StructuralMerge,
+					contributors: vec![contributor(
+						"mod-a",
+						"/mods/a/common/event_modifiers/a.txt",
+						1,
+					)],
+					winner: Some(contributor(
+						"mod-a",
+						"/mods/a/common/event_modifiers/a.txt",
+						1,
+					)),
+					notes: Vec::new(),
+				},
+				MergePlanEntry {
+					target: MergePlanTarget::File {
+						path: game_path("gfx/interface/Mixed Case.dds"),
+					},
+					strategy: MergePlanStrategy::LastWriterOverlay,
+					contributors: vec![
+						contributor("__game__eu4", "/game/gfx/interface/Mixed Case.dds", 0),
+						contributor("mod-b", "/mods/b/gfx/interface/Mixed Case.dds", 2),
+					],
+					winner: Some(contributor(
+						"mod-b",
+						"/mods/b/gfx/interface/Mixed Case.dds",
+						2,
+					)),
+					notes: vec!["binary overlap resolved by last-writer-overlay".to_string()],
+				},
+			],
+			fatal_errors: Vec::new(),
+		};
+		let expected = concat!(
+			r#"{"game":"eu4","playset_name":"playset","generated_at":"1","include_game_base":true,"#,
+			r#""strategies":{"total_paths":2,"copy_through":0,"last_writer_overlay":1,"structural_merge":1,"localisation_merge":0,"manual_conflict":0},"#,
+			r#""paths":[{"target":{"kind":"module","id":{"family_id":"CStaticModifierDataBase","module_name":"CStaticModifierDataBase"},"#,
+			r#""input_paths":["common/event_modifiers/a.txt","common/static_modifiers/b.txt"],"#,
+			r#""outputs":[{"output_path":"common/event_modifiers/zzz_foch_event_modifiers.txt","namespace_prefix":"common/event_modifiers"},"#,
+			r#"{"output_path":"common/static_modifiers/zzz_foch_static_modifiers.txt","namespace_prefix":"common/static_modifiers","replace_prefix":"common/static_modifiers"}]},"#,
+			r#""strategy":"structural_merge","#,
+			r#""contributors":[{"mod_id":"mod-a","source_path":"/mods/a/common/event_modifiers/a.txt","precedence":1,"is_base_game":false}],"#,
+			r#""winner":{"mod_id":"mod-a","source_path":"/mods/a/common/event_modifiers/a.txt","precedence":1,"is_base_game":false},"notes":[]},"#,
+			r#"{"target":{"kind":"file","path":"gfx/interface/Mixed Case.dds"},"strategy":"last_writer_overlay","#,
+			r#""contributors":[{"mod_id":"__game__eu4","source_path":"/game/gfx/interface/Mixed Case.dds","precedence":0,"is_base_game":true},"#,
+			r#"{"mod_id":"mod-b","source_path":"/mods/b/gfx/interface/Mixed Case.dds","precedence":2,"is_base_game":false}],"#,
+			r#""winner":{"mod_id":"mod-b","source_path":"/mods/b/gfx/interface/Mixed Case.dds","precedence":2,"is_base_game":false},"#,
+			r#""notes":["binary overlap resolved by last-writer-overlay"]}]}"#,
+		);
+
+		let json = serde_json::to_string(&plan).expect("serialize plan");
+		assert_eq!(json, expected);
+		let read_back: MergePlanResult = serde_json::from_str(&json).expect("read plan back");
+		assert_eq!(
+			serde_json::to_string(&read_back).expect("serialize again"),
+			expected
+		);
+	}
+
+	/// Report paths are typed, but the persisted report is the same text: a
+	/// path record serializes as the string it held before, and a map keyed
+	/// by path keeps its keys and their order.
+	#[test]
+	fn report_path_fields_serialize_to_the_same_json_text() {
+		use super::{
+			DeferredUnitReason, HandlerResolutionRecord, MergeReportConflictResolution,
+			StaleVanillaTargetDescriptor,
+		};
+		use std::collections::BTreeMap;
+
+		let record = HandlerResolutionRecord {
+			path: game_path("history/countries/FRA - France.txt"),
+			action: "kept_existing".to_string(),
+			source: None,
+			rationale: None,
+		};
+		assert_eq!(
+			serde_json::to_string(&record).expect("serialize record"),
+			r#"{"path":"history/countries/FRA - France.txt","action":"kept_existing"}"#
+		);
+		let resolution = MergeReportConflictResolution {
+			path: game_path("common/ideas/00_basic_ideas.txt"),
+			reason: "deferred".to_string(),
+			deferred_reason: DeferredUnitReason::NeedsUserChoice,
+			kind: None,
+			leaf_conflicts: Vec::new(),
+		};
+		assert_eq!(
+			serde_json::to_string(&resolution).expect("serialize resolution"),
+			r#"{"path":"common/ideas/00_basic_ideas.txt","reason":"deferred","deferred_reason":"needs_user_choice","leaf_conflicts":[]}"#
+		);
+		let stale = StaleVanillaTargetDescriptor {
+			mod_id: "mod-a".to_string(),
+			mod_version: "1.0".to_string(),
+			file_path: game_path("events/Flavor.txt"),
+			patch_kind: "remove".to_string(),
+			target_path: vec!["root".to_string()],
+			target_key: None,
+			note: None,
+		};
+		assert_eq!(
+			serde_json::to_string(&stale).expect("serialize stale target"),
+			r#"{"mod_id":"mod-a","mod_version":"1.0","file_path":"events/Flavor.txt","patch_kind":"remove","target_path":["root"],"target_key":null,"note":null}"#
+		);
+		let provenance: BTreeMap<GamePathBuf, BTreeMap<String, Vec<String>>> = [
+			"common/scripted_effects/a-b.txt",
+			"common/scripted_effects/a/b.txt",
+		]
+		.into_iter()
+		.map(|path| (game_path(path), BTreeMap::new()))
+		.collect();
+		assert_eq!(
+			serde_json::to_string(&provenance).expect("serialize provenance"),
+			r#"{"common/scripted_effects/a-b.txt":{},"common/scripted_effects/a/b.txt":{}}"#
+		);
+	}
+
+	#[test]
+	fn a_persisted_plan_that_names_no_game_path_or_no_output_is_rejected() {
+		for (json, reason) in [
+			(
+				r#"{"kind":"file","path":"common\\x.txt"}"#,
+				"invalid game path",
+			),
+			(r#"{"kind":"file","path":"../x.txt"}"#, "invalid game path"),
+			(
+				r#"{"kind":"module","id":{"family_id":"f","module_name":"m"},"input_paths":[],"outputs":[]}"#,
+				"at least one output",
+			),
+			(
+				r#"{"kind":"module","id":{"family_id":"f","module_name":"m"},"input_paths":["common\\ideas\\a.txt"],"outputs":[{"output_path":"common/ideas/z.txt","namespace_prefix":"common/ideas"}]}"#,
+				"invalid game path",
+			),
+			(
+				r#"{"kind":"module","id":{"family_id":"f","module_name":"m"},"input_paths":[],"outputs":[{"output_path":"common/ideas/z.txt","namespace_prefix":"common/ideas","replace_prefix":"../ideas"}]}"#,
+				"invalid game path",
+			),
+			// An output's namespace is the directory holding it: one directly
+			// under the root has none, and a persisted namespace naming another
+			// directory would select that directory's files as inputs.
+			(
+				r#"{"kind":"module","id":{"family_id":"f","module_name":"m"},"input_paths":[],"outputs":[{"output_path":"zzz_foch_root.txt","namespace_prefix":"common"}]}"#,
+				"inside a namespace directory",
+			),
+			(
+				r#"{"kind":"module","id":{"family_id":"f","module_name":"m"},"input_paths":[],"outputs":[{"output_path":"common/ideas/z.txt","namespace_prefix":"events"}]}"#,
+				"namespace events is not the directory holding output common/ideas/z.txt",
+			),
+		] {
+			let error = serde_json::from_str::<MergePlanTarget>(json).expect_err(json);
+			assert!(error.to_string().contains(reason), "{json}: {error}");
+		}
+	}
+
+	#[test]
+	fn a_module_output_directly_under_the_root_has_no_namespace() {
+		assert!(MergeModuleOutput::new(game_path("zzz_foch_root.txt"), None).is_none());
+		let nested = output("common/ideas/zzz_foch_ideas.txt", None);
+		assert_eq!(nested.namespace_prefix.as_str(), "common/ideas");
+	}
+
+	#[test]
+	fn namespace_inputs_are_the_direct_children_of_the_namespace() {
+		let target = MergePlanTarget::Module {
+			id: MergeUnitId {
+				family_id: "ideas".to_string(),
+				module_name: "ideas".to_string(),
+			},
+			input_paths: vec![
+				game_path("common/ideas/a.txt"),
+				game_path("common/ideas/nested/b.txt"),
+				game_path("common/ideas_extra/c.txt"),
+			],
+			outputs: outputs(vec![output("common/ideas/zzz_foch_ideas.txt", None)]),
+		};
+
+		assert_eq!(
+			target.namespace_input_paths(GamePath::new("common/ideas").expect("valid game path")),
+			[GamePath::new("common/ideas/a.txt").expect("valid game path")]
+		);
+	}
+
 	#[test]
 	fn file_target_exposes_its_output_path() {
 		let target = MergePlanTarget::File {
-			path: "common/scripted_effects/example.txt".to_string(),
+			path: game_path("common/scripted_effects/example.txt"),
 		};
 
-		assert_eq!(target.output_path(), "common/scripted_effects/example.txt");
+		assert_eq!(
+			target.output_path().as_str(),
+			"common/scripted_effects/example.txt"
+		);
 		assert!(target.module_id().is_none());
 	}
 
@@ -605,9 +914,10 @@ impl DeferredUnitReason {
 	}
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergeReportConflictResolution {
-	pub path: String,
+	/// The deferred unit's primary output.
+	pub path: GamePathBuf,
 	pub reason: String,
 	#[serde(default)]
 	pub deferred_reason: DeferredUnitReason,
@@ -617,10 +927,16 @@ pub struct MergeReportConflictResolution {
 	pub leaf_conflicts: Vec<LeafConflictDetail>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HandlerResolutionRecord {
-	pub path: String,
+	/// The output file the decision applies to. Commit reads a `kept_existing`
+	/// record's file back from the prior output, so reading a report validates
+	/// it as a game path.
+	pub path: GamePathBuf,
 	pub action: String,
+	/// Where the kept content came from (a mod id, an AST address or an
+	/// external file), rendered for people. It is never read back to find a
+	/// file.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub source: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -697,11 +1013,11 @@ pub struct VersionMismatchFinding {
 	pub message: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StaleVanillaTargetDescriptor {
 	pub mod_id: String,
 	pub mod_version: String,
-	pub file_path: String,
+	pub file_path: GamePathBuf,
 	pub patch_kind: String,
 	pub target_path: Vec<String>,
 	pub target_key: Option<String>,
@@ -801,14 +1117,14 @@ pub struct MergeReport {
 	/// does not affect the emitted game files, so it is omitted from the report
 	/// (and thus the report stays byte-identical) when the flag is off.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	pub definition_provenance: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+	pub definition_provenance: BTreeMap<GamePathBuf, BTreeMap<String, Vec<String>>>,
 	/// Display names for mods referenced by surviving `definition_provenance`.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
 	pub provenance_mod_names: BTreeMap<String, String>,
 	/// Per merged file path → per top-level definition key → merge audit trail.
 	/// Populated with `definition_provenance` when `--provenance` is enabled.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	pub merge_trace: BTreeMap<String, BTreeMap<String, MergeTraceEntry>>,
+	pub merge_trace: BTreeMap<GamePathBuf, BTreeMap<String, MergeTraceEntry>>,
 }
 
 impl MergeReport {

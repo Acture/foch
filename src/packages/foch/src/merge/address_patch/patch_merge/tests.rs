@@ -6,6 +6,7 @@ use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue, Span
 use crate::merge::conflict_handler::{ChainHandler, LookupHandler};
 use crate::model::HandlerResolutionRecord;
 use crate::project::{ResolutionDecision, ResolutionMap, compute_conflict_id};
+use std::path::PathBuf;
 
 fn span() -> SpanRange {
 	SpanRange {
@@ -149,12 +150,17 @@ fn merge_patch_sets_with_defer(
 	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	policies: &MergePolicies,
 ) -> PatchMergeResult {
-	let mut handler = DeferHandler;
-	merge_patch_sets(mod_patches, policies, &mut handler).expect("defer handler should not abort")
+	merge_patch_sets(mod_patches, policies).expect("a merge without a handler cannot abort")
 }
 
+fn game_path(text: &str) -> GamePathBuf {
+	GamePathBuf::parse(text).expect("valid game path")
+}
+
+/// Without a file there is no handler to ask: every conflict is left for the
+/// enclosing merge, exactly as a handler that always defers would leave it.
 #[test]
-fn merge_patch_sets_with_defer_handler_preserves_current_behavior() {
+fn merge_patch_sets_without_a_file_leaves_every_conflict_unresolved() {
 	let patch_a = ClausewitzPatch::ReplaceBlock {
 		path: vec!["root".into()],
 		key: "decisions".into(),
@@ -168,16 +174,14 @@ fn merge_patch_sets_with_defer_handler_preserves_current_behavior() {
 		new_statement: assignment("decisions", scalar("beta")),
 	};
 
-	let mut handler = DeferHandler;
 	let result = merge_patch_sets(
 		vec![
 			("mod_a".into(), 1, vec![patch_a.clone()]),
 			("mod_b".into(), 2, vec![patch_b.clone()]),
 		],
 		&default_policies(),
-		&mut handler,
 	)
-	.expect("defer handler should not abort");
+	.expect("a merge without a handler cannot abort");
 
 	let expected = PatchMergeResult {
 		conflicts: vec![PatchResolution::Conflict {
@@ -211,7 +215,7 @@ fn merge_patch_sets_with_defer_handler_preserves_current_behavior() {
 
 #[test]
 fn merge_patch_sets_with_resolution_picks_correct_mod_patch() {
-	let current_file = PathBuf::from("common/ideas/resolved.txt");
+	let current_file = game_path("common/ideas/resolved.txt");
 	let patch_a = ClausewitzPatch::ReplaceBlock {
 		path: vec!["root".into()],
 		key: "decisions".into(),
@@ -230,15 +234,16 @@ fn merge_patch_sets_with_resolution_picks_correct_mod_patch() {
 		conflict_id,
 		ResolutionDecision::PreferMod("mod_a".to_string()),
 	);
-	let mut handler = LookupHandler::new(&resolution_map, current_file);
+	let mut handler = LookupHandler::new(&resolution_map, current_file.clone());
 
-	let result = merge_patch_sets(
+	let result = merge_patch_sets_for_file(
 		vec![
 			("mod_a".into(), 1, vec![patch_a.clone()]),
 			("mod_b".into(), 2, vec![patch_b]),
 		],
 		&default_policies(),
 		&mut handler,
+		&current_file,
 	)
 	.expect("resolution map should select the mod_a candidate");
 
@@ -260,7 +265,7 @@ fn merge_patch_sets_records_candidate_handler_metadata() {
 			ConflictDecision::PickCandidate {
 				candidate: 1,
 				record: Some(HandlerResolutionRecord {
-					path: "common/ideas/dep.txt".to_string(),
+					path: game_path("common/ideas/dep.txt"),
 					action: "dep_implied".to_string(),
 					source: Some("mod_b".to_string()),
 					rationale: Some("mod mod_b declares dep on mod_a".to_string()),
@@ -283,13 +288,14 @@ fn merge_patch_sets_records_candidate_handler_metadata() {
 	};
 	let mut handler = MockRecordedPickHandler;
 
-	let result = merge_patch_sets(
+	let result = merge_patch_sets_for_file(
 		vec![
 			("mod_a".into(), 1, vec![patch_a]),
 			("mod_b".into(), 2, vec![patch_b.clone()]),
 		],
 		&default_policies(),
 		&mut handler,
+		&game_path("common/ideas/dep.txt"),
 	)
 	.expect("mock recorded pick should not abort");
 
@@ -337,19 +343,68 @@ fn chain_handler_falls_through_to_second_on_defer() {
 		first: DeferHandler,
 		second: MockPickHandler,
 	};
-	let result = merge_patch_sets(
+	let result = merge_patch_sets_for_file(
 		vec![
 			("mod_a".into(), 1, vec![patch_a]),
 			("mod_b".into(), 2, vec![patch_b.clone()]),
 		],
 		&default_policies(),
 		&mut handler,
+		&game_path("common/ideas/chain.txt"),
 	)
 	.expect("mock pick handler should not abort");
 
 	assert_eq!(result.conflicts.len(), 0);
 	assert_eq!(result.handler_resolved_count, 1);
 	assert_eq!(result.resolved, vec![PatchResolution::Resolved(patch_b)]);
+}
+
+/// A handler sees the conflict in the file being merged, with the id that
+/// file's resolutions are recorded under. No AST address stands in for it.
+#[test]
+fn handlers_see_conflicts_in_the_current_file() {
+	struct RecordingHandler {
+		seen: Vec<(GamePathBuf, String)>,
+	}
+
+	impl ConflictHandler for RecordingHandler {
+		fn on_conflict(
+			&mut self,
+			view: &crate::merge::conflict_view::ConflictView,
+		) -> ConflictDecision {
+			self.seen
+				.push((view.file_path.clone(), view.conflict_id.clone()));
+			ConflictDecision::Defer { record: None }
+		}
+	}
+
+	let current_file = game_path("common/ideas/resolved.txt");
+	let replace = |value: &str| ClausewitzPatch::ReplaceBlock {
+		path: vec!["root".into()],
+		key: "decisions".into(),
+		old_statement: assignment("decisions", scalar("old")),
+		new_statement: assignment("decisions", scalar(value)),
+	};
+	let mut handler = RecordingHandler { seen: Vec::new() };
+	let result = merge_patch_sets_for_file(
+		vec![
+			("mod_a".into(), 1, vec![replace("alpha")]),
+			("mod_b".into(), 2, vec![replace("beta")]),
+		],
+		&default_policies(),
+		&mut handler,
+		&current_file,
+	)
+	.expect("a deferring handler does not abort");
+
+	assert_eq!(result.conflicts.len(), 1);
+	assert_eq!(
+		handler.seen,
+		[(
+			current_file.clone(),
+			compute_conflict_id(&current_file, "root", "decisions")
+		)]
+	);
 }
 
 #[test]
@@ -367,7 +422,7 @@ fn file_level_conflict_decisions_are_keyed_by_current_file() {
 		}
 	}
 
-	let current_file = PathBuf::from("common/ideas/resolved.txt");
+	let current_file = game_path("common/ideas/resolved.txt");
 	let patch_a = ClausewitzPatch::ReplaceBlock {
 		path: vec!["root".into()],
 		key: "decisions".into(),
@@ -392,7 +447,7 @@ fn file_level_conflict_decisions_are_keyed_by_current_file() {
 		mod_patches.clone(),
 		&default_policies(),
 		&mut keep_handler,
-		Some(&current_file),
+		&current_file,
 	)
 	.expect("keep-existing handler should not abort");
 
@@ -400,7 +455,7 @@ fn file_level_conflict_decisions_are_keyed_by_current_file() {
 	assert!(
 		!keep_result
 			.keep_existing_paths
-			.contains(&PathBuf::from("root/decisions"))
+			.contains(&game_path("root/decisions"))
 	);
 
 	let external_file = PathBuf::from("resolutions/resolved.txt");
@@ -411,7 +466,7 @@ fn file_level_conflict_decisions_are_keyed_by_current_file() {
 		mod_patches,
 		&default_policies(),
 		&mut file_handler,
-		Some(&current_file),
+		&current_file,
 	)
 	.expect("use-file handler should not abort");
 
@@ -422,7 +477,7 @@ fn file_level_conflict_decisions_are_keyed_by_current_file() {
 	assert!(
 		!file_result
 			.external_file_resolutions
-			.contains_key(&PathBuf::from("root/decisions"))
+			.contains_key(&game_path("root/decisions"))
 	);
 }
 

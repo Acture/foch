@@ -9,7 +9,8 @@ use crate::game::eu4::analysis::{AnalyzeOptions, analyze_visibility};
 use crate::game::eu4::content::MergeKeySource;
 use crate::game::eu4::content::eu4 as raw_eu4;
 use crate::model::{
-	AnalysisMode, MaybeScope, ScopeKind, ScopeSet, SymbolKind, base_scope, test_support,
+	AnalysisMode, GamePath, GamePathBuf, MaybeScope, ScopeKind, ScopeSet, SymbolKind, base_scope,
+	test_support,
 };
 use std::fs;
 use std::path::Path;
@@ -19,13 +20,20 @@ fn init_scopes() {
 	test_support::install_defaults();
 }
 
+/// Parses the file at physical `path` under `mod_root`, as a mod file would be
+/// loaded from its root.
 fn parse_script_file(
 	mod_id: &str,
 	mod_root: &std::path::Path,
 	path: &std::path::Path,
 ) -> Option<super::ParsedScriptFile> {
 	init_scopes();
-	raw_parse_script_file(mod_id, mod_root, path)
+	let relative = GamePathBuf::from_physical(mod_root, path).expect("file under its mod root");
+	Some(raw_parse_script_file(mod_id, mod_root, &relative))
+}
+
+fn game_path(text: &str) -> &GamePath {
+	GamePath::new(text).expect("valid game path")
 }
 
 fn build_semantic_index(files: &[super::ParsedScriptFile]) -> crate::model::SemanticIndex {
@@ -362,7 +370,9 @@ fn fourth_wave_missing_effect_parameter_messages(
 #[test]
 fn interface_content_family_keys_gui_types_children_by_name() {
 	let descriptor = eu4()
-		.classify_content_family(Path::new("interface/topbar.gui"))
+		.classify_content_family(
+			crate::model::GamePath::new("interface/topbar.gui").expect("valid game path"),
+		)
 		.expect("interface descriptor");
 	match descriptor.merge_key_source.expect("merge key source") {
 		MergeKeySource::ContainerChildFieldValue {
@@ -387,333 +397,293 @@ fn interface_content_family_keys_gui_types_children_by_name() {
 #[test]
 fn classify_paths() {
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/on_actions/00_on_actions.txt")),
+		classify_script_file(game_path("common/on_actions/00_on_actions.txt")),
 		ScriptFileKind::new("on_actions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("events/common/on_actions/foo.txt")),
+		classify_script_file(game_path("events/common/on_actions/foo.txt")),
 		ScriptFileKind::new("on_actions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/scripted_effects/a.txt")),
+		classify_script_file(game_path("common/scripted_effects/a.txt")),
 		ScriptFileKind::new("scripted_effects")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("events/a.txt")),
+		classify_script_file(game_path("events/a.txt")),
 		ScriptFileKind::new("events")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("interface/a.gui")),
+		classify_script_file(game_path("interface/a.gui")),
 		ScriptFileKind::new("ui")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/achievements.txt")),
+		classify_script_file(game_path("common/achievements.txt")),
 		ScriptFileKind::new("achievements")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/ages/00_default.txt")),
+		classify_script_file(game_path("common/ages/00_default.txt")),
 		ScriptFileKind::new("ages")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/buildings/00_buildings.txt")),
+		classify_script_file(game_path("common/buildings/00_buildings.txt")),
 		ScriptFileKind::new("buildings")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/ideas/00_country_ideas.txt")),
+		classify_script_file(game_path("common/ideas/00_country_ideas.txt")),
 		ScriptFileKind::new("ideas")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/great_projects/01_monuments.txt"
-		)),
+		classify_script_file(game_path("common/great_projects/01_monuments.txt")),
 		ScriptFileKind::new("great_projects")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"common/government_reforms/01_government_reforms.txt"
 		)),
 		ScriptFileKind::new("government_reforms")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/cultures/00_cultures.txt")),
+		classify_script_file(game_path("common/cultures/00_cultures.txt")),
 		ScriptFileKind::new("cultures")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/custom_gui/AdvisorActionsGui.txt"
-		)),
+		classify_script_file(game_path("common/custom_gui/AdvisorActionsGui.txt")),
 		ScriptFileKind::new("custom_gui")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/advisortypes/00_advisortypes.txt"
-		)),
+		classify_script_file(game_path("common/advisortypes/00_advisortypes.txt")),
 		ScriptFileKind::new("advisortypes")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/event_modifiers/00_modifiers.txt"
-		)),
+		classify_script_file(game_path("common/event_modifiers/00_modifiers.txt")),
 		ScriptFileKind::new("event_modifiers")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/cb_types/00_cb_types.txt")),
+		classify_script_file(game_path("common/cb_types/00_cb_types.txt")),
 		ScriptFileKind::new("cb_types")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/government_names/00_names.txt")),
+		classify_script_file(game_path("common/government_names/00_names.txt")),
 		ScriptFileKind::new("government_names")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"customizable_localization/00_customizable_localization.txt"
 		)),
 		ScriptFileKind::new("customizable_localization")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/new_diplomatic_actions/00_actions.txt"
-		)),
+		classify_script_file(game_path("common/new_diplomatic_actions/00_actions.txt")),
 		ScriptFileKind::new("new_diplomatic_actions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"events/common/new_diplomatic_actions/00_actions.txt"
 		)),
 		ScriptFileKind::new("new_diplomatic_actions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("missions/example.txt")),
+		classify_script_file(game_path("missions/example.txt")),
 		ScriptFileKind::new("missions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("events/decisions/example.txt")),
+		classify_script_file(game_path("events/decisions/example.txt")),
 		ScriptFileKind::new("decisions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/institutions/00.txt")),
+		classify_script_file(game_path("common/institutions/00.txt")),
 		ScriptFileKind::new("institutions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/province_triggered_modifiers/00.txt"
-		)),
+		classify_script_file(game_path("common/province_triggered_modifiers/00.txt")),
 		ScriptFileKind::new("province_triggered_modifiers")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/scripted_triggers/00_triggers.txt"
-		)),
+		classify_script_file(game_path("common/scripted_triggers/00_triggers.txt")),
 		ScriptFileKind::new("scripted_triggers")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/country_tags/00_countries.txt")),
+		classify_script_file(game_path("common/country_tags/00_countries.txt")),
 		ScriptFileKind::new("country_tags")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/countries/00_countries.txt")),
+		classify_script_file(game_path("common/countries/00_countries.txt")),
 		ScriptFileKind::new("countries")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("history/countries/FRA - France.txt")),
+		classify_script_file(game_path("history/countries/FRA - France.txt")),
 		ScriptFileKind::new("country_history")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("history/provinces/1 - Stockholm.txt")),
+		classify_script_file(game_path("history/provinces/1 - Stockholm.txt")),
 		ScriptFileKind::new("province_history")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/province_names/sorbian.txt")),
+		classify_script_file(game_path("common/province_names/sorbian.txt")),
 		ScriptFileKind::new("province_names")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("map/random/tiles/tile0.txt")),
+		classify_script_file(game_path("map/random/tiles/tile0.txt")),
 		ScriptFileKind::new("random_map_tiles")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("map/random/RandomLandNames.txt")),
+		classify_script_file(game_path("map/random/RandomLandNames.txt")),
 		ScriptFileKind::new("random_map_names")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("map/random/RNWScenarios.txt")),
+		classify_script_file(game_path("map/random/RNWScenarios.txt")),
 		ScriptFileKind::new("random_map_scenarios")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("map/random/tweaks.lua")),
+		classify_script_file(game_path("map/random/tweaks.lua")),
 		ScriptFileKind::new("other")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("history/diplomacy/hre.txt")),
+		classify_script_file(game_path("history/diplomacy/hre.txt")),
 		ScriptFileKind::new("diplomacy_history")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("history/advisors/00_england.txt")),
+		classify_script_file(game_path("history/advisors/00_england.txt")),
 		ScriptFileKind::new("advisor_history")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("history/wars/100yearswar.txt")),
+		classify_script_file(game_path("history/wars/100yearswar.txt")),
 		ScriptFileKind::new("wars")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/units/00_units.txt")),
+		classify_script_file(game_path("common/units/00_units.txt")),
 		ScriptFileKind::new("units")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/religions/00_religion.txt")),
+		classify_script_file(game_path("common/religions/00_religion.txt")),
 		ScriptFileKind::new("religions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/subject_types/00_subject_types.txt"
-		)),
+		classify_script_file(game_path("common/subject_types/00_subject_types.txt")),
 		ScriptFileKind::new("subject_types")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/rebel_types/independence_rebels.txt"
-		)),
+		classify_script_file(game_path("common/rebel_types/independence_rebels.txt")),
 		ScriptFileKind::new("rebel_types")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/disasters/civil_war.txt")),
+		classify_script_file(game_path("common/disasters/civil_war.txt")),
 		ScriptFileKind::new("disasters")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"common/government_mechanics/18_parliament_vs_monarchy.txt"
 		)),
 		ScriptFileKind::new("government_mechanics")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/church_aspects/00_church_aspects.txt"
-		)),
+		classify_script_file(game_path("common/church_aspects/00_church_aspects.txt")),
 		ScriptFileKind::new("church_aspects")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/factions/00_factions.txt")),
+		classify_script_file(game_path("common/factions/00_factions.txt")),
 		ScriptFileKind::new("factions")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/hegemons/0_economic_hegemon.txt"
-		)),
+		classify_script_file(game_path("common/hegemons/0_economic_hegemon.txt")),
 		ScriptFileKind::new("hegemons")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/personal_deities/00_hindu_deities.txt"
-		)),
+		classify_script_file(game_path("common/personal_deities/00_hindu_deities.txt")),
 		ScriptFileKind::new("personal_deities")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/fetishist_cults/00_fetishist_cults.txt"
-		)),
+		classify_script_file(game_path("common/fetishist_cults/00_fetishist_cults.txt")),
 		ScriptFileKind::new("fetishist_cults")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/estate_agendas/00_generic_agendas.txt"
-		)),
+		classify_script_file(game_path("common/estate_agendas/00_generic_agendas.txt")),
 		ScriptFileKind::new("estate_agendas")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"common/estate_privileges/01_church_privileges.txt"
 		)),
 		ScriptFileKind::new("estate_privileges")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/estates/01_church.txt")),
+		classify_script_file(game_path("common/estates/01_church.txt")),
 		ScriptFileKind::new("estates")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"common/parliament_bribes/administrative_support.txt"
 		)),
 		ScriptFileKind::new("parliament_bribes")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"common/parliament_issues/00_adm_parliament_issues.txt"
 		)),
 		ScriptFileKind::new("parliament_issues")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/state_edicts/edict_of_governance.txt"
-		)),
+		classify_script_file(game_path("common/state_edicts/edict_of_governance.txt")),
 		ScriptFileKind::new("state_edicts")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/peace_treaties/00_peace_treaties.txt"
-		)),
+		classify_script_file(game_path("common/peace_treaties/00_peace_treaties.txt")),
 		ScriptFileKind::new("peace_treaties")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/bookmarks/a_new_world.txt")),
+		classify_script_file(game_path("common/bookmarks/a_new_world.txt")),
 		ScriptFileKind::new("bookmarks")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/policies/00_adm.txt")),
+		classify_script_file(game_path("common/policies/00_adm.txt")),
 		ScriptFileKind::new("policies")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/mercenary_companies/00_mercenaries.txt"
-		)),
+		classify_script_file(game_path("common/mercenary_companies/00_mercenaries.txt")),
 		ScriptFileKind::new("mercenary_companies")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/fervor/00_fervor.txt")),
+		classify_script_file(game_path("common/fervor/00_fervor.txt")),
 		ScriptFileKind::new("fervor")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/decrees/00_china.txt")),
+		classify_script_file(game_path("common/decrees/00_china.txt")),
 		ScriptFileKind::new("decrees")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/federation_advancements/00_default.txt"
-		)),
+		classify_script_file(game_path("common/federation_advancements/00_default.txt")),
 		ScriptFileKind::new("federation_advancements")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/golden_bulls/00_golden_bulls.txt"
-		)),
+		classify_script_file(game_path("common/golden_bulls/00_golden_bulls.txt")),
 		ScriptFileKind::new("golden_bulls")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"common/flagship_modifications/00_flagship_modifications.txt"
 		)),
 		ScriptFileKind::new("flagship_modifications")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/powerprojection/00_static.txt")),
+		classify_script_file(game_path("common/powerprojection/00_static.txt")),
 		ScriptFileKind::new("powerprojection")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
+		classify_script_file(game_path(
 			"common/subject_type_upgrades/00_subject_type_upgrades.txt"
 		)),
 		ScriptFileKind::new("subject_type_upgrades")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new(
-			"common/government_ranks/00_government_ranks.txt"
-		)),
+		classify_script_file(game_path("common/government_ranks/00_government_ranks.txt")),
 		ScriptFileKind::new("government_ranks")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/technologies/adm.txt")),
+		classify_script_file(game_path("common/technologies/adm.txt")),
 		ScriptFileKind::new("technologies")
 	);
 	assert_eq!(
-		classify_script_file(std::path::Path::new("common/technology.txt")),
+		classify_script_file(game_path("common/technology.txt")),
 		ScriptFileKind::new("technology_groups")
 	);
 }
@@ -864,62 +834,62 @@ battle = {
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/country_tags/00_countries.txt")
+		reference.path.as_str() == "common/country_tags/00_countries.txt"
 			&& reference.key == "country_tag:SWE"
 			&& reference.value == "countries/Sweden.txt"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/countries/Sweden.txt")
+		reference.path.as_str() == "common/countries/Sweden.txt"
 			&& reference.key == "graphical_culture"
 			&& reference.value == "scandinaviangfx"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/countries/Sweden.txt")
+		reference.path.as_str() == "common/countries/Sweden.txt"
 			&& reference.key == "preferred_religion"
 			&& reference.value == "protestant"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/countries/Sweden.txt")
+		reference.path.as_str() == "common/countries/Sweden.txt"
 			&& reference.key == "historical_idea_groups"
 			&& reference.value == "quality_ideas"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/countries/Sweden.txt")
+		reference.path.as_str() == "common/countries/Sweden.txt"
 			&& reference.key == "historical_units"
 			&& reference.value == "western_medieval_infantry"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/countries/SWE - Sweden.txt")
+		reference.path.as_str() == "history/countries/SWE - Sweden.txt"
 			&& reference.key == "capital"
 			&& reference.value == "1"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/countries/SWE - Sweden.txt")
+		reference.path.as_str() == "history/countries/SWE - Sweden.txt"
 			&& reference.key == "country_of_origin"
 			&& reference.value == "SWE"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/provinces/1-Uppland.txt")
+		reference.path.as_str() == "history/provinces/1-Uppland.txt"
 			&& reference.key == "owner"
 			&& reference.value == "SWE"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/wars/afghan_maratha.txt")
+		reference.path.as_str() == "history/wars/afghan_maratha.txt"
 			&& reference.key == "add_attacker"
 			&& reference.value == "AFG"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/wars/afghan_maratha.txt")
+		reference.path.as_str() == "history/wars/afghan_maratha.txt"
 			&& reference.key == "location"
 			&& reference.value == "521"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/units/swedish_tercio.txt")
+		reference.path.as_str() == "common/units/swedish_tercio.txt"
 			&& reference.key == "type"
 			&& reference.value == "infantry"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/units/swedish_tercio.txt")
+		reference.path.as_str() == "common/units/swedish_tercio.txt"
 			&& reference.key == "unit_type"
 			&& reference.value == "western"
 	}));
@@ -1096,52 +1066,52 @@ powers = {
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/religions/00_religion.txt")
+		reference.path.as_str() == "common/religions/00_religion.txt"
 			&& reference.key == "center_of_religion"
 			&& reference.value == "118"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/religions/00_religion.txt")
+		reference.path.as_str() == "common/religions/00_religion.txt"
 			&& reference.key == "allowed_conversion"
 			&& reference.value == "protestant"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/religions/00_religion.txt")
+		reference.path.as_str() == "common/religions/00_religion.txt"
 			&& reference.key == "papal_tag"
 			&& reference.value == "PAP"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/subject_types/00_subject_types.txt")
+		reference.path.as_str() == "common/subject_types/00_subject_types.txt"
 			&& reference.key == "copy_from"
 			&& reference.value == "default"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/subject_types/00_subject_types.txt")
+		reference.path.as_str() == "common/subject_types/00_subject_types.txt"
 			&& reference.key == "sprite"
 			&& reference.value == "GFX_icon_vassal"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/rebel_types/independence_rebels.txt")
+		reference.path.as_str() == "common/rebel_types/independence_rebels.txt"
 			&& reference.key == "demands_description"
 			&& reference.value == "independence_rebels_demands"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/disasters/civil_war.txt")
+		reference.path.as_str() == "common/disasters/civil_war.txt"
 			&& reference.key == "on_start"
 			&& reference.value == "civil_war.1"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/disasters/civil_war.txt")
+		reference.path.as_str() == "common/disasters/civil_war.txt"
 			&& reference.key == "event"
 			&& reference.value == "civil_war.3"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/government_mechanics/18_parliament_vs_monarchy.txt")
+		reference.path.as_str() == "common/government_mechanics/18_parliament_vs_monarchy.txt"
 			&& reference.key == "gui"
 			&& reference.value == "parliament_vs_monarchy_gov_mech"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/government_mechanics/18_parliament_vs_monarchy.txt")
+		reference.path.as_str() == "common/government_mechanics/18_parliament_vs_monarchy.txt"
 			&& reference.key == "country_event"
 			&& reference.value == "flavor_gbr.113"
 	}));
@@ -1347,57 +1317,57 @@ modifier = {
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/estate_agendas/00_generic_agendas.txt")
+		reference.path.as_str() == "common/estate_agendas/00_generic_agendas.txt"
 			&& reference.key == "estate"
 			&& reference.value == "clergy"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/estate_agendas/00_generic_agendas.txt")
+		reference.path.as_str() == "common/estate_agendas/00_generic_agendas.txt"
 			&& reference.key == "custom_tooltip"
 			&& reference.value == "agenda_done_tt"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/estate_privileges/01_church_privileges.txt")
+		reference.path.as_str() == "common/estate_privileges/01_church_privileges.txt"
 			&& reference.key == "icon"
 			&& reference.value == "privilege_religious_diplomats"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/estate_privileges/01_church_privileges.txt")
+		reference.path.as_str() == "common/estate_privileges/01_church_privileges.txt"
 			&& reference.key == "mechanics"
 			&& reference.value == "papal_influence"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/estates/01_church.txt")
+		reference.path.as_str() == "common/estates/01_church.txt"
 			&& reference.key == "custom_name"
 			&& reference.value == "estate_clergy_custom_name"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/estates/01_church.txt")
+		reference.path.as_str() == "common/estates/01_church.txt"
 			&& reference.key == "privileges"
 			&& reference.value == "religious_diplomats"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/parliament_bribes/administrative_support.txt")
+		reference.path.as_str() == "common/parliament_bribes/administrative_support.txt"
 			&& reference.key == "mechanic_type"
 			&& reference.value == "parliament_vs_monarchy_mechanic"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/parliament_issues/00_adm_parliament_issues.txt")
+		reference.path.as_str() == "common/parliament_issues/00_adm_parliament_issues.txt"
 			&& reference.key == "parliament_action"
 			&& reference.value == "strengthen_government"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/parliament_issues/00_adm_parliament_issues.txt")
+		reference.path.as_str() == "common/parliament_issues/00_adm_parliament_issues.txt"
 			&& reference.key == "estate"
 			&& reference.value == "clergy"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/state_edicts/edict_of_governance.txt")
+		reference.path.as_str() == "common/state_edicts/edict_of_governance.txt"
 			&& reference.key == "tooltip"
 			&& reference.value == "edict_of_governance_tt"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/state_edicts/edict_of_governance.txt")
+		reference.path.as_str() == "common/state_edicts/edict_of_governance.txt"
 			&& reference.key == "has_state_edict"
 			&& reference.value == "encourage_development_edict"
 	}));
@@ -1473,47 +1443,47 @@ country = ENG
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+		reference.path.as_str() == "common/peace_treaties/00_peace_treaties.txt"
 			&& reference.key == "localisation_desc"
 			&& reference.value == "spread_dynasty_desc"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+		reference.path.as_str() == "common/peace_treaties/00_peace_treaties.txt"
 			&& reference.key == "localisation_cb_allowed"
 			&& reference.value == "CB_ALLOWED_spread_dynasty"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+		reference.path.as_str() == "common/peace_treaties/00_peace_treaties.txt"
 			&& reference.key == "localisation_peace"
 			&& reference.value == "PEACE_spread_dynasty"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+		reference.path.as_str() == "common/peace_treaties/00_peace_treaties.txt"
 			&& reference.key == "power_projection"
 			&& reference.value == "vassalized_rival"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/bookmarks/a_new_world.txt")
+		reference.path.as_str() == "common/bookmarks/a_new_world.txt"
 			&& reference.key == "name"
 			&& reference.value == "NEWWORLD_NAME"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/bookmarks/a_new_world.txt")
+		reference.path.as_str() == "common/bookmarks/a_new_world.txt"
 			&& reference.key == "desc"
 			&& reference.value == "NEWWORLD_DESC"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/bookmarks/a_new_world.txt")
+		reference.path.as_str() == "common/bookmarks/a_new_world.txt"
 			&& reference.key == "center"
 			&& reference.value == "2133"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/bookmarks/a_new_world.txt")
+		reference.path.as_str() == "common/bookmarks/a_new_world.txt"
 			&& reference.key == "country"
 			&& reference.value == "CAS"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/bookmarks/a_new_world.txt")
+		reference.path.as_str() == "common/bookmarks/a_new_world.txt"
 			&& reference.key == "country"
 			&& reference.value == "ENG"
 	}));
@@ -1661,87 +1631,87 @@ ai_will_do = { factor = 1 }
 
 	let index = build_semantic_index(&files);
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/church_aspects/00_church_aspects.txt")
+		usage.path.as_str() == "common/church_aspects/00_church_aspects.txt"
 			&& usage.key == "religion"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/church_aspects/00_church_aspects.txt")
+		usage.path.as_str() == "common/church_aspects/00_church_aspects.txt"
 			&& usage.key == "add_stability"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Effect
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/factions/00_factions.txt")
+		usage.path.as_str() == "common/factions/00_factions.txt"
 			&& usage.key == "has_dlc"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/hegemons/0_economic_hegemon.txt")
+		usage.path.as_str() == "common/hegemons/0_economic_hegemon.txt"
 			&& usage.key == "war_exhaustion"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Block
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/personal_deities/00_hindu_deities.txt")
+		usage.path.as_str() == "common/personal_deities/00_hindu_deities.txt"
 			&& usage.key == "add_prestige"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Effect
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/fetishist_cults/00_fetishist_cults.txt")
+		usage.path.as_str() == "common/fetishist_cults/00_fetishist_cults.txt"
 			&& usage.key == "religion"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/church_aspects/00_church_aspects.txt")
+		reference.path.as_str() == "common/church_aspects/00_church_aspects.txt"
 			&& reference.key == "localisation"
 			&& reference.value == "organised_through_bishops_aspect"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/church_aspects/00_church_aspects.txt")
+		reference.path.as_str() == "common/church_aspects/00_church_aspects.txt"
 			&& reference.key == "localisation_desc"
 			&& reference.value == "desc_organised_through_bishops_aspect"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/church_aspects/00_church_aspects.txt")
+		reference.path.as_str() == "common/church_aspects/00_church_aspects.txt"
 			&& reference.key == "localisation_modifier"
 			&& reference.value == "organised_through_bishops_aspect_modifier"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/factions/00_factions.txt")
+		reference.path.as_str() == "common/factions/00_factions.txt"
 			&& reference.key == "localisation"
 			&& reference.value == "rr_jacobins"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/factions/00_factions.txt")
+		reference.path.as_str() == "common/factions/00_factions.txt"
 			&& reference.key == "localisation_influence"
 			&& reference.value == "rr_jacobins_influence"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/factions/00_factions.txt")
+		reference.path.as_str() == "common/factions/00_factions.txt"
 			&& reference.key == "monarch_power"
 			&& reference.value == "ADM"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/hegemons/0_economic_hegemon.txt")
+		reference.path.as_str() == "common/hegemons/0_economic_hegemon.txt"
 			&& reference.key == "localisation"
 			&& reference.value == "economic_hegemon"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/personal_deities/00_hindu_deities.txt")
+		reference.path.as_str() == "common/personal_deities/00_hindu_deities.txt"
 			&& reference.key == "localisation"
 			&& reference.value == "shiva"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/personal_deities/00_hindu_deities.txt")
+		reference.path.as_str() == "common/personal_deities/00_hindu_deities.txt"
 			&& reference.key == "localisation_desc"
 			&& reference.value == "shiva_desc"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/fetishist_cults/00_fetishist_cults.txt")
+		reference.path.as_str() == "common/fetishist_cults/00_fetishist_cults.txt"
 			&& reference.key == "localisation"
 			&& reference.value == "yemoja_cult"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/fetishist_cults/00_fetishist_cults.txt")
+		reference.path.as_str() == "common/fetishist_cults/00_fetishist_cults.txt"
 			&& reference.key == "localisation_desc"
 			&& reference.value == "yemoja_cult_desc"
 	}));
@@ -1809,52 +1779,52 @@ modifier = {
 
 	let index = build_semantic_index(&files);
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/policies/00_adm.txt")
+		usage.path.as_str() == "common/policies/00_adm.txt"
 			&& usage.key == "has_idea_group"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/policies/00_adm.txt")
+		usage.path.as_str() == "common/policies/00_adm.txt"
 			&& usage.key == "add_prestige"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Effect
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+		usage.path.as_str() == "common/mercenary_companies/00_mercenaries.txt"
 			&& usage.key == "tag"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
 	}));
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+		usage.path.as_str() == "common/mercenary_companies/00_mercenaries.txt"
 			&& usage.key == "discipline"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Block
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/policies/00_adm.txt")
+		reference.path.as_str() == "common/policies/00_adm.txt"
 			&& reference.key == "localisation"
 			&& reference.value == "the_combination_act"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/policies/00_adm.txt")
+		reference.path.as_str() == "common/policies/00_adm.txt"
 			&& reference.key == "monarch_power"
 			&& reference.value == "ADM"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+		reference.path.as_str() == "common/mercenary_companies/00_mercenaries.txt"
 			&& reference.key == "localisation"
 			&& reference.value == "merc_black_army"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+		reference.path.as_str() == "common/mercenary_companies/00_mercenaries.txt"
 			&& reference.key == "mercenary_desc_key"
 			&& reference.value == "FREE_OF_ARMY_PROFESSIONALISM_COST"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+		reference.path.as_str() == "common/mercenary_companies/00_mercenaries.txt"
 			&& reference.key == "home_province"
 			&& reference.value == "153"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+		reference.path.as_str() == "common/mercenary_companies/00_mercenaries.txt"
 			&& reference.key == "sprites"
 			&& reference.value == "dlc102_hun_sprite_pack"
 	}));
@@ -2191,192 +2161,192 @@ max_absolutism = 5
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/fervor/00_fervor.txt")
+		reference.path.as_str() == "common/fervor/00_fervor.txt"
 			&& reference.key == "fervor_definition"
 			&& reference.value == "fervor_trade"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/fervor/00_fervor.txt")
+		reference.path.as_str() == "common/fervor/00_fervor.txt"
 			&& reference.key == "cost_type"
 			&& reference.value == "fervor"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/decrees/00_china.txt")
+		reference.path.as_str() == "common/decrees/00_china.txt"
 			&& reference.key == "decree_definition"
 			&& reference.value == "expand_bureaucracy_decree"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/decrees/00_china.txt")
+		reference.path.as_str() == "common/decrees/00_china.txt"
 			&& reference.key == "icon"
 			&& reference.value == "decree_expand_bureaucracy"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/federation_advancements/00_default.txt")
+		reference.path.as_str() == "common/federation_advancements/00_default.txt"
 			&& reference.key == "federation_advancement_definition"
 			&& reference.value == "federal_constitution"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/federation_advancements/00_default.txt")
+		reference.path.as_str() == "common/federation_advancements/00_default.txt"
 			&& reference.key == "gfx"
 			&& reference.value == "federation_constitution"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/federation_advancements/00_default.txt")
+		reference.path.as_str() == "common/federation_advancements/00_default.txt"
 			&& reference.key == "names"
 			&& reference.value == "federation_name_key"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/federation_advancements/00_default.txt")
+		reference.path.as_str() == "common/federation_advancements/00_default.txt"
 			&& reference.key == "government"
 			&& reference.value == "federal_republic"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/federation_advancements/00_default.txt")
+		reference.path.as_str() == "common/federation_advancements/00_default.txt"
 			&& reference.key == "religion"
 			&& reference.value == "catholic"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/federation_advancements/00_default.txt")
+		reference.path.as_str() == "common/federation_advancements/00_default.txt"
 			&& reference.key == "tag"
 			&& reference.value == "HUN"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/golden_bulls/00_golden_bulls.txt")
+		reference.path.as_str() == "common/golden_bulls/00_golden_bulls.txt"
 			&& reference.key == "golden_bull_definition"
 			&& reference.value == "golden_bull_treasury"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/golden_bulls/00_golden_bulls.txt")
+		reference.path.as_str() == "common/golden_bulls/00_golden_bulls.txt"
 			&& reference.key == "mechanics"
 			&& reference.value == "curia_treasury"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/golden_bulls/00_golden_bulls.txt")
+		reference.path.as_str() == "common/golden_bulls/00_golden_bulls.txt"
 			&& reference.key == "mechanics"
 			&& reference.value == "curia_powers"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/flagship_modifications/00_flagship_modifications.txt")
+		reference.path.as_str() == "common/flagship_modifications/00_flagship_modifications.txt"
 			&& reference.key == "flagship_modification_definition"
 			&& reference.value == "extra_cannons"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/flagship_modifications/00_flagship_modifications.txt")
+		reference.path.as_str() == "common/flagship_modifications/00_flagship_modifications.txt"
 			&& reference.key == "cost_type"
 			&& reference.value == "sailors"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/holy_orders/00_holy_orders.txt")
+		reference.path.as_str() == "common/holy_orders/00_holy_orders.txt"
 			&& reference.key == "holy_order_definition"
 			&& reference.value == "benedictines"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/holy_orders/00_holy_orders.txt")
+		reference.path.as_str() == "common/holy_orders/00_holy_orders.txt"
 			&& reference.key == "cost_type"
 			&& reference.value == "adm_power"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/naval_doctrines/00_naval_doctrines.txt")
+		reference.path.as_str() == "common/naval_doctrines/00_naval_doctrines.txt"
 			&& reference.key == "naval_doctrine_definition"
 			&& reference.value == "fleet_in_being"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/naval_doctrines/00_naval_doctrines.txt")
+		reference.path.as_str() == "common/naval_doctrines/00_naval_doctrines.txt"
 			&& reference.key == "button_gfx"
 			&& reference.value == "1"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/defender_of_faith/00_defender_of_faith.txt")
+		reference.path.as_str() == "common/defender_of_faith/00_defender_of_faith.txt"
 			&& reference.key == "defender_of_faith_definition"
 			&& reference.value == "defender_of_faith_1"
 	}));
 	assert!(index.scalar_assignments.iter().any(|assignment| {
-		assignment.path == Path::new("common/defender_of_faith/00_defender_of_faith.txt")
+		assignment.path.as_str() == "common/defender_of_faith/00_defender_of_faith.txt"
 			&& assignment.key == "level"
 			&& assignment.value == "1"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/isolationism/00_shinto.txt")
+		reference.path.as_str() == "common/isolationism/00_shinto.txt"
 			&& reference.key == "isolationism_definition"
 			&& reference.value == "open_doors_isolation"
 	}));
 	assert!(index.scalar_assignments.iter().any(|assignment| {
-		assignment.path == Path::new("common/isolationism/00_shinto.txt")
+		assignment.path.as_str() == "common/isolationism/00_shinto.txt"
 			&& assignment.key == "isolation_value"
 			&& assignment.value == "0"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/professionalism/00_modifiers.txt")
+		reference.path.as_str() == "common/professionalism/00_modifiers.txt"
 			&& reference.key == "professionalism_definition"
 			&& reference.value == "nothingness_modifier"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/professionalism/00_modifiers.txt")
+		reference.path.as_str() == "common/professionalism/00_modifiers.txt"
 			&& reference.key == "marker_sprite"
 			&& reference.value == "GFX_pa_rank_0"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/professionalism/00_modifiers.txt")
+		reference.path.as_str() == "common/professionalism/00_modifiers.txt"
 			&& reference.key == "unit_sprite_start"
 			&& reference.value == "GFX_ap1_"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/powerprojection/00_static.txt")
+		reference.path.as_str() == "common/powerprojection/00_static.txt"
 			&& reference.key == "powerprojection_definition"
 			&& reference.value == "great_power_1"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/powerprojection/00_static.txt")
+		reference.path.as_str() == "common/powerprojection/00_static.txt"
 			&& reference.key == "powerprojection_definition"
 			&& reference.value == "humiliated_rival"
 	}));
 	assert!(index.scalar_assignments.iter().any(|assignment| {
-		assignment.path == Path::new("common/powerprojection/00_static.txt")
+		assignment.path.as_str() == "common/powerprojection/00_static.txt"
 			&& assignment.key == "power"
 			&& assignment.value == "25"
 	}));
 	assert!(index.scalar_assignments.iter().any(|assignment| {
-		assignment.path == Path::new("common/powerprojection/00_static.txt")
+		assignment.path.as_str() == "common/powerprojection/00_static.txt"
 			&& assignment.key == "yearly_decay"
 			&& assignment.value == "1"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+		reference.path.as_str() == "common/subject_type_upgrades/00_subject_type_upgrades.txt"
 			&& reference.key == "subject_type_upgrade_definition"
 			&& reference.value == "increase_force_limit_from_colony"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+		reference.path.as_str() == "common/subject_type_upgrades/00_subject_type_upgrades.txt"
 			&& reference.key == "subject_type_upgrade_definition"
 			&& reference.value == "allow_autonomous_trade"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+		reference.path.as_str() == "common/subject_type_upgrades/00_subject_type_upgrades.txt"
 			&& reference.key == "custom_tooltip"
 			&& reference.value == "increase_force_limit_from_colony_tt"
 	}));
 	assert!(index.scalar_assignments.iter().any(|assignment| {
-		assignment.path == Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+		assignment.path.as_str() == "common/subject_type_upgrades/00_subject_type_upgrades.txt"
 			&& assignment.key == "cost"
 			&& assignment.value == "100"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/government_ranks/00_government_ranks.txt")
+		reference.path.as_str() == "common/government_ranks/00_government_ranks.txt"
 			&& reference.key == "government_rank_definition"
 			&& reference.value == "2"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/government_ranks/00_government_ranks.txt")
+		reference.path.as_str() == "common/government_ranks/00_government_ranks.txt"
 			&& reference.key == "government_rank_definition"
 			&& reference.value == "3"
 	}));
 	assert!(index.scalar_assignments.iter().any(|assignment| {
-		assignment.path == Path::new("common/government_ranks/00_government_ranks.txt")
+		assignment.path.as_str() == "common/government_ranks/00_government_ranks.txt"
 			&& assignment.key == "diplomats"
 			&& assignment.value == "1"
 	}));
 	assert!(index.scalar_assignments.iter().any(|assignment| {
-		assignment.path == Path::new("common/government_ranks/00_government_ranks.txt")
+		assignment.path.as_str() == "common/government_ranks/00_government_ranks.txt"
 			&& assignment.key == "global_autonomy"
 			&& assignment.value == "-0.05"
 	}));
@@ -2446,57 +2416,57 @@ death_date = 1460.1.1
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/diplomacy/hre.txt")
+		reference.path.as_str() == "history/diplomacy/hre.txt"
 			&& reference.key == "relation_type"
 			&& reference.value == "alliance"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/diplomacy/hre.txt")
+		reference.path.as_str() == "history/diplomacy/hre.txt"
 			&& reference.key == "first"
 			&& reference.value == "FRA"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/diplomacy/hre.txt")
+		reference.path.as_str() == "history/diplomacy/hre.txt"
 			&& reference.key == "second"
 			&& reference.value == "SCO"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/diplomacy/hre.txt")
+		reference.path.as_str() == "history/diplomacy/hre.txt"
 			&& reference.key == "emperor"
 			&& reference.value == "BOH"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/diplomacy/hre.txt")
+		reference.path.as_str() == "history/diplomacy/hre.txt"
 			&& reference.key == "celestial_emperor"
 			&& reference.value == "MNG"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/advisors/00_england.txt")
+		reference.path.as_str() == "history/advisors/00_england.txt"
 			&& reference.key == "advisor_definition"
 			&& reference.value == "advisor_216"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/advisors/00_england.txt")
+		reference.path.as_str() == "history/advisors/00_england.txt"
 			&& reference.key == "advisor_id"
 			&& reference.value == "216"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/advisors/00_england.txt")
+		reference.path.as_str() == "history/advisors/00_england.txt"
 			&& reference.key == "location"
 			&& reference.value == "236"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/advisors/00_england.txt")
+		reference.path.as_str() == "history/advisors/00_england.txt"
 			&& reference.key == "type"
 			&& reference.value == "theologian"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/advisors/00_england.txt")
+		reference.path.as_str() == "history/advisors/00_england.txt"
 			&& reference.key == "culture"
 			&& reference.value == "english"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("history/advisors/00_england.txt")
+		reference.path.as_str() == "history/advisors/00_england.txt"
 			&& reference.key == "religion"
 			&& reference.value == "catholic"
 	}));
@@ -2528,22 +2498,22 @@ fn province_names_record_resource_references() {
 	.expect("parsed province names");
 	let index = build_semantic_index(&[parsed]);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/province_names/sorbian.txt")
+		reference.path.as_str() == "common/province_names/sorbian.txt"
 			&& reference.key == "province_name_table"
 			&& reference.value == "sorbian"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/province_names/sorbian.txt")
+		reference.path.as_str() == "common/province_names/sorbian.txt"
 			&& reference.key == "province_id"
 			&& reference.value == "4778"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/province_names/sorbian.txt")
+		reference.path.as_str() == "common/province_names/sorbian.txt"
 			&& reference.key == "province_name_literal"
 			&& reference.value == "Zhorjelc"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/province_names/sorbian.txt")
+		reference.path.as_str() == "common/province_names/sorbian.txt"
 			&& reference.key == "province_id"
 			&& reference.value == "38"
 	}));
@@ -2610,49 +2580,49 @@ p_chugwater:river
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/tiles/tile0.txt")
+		reference.path.as_str() == "map/random/tiles/tile0.txt"
 			&& reference.key == "tile_definition"
 			&& reference.value == "tile0"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/tiles/tile0.txt")
+		reference.path.as_str() == "map/random/tiles/tile0.txt"
 			&& reference.key == "tile_color_group"
 			&& reference.value == "sea_province"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/tiles/tile0.txt")
+		reference.path.as_str() == "map/random/tiles/tile0.txt"
 			&& reference.key == "tile_color_rgb"
 			&& reference.value == "93,164,236"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/tiles/tile0.txt")
+		reference.path.as_str() == "map/random/tiles/tile0.txt"
 			&& reference.key == "tile_size"
 			&& reference.value == "7,7"
 	}));
 	assert!(!index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/tiles/tile0.txt")
+		reference.path.as_str() == "map/random/tiles/tile0.txt"
 			&& matches!(
 				reference.key.as_str(),
 				"num_sea_provinces" | "num_land_provinces" | "weight" | "continent"
 			)
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RandomLandNames.txt")
+		reference.path.as_str() == "map/random/RandomLandNames.txt"
 			&& reference.key == "random_name_table"
 			&& reference.value == "random_land_names"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RandomLandNames.txt")
+		reference.path.as_str() == "map/random/RandomLandNames.txt"
 			&& reference.key == "random_name_token"
 			&& reference.value == "p_tumbletown"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RandomLandNames.txt")
+		reference.path.as_str() == "map/random/RandomLandNames.txt"
 			&& reference.key == "random_name_token"
 			&& reference.value == "p_chugwater"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RandomLandNames.txt")
+		reference.path.as_str() == "map/random/RandomLandNames.txt"
 			&& reference.key == "random_name_category"
 			&& reference.value == "river"
 	}));
@@ -2691,32 +2661,32 @@ names = {
 
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RNWScenarios.txt")
+		reference.path.as_str() == "map/random/RNWScenarios.txt"
 			&& reference.key == "random_map_scenario"
 			&& reference.value == "scenario_animism_tribes"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RNWScenarios.txt")
+		reference.path.as_str() == "map/random/RNWScenarios.txt"
 			&& reference.key == "religion"
 			&& reference.value == "animism"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RNWScenarios.txt")
+		reference.path.as_str() == "map/random/RNWScenarios.txt"
 			&& reference.key == "technology_group"
 			&& reference.value == "south_american"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RNWScenarios.txt")
+		reference.path.as_str() == "map/random/RNWScenarios.txt"
 			&& reference.key == "government"
 			&& reference.value == "native"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RNWScenarios.txt")
+		reference.path.as_str() == "map/random/RNWScenarios.txt"
 			&& reference.key == "graphical_culture"
 			&& reference.value == "northamericagfx"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("map/random/RNWScenarios.txt")
+		reference.path.as_str() == "map/random/RNWScenarios.txt"
 			&& reference.key == "scenario_name_key"
 			&& reference.value == "rnw_arauluche"
 	}));
@@ -2761,47 +2731,47 @@ may_force_march = yes
 	.expect("parsed technologies");
 	let index = build_semantic_index(&[parsed]);
 	assert!(index.key_usages.iter().any(|usage| {
-		usage.path == Path::new("common/technologies/adm.txt")
+		usage.path.as_str() == "common/technologies/adm.txt"
 			&& usage.key == "adm_tech_cost_modifier"
 			&& scope_kind(&index, usage.scope_id) == ScopeKind::Block
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "monarch_power"
 			&& reference.value == "ADM"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "technology_definition"
 			&& reference.value == "adm_tech_0"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "technology_definition"
 			&& reference.value == "adm_tech_1"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "expects_institution"
 			&& reference.value == "feudalism"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "expects_institution"
 			&& reference.value == "renaissance"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "enable"
 			&& reference.value == "temple"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "enable"
 			&& reference.value == "courthouse"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technologies/adm.txt")
+		reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "enable"
 			&& reference.value == "may_force_march"
 	}));
@@ -2869,25 +2839,25 @@ marketplace = yes
 	let index = build_semantic_index(&files);
 	assert!(index.resource_references.iter().any(|reference| {
 		reference.mod_id == "mod-a"
-			&& reference.path == Path::new("common/technologies/adm.txt")
+			&& reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "technology_definition"
 			&& reference.value == "adm_tech_0"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
 		reference.mod_id == "mod-b"
-			&& reference.path == Path::new("common/technologies/adm.txt")
+			&& reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "technology_definition"
 			&& reference.value == "dip_tech_0"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
 		reference.mod_id == "mod-b"
-			&& reference.path == Path::new("common/technologies/adm.txt")
+			&& reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "monarch_power"
 			&& reference.value == "DIP"
 	}));
 	assert!(!index.resource_references.iter().any(|reference| {
 		reference.mod_id == "mod-b"
-			&& reference.path == Path::new("common/technologies/adm.txt")
+			&& reference.path.as_str() == "common/technologies/adm.txt"
 			&& reference.key == "technology_definition"
 			&& reference.value == "adm_tech_1"
 	}));
@@ -2932,17 +2902,17 @@ eastern = {
 	.expect("parsed technology groups");
 	let index = build_semantic_index(&[parsed]);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technology.txt")
+		reference.path.as_str() == "common/technology.txt"
 			&& reference.key == "technology_group"
 			&& reference.value == "western"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technology.txt")
+		reference.path.as_str() == "common/technology.txt"
 			&& reference.key == "nation_designer_unit_type"
 			&& reference.value == "western"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/technology.txt")
+		reference.path.as_str() == "common/technology.txt"
 			&& reference.key == "nation_designer_cost_value"
 			&& reference.value == "25"
 	}));
@@ -3027,7 +2997,8 @@ immediate = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "unknown-scope-type" && finding.path == Some("events/x.txt".into())
+			finding.rule_id == "unknown-scope-type"
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("events/x.txt")
 		}),
 		"typed event roots should not stay in Unknown scope"
 	);
@@ -3152,7 +3123,7 @@ provinces_to_highlight = {
 
 	let index = build_semantic_index(&[parsed]);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/achievements.txt")
+		reference.path.as_str() == "common/achievements.txt"
 			&& reference.key == "achievement_definition"
 			&& reference.value == "achievement_example"
 	}));
@@ -3221,7 +3192,7 @@ provinces_to_highlight = {
 			.advisory
 			.iter()
 			.any(|finding| finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/achievements.txt".into())),
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("common/achievements.txt")),
 		"achievements root scope should no longer stay Unknown"
 	);
 }
@@ -3433,7 +3404,8 @@ trigger = {
 	] {
 		assert!(
 			!diagnostics.strict.iter().any(|finding| {
-				finding.rule_id == "unresolved-call-target" && finding.path == Some(path.into())
+				finding.rule_id == "unresolved-call-target"
+					&& finding.path.as_ref().map(|p| p.as_str()) == Some(path)
 			}),
 			"{path} should not report top-level scripted effect fallback"
 		);
@@ -3446,7 +3418,8 @@ trigger = {
 	] {
 		assert!(
 			!diagnostics.advisory.iter().any(|finding| {
-				finding.rule_id == "unknown-scope-type" && finding.path == Some(path.into())
+				finding.rule_id == "unknown-scope-type"
+					&& finding.path.as_ref().map(|p| p.as_str()) == Some(path)
 			}),
 			"{path} should have a typed root scope"
 		);
@@ -3568,7 +3541,8 @@ test_decision = {
 	] {
 		assert!(
 			!diagnostics.advisory.iter().any(|finding| {
-				finding.rule_id == "unknown-scope-type" && finding.path == Some(path.into())
+				finding.rule_id == "unknown-scope-type"
+					&& finding.path.as_ref().map(|p| p.as_str()) == Some(path)
 			}),
 			"{path} should reuse typed DSL semantics"
 		);
@@ -4074,7 +4048,7 @@ objectives = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/ages/ages.txt")
+		reference.path.as_str() == "common/ages/ages.txt"
 			&& reference.key == "age_definition"
 			&& reference.value == "age_of_discovery"
 	}));
@@ -4119,7 +4093,7 @@ on_start = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/institutions/institutions.txt")
+		reference.path.as_str() == "common/institutions/institutions.txt"
 			&& reference.key == "institution_definition"
 			&& reference.value == "renaissance"
 	}));
@@ -4167,7 +4141,7 @@ coverage_project = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/great_projects/projects.txt")
+		reference.path.as_str() == "common/great_projects/projects.txt"
 			&& reference.key == "great_project_definition"
 			&& reference.value == "coverage_project"
 	}));
@@ -4238,7 +4212,7 @@ coverage_canal = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/great_projects/projects.txt")
+		reference.path.as_str() == "common/great_projects/projects.txt"
 			&& reference.key == "great_project_definition"
 			&& reference.value == "coverage_canal"
 	}));
@@ -4287,7 +4261,7 @@ coverage_ideas = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/ideas/ideas.txt")
+		reference.path.as_str() == "common/ideas/ideas.txt"
 			&& reference.key == "idea_group_definition"
 			&& reference.value == "coverage_ideas"
 	}));
@@ -4334,7 +4308,7 @@ coverage_advisor = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/advisortypes/advisors.txt")
+		reference.path.as_str() == "common/advisortypes/advisors.txt"
 			&& reference.key == "advisor_type_definition"
 			&& reference.value == "coverage_advisor"
 	}));
@@ -4375,7 +4349,7 @@ fn custom_gui_emit_definition_resources_from_top_level_custom_blocks() {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/custom_gui/gui.txt")
+		reference.path.as_str() == "common/custom_gui/gui.txt"
 			&& reference.key == "custom_gui_definition"
 			&& reference.value == "coverage_window"
 	}));
@@ -4424,7 +4398,7 @@ coverage_group = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/cultures/cultures.txt")
+		reference.path.as_str() == "common/cultures/cultures.txt"
 			&& reference.key == "culture_definition"
 			&& reference.value == "coverage_culture"
 	}));
@@ -4469,7 +4443,7 @@ coverage_government_names = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/government_names/names.txt")
+		reference.path.as_str() == "common/government_names/names.txt"
 			&& reference.key == "government_name_definition"
 			&& reference.value == "coverage_government_names"
 	}));
@@ -4511,7 +4485,7 @@ coverage_event_modifier = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/event_modifiers/modifiers.txt")
+		reference.path.as_str() == "common/event_modifiers/modifiers.txt"
 			&& reference.key == "event_modifier_definition"
 			&& reference.value == "coverage_event_modifier"
 	}));
@@ -4558,7 +4532,7 @@ coverage_ptm = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/province_triggered_modifiers/modifiers.txt")
+		reference.path.as_str() == "common/province_triggered_modifiers/modifiers.txt"
 			&& reference.key == "province_triggered_modifier_definition"
 			&& reference.value == "coverage_ptm"
 	}));
@@ -4600,7 +4574,7 @@ coverage_cb = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/cb_types/cb.txt")
+		reference.path.as_str() == "common/cb_types/cb.txt"
 			&& reference.key == "cb_type_definition"
 			&& reference.value == "coverage_cb"
 	}));
@@ -4648,7 +4622,7 @@ test_reform = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/government_reforms/reforms.txt")
+		reference.path.as_str() == "common/government_reforms/reforms.txt"
 			&& reference.key == "government_reform_definition"
 			&& reference.value == "test_reform"
 	}));
@@ -4697,12 +4671,12 @@ owner = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/scripted_triggers/triggers.txt")
+		reference.path.as_str() == "common/scripted_triggers/triggers.txt"
 			&& reference.key == "scripted_trigger_definition"
 			&& reference.value == "eu4_cov_country_trigger"
 	}));
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/scripted_triggers/triggers.txt")
+		reference.path.as_str() == "common/scripted_triggers/triggers.txt"
 			&& reference.key == "scripted_trigger_definition"
 			&& reference.value == "eu4_cov_province_trigger"
 	}));
@@ -4755,7 +4729,7 @@ on_accept = {
 	let index = build_semantic_index(&parsed);
 
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == std::path::Path::new("common/new_diplomatic_actions/actions.txt")
+		reference.path.as_str() == "common/new_diplomatic_actions/actions.txt"
 			&& reference.key == "new_diplomatic_action_definition"
 			&& reference.value == "request_condottieri"
 	}));
@@ -4917,14 +4891,14 @@ can_use = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/cb_types/cb.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("common/cb_types/cb.txt")
 		}),
 		"cb types should no longer keep ROOT/FROM/owner/capital_scope under Unknown scope"
 	);
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
 			finding.rule_id == "unresolved-call-target"
-				&& finding.path == Some("common/cb_types/cb.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str()) == Some("common/cb_types/cb.txt")
 		}),
 		"cb type trigger containers should not become scripted effect calls"
 	);
@@ -5202,7 +5176,8 @@ while = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/on_actions/callbacks.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/on_actions/callbacks.txt")
 		}),
 		"on_actions callbacks should no longer start from Unknown scope"
 	);
@@ -5215,7 +5190,8 @@ while = {
 		assert!(
 			!diagnostics.strict.iter().any(|finding| {
 				finding.rule_id == "unresolved-call-target"
-					&& finding.path == Some("common/on_actions/callbacks.txt".into())
+					&& finding.path.as_ref().map(|p| p.as_str())
+						== Some("common/on_actions/callbacks.txt")
 					&& finding.message.contains(name)
 			}),
 			"{name} should not produce unresolved-call-target in on_actions callbacks"
@@ -5224,7 +5200,8 @@ while = {
 	for name in ["missing_province_effect", "missing_country_effect"] {
 		assert!(diagnostics.strict.iter().any(|finding| {
 			finding.rule_id == "unresolved-call-target"
-				&& finding.path == Some("common/on_actions/callbacks.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/on_actions/callbacks.txt")
 				&& finding.message.contains(name)
 		}));
 	}
@@ -5602,12 +5579,12 @@ $who$ = {
 	];
 	let index = build_semantic_index(&parsed);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/diplomatic_actions/actions.txt")
+		reference.path.as_str() == "common/diplomatic_actions/actions.txt"
 			&& reference.key == "diplomatic_action_definition"
 			&& reference.value == "milaccess"
 	}));
 	assert!(!index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/diplomatic_actions/actions.txt")
+		reference.path.as_str() == "common/diplomatic_actions/actions.txt"
 			&& reference.key == "diplomatic_action_definition"
 			&& reference.value == "condition"
 	}));
@@ -5681,7 +5658,7 @@ on_built = {
 	];
 	let index = build_semantic_index(&parsed);
 	assert!(index.resource_references.iter().any(|reference| {
-		reference.path == Path::new("common/buildings/buildings.txt")
+		reference.path.as_str() == "common/buildings/buildings.txt"
 			&& reference.key == "building_definition"
 			&& reference.value == "barracks"
 	}));
@@ -6410,7 +6387,8 @@ capital_scope = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/wrappers.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/wrappers.txt")
 		}),
 		"wrapper-heavy scripted effects should not stay unknown"
 	);
@@ -6464,7 +6442,8 @@ hidden_effect = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/province_ids.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/province_ids.txt")
 		}),
 		"province id selector should seed Province scope for nested owner blocks"
 	);
@@ -6592,7 +6571,8 @@ immediate = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/effects.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/effects.txt")
 				&& finding.line == Some(14)
 		}),
 		"chain_b owner scope should resolve to Province after fixpoint inference"
@@ -6600,7 +6580,8 @@ immediate = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_effects/effects.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_effects/effects.txt")
 		}),
 		"mixed scripted effects should stay usable via mask-aware unknown-scope-type checks"
 	);
@@ -6734,7 +6715,8 @@ trigger = {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
 			finding.rule_id == "unknown-scope-type"
-				&& finding.path == Some("common/scripted_triggers/triggers.txt".into())
+				&& finding.path.as_ref().map(|p| p.as_str())
+					== Some("common/scripted_triggers/triggers.txt")
 		}),
 		"scripted triggers should use propagated masks for owner/capital_scope checks"
 	);
@@ -6825,7 +6807,9 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 	use super::extractors;
 	let descriptor = ContentFamilyDescriptor {
 		id: super::super::content::ContentFamilyId::new("unregistered_test_family"),
-		matcher: ContentFamilyPathMatcher::Prefix("unregistered_test_family/"),
+		matcher: ContentFamilyPathMatcher::Prefix(
+			crate::model::GamePath::new("unregistered_test_family").expect("valid game path"),
+		),
 		script_file_kind: ScriptFileKind::new("events"),
 		module_name_rule: ModuleNameRule::Static("events"),
 		load_policy: ContentLoadPolicy::PerPath,
@@ -6848,7 +6832,9 @@ fn extractor_for_returns_some_for_registered_families() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("common/fervor/test.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("common/fervor/test.txt").expect("valid game path"),
+		)
 		.expect("fervor family");
 	assert!(extractors::extractor_for(descriptor).is_some());
 }
@@ -6984,7 +6970,7 @@ march_modifier = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("common/triggered_modifiers/00_triggered_modifiers.txt")
+			reference.path.as_str() == "common/triggered_modifiers/00_triggered_modifiers.txt"
 				&& reference.key == "triggered_modifier_definition"
 				&& reference.value == "legitimate_ruler"
 		}),
@@ -6992,7 +6978,7 @@ march_modifier = {
 	);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("common/triggered_modifiers/00_triggered_modifiers.txt")
+			reference.path.as_str() == "common/triggered_modifiers/00_triggered_modifiers.txt"
 				&& reference.key == "triggered_modifier_definition"
 				&& reference.value == "march_modifier"
 		}),
@@ -7046,7 +7032,7 @@ add_age_modifier_effect = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("common/scripted_effects/00_scripted_effects.txt")
+			reference.path.as_str() == "common/scripted_effects/00_scripted_effects.txt"
 				&& reference.key == "scripted_effect_definition"
 				&& reference.value == "country_event_effect"
 		}),
@@ -7054,7 +7040,7 @@ add_age_modifier_effect = {
 	);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("common/scripted_effects/00_scripted_effects.txt")
+			reference.path.as_str() == "common/scripted_effects/00_scripted_effects.txt"
 				&& reference.key == "scripted_effect_definition"
 				&& reference.value == "add_age_modifier_effect"
 		}),
@@ -7085,7 +7071,9 @@ NCountry = {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("common/defines/00_defines.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("common/defines/00_defines.txt").expect("valid game path"),
+		)
 		.expect("defines family");
 	assert!(
 		extractors::extractor_for(descriptor).is_none(),
@@ -7149,7 +7137,7 @@ defined_text = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("customizable_localization/00_custom_loc.txt")
+			reference.path.as_str() == "customizable_localization/00_custom_loc.txt"
 				&& reference.key == "customizable_localization_definition"
 				&& reference.value == "defined_text"
 		}),
@@ -7163,7 +7151,9 @@ fn events_extractor_is_registered() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("events/FlavorFRA.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("events/FlavorFRA.txt").expect("valid game path"),
+		)
 		.expect("events family");
 	assert!(
 		extractors::extractor_for(descriptor).is_some(),
@@ -7177,7 +7167,10 @@ fn events_decisions_extractor_is_registered() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("events/decisions/00_decisions.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("events/decisions/00_decisions.txt")
+				.expect("valid game path"),
+		)
 		.expect("events/decisions family");
 	assert_eq!(descriptor.id.as_str(), "events/decisions");
 	assert!(
@@ -7192,7 +7185,9 @@ fn decisions_extractor_is_registered() {
 	use super::extractors;
 	let profile = eu4();
 	let descriptor = profile
-		.classify_content_family(std::path::Path::new("decisions/00_decisions.txt"))
+		.classify_content_family(
+			crate::model::GamePath::new("decisions/00_decisions.txt").expect("valid game path"),
+		)
 		.expect("decisions family");
 	assert_eq!(descriptor.id.as_str(), "decisions");
 	assert!(
@@ -7236,7 +7231,7 @@ province_event = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|r| {
-			r.path == Path::new("events/FlavorFRA.txt")
+			r.path.as_str() == "events/FlavorFRA.txt"
 				&& r.key == "event_namespace"
 				&& r.value == "flavor_fra"
 		}),
@@ -7244,7 +7239,7 @@ province_event = {
 	);
 	assert!(
 		index.resource_references.iter().any(|r| {
-			r.path == Path::new("events/FlavorFRA.txt")
+			r.path.as_str() == "events/FlavorFRA.txt"
 				&& r.key == "event_definition"
 				&& r.value == "flavor_fra.9100"
 		}),
@@ -7252,7 +7247,7 @@ province_event = {
 	);
 	assert!(
 		index.resource_references.iter().any(|r| {
-			r.path == Path::new("events/FlavorFRA.txt")
+			r.path.as_str() == "events/FlavorFRA.txt"
 				&& r.key == "event_definition"
 				&& r.value == "flavor_fra.9200"
 		}),
@@ -7294,7 +7289,7 @@ country_decisions = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|r| {
-			r.path == Path::new("decisions/00_decisions.txt")
+			r.path.as_str() == "decisions/00_decisions.txt"
 				&& r.key == "decision_definition"
 				&& r.value == "restore_roman_empire"
 		}),
@@ -7302,7 +7297,7 @@ country_decisions = {
 	);
 	assert!(
 		index.resource_references.iter().any(|r| {
-			r.path == Path::new("decisions/00_decisions.txt")
+			r.path.as_str() == "decisions/00_decisions.txt"
 				&& r.key == "decision_definition"
 				&& r.value == "form_prussia"
 		}),
@@ -7363,7 +7358,7 @@ french_missions_2 = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("missions/FRA_Missions.txt")
+			reference.path.as_str() == "missions/FRA_Missions.txt"
 				&& reference.key == "mission_definition"
 				&& reference.value == "french_missions_1"
 		}),
@@ -7371,7 +7366,7 @@ french_missions_2 = {
 	);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("missions/FRA_Missions.txt")
+			reference.path.as_str() == "missions/FRA_Missions.txt"
 				&& reference.key == "mission_definition"
 				&& reference.value == "french_missions_2"
 		}),
@@ -7421,7 +7416,7 @@ on_startup = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("common/on_actions/00_on_actions.txt")
+			reference.path.as_str() == "common/on_actions/00_on_actions.txt"
 				&& reference.key == "on_action_definition"
 				&& reference.value == "on_battle_won"
 		}),
@@ -7429,7 +7424,7 @@ on_startup = {
 	);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("common/on_actions/00_on_actions.txt")
+			reference.path.as_str() == "common/on_actions/00_on_actions.txt"
 				&& reference.key == "on_action_definition"
 				&& reference.value == "on_startup"
 		}),
@@ -7478,7 +7473,7 @@ on_peace_signed = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("events/common/on_actions/00_on_actions.txt")
+			reference.path.as_str() == "events/common/on_actions/00_on_actions.txt"
 				&& reference.key == "on_action_definition"
 				&& reference.value == "on_war_declared"
 		}),
@@ -7486,7 +7481,7 @@ on_peace_signed = {
 	);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("events/common/on_actions/00_on_actions.txt")
+			reference.path.as_str() == "events/common/on_actions/00_on_actions.txt"
 				&& reference.key == "on_action_definition"
 				&& reference.value == "on_peace_signed"
 		}),
@@ -7555,8 +7550,8 @@ knowledge_sharing = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path
-				== Path::new("events/common/new_diplomatic_actions/01_diplomatic_actions.txt")
+			reference.path.as_str()
+				== "events/common/new_diplomatic_actions/01_diplomatic_actions.txt"
 				&& reference.key == "new_diplomatic_action_definition"
 				&& reference.value == "request_condottieri"
 		}),
@@ -7564,8 +7559,8 @@ knowledge_sharing = {
 	);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path
-				== Path::new("events/common/new_diplomatic_actions/01_diplomatic_actions.txt")
+			reference.path.as_str()
+				== "events/common/new_diplomatic_actions/01_diplomatic_actions.txt"
 				&& reference.key == "new_diplomatic_action_definition"
 				&& reference.value == "knowledge_sharing"
 		}),
@@ -7611,7 +7606,7 @@ guiTypes = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("interface/core.gui")
+			reference.path.as_str() == "interface/core.gui"
 				&& reference.key == "interface_definition"
 				&& reference.value == "guiTypes"
 		}),
@@ -7655,7 +7650,7 @@ guiTypes = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("common/interface/country.gui")
+			reference.path.as_str() == "common/interface/country.gui"
 				&& reference.key == "interface_definition"
 				&& reference.value == "guiTypes"
 		}),
@@ -7697,7 +7692,7 @@ objectTypes = {
 	let index = build_semantic_index(&[parsed]);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("gfx/FX.gfx")
+			reference.path.as_str() == "gfx/FX.gfx"
 				&& reference.key == "gfx_definition"
 				&& reference.value == "spriteTypes"
 		}),
@@ -7705,7 +7700,7 @@ objectTypes = {
 	);
 	assert!(
 		index.resource_references.iter().any(|reference| {
-			reference.path == Path::new("gfx/FX.gfx")
+			reference.path.as_str() == "gfx/FX.gfx"
 				&& reference.key == "gfx_definition"
 				&& reference.value == "objectTypes"
 		}),
@@ -7824,7 +7819,7 @@ fn batch_promoted_roots_have_registered_extractors() {
 	let profile = eu4();
 	for &(path, expected_id) in roots {
 		let descriptor = profile
-			.classify_content_family(std::path::Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.unwrap_or_else(|| panic!("no descriptor for path {path}"));
 		assert_eq!(descriptor.id.as_str(), expected_id, "wrong id for {path}");
 		assert!(
@@ -7855,8 +7850,12 @@ fn parsing_from_an_absolute_root_keeps_the_relative_path_in_the_ast() {
 	let parsed = parse_script_file("mod-a", &mod_root, &file).expect("parse decision");
 
 	assert!(mod_root.is_absolute(), "the parse root must be absolute");
-	assert_eq!(parsed.path, file, "the disk location stays absolute");
-	assert_eq!(parsed.relative_path, Path::new("decisions/Regression.txt"));
+	assert_eq!(
+		parsed.path.as_deref(),
+		Some(file.as_path()),
+		"the disk location stays absolute"
+	);
+	assert_eq!(parsed.relative_path.as_str(), "decisions/Regression.txt");
 	assert_eq!(
 		parsed.ast.path, parsed.relative_path,
 		"the AST carries the semantic relative path",
@@ -7874,16 +7873,81 @@ fn parsing_from_an_absolute_root_keeps_the_relative_path_in_the_ast() {
 fn parsing_supplied_bytes_keeps_the_relative_path_in_the_ast() {
 	init_scopes();
 	let mod_root = Path::new("/absolute/workshop/content/236850/999");
-	let file = mod_root.join("decisions").join("Regression.txt");
+	let relative = game_path("decisions/Regression.txt");
 	let parsed = super::parse_script_bytes_cached(
 		"mod-a",
 		mod_root,
-		&file,
+		relative,
 		b"country_decisions = { foch_regression = { potential = { tag = SWE } } }\n",
-	)
-	.expect("parse supplied bytes");
+	);
 
-	assert_eq!(parsed.path, file, "the disk location stays absolute");
-	assert_eq!(parsed.relative_path, Path::new("decisions/Regression.txt"));
+	assert_eq!(
+		parsed.path.as_deref(),
+		Some(mod_root.join("decisions").join("Regression.txt").as_path()),
+		"the disk location is the game path under the root"
+	);
+	assert_eq!(parsed.relative_path.as_game_path(), relative);
 	assert_eq!(parsed.ast.path, parsed.relative_path);
+}
+
+/// Module names become part of symbol names and of persisted base data, so
+/// deriving them from path components must give exactly the names the text
+/// splitting did: descriptor names fold `-` to `_`, the parent-directory
+/// fallback keeps it, and a file directly under the root is `other`.
+#[test]
+fn module_names_derived_from_components_match_the_text_derivation() {
+	init_scopes();
+	let root = Path::new("/mod");
+	for (relative, expected) in [
+		("common/scripted_effects/x.txt", "scripted_effects"),
+		// The tail rule skips one directory below the family prefix.
+		(
+			"common/scripted_effects/sub-dir/nested/x.txt",
+			"scripted_effects.nested",
+		),
+		(
+			"common/scripted_effects/a/sub-dir/x.txt",
+			"scripted_effects.sub_dir",
+		),
+		(
+			"events/common/new_diplomatic_actions/a-b/x.txt",
+			"new_diplomatic_actions.a_b",
+		),
+		("history/countries/FRA - France.txt", "country_history"),
+		("foch_unknown/a-b/deep/x.txt", "foch_unknown.a-b.deep"),
+		("foch_unknown/x.txt", "foch_unknown"),
+		("readme.txt", "other"),
+	] {
+		let parsed = super::parse_script_bytes_cached("mod-a", root, game_path(relative), b"");
+		assert_eq!(parsed.module_name, expected, "{relative}");
+	}
+}
+
+/// A script that cannot be read is still a document at its game path: the
+/// read failure is its parse issue, and `path` names the file that was tried.
+#[test]
+fn a_script_that_cannot_be_read_is_reported_at_its_game_path() {
+	init_scopes();
+	let tmp = TempDir::new().expect("temp dir");
+	let relative = game_path("events/missing.txt");
+
+	let parsed = raw_parse_script_file("mod-a", tmp.path(), relative);
+
+	assert_eq!(
+		parsed.path.as_deref(),
+		Some(tmp.path().join("events").join("missing.txt").as_path())
+	);
+	assert_eq!(parsed.relative_path, relative);
+	assert_eq!(parsed.ast.path, relative);
+	assert!(parsed.ast.statements.is_empty());
+	let [issue] = parsed.parse_issues.as_slice() else {
+		panic!("expected one parse issue: {:?}", parsed.parse_issues);
+	};
+	assert_eq!(issue.mod_id, "mod-a");
+	assert_eq!(issue.path, relative);
+	assert!(
+		issue.message.starts_with("failed to read file"),
+		"{}",
+		issue.message
+	);
 }

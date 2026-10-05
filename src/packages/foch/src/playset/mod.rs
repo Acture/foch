@@ -6,7 +6,9 @@ pub mod steam;
 pub use error::{ParseError, ParseErrorKind};
 
 use crate::game::eu4::Eu4;
-use descriptor::{ModDescriptor, load_descriptor};
+use crate::model::GamePath;
+use descriptor::{LauncherDescriptor, load_launcher_descriptor};
+use relative_path::RelativePath;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use steam::WorkshopInstallIdentity;
@@ -51,7 +53,10 @@ impl Playset {
 	///
 	/// Conventions:
 	/// - `dlc_load.json`'s `enabled_mods` is an ordered list of paths like
-	///   `mod/ugc_<steamId>.mod` (positions = array index = precedence).
+	///   `mod/ugc_<steamId>.mod` (positions = array index = precedence). The
+	///   launcher writes them relative to the Paradox data directory in `/`
+	///   syntax on every host; an entry in any other form, or one that leaves
+	///   the data directory, is a format error.
 	/// - Each referenced descriptor is read for its `name` (→ display_name)
 	///   and `remote_file_id` (→ steam_id, falling back to the filename's
 	///   numeric tail when the descriptor omits it).
@@ -81,6 +86,7 @@ impl Playset {
 		let game = Eu4;
 		let mut mods = Vec::with_capacity(dlc.enabled_mods.len());
 		for (position, rel) in dlc.enabled_mods.iter().enumerate() {
+			let rel = parse_enabled_mod_entry(path, rel)?;
 			let entry = if require_descriptors {
 				read_dlc_load_entry_required(&parent, position, rel)?
 			} else {
@@ -96,30 +102,54 @@ impl Playset {
 	}
 }
 
-fn read_dlc_load_entry(paradox_data_dir: &Path, position: usize, rel: &str) -> PlaysetEntry {
-	let descriptor_path = paradox_data_dir.join(rel);
-	let descriptor = load_descriptor(&descriptor_path).ok();
+/// Reads an `enabled_mods` entry. The launcher writes each entry relative to
+/// the Paradox data directory in `/` syntax on every host. That syntax has the
+/// constraints a [`GamePath`] validates (relative, no `.` or `..`, no host path
+/// structure), so the same validator is reused and the entry cannot leave the
+/// data directory. The entry stays a [`RelativePath`], though: it names a
+/// launcher file under the data directory, not a file in the game's namespace.
+/// A separator the syntax does not declare, such as `\`, is rejected rather
+/// than guessed at.
+fn parse_enabled_mod_entry<'a>(
+	dlc_load: &Path,
+	rel: &'a str,
+) -> Result<&'a RelativePath, ParseError> {
+	GamePath::new(rel)
+		.map(GamePath::as_relative_path)
+		.map_err(|error| {
+			ParseError::format(
+				dlc_load.to_path_buf(),
+				format!(
+					"enabled mod descriptor path `{rel}` must be normalized and relative: {}",
+					error.kind
+				),
+			)
+		})
+}
+
+/// The descriptor file an `enabled_mods` entry names under the data
+/// directory, joined one name at a time.
+fn enabled_mod_descriptor_path(paradox_data_dir: &Path, rel: &RelativePath) -> PathBuf {
+	rel.iter()
+		.fold(paradox_data_dir.to_path_buf(), |path, name| path.join(name))
+}
+
+fn read_dlc_load_entry(
+	paradox_data_dir: &Path,
+	position: usize,
+	rel: &RelativePath,
+) -> PlaysetEntry {
+	let descriptor =
+		load_launcher_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel)).ok();
 	playset_entry_from_descriptor(position, rel, descriptor)
 }
 
 fn read_dlc_load_entry_required(
 	paradox_data_dir: &Path,
 	position: usize,
-	rel: &str,
+	rel: &RelativePath,
 ) -> Result<PlaysetEntry, ParseError> {
-	let relative_path = Path::new(rel);
-	if relative_path.is_absolute()
-		|| relative_path
-			.components()
-			.any(|component| !matches!(component, std::path::Component::Normal(_)))
-	{
-		return Err(ParseError::format(
-			paradox_data_dir.join(relative_path),
-			"enabled mod descriptor path must be normalized and relative".to_string(),
-		));
-	}
-	let descriptor_path = paradox_data_dir.join(relative_path);
-	let descriptor = load_descriptor(&descriptor_path)?;
+	let descriptor = load_launcher_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel))?;
 	Ok(playset_entry_from_descriptor(
 		position,
 		rel,
@@ -129,8 +159,8 @@ fn read_dlc_load_entry_required(
 
 fn playset_entry_from_descriptor(
 	position: usize,
-	rel: &str,
-	descriptor: Option<ModDescriptor>,
+	rel: &RelativePath,
+	descriptor: Option<LauncherDescriptor>,
 ) -> PlaysetEntry {
 	let steam_id = descriptor
 		.as_ref()
@@ -151,10 +181,10 @@ fn playset_entry_from_descriptor(
 	}
 }
 
-fn extract_steam_id_from_descriptor_path(rel: &str) -> Option<String> {
+fn extract_steam_id_from_descriptor_path(rel: &RelativePath) -> Option<String> {
 	// Convention: dlc_load lists mods as `mod/ugc_<numeric steam id>.mod`;
 	// strip the prefix/suffix and validate the inner segment.
-	let filename = Path::new(rel).file_stem().and_then(|s| s.to_str())?;
+	let filename = rel.file_stem()?;
 	let stripped = filename.strip_prefix("ugc_")?;
 	if stripped.chars().all(|c| c.is_ascii_digit()) && !stripped.is_empty() {
 		Some(stripped.to_string())
@@ -242,6 +272,30 @@ mod tests {
 		assert!(strict_error.path.ends_with("mod/ugc_999.mod"));
 	}
 
+	/// The launcher's copy of a descriptor is read for the mod's name and id
+	/// only. A `replace_path` the mod's own descriptor would reject leaves both
+	/// readers with the name the launcher wrote, not a file-name fallback or an
+	/// unreadable playset.
+	#[test]
+	fn a_launcher_descriptor_replace_path_does_not_affect_the_playset_entry() {
+		let temp = TempDir::new().unwrap();
+		let game_dir = temp.path().join("Europa Universalis IV");
+		write_dlc_load(&game_dir, &[("1001", "Named")]);
+		let launcher_copy = game_dir.join("mod").join("ugc_1001.mod");
+		let mut body = fs::read_to_string(&launcher_copy).unwrap();
+		body.push_str("replace_path=\"common/../events\"\n");
+		fs::write(&launcher_copy, body).unwrap();
+
+		let dlc_load = game_dir.join("dlc_load.json");
+		for playset in [
+			Playset::from_dlc_load(&dlc_load).unwrap(),
+			Playset::from_dlc_load_with_required_descriptors(&dlc_load).unwrap(),
+		] {
+			assert_eq!(playset.mods[0].display_name.as_deref(), Some("Named"));
+			assert_eq!(playset.mods[0].steam_id.as_deref(), Some("1001"));
+		}
+	}
+
 	#[test]
 	fn strict_loader_rejects_descriptor_path_escape() {
 		let temp = TempDir::new().unwrap();
@@ -266,6 +320,58 @@ mod tests {
 				.to_string()
 				.contains("must be normalized and relative")
 		);
+	}
+
+	#[test]
+	fn both_loaders_reject_entries_outside_the_launcher_slash_syntax() {
+		let temp = TempDir::new().unwrap();
+		let game_dir = temp.path().join("Europa Universalis IV");
+		fs::create_dir_all(game_dir.join("mod")).unwrap();
+		fs::write(
+			temp.path().join("outside.mod"),
+			"name=\"Outside\"\nremote_file_id=\"999\"\n",
+		)
+		.unwrap();
+		// On a Unix host `mod\ugc_999.mod` is one file name, so reading it
+		// with host syntax would silently look for a different file than the
+		// launcher meant; the declared `/` syntax rejects it instead.
+		fs::write(
+			game_dir.join("mod").join("ugc_999.mod"),
+			"name=\"Inside\"\nremote_file_id=\"999\"\n",
+		)
+		.unwrap();
+		let dlc_load = game_dir.join("dlc_load.json");
+		for entry in [
+			"../outside.mod",
+			"/mod/ugc_999.mod",
+			r"mod\ugc_999.mod",
+			"mod//ugc_999.mod",
+			"./mod/ugc_999.mod",
+			"",
+		] {
+			fs::write(
+				&dlc_load,
+				serde_json::json!({ "enabled_mods": [entry], "disabled_dlcs": [] }).to_string(),
+			)
+			.unwrap();
+			for error in [
+				Playset::from_dlc_load(&dlc_load).expect_err(entry),
+				Playset::from_dlc_load_with_required_descriptors(&dlc_load).expect_err(entry),
+			] {
+				assert_eq!(error.kind, ParseErrorKind::Format, "{entry}");
+				assert_eq!(error.path, dlc_load, "{entry}");
+				assert!(
+					error
+						.message
+						.contains(&format!("`{entry}` must be normalized and relative")),
+					"{entry}: {error}"
+				);
+				assert!(
+					!error.message.contains("game path"),
+					"a launcher entry is not a game path: {error}"
+				);
+			}
+		}
 	}
 
 	#[test]

@@ -1,20 +1,26 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::game::schema::cache::{CwtLoadStatus, load_cwt_from_dir};
-use crate::game::schema::compile::CwtSchemaGraph;
+use crate::game::schema::compile::{CwtSchemaGraph, SchemaRootId};
 use crate::game::schema::query::{
 	CompiledRuleCondition, CompiledRulePack, CompiledRuleValue, CompiledSeverity,
 	CompiledTypeKeyFilter, CwtQuery, RuleContext, SchemaBinding,
 };
+use crate::game::schema::rule_path::SchemaDirectory;
 use crate::game::schema::syntax::ParadoxTree;
+use crate::model::GamePath;
+
+fn game_path(text: &str) -> &GamePath {
+	GamePath::new(text).expect("valid game path")
+}
 
 #[test]
 fn compiled_engine_binds_root_and_alias_chain() {
 	let graph = load_binding_graph();
 	let engine = CwtQuery::from_graph(&graph);
 
-	let root_path = Path::new("events/example.txt");
+	let root_path = game_path("events/example.txt");
 	assert!(matches!(
 		engine.root_binding(root_path),
 		SchemaBinding::Bound { .. }
@@ -44,7 +50,7 @@ fn compiled_engine_projects_field_and_alias_metadata() {
 	let graph = load_binding_graph();
 	let engine = CwtQuery::from_graph(&graph);
 	let event = engine
-		.bind_root(Path::new("events/example.txt"))
+		.bind_root(game_path("events/example.txt"))
 		.expect("bind event root");
 	let iterator = engine
 		.bind_field(RuleContext::RootType(event), "every_country")
@@ -78,7 +84,7 @@ fn compiled_engine_tracks_subtype_and_root_instance_contexts() {
 	let engine = CwtQuery::from_graph(&graph);
 
 	let event_context = engine
-		.bind_context(Path::new("events/example.txt"), &["country_event"])
+		.bind_context(game_path("events/example.txt"), &["country_event"])
 		.expect("bind event subtype context");
 	let RuleContext::Subtype(event, subtype) = event_context else {
 		panic!("expected subtype context, got {event_context:?}");
@@ -92,7 +98,7 @@ fn compiled_engine_tracks_subtype_and_root_instance_contexts() {
 	);
 
 	let mission_context = engine
-		.bind_context(Path::new("missions/example.txt"), &["my_mission"])
+		.bind_context(game_path("missions/example.txt"), &["my_mission"])
 		.expect("bind mission root instance context");
 	let RuleContext::RootType(mission) = mission_context else {
 		panic!("expected root context, got {mission_context:?}");
@@ -120,7 +126,7 @@ fn compiled_engine_returns_all_direct_field_matches() {
 	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
 	let engine = CwtQuery::from_graph(&graph);
 	let privilege = engine
-		.bind_root(Path::new("common/estate_privileges/example.txt"))
+		.bind_root(game_path("common/estate_privileges/example.txt"))
 		.expect("bind privilege root");
 	let matches = engine.bind_fields(RuleContext::RootType(privilege), "can_revoke");
 
@@ -156,7 +162,7 @@ fn compiled_engine_projects_plural_replace_scopes() {
 	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
 	let engine = CwtQuery::from_graph(&graph);
 	let incident = engine
-		.bind_root(Path::new("common/incidents/example.txt"))
+		.bind_root(game_path("common/incidents/example.txt"))
 		.expect("bind incident root");
 	let field = engine
 		.bind_field(RuleContext::RootType(incident), "immediate")
@@ -208,7 +214,7 @@ fn compiled_binary_pack_roundtrips_conditional_rule_fields() {
 		.expect("decode compiled pack");
 	let engine = CwtQuery::new(decoded);
 	let event = engine
-		.bind_root(Path::new("events/example.txt"))
+		.bind_root(game_path("events/example.txt"))
 		.expect("bind event root");
 	let hidden_only = event
 		.rules
@@ -255,7 +261,7 @@ fn compiled_binary_pack_roundtrips_type_localisation_metadata() {
 		.expect("decode compiled pack");
 	let engine = CwtQuery::new(decoded);
 	let event = engine
-		.bind_root(Path::new("events/example.txt"))
+		.bind_root(game_path("events/example.txt"))
 		.expect("bind event root");
 	assert!(
 		event.rules.iter().all(|field| field.key != "localisation"),
@@ -336,11 +342,13 @@ fn compiled_engine_roundtrips_complex_enums() {
 	let complex_enum = engine
 		.complex_enum("country_tags")
 		.expect("country_tags complex enum");
-	assert_eq!(complex_enum.path.as_deref(), Some("common/country_tags"));
 	assert_eq!(
-		complex_enum.normalized_path.as_deref(),
-		Some("common/country_tags")
+		complex_enum.path,
+		Some(SchemaDirectory::Directory(
+			game_path("common/country_tags").to_owned()
+		))
 	);
+	assert!(complex_enum.matches(game_path("common/country_tags/00_tags.txt")));
 	assert!(complex_enum.start_from_root);
 	assert_eq!(complex_enum.name_rules.len(), 1);
 	assert_eq!(complex_enum.name_rules[0].key, "enum_name");
@@ -352,15 +360,16 @@ fn compiled_engine_roundtrips_complex_enums() {
 	let graphical_cultures = engine
 		.complex_enum("graphical_cultures")
 		.expect("graphical_cultures complex enum");
-	assert_eq!(graphical_cultures.path.as_deref(), Some("common"));
+	assert_eq!(
+		graphical_cultures.path,
+		Some(SchemaDirectory::Directory(game_path("common").to_owned()))
+	);
 	assert_eq!(
 		graphical_cultures.path_file.as_deref(),
-		Some("graphicalculturetype.txt")
+		Some(game_path("graphicalculturetype.txt"))
 	);
-	assert_eq!(
-		graphical_cultures.normalized_file_path.as_deref(),
-		Some("common/graphicalculturetype.txt")
-	);
+	assert!(graphical_cultures.matches(game_path("common/graphicalculturetype.txt")));
+	assert!(!graphical_cultures.matches(game_path("common/other.txt")));
 	assert!(graphical_cultures.start_from_root);
 	assert_eq!(graphical_cultures.name_rules.len(), 1);
 	assert_eq!(graphical_cultures.name_rules[0].key, "enum_name");
@@ -489,7 +498,7 @@ fn compiled_engine_matches_static_dynamic_key_markers() {
 		.expect("decode compiled pack");
 	let engine = CwtQuery::new(decoded);
 	let event = engine
-		.bind_root(Path::new("events/example.txt"))
+		.bind_root(game_path("events/example.txt"))
 		.expect("bind event root");
 	let dynamic_fields = engine
 		.bind_field(RuleContext::RootType(event), "dynamic_fields")
@@ -543,7 +552,7 @@ fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
 	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
 	let engine = CwtQuery::from_graph(&graph);
-	let path = Path::new("missions/example.txt");
+	let path = game_path("missions/example.txt");
 	let ast_path = ["demo_mission", "mission_tree", "conquest", "trigger"];
 
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
@@ -594,7 +603,7 @@ fn compiled_engine_honors_root_type_key_filter_exclusions() {
 	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
 	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
 	let engine = CwtQuery::from_graph(&graph);
-	let path = Path::new("common/ideas/example.txt");
+	let path = game_path("common/ideas/example.txt");
 	let ast_path = ["sample_group", "sample_idea", "idea_only"];
 
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
@@ -645,7 +654,7 @@ fn compiled_engine_honors_path_file_root_matching() {
 	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
 	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
 	let engine = CwtQuery::from_graph(&graph);
-	let area_path = Path::new("map/area.txt");
+	let area_path = game_path("map/area.txt");
 	let area_ast_path = ["sample_area", "area_only"];
 
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(area_path, &area_ast_path)
@@ -655,7 +664,7 @@ fn compiled_engine_honors_path_file_root_matching() {
 	assert_eq!(type_id.as_str(), "area");
 	assert_eq!(node_id.0, "type:area:field:area_only");
 
-	let region_path = Path::new("map/region.txt");
+	let region_path = game_path("map/region.txt");
 	let region_ast_path = ["sample_region", "region_only"];
 	let SchemaBinding::Bound { type_id, node_id } =
 		engine.bind_chain(region_path, &region_ast_path)
@@ -665,7 +674,7 @@ fn compiled_engine_honors_path_file_root_matching() {
 	assert_eq!(type_id.as_str(), "region");
 	assert_eq!(node_id.0, "type:region:field:region_only");
 
-	let fallback_path = Path::new("map/other.txt");
+	let fallback_path = game_path("map/other.txt");
 	let fallback_ast_path = ["sample_map", "fallback_only"];
 	let SchemaBinding::Bound { type_id, node_id } =
 		engine.bind_chain(fallback_path, &fallback_ast_path)
@@ -700,7 +709,7 @@ fn compiled_engine_honors_ordered_skip_root_key_chain() {
 	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
 	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
 	let engine = CwtQuery::from_graph(&graph);
-	let path = Path::new("common/ages/example.txt");
+	let path = game_path("common/ages/example.txt");
 	let ast_path = ["age_of_discovery", "abilities", "free_war_taxes", "power"];
 
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
@@ -745,7 +754,7 @@ fn compiled_binary_pack_roundtrips_and_keeps_binding_semantics() {
 
 	let engine = CwtQuery::new(decoded);
 	let mission = engine
-		.bind_root(Path::new("missions/example.txt"))
+		.bind_root(game_path("missions/example.txt"))
 		.expect("bind mission root after roundtrip");
 	let field = engine
 		.bind_field(RuleContext::RootType(mission), "provinces_to_highlight")
@@ -782,7 +791,7 @@ fn compiled_binary_pack_roundtrips_severity_attributes() {
 		.expect("decode compiled pack");
 	let engine = CwtQuery::new(decoded);
 	let event = engine
-		.bind_root(Path::new("events/example.txt"))
+		.bind_root(game_path("events/example.txt"))
 		.expect("bind event root");
 	let field = engine
 		.bind_field(RuleContext::RootType(event), "gentle_bool")
@@ -820,7 +829,7 @@ fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 		first
 			.cache_path
 			.as_ref()
-			.is_some_and(|path| { path.starts_with(cache.path().join("v0.11.0")) })
+			.is_some_and(|path| { path.starts_with(cache.path().join("v0.12.0")) })
 	);
 	assert!(obsolete_generation.exists());
 	assert!(legacy_flat_entry.exists());
@@ -836,8 +845,8 @@ fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 	assert_eq!(second.source_id, first.source_id);
 	assert_eq!(second.facts.alias_count(), first.facts.alias_count());
 	assert_eq!(
-		second.facts.root_binding(Path::new("events/example.txt")),
-		first.facts.root_binding(Path::new("events/example.txt"))
+		second.facts.root_binding(game_path("events/example.txt")),
+		first.facts.root_binding(game_path("events/example.txt"))
 	);
 }
 
@@ -851,7 +860,7 @@ fn compiled_vendor_pack_preserves_cwtools_alias_binding() {
 
 	let context = engine
 		.bind_context(
-			Path::new("events/example.txt"),
+			game_path("events/example.txt"),
 			&["country_event", "trigger"],
 		)
 		.expect("bind event trigger context");
@@ -871,6 +880,216 @@ fn compiled_vendor_pack_preserves_cwtools_alias_binding() {
 	let decoded = CompiledRulePack::from_bytes(&bytes).expect("decode vendor compiled pack");
 	let roundtripped = CwtQuery::new(decoded);
 	assert_eq!(roundtripped.alias_count(), engine.alias_count());
+}
+
+#[test]
+fn root_binding_matches_file_paths_ignoring_ascii_case() {
+	let engine = CwtQuery::from_graph(&load_binding_graph());
+	for file in [
+		"events/example.txt",
+		"EVENTS/Example.TXT",
+		"Events/nested/x.txt",
+	] {
+		assert_eq!(
+			engine
+				.bind_root(game_path(file))
+				.map(|root| root.name.as_str()),
+			Some("event"),
+			"{file}"
+		);
+	}
+	// The reason spells the file folded as rule paths compare it.
+	assert_eq!(
+		engine.root_binding(game_path("Common/Example.txt")),
+		SchemaBinding::Unbound {
+			reason: "no root type matches `common/example.txt`".to_string(),
+		}
+	);
+	assert!(engine.bind_root(game_path("eventsx/example.txt")).is_none());
+}
+
+#[test]
+fn a_root_type_declared_on_the_game_root_binds_no_file() {
+	let schema = r#"
+		types = {
+			type[everything] = { path = "game" }
+			type[everything_file] = { path = "game" path_file = "descriptor.mod" }
+		}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let engine = CwtQuery::from_graph(&CwtSchemaGraph::from_paradox_tree(&tree));
+	assert_eq!(
+		engine.root("everything").and_then(|root| root.path.clone()),
+		Some(SchemaDirectory::GameRoot)
+	);
+	for file in ["events/example.txt", "descriptor.mod", "game/x.txt"] {
+		assert!(
+			matches!(
+				engine.root_binding(game_path(file)),
+				SchemaBinding::Unbound { .. }
+			),
+			"{file}"
+		);
+	}
+}
+
+#[test]
+fn a_path_file_root_binds_only_its_direct_child() {
+	let schema = r#"
+		types = {
+			type[achievement] = { path = "game/common" path_file = "achievements.txt" }
+		}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let engine = CwtQuery::from_graph(&CwtSchemaGraph::from_paradox_tree(&tree));
+	assert!(
+		engine
+			.bind_root(game_path("common/achievements.txt"))
+			.is_some()
+	);
+	assert!(
+		engine
+			.bind_root(game_path("Common/ACHIEVEMENTS.txt"))
+			.is_some()
+	);
+	for file in [
+		"common/sub/achievements.txt",
+		"common/other.txt",
+		"achievements.txt",
+	] {
+		assert!(engine.bind_root(game_path(file)).is_none(), "{file}");
+	}
+}
+
+#[test]
+fn a_rule_path_that_is_not_a_game_path_fails_to_compile_naming_the_type_and_file() {
+	for (declaration, reason) in [
+		(r#"path = "game/common\ideas""#, "contains '\\\\'"),
+		(r#"path = "game/common/../events""#, "`..` component"),
+		(
+			r#"path = "game/common" path_file = "../x.txt""#,
+			"`..` component",
+		),
+	] {
+		let root = tempfile::tempdir().expect("create schema dir");
+		let file = root.path().join("rules.cwt");
+		fs::write(
+			&file,
+			format!("types = {{\n\ttype[bad_type] = {{ {declaration} }}\n}}\n"),
+		)
+		.expect("write schema");
+		let error = CwtSchemaGraph::from_directory(root.path())
+			.expect_err("an invalid rule path must not compile");
+		let message = error.to_string();
+		assert!(message.contains(&file.display().to_string()), "{message}");
+		assert!(message.contains("`bad_type`"), "{message}");
+		assert!(message.contains(reason), "{reason}: {message}");
+	}
+}
+
+#[test]
+fn a_complex_enum_rule_path_that_is_not_a_game_path_fails_to_compile_naming_the_enum_and_file() {
+	for (declaration, field, reason) in [
+		(
+			r#"path = "game/common\ideas""#,
+			"invalid path:",
+			"contains '\\\\'",
+		),
+		(
+			r#"path = "game/common" path_file = "../x.txt""#,
+			"invalid path_file:",
+			"`..` component",
+		),
+	] {
+		let root = tempfile::tempdir().expect("create schema dir");
+		let file = root.path().join("enums.cwt");
+		fs::write(
+			&file,
+			format!(
+				"enums = {{\n\tcomplex_enum[bad_enum] = {{ {declaration} name = {{ enum_name }} }}\n}}\n"
+			),
+		)
+		.expect("write schema");
+		let error = CwtSchemaGraph::from_directory(root.path())
+			.expect_err("an invalid rule path must not compile");
+		let message = error.to_string();
+		for expected in [
+			file.display().to_string(),
+			"`bad_enum`".to_string(),
+			field.to_string(),
+			reason.to_string(),
+		] {
+			assert!(message.contains(&expected), "{expected}: {message}");
+		}
+	}
+}
+
+/// A top-level block without a `type[...]` header reads the files below the
+/// directory holding its schema file. The directory keeps the case the
+/// schema tree spells and matches files ignoring ASCII case, as rule paths
+/// do.
+#[test]
+fn a_headerless_type_reads_the_directory_of_its_schema_file() {
+	let root = tempfile::tempdir().expect("create schema dir");
+	let events = root.path().join("Events");
+	fs::create_dir(&events).expect("create schema subdir");
+	fs::write(events.join("foo.cwt"), "foo = { x = bool }\n").expect("write schema");
+
+	let graph = CwtSchemaGraph::from_directory(root.path()).expect("compile schema");
+	assert_eq!(
+		graph.types[&SchemaRootId::new("foo")].path,
+		Some(SchemaDirectory::Directory(game_path("Events").to_owned()))
+	);
+	let engine = CwtQuery::from_graph(&graph);
+	assert_eq!(
+		engine
+			.bind_root(game_path("events/a.txt"))
+			.map(|root| root.name.as_str()),
+		Some("foo")
+	);
+	assert!(engine.bind_root(game_path("common/a.txt")).is_none());
+}
+
+/// The same block in a schema file at the schema root names the game root,
+/// which holds every file and so, as a rule directory, matches none.
+#[test]
+fn a_headerless_type_in_a_root_level_schema_file_binds_no_file() {
+	let root = tempfile::tempdir().expect("create schema dir");
+	fs::write(root.path().join("foo.cwt"), "foo = { x = bool }\n").expect("write schema");
+
+	let graph = CwtSchemaGraph::from_directory(root.path()).expect("compile schema");
+	assert_eq!(
+		graph.types[&SchemaRootId::new("foo")].path,
+		Some(SchemaDirectory::GameRoot)
+	);
+	let engine = CwtQuery::from_graph(&graph);
+	for file in ["foo.txt", "events/a.txt"] {
+		assert!(engine.bind_root(game_path(file)).is_none(), "{file}");
+	}
+}
+
+/// A schema directory whose name a host would split (a literal backslash on
+/// Unix) is not a game directory, so the headerless type it would name fails
+/// to compile, naming the type and the schema file.
+#[cfg(unix)]
+#[test]
+fn a_headerless_type_in_a_directory_that_is_not_a_game_path_fails_to_compile() {
+	let root = tempfile::tempdir().expect("create schema dir");
+	let directory = root.path().join(r"a\b");
+	fs::create_dir(&directory).expect("create schema subdir");
+	let file = directory.join("foo.cwt");
+	fs::write(&file, "foo = { x = bool }\n").expect("write schema");
+
+	let error = CwtSchemaGraph::from_directory(root.path())
+		.expect_err("a literal backslash is not a game directory");
+	let message = error.to_string();
+	for expected in [
+		file.display().to_string(),
+		"`foo` declares an invalid schema directory".to_string(),
+		"contains '\\\\'".to_string(),
+	] {
+		assert!(message.contains(&expected), "{expected}: {message}");
+	}
 }
 
 fn load_binding_graph() -> CwtSchemaGraph {

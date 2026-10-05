@@ -6,6 +6,7 @@
 //! invalidation per file and upstream dependency set.
 
 use crate::game::eu4::script::parser::AstStatement;
+use crate::model::GamePath;
 use crate::platform::cache_store::CacheError;
 use crate::platform::cache_store::generation::{ensure as ensure_generation, generation_dir};
 use crate::platform::cache_store::{default_foch_cache_dir, write_atomically};
@@ -63,7 +64,7 @@ impl DagBaseCache {
 	pub fn lookup(
 		&self,
 		deps_hash: &str,
-		file_path: &str,
+		file_path: &GamePath,
 		foch_version: &str,
 		game_version: &str,
 	) -> Option<Vec<AstStatement>> {
@@ -79,7 +80,7 @@ impl DagBaseCache {
 	pub fn store(
 		&self,
 		deps_hash: &str,
-		file_path: &str,
+		file_path: &GamePath,
 		foch_version: &str,
 		game_version: &str,
 		statements: &[AstStatement],
@@ -88,7 +89,7 @@ impl DagBaseCache {
 		let payload = StoredDagBase {
 			cache_version: DAG_BASE_CACHE_VERSION.to_string(),
 			deps_hash: deps_hash.to_string(),
-			file_path: file_path.to_string(),
+			file_path: file_path.as_str().to_string(),
 			foch_version: foch_version.to_string(),
 			game_version: game_version.to_string(),
 			statements: statements.to_vec(),
@@ -103,7 +104,7 @@ impl DagBaseCache {
 	fn lookup_inner(
 		&self,
 		deps_hash: &str,
-		file_path: &str,
+		file_path: &GamePath,
 		foch_version: &str,
 		game_version: &str,
 	) -> Option<Vec<AstStatement>> {
@@ -112,7 +113,7 @@ impl DagBaseCache {
 		let stored = bincode::deserialize::<StoredDagBase>(&raw).ok()?;
 		if stored.cache_version != DAG_BASE_CACHE_VERSION
 			|| stored.deps_hash != deps_hash
-			|| stored.file_path != file_path
+			|| stored.file_path != file_path.as_str()
 			|| stored.foch_version != foch_version
 			|| stored.game_version != game_version
 		{
@@ -124,7 +125,7 @@ impl DagBaseCache {
 	fn cache_file(
 		&self,
 		deps_hash: &str,
-		file_path: &str,
+		file_path: &GamePath,
 		foch_version: &str,
 		game_version: &str,
 	) -> PathBuf {
@@ -157,7 +158,7 @@ pub fn reset_dag_base_cache_stats() {
 fn cache_filename(
 	cache_version: &str,
 	deps_hash: &str,
-	file_path: &str,
+	file_path: &GamePath,
 	foch_version: &str,
 	game_version: &str,
 ) -> String {
@@ -172,10 +173,15 @@ fn cache_filename(
 	)
 }
 
-fn cache_key(deps_hash: &str, file_path: &str, foch_version: &str, game_version: &str) -> String {
+fn cache_key(
+	deps_hash: &str,
+	file_path: &GamePath,
+	foch_version: &str,
+	game_version: &str,
+) -> String {
 	let mut hasher = blake3::Hasher::new();
 	update_hash_part(&mut hasher, deps_hash.as_bytes());
-	update_hash_part(&mut hasher, file_path.as_bytes());
+	update_hash_part(&mut hasher, file_path.as_str().as_bytes());
 	update_hash_part(&mut hasher, foch_version.as_bytes());
 	update_hash_part(&mut hasher, game_version.as_bytes());
 	hasher.finalize().to_hex()[..HASH_HEX_LEN].to_string()
@@ -215,6 +221,10 @@ mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
 
 	fn cache_dir(name: &str) -> PathBuf {
 		let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -266,16 +276,22 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.lookup("deps-a", game_path("common/foo.txt"), "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 		cache
-			.store("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37", &statements)
+			.store(
+				"deps-a",
+				game_path("common/foo.txt"),
+				"0.1.0",
+				"eu4 1.37",
+				&statements,
+			)
 			.expect("store base");
 
 		assert_eq!(
 			cache
-				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.lookup("deps-a", game_path("common/foo.txt"), "0.1.0", "eu4 1.37")
 				.expect("cache hit"),
 			statements
 		);
@@ -287,7 +303,7 @@ mod tests {
 		cache
 			.store(
 				"deps-a-b",
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"0.1.0",
 				"eu4 1.37",
 				&sample_statements(),
@@ -296,7 +312,7 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("deps-a-c", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.lookup("deps-a-c", game_path("common/foo.txt"), "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 	}
@@ -307,7 +323,7 @@ mod tests {
 		cache
 			.store(
 				"hash-before",
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"0.1.0",
 				"eu4 1.37",
 				&sample_statements(),
@@ -316,7 +332,12 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("hash-after", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.lookup(
+					"hash-after",
+					game_path("common/foo.txt"),
+					"0.1.0",
+					"eu4 1.37"
+				)
 				.is_none()
 		);
 	}
@@ -327,7 +348,7 @@ mod tests {
 		cache
 			.store(
 				"deps-a",
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"0.1.0",
 				"eu4 1.36",
 				&sample_statements(),
@@ -336,7 +357,7 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.lookup("deps-a", game_path("common/foo.txt"), "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 	}
@@ -346,11 +367,17 @@ mod tests {
 		let current = cache_filename(
 			DAG_BASE_CACHE_VERSION,
 			"deps-a",
-			"common/foo.txt",
+			game_path("common/foo.txt"),
 			"0.1.0",
 			"eu4 1.37",
 		);
-		let bumped = cache_filename("12.0.1", "deps-a", "common/foo.txt", "0.1.0", "eu4 1.37");
+		let bumped = cache_filename(
+			"12.0.1",
+			"deps-a",
+			game_path("common/foo.txt"),
+			"0.1.0",
+			"eu4 1.37",
+		);
 
 		assert_ne!(current, bumped);
 		assert!(current.contains(&format!("__cv{}__", DAG_BASE_CACHE_VERSION)));
@@ -364,7 +391,7 @@ mod tests {
 		cache
 			.store(
 				"deps-a",
-				"common/foo.txt",
+				game_path("common/foo.txt"),
 				"0.1.0",
 				"eu4 1.37",
 				&sample_statements(),
@@ -373,7 +400,7 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("deps-a", "common/bar.txt", "0.1.0", "eu4 1.37")
+				.lookup("deps-a", game_path("common/bar.txt"), "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 	}
@@ -385,7 +412,13 @@ mod tests {
 		let cache = DagBaseCache::open(&layer_root);
 		let statements = sample_statements();
 		cache
-			.store("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37", &statements)
+			.store(
+				"deps-a",
+				game_path("common/foo.txt"),
+				"0.1.0",
+				"eu4 1.37",
+				&statements,
+			)
 			.expect("store current generation entry");
 
 		let current_generation = layer_root.join(format!("v{DAG_BASE_CACHE_VERSION}"));
@@ -409,7 +442,7 @@ mod tests {
 		assert!(unrelated_entry.exists());
 		assert_eq!(
 			reopened
-				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.lookup("deps-a", game_path("common/foo.txt"), "0.1.0", "eu4 1.37")
 				.expect("current generation survives cleanup"),
 			statements
 		);
@@ -418,7 +451,7 @@ mod tests {
 		assert!(unrelated_entry.exists());
 		assert!(
 			reopened_again
-				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.lookup("deps-a", game_path("common/foo.txt"), "0.1.0", "eu4 1.37")
 				.is_some()
 		);
 	}

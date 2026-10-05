@@ -605,7 +605,6 @@ mod tests {
 		MaybeScope, ParamContract, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind,
 		base_scope, test_support,
 	};
-	use std::path::PathBuf;
 
 	#[test]
 	fn apply_registered_param_contracts_preserves_existing_contracts() {
@@ -617,7 +616,8 @@ mod tests {
 			module: "test".to_string(),
 			local_name: "ME_give_claims".to_string(),
 			mod_id: "1000".to_string(),
-			path: PathBuf::from("common/scripted_effects/test.txt"),
+			path: crate::model::GamePathBuf::parse("common/scripted_effects/test.txt")
+				.expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id: 0,

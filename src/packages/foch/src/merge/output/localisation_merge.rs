@@ -11,6 +11,7 @@
 //! merged entries.
 
 use crate::input::ResolvedInputContributor;
+use crate::model::GamePath;
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -28,7 +29,7 @@ pub(crate) enum LocalisationMergeOutcome {
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 
 pub(crate) fn merge_localisation_file(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 ) -> Result<LocalisationMergeOutcome, String> {
 	// Highest precedence first so "first writer wins" gives us the winner.
@@ -40,10 +41,10 @@ pub(crate) fn merge_localisation_file(
 	let mut order: Vec<String> = Vec::new();
 
 	for contributor in &sorted {
-		let raw = fs::read(&contributor.absolute_path).map_err(|err| {
+		let raw = fs::read(contributor.absolute_path()).map_err(|err| {
 			format!(
 				"failed to read {} ({}): {err}",
-				contributor.absolute_path.display(),
+				contributor.absolute_path().display(),
 				contributor.mod_id
 			)
 		})?;
@@ -210,7 +211,7 @@ mod tests {
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
 			root_path: dir.to_path_buf(),
-			absolute_path: path,
+			relative_path: crate::model::GamePathBuf::parse(filename).expect("valid game path"),
 			precedence,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -236,8 +237,12 @@ mod tests {
 			"ee_l_english.yml",
 			b"\xEF\xBB\xBFl_english:\n EE_KEY:0 \"Eastern\"\n SHARED:0 \"From EE\"\n",
 		);
-		let outcome = merge_localisation_file("localisation/test_l_english.yml", &[hre, ee])
-			.expect("merge ok");
+		let outcome = merge_localisation_file(
+			crate::model::GamePath::new("localisation/test_l_english.yml")
+				.expect("valid game path"),
+			&[hre, ee],
+		)
+		.expect("merge ok");
 		let LocalisationMergeOutcome::Merged(bytes) = outcome else {
 			panic!("expected merged outcome");
 		};
@@ -268,8 +273,12 @@ mod tests {
 			"b_l_french.yml",
 			b"\xEF\xBB\xBFl_french:\n KEY_B:0 \"B\"\n",
 		);
-		let outcome =
-			merge_localisation_file("localisation/test_l_english.yml", &[a, b]).expect("ok");
+		let outcome = merge_localisation_file(
+			crate::model::GamePath::new("localisation/test_l_english.yml")
+				.expect("valid game path"),
+			&[a, b],
+		)
+		.expect("ok");
 		match outcome {
 			LocalisationMergeOutcome::LanguageMismatch { warning } => {
 				assert!(warning.contains("language mismatch"), "{warning}");
@@ -295,9 +304,11 @@ mod tests {
 			"b_l_english.yml",
 			b"l_english:\n KEY_B:0 \"B\"\n",
 		);
-		let LocalisationMergeOutcome::Merged(bytes) =
-			merge_localisation_file("localisation/x_l_english.yml", &[a, b]).expect("ok")
-		else {
+		let LocalisationMergeOutcome::Merged(bytes) = merge_localisation_file(
+			crate::model::GamePath::new("localisation/x_l_english.yml").expect("valid game path"),
+			&[a, b],
+		)
+		.expect("ok") else {
 			panic!("expected merged");
 		};
 		assert!(bytes.starts_with(UTF8_BOM));
@@ -321,9 +332,11 @@ mod tests {
 			b"\xEF\xBB\xBFl_english:\n SHARED:0 \"high value\"\n",
 		);
 		// Pass in arbitrary order; merger must sort by precedence.
-		let LocalisationMergeOutcome::Merged(bytes) =
-			merge_localisation_file("localisation/x_l_english.yml", &[low, high]).expect("ok")
-		else {
+		let LocalisationMergeOutcome::Merged(bytes) = merge_localisation_file(
+			crate::model::GamePath::new("localisation/x_l_english.yml").expect("valid game path"),
+			&[low, high],
+		)
+		.expect("ok") else {
 			panic!("expected merged");
 		};
 		let text = std::str::from_utf8(&bytes).unwrap();
@@ -348,9 +361,11 @@ mod tests {
 			"b_l_english.yml",
 			b"\xEF\xBB\xBFl_english:\n KEY_B:0 \"B\"\n",
 		);
-		let LocalisationMergeOutcome::Merged(bytes) =
-			merge_localisation_file("localisation/x_l_english.yml", &[a, b]).expect("ok")
-		else {
+		let LocalisationMergeOutcome::Merged(bytes) = merge_localisation_file(
+			crate::model::GamePath::new("localisation/x_l_english.yml").expect("valid game path"),
+			&[a, b],
+		)
+		.expect("ok") else {
 			panic!("expected merged");
 		};
 		let text = std::str::from_utf8(&bytes).unwrap();

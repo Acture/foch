@@ -22,7 +22,9 @@ flate2.workspace = true
 globset.workspace = true
 jomini.workspace = true
 keyvalues-parser.workspace = true
+ref-cast = "1.0.27"
 regex.workspace = true
+relative-path = "2.0.1"
 rkyv.workspace = true
 rayon.workspace = true
 remove_dir_all.workspace = true
@@ -41,6 +43,7 @@ tracing.workspace = true
 tree-sitter.workspace = true
 tree-sitter-paradox.workspace = true
 thiserror = "2.0"
+typed-path = "0.12"
 walkdir.workspace = true
 
 # build.rs compiles the vendored CWT config with the `src/game/schema` modules
@@ -49,6 +52,9 @@ walkdir.workspace = true
 bincode.workspace = true
 chardetng.workspace = true
 encoding_rs.workspace = true
+ref-cast = "1.0.27"
+relative-path = "2.0.1"
+rkyv.workspace = true
 serde.workspace = true
 sha2.workspace = true
 tree-sitter.workspace = true

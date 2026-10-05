@@ -83,6 +83,10 @@ separate TTY overwrite confirmation, so non-interactive jobs must use a new or
 empty path. `--non-interactive` disables prompts and does not imply
 `--confirm`.
 
+The terminal review shows the first 20 units of each disposition, the complete
+totals, and explicit counts of omitted units. Add `--review-all` to inspect
+every unit before committing; this changes presentation only.
+
 Unresolved files or complete definition modules are withheld while unrelated
 safe units are written. This `partial_success` result is valid. `--force`
 applies only to supported `needs_user_choice` fallbacks; it does not turn

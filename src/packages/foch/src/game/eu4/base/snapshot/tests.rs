@@ -19,14 +19,17 @@ use crate::game::eu4::content::ScriptFileKind;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::parse_clausewitz_content;
 use crate::model::{
-	DocumentFamily, DocumentRecord, LocalisationDefinition, MaybeScope, ParamContract,
+	DocumentFamily, DocumentRecord, GamePathBuf, LocalisationDefinition, MaybeScope, ParamContract,
 	ResourceReference, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind, base_scope,
 	test_support,
 };
 use filetime::{FileTime, set_file_mtime};
-use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
+
+fn game_path(text: &str) -> GamePathBuf {
+	GamePathBuf::parse(text).expect("valid game path")
+}
 
 fn tamper_snapshot_preserving_len_and_mtime(path: &std::path::Path) {
 	let metadata = std::fs::metadata(path).expect("snapshot metadata");
@@ -63,7 +66,7 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 		module: "test".to_string(),
 		local_name: "add_age_modifier".to_string(),
 		mod_id: "__game__eu4".to_string(),
-		path: PathBuf::from("common/scripted_effects/test.txt"),
+		path: game_path("common/scripted_effects/test.txt"),
 		line: 1,
 		column: 1,
 		scope_id: 0,
@@ -93,7 +96,7 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 	BaseAnalysisSnapshot::from_semantic_index(
 		&Eu4,
 		"schema-test",
-		vec!["common/scripted_effects/test.txt".to_string()],
+		vec![game_path("common/scripted_effects/test.txt")],
 		&index,
 		Default::default(),
 	)
@@ -103,7 +106,7 @@ fn alternate_valid_snapshot() -> BaseAnalysisSnapshot {
 	let mut snapshot = sample_snapshot_with_contract();
 	snapshot
 		.inventory_paths
-		.push("common/scripted_effects/alternate.txt".to_string());
+		.push(game_path("common/scripted_effects/alternate.txt"));
 	snapshot
 }
 
@@ -129,13 +132,13 @@ fn metadata_for_test_snapshot(
 fn base_snapshot_roundtrips_parsed_scripts_section() {
 	test_support::install_defaults();
 	let temp = TempDir::new().expect("temp dir");
-	let relative_path = PathBuf::from("common/scripted_effects/test.txt");
-	let absolute_path = temp.path().join(&relative_path);
+	let relative_path = game_path("common/scripted_effects/test.txt");
+	let absolute_path = relative_path.to_path(temp.path());
 	let source = "test_effect = { add_prestige = 1 }\n";
-	let parsed = parse_clausewitz_content(absolute_path.clone(), source);
+	let parsed = parse_clausewitz_content(&relative_path, source);
 	let parsed_script = ParsedScriptFile {
 		mod_id: "__game__eu4".to_string(),
-		path: absolute_path,
+		path: Some(absolute_path),
 		relative_path: relative_path.clone(),
 		content_family: None,
 		file_kind: ScriptFileKind::new("scripted_effects"),
@@ -157,7 +160,7 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 	let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
 		&Eu4,
 		"parsed-script-test",
-		vec![relative_path.to_string_lossy().to_string()],
+		vec![relative_path.clone()],
 		&index,
 		Default::default(),
 		parsed_scripts,
@@ -173,8 +176,14 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 	assert_eq!(decoded_scripts[0].mod_id, "__game__eu4");
 	assert_eq!(decoded_scripts[0].relative_path, relative_path);
 	assert_eq!(
-		decoded_scripts[0].path,
-		temp.path().join("common/scripted_effects/test.txt")
+		decoded_scripts[0].path.as_deref(),
+		Some(
+			temp.path()
+				.join("common")
+				.join("scripted_effects")
+				.join("test.txt")
+				.as_path()
+		)
 	);
 	assert_eq!(decoded_scripts[0].source, source);
 	assert_eq!(decoded_scripts[0].ast.statements.len(), 1);
@@ -182,28 +191,24 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 	assert_eq!(decoded_scripts[0].ast.path, relative_path);
 }
 
-/// A snapshot stores the absolute path of the machine that built it, and
-/// release snapshots are installed on machines where that path does not exist.
-/// `rebase_parsed_documents` only repairs the outer disk location, so decoding
-/// must restore the semantic relative path in the AST; otherwise the vanilla
-/// ancestor normalizes as `other` while the merge target normalizes under its
-/// real content family, and lineage validation rejects the join.
+/// Released snapshots record where the machine that built them read each
+/// file, and older ones record it in the AST as well, as an absolute path
+/// that is not a game path. They are installed on machines where that path
+/// does not exist. Decoding locates each document under the reading machine's
+/// game root and identifies its AST by the game path, so the vanilla ancestor
+/// normalizes under the same content family as the merge target it is the
+/// base of.
 #[test]
 fn decoding_a_foreign_snapshot_restores_the_relative_ast_path() {
 	test_support::install_defaults();
 	let temp = TempDir::new().expect("temp dir");
-	let relative_path = PathBuf::from("decisions/Regression.txt");
-	let foreign_root = PathBuf::from("/builder/machine/Europa Universalis IV");
+	let relative_path = game_path("decisions/Regression.txt");
+	let foreign_file = "/builder/machine/Europa Universalis IV/decisions/Regression.txt";
 	let source = "country_decisions = { foch_regression = { potential = { tag = SWE } } }\n";
-	let parsed = parse_clausewitz_content(foreign_root.join(&relative_path), source);
-	assert_eq!(
-		parsed.ast.path,
-		foreign_root.join(&relative_path),
-		"the fixture must encode a foreign absolute AST path",
-	);
+	let parsed = parse_clausewitz_content(&relative_path, source);
 	let parsed_script = ParsedScriptFile {
 		mod_id: "__game__eu4".to_string(),
-		path: foreign_root.join(&relative_path),
+		path: None,
 		relative_path: relative_path.clone(),
 		content_family: None,
 		file_kind: ScriptFileKind::new("decisions"),
@@ -213,8 +218,10 @@ fn decoding_a_foreign_snapshot_restores_the_relative_ast_path() {
 		parse_issues: Vec::new(),
 		parse_cache_hit: false,
 	};
-	let parsed_scripts = super::parsed_scripts::encode_parsed_documents(&[parsed_script])
-		.expect("encode parsed script");
+	let mut legacy = super::parsed_scripts::text_layout::File::of(&parsed_script);
+	legacy.path = foreign_file.to_string();
+	legacy.ast.path = foreign_file.to_string();
+	let parsed_scripts = super::parsed_scripts::text_layout::encode(&[legacy]);
 	let mut index = SemanticIndex::default();
 	index.documents.push(DocumentRecord {
 		mod_id: "__game__eu4".to_string(),
@@ -225,7 +232,7 @@ fn decoding_a_foreign_snapshot_restores_the_relative_ast_path() {
 	let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
 		&Eu4,
 		"foreign-snapshot-test",
-		vec![relative_path.to_string_lossy().to_string()],
+		vec![relative_path.clone()],
 		&index,
 		Default::default(),
 		parsed_scripts,
@@ -240,8 +247,8 @@ fn decoding_a_foreign_snapshot_restores_the_relative_ast_path() {
 	assert_eq!(decoded_scripts.len(), 1);
 	assert_eq!(
 		decoded_scripts[0].path,
-		temp.path().join(&relative_path),
-		"the disk location is rebased onto the local installation",
+		Some(relative_path.to_path(temp.path())),
+		"the disk location is resolved under the local installation",
 	);
 	assert_eq!(
 		decoded_scripts[0].ast.path, relative_path,
@@ -256,391 +263,391 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		documents: vec![
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/country_tags/00_countries.txt"),
+				path: game_path("common/country_tags/00_countries.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/countries/Sweden.txt"),
+				path: game_path("common/countries/Sweden.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/units/swedish_tercio.txt"),
+				path: game_path("common/units/swedish_tercio.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/religions/00_religion.txt"),
+				path: game_path("common/religions/00_religion.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/subject_types/00_subject_types.txt"),
+				path: game_path("common/subject_types/00_subject_types.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/rebel_types/independence_rebels.txt"),
+				path: game_path("common/rebel_types/independence_rebels.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/disasters/civil_war.txt"),
+				path: game_path("common/disasters/civil_war.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/government_mechanics/18_parliament_vs_monarchy.txt"),
+				path: game_path("common/government_mechanics/18_parliament_vs_monarchy.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/peace_treaties/00_peace_treaties.txt"),
+				path: game_path("common/peace_treaties/00_peace_treaties.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/bookmarks/a_new_world.txt"),
+				path: game_path("common/bookmarks/a_new_world.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/policies/00_adm.txt"),
+				path: game_path("common/policies/00_adm.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/mercenary_companies/00_mercenaries.txt"),
+				path: game_path("common/mercenary_companies/00_mercenaries.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/fervor/00_fervor.txt"),
+				path: game_path("common/fervor/00_fervor.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/decrees/00_china.txt"),
+				path: game_path("common/decrees/00_china.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/federation_advancements/00_default.txt"),
+				path: game_path("common/federation_advancements/00_default.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/golden_bulls/00_golden_bulls.txt"),
+				path: game_path("common/golden_bulls/00_golden_bulls.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/flagship_modifications/00_flagship_modifications.txt"),
+				path: game_path("common/flagship_modifications/00_flagship_modifications.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/holy_orders/00_holy_orders.txt"),
+				path: game_path("common/holy_orders/00_holy_orders.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/naval_doctrines/00_naval_doctrines.txt"),
+				path: game_path("common/naval_doctrines/00_naval_doctrines.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/defender_of_faith/00_defender_of_faith.txt"),
+				path: game_path("common/defender_of_faith/00_defender_of_faith.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/isolationism/00_shinto.txt"),
+				path: game_path("common/isolationism/00_shinto.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/professionalism/00_modifiers.txt"),
+				path: game_path("common/professionalism/00_modifiers.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/powerprojection/00_static.txt"),
+				path: game_path("common/powerprojection/00_static.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/subject_type_upgrades/00_subject_type_upgrades.txt"),
+				path: game_path("common/subject_type_upgrades/00_subject_type_upgrades.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/government_ranks/00_government_ranks.txt"),
+				path: game_path("common/government_ranks/00_government_ranks.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/achievements.txt"),
+				path: game_path("common/achievements.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/ages/00_ages.txt"),
+				path: game_path("common/ages/00_ages.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/scripted_triggers/00_triggers.txt"),
+				path: game_path("common/scripted_triggers/00_triggers.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/diplomatic_actions/00_actions.txt"),
+				path: game_path("common/diplomatic_actions/00_actions.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/new_diplomatic_actions/00_actions.txt"),
+				path: game_path("common/new_diplomatic_actions/00_actions.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/buildings/buildings.txt"),
+				path: game_path("common/buildings/buildings.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/institutions/institutions.txt"),
+				path: game_path("common/institutions/institutions.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/great_projects/00_coverage_projects.txt"),
+				path: game_path("common/great_projects/00_coverage_projects.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/advisortypes/00_advisortypes.txt"),
+				path: game_path("common/advisortypes/00_advisortypes.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/government_names/00_coverage_government_names.txt"),
+				path: game_path("common/government_names/00_coverage_government_names.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/custom_gui/00_coverage_gui.txt"),
+				path: game_path("common/custom_gui/00_coverage_gui.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/cultures/00_coverage_cultures.txt"),
+				path: game_path("common/cultures/00_coverage_cultures.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/event_modifiers/00_modifiers.txt"),
+				path: game_path("common/event_modifiers/00_modifiers.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/province_triggered_modifiers/00_modifiers.txt"),
+				path: game_path("common/province_triggered_modifiers/00_modifiers.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/cb_types/00_cb.txt"),
+				path: game_path("common/cb_types/00_cb.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/ideas/00_ideas.txt"),
+				path: game_path("common/ideas/00_ideas.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/technologies/adm.txt"),
+				path: game_path("common/technologies/adm.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/technology.txt"),
+				path: game_path("common/technology.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
+				path: game_path("common/estate_agendas/00_generic_agendas.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/estate_privileges/01_church_privileges.txt"),
+				path: game_path("common/estate_privileges/01_church_privileges.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/estates/01_church.txt"),
+				path: game_path("common/estates/01_church.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/parliament_bribes/administrative_support.txt"),
+				path: game_path("common/parliament_bribes/administrative_support.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/parliament_issues/00_adm_parliament_issues.txt"),
+				path: game_path("common/parliament_issues/00_adm_parliament_issues.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/state_edicts/edict_of_governance.txt"),
+				path: game_path("common/state_edicts/edict_of_governance.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+				path: game_path("common/church_aspects/00_church_aspects.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/factions/00_factions.txt"),
+				path: game_path("common/factions/00_factions.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/hegemons/0_economic_hegemon.txt"),
+				path: game_path("common/hegemons/0_economic_hegemon.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/personal_deities/00_hindu_deities.txt"),
+				path: game_path("common/personal_deities/00_hindu_deities.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/fetishist_cults/00_fetishist_cults.txt"),
+				path: game_path("common/fetishist_cults/00_fetishist_cults.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/scripted_effects/test.txt"),
+				path: game_path("common/scripted_effects/test.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("history/countries/SWE - Sweden.txt"),
+				path: game_path("history/countries/SWE - Sweden.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("history/provinces/1 - Stockholm.txt"),
+				path: game_path("history/provinces/1 - Stockholm.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("common/province_names/sorbian.txt"),
+				path: game_path("common/province_names/sorbian.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("map/random/tiles/tile0.txt"),
+				path: game_path("map/random/tiles/tile0.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("map/random/RandomLandNames.txt"),
+				path: game_path("map/random/RandomLandNames.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("map/random/RNWScenarios.txt"),
+				path: game_path("map/random/RNWScenarios.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("history/diplomacy/hre.txt"),
+				path: game_path("history/diplomacy/hre.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("history/advisors/00_england.txt"),
+				path: game_path("history/advisors/00_england.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("history/wars/sample.txt"),
+				path: game_path("history/wars/sample.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
-				path: PathBuf::from("localisation/english/test_l_english.yml"),
+				path: game_path("localisation/english/test_l_english.yml"),
 				family: DocumentFamily::Localisation,
 				parse_ok: true,
 			},
@@ -653,7 +660,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		module: "test".to_string(),
 		local_name: "test_effect".to_string(),
 		mod_id: mod_id.clone(),
-		path: PathBuf::from("common/scripted_effects/test.txt"),
+		path: game_path("common/scripted_effects/test.txt"),
 		line: 1,
 		column: 1,
 		scope_id: 0,
@@ -670,7 +677,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 	index.localisation_definitions.push(LocalisationDefinition {
 		key: "test_key".to_string(),
 		mod_id,
-		path: PathBuf::from("localisation/english/test_l_english.yml"),
+		path: game_path("localisation/english/test_l_english.yml"),
 		line: 1,
 		column: 1,
 	});
@@ -679,7 +686,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "country_tag:SWE".to_string(),
 			value: "countries/Sweden.txt".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/country_tags/00_countries.txt"),
+			path: game_path("common/country_tags/00_countries.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -687,7 +694,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "graphical_culture".to_string(),
 			value: "scandinaviangfx".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/countries/Sweden.txt"),
+			path: game_path("common/countries/Sweden.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -695,7 +702,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "historical_units".to_string(),
 			value: "western_medieval_infantry".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/countries/Sweden.txt"),
+			path: game_path("common/countries/Sweden.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -703,7 +710,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "capital".to_string(),
 			value: "1".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/countries/SWE - Sweden.txt"),
+			path: game_path("history/countries/SWE - Sweden.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -711,7 +718,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "owner".to_string(),
 			value: "SWE".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/provinces/1 - Stockholm.txt"),
+			path: game_path("history/provinces/1 - Stockholm.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -719,7 +726,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "province_name_table".to_string(),
 			value: "sorbian".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/province_names/sorbian.txt"),
+			path: game_path("common/province_names/sorbian.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -727,7 +734,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "province_id".to_string(),
 			value: "4778".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/province_names/sorbian.txt"),
+			path: game_path("common/province_names/sorbian.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -735,7 +742,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "province_name_literal".to_string(),
 			value: "Zhorjelc".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/province_names/sorbian.txt"),
+			path: game_path("common/province_names/sorbian.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -743,7 +750,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "tile_definition".to_string(),
 			value: "tile0".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/tiles/tile0.txt"),
+			path: game_path("map/random/tiles/tile0.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -751,7 +758,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "tile_color_group".to_string(),
 			value: "sea_province".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/tiles/tile0.txt"),
+			path: game_path("map/random/tiles/tile0.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -759,7 +766,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "tile_color_rgb".to_string(),
 			value: "93,164,236".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/tiles/tile0.txt"),
+			path: game_path("map/random/tiles/tile0.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -767,7 +774,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "tile_size".to_string(),
 			value: "7,7".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/tiles/tile0.txt"),
+			path: game_path("map/random/tiles/tile0.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -775,7 +782,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "weight".to_string(),
 			value: "130".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/tiles/tile0.txt"),
+			path: game_path("map/random/tiles/tile0.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -783,7 +790,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "random_name_table".to_string(),
 			value: "random_land_names".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RandomLandNames.txt"),
+			path: game_path("map/random/RandomLandNames.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -791,7 +798,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "random_name_token".to_string(),
 			value: "p_tumbletown".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RandomLandNames.txt"),
+			path: game_path("map/random/RandomLandNames.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -799,7 +806,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "random_name_token".to_string(),
 			value: "p_chugwater".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RandomLandNames.txt"),
+			path: game_path("map/random/RandomLandNames.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -807,7 +814,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "random_name_category".to_string(),
 			value: "river".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RandomLandNames.txt"),
+			path: game_path("map/random/RandomLandNames.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -815,7 +822,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "random_map_scenario".to_string(),
 			value: "scenario_animism_tribes".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RNWScenarios.txt"),
+			path: game_path("map/random/RNWScenarios.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -823,7 +830,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "religion".to_string(),
 			value: "animism".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RNWScenarios.txt"),
+			path: game_path("map/random/RNWScenarios.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -831,7 +838,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "technology_group".to_string(),
 			value: "south_american".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RNWScenarios.txt"),
+			path: game_path("map/random/RNWScenarios.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -839,7 +846,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "government".to_string(),
 			value: "native".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RNWScenarios.txt"),
+			path: game_path("map/random/RNWScenarios.txt"),
 			line: 4,
 			column: 1,
 		},
@@ -847,7 +854,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "graphical_culture".to_string(),
 			value: "northamericagfx".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RNWScenarios.txt"),
+			path: game_path("map/random/RNWScenarios.txt"),
 			line: 5,
 			column: 1,
 		},
@@ -855,7 +862,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "scenario_name_key".to_string(),
 			value: "rnw_arauluche".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("map/random/RNWScenarios.txt"),
+			path: game_path("map/random/RNWScenarios.txt"),
 			line: 6,
 			column: 1,
 		},
@@ -863,7 +870,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "relation_type".to_string(),
 			value: "alliance".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/diplomacy/hre.txt"),
+			path: game_path("history/diplomacy/hre.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -871,7 +878,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "first".to_string(),
 			value: "FRA".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/diplomacy/hre.txt"),
+			path: game_path("history/diplomacy/hre.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -879,7 +886,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "second".to_string(),
 			value: "SCO".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/diplomacy/hre.txt"),
+			path: game_path("history/diplomacy/hre.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -887,7 +894,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "emperor".to_string(),
 			value: "BOH".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/diplomacy/hre.txt"),
+			path: game_path("history/diplomacy/hre.txt"),
 			line: 4,
 			column: 1,
 		},
@@ -895,7 +902,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "advisor_definition".to_string(),
 			value: "advisor_216".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/advisors/00_england.txt"),
+			path: game_path("history/advisors/00_england.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -903,7 +910,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "location".to_string(),
 			value: "236".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/advisors/00_england.txt"),
+			path: game_path("history/advisors/00_england.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -911,7 +918,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "type".to_string(),
 			value: "theologian".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/advisors/00_england.txt"),
+			path: game_path("history/advisors/00_england.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -919,7 +926,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "unit_type".to_string(),
 			value: "western".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/units/swedish_tercio.txt"),
+			path: game_path("common/units/swedish_tercio.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -927,7 +934,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "center_of_religion".to_string(),
 			value: "118".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/religions/00_religion.txt"),
+			path: game_path("common/religions/00_religion.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -935,7 +942,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "copy_from".to_string(),
 			value: "default".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/subject_types/00_subject_types.txt"),
+			path: game_path("common/subject_types/00_subject_types.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -943,7 +950,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "demands_description".to_string(),
 			value: "independence_rebels_demands".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/rebel_types/independence_rebels.txt"),
+			path: game_path("common/rebel_types/independence_rebels.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -951,7 +958,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "on_start".to_string(),
 			value: "civil_war.1".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/disasters/civil_war.txt"),
+			path: game_path("common/disasters/civil_war.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -959,7 +966,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "gui".to_string(),
 			value: "parliament_vs_monarchy_gov_mech".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/government_mechanics/18_parliament_vs_monarchy.txt"),
+			path: game_path("common/government_mechanics/18_parliament_vs_monarchy.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -967,7 +974,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation_desc".to_string(),
 			value: "spread_dynasty_desc".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/peace_treaties/00_peace_treaties.txt"),
+			path: game_path("common/peace_treaties/00_peace_treaties.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -975,7 +982,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "country".to_string(),
 			value: "CAS".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/bookmarks/a_new_world.txt"),
+			path: game_path("common/bookmarks/a_new_world.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -983,7 +990,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation".to_string(),
 			value: "the_combination_act".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/policies/00_adm.txt"),
+			path: game_path("common/policies/00_adm.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -991,7 +998,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "monarch_power".to_string(),
 			value: "ADM".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/policies/00_adm.txt"),
+			path: game_path("common/policies/00_adm.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -999,7 +1006,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation".to_string(),
 			value: "merc_black_army".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/mercenary_companies/00_mercenaries.txt"),
+			path: game_path("common/mercenary_companies/00_mercenaries.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1007,7 +1014,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "mercenary_desc_key".to_string(),
 			value: "FREE_OF_ARMY_PROFESSIONALISM_COST".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/mercenary_companies/00_mercenaries.txt"),
+			path: game_path("common/mercenary_companies/00_mercenaries.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1015,7 +1022,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "fervor_definition".to_string(),
 			value: "fervor_trade".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/fervor/00_fervor.txt"),
+			path: game_path("common/fervor/00_fervor.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1023,7 +1030,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "cost_type".to_string(),
 			value: "fervor".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/fervor/00_fervor.txt"),
+			path: game_path("common/fervor/00_fervor.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1031,7 +1038,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "decree_definition".to_string(),
 			value: "expand_bureaucracy_decree".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/decrees/00_china.txt"),
+			path: game_path("common/decrees/00_china.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1039,7 +1046,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "icon".to_string(),
 			value: "decree_expand_bureaucracy".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/decrees/00_china.txt"),
+			path: game_path("common/decrees/00_china.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1047,7 +1054,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "federation_advancement_definition".to_string(),
 			value: "federal_constitution".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/federation_advancements/00_default.txt"),
+			path: game_path("common/federation_advancements/00_default.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1055,7 +1062,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "gfx".to_string(),
 			value: "federation_constitution".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/federation_advancements/00_default.txt"),
+			path: game_path("common/federation_advancements/00_default.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1063,7 +1070,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "government".to_string(),
 			value: "federal_republic".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/federation_advancements/00_default.txt"),
+			path: game_path("common/federation_advancements/00_default.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -1071,7 +1078,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "golden_bull_definition".to_string(),
 			value: "golden_bull_treasury".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/golden_bulls/00_golden_bulls.txt"),
+			path: game_path("common/golden_bulls/00_golden_bulls.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1079,7 +1086,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "mechanics".to_string(),
 			value: "curia_treasury".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/golden_bulls/00_golden_bulls.txt"),
+			path: game_path("common/golden_bulls/00_golden_bulls.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1087,7 +1094,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "flagship_modification_definition".to_string(),
 			value: "extra_cannons".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/flagship_modifications/00_flagship_modifications.txt"),
+			path: game_path("common/flagship_modifications/00_flagship_modifications.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1095,7 +1102,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "cost_type".to_string(),
 			value: "sailors".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/flagship_modifications/00_flagship_modifications.txt"),
+			path: game_path("common/flagship_modifications/00_flagship_modifications.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1103,7 +1110,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "holy_order_definition".to_string(),
 			value: "benedictines".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/holy_orders/00_holy_orders.txt"),
+			path: game_path("common/holy_orders/00_holy_orders.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1111,7 +1118,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "cost_type".to_string(),
 			value: "adm_power".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/holy_orders/00_holy_orders.txt"),
+			path: game_path("common/holy_orders/00_holy_orders.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1119,7 +1126,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "naval_doctrine_definition".to_string(),
 			value: "fleet_in_being".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/naval_doctrines/00_naval_doctrines.txt"),
+			path: game_path("common/naval_doctrines/00_naval_doctrines.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1127,7 +1134,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "button_gfx".to_string(),
 			value: "1".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/naval_doctrines/00_naval_doctrines.txt"),
+			path: game_path("common/naval_doctrines/00_naval_doctrines.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1135,7 +1142,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "defender_of_faith_definition".to_string(),
 			value: "defender_of_faith_1".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/defender_of_faith/00_defender_of_faith.txt"),
+			path: game_path("common/defender_of_faith/00_defender_of_faith.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1143,7 +1150,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "isolationism_definition".to_string(),
 			value: "open_doors_isolation".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/isolationism/00_shinto.txt"),
+			path: game_path("common/isolationism/00_shinto.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1151,7 +1158,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "professionalism_definition".to_string(),
 			value: "nothingness_modifier".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/professionalism/00_modifiers.txt"),
+			path: game_path("common/professionalism/00_modifiers.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1159,7 +1166,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "marker_sprite".to_string(),
 			value: "GFX_pa_rank_0".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/professionalism/00_modifiers.txt"),
+			path: game_path("common/professionalism/00_modifiers.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1167,7 +1174,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "powerprojection_definition".to_string(),
 			value: "great_power_1".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/powerprojection/00_static.txt"),
+			path: game_path("common/powerprojection/00_static.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1175,7 +1182,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "subject_type_upgrade_definition".to_string(),
 			value: "increase_force_limit_from_colony".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/subject_type_upgrades/00_subject_type_upgrades.txt"),
+			path: game_path("common/subject_type_upgrades/00_subject_type_upgrades.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1183,7 +1190,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "government_rank_definition".to_string(),
 			value: "2".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/government_ranks/00_government_ranks.txt"),
+			path: game_path("common/government_ranks/00_government_ranks.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1191,7 +1198,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "achievement_definition".to_string(),
 			value: "coverage_achievement".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/achievements.txt"),
+			path: game_path("common/achievements.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1199,7 +1206,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "age_definition".to_string(),
 			value: "age_of_discovery".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/ages/00_ages.txt"),
+			path: game_path("common/ages/00_ages.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1207,7 +1214,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "scripted_trigger_definition".to_string(),
 			value: "eu4_cov_country_trigger".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/scripted_triggers/00_triggers.txt"),
+			path: game_path("common/scripted_triggers/00_triggers.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1215,7 +1222,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "diplomatic_action_definition".to_string(),
 			value: "milaccess".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/diplomatic_actions/00_actions.txt"),
+			path: game_path("common/diplomatic_actions/00_actions.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1223,7 +1230,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "new_diplomatic_action_definition".to_string(),
 			value: "request_condottieri".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/new_diplomatic_actions/00_actions.txt"),
+			path: game_path("common/new_diplomatic_actions/00_actions.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1231,7 +1238,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "building_definition".to_string(),
 			value: "marketplace".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/buildings/buildings.txt"),
+			path: game_path("common/buildings/buildings.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1239,7 +1246,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "institution_definition".to_string(),
 			value: "feudalism".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/institutions/institutions.txt"),
+			path: game_path("common/institutions/institutions.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1247,7 +1254,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "great_project_definition".to_string(),
 			value: "coverage_project".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/great_projects/00_coverage_projects.txt"),
+			path: game_path("common/great_projects/00_coverage_projects.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1255,7 +1262,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "advisor_type_definition".to_string(),
 			value: "coverage_advisor".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/advisortypes/00_advisortypes.txt"),
+			path: game_path("common/advisortypes/00_advisortypes.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1263,7 +1270,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "government_name_definition".to_string(),
 			value: "coverage_government_names".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/government_names/00_coverage_government_names.txt"),
+			path: game_path("common/government_names/00_coverage_government_names.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1271,7 +1278,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "custom_gui_definition".to_string(),
 			value: "coverage_window".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/custom_gui/00_coverage_gui.txt"),
+			path: game_path("common/custom_gui/00_coverage_gui.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1279,7 +1286,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "culture_definition".to_string(),
 			value: "coverage_culture".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/cultures/00_coverage_cultures.txt"),
+			path: game_path("common/cultures/00_coverage_cultures.txt"),
 			line: 2,
 			column: 2,
 		},
@@ -1287,7 +1294,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "event_modifier_definition".to_string(),
 			value: "coverage_event_modifier".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/event_modifiers/00_modifiers.txt"),
+			path: game_path("common/event_modifiers/00_modifiers.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1295,7 +1302,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "province_triggered_modifier_definition".to_string(),
 			value: "coverage_ptm".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/province_triggered_modifiers/00_modifiers.txt"),
+			path: game_path("common/province_triggered_modifiers/00_modifiers.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1303,7 +1310,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "cb_type_definition".to_string(),
 			value: "coverage_cb".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/cb_types/00_cb.txt"),
+			path: game_path("common/cb_types/00_cb.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1311,7 +1318,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "idea_group_definition".to_string(),
 			value: "coverage_ideas".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/ideas/00_ideas.txt"),
+			path: game_path("common/ideas/00_ideas.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1319,7 +1326,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "monarch_power".to_string(),
 			value: "ADM".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/technologies/adm.txt"),
+			path: game_path("common/technologies/adm.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1327,7 +1334,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "technology_definition".to_string(),
 			value: "adm_tech_0".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/technologies/adm.txt"),
+			path: game_path("common/technologies/adm.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1335,7 +1342,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "expects_institution".to_string(),
 			value: "feudalism".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/technologies/adm.txt"),
+			path: game_path("common/technologies/adm.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -1343,7 +1350,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "enable".to_string(),
 			value: "temple".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/technologies/adm.txt"),
+			path: game_path("common/technologies/adm.txt"),
 			line: 4,
 			column: 1,
 		},
@@ -1351,7 +1358,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "technology_group".to_string(),
 			value: "western".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/technology.txt"),
+			path: game_path("common/technology.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1359,7 +1366,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "nation_designer_unit_type".to_string(),
 			value: "western".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/technology.txt"),
+			path: game_path("common/technology.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1367,7 +1374,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "nation_designer_cost_value".to_string(),
 			value: "25".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/technology.txt"),
+			path: game_path("common/technology.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -1375,7 +1382,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "estate".to_string(),
 			value: "clergy".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
+			path: game_path("common/estate_agendas/00_generic_agendas.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1383,7 +1390,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "custom_tooltip".to_string(),
 			value: "agenda_done_tt".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
+			path: game_path("common/estate_agendas/00_generic_agendas.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1391,7 +1398,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "icon".to_string(),
 			value: "privilege_religious_diplomats".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/estate_privileges/01_church_privileges.txt"),
+			path: game_path("common/estate_privileges/01_church_privileges.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1399,7 +1406,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "mechanics".to_string(),
 			value: "papal_influence".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/estate_privileges/01_church_privileges.txt"),
+			path: game_path("common/estate_privileges/01_church_privileges.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1407,7 +1414,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "custom_name".to_string(),
 			value: "estate_clergy_custom_name".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/estates/01_church.txt"),
+			path: game_path("common/estates/01_church.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1415,7 +1422,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "privileges".to_string(),
 			value: "religious_diplomats".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/estates/01_church.txt"),
+			path: game_path("common/estates/01_church.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1423,7 +1430,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "mechanic_type".to_string(),
 			value: "parliament_vs_monarchy_mechanic".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/parliament_bribes/administrative_support.txt"),
+			path: game_path("common/parliament_bribes/administrative_support.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1431,7 +1438,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "parliament_action".to_string(),
 			value: "strengthen_government".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/parliament_issues/00_adm_parliament_issues.txt"),
+			path: game_path("common/parliament_issues/00_adm_parliament_issues.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1439,7 +1446,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "tooltip".to_string(),
 			value: "edict_of_governance_tt".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/state_edicts/edict_of_governance.txt"),
+			path: game_path("common/state_edicts/edict_of_governance.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1447,7 +1454,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "has_state_edict".to_string(),
 			value: "encourage_development_edict".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/state_edicts/edict_of_governance.txt"),
+			path: game_path("common/state_edicts/edict_of_governance.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1455,7 +1462,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation".to_string(),
 			value: "organised_through_bishops_aspect".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+			path: game_path("common/church_aspects/00_church_aspects.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1463,7 +1470,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation_desc".to_string(),
 			value: "desc_organised_through_bishops_aspect".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+			path: game_path("common/church_aspects/00_church_aspects.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1471,7 +1478,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation_modifier".to_string(),
 			value: "organised_through_bishops_aspect_modifier".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+			path: game_path("common/church_aspects/00_church_aspects.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -1479,7 +1486,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation".to_string(),
 			value: "rr_jacobins".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/factions/00_factions.txt"),
+			path: game_path("common/factions/00_factions.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1487,7 +1494,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation_influence".to_string(),
 			value: "rr_jacobins_influence".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/factions/00_factions.txt"),
+			path: game_path("common/factions/00_factions.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1495,7 +1502,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "monarch_power".to_string(),
 			value: "ADM".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/factions/00_factions.txt"),
+			path: game_path("common/factions/00_factions.txt"),
 			line: 3,
 			column: 1,
 		},
@@ -1503,7 +1510,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation".to_string(),
 			value: "economic_hegemon".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/hegemons/0_economic_hegemon.txt"),
+			path: game_path("common/hegemons/0_economic_hegemon.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1511,7 +1518,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation".to_string(),
 			value: "shiva".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/personal_deities/00_hindu_deities.txt"),
+			path: game_path("common/personal_deities/00_hindu_deities.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1519,7 +1526,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation_desc".to_string(),
 			value: "shiva_desc".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/personal_deities/00_hindu_deities.txt"),
+			path: game_path("common/personal_deities/00_hindu_deities.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1527,7 +1534,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation".to_string(),
 			value: "yemoja_cult".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/fetishist_cults/00_fetishist_cults.txt"),
+			path: game_path("common/fetishist_cults/00_fetishist_cults.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1535,7 +1542,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "localisation_desc".to_string(),
 			value: "yemoja_cult_desc".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/fetishist_cults/00_fetishist_cults.txt"),
+			path: game_path("common/fetishist_cults/00_fetishist_cults.txt"),
 			line: 2,
 			column: 1,
 		},
@@ -1543,7 +1550,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "add_attacker".to_string(),
 			value: "SWE".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("history/wars/sample.txt"),
+			path: game_path("history/wars/sample.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1551,7 +1558,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			key: "scripted_effect_definition".to_string(),
 			value: "test_effect".to_string(),
 			mod_id: "__game__eu4".to_string(),
-			path: PathBuf::from("common/scripted_effects/test.txt"),
+			path: game_path("common/scripted_effects/test.txt"),
 			line: 1,
 			column: 1,
 		},
@@ -1560,69 +1567,268 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		&Eu4,
 		"coverage-test",
 		vec![
-			"common/country_tags/00_countries.txt".to_string(),
-			"common/countries/Sweden.txt".to_string(),
-			"common/units/swedish_tercio.txt".to_string(),
-			"common/religions/00_religion.txt".to_string(),
-			"common/subject_types/00_subject_types.txt".to_string(),
-			"common/rebel_types/independence_rebels.txt".to_string(),
-			"common/disasters/civil_war.txt".to_string(),
-			"common/government_mechanics/18_parliament_vs_monarchy.txt".to_string(),
-			"common/peace_treaties/00_peace_treaties.txt".to_string(),
-			"common/bookmarks/a_new_world.txt".to_string(),
-			"common/policies/00_adm.txt".to_string(),
-			"common/mercenary_companies/00_mercenaries.txt".to_string(),
-			"common/fervor/00_fervor.txt".to_string(),
-			"common/decrees/00_china.txt".to_string(),
-			"common/federation_advancements/00_default.txt".to_string(),
-			"common/golden_bulls/00_golden_bulls.txt".to_string(),
-			"common/flagship_modifications/00_flagship_modifications.txt".to_string(),
-			"common/holy_orders/00_holy_orders.txt".to_string(),
-			"common/naval_doctrines/00_naval_doctrines.txt".to_string(),
-			"common/defender_of_faith/00_defender_of_faith.txt".to_string(),
-			"common/isolationism/00_shinto.txt".to_string(),
-			"common/professionalism/00_modifiers.txt".to_string(),
-			"common/powerprojection/00_static.txt".to_string(),
-			"common/subject_type_upgrades/00_subject_type_upgrades.txt".to_string(),
-			"common/ages/00_ages.txt".to_string(),
-			"common/scripted_triggers/00_triggers.txt".to_string(),
-			"common/diplomatic_actions/00_actions.txt".to_string(),
-			"common/new_diplomatic_actions/00_actions.txt".to_string(),
-			"common/buildings/buildings.txt".to_string(),
-			"common/institutions/institutions.txt".to_string(),
-			"common/great_projects/00_coverage_projects.txt".to_string(),
-			"common/technologies/adm.txt".to_string(),
-			"common/technology.txt".to_string(),
-			"common/estate_agendas/00_generic_agendas.txt".to_string(),
-			"common/estate_privileges/01_church_privileges.txt".to_string(),
-			"common/estates/01_church.txt".to_string(),
-			"common/parliament_bribes/administrative_support.txt".to_string(),
-			"common/parliament_issues/00_adm_parliament_issues.txt".to_string(),
-			"common/state_edicts/edict_of_governance.txt".to_string(),
-			"common/achievements.txt".to_string(),
-			"common/church_aspects/00_church_aspects.txt".to_string(),
-			"common/factions/00_factions.txt".to_string(),
-			"common/hegemons/0_economic_hegemon.txt".to_string(),
-			"common/personal_deities/00_hindu_deities.txt".to_string(),
-			"common/fetishist_cults/00_fetishist_cults.txt".to_string(),
-			"common/scripted_effects/test.txt".to_string(),
-			"history/countries/SWE - Sweden.txt".to_string(),
-			"history/provinces/1 - Stockholm.txt".to_string(),
-			"common/province_names/sorbian.txt".to_string(),
-			"map/random/tiles/tile0.txt".to_string(),
-			"map/random/RandomLandNames.txt".to_string(),
-			"map/random/RNWScenarios.txt".to_string(),
-			"history/diplomacy/hre.txt".to_string(),
-			"history/advisors/00_england.txt".to_string(),
-			"history/wars/sample.txt".to_string(),
-			"localisation/english/test_l_english.yml".to_string(),
-			"patchnotes/1_36.txt".to_string(),
-			"builtin_dlc/builtin_dlc.txt".to_string(),
-			"checksum_manifest.txt".to_string(),
+			game_path("common/country_tags/00_countries.txt"),
+			game_path("common/countries/Sweden.txt"),
+			game_path("common/units/swedish_tercio.txt"),
+			game_path("common/religions/00_religion.txt"),
+			game_path("common/subject_types/00_subject_types.txt"),
+			game_path("common/rebel_types/independence_rebels.txt"),
+			game_path("common/disasters/civil_war.txt"),
+			game_path("common/government_mechanics/18_parliament_vs_monarchy.txt"),
+			game_path("common/peace_treaties/00_peace_treaties.txt"),
+			game_path("common/bookmarks/a_new_world.txt"),
+			game_path("common/policies/00_adm.txt"),
+			game_path("common/mercenary_companies/00_mercenaries.txt"),
+			game_path("common/fervor/00_fervor.txt"),
+			game_path("common/decrees/00_china.txt"),
+			game_path("common/federation_advancements/00_default.txt"),
+			game_path("common/golden_bulls/00_golden_bulls.txt"),
+			game_path("common/flagship_modifications/00_flagship_modifications.txt"),
+			game_path("common/holy_orders/00_holy_orders.txt"),
+			game_path("common/naval_doctrines/00_naval_doctrines.txt"),
+			game_path("common/defender_of_faith/00_defender_of_faith.txt"),
+			game_path("common/isolationism/00_shinto.txt"),
+			game_path("common/professionalism/00_modifiers.txt"),
+			game_path("common/powerprojection/00_static.txt"),
+			game_path("common/subject_type_upgrades/00_subject_type_upgrades.txt"),
+			game_path("common/ages/00_ages.txt"),
+			game_path("common/scripted_triggers/00_triggers.txt"),
+			game_path("common/diplomatic_actions/00_actions.txt"),
+			game_path("common/new_diplomatic_actions/00_actions.txt"),
+			game_path("common/buildings/buildings.txt"),
+			game_path("common/institutions/institutions.txt"),
+			game_path("common/great_projects/00_coverage_projects.txt"),
+			game_path("common/technologies/adm.txt"),
+			game_path("common/technology.txt"),
+			game_path("common/estate_agendas/00_generic_agendas.txt"),
+			game_path("common/estate_privileges/01_church_privileges.txt"),
+			game_path("common/estates/01_church.txt"),
+			game_path("common/parliament_bribes/administrative_support.txt"),
+			game_path("common/parliament_issues/00_adm_parliament_issues.txt"),
+			game_path("common/state_edicts/edict_of_governance.txt"),
+			game_path("common/achievements.txt"),
+			game_path("common/church_aspects/00_church_aspects.txt"),
+			game_path("common/factions/00_factions.txt"),
+			game_path("common/hegemons/0_economic_hegemon.txt"),
+			game_path("common/personal_deities/00_hindu_deities.txt"),
+			game_path("common/fetishist_cults/00_fetishist_cults.txt"),
+			game_path("common/scripted_effects/test.txt"),
+			game_path("history/countries/SWE - Sweden.txt"),
+			game_path("history/provinces/1 - Stockholm.txt"),
+			game_path("common/province_names/sorbian.txt"),
+			game_path("map/random/tiles/tile0.txt"),
+			game_path("map/random/RandomLandNames.txt"),
+			game_path("map/random/RNWScenarios.txt"),
+			game_path("history/diplomacy/hre.txt"),
+			game_path("history/advisors/00_england.txt"),
+			game_path("history/wars/sample.txt"),
+			game_path("localisation/english/test_l_english.yml"),
+			game_path("patchnotes/1_36.txt"),
+			game_path("builtin_dlc/builtin_dlc.txt"),
+			game_path("checksum_manifest.txt"),
 		],
 		&index,
 		Default::default(),
 	)
+}
+
+#[cfg(unix)]
+#[test]
+fn base_snapshot_build_fails_on_a_game_file_without_a_portable_game_path() {
+	let temp = TempDir::new().expect("temp dir");
+	let game_root = temp.path().join("game");
+	std::fs::create_dir_all(game_root.join("common").join("a")).expect("create game tree");
+	std::fs::write(
+		game_root.join("common").join("a").join("b.txt"),
+		"a = { }\n",
+	)
+	.expect("write nested file");
+	let literal = game_root.join("common").join(r"a\b.txt");
+	std::fs::write(&literal, "b = { }\n").expect("write literal-backslash file");
+
+	// The inventory walk fails before any document is parsed or cached.
+	let error = super::build_base_snapshot(
+		&Eu4,
+		&game_root,
+		Some("1.37.5"),
+		&crate::input::FileFilter::for_game(Eu4),
+	)
+	.expect_err("a literal backslash has no portable game path");
+
+	assert!(error.contains("base game: "), "{error}");
+	assert!(error.contains(&literal.display().to_string()), "{error}");
+	assert!(error.contains("no portable game path"), "{error}");
+}
+
+#[test]
+fn base_snapshot_build_persists_the_inventory_in_component_order() {
+	let temp = TempDir::new().expect("temp dir");
+	let game_root = temp.path().join("game");
+	std::fs::create_dir_all(game_root.join("common").join("a")).expect("create game tree");
+	std::fs::create_dir_all(game_root.join("irrelevant")).expect("create non-loadable root");
+	std::fs::write(
+		game_root.join("common").join("a").join("b.txt"),
+		"a = { }\n",
+	)
+	.expect("write nested file");
+	std::fs::write(game_root.join("common").join("a-b.txt"), "b = { }\n")
+		.expect("write dashed file");
+	std::fs::write(game_root.join("irrelevant").join("x.txt"), "x = { }\n")
+		.expect("write file outside loadable roots");
+
+	let built = super::build_base_snapshot(
+		&Eu4,
+		&game_root,
+		Some("1.37.5"),
+		&crate::input::FileFilter::for_game(Eu4),
+	)
+	.expect("build base snapshot");
+	let decoded = decode_snapshot_from_bytes(&built.encoded_snapshot).expect("decode snapshot");
+
+	// Released snapshots were written in component order, where `a/b.txt`
+	// precedes `a-b.txt`; byte order would swap them and change the bytes.
+	assert_eq!(
+		decoded.inventory_paths,
+		vec![game_path("common/a/b.txt"), game_path("common/a-b.txt")]
+	);
+	let mut documents = decoded
+		.documents
+		.iter()
+		.map(|document| document.path.as_str())
+		.collect::<Vec<_>>();
+	documents.sort_unstable();
+	assert_eq!(
+		documents,
+		vec!["common/a-b.txt", "common/a/b.txt"],
+		"documents are discovered from the inventory alone"
+	);
+}
+
+#[test]
+fn base_snapshot_decode_rejects_inventory_entries_that_are_invalid_or_repeated() {
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let decoded = decode_snapshot_from_bytes(&encoded.bytes).expect("decode valid snapshot");
+	assert_eq!(decoded.inventory_paths, snapshot.inventory_paths);
+
+	let repeated = "common/scripted_effects/test.txt";
+	for (invalid, inventory_paths, reason) in [
+		(
+			r"common\scripted_effects\test.txt",
+			vec![r"common\scripted_effects\test.txt"],
+			"invalid game path",
+		),
+		(
+			"../outside.txt",
+			vec!["../outside.txt"],
+			"invalid game path",
+		),
+		("", vec![""], "invalid game path"),
+		(
+			repeated,
+			vec![repeated, "common/other.txt", repeated],
+			"is listed more than once",
+		),
+	] {
+		let mut bundle: super::SnapshotWireBundle =
+			bincode::deserialize(&encoded.bytes).expect("parse bundle");
+		let section = bundle
+			.sections
+			.iter_mut()
+			.find(|section| section.name == super::SnapshotWireSectionName::InventoryDocuments)
+			.expect("inventory section");
+		*section = super::encode_section_payload(
+			super::SnapshotWireSectionName::InventoryDocuments,
+			"inventory_documents",
+			&super::SnapshotInventoryDocumentsSection {
+				inventory_paths: inventory_paths.into_iter().map(str::to_string).collect(),
+				documents: snapshot.documents.clone(),
+				parse_error_count: snapshot.parse_error_count,
+				parsed_files: snapshot.parsed_files,
+				parse_stats: snapshot.parse_stats.clone(),
+			},
+		)
+		.expect("encode inventory section")
+		.wire;
+		let bytes = bincode::serialize(&bundle).expect("serialize bundle");
+
+		let error = decode_snapshot_from_bytes(&bytes).expect_err(invalid);
+		assert!(
+			error.contains("base data snapshot inventory is invalid"),
+			"{invalid}: {error}"
+		);
+		assert!(
+			error.contains(&format!("`{invalid}`")),
+			"{invalid}: {error}"
+		);
+		assert!(error.contains(reason), "{invalid}: {error}");
+	}
+}
+
+/// Record paths are text on the wire, validated when their section is
+/// decoded, so a corrupt record fails the load with the path it names. Every
+/// persisted record kind's path is corrupted on its own, wherever its section
+/// stores it.
+#[test]
+fn base_snapshot_decode_rejects_record_paths_that_are_not_game_paths() {
+	use std::io::Read;
+
+	// One length for every path, so each replacement changes only the text
+	// of one record path in its section.
+	let valid = |kind: usize| format!("events/r{kind:02}.txt");
+	let mut index =
+		crate::model::index_with_one_record_of_each_kind(|kind| game_path(&valid(kind)));
+	// A base snapshot keeps a count of parse issues, not the issues.
+	index.parse_issues.clear();
+	let snapshot = BaseAnalysisSnapshot::from_semantic_index(
+		&Eu4,
+		"record-path-test",
+		vec![game_path("gfx/flags/A.tga")],
+		&index,
+		Default::default(),
+	);
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	decode_snapshot_from_bytes(&encoded.bytes).expect("the valid snapshot decodes");
+
+	let persisted_kinds = &crate::model::SEMANTIC_RECORD_KINDS[..13];
+	assert_eq!(persisted_kinds.last(), Some(&"json property"));
+	for (kind, name) in persisted_kinds.iter().enumerate() {
+		let valid = valid(kind);
+		let invalid = format!(r"events\r{kind:02}.txt");
+		let mut bundle: super::SnapshotWireBundle =
+			bincode::deserialize(&encoded.bytes).expect("parse bundle");
+		let mut corrupted = Vec::new();
+		for section in &mut bundle.sections {
+			let mut raw = Vec::new();
+			flate2::read::GzDecoder::new(section.payload.as_slice())
+				.read_to_end(&mut raw)
+				.expect("decompress section");
+			let positions = raw
+				.windows(valid.len())
+				.enumerate()
+				.filter(|(_, window)| *window == valid.as_bytes())
+				.map(|(at, _)| at)
+				.collect::<Vec<_>>();
+			for at in &positions {
+				raw[*at..*at + valid.len()].copy_from_slice(invalid.as_bytes());
+				corrupted.push(section.name);
+			}
+			if positions.is_empty() {
+				continue;
+			}
+			section.payload = super::gzip_bytes(&raw).expect("compress section");
+			section.sha256 = sha256_hex(&section.payload);
+			section.compressed_bytes = section.payload.len() as u64;
+		}
+		assert_eq!(corrupted.len(), 1, "{name}: `{valid}` in {corrupted:?}");
+		let bytes = bincode::serialize(&bundle).expect("serialize bundle");
+
+		let error = decode_snapshot_from_bytes(&bytes).expect_err(name);
+		assert!(
+			error.contains(&format!("invalid game path `{invalid}`")),
+			"{name}: {error}"
+		);
+	}
 }
 
 #[test]

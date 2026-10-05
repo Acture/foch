@@ -171,6 +171,11 @@ pub struct MergeArgs {
 	#[arg(long, alias = "no-interactive")]
 	pub non_interactive: bool,
 
+	/// Show every review unit. By default, show the first 20 of each
+	/// disposition, with totals and explicit counts of omitted units.
+	#[arg(long)]
+	pub review_all: bool,
+
 	/// Use the simple stdin/stderr prompt instead of the ratatui interactive UI.
 	#[arg(long)]
 	pub cli_prompt: bool,

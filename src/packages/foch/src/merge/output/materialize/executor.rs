@@ -476,7 +476,7 @@ fn report_slow_units(
 
 fn workers_exited() -> MergeError {
 	MergeError::Validation {
-		path: None,
+		subject: None,
 		message: "internal error: merge workers exited before every unit was analyzed".to_string(),
 	}
 }
@@ -486,6 +486,7 @@ mod tests {
 	use super::{PENDING_UNITS_PER_WORKER, UnitSchedule, run_units};
 	use crate::merge::analyze::CancellationToken;
 	use crate::merge::error::MergeError;
+	use crate::merge::error::MergeErrorSubject;
 	use std::num::NonZeroUsize;
 	use std::panic::{AssertUnwindSafe, catch_unwind};
 	use std::sync::{Condvar, Mutex, MutexGuard};
@@ -751,7 +752,7 @@ mod tests {
 				applied.push(index);
 				if index == 5 {
 					return Err(MergeError::Validation {
-						path: Some("five".to_string()),
+						subject: Some(MergeErrorSubject::Named("five".to_string())),
 						message: "unit five failed".to_string(),
 					});
 				}

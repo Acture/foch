@@ -1,7 +1,7 @@
 use crate::game::eu4::content::MergeKeySource;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstStatement, AstValue};
-use crate::model::StaleVanillaTargetDescriptor;
+use crate::model::{GamePath, StaleVanillaTargetDescriptor};
 
 use super::super::patch::ClausewitzPatch;
 
@@ -15,7 +15,7 @@ const MISSING_KEY_NOTE: &str = "vanilla snapshot contains the parent path but no
 /// the patch layer does not preserve guard intent.
 pub(crate) fn detect_stale_vanilla_targets(
 	patches: &[ClausewitzPatch],
-	file_path: &str,
+	file_path: &GamePath,
 	mod_id: &str,
 	mod_version: &str,
 	vanilla: Option<&ParsedScriptFile>,
@@ -43,7 +43,7 @@ pub(crate) fn detect_stale_vanilla_targets(
 			Some(StaleVanillaTargetDescriptor {
 				mod_id: mod_id.to_string(),
 				mod_version: mod_version.to_string(),
-				file_path: file_path.to_string(),
+				file_path: file_path.to_owned(),
 				patch_kind: target.kind.to_string(),
 				target_path: target.path.to_vec(),
 				target_key: target.key.map(str::to_string),
@@ -194,7 +194,6 @@ fn block_items(stmt: &AstStatement) -> Option<&[AstStatement]> {
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use crate::game::eu4::content::ScriptFileKind;
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
@@ -204,11 +203,11 @@ mod tests {
 	const FILE_PATH: &str = "common/test/foo.txt";
 
 	fn parsed(source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from(FILE_PATH);
-		let parsed = parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse(FILE_PATH).expect("valid game path");
+		let parsed = parse_clausewitz_content(&path, source);
 		ParsedScriptFile {
 			mod_id: "__game__".to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path.clone(),
 			content_family: None,
 			file_kind: ScriptFileKind::new("other"),
@@ -235,7 +234,7 @@ mod tests {
 
 		let findings = detect_stale_vanilla_targets(
 			&patches,
-			FILE_PATH,
+			crate::model::GamePath::new(FILE_PATH).expect("valid game path"),
 			"mod-a",
 			"1.0.0",
 			Some(&vanilla),
@@ -256,7 +255,7 @@ mod tests {
 
 		let findings = detect_stale_vanilla_targets(
 			&patches,
-			FILE_PATH,
+			crate::model::GamePath::new(FILE_PATH).expect("valid game path"),
 			"mod-a",
 			"1.34.0",
 			Some(&vanilla),
@@ -267,7 +266,7 @@ mod tests {
 		let finding = &findings[0];
 		assert_eq!(finding.mod_id, "mod-a");
 		assert_eq!(finding.mod_version, "1.34.0");
-		assert_eq!(finding.file_path, FILE_PATH);
+		assert_eq!(finding.file_path.as_str(), FILE_PATH);
 		assert_eq!(finding.patch_kind, "RemoveNode");
 		assert_eq!(finding.target_path, vec!["absent"]);
 		assert_eq!(finding.target_key.as_deref(), Some("child"));
@@ -290,7 +289,7 @@ mod tests {
 
 		let findings = detect_stale_vanilla_targets(
 			&patches,
-			FILE_PATH,
+			crate::model::GamePath::new(FILE_PATH).expect("valid game path"),
 			"mod-a",
 			"1.0.0",
 			Some(&vanilla),

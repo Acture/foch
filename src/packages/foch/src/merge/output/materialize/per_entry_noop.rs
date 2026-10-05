@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 
 use crate::game::eu4::content::{ContentFamilyDescriptor, MergeKeySource, MergePolicies};
 use crate::game::eu4::script::is_decision_container_key;
@@ -7,6 +6,7 @@ use crate::game::eu4::script::parser::{AstStatement, AstValue};
 
 use super::cross_file_dedup::{container_child_field_value_key, scalar_assignment_value};
 use crate::merge::structured::clausewitz_statements_semantically_equivalent;
+use crate::model::GamePath;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct PerEntryNoopLookupKey {
@@ -23,7 +23,7 @@ pub(super) fn drop_per_entry_noop_duplicates(
 	merged_statements: Vec<AstStatement>,
 	vanilla_statements: &[AstStatement],
 	descriptor: &ContentFamilyDescriptor,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> (Vec<AstStatement>, usize) {
 	if !descriptor.capabilities.dedup_policy.per_entry_safe() {
 		return (merged_statements, 0);
@@ -70,7 +70,7 @@ fn filter_per_entry_noop_statements(
 	merge_key_source: MergeKeySource,
 	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
 	policies: &MergePolicies,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> (Vec<AstStatement>, usize) {
 	let mut filtered = Vec::with_capacity(statements.len());
 	let mut dropped = 0usize;
@@ -105,7 +105,7 @@ fn filter_per_entry_noop_child_statements(
 	merge_key_source: MergeKeySource,
 	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
 	policies: &MergePolicies,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> (AstStatement, usize) {
 	match statement {
 		AstStatement::Assignment {
@@ -155,7 +155,7 @@ fn per_entry_noop_matches_vanilla(
 	statement: &AstStatement,
 	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
 	policies: &MergePolicies,
-	relative_path: &Path,
+	relative_path: &GamePath,
 ) -> bool {
 	vanilla_lookup.get(key).is_some_and(|vanilla_entries| {
 		vanilla_entries.iter().any(|vanilla| {

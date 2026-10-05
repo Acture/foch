@@ -24,6 +24,9 @@ arbitrary modlists.
   commit/export and a durable `MergeSession` are not implemented.
 - Editor and desktop provenance views expose adopted merge sources. Their
   existence does not establish packaged desktop readiness or in-game behavior.
+- The P-736 branch carries validated `GamePath` / `GamePathBuf` identities
+  through input, semantic, provenance and cache boundaries; native paths remain
+  at physical I/O. Its rebased sources follow the current workspace layout.
 
 See [merge design](merge-design.md), [architecture](architecture.md),
 [cache behavior](cache-architecture.md) and [known issues](known-issues.md)

@@ -1,3 +1,4 @@
+use crate::model::GamePathBuf;
 use crate::playset::PlaysetEntry;
 use crate::playset::descriptor::ModDescriptor;
 use crate::playset::steam::WorkshopInstallIdentity;
@@ -12,5 +13,6 @@ pub struct ModCandidate {
 	pub descriptor: Option<ModDescriptor>,
 	pub workshop_identity: Option<WorkshopInstallIdentity>,
 	pub descriptor_error: Option<String>,
-	pub files: Vec<PathBuf>,
+	/// The mod's inventory, relative to `root_path`, in byte order.
+	pub files: Vec<GamePathBuf>,
 }

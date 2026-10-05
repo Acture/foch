@@ -42,7 +42,9 @@ fn write_mod(playset_root: &Path, id: &str, name: &str, relative: &str, content:
 }
 
 fn government_reforms(path: &Path, root: &Path) -> BTreeMap<String, String> {
-	let parsed = parse_script_file("generated", root, path).expect("parse generated module");
+	let relative =
+		foch::model::GamePathBuf::from_physical(root, path).expect("file under the output root");
+	let parsed = parse_script_file("generated", root, &relative);
 	parsed
 		.ast
 		.statements
@@ -177,10 +179,13 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 			playset_fingerprint: None,
 			provenance: false,
 			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
-			retained_paths: Some(BTreeSet::from([
-				"common/governments/zzz_10_override.txt".to_string(),
-				"common/defines/es_defines.lua".to_string(),
-			])),
+			retained_paths: Some(BTreeSet::from(
+				[
+					"common/governments/zzz_10_override.txt",
+					"common/defines/es_defines.lua",
+				]
+				.map(|path| foch::model::GamePathBuf::parse(path).expect("valid game path")),
+			)),
 		},
 	)
 	.expect("merge synthetic base-aware module");

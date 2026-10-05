@@ -449,7 +449,6 @@ fn append_comments(statements: &mut Vec<AstStatement>, entries: Vec<&TriviaEntry
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use crate::game::eu4::script::parser::{Span, SpanRange};
 
@@ -608,7 +607,8 @@ mod tests {
 
 	fn file(statements: Vec<AstStatement>) -> AstFile {
 		AstFile {
-			path: PathBuf::from("common/governments/test.txt"),
+			path: crate::model::GamePathBuf::parse("common/governments/test.txt")
+				.expect("valid game path"),
 			statements,
 		}
 	}

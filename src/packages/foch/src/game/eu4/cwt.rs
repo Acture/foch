@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use super::base::builtin::is_builtin_effect;
@@ -11,7 +11,8 @@ use crate::game::schema::query::{
 	CompiledAliasCategory, CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery,
 	RuleContext,
 };
-use crate::model::{ScopeKind, ScopeType, base_scope};
+use crate::game::schema::rule_path::SchemaDirectory;
+use crate::model::{GamePath, ScopeKind, ScopeType, base_scope};
 
 pub mod merge;
 
@@ -405,7 +406,7 @@ pub(crate) fn schema_file_kind_container_scope_kind(
 pub(crate) fn schema_path_container_scope_kind(
 	engine: &CwtQuery,
 	file_kind: ScriptFileKind,
-	file_path: &Path,
+	file_path: &GamePath,
 	ast_path: &[&str],
 ) -> Option<ScopeKind> {
 	let key = *ast_path.last()?;
@@ -707,7 +708,7 @@ fn file_kind_root_types<'e>(
 			definition.name.as_str() == kind
 				|| definition
 					.path
-					.as_deref()
+					.as_ref()
 					.is_some_and(|path| schema_path_matches_file_kind(path, kind))
 		})
 		.collect::<Vec<_>>();
@@ -715,12 +716,11 @@ fn file_kind_root_types<'e>(
 	matches
 }
 
-fn schema_path_matches_file_kind(path: &str, file_kind: &str) -> bool {
-	let normalized = path
-		.trim_start_matches("game/")
-		.trim_matches('/')
-		.to_ascii_lowercase();
-	normalized == file_kind || normalized.rsplit('/').next() == Some(file_kind)
+/// Whether a root type's directory is named for `file_kind`: its last
+/// component, compared ignoring ASCII case as rule paths are.
+pub(super) fn schema_path_matches_file_kind(path: &SchemaDirectory, file_kind: &str) -> bool {
+	path.as_game_path()
+		.is_some_and(|directory| directory.file_name().eq_ignore_ascii_case(file_kind))
 }
 
 fn file_kind_container_fields<'e>(
@@ -1063,15 +1063,15 @@ mod tests {
 	use std::ffi::OsString;
 
 	use super::{
-		EMBEDDED_CWT_SCHEMA_ID, EMBEDDED_RULE_PACK, iterator_scope_type, load_schema, override_dir,
-		schema_path_container_scope_kind,
+		CwtSchema, EMBEDDED_CWT_SCHEMA_ID, EMBEDDED_RULE_PACK, iterator_scope_type, load_schema,
+		override_dir, schema_path_container_scope_kind,
 	};
 	use crate::game::eu4::content::ScriptFileKind;
 	use crate::game::schema::CwtLoadStatus;
-	use crate::game::schema::compile::cwt_files;
 	use crate::game::schema::query::CompiledRulePack;
+	use crate::game::schema::source::cwt_files;
 	use crate::game::schema::source::{SchemaPack, cwt_schema_id_from_dir, normalize_line_endings};
-	use crate::model::{ScopeKind, ScopeRegistry, base_scope};
+	use crate::model::{GamePath, ScopeKind, ScopeRegistry, base_scope};
 
 	fn vendored_schema_dir() -> PathBuf {
 		Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../vendor/cwtools-eu4-config")
@@ -1204,7 +1204,7 @@ mod tests {
 	#[test]
 	fn schema_path_classifies_dynamic_age_objectives_as_triggers() {
 		let engine = super::rule_engine();
-		let file = Path::new("common/ages/00_default.txt");
+		let file = GamePath::new("common/ages/00_default.txt").expect("valid game path");
 		let file_kind = ScriptFileKind::new("ages");
 
 		assert_eq!(
@@ -1225,5 +1225,33 @@ mod tests {
 			),
 			Some(ScopeKind::Trigger),
 		);
+	}
+
+	/// A user schema can declare a rule path that is not a game path. It no
+	/// longer loads, and the report says which schema, which file and which
+	/// declaration instead of switching schema features off silently.
+	#[test]
+	#[should_panic(expected = "FOCH_CWTOOLS_SCHEMA_DIR")]
+	fn a_user_schema_that_fails_to_load_is_reported_with_its_cause() {
+		let root = tempfile::tempdir().expect("create schema dir");
+		let file = root.path().join("ideas.cwt");
+		std::fs::write(
+			&file,
+			"types = { type[idea_group] = { path = \"game/common/ideas/\" } }\n",
+		)
+		.expect("write schema");
+		let error = CwtSchema::load_with_cache(root.path(), None)
+			.err()
+			.expect("a trailing `/` is not a game path");
+		let report: String = error.to_string();
+
+		for expected in [
+			root.path().display().to_string(),
+			file.display().to_string(),
+			"`idea_group` declares an invalid path".to_string(),
+		] {
+			assert!(report.contains(&expected), "{expected} not in {report}");
+		}
+		load_schema(Some(root.path().to_path_buf()));
 	}
 }

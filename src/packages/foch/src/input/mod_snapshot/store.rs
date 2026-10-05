@@ -1,8 +1,9 @@
 use crate::model::{
-	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
-	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
-	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex,
-	SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
+	AliasUsage, AsGamePathText, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf,
+	GamePathError, JsonProperty, KeyUsage, LocalisationDefinition, LocalisationDuplicate,
+	MaybeScope, ParamBinding, ParamContract, ParseIssue, ResourceReference, ScalarAssignment,
+	ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
+	SymbolReference, UiDefinition,
 };
 use crate::platform::cache_store::{CacheError, default_foch_cache_dir};
 use flate2::Compression;
@@ -20,7 +21,7 @@ use std::time::SystemTime;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "10.0.0";
+pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "11.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const MOD_SNAPSHOT_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
 const MOD_SNAPSHOT_CACHE_HEADER_BYTES: usize = MOD_SNAPSHOT_CACHE_MAGIC.len() + size_of::<u64>();
@@ -73,9 +74,9 @@ impl<W: Write> Write for SizeLimitedWriter<W> {
 #[derive(Clone, Debug)]
 pub struct CachedModData {
 	pub semantic_index: SemanticIndex,
-	/// Strictly sorted, unique, normalized relative paths for every file in the
-	/// source mod inventory, including files outside semantic analysis.
-	pub inventory_paths: Vec<String>,
+	/// Game paths for every file in the source mod inventory, including files
+	/// outside semantic analysis, strictly increasing in byte order.
+	pub inventory_paths: Vec<GamePathBuf>,
 	/// One compact flag per `semantic_index.documents` entry. `true` means the
 	/// document parsed cleanly and contains no non-comment AST content.
 	pub document_noop_hints: Vec<bool>,
@@ -135,7 +136,8 @@ struct StoredSemanticIndex {
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct StoredDocumentRecord {
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	family: DocumentFamily,
 	parse_ok: bool,
 }
@@ -148,7 +150,8 @@ struct StoredScopeNode {
 	this_type: MaybeScope,
 	aliases: std::collections::HashMap<String, MaybeScope>,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	span: SourceSpan,
 	key: String,
 }
@@ -160,7 +163,8 @@ struct StoredSymbolDefinition {
 	module: String,
 	local_name: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -181,7 +185,8 @@ struct StoredSymbolReference {
 	name: String,
 	module: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -193,7 +198,8 @@ struct StoredSymbolReference {
 struct StoredAliasUsage {
 	alias: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -203,7 +209,8 @@ struct StoredAliasUsage {
 struct StoredKeyUsage {
 	key: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -215,7 +222,8 @@ struct StoredScalarAssignment {
 	key: String,
 	value: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	scope_id: usize,
@@ -225,7 +233,8 @@ struct StoredScalarAssignment {
 struct StoredLocalisationDefinition {
 	key: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -234,7 +243,8 @@ struct StoredLocalisationDefinition {
 struct StoredLocalisationDuplicate {
 	key: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	first_line: usize,
 	duplicate_line: usize,
 }
@@ -243,7 +253,8 @@ struct StoredLocalisationDuplicate {
 struct StoredUiDefinition {
 	name: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -253,7 +264,8 @@ struct StoredResourceReference {
 	key: String,
 	value: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -262,7 +274,8 @@ struct StoredResourceReference {
 struct StoredCsvRow {
 	identity: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -271,7 +284,8 @@ struct StoredCsvRow {
 struct StoredJsonProperty {
 	key_path: String,
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -287,7 +301,8 @@ struct StoredJsonProperty {
 )]
 struct StoredParseIssue {
 	mod_id: String,
-	path: String,
+	#[rkyv(with = AsGamePathText)]
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 	message: String,
@@ -403,8 +418,7 @@ impl ModSnapshotCache {
 		{
 			return None;
 		}
-		stored.validate_document_metadata().ok()?;
-		let data = stored.into_cached_mod_data();
+		let data = stored.into_cached_mod_data().ok()?;
 		touch_cache_file(&path);
 		Some(data)
 	}
@@ -426,7 +440,7 @@ impl ModSnapshotCache {
 		if let Err(error) = fs::create_dir_all(&self.root).map_err(CacheError::Io) {
 			return (data, Err(error));
 		}
-		let payload = StoredCachedModData::from_cached_mod_data_owned(
+		let (payload, inventory_paths) = StoredCachedModData::from_cached_mod_data_owned(
 			cache_version,
 			mod_hash,
 			analysis_identity,
@@ -435,7 +449,7 @@ impl ModSnapshotCache {
 		);
 		let path = self.cache_file(cache_version, mod_hash, analysis_identity, game_key);
 		let result = store_payload_streaming(&path, &payload);
-		let data = payload.into_cached_mod_data();
+		let data = payload.into_cached_mod_data_with_inventory(inventory_paths);
 		(data, result)
 	}
 
@@ -464,25 +478,40 @@ fn is_mod_snapshot_cache_tmp(name: &str) -> bool {
 }
 
 impl StoredCachedModData {
+	/// Moves `data` into its wire form. The inventory is written as text and
+	/// the typed paths are handed back, so the caller can restore `data`
+	/// without parsing them again.
 	fn from_cached_mod_data_owned(
 		cache_version: &str,
 		mod_hash: &str,
 		analysis_identity: &str,
 		game_key: &str,
 		data: CachedModData,
-	) -> Self {
-		Self {
+	) -> (Self, Vec<GamePathBuf>) {
+		let CachedModData {
+			semantic_index,
+			inventory_paths,
+			document_noop_hints,
+			document_input_identities,
+		} = data;
+		let stored = Self {
 			cache_version: cache_version.to_string(),
 			mod_hash: mod_hash.to_string(),
 			analysis_identity: analysis_identity.to_string(),
 			game_key: game_key.to_string(),
-			semantic_index: StoredSemanticIndex::from_semantic_index_owned(data.semantic_index),
-			inventory_paths: data.inventory_paths,
-			document_noop_hints: data.document_noop_hints,
-			document_input_identities: data.document_input_identities,
-		}
+			semantic_index: StoredSemanticIndex::from_semantic_index_owned(semantic_index),
+			inventory_paths: inventory_paths
+				.iter()
+				.map(|path| path.as_str().to_owned())
+				.collect(),
+			document_noop_hints,
+			document_input_identities,
+		};
+		(stored, inventory_paths)
 	}
 
+	/// Checks the per-document metadata lengths. The inventory is validated
+	/// once, when [`Self::into_cached_mod_data`] restores its typed paths.
 	fn validate_document_metadata(&self) -> Result<(), CacheError> {
 		let document_count = self.semantic_index.documents.len();
 		if self.document_noop_hints.len() != document_count {
@@ -497,15 +526,27 @@ impl StoredCachedModData {
 				self.document_input_identities.len(),
 			)));
 		}
-		validate_inventory_paths(&self.inventory_paths)?;
 		Ok(())
 	}
 
-	fn into_cached_mod_data(self) -> CachedModData {
-		let semantic_index = self.semantic_index.into_semantic_index();
+	/// Restores the in-memory form of a decoded entry, validating each
+	/// inventory entry as a game path and the inventory's strict byte order.
+	fn into_cached_mod_data(mut self) -> Result<CachedModData, CacheError> {
+		let inventory_paths = std::mem::take(&mut self.inventory_paths)
+			.into_iter()
+			.map(|path| GamePathBuf::try_from(path).map_err(invalid_inventory_path))
+			.collect::<Result<Vec<_>, _>>()?;
+		validate_inventory_order(inventory_paths.iter().map(GamePathBuf::as_game_path))?;
+		Ok(self.into_cached_mod_data_with_inventory(inventory_paths))
+	}
+
+	fn into_cached_mod_data_with_inventory(
+		self,
+		inventory_paths: Vec<GamePathBuf>,
+	) -> CachedModData {
 		CachedModData {
-			semantic_index,
-			inventory_paths: self.inventory_paths,
+			semantic_index: self.semantic_index.into_semantic_index(),
+			inventory_paths,
 			document_noop_hints: self.document_noop_hints,
 			document_input_identities: self.document_input_identities,
 		}
@@ -526,39 +567,28 @@ fn validate_cached_document_metadata(data: &CachedModData) -> Result<(), CacheEr
 			data.document_input_identities.len(),
 		)));
 	}
-	validate_inventory_paths(&data.inventory_paths)?;
-	Ok(())
+	validate_inventory_order(data.inventory_paths.iter().map(GamePathBuf::as_game_path))
 }
 
-fn validate_inventory_paths(inventory_paths: &[String]) -> Result<(), CacheError> {
+fn invalid_inventory_path(error: GamePathError) -> CacheError {
+	CacheError::encode(format!("mod snapshot inventory path is invalid: {error}"))
+}
+
+/// A stored inventory is strictly increasing in byte order, which also makes
+/// it unique: a repeated path would mean two files were given one identity.
+fn validate_inventory_order<'a>(
+	inventory_paths: impl IntoIterator<Item = &'a GamePath>,
+) -> Result<(), CacheError> {
+	let mut previous: Option<&GamePath> = None;
 	for path in inventory_paths {
-		if !is_normalized_relative_inventory_path(path) {
+		if let Some(previous) = previous.filter(|previous| *previous >= path) {
 			return Err(CacheError::encode(format!(
-				"mod snapshot inventory path {path:?} is not a normalized forward-slash relative path"
+				"mod snapshot inventory paths must be strictly sorted and unique: `{path}` follows `{previous}`"
 			)));
 		}
-	}
-	for pair in inventory_paths.windows(2) {
-		if pair[0] >= pair[1] {
-			return Err(CacheError::encode(
-				"mod snapshot inventory paths must be strictly sorted and unique",
-			));
-		}
+		previous = Some(path);
 	}
 	Ok(())
-}
-
-fn is_normalized_relative_inventory_path(path: &str) -> bool {
-	let bytes = path.as_bytes();
-	if path.is_empty()
-		|| path.starts_with('/')
-		|| path.contains('\\')
-		|| (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
-	{
-		return false;
-	}
-	path.split('/')
-		.all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 impl StoredSemanticIndex {
@@ -717,7 +747,7 @@ impl StoredDocumentRecord {
 	fn from_document_record_owned(item: DocumentRecord) -> Self {
 		Self {
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			family: item.family,
 			parse_ok: item.parse_ok,
 		}
@@ -726,7 +756,7 @@ impl StoredDocumentRecord {
 	fn into_document_record(self) -> DocumentRecord {
 		DocumentRecord {
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			family: self.family,
 			parse_ok: self.parse_ok,
 		}
@@ -742,7 +772,7 @@ impl StoredScopeNode {
 			this_type: item.this_type,
 			aliases: item.aliases,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			span: item.span,
 			key: item.key,
 		}
@@ -756,7 +786,7 @@ impl StoredScopeNode {
 			this_type: self.this_type,
 			aliases: self.aliases,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			span: self.span,
 			key: self.key,
 		}
@@ -771,7 +801,7 @@ impl StoredSymbolDefinition {
 			module: item.module,
 			local_name: item.local_name,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -794,7 +824,7 @@ impl StoredSymbolDefinition {
 			module: self.module,
 			local_name: self.local_name,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -818,7 +848,7 @@ impl StoredSymbolReference {
 			name: item.name,
 			module: item.module,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -833,7 +863,7 @@ impl StoredSymbolReference {
 			name: self.name,
 			module: self.module,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -848,7 +878,7 @@ impl StoredAliasUsage {
 		Self {
 			alias: item.alias,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -859,7 +889,7 @@ impl StoredAliasUsage {
 		AliasUsage {
 			alias: self.alias,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -872,7 +902,7 @@ impl StoredKeyUsage {
 		Self {
 			key: item.key,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -884,7 +914,7 @@ impl StoredKeyUsage {
 		KeyUsage {
 			key: self.key,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -899,7 +929,7 @@ impl StoredScalarAssignment {
 			key: item.key,
 			value: item.value,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
@@ -911,7 +941,7 @@ impl StoredScalarAssignment {
 			key: self.key,
 			value: self.value,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			scope_id: self.scope_id,
@@ -924,7 +954,7 @@ impl StoredLocalisationDefinition {
 		Self {
 			key: item.key,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -934,7 +964,7 @@ impl StoredLocalisationDefinition {
 		LocalisationDefinition {
 			key: self.key,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -946,7 +976,7 @@ impl StoredLocalisationDuplicate {
 		Self {
 			key: item.key,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			first_line: item.first_line,
 			duplicate_line: item.duplicate_line,
 		}
@@ -956,7 +986,7 @@ impl StoredLocalisationDuplicate {
 		LocalisationDuplicate {
 			key: self.key,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			first_line: self.first_line,
 			duplicate_line: self.duplicate_line,
 		}
@@ -968,7 +998,7 @@ impl StoredUiDefinition {
 		Self {
 			name: item.name,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -978,7 +1008,7 @@ impl StoredUiDefinition {
 		UiDefinition {
 			name: self.name,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -991,7 +1021,7 @@ impl StoredResourceReference {
 			key: item.key,
 			value: item.value,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -1002,7 +1032,7 @@ impl StoredResourceReference {
 			key: self.key,
 			value: self.value,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -1014,7 +1044,7 @@ impl StoredCsvRow {
 		Self {
 			identity: item.identity,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -1024,7 +1054,7 @@ impl StoredCsvRow {
 		CsvRow {
 			identity: self.identity,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -1036,7 +1066,7 @@ impl StoredJsonProperty {
 		Self {
 			key_path: item.key_path,
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 		}
@@ -1046,7 +1076,7 @@ impl StoredJsonProperty {
 		JsonProperty {
 			key_path: self.key_path,
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 		}
@@ -1057,7 +1087,7 @@ impl StoredParseIssue {
 	fn from_parse_issue_owned(item: ParseIssue) -> Self {
 		Self {
 			mod_id: item.mod_id,
-			path: path_to_string(&item.path),
+			path: item.path,
 			line: item.line,
 			column: item.column,
 			message: item.message,
@@ -1067,16 +1097,12 @@ impl StoredParseIssue {
 	fn into_parse_issue(self) -> ParseIssue {
 		ParseIssue {
 			mod_id: self.mod_id,
-			path: PathBuf::from(self.path),
+			path: self.path,
 			line: self.line,
 			column: self.column,
 			message: self.message,
 		}
 	}
-}
-
-fn path_to_string(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
 }
 
 pub fn default_mod_snapshot_cache_dir() -> PathBuf {
@@ -1263,6 +1289,19 @@ mod tests {
 	use std::time::Duration;
 	use tempfile::TempDir;
 
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn empty_data() -> CachedModData {
+		CachedModData {
+			semantic_index: SemanticIndex::default(),
+			inventory_paths: Vec::new(),
+			document_noop_hints: Vec::new(),
+			document_input_identities: Vec::new(),
+		}
+	}
+
 	#[test]
 	fn cache_lookup_miss_then_store_then_hit() {
 		let tmp = TempDir::new().expect("temp dir");
@@ -1270,15 +1309,15 @@ mod tests {
 		let mut index = SemanticIndex::default();
 		index.documents.push(DocumentRecord {
 			mod_id: "mod-a".to_string(),
-			path: PathBuf::from("common/countries/A.txt"),
+			path: game_path("common/countries/A.txt"),
 			family: DocumentFamily::Clausewitz,
 			parse_ok: true,
 		});
 		let data = CachedModData {
 			semantic_index: index,
 			inventory_paths: vec![
-				"common/countries/A.txt".to_string(),
-				"gfx/flags/A.tga".to_string(),
+				game_path("common/countries/A.txt"),
+				game_path("gfx/flags/A.tga"),
 			],
 			document_noop_hints: vec![true],
 			document_input_identities: vec![Some(CachedDocumentInputIdentity {
@@ -1300,8 +1339,8 @@ mod tests {
 		assert_eq!(
 			hit.inventory_paths,
 			vec![
-				"common/countries/A.txt".to_string(),
-				"gfx/flags/A.tga".to_string(),
+				game_path("common/countries/A.txt"),
+				game_path("gfx/flags/A.tga"),
 			]
 		);
 		assert_eq!(hit.document_noop_hints, vec![true]);
@@ -1332,7 +1371,7 @@ mod tests {
 		let mut index = SemanticIndex::default();
 		index.documents.push(DocumentRecord {
 			mod_id: "mod-a".to_string(),
-			path: PathBuf::from("common/countries/A.txt"),
+			path: game_path("common/countries/A.txt"),
 			family: DocumentFamily::Clausewitz,
 			parse_ok: true,
 		});
@@ -1357,7 +1396,7 @@ mod tests {
 	}
 
 	#[test]
-	fn store_rejects_invalid_inventory_paths() {
+	fn store_rejects_unsorted_or_repeated_inventory_paths() {
 		let tmp = TempDir::new().expect("temp dir");
 		let cache = ModSnapshotCache::open(tmp.path());
 		let invalid_cases = [
@@ -1369,22 +1408,15 @@ mod tests {
 				"duplicate",
 				vec!["common/countries/A.txt", "common/countries/A.txt"],
 			),
-			("empty", vec![""]),
-			("absolute", vec!["/common/countries/A.txt"]),
-			("drive-absolute", vec!["C:/common/countries/A.txt"]),
-			("empty-component", vec!["common//countries/A.txt"]),
-			("dot-component", vec!["common/./countries/A.txt"]),
-			("parent-component", vec!["common/../countries/A.txt"]),
-			("backslash", vec![r"common\countries\A.txt"]),
+			// Byte order, not component order: `a-b` sorts before `a/b`.
+			("component-order", vec!["common/a/b.txt", "common/a-b.txt"]),
 		];
 
 		for (case, paths) in invalid_cases {
-			let inventory_paths = paths.into_iter().map(str::to_string).collect::<Vec<_>>();
+			let inventory_paths = paths.into_iter().map(game_path).collect::<Vec<_>>();
 			let data = CachedModData {
-				semantic_index: SemanticIndex::default(),
 				inventory_paths: inventory_paths.clone(),
-				document_noop_hints: Vec::new(),
-				document_input_identities: Vec::new(),
+				..empty_data()
 			};
 
 			let (returned, result) = cache.store_owned(case, "0.1.0", "eu4 1.37.4", data);
@@ -1405,39 +1437,171 @@ mod tests {
 	}
 
 	#[test]
-	fn decode_rejects_invalid_inventory_paths() {
+	fn decoded_inventory_text_must_be_strictly_ordered_game_paths() {
 		let tmp = TempDir::new().expect("temp dir");
 		let cache = ModSnapshotCache::open(tmp.path());
-		let path = cache.cache_file(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			"invalid-inventory",
-			"0.1.0",
-			"eu4 1.37.4",
-		);
-		let payload = StoredCachedModData::from_cached_mod_data_owned(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			"invalid-inventory",
-			"0.1.0",
-			"eu4 1.37.4",
-			CachedModData {
-				semantic_index: SemanticIndex::default(),
-				inventory_paths: vec!["common/../countries/A.txt".to_string()],
-				document_noop_hints: Vec::new(),
-				document_input_identities: Vec::new(),
-			},
-		);
-		store_payload_streaming(&path, &payload).expect("encode invalid payload");
+		let invalid = "mod snapshot inventory path is invalid";
+		let unordered = "must be strictly sorted and unique";
+		let invalid_cases = [
+			("empty", vec![""], invalid, "``"),
+			(
+				"absolute",
+				vec!["/common/countries/A.txt"],
+				invalid,
+				"`/common/countries/A.txt`",
+			),
+			(
+				"drive-absolute",
+				vec!["C:/common/countries/A.txt"],
+				invalid,
+				"`C:/common/countries/A.txt`",
+			),
+			(
+				"empty-component",
+				vec!["common//countries/A.txt"],
+				invalid,
+				"`common//countries/A.txt`",
+			),
+			(
+				"dot-component",
+				vec!["common/./countries/A.txt"],
+				invalid,
+				"`common/./countries/A.txt`",
+			),
+			(
+				"parent-component",
+				vec!["common/../countries/A.txt"],
+				invalid,
+				"`common/../countries/A.txt`",
+			),
+			(
+				"backslash",
+				vec![r"common\countries\A.txt"],
+				invalid,
+				r"`common\countries\A.txt`",
+			),
+			(
+				"unsorted",
+				vec!["gfx/flags/A.tga", "common/countries/A.txt"],
+				unordered,
+				"`common/countries/A.txt` follows `gfx/flags/A.tga`",
+			),
+			(
+				"duplicate",
+				vec!["common/countries/A.txt", "common/countries/A.txt"],
+				unordered,
+				"`common/countries/A.txt` follows `common/countries/A.txt`",
+			),
+		];
 
-		let error = decode_payload_from_file(&path).expect_err("reject invalid inventory");
-		assert!(matches!(
-			error,
-			CacheError::Encode(message) if message.contains("inventory path")
-		));
-		assert!(
-			cache
-				.lookup("invalid-inventory", "0.1.0", "eu4 1.37.4")
-				.is_none()
-		);
+		for (case, paths, reason, named) in invalid_cases {
+			let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, case, "0.1.0", "eu4 1.37.4");
+			let (mut payload, _) = StoredCachedModData::from_cached_mod_data_owned(
+				MOD_SNAPSHOT_CACHE_VERSION,
+				case,
+				"0.1.0",
+				"eu4 1.37.4",
+				empty_data(),
+			);
+			payload.inventory_paths = paths.into_iter().map(str::to_string).collect();
+			store_payload_streaming(&path, &payload).expect("encode invalid payload");
+
+			// The wire decode checks structure only; restoring the typed
+			// inventory is the single validation of its paths.
+			let stored = decode_payload_from_file(&path).expect(case);
+			let error = stored.into_cached_mod_data().expect_err(case);
+			assert!(
+				matches!(
+					&error,
+					CacheError::Encode(message) if message.contains(reason) && message.contains(named)
+				),
+				"{case}: {error}"
+			);
+			assert!(
+				cache.lookup(case, "0.1.0", "eu4 1.37.4").is_none(),
+				"{case}"
+			);
+		}
+	}
+
+	/// Record paths are text on the wire and validated when an entry is
+	/// decoded, so record text that is not a game path makes the entry a miss
+	/// that the caller rebuilds, as a corrupt inventory does. Every record
+	/// kind's path is corrupted on its own, and one of them in each way a text
+	/// can fail to be a game path.
+	#[test]
+	fn decoded_record_text_that_is_not_a_game_path_is_a_miss() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModSnapshotCache::open(tmp.path());
+		// One length for every path, so each replacement changes only the
+		// text of one record path in the archive.
+		let valid = |kind: usize| format!("events/r{kind:02}.txt");
+		let mut cases: Vec<(String, usize, String)> = crate::model::SEMANTIC_RECORD_KINDS
+			.iter()
+			.enumerate()
+			.map(|(kind, name)| (name.to_string(), kind, format!(r"events\r{kind:02}.txt")))
+			.collect();
+		for (case, invalid) in [
+			("parent-component", "../nts/r00.txt"),
+			("empty-component", "events//00.txt"),
+			("absolute", "/vents/r00.txt"),
+		] {
+			cases.push((case.to_string(), 0, invalid.to_string()));
+		}
+		let payload = |case: &str| {
+			let data = CachedModData {
+				semantic_index: crate::model::index_with_one_record_of_each_kind(|kind| {
+					game_path(&valid(kind))
+				}),
+				inventory_paths: vec![game_path("gfx/flags/A.tga")],
+				document_noop_hints: vec![false],
+				document_input_identities: vec![None],
+			};
+			StoredCachedModData::from_cached_mod_data_owned(
+				MOD_SNAPSHOT_CACHE_VERSION,
+				case,
+				"0.1.0",
+				"eu4 1.37.4",
+				data,
+			)
+			.0
+		};
+		for (case, kind, invalid) in cases {
+			let valid = valid(kind);
+			assert_eq!(invalid.len(), valid.len(), "{case}");
+			let mut raw = rkyv::to_bytes::<rkyv::rancor::Error>(&payload(&case))
+				.expect("archive payload")
+				.to_vec();
+			let positions = raw
+				.windows(valid.len())
+				.enumerate()
+				.filter(|(_, window)| *window == valid.as_bytes())
+				.map(|(at, _)| at)
+				.collect::<Vec<_>>();
+			let [at] = positions.as_slice() else {
+				panic!("{case}: `{valid}` is archived {} times", positions.len());
+			};
+			raw[*at..*at + valid.len()].copy_from_slice(invalid.as_bytes());
+			let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+			encoder.write_all(&raw).expect("compress payload");
+			let mut bytes = MOD_SNAPSHOT_CACHE_MAGIC.to_vec();
+			bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+			bytes.extend(encoder.finish().expect("finish payload"));
+			let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, &case, "0.1.0", "eu4 1.37.4");
+			fs::write(&path, bytes).expect("write entry");
+
+			let error = decode_payload_from_file(&path)
+				.expect_err(&case)
+				.to_string();
+			assert!(
+				error.contains(&format!("invalid game path `{invalid}`")),
+				"{case}: {error}"
+			);
+			assert!(
+				cache.lookup(&case, "0.1.0", "eu4 1.37.4").is_none(),
+				"{case}"
+			);
+		}
 	}
 
 	#[test]

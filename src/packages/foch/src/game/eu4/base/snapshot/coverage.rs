@@ -5,7 +5,8 @@ use super::{
 };
 use crate::game::eu4::content::eu4_content_family_for_root_family;
 use crate::game::eu4::script::classify_script_file;
-use crate::model::DocumentFamily;
+use crate::model::{DocumentFamily, GamePath};
+use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -124,7 +125,7 @@ pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageRep
 		}
 		entry.increment_document_family(document.family);
 		if document.family == DocumentFamily::Clausewitz {
-			let kind = classify_script_file(Path::new(&document.path));
+			let kind = classify_script_file(&document.path);
 			entry.increment_script_file_kind(kind.as_str());
 		}
 	}
@@ -258,135 +259,122 @@ fn accumulate_semantic_counts<T>(
 }
 
 trait CoveragePath {
-	fn coverage_path(&self) -> &str;
+	fn coverage_path(&self) -> &GamePath;
 }
 
 impl CoveragePath for BaseSymbolDefinition {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseSymbolReference {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseAliasUsage {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseKeyUsage {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseScalarAssignment {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseLocalisationDefinition {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseLocalisationDuplicate {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseUiDefinition {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseResourceReference {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseCsvRow {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
 impl CoveragePath for BaseJsonProperty {
-	fn coverage_path(&self) -> &str {
+	fn coverage_path(&self) -> &GamePath {
 		&self.path
 	}
 }
 
-fn coverage_root_family(path: &str) -> Option<String> {
-	let normalized = path.replace('\\', "/");
-	if !is_tracked_non_binary_path(&normalized) {
+/// The coverage root a game path counts toward: its content family's root
+/// directory, spelled as the family id is.
+fn coverage_root_family(path: &GamePath) -> Option<String> {
+	if !is_tracked_non_binary_path(path) {
 		return None;
 	}
-	let parts: Vec<&str> = normalized
-		.split('/')
-		.filter(|item| !item.is_empty())
-		.collect();
-	if parts.is_empty() {
-		return None;
-	}
-	if parts[0] == "events"
-		&& parts.get(1) == Some(&"common")
-		&& let Some(group) = parts.get(2)
-	{
-		return Some(format!("events/common/{}", strip_extension(group)));
-	}
-	if parts[0] == "events" && parts.get(1) == Some(&"decisions") {
-		return Some("events/decisions".to_string());
-	}
-	if normalized.starts_with("map/random/tiles/") {
-		return Some("map/random/tiles".to_string());
-	}
-	if matches!(
-		normalized.as_str(),
-		"map/random/RandomLandNames.txt"
-			| "map/random/RandomSeaNames.txt"
-			| "map/random/RandomLakeNames.txt"
-	) {
-		return Some("map/random_names".to_string());
-	}
-	if normalized == "map/random/RNWScenarios.txt" {
-		return Some("map/random/scenarios".to_string());
-	}
-	match parts[0] {
-		"common" | "history" | "map" => {
-			let group = parts.get(1)?;
-			let family = if parts.len() == 2 {
-				strip_extension(group)
-			} else {
-				group
-			};
-			Some(format!("{}/{}", parts[0], family))
+	let parts: Vec<&str> = path.iter().collect();
+	match parts.as_slice() {
+		["events", "common", group, ..] => {
+			return Some(format!("events/common/{}", component_stem(group)));
 		}
-		_ if parts.len() == 1 => Some(parts[0].to_string()),
-		_ => Some(parts[0].to_string()),
+		["events", "decisions", ..] => return Some("events/decisions".to_string()),
+		["map", "random", "tiles", _, ..] => return Some("map/random/tiles".to_string()),
+		[
+			"map",
+			"random",
+			"RandomLandNames.txt" | "RandomSeaNames.txt" | "RandomLakeNames.txt",
+		] => {
+			return Some("map/random_names".to_string());
+		}
+		["map", "random", "RNWScenarios.txt"] => return Some("map/random/scenarios".to_string()),
+		_ => {}
+	}
+	match parts.as_slice() {
+		[] | ["common" | "history" | "map"] => None,
+		[top @ ("common" | "history" | "map"), file] => {
+			Some(format!("{top}/{}", component_stem(file)))
+		}
+		[top @ ("common" | "history" | "map"), group, ..] => Some(format!("{top}/{group}")),
+		[top, ..] => Some((*top).to_string()),
 	}
 }
 
-fn strip_extension(value: &str) -> &str {
-	value.rsplit_once('.').map_or(value, |(stem, _)| stem)
+/// A path component without its extension.
+fn component_stem(name: &str) -> &str {
+	RelativePath::new(name).file_stem().unwrap_or(name)
 }
 
-fn is_tracked_non_binary_path(path: &str) -> bool {
-	let normalized = path.to_ascii_lowercase();
-	matches!(
-		normalized.rsplit('.').next(),
-		Some("txt" | "gui" | "gfx" | "asset" | "mod" | "lua" | "yml" | "yaml" | "csv" | "json")
-	)
+/// Text files the coverage report tracks, by extension in any case.
+fn is_tracked_non_binary_path(path: &GamePath) -> bool {
+	path.extension().is_some_and(|extension| {
+		[
+			"txt", "gui", "gfx", "asset", "mod", "lua", "yml", "yaml", "csv", "json",
+		]
+		.iter()
+		.any(|tracked| extension.eq_ignore_ascii_case(tracked))
+	})
 }
 
 fn is_excluded_non_gameplay_root(root_family: &str) -> bool {
@@ -431,4 +419,46 @@ pub fn write_coverage_report(path: &Path, snapshot: &BaseAnalysisSnapshot) -> Re
 			path.display()
 		)
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::coverage_root_family;
+	use crate::model::GamePath;
+
+	#[test]
+	fn coverage_roots_are_derived_from_game_path_components() {
+		for (path, root) in [
+			(
+				"events/common/on_actions/x.txt",
+				Some("events/common/on_actions"),
+			),
+			("events/common/foo.txt", Some("events/common/foo")),
+			("events/decisions/x.txt", Some("events/decisions")),
+			("events/x.txt", Some("events")),
+			("map/random/tiles/tile0.txt", Some("map/random/tiles")),
+			("map/random/RandomLakeNames.txt", Some("map/random_names")),
+			("map/random/RNWScenarios.txt", Some("map/random/scenarios")),
+			("map/random/other.txt", Some("map/random")),
+			("map/area.txt", Some("map/area")),
+			("common/ideas/00_x.txt", Some("common/ideas")),
+			("common/achievements.txt", Some("common/achievements")),
+			("common/defines.lua", Some("common/defines")),
+			("common/Ideas/x.txt", Some("common/Ideas")),
+			(
+				"history/countries/SWE - Sweden.txt",
+				Some("history/countries"),
+			),
+			("localisation/x_l_english.YML", Some("localisation")),
+			("ThirdPartyLicenses.txt", Some("ThirdPartyLicenses.txt")),
+			("gfx/x.dds", None),
+			("common/no_extension", None),
+		] {
+			assert_eq!(
+				coverage_root_family(GamePath::new(path).expect("valid game path")).as_deref(),
+				root,
+				"{path}"
+			);
+		}
+	}
 }

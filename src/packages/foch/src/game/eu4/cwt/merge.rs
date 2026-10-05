@@ -3,13 +3,11 @@
 //! Callers provide only a file path and an AST address. The compiled CWT rule
 //! graph stays private to `foch` and is never exposed as part of the merge API.
 
-use std::path::Path;
-
 use crate::game::eu4::content::BlockMergePolicy;
 use crate::game::schema::query::{
 	CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery, RuleContext, SchemaBinding,
 };
-use crate::model::ConflictKind;
+use crate::model::{ConflictKind, GamePath};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaMergeSuggestion {
@@ -25,13 +23,16 @@ pub enum SchemaMergeIdentity {
 }
 
 /// Suggests schema-backed merge identity and block policy for an EU4 AST path.
-pub fn suggest_for_conflict(file_path: &Path, ast_path: &[&str]) -> Option<SchemaMergeSuggestion> {
+pub fn suggest_for_conflict(
+	file_path: &GamePath,
+	ast_path: &[&str],
+) -> Option<SchemaMergeSuggestion> {
 	suggest_for_conflict_with_query(super::rule_engine(), file_path, ast_path)
 }
 
 /// Classifies an unresolved EU4 merge conflict using schema evidence.
 pub fn classify_conflict_kind(
-	file_path: &Path,
+	file_path: &GamePath,
 	ast_path: &[&str],
 	reason: &str,
 ) -> Option<ConflictKind> {
@@ -40,7 +41,7 @@ pub fn classify_conflict_kind(
 
 fn suggest_for_conflict_with_query(
 	schema: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	ast_path: &[&str],
 ) -> Option<SchemaMergeSuggestion> {
 	let SchemaBinding::Bound { type_id, .. } = schema.bind_chain(file_path, ast_path) else {
@@ -62,7 +63,7 @@ fn suggest_for_conflict_with_query(
 
 fn classify_conflict_kind_with_query(
 	schema: &CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	ast_path: &[&str],
 	reason: &str,
 ) -> Option<ConflictKind> {
@@ -118,7 +119,7 @@ fn classify_conflict_kind_with_query(
 
 fn conflict_rule_fields_for_path<'schema>(
 	schema: &'schema CwtQuery,
-	file_path: &Path,
+	file_path: &GamePath,
 	ast_path: &[&str],
 ) -> Vec<&'schema CompiledRuleField> {
 	let Some(root) = schema.bind_root(file_path) else {
@@ -204,7 +205,10 @@ fn rule_value_for_path<'schema>(
 	last_value
 }
 
-fn root_name_field<'schema>(schema: &'schema CwtQuery, file_path: &Path) -> Option<&'schema str> {
+fn root_name_field<'schema>(
+	schema: &'schema CwtQuery,
+	file_path: &GamePath,
+) -> Option<&'schema str> {
 	schema.bind_root(file_path)?.name_field.as_deref()
 }
 
@@ -215,17 +219,15 @@ fn block_policy_for_value(value: &CompiledRuleValue) -> Option<BlockMergePolicy>
 	})
 }
 
-fn path_namespace(file_path: &Path) -> String {
-	let normalized = file_path.to_string_lossy().replace('\\', "/");
-	let components = normalized
-		.split('/')
-		.filter(|segment| !segment.is_empty())
-		.collect::<Vec<_>>();
-	match components.as_slice() {
-		[] => "unknown".to_string(),
-		[only] => (*only).to_string(),
-		[first, second, ..] if *first == "common" => (*second).to_string(),
-		[first, ..] => (*first).to_string(),
+/// The directory a file's schema provenance is reported under: the second
+/// component below `common`, otherwise the first; a file directly under the
+/// root is its own namespace.
+fn path_namespace(file_path: &GamePath) -> &str {
+	let mut components = file_path.iter();
+	let first = components.next().unwrap_or_else(|| file_path.file_name());
+	match components.next() {
+		Some(second) if first == "common" => second,
+		_ => first,
 	}
 }
 
@@ -236,6 +238,10 @@ mod tests {
 	use tempfile::TempDir;
 
 	use super::*;
+
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
 	use crate::game::schema::CwtSchema;
 
 	const EVENT_SCHEMA: &str = r#"
@@ -272,7 +278,7 @@ mod tests {
 	fn suggests_field_value_identity_from_name_field() {
 		let schema = test_schema(EVENT_SCHEMA);
 		let suggestion =
-			suggest_for_conflict_with_query(schema.facts(), Path::new("events/example.txt"), &[])
+			suggest_for_conflict_with_query(schema.facts(), game_path("events/example.txt"), &[])
 				.expect("suggestion");
 		assert_eq!(
 			suggestion.suggested_identity_source,
@@ -287,7 +293,7 @@ mod tests {
 		let schema = test_schema(BINDING_SCHEMA);
 		let suggestion = suggest_for_conflict_with_query(
 			schema.facts(),
-			Path::new("missions/example.txt"),
+			game_path("missions/example.txt"),
 			&["my_mission"],
 		)
 		.expect("suggestion");
@@ -304,7 +310,7 @@ mod tests {
 		assert_eq!(
 			classify_conflict_kind_with_query(
 				schema.facts(),
-				Path::new("events/example.txt"),
+				game_path("events/example.txt"),
 				&["country_event"],
 				"sibling mods inserted divergent statements at the same key"
 			),
@@ -318,7 +324,7 @@ mod tests {
 		assert_eq!(
 			classify_conflict_kind_with_query(
 				schema.facts(),
-				Path::new("events/example.txt"),
+				game_path("events/example.txt"),
 				&["country_event", "immediate"],
 				"policy: divergent block revisions remain unresolved"
 			),
@@ -332,7 +338,7 @@ mod tests {
 		assert_eq!(
 			classify_conflict_kind_with_query(
 				schema.facts(),
-				Path::new("missions/example.txt"),
+				game_path("missions/example.txt"),
 				&["provinces_to_highlight"],
 				"sibling mods inserted divergent statements at the same key"
 			),
@@ -344,7 +350,7 @@ mod tests {
 	fn classifies_vendor_country_history_cardinality_conflict() {
 		assert_eq!(
 			classify_conflict_kind(
-				Path::new("history/countries/TES - Test.txt"),
+				game_path("history/countries/TES - Test.txt"),
 				&["government_rank"],
 				"sibling mods inserted divergent statements at the same key"
 			),
@@ -356,7 +362,7 @@ mod tests {
 	fn classifies_vendor_recursive_block_conflict_as_deep_mergeable() {
 		assert_eq!(
 			classify_conflict_kind(
-				Path::new("common/government_reforms/test.txt"),
+				game_path("common/government_reforms/test.txt"),
 				&["test_reform"],
 				"deep merge of replaced block has 1 unresolved sub-conflict(s)"
 			),
@@ -390,7 +396,7 @@ mod tests {
 		let schema = test_schema(ALIAS_SCHEMA);
 		let suggestion = suggest_for_conflict_with_query(
 			schema.facts(),
-			Path::new("common/things/example.txt"),
+			game_path("common/things/example.txt"),
 			&["breakdown"],
 		)
 		.expect("suggestion");
@@ -406,7 +412,7 @@ mod tests {
 		let schema = test_schema(ALIAS_SCHEMA);
 		let suggestion = suggest_for_conflict_with_query(
 			schema.facts(),
-			Path::new("common/things/example.txt"),
+			game_path("common/things/example.txt"),
 			&["upkeep"],
 		)
 		.expect("suggestion");
@@ -423,7 +429,7 @@ mod tests {
 		assert!(
 			suggest_for_conflict_with_query(
 				schema.facts(),
-				Path::new("events/example.txt"),
+				game_path("events/example.txt"),
 				&["missing"]
 			)
 			.is_none()

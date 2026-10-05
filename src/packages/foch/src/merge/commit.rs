@@ -1,6 +1,6 @@
 //! Commit of an already analyzed and frozen merge artifact.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,11 +11,11 @@ use crate::game::eu4::base::snapshot::{
 };
 use crate::input::request::InputRequest;
 use crate::input::{InputInventory, resolve_product_input_manifest};
-use crate::model::{MergeReport, ProductInputAttestation};
+use crate::model::{GamePathBuf, MergeReport, ProductInputAttestation};
 use walkdir::WalkDir;
 
 use super::analyze::{AnalysisStatusView, AnalyzedMerge, MergeStatusView, commit_exit_code};
-use super::error::MergeError;
+use super::error::{MergeError, MergeErrorSubject};
 use super::output::materialize::OutputTransaction;
 
 #[derive(Clone, Debug)]
@@ -61,25 +61,22 @@ impl BaseSnapshotCommitGuard {
 #[derive(Clone, Debug)]
 pub(super) struct ProductInputCommitGuard {
 	request: InputRequest,
-	retained_paths: Option<BTreeSet<String>>,
 	pub(super) expected: ProductInputAttestation,
 }
 
 impl ProductInputCommitGuard {
 	pub(super) fn from_inventory(
 		request: InputRequest,
-		retained_paths: Option<BTreeSet<String>>,
 		inventory: &InputInventory,
 	) -> Option<Self> {
 		Some(Self {
 			request,
-			retained_paths,
 			expected: inventory.product_input_manifest.as_ref()?.attestation(),
 		})
 	}
 
 	fn validate(&self) -> Result<(), MergeError> {
-		let observed = resolve_product_input_manifest(&self.request, self.retained_paths.as_ref())
+		let observed = resolve_product_input_manifest(&self.request)
 			.map_err(|error| MergeError::InputResolve {
 				path: error.path,
 				message: format!(
@@ -101,25 +98,29 @@ impl ProductInputCommitGuard {
 	}
 }
 
+/// The prior-output files a `keep_existing` decision carried into the
+/// analyzed output, with the digest each had when analysis read it. Commit
+/// refuses to install the output if any of them changed since.
 #[derive(Clone, Debug)]
 pub(super) struct PriorOutputGuard {
 	root: PathBuf,
-	files: BTreeMap<PathBuf, blake3::Hash>,
+	files: BTreeMap<GamePathBuf, blake3::Hash>,
 }
 
 impl PriorOutputGuard {
+	/// Every `kept_existing` record names its file by game path, which reading
+	/// the report validated, so the file is that path under `root`.
 	pub(super) fn from_report(
 		root: &Path,
 		report: &MergeReport,
 	) -> Result<Option<Self>, MergeError> {
-		let mut files: BTreeMap<PathBuf, blake3::Hash> = BTreeMap::new();
+		let mut files: BTreeMap<GamePathBuf, blake3::Hash> = BTreeMap::new();
 		for resolution in &report.handler_resolutions {
 			if !resolution.action.eq_ignore_ascii_case("kept_existing") {
 				continue;
 			}
-			let relative = safe_output_relative_path(Path::new(&resolution.path))?;
-			let bytes = fs::read(root.join(&relative))?;
-			files.insert(relative, blake3::hash(&bytes));
+			let bytes = fs::read(resolution.path.to_path(root))?;
+			files.insert(resolution.path.clone(), blake3::hash(&bytes));
 		}
 		if files.is_empty() {
 			Ok(None)
@@ -133,7 +134,7 @@ impl PriorOutputGuard {
 
 	fn validate(&self) -> Result<(), MergeError> {
 		for (relative, expected) in &self.files {
-			let path = self.root.join(relative);
+			let path = relative.to_path(&self.root);
 			let unchanged = fs::read(&path)
 				.map(|bytes| blake3::hash(&bytes) == *expected)
 				.unwrap_or(false);
@@ -152,7 +153,7 @@ fn safe_output_relative_path(path: &Path) -> Result<PathBuf, MergeError> {
 			.any(|component| !matches!(component, std::path::Component::Normal(_)))
 	{
 		return Err(MergeError::Validation {
-			path: Some(path.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(path.to_path_buf())),
 			message: "output path is not a safe relative path".to_string(),
 		});
 	}
@@ -164,7 +165,7 @@ fn fingerprint_replacement_target(root: &Path) -> Result<Option<ReplacementTarge
 		Ok(metadata) if metadata.file_type().is_dir() => {}
 		Ok(_) => {
 			return Err(MergeError::Validation {
-				path: Some(root.display().to_string()),
+				subject: Some(MergeErrorSubject::Host(root.to_path_buf())),
 				message: "merge output target is not a directory".to_string(),
 			});
 		}
@@ -182,7 +183,7 @@ fn fingerprint_replacement_target(root: &Path) -> Result<Option<ReplacementTarge
 			match error.into_io_error() {
 				Some(error) => MergeError::Io(io::Error::new(error.kind(), message)),
 				None => MergeError::Validation {
-					path: Some(root.display().to_string()),
+					subject: Some(MergeErrorSubject::Host(root.to_path_buf())),
 					message,
 				},
 			}
@@ -200,12 +201,12 @@ fn fingerprint_replacement_target(root: &Path) -> Result<Option<ReplacementTarge
 			.path()
 			.strip_prefix(root)
 			.map_err(|_| MergeError::Validation {
-				path: Some(entry.path().display().to_string()),
+				subject: Some(MergeErrorSubject::Host(entry.path().to_path_buf())),
 				message: "replacement target entry escaped its root".to_string(),
 			})?;
 		let relative = safe_output_relative_path(relative)?;
 		let relative = relative.to_str().ok_or_else(|| MergeError::Validation {
-			path: Some(relative.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(relative.to_path_buf())),
 			message: "replacement target path is not valid UTF-8".to_string(),
 		})?;
 		if entry.file_type().is_dir() {
@@ -220,7 +221,7 @@ fn fingerprint_replacement_target(root: &Path) -> Result<Option<ReplacementTarge
 			total_bytes = total_bytes.saturating_add(bytes.len() as u64);
 		} else {
 			return Err(MergeError::Validation {
-				path: Some(entry.path().display().to_string()),
+				subject: Some(MergeErrorSubject::Host(entry.path().to_path_buf())),
 				message: "replacement target contains a symlink or special file".to_string(),
 			});
 		}

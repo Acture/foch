@@ -1,19 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::game::eu4::content::EU4_LOCALISATION_LANGUAGE_HEADERS;
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
 use crate::merge::kernel::NodeId;
+use crate::model::{GamePath, GamePathBuf};
 
-use crate::merge::error::MergeError;
+use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::model::{
 	SemanticMergeComputation, SemanticOrigin, SemanticPartitionId, SemanticPartitionLineage,
 };
 use crate::merge::structured::{DefinitionModuleAdapter, TreePartitionAdapter};
 
-const DIPLOMATIC_ACTIONS_PREFIX: &str = "common/diplomatic_actions/";
+/// The directory whose files get condition provenance tooltips.
+const DIPLOMATIC_ACTIONS_DIRECTORY: [&str; 2] = ["common", "diplomatic_actions"];
 pub(super) const PROVENANCE_KEY_PREFIX: &str = "FOCH_PROVENANCE_";
 const BASE_GAME_DISPLAY_NAME: &str = "Europa Universalis IV";
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
@@ -53,14 +55,14 @@ struct FinalSemanticProjection {
 
 impl FinalSemanticProjection {
 	fn build(
-		target_path: &str,
+		target_path: &GamePath,
 		statements: &[AstStatement],
 		semantic: &SemanticMergeComputation,
 		policies: &MergePolicies,
 	) -> Result<Self, String> {
 		let adapter = DefinitionModuleAdapter;
 		let final_file = AstFile {
-			path: PathBuf::from(target_path),
+			path: target_path.to_owned(),
 			statements: statements.to_vec(),
 		};
 		let prepared = adapter.prepare(&final_file);
@@ -111,14 +113,13 @@ impl FinalSemanticProjection {
 
 pub(super) fn materialize_condition_provenance_tooltips(
 	enabled: bool,
-	target_path: &str,
+	target_path: &GamePath,
 	mut statements: Vec<AstStatement>,
 	semantic: &SemanticMergeComputation,
 	policies: &MergePolicies,
 	display_names: &HashMap<String, String>,
 ) -> Result<ProvenanceTooltipOutput, String> {
-	let normalized_target = target_path.replace('\\', "/");
-	if !enabled || !normalized_target.starts_with(DIPLOMATIC_ACTIONS_PREFIX) {
+	if !enabled || !target_path.is_inside(&DIPLOMATIC_ACTIONS_DIRECTORY, str::eq) {
 		return Ok(ProvenanceTooltipOutput {
 			statements,
 			localisation: BTreeMap::new(),
@@ -126,7 +127,7 @@ pub(super) fn materialize_condition_provenance_tooltips(
 	}
 
 	let mut projection =
-		FinalSemanticProjection::build(&normalized_target, &statements, semantic, policies)?;
+		FinalSemanticProjection::build(target_path, &statements, semantic, policies)?;
 	let mut localisation = BTreeMap::new();
 	let mut definition_occurrences = HashMap::<String, usize>::new();
 
@@ -186,7 +187,7 @@ pub(super) fn materialize_condition_provenance_tooltips(
 				condition.node,
 			)?;
 			let wrapper_key = provenance_wrapper_key(
-				&normalized_target,
+				target_path,
 				&condition.partition,
 				condition.node,
 				&original_key,
@@ -220,11 +221,14 @@ pub(super) fn materialize_condition_provenance_tooltips(
 	})
 }
 
+/// Write the localisation for the tooltips of the scripts that survived, at
+/// a path named by the digest of its content. Returns that game path, or
+/// `None` when no surviving script has a tooltip.
 pub(super) fn write_surviving_provenance_localisation(
 	out_dir: &Path,
-	module_entries: &BTreeMap<String, BTreeMap<String, String>>,
-	surviving_script_paths: &BTreeSet<String>,
-) -> Result<Option<String>, MergeError> {
+	module_entries: &BTreeMap<GamePathBuf, BTreeMap<String, String>>,
+	surviving_script_paths: &BTreeSet<GamePathBuf>,
+) -> Result<Option<GamePathBuf>, MergeError> {
 	let mut entries = BTreeMap::<String, String>::new();
 	for (script_path, script_entries) in module_entries {
 		if !surviving_script_paths.contains(script_path) {
@@ -235,7 +239,7 @@ pub(super) fn write_surviving_provenance_localisation(
 				&& existing != *value
 			{
 				return Err(MergeError::Validation {
-					path: Some(script_path.clone()),
+					subject: Some(MergeErrorSubject::Game(script_path.to_owned())),
 					message: format!("provenance localisation key collision for {key}"),
 				});
 			}
@@ -247,13 +251,17 @@ pub(super) fn write_surviving_provenance_localisation(
 
 	let bytes = render_localisation_file(&entries);
 	let digest = blake3::hash(&bytes).to_hex();
-	let relative_path = format!("localisation/foch_provenance_{digest}.yml");
-	let target = out_dir.join(&relative_path);
+	let relative_path = GamePathBuf::try_from(format!("localisation/foch_provenance_{digest}.yml"))
+		.map_err(|error| MergeError::Validation {
+			subject: None,
+			message: format!("generated provenance localisation has no game path: {error}"),
+		})?;
+	let target = relative_path.to_path(out_dir);
 	if target.exists() {
 		let existing = fs::read(&target)?;
 		if existing != bytes {
 			return Err(MergeError::Validation {
-				path: Some(relative_path),
+				subject: Some(MergeErrorSubject::Game(relative_path.to_owned())),
 				message: "generated provenance localisation path collides with existing content"
 					.to_string(),
 			});
@@ -447,15 +455,17 @@ pub(super) fn is_safe_localisation_key(key: &str) -> bool {
 			.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
 }
 
+/// The localisation key a tooltip is wrapped in. It is written into the
+/// merged mod, so the target path is hashed as its canonical text.
 fn provenance_wrapper_key(
-	target_path: &str,
+	target_path: &GamePath,
 	partition: &SemanticPartitionId,
 	condition_node: NodeId,
 	original_key: &str,
 ) -> String {
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(b"foch-provenance-tooltip-v1\0");
-	for component in [target_path, original_key] {
+	for component in [target_path.as_str(), original_key] {
 		hasher.update(&(component.len() as u64).to_le_bytes());
 		hasher.update(component.as_bytes());
 	}
@@ -541,7 +551,6 @@ fn render_localisation_file(entries: &BTreeMap<String, String>) -> Vec<u8> {
 mod tests {
 	use super::*;
 	use std::collections::{BTreeMap, BTreeSet};
-	use std::path::PathBuf;
 
 	use crate::game::eu4::content::{MergePolicies, ScriptFileKind};
 	use crate::game::eu4::script::ParsedScriptFile;
@@ -554,13 +563,58 @@ mod tests {
 	};
 	use crate::merge::structured::DefinitionModuleAdapter;
 
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
+	/// Wrapper keys are written into the merged mod's scripts and localisation,
+	/// so typing the target path must not move them: the value is the one the
+	/// target's path text produced.
+	#[test]
+	fn wrapper_keys_are_unchanged_by_typed_target_paths() {
+		assert_eq!(
+			provenance_wrapper_key(
+				game_path("common/diplomatic_actions/00_actions.txt"),
+				&SemanticPartitionId::Definition("alliance".to_string()),
+				NodeId::new(7),
+				"is_neighbor_of",
+			),
+			"FOCH_PROVENANCE_8684613da12520406d795a2d0d1d60aee1e4864e814ce56e04dfe35864e664d9"
+		);
+	}
+
+	/// Only files inside `common/diplomatic_actions`, spelled exactly, get
+	/// tooltips; a sibling directory sharing the prefix does not.
+	#[test]
+	fn only_diplomatic_action_files_get_tooltips() {
+		let final_file = parsed("send_warning = { condition = { tooltip = BASE_TT } }\n");
+		for path in [
+			"common/diplomatic_actions_extra/x.txt",
+			"Common/diplomatic_actions/x.txt",
+			"common/diplomatic_actions",
+		] {
+			let output = materialize_condition_provenance_tooltips(
+				true,
+				game_path(path),
+				final_file.ast.statements.clone(),
+				&semantic_with_marker_origins(&final_file, &[]),
+				&MergePolicies::default(),
+				&HashMap::new(),
+			)
+			.expect("untouched output");
+			assert_eq!(output.statements, final_file.ast.statements, "{path}");
+			assert!(output.localisation.is_empty(), "{path}");
+		}
+	}
+
 	fn parsed(source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/diplomatic_actions/00_actions.txt");
-		let parsed = parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse("common/diplomatic_actions/00_actions.txt")
+			.expect("valid game path");
+		let parsed = parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: "fixture".to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("diplomatic_actions"),
@@ -724,7 +778,7 @@ mod tests {
 
 		let output = materialize_condition_provenance_tooltips(
 			true,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			final_file.ast.statements.clone(),
 			&semantic,
 			&MergePolicies::default(),
@@ -733,7 +787,7 @@ mod tests {
 		.expect("materialize provenance tooltips");
 		let repeated = materialize_condition_provenance_tooltips(
 			true,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			final_file.ast.statements.clone(),
 			&semantic,
 			&MergePolicies::default(),
@@ -791,7 +845,7 @@ mod tests {
 
 		let output = materialize_condition_provenance_tooltips(
 			true,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			final_file.ast.statements.clone(),
 			&semantic,
 			&MergePolicies::default(),
@@ -828,7 +882,7 @@ mod tests {
 
 		let output = materialize_condition_provenance_tooltips(
 			true,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			final_file.ast.statements.clone(),
 			&semantic,
 			&MergePolicies::default(),
@@ -860,7 +914,7 @@ mod tests {
 
 		let error = materialize_condition_provenance_tooltips(
 			true,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			drifted.ast.statements,
 			&semantic,
 			&MergePolicies::default(),
@@ -910,7 +964,7 @@ mod tests {
 
 		let output = materialize_condition_provenance_tooltips(
 			true,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			final_file.ast.statements,
 			&semantic,
 			&MergePolicies::default(),
@@ -961,7 +1015,7 @@ mod tests {
 
 		let error = materialize_condition_provenance_tooltips(
 			true,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			final_file.ast.statements,
 			&semantic,
 			&MergePolicies::default(),
@@ -986,7 +1040,7 @@ mod tests {
 
 		let output = materialize_condition_provenance_tooltips(
 			false,
-			"common/diplomatic_actions/foch_merged.txt",
+			game_path("common/diplomatic_actions/foch_merged.txt"),
 			original.clone(),
 			&semantic,
 			&MergePolicies::default(),
@@ -1007,28 +1061,33 @@ mod tests {
 		let temp = tempfile::tempdir().expect("tempdir");
 		let module_entries = BTreeMap::from([
 			(
-				"common/diplomatic_actions/kept.txt".to_string(),
+				game_path("common/diplomatic_actions/kept.txt").to_owned(),
 				BTreeMap::from([(
 					"FOCH_PROVENANCE_aaa".to_string(),
 					"$ORIGINAL$\\n\\nBase: Europa Universalis IV".to_string(),
 				)]),
 			),
 			(
-				"common/diplomatic_actions/pruned.txt".to_string(),
+				game_path("common/diplomatic_actions/pruned.txt").to_owned(),
 				BTreeMap::from([(
 					"FOCH_PROVENANCE_bbb".to_string(),
 					"$REMOVED$\\n\\nBase: Removed Mod".to_string(),
 				)]),
 			),
 		]);
-		let surviving = BTreeSet::from(["common/diplomatic_actions/kept.txt".to_string()]);
+		let surviving =
+			BTreeSet::from([game_path("common/diplomatic_actions/kept.txt").to_owned()]);
 
 		let relative =
 			write_surviving_provenance_localisation(temp.path(), &module_entries, &surviving)
 				.expect("write provenance localisation")
 				.expect("localisation path");
-		assert!(!relative.contains("_l_english"), "{relative}");
-		let bytes = fs::read(temp.path().join(&relative)).expect("read localisation");
+		assert!(!relative.as_str().contains("_l_english"), "{relative}");
+		assert_eq!(
+			relative.parent().map(GamePath::as_str),
+			Some("localisation")
+		);
+		let bytes = fs::read(relative.to_path(temp.path())).expect("read localisation");
 
 		assert!(bytes.starts_with(UTF8_BOM));
 		assert_eq!(

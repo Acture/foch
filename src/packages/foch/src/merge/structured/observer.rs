@@ -438,7 +438,6 @@ fn trace_decision(
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use super::*;
 	use crate::game::eu4::content::{MergeKeySource, MergePolicies};
@@ -455,7 +454,10 @@ mod tests {
 	}
 
 	fn parse(source: &str) -> AstFile {
-		let parsed = parse_clausewitz_content(PathBuf::from("common/test.txt"), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
 	}
@@ -547,7 +549,7 @@ mod tests {
 	#[test]
 	fn trace_derivation_marks_union_of_two_mods() {
 		let descriptor =
-			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects/")
+			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects")
 				.merge_key(MergeKeySource::AssignmentKey)
 				.divergent_block_policy(DivergentBlockPolicy::Union)
 				.build();
@@ -834,7 +836,7 @@ mod tests {
 
 	#[test]
 	fn trace_derivation_marks_overlay_winner_as_overridden() {
-		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test/")
+		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test")
 			.merge_key(MergeKeySource::AssignmentKey)
 			.divergent_block_policy(DivergentBlockPolicy::LastWriter)
 			.build();
@@ -853,7 +855,7 @@ mod tests {
 
 	#[test]
 	fn observer_projects_kernel_evidence_to_its_definition() {
-		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test/")
+		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test")
 			.merge_key(MergeKeySource::AssignmentKey)
 			.divergent_block_policy(DivergentBlockPolicy::Union)
 			.build();

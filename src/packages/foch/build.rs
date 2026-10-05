@@ -8,8 +8,9 @@
 //! build error, never a binary without a schema.
 //!
 //! The compiler is the library's own `src/game/schema`, included by path: a
-//! build script cannot link the crate it builds, and those modules depend on
-//! nothing else in it.
+//! build script cannot link the crate it builds. The same validated game-path
+//! types are included so build-time compilation and runtime rule matching
+//! use identical boundaries.
 
 #![allow(dead_code)]
 
@@ -17,8 +18,12 @@
 mod compile;
 #[path = "src/game/schema/error.rs"]
 mod error;
+#[path = "src/model/game_path.rs"]
+mod model;
 #[path = "src/game/schema/query.rs"]
 mod query;
+#[path = "src/game/schema/rule_path.rs"]
+mod rule_path;
 #[path = "src/game/schema/source.rs"]
 mod source;
 #[path = "src/game/schema/syntax.rs"]

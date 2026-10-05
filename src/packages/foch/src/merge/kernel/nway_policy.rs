@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::merge::kernel::{
 	ChildOrder, ClassId, ConflictKind, MergeDecisionEvidence, MergeDecisionReason,
 	MergeDecisionResult, MergePolicy, MergePolicyKind, MergeRevision, NWayClassContext,
@@ -6,6 +8,92 @@ use crate::merge::kernel::{
 	StructuralConflictDraft,
 };
 
+/// Records keep their insertion order while policies replace only a class's
+/// own state. A conflict can affect several classes: clearing it through any
+/// one class must make it disappear from every other class's lookup as well.
+#[derive(Default)]
+struct PolicyRecords {
+	conflicts: Vec<Option<StructuralConflictDraft>>,
+	conflicts_by_class: BTreeMap<ClassId, Vec<usize>>,
+	decisions: Vec<Option<MergeDecisionEvidence>>,
+	decisions_by_class: BTreeMap<ClassId, Vec<usize>>,
+}
+
+impl PolicyRecords {
+	fn take(plan: &mut NWaySelectionPlan, correspondence: &NWayCorrespondence) -> Self {
+		let mut records: Self = Self::default();
+		for conflict in std::mem::take(&mut plan.conflicts) {
+			records.push_conflict(conflict, correspondence);
+		}
+		for decision in std::mem::take(&mut plan.decisions) {
+			records.push_decision(decision);
+		}
+		records
+	}
+
+	fn push_conflict(
+		&mut self,
+		conflict: StructuralConflictDraft,
+		correspondence: &NWayCorrespondence,
+	) {
+		let classes: BTreeSet<ClassId> = conflict
+			.revisions
+			.iter()
+			.copied()
+			.chain(conflict.base)
+			.map(|source| correspondence.classes.class_of(source))
+			.collect();
+		for class in classes {
+			self.conflicts_by_class
+				.entry(class)
+				.or_default()
+				.push(self.conflicts.len());
+		}
+		self.conflicts.push(Some(conflict));
+	}
+
+	fn push_decision(&mut self, decision: MergeDecisionEvidence) {
+		self.decisions_by_class
+			.entry(decision.affected_class)
+			.or_default()
+			.push(self.decisions.len());
+		self.decisions.push(Some(decision));
+	}
+
+	fn remove_for_class(&mut self, class: ClassId) {
+		if let Some(indices) = self.decisions_by_class.remove(&class) {
+			for index in indices {
+				self.decisions[index] = None;
+			}
+		}
+		if let Some(indices) = self.conflicts_by_class.get(&class) {
+			for &index in indices {
+				if self.conflicts[index].as_ref().is_some_and(|conflict| {
+					matches!(
+						conflict.kind,
+						ConflictKind::InsertInsert
+							| ConflictKind::DeleteModify
+							| ConflictKind::Policy
+					)
+				}) {
+					self.conflicts[index] = None;
+				}
+			}
+		}
+	}
+
+	fn has_conflict(&self, class: ClassId) -> bool {
+		self.conflicts_by_class
+			.get(&class)
+			.is_some_and(|indices| indices.iter().any(|&index| self.conflicts[index].is_some()))
+	}
+
+	fn finish(self, plan: &mut NWaySelectionPlan) {
+		plan.conflicts = self.conflicts.into_iter().flatten().collect();
+		plan.decisions = self.decisions.into_iter().flatten().collect();
+	}
+}
+
 pub(crate) fn apply_nway_policy(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
@@ -13,6 +101,7 @@ pub(crate) fn apply_nway_policy(
 	policy: &dyn MergePolicy,
 	plan: &mut NWaySelectionPlan,
 ) {
+	let mut records: PolicyRecords = PolicyRecords::take(plan, correspondence);
 	let class_ids = correspondence
 		.classes
 		.classes()
@@ -44,7 +133,7 @@ pub(crate) fn apply_nway_policy(
 				true,
 				MergePolicyKind::SubtreeSelection,
 				plan,
-				correspondence,
+				&mut records,
 			);
 			exclude_unselected_subtree_classes(source, base, revisions, correspondence, plan);
 			subtree_selected = true;
@@ -79,7 +168,7 @@ pub(crate) fn apply_nway_policy(
 							true,
 							MergePolicyKind::SubtreeSelection,
 							plan,
-							correspondence,
+							&mut records,
 						);
 						exclude_unselected_subtree_classes(
 							source,
@@ -94,7 +183,7 @@ pub(crate) fn apply_nway_policy(
 				policy.resolve_nway_delete(delete_context),
 				delete_context,
 				plan,
-				correspondence,
+				&mut records,
 			);
 		}
 
@@ -110,26 +199,29 @@ pub(crate) fn apply_nway_policy(
 			&& policy_relevant_change
 		{
 			let decision = policy.resolve_nway_divergent_node(context);
-			if !apply_divergent_decision(decision, context, plan, correspondence)
+			if !apply_divergent_decision(decision, context, plan, &mut records)
 				&& contributors_diverge
-				&& !class_has_conflict(plan, correspondence, class_id)
+				&& !records.has_conflict(class_id)
 			{
-				plan.conflicts.push(class_conflict(
-					ConflictKind::Policy,
-					class_id,
-					plan.classes[&class_id].parent,
-					base,
-					revisions,
-					correspondence,
-					format!(
-						"{} revisions changed class {} differently",
-						contributors
-							.iter()
-							.filter(|view| view.shallow_changed)
-							.count(),
-						class_id.get(),
+				records.push_conflict(
+					class_conflict(
+						ConflictKind::Policy,
+						class_id,
+						plan.classes[&class_id].parent,
+						base,
+						revisions,
+						correspondence,
+						format!(
+							"{} revisions changed class {} differently",
+							contributors
+								.iter()
+								.filter(|view| view.shallow_changed)
+								.count(),
+							class_id.get(),
+						),
 					),
-				));
+					correspondence,
+				);
 			}
 		}
 
@@ -142,14 +234,15 @@ pub(crate) fn apply_nway_policy(
 
 		debug_assert_eq!(class.id, class_id);
 	}
-	close_policy_ancestors(base, revisions, correspondence, policy, plan);
+	close_policy_ancestors(base, revisions, correspondence, policy, plan, &mut records);
+	records.finish(plan);
 }
 
 fn apply_delete_decision(
 	decision: PolicyDecision,
 	context: NWayDeleteContext<'_>,
 	plan: &mut NWaySelectionPlan,
-	correspondence: &NWayCorrespondence,
+	records: &mut PolicyRecords,
 ) -> bool {
 	let class = context.class.class;
 	let modified = context
@@ -176,11 +269,11 @@ fn apply_delete_decision(
 			else {
 				return false;
 			};
-			apply_source_selection(class, source, false, policy_kind, plan, correspondence);
+			apply_source_selection(class, source, false, policy_kind, plan, records);
 			true
 		}
 		PolicyDecision::Select(revision) if context.deleted_by.contains(&revision) => {
-			remove_class_resolution_state(class, plan, correspondence);
+			records.remove_for_class(class);
 			let base = context
 				.class
 				.base
@@ -194,7 +287,7 @@ fn apply_delete_decision(
 			selection.subtree_selected = false;
 			selection.scalar_synthesis = None;
 			selection.child_revision = None;
-			plan.decisions.push(MergeDecisionEvidence {
+			records.push_decision(MergeDecisionEvidence {
 				affected_class: class,
 				policy: policy_kind,
 				reason: MergeDecisionReason::ExplicitDomainRule,
@@ -212,7 +305,7 @@ fn apply_delete_decision(
 			else {
 				return false;
 			};
-			apply_source_selection(class, source, false, policy_kind, plan, correspondence);
+			apply_source_selection(class, source, false, policy_kind, plan, records);
 			true
 		}
 	}
@@ -222,7 +315,7 @@ fn apply_divergent_decision(
 	decision: PolicyDecision,
 	context: NWayClassContext<'_>,
 	plan: &mut NWaySelectionPlan,
-	correspondence: &NWayCorrespondence,
+	records: &mut PolicyRecords,
 ) -> bool {
 	match decision {
 		PolicyDecision::Unresolved => false,
@@ -236,7 +329,7 @@ fn apply_divergent_decision(
 				false,
 				MergePolicyKind::DivergentNode,
 				plan,
-				correspondence,
+				records,
 			);
 			true
 		}
@@ -251,7 +344,7 @@ fn apply_divergent_decision(
 				false,
 				MergePolicyKind::DivergentNode,
 				plan,
-				correspondence,
+				records,
 			);
 			true
 		}
@@ -262,7 +355,7 @@ fn apply_divergent_decision(
 			let Some(source) = context.contributors.last().map(|view| view.source) else {
 				return false;
 			};
-			remove_class_resolution_state(context.class, plan, correspondence);
+			records.remove_for_class(context.class);
 			let selection = plan
 				.classes
 				.get_mut(&context.class)
@@ -271,7 +364,7 @@ fn apply_divergent_decision(
 			selection.subtree_selected = false;
 			selection.scalar_synthesis = Some(synthesis.clone());
 			selection.child_revision = None;
-			plan.decisions.push(MergeDecisionEvidence {
+			records.push_decision(MergeDecisionEvidence {
 				affected_class: context.class,
 				policy: MergePolicyKind::ScalarReducer,
 				reason: MergeDecisionReason::ExplicitDomainRule,
@@ -291,9 +384,9 @@ fn apply_source_selection(
 	subtree: bool,
 	policy: MergePolicyKind,
 	plan: &mut NWaySelectionPlan,
-	correspondence: &NWayCorrespondence,
+	records: &mut PolicyRecords,
 ) {
-	remove_class_resolution_state(class, plan, correspondence);
+	records.remove_for_class(class);
 	let selection = plan
 		.classes
 		.get_mut(&class)
@@ -302,27 +395,12 @@ fn apply_source_selection(
 	selection.subtree_selected = subtree;
 	selection.scalar_synthesis = None;
 	selection.child_revision = None;
-	plan.decisions.push(MergeDecisionEvidence {
+	records.push_decision(MergeDecisionEvidence {
 		affected_class: class,
 		policy,
 		reason: MergeDecisionReason::ExplicitDomainRule,
 		contributors: selection.sources.clone(),
 		result: MergeDecisionResult::SelectSource { source },
-	});
-}
-
-fn remove_class_resolution_state(
-	class: ClassId,
-	plan: &mut NWaySelectionPlan,
-	correspondence: &NWayCorrespondence,
-) {
-	plan.decisions
-		.retain(|decision| decision.affected_class != class);
-	plan.conflicts.retain(|conflict| {
-		!matches!(
-			conflict.kind,
-			ConflictKind::InsertInsert | ConflictKind::DeleteModify | ConflictKind::Policy
-		) || !conflict_affects_class(conflict, correspondence, class)
 	});
 }
 
@@ -615,6 +693,7 @@ fn close_policy_ancestors(
 	correspondence: &NWayCorrespondence,
 	policy: &dyn MergePolicy,
 	plan: &mut NWaySelectionPlan,
+	records: &mut PolicyRecords,
 ) {
 	let roots = plan
 		.classes
@@ -632,7 +711,7 @@ fn close_policy_ancestors(
 				if !policy.permits_ancestor_closure(node) {
 					break;
 				}
-				remove_class_resolution_state(class, plan, correspondence);
+				records.remove_for_class(class);
 				let selection = plan
 					.classes
 					.get_mut(&class)
@@ -641,7 +720,7 @@ fn close_policy_ancestors(
 				selection.subtree_selected = false;
 				selection.scalar_synthesis = None;
 				selection.child_revision = None;
-				plan.decisions.push(MergeDecisionEvidence {
+				records.push_decision(MergeDecisionEvidence {
 					affected_class: class,
 					policy: MergePolicyKind::AncestorClosure,
 					reason: MergeDecisionReason::StructuralConstraint,
@@ -652,30 +731,6 @@ fn close_policy_ancestors(
 			parent = tree.node(parent_node).unwrap().parent;
 		}
 	}
-}
-
-fn class_has_conflict(
-	plan: &NWaySelectionPlan,
-	correspondence: &NWayCorrespondence,
-	class: ClassId,
-) -> bool {
-	plan.conflicts
-		.iter()
-		.any(|conflict| conflict_affects_class(conflict, correspondence, class))
-}
-
-fn conflict_affects_class(
-	conflict: &StructuralConflictDraft,
-	correspondence: &NWayCorrespondence,
-	class: ClassId,
-) -> bool {
-	conflict
-		.revisions
-		.iter()
-		.any(|source| correspondence.classes.class_of(*source) == class)
-		|| conflict
-			.base
-			.is_some_and(|source| correspondence.classes.class_of(source) == class)
 }
 
 fn class_conflict(

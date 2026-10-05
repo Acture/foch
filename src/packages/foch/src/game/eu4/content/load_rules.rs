@@ -1,7 +1,7 @@
-use globset::{GlobBuilder, GlobMatcher};
+use crate::model::{GamePath, GamePathBuf};
+use globset::{Candidate, GlobBuilder, GlobMatcher};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::OnceLock;
 
 const RULES_1_37_5: &str = include_str!("rules/1.37.5.json");
@@ -14,13 +14,16 @@ struct RuleFile {
 
 #[derive(Deserialize)]
 struct FileSelection {
-	directory: String,
+	/// The game directory whose direct children the rule selects; reading the
+	/// rule file validates it as a game path.
+	directory: GamePathBuf,
+	/// A glob over the file name.
 	files: String,
 }
 
 struct DatabaseSelection {
 	name: String,
-	files: Vec<(String, GlobMatcher)>,
+	files: Vec<(GamePathBuf, GlobMatcher)>,
 }
 
 pub(crate) struct DatabaseLoadRules {
@@ -33,10 +36,11 @@ impl DatabaseLoadRules {
 		let file: RuleFile = serde_json::from_str(json).map_err(|error| error.to_string())?;
 		let mut databases: Vec<DatabaseSelection> = Vec::new();
 		for (name, selections) in file.databases {
-			let mut files: Vec<(String, GlobMatcher)> = Vec::new();
+			let mut files: Vec<(GamePathBuf, GlobMatcher)> = Vec::new();
 			for selection in selections {
 				let matcher: GlobMatcher = GlobBuilder::new(&selection.files)
 					.literal_separator(true)
+					.backslash_escape(true)
 					.build()
 					.map_err(|error| error.to_string())?
 					.compile_matcher();
@@ -50,16 +54,19 @@ impl DatabaseLoadRules {
 		})
 	}
 
-	pub(crate) fn database_for(&self, relative_path: &str) -> Result<Option<&str>, String> {
-		let normalized: String = relative_path.replace('\\', "/");
-		let path: &Path = Path::new(&normalized);
-		let Some(filename) = path.file_name() else {
+	/// The database that loads `relative_path`: a rule matches a direct child
+	/// of its directory whose file name matches its glob. Names compare as
+	/// spelled, including case.
+	pub(crate) fn database_for(&self, relative_path: &GamePath) -> Result<Option<&str>, String> {
+		let Some(parent) = relative_path.parent() else {
 			return Ok(None);
 		};
+		let file_name: &str = relative_path.file_name();
+		let candidate: Candidate<'_> = Candidate::from_bytes(file_name);
 		let mut matched: Option<&str> = None;
 		for database in &self.databases {
 			if !database.files.iter().any(|(directory, matcher)| {
-				path.parent() == Some(Path::new(directory)) && matcher.is_match(Path::new(filename))
+				parent == directory.as_game_path() && matcher.is_match_candidate(&candidate)
 			}) {
 				continue;
 			}
@@ -115,6 +122,7 @@ pub(crate) fn load_rules_for_version(version: &str) -> Option<&'static DatabaseL
 #[cfg(test)]
 mod tests {
 	use super::{DatabaseLoadRules, load_rules_for_version, normalize_game_version};
+	use crate::model::{GamePath, GamePathErrorKind};
 
 	#[test]
 	fn rules_resolve_for_the_version_string_a_real_installation_reports() {
@@ -146,16 +154,19 @@ mod tests {
 		assert!(load_rules_for_version("v1.37.4.0").is_none());
 	}
 
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
 	#[test]
 	fn rules_match_database_directories_and_filename_filters() {
 		let rules: &DatabaseLoadRules = load_rules_for_version("1.37.5").unwrap();
 		for path in [
 			"common/static_modifiers/mod_a.txt",
 			"common/event_modifiers/mod_b.txt",
-			"common\\event_modifiers\\mod_b.txt",
 		] {
 			assert_eq!(
-				rules.database_for(path).unwrap(),
+				rules.database_for(game_path(path)).unwrap(),
 				Some("CStaticModifierDataBase")
 			);
 		}
@@ -163,11 +174,101 @@ mod tests {
 			"common/static_modifiers/mod_a.gui",
 			"common/static_modifiers_extra/mod_a.txt",
 			"common/static_modifiers/nested/mod_a.txt",
+			"common/Static_Modifiers/mod_a.txt",
+			"common/static_modifiers",
 			"gfx/example.dds",
+			"trigger_profile.txt",
 		] {
-			assert_eq!(rules.database_for(path).unwrap(), None);
+			assert_eq!(rules.database_for(game_path(path)).unwrap(), None, "{path}");
+		}
+		for (path, database) in [
+			("common/ideas/x.txt", Some("CIdeaDataBase")),
+			("common/ideas/sub/x.txt", None),
+			(
+				"common/scripted_effects/x.txt",
+				Some("CScriptedEffectTemplateDatabase"),
+			),
+			(
+				"common/governments/00_governments.txt",
+				Some("CGovernmentDataBase"),
+			),
+			("common/triggered_modifiers/deep/a.txt", None),
+			("interface/x.gui", None),
+			("events/x.txt", None),
+		] {
+			assert_eq!(
+				rules.database_for(game_path(path)).unwrap(),
+				database,
+				"{path}"
+			);
 		}
 		assert!(load_rules_for_version("1.37.4").is_none());
+	}
+
+	#[test]
+	fn filename_globs_use_portable_escapes_on_every_host() {
+		let rules: DatabaseLoadRules = DatabaseLoadRules::parse(
+			r#"{"game_version":"test","databases":{"Ideas":[{"directory":"common/ideas","files":"literal\\*.txt"}]}}"#,
+		)
+		.expect("valid rules");
+		assert_eq!(
+			rules.database_for(game_path("common/ideas/literal*.txt")),
+			Ok(Some("Ideas"))
+		);
+		assert_eq!(
+			rules.database_for(game_path("common/ideas/literal_other.txt")),
+			Ok(None)
+		);
+	}
+
+	#[test]
+	fn windows_spelled_rule_input_is_rejected_at_the_game_path_boundary_not_folded() {
+		// `database_for` used to rewrite `\` into `/` before matching, so a
+		// Unix file named `common\event_modifiers\mod_b.txt` (one name, at the
+		// root) was given the database of the nested file. Rule lookups now
+		// take a game path: the nested file still matches, and the file whose
+		// name holds backslashes gets no game path, so it never reaches the
+		// rules.
+		let rules: &DatabaseLoadRules = load_rules_for_version("1.37.5").unwrap();
+		assert_eq!(
+			rules.database_for(game_path("common/event_modifiers/mod_b.txt")),
+			Ok(Some("CStaticModifierDataBase"))
+		);
+		let spelled = r"common\event_modifiers\mod_b.txt";
+		let reserved = |kind: &GamePathErrorKind| {
+			matches!(
+				kind,
+				GamePathErrorKind::ReservedCharacter {
+					character: '\\',
+					..
+				}
+			)
+		};
+		assert!(reserved(&GamePath::new(spelled).expect_err(spelled).kind));
+		#[cfg(unix)]
+		assert!(reserved(
+			&crate::model::GamePathBuf::from_native_relative(std::path::Path::new(spelled))
+				.expect_err(spelled)
+				.kind
+		));
+	}
+
+	#[test]
+	fn a_rule_directory_that_is_not_a_game_path_fails_to_load() {
+		for directory in ["common/test/", r"common\test", "../common", ""] {
+			let json = serde_json::json!({
+				"game_version": "test",
+				"databases": {"First": [{"directory": directory, "files": "*.txt"}]},
+			})
+			.to_string();
+			let error = DatabaseLoadRules::parse(&json)
+				.err()
+				.unwrap_or_else(|| panic!("{directory:?} must not load"));
+			assert!(
+				error.contains("invalid game path"),
+				"{directory:?}: {error}"
+			);
+		}
 	}
 
 	#[test]
@@ -179,9 +280,15 @@ mod tests {
 			}}"#,
 		)
 		.unwrap();
-		assert!(rules.database_for("common/test/special.txt").is_err());
+		assert!(
+			rules
+				.database_for(game_path("common/test/special.txt"))
+				.is_err()
+		);
 		assert_eq!(
-			rules.database_for("common/test/other.txt").unwrap(),
+			rules
+				.database_for(game_path("common/test/other.txt"))
+				.unwrap(),
 			Some("First")
 		);
 	}

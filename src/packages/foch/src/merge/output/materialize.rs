@@ -15,7 +15,7 @@ use super::super::conflict_handler::ConflictHandler;
 use super::super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
-use super::super::error::MergeError;
+use super::super::error::{MergeError, MergeErrorSubject};
 #[allow(unused_imports)]
 use super::super::namespace::{
 	FamilyKeyIndex, build_family_key_index, detect_key_conflicts, group_by_family,
@@ -41,13 +41,13 @@ use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
 use crate::merge::review::{MergeDisposition, MergeReview, UnitOutcomeLedger};
 use crate::model::{
-	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, HandlerResolutionRecord,
-	LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput, MergePlanEntry,
-	MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
+	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath, GamePathBuf,
+	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
+	MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 	MergeReportConflictResolution, MergeReportStatus, MergeTraceEntry, SemanticIndex,
 	StaleVanillaTargetDescriptor,
 };
-use crate::project::{AppliedDepOverride, DepOverride, ResolutionMap};
+use crate::project::{AppliedDepOverride, DepOverride, ResolutionDecision, ResolutionMap};
 use analysis::{
 	FileAnalysis, InteractivePrompt, ModuleAnalysis, NamespaceAnalysis, UnitAnalysis,
 	UnitAnalysisContext, analyze_unit, unit_needs_analysis, working_set_estimate,
@@ -89,9 +89,9 @@ pub(crate) struct MergeMaterializeOptions {
 	/// (inline `# foch: …` comments + `.foch/foch-provenance.json`).
 	pub provenance: bool,
 	pub backend: Box<dyn MergeBackend>,
-	/// Optional relative-path retention set for callers that only need a subset
+	/// Optional game-path retention set for callers that only need a subset
 	/// of copy-through output.
-	pub retained_paths: Option<BTreeSet<String>>,
+	pub retained_paths: Option<BTreeSet<GamePathBuf>>,
 	pub cancellation: CancellationToken,
 	/// Units analyzed at once. With one worker every unit is analyzed and
 	/// applied on the calling thread. With several and an interactive conflict
@@ -580,9 +580,9 @@ pub(crate) fn materialize_analyzed_input(
 /// Output facts that units accumulate for the manifest built after the loop.
 #[derive(Default)]
 struct UnitOutputs {
-	generated_paths: BTreeSet<String>,
-	counted_generated_paths: BTreeSet<String>,
-	provenance_localisation_by_script: BTreeMap<String, BTreeMap<String, String>>,
+	generated_paths: BTreeSet<GamePathBuf>,
+	counted_generated_paths: BTreeSet<GamePathBuf>,
+	provenance_localisation_by_script: BTreeMap<GamePathBuf, BTreeMap<String, String>>,
 	pending_copy_through: Vec<MergePlanEntry>,
 }
 
@@ -640,7 +640,7 @@ fn apply_unit(
 				} else {
 					"copied unchanged from the selected contributor"
 				},
-				(!omitted).then(|| entry.output_path().to_string()),
+				(!omitted).then(|| entry.output_path().to_owned()),
 				[],
 			)?;
 		}
@@ -651,7 +651,7 @@ fn apply_unit(
 				entry,
 				MergeDisposition::Copy,
 				"copied the highest-precedence contributor",
-				Some(entry.output_path().to_string()),
+				Some(entry.output_path().to_owned()),
 				[],
 			)?;
 		}
@@ -701,7 +701,7 @@ fn apply_unit(
 /// is an internal invariant failure rather than a property of the input.
 fn analysis_mismatch(entry: &MergePlanEntry) -> MergeError {
 	MergeError::Validation {
-		path: Some(entry.output_path().to_string()),
+		subject: Some(MergeErrorSubject::Game(entry.output_path().to_owned())),
 		message: format!(
 			"internal error: the unit analysis does not match its planned {} strategy",
 			merge_plan_strategy_name(entry.strategy)
@@ -720,7 +720,7 @@ fn apply_localisation_unit(
 	let ApplyEnv { input, out_dir, .. } = *env;
 	let summary = match outcome {
 		Some(Ok(LocalisationMergeOutcome::Merged(bytes))) => {
-			let target = out_dir.join(entry.output_path());
+			let target = entry.output_path().to_path(out_dir);
 			if let Some(parent) = target.parent() {
 				fs::create_dir_all(parent)?;
 			}
@@ -735,7 +735,7 @@ fn apply_localisation_unit(
 				entry,
 				MergeDisposition::Safe,
 				"merged localisation keys",
-				Some(entry.output_path().to_string()),
+				Some(entry.output_path().to_owned()),
 				[],
 			)?;
 			return Ok(());
@@ -759,7 +759,7 @@ fn apply_localisation_unit(
 		entry,
 		MergeDisposition::Copy,
 		summary,
-		Some(entry.output_path().to_string()),
+		Some(entry.output_path().to_owned()),
 		[],
 	)
 }
@@ -783,7 +783,7 @@ fn apply_structural_unit(
 			.file_inventory
 			.get(entry.output_path())
 			.map(Vec::as_slice);
-		let descriptor = profile.classify_content_family(Path::new(entry.output_path()));
+		let descriptor = profile.classify_content_family(entry.output_path());
 		let vanilla_base_mode = effective_vanilla_base_mode(
 			descriptor,
 			contributors,
@@ -828,12 +828,12 @@ fn apply_module_unit(
 	// A unit writes one file per contributing directory, and a directory that
 	// merges to a no-op against vanilla writes none, so the review records what
 	// was written rather than what was planned.
-	let written: Vec<String> = entry
+	let written: Vec<GamePathBuf> = entry
 		.target
 		.output_paths()
 		.into_iter()
 		.filter(|path| outputs.generated_paths.contains(*path))
-		.map(str::to_string)
+		.map(ToOwned::to_owned)
 		.collect();
 	let wrote_nothing: bool = written.is_empty();
 	review.resolve_written(entry, outcome.disposition, outcome.summary, written, [])?;
@@ -914,7 +914,7 @@ fn apply_file_unit(
 				if !entries.is_empty() {
 					outputs
 						.provenance_localisation_by_script
-						.insert(entry.output_path().to_string(), entries);
+						.insert(entry.output_path().to_owned(), entries);
 				}
 			}
 			if materialization.counts_as_generated() {
@@ -929,13 +929,13 @@ fn apply_file_unit(
 					if !trace.is_empty() {
 						report
 							.merge_trace
-							.insert(entry.output_path().to_string(), trace);
+							.insert(entry.output_path().to_owned(), trace);
 					}
 					let prov = std::mem::take(&mut merge_output.definition_provenance);
 					if !prov.is_empty() {
 						report
 							.definition_provenance
-							.insert(entry.output_path().to_string(), prov);
+							.insert(entry.output_path().to_owned(), prov);
 					}
 				}
 			} else if materialization.counts_as_noop_skipped() {
@@ -947,7 +947,7 @@ fn apply_file_unit(
 				"structural merge completed safely",
 				materialization
 					.commits_output()
-					.then(|| entry.output_path().to_string()),
+					.then(|| entry.output_path().to_owned()),
 				[],
 			);
 		}
@@ -999,7 +999,7 @@ fn apply_file_unit(
 		entry,
 		disposition,
 		summary,
-		placeholder_written.then(|| entry.output_path().to_string()),
+		placeholder_written.then(|| entry.output_path().to_owned()),
 		[],
 	)
 }
@@ -1023,7 +1023,7 @@ fn copy_file_unit_winner(
 		entry,
 		MergeDisposition::Copy,
 		summary,
-		Some(entry.output_path().to_string()),
+		Some(entry.output_path().to_owned()),
 		[],
 	)
 }
@@ -1044,13 +1044,13 @@ fn derived_memory_budget() -> u64 {
 }
 
 fn record_counted_generated_output(
-	path: &str,
-	generated_paths: &mut BTreeSet<String>,
-	counted_generated_paths: &mut BTreeSet<String>,
+	path: &GamePath,
+	generated_paths: &mut BTreeSet<GamePathBuf>,
+	counted_generated_paths: &mut BTreeSet<GamePathBuf>,
 	report: &mut MergeReport,
 ) {
-	generated_paths.insert(path.to_string());
-	if counted_generated_paths.insert(path.to_string()) {
+	generated_paths.insert(path.to_owned());
+	if counted_generated_paths.insert(path.to_owned()) {
 		report.generated_file_count += 1;
 	}
 }
@@ -1058,12 +1058,17 @@ fn record_counted_generated_output(
 fn reconcile_surviving_output_facts(
 	plan: &MergePlanResult,
 	prune_result: &CrossFilePruneResult,
-	counted_generated_paths: &mut BTreeSet<String>,
-	provenance_localisation_by_script: &mut BTreeMap<String, BTreeMap<String, String>>,
+	counted_generated_paths: &mut BTreeSet<GamePathBuf>,
+	provenance_localisation_by_script: &mut BTreeMap<GamePathBuf, BTreeMap<String, String>>,
 	report: &mut MergeReport,
-) -> BTreeSet<String> {
+) -> BTreeSet<GamePathBuf> {
 	let surviving_paths = &prune_result.surviving_generated_paths;
-	debug_assert!(prune_result.pruned_paths.is_disjoint(surviving_paths));
+	debug_assert!(
+		prune_result
+			.pruned_paths
+			.iter()
+			.all(|pruned| !surviving_paths.contains(pruned))
+	);
 
 	counted_generated_paths.retain(|path| surviving_paths.contains(path));
 	report.generated_file_count = counted_generated_paths.len();
@@ -1084,12 +1089,12 @@ fn reconcile_surviving_output_facts(
 		// drop the other directories' resets from the generated descriptor,
 		// leaving the merged mod overlaying a namespace it merged as replaced.
 		for output in entry.target.module_outputs() {
-			if !surviving_paths.contains(output.output_path.as_str()) {
+			if !surviving_paths.contains(output.output_path()) {
 				continue;
 			}
 			report.definition_module_generated_count += 1;
-			if let Some(prefix) = output.replace_prefix.as_deref() {
-				committed_module_replacements.insert(prefix.to_string());
+			if let Some(prefix) = output.replace_prefix() {
+				committed_module_replacements.insert(prefix.to_owned());
 			}
 		}
 	}
@@ -1112,9 +1117,9 @@ struct CrossFileModuleMaterializeContext<'a> {
 	prior_out_dir: Option<&'a Path>,
 	options: &'a MergeMaterializeOptions,
 	report: &'a mut MergeReport,
-	generated_paths: &'a mut BTreeSet<String>,
-	counted_generated_paths: &'a mut BTreeSet<String>,
-	provenance_localisation_by_script: &'a mut BTreeMap<String, BTreeMap<String, String>>,
+	generated_paths: &'a mut BTreeSet<GamePathBuf>,
+	counted_generated_paths: &'a mut BTreeSet<GamePathBuf>,
+	provenance_localisation_by_script: &'a mut BTreeMap<GamePathBuf, BTreeMap<String, String>>,
 }
 
 struct CrossFileModuleOutcome {
@@ -1288,12 +1293,12 @@ fn materialize_cross_file_module(
 
 	let mut committed_any = false;
 	for output in &mut staged {
-		let output_path: &str = output.namespace.output_path.as_str();
+		let output_path: &GamePath = output.namespace.output_path();
 		if output.materialization.uses_rendered_output() {
 			report.per_entry_noop_skipped_count += output.merge_output.per_entry_noop_skipped_count;
 		}
 		if output.materialization.commits_output() {
-			if !output.stage_dir.join(output_path).is_file() {
+			if !output_path.to_path(&output.stage_dir).is_file() {
 				for output in &staged {
 					let _ = fs::remove_dir_all(&output.stage_dir);
 				}
@@ -1309,12 +1314,12 @@ fn materialize_cross_file_module(
 				);
 			}
 			commit_staged_module_output(&output.stage_dir, out_dir, output_path)?;
-			generated_paths.insert(output_path.to_string());
+			generated_paths.insert(output_path.to_owned());
 			committed_any = true;
 			if output.materialization.uses_rendered_output() {
 				let entries = std::mem::take(&mut output.merge_output.provenance_localisation);
 				if !entries.is_empty() {
-					provenance_localisation_by_script.insert(output_path.to_string(), entries);
+					provenance_localisation_by_script.insert(output_path.to_owned(), entries);
 				}
 			}
 			if output.materialization.counts_as_generated() {
@@ -1331,17 +1336,17 @@ fn materialize_cross_file_module(
 			{
 				let trace = std::mem::take(&mut output.merge_output.merge_trace);
 				if !trace.is_empty() {
-					report.merge_trace.insert(output_path.to_string(), trace);
+					report.merge_trace.insert(output_path.to_owned(), trace);
 				}
 				let provenance = std::mem::take(&mut output.merge_output.definition_provenance);
 				if !provenance.is_empty() {
 					report
 						.definition_provenance
-						.insert(output_path.to_string(), provenance);
+						.insert(output_path.to_owned(), provenance);
 				}
 			}
 		} else if output.materialization.counts_as_noop_skipped()
-			&& output.namespace.replace_prefix.is_none()
+			&& output.namespace.replace_prefix().is_none()
 		{
 			report.noop_skipped_file_count += 1;
 		} else {
@@ -1391,7 +1396,7 @@ fn stage_cross_file_module_namespace<'a>(
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 ) -> Result<NamespaceStaging<'a>, MergeError> {
-	let output_path: &str = namespace.output_path.as_str();
+	let output_path: &GamePath = namespace.output_path();
 	let result = match analysis {
 		NamespaceAnalysis::Analyzed(result) => result,
 		NamespaceAnalysis::Failed(reason, message) => {
@@ -1410,7 +1415,7 @@ fn stage_cross_file_module_namespace<'a>(
 			// A namespace replacement cannot skip output merely because it matches
 			// vanilla: its descriptor will hide the original prefix. An overlay
 			// module can safely remain absent when it is a semantic no-op.
-			if namespace.replace_prefix.is_some() {
+			if namespace.replace_prefix().is_some() {
 				merge_output.noop_vs_vanilla = false;
 			}
 			let stage_dir = prepare_module_stage_dir(out_dir, output_path)?;
@@ -1486,19 +1491,19 @@ fn cross_namespace_definition_collision(
 	if staged.len() < 2 {
 		return None;
 	}
-	let namespaces: Vec<&str> = staged
+	let namespaces: Vec<&GamePath> = staged
 		.iter()
-		.map(|output| output.namespace.namespace_prefix.as_str())
+		.map(|output| output.namespace.namespace_prefix())
 		.collect();
 	// Vanilla's own arrangement comes from the base snapshot, but the collision
 	// itself is read from each namespace's merged bytes: a `replace_path` reset
 	// or a dependency override can hide a contributor, and a name that no longer
 	// survives into the output is not a collision in it.
-	let merged_keys: BTreeMap<&str, BTreeSet<String>> = staged
+	let merged_keys: BTreeMap<&GamePath, BTreeSet<String>> = staged
 		.iter()
 		.map(|output| {
 			(
-				output.namespace.namespace_prefix.as_str(),
+				output.namespace.namespace_prefix(),
 				rendered_definition_keys(&output.merge_output.rendered),
 			)
 		})
@@ -1518,29 +1523,31 @@ fn cross_namespace_definition_collision(
 
 /// Top-level definition names in one namespace's merged output.
 fn rendered_definition_keys(rendered: &str) -> BTreeSet<String> {
-	crate::game::eu4::script::parser::parse_clausewitz_content(PathBuf::new(), rendered)
-		.ast
-		.statements
-		.iter()
-		.filter_map(|statement| match statement {
-			crate::game::eu4::script::parser::AstStatement::Assignment { key, .. }
-				if !key.trim().is_empty() =>
-			{
-				Some(key.clone())
-			}
-			_ => None,
-		})
-		.collect()
+	crate::game::eu4::script::parser::parse_clausewitz_statements(
+		crate::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+		rendered,
+	)
+	.statements
+	.iter()
+	.filter_map(|statement| match statement {
+		crate::game::eu4::script::parser::AstStatement::Assignment { key, .. }
+			if !key.trim().is_empty() =>
+		{
+			Some(key.clone())
+		}
+		_ => None,
+	})
+	.collect()
 }
 
-fn cross_namespace_collision_detail(
+fn cross_namespace_collision_detail<N: Copy + std::fmt::Display>(
 	database: &str,
-	namespaces: &[&str],
-	keys_for: impl Fn(&str, bool) -> BTreeSet<String>,
+	namespaces: &[N],
+	keys_for: impl Fn(N, bool) -> BTreeSet<String>,
 ) -> Option<String> {
-	let repeated_in = |base_game_only: bool| -> BTreeMap<String, Vec<&str>> {
-		let mut owners: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-		for namespace in namespaces {
+	let repeated_in = |base_game_only: bool| -> BTreeMap<String, Vec<N>> {
+		let mut owners: BTreeMap<String, Vec<N>> = BTreeMap::new();
+		for &namespace in namespaces {
 			for definition in keys_for(namespace, base_game_only) {
 				owners.entry(definition).or_default().push(namespace);
 			}
@@ -1553,13 +1560,16 @@ fn cross_namespace_collision_detail(
 	if !repeated_in(true).is_empty() {
 		return None;
 	}
-	let collisions: BTreeMap<String, Vec<&str>> = repeated_in(false);
+	let collisions: BTreeMap<String, Vec<N>> = repeated_in(false);
 	if collisions.is_empty() {
 		return None;
 	}
 	let detail: Vec<String> = collisions
 		.iter()
-		.map(|(definition, owners)| format!("{definition} (in {})", owners.join(" and ")))
+		.map(|(definition, owners)| {
+			let owners: Vec<String> = owners.iter().map(ToString::to_string).collect();
+			format!("{definition} (in {})", owners.join(" and "))
+		})
 		.collect();
 	Some(format!(
 		"database {database} defines {} in more than one directory. The analyzed base game never repeats a name across those directories, so nothing establishes whether the game composes the two or lets one directory replace the other, and the extracted loading rules record neither the registration behavior nor the directory read order",
@@ -1567,8 +1577,10 @@ fn cross_namespace_collision_detail(
 	))
 }
 
-fn prepare_module_stage_dir(out_dir: &Path, output_path: &str) -> Result<PathBuf, MergeError> {
-	let digest = blake3::hash(output_path.as_bytes()).to_hex();
+/// A private staging directory for one namespace's output, named by the
+/// digest of the output's game-path text.
+fn prepare_module_stage_dir(out_dir: &Path, output_path: &GamePath) -> Result<PathBuf, MergeError> {
+	let digest = blake3::hash(output_path.as_str().as_bytes()).to_hex();
 	let stage_dir = out_dir
 		.join(".foch")
 		.join(format!("module-stage-{}", &digest[..16]));
@@ -1582,16 +1594,16 @@ fn prepare_module_stage_dir(out_dir: &Path, output_path: &str) -> Result<PathBuf
 fn commit_staged_module_output(
 	stage_dir: &Path,
 	out_dir: &Path,
-	output_path: &str,
+	output_path: &GamePath,
 ) -> Result<(), MergeError> {
-	let staged = stage_dir.join(output_path);
+	let staged = output_path.to_path(stage_dir);
 	if !staged.is_file() {
 		return Err(MergeError::Validation {
-			path: Some(output_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(output_path.to_owned())),
 			message: "definition module staging completed without an output file".to_string(),
 		});
 	}
-	let target = out_dir.join(output_path);
+	let target = output_path.to_path(out_dir);
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
@@ -1618,7 +1630,7 @@ fn resolve_cross_file_module_failure(
 	out_dir: &Path,
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
-	generated_paths: &mut BTreeSet<String>,
+	generated_paths: &mut BTreeSet<GamePathBuf>,
 	deferred_reason: DeferredUnitReason,
 	reason: String,
 ) -> Result<CrossFileModuleOutcome, MergeError> {
@@ -1647,7 +1659,7 @@ fn resolve_cross_file_module_conflict(
 	out_dir: &Path,
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
-	generated_paths: &mut BTreeSet<String>,
+	generated_paths: &mut BTreeSet<GamePathBuf>,
 	deferred_reason: DeferredUnitReason,
 	conflict: StructuralConflictReport,
 ) -> Result<(), MergeError> {
@@ -1683,7 +1695,7 @@ fn resolve_cross_file_module_conflict(
 fn discard_module_output(
 	entry: &MergePlanEntry,
 	out_dir: &Path,
-	generated_paths: &mut BTreeSet<String>,
+	generated_paths: &mut BTreeSet<GamePathBuf>,
 ) -> Result<(), MergeError> {
 	// A unit writes one file per contributing directory and commits them in
 	// order, so a failure in a later directory can leave earlier ones already
@@ -1691,7 +1703,7 @@ fn discard_module_output(
 	// just the primary one.
 	for output_path in entry.target.output_paths() {
 		generated_paths.remove(output_path);
-		match fs::remove_file(out_dir.join(output_path)) {
+		match fs::remove_file(output_path.to_path(out_dir)) {
 			Ok(()) => {}
 			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
 			Err(error) => return Err(MergeError::Io(error)),
@@ -1718,7 +1730,7 @@ fn materialize_copy_through(
 	_out_dir: &Path,
 	include_base: bool,
 	report: &mut MergeReport,
-	retained_paths: Option<&BTreeSet<String>>,
+	retained_paths: Option<&BTreeSet<GamePathBuf>>,
 	pending_copy_through: &mut Vec<MergePlanEntry>,
 ) -> Result<(), MergeError> {
 	let contributors = input.file_inventory.get(entry.output_path());
@@ -1775,7 +1787,7 @@ fn build_surviving_output_manifest(
 	input: &ResolvedInput,
 	out_dir: &Path,
 	pending_copy_through: &[MergePlanEntry],
-	generated_paths: BTreeSet<String>,
+	generated_paths: BTreeSet<GamePathBuf>,
 	profile: &Eu4,
 	report: &mut MergeReport,
 ) -> Result<CrossFilePruneResult, MergeError> {
@@ -1813,6 +1825,12 @@ fn cache_game_version_with_resolution_salt(base: &str, resolution_map: &Resoluti
 	format!("{base} resolutions:{salt}")
 }
 
+/// A digest of the resolutions that can change merged output, or `None` when
+/// there are none. Every entry is hashed from explicit fields, game paths as
+/// their canonical text and host paths as their encoded bytes, so the salt
+/// does not depend on how a type prints itself. Each section is prefixed by
+/// its entry count and each field by its length, so two different maps never
+/// hash the same byte stream.
 fn resolution_map_cache_salt(resolution_map: &ResolutionMap) -> Option<String> {
 	if resolution_map.by_file.is_empty()
 		&& resolution_map.by_conflict_id.is_empty()
@@ -1822,19 +1840,77 @@ fn resolution_map_cache_salt(resolution_map: &ResolutionMap) -> Option<String> {
 		return None;
 	}
 
-	let pattern_rules = resolution_map
-		.pattern_rules
-		.iter()
-		.map(|rule| (&rule.dsl, &rule.decision))
-		.collect::<Vec<_>>();
-	let raw = format!(
-		"by_file={:?};by_conflict_id={:?};mod_priority_boost={:?};pattern_rules={:?}",
-		resolution_map.by_file,
-		resolution_map.by_conflict_id,
-		resolution_map.mod_priority_boost,
-		pattern_rules
+	let mut hasher = blake3::Hasher::new();
+	hasher.update(b"foch-resolution-cache-salt-v2\0");
+	hash_salt_section(&mut hasher, b"by_file", resolution_map.by_file.len());
+	for (file, decision) in &resolution_map.by_file {
+		hash_salt_part(&mut hasher, file.as_str().as_bytes());
+		hash_resolution_decision(&mut hasher, decision);
+	}
+	hash_salt_section(
+		&mut hasher,
+		b"by_conflict_id",
+		resolution_map.by_conflict_id.len(),
 	);
-	Some(blake3::hash(raw.as_bytes()).to_hex().to_string())
+	for (conflict_id, decision) in &resolution_map.by_conflict_id {
+		hash_salt_part(&mut hasher, conflict_id.as_bytes());
+		hash_resolution_decision(&mut hasher, decision);
+	}
+	hash_salt_section(
+		&mut hasher,
+		b"mod_priority_boost",
+		resolution_map.mod_priority_boost.len(),
+	);
+	for (mod_id, boost) in &resolution_map.mod_priority_boost {
+		hash_salt_part(&mut hasher, mod_id.as_bytes());
+		hash_salt_part(&mut hasher, &boost.to_le_bytes());
+	}
+	hash_salt_section(
+		&mut hasher,
+		b"pattern_rules",
+		resolution_map.pattern_rules.len(),
+	);
+	for rule in &resolution_map.pattern_rules {
+		hash_salt_part(&mut hasher, rule.dsl.as_bytes());
+		hash_resolution_decision(&mut hasher, &rule.decision);
+	}
+	Some(hasher.finalize().to_hex().to_string())
+}
+
+fn hash_resolution_decision(hasher: &mut blake3::Hasher, decision: &ResolutionDecision) {
+	match decision {
+		ResolutionDecision::PreferMod(mod_id) => {
+			hash_salt_part(hasher, b"prefer_mod");
+			hash_salt_part(hasher, mod_id.as_bytes());
+		}
+		ResolutionDecision::PreferCandidate(candidate) => {
+			hash_salt_part(hasher, b"prefer_candidate");
+			hash_salt_part(hasher, &(*candidate as u64).to_le_bytes());
+		}
+		ResolutionDecision::UseFile(path) => {
+			hash_salt_part(hasher, b"use_file");
+			hash_salt_part(hasher, path.as_os_str().as_encoded_bytes());
+		}
+		ResolutionDecision::UseLiveFile(path) => {
+			hash_salt_part(hasher, b"use_live_file");
+			hash_salt_part(hasher, path.as_os_str().as_encoded_bytes());
+		}
+		ResolutionDecision::KeepExisting => hash_salt_part(hasher, b"keep_existing"),
+		ResolutionDecision::Handler(name) => {
+			hash_salt_part(hasher, b"handler");
+			hash_salt_part(hasher, name.as_bytes());
+		}
+	}
+}
+
+fn hash_salt_section(hasher: &mut blake3::Hasher, name: &[u8], entries: usize) {
+	hash_salt_part(hasher, name);
+	hasher.update(&(entries as u64).to_le_bytes());
+}
+
+fn hash_salt_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+	hasher.update(&(bytes.len() as u64).to_le_bytes());
+	hasher.update(bytes);
 }
 
 fn input_mod_versions(input: &ResolvedInput) -> HashMap<String, String> {
@@ -1986,7 +2062,7 @@ fn validate_structured_merge_entry(
 	profile: &Eu4,
 ) -> Result<(), MergeError> {
 	let descriptor = profile
-		.classify_content_family(Path::new(entry.output_path()))
+		.classify_content_family(entry.output_path())
 		.ok_or_else(|| {
 			structured_merge_unsupported(entry, "the path has no ContentFamily descriptor")
 		})?;
@@ -2095,26 +2171,25 @@ fn effective_vanilla_base_mode(
 
 fn validate_structured_plan_selection(
 	plan: &MergePlanResult,
-	retained_paths: Option<&BTreeSet<String>>,
+	retained_paths: Option<&BTreeSet<GamePathBuf>>,
 ) -> Result<(), MergeError> {
 	let Some(retained_paths) = retained_paths.filter(|paths| !paths.is_empty()) else {
 		return Ok(());
 	};
 	for retained_path in retained_paths {
-		let normalized = retained_path.replace('\\', "/");
 		let entry = plan
 			.paths
 			.iter()
 			.find(|entry| {
-				entry.output_path() == normalized
+				entry.output_path() == retained_path
 					|| entry
 						.target
 						.input_paths()
 						.iter()
-						.any(|path| path == &normalized)
+						.any(|path| path == retained_path)
 			})
 			.ok_or_else(|| MergeError::Validation {
-				path: Some(normalized.clone()),
+				subject: Some(MergeErrorSubject::Game(retained_path.to_owned())),
 				message: "structured merge unsupported: retained path has no analysis-plan unit"
 					.to_string(),
 			})?;
@@ -2149,7 +2224,7 @@ fn merge_plan_strategy_name(strategy: MergePlanStrategy) -> &'static str {
 
 fn structured_merge_unsupported(entry: &MergePlanEntry, reason: &str) -> MergeError {
 	MergeError::Validation {
-		path: Some(entry.output_path().to_string()),
+		subject: Some(MergeErrorSubject::Game(entry.output_path().to_owned())),
 		message: format!("structured merge unsupported: {reason}"),
 	}
 }
@@ -2177,8 +2252,8 @@ struct StructuralMergeFailureCtx<'a> {
 	deferred_reason: DeferredUnitReason,
 	options: &'a MergeMaterializeOptions,
 	report: &'a mut MergeReport,
-	generated_paths: &'a mut BTreeSet<String>,
-	counted_generated_paths: &'a mut BTreeSet<String>,
+	generated_paths: &'a mut BTreeSet<GamePathBuf>,
+	counted_generated_paths: &'a mut BTreeSet<GamePathBuf>,
 	allow_force: bool,
 }
 
@@ -2244,7 +2319,7 @@ fn input_conflict_skipped_resolution(
 	leaf_conflicts: Vec<LeafConflictDetail>,
 ) -> MergeReportConflictResolution {
 	MergeReportConflictResolution {
-		path: entry.output_path().to_string(),
+		path: entry.output_path().to_owned(),
 		reason: reason.to_string(),
 		deferred_reason,
 		kind: summarize_conflict_kind(&leaf_conflicts),
@@ -2257,7 +2332,7 @@ fn plan_conflict_skipped_resolution(
 	reason: &str,
 ) -> MergeReportConflictResolution {
 	MergeReportConflictResolution {
-		path: entry.output_path().to_string(),
+		path: entry.output_path().to_owned(),
 		reason: reason.to_string(),
 		deferred_reason: DeferredUnitReason::UnsupportedInput,
 		kind: None,
@@ -2285,8 +2360,8 @@ pub(crate) struct StructuralMergeOutput {
 	dep_remove_counts: Vec<DepMisuseRemoveCount>,
 	stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
-	external_file_resolutions: HashMap<PathBuf, ExternalFileResolution>,
-	keep_existing_paths: HashSet<PathBuf>,
+	external_file_resolutions: HashMap<GamePathBuf, ExternalFileResolution>,
+	keep_existing_paths: HashSet<GamePathBuf>,
 	/// True when the merged statement list is AST-equal (modulo
 	/// span / comment trivia) to the vanilla base — shipping the file
 	/// would just shadow the game's own copy with the same content.
@@ -2471,12 +2546,28 @@ mod tests {
 	use crate::merge::model::{ExternalFileResolution, VanillaBaseMode};
 	use crate::merge::{MergeDisposition, MergeError};
 	use crate::model::{
-		DeferredUnitReason, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
-		MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
-		MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget,
-		MergeReport, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
-		MergeUnitId,
+		DeferredUnitReason, GamePath, GamePathBuf, HandlerResolutionRecord,
+		MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
+		MergeModuleOutput, MergeModuleOutputs, MergePlanContributor, MergePlanEntry,
+		MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportStatus,
+		MergeTraceDecision, MergeTraceEntry, MergeTracePolicy, MergeUnitId,
 	};
+
+	fn game_path(text: &str) -> GamePathBuf {
+		GamePathBuf::parse(text).expect("valid game path")
+	}
+
+	fn single_output(output_path: &str, replace_prefix: Option<&str>) -> MergeModuleOutputs {
+		MergeModuleOutputs::new(vec![
+			MergeModuleOutput::new(game_path(output_path), replace_prefix.map(game_path))
+				.expect("output inside a namespace directory"),
+		])
+		.expect("one output")
+	}
+
+	fn texts<'a>(paths: impl IntoIterator<Item = &'a GamePath>) -> Vec<&'a str> {
+		paths.into_iter().map(GamePath::as_str).collect()
+	}
 	use crate::playset::Playset;
 	use crate::project::{ResolutionDecision, ResolutionMap};
 	use serde_json::json;
@@ -2545,7 +2636,9 @@ mod tests {
 			}
 			Err(super::StructuralMergeFailure::Merge(
 				MergeError::Validation {
-					path: Some(request.target_path.to_string()),
+					subject: Some(super::MergeErrorSubject::Game(
+						request.target_path.to_owned(),
+					)),
 					message: "controlled structural backend failure".to_string(),
 				},
 			))
@@ -2656,23 +2749,25 @@ mod tests {
 	#[test]
 	fn copy_through_skips_true_base_by_default_but_writes_opted_in_or_synthetic_base() {
 		let temp = TempDir::new().expect("temp dir");
-		let true_base_source = temp.path().join("game").join("common").join("vanilla.txt");
-		let synthetic_source = temp
-			.path()
-			.join("synthetic")
-			.join("common")
-			.join("vanilla.txt");
+		let path = "common/vanilla.txt";
+		let true_base =
+			test_contributor_with_path("base", temp.path().join("game"), path, 0, true, false);
+		let synthetic_base = test_contributor_with_path(
+			"synthetic",
+			temp.path().join("synthetic"),
+			path,
+			0,
+			false,
+			true,
+		);
+		let true_base_source = true_base.absolute_path();
+		let synthetic_source = synthetic_base.absolute_path();
 		fs::create_dir_all(true_base_source.parent().expect("true base parent"))
 			.expect("create true base parent");
 		fs::create_dir_all(synthetic_source.parent().expect("synthetic parent"))
 			.expect("create synthetic parent");
 		fs::write(&true_base_source, "vanilla\n").expect("write true base source");
 		fs::write(&synthetic_source, "synthetic\n").expect("write synthetic source");
-
-		let true_base = test_contributor_with_path("base", true_base_source, 0, true, false);
-		let synthetic_base =
-			test_contributor_with_path("synthetic", synthetic_source, 0, false, true);
-		let path = "common/vanilla.txt";
 
 		let mut skipped_report = MergeReport::default();
 		let mut skipped_pending = Vec::new();
@@ -2745,14 +2840,21 @@ mod tests {
 	#[test]
 	fn copy_through_retained_paths_filters_deferred_copies() {
 		let temp = TempDir::new().expect("temp dir");
-		let source = temp.path().join("mod").join("common").join("keep.txt");
+		let contributor = test_contributor_with_path(
+			"mod",
+			temp.path().join("mod"),
+			"common/keep.txt",
+			1,
+			false,
+			false,
+		);
+		let source = contributor.absolute_path();
 		fs::create_dir_all(source.parent().expect("source parent")).expect("create source parent");
 		fs::write(&source, "kept\n").expect("write source");
-		let contributor = test_contributor_with_path("mod", source, 1, false, false);
 		let input = input_with_contributor("common/keep.txt", contributor.clone());
 		let mut report = MergeReport::default();
 		let mut pending = Vec::new();
-		let retained = BTreeSet::from(["common/other.txt".to_string()]);
+		let retained = BTreeSet::from([game_path("common/other.txt")]);
 
 		super::materialize_copy_through(
 			&input,
@@ -2776,8 +2878,7 @@ mod tests {
 			paths: vec![entry.clone()],
 			..MergePlanResult::default()
 		};
-		let retained =
-			BTreeSet::from(["common/institutions/zzz_foch_institutions.txt".to_string()]);
+		let retained = BTreeSet::from([game_path("common/institutions/zzz_foch_institutions.txt")]);
 
 		super::validate_structured_plan_selection(&plan, Some(&retained))
 			.expect("select definition module");
@@ -2793,7 +2894,7 @@ mod tests {
 			paths: vec![entry],
 			..MergePlanResult::default()
 		};
-		let retained = BTreeSet::from(["common/powerprojection/00_static.txt".to_string()]);
+		let retained = BTreeSet::from([game_path("common/powerprojection/00_static.txt")]);
 
 		super::validate_structured_plan_selection(&plan, Some(&retained))
 			.expect("base-only retained paths use the unchanged runtime base");
@@ -2807,7 +2908,7 @@ mod tests {
 			paths: vec![entry],
 			..MergePlanResult::default()
 		};
-		let retained = BTreeSet::from(["common/powerprojection/00_static.txt".to_string()]);
+		let retained = BTreeSet::from([game_path("common/powerprojection/00_static.txt")]);
 
 		let error = super::validate_structured_plan_selection(&plan, Some(&retained))
 			.expect_err("mod input must exercise the candidate structural kernel");
@@ -2845,11 +2946,19 @@ mod tests {
 	#[test]
 	fn supported_file_families_treat_verified_missing_vanilla_as_known_absent() {
 		let profile = eu4();
-		let defines = profile.classify_content_family(Path::new("common/defines/es_defines.lua"));
-		let events = profile.classify_content_family(Path::new("events/test.txt"));
-		let gfx =
-			profile.classify_content_family(Path::new("interface/000_expanded_mod_family.gfx"));
-		let governments = profile.classify_content_family(Path::new("common/governments/test.txt"));
+		let defines = profile.classify_content_family(
+			crate::model::GamePath::new("common/defines/es_defines.lua").expect("valid game path"),
+		);
+		let events = profile.classify_content_family(
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+		);
+		let gfx = profile.classify_content_family(
+			crate::model::GamePath::new("interface/000_expanded_mod_family.gfx")
+				.expect("valid game path"),
+		);
+		let governments = profile.classify_content_family(
+			crate::model::GamePath::new("common/governments/test.txt").expect("valid game path"),
+		);
 		let contributors = [
 			test_contributor("left", 1, false, false),
 			test_contributor("right", 2, false, false),
@@ -2944,14 +3053,11 @@ mod tests {
 					module_name: "institutions".to_string(),
 				},
 				input_paths: vec![
-					"common/institutions/00_core.txt".to_string(),
-					"common/institutions/left.txt".to_string(),
-					"common/institutions/right.txt".to_string(),
+					game_path("common/institutions/00_core.txt"),
+					game_path("common/institutions/left.txt"),
+					game_path("common/institutions/right.txt"),
 				],
-				outputs: vec![MergeModuleOutput::new(
-					"common/institutions/zzz_foch_institutions.txt".to_string(),
-					None,
-				)],
+				outputs: single_output("common/institutions/zzz_foch_institutions.txt", None),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors,
@@ -2968,7 +3074,8 @@ mod tests {
 	) -> ResolvedInputContributor {
 		test_contributor_with_path(
 			mod_id,
-			PathBuf::from(mod_id).join("common/test.txt"),
+			PathBuf::from(mod_id),
+			"common/test.txt",
 			precedence,
 			is_base_game,
 			is_synthetic_base,
@@ -2977,15 +3084,16 @@ mod tests {
 
 	fn test_contributor_with_path(
 		mod_id: &str,
-		absolute_path: PathBuf,
+		root_path: PathBuf,
+		relative_path: &str,
 		precedence: usize,
 		is_base_game: bool,
 		is_synthetic_base: bool,
 	) -> ResolvedInputContributor {
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
-			root_path: PathBuf::from(mod_id),
-			absolute_path,
+			root_path,
+			relative_path: GamePathBuf::parse(relative_path).expect("valid game path"),
 			precedence,
 			is_base_game,
 			is_synthetic_base,
@@ -3001,16 +3109,13 @@ mod tests {
 	fn copy_through_entry(path: &str, contributor: &ResolvedInputContributor) -> MergePlanEntry {
 		let plan_contributor = MergePlanContributor {
 			mod_id: contributor.mod_id.clone(),
-			source_path: contributor
-				.absolute_path
-				.to_string_lossy()
-				.replace('\\', "/"),
+			source_path: contributor.absolute_path().display().to_string(),
 			precedence: contributor.precedence,
 			is_base_game: contributor.is_base_game,
 		};
 		MergePlanEntry {
 			target: MergePlanTarget::File {
-				path: path.to_string(),
+				path: game_path(path),
 			},
 			strategy: MergePlanStrategy::CopyThrough,
 			contributors: vec![plan_contributor.clone()],
@@ -3021,7 +3126,7 @@ mod tests {
 
 	fn input_with_contributor(path: &str, contributor: ResolvedInputContributor) -> ResolvedInput {
 		let mut file_inventory = BTreeMap::new();
-		file_inventory.insert(path.to_string(), vec![contributor]);
+		file_inventory.insert(game_path(path), vec![contributor]);
 		ResolvedInput {
 			playlist_path: PathBuf::from("playlist.json"),
 			playlist: Playset {
@@ -3043,7 +3148,7 @@ mod tests {
 	}
 
 	fn per_entry_noop_descriptor(opted_in: bool) -> ContentFamilyDescriptor {
-		let builder = ContentFamilyDescriptor::prefix("test", "test/")
+		let builder = ContentFamilyDescriptor::prefix("test", "test")
 			.merge_key(MergeKeySource::AssignmentKey);
 		if opted_in {
 			builder.per_entry_dedup_safe().build()
@@ -3053,7 +3158,10 @@ mod tests {
 	}
 
 	fn parse_test_statements(content: &str) -> Vec<AstStatement> {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), content);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("test.txt").expect("valid game path"),
+			content,
+		);
 		assert!(
 			parsed.diagnostics.is_empty(),
 			"test content should parse without diagnostics: {:?}",
@@ -3086,7 +3194,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 1);
@@ -3103,7 +3211,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 0);
@@ -3120,7 +3228,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 0);
@@ -3137,7 +3245,7 @@ mod tests {
 			merged,
 			&vanilla,
 			&descriptor,
-			Path::new("test/test.txt"),
+			crate::model::GamePath::new("test/test.txt").expect("valid game path"),
 		);
 
 		assert_eq!(count, 0);
@@ -3153,7 +3261,8 @@ mod tests {
 	/// adds nothing, and the merged output must not carry the duplicate.
 	#[test]
 	fn per_entry_noop_drops_a_vanilla_equivalent_definition_under_its_content_family() {
-		let path = Path::new("common/scripted_triggers/00_scripted_triggers.txt");
+		let path = crate::model::GamePath::new("common/scripted_triggers/00_scripted_triggers.txt")
+			.expect("valid game path");
 		let descriptor = eu4()
 			.classify_content_family(path)
 			.expect("scripted_triggers family");
@@ -3179,7 +3288,8 @@ mod tests {
 	/// The same comparison must still keep a real change to the same definition.
 	#[test]
 	fn per_entry_noop_keeps_a_changed_definition_under_its_content_family() {
-		let path = Path::new("common/scripted_triggers/00_scripted_triggers.txt");
+		let path = crate::model::GamePath::new("common/scripted_triggers/00_scripted_triggers.txt")
+			.expect("valid game path");
 		let descriptor = eu4()
 			.classify_content_family(path)
 			.expect("scripted_triggers family");
@@ -3202,9 +3312,8 @@ mod tests {
 	}
 
 	fn descriptor_path_value(path: &Path) -> String {
-		path.to_string_lossy()
-			.replace('\\', "/")
-			.replace('"', "\\\"")
+		crate::playset::descriptor::descriptor_path_text(path)
+			.expect("a test directory has descriptor text")
 	}
 
 	fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
@@ -3335,9 +3444,12 @@ mod tests {
 		let units = materialized.review.units();
 		assert_eq!(units.len(), 1, "review must contain exactly one plan unit");
 		let unit = &units[0];
-		assert_eq!(unit.path, path);
+		assert_eq!(unit.path.as_str(), path);
 		assert_eq!(unit.disposition, disposition);
-		assert_eq!(unit.output_path.as_deref(), output_path);
+		assert_eq!(
+			unit.output_path.as_ref().map(|path| path.as_str()),
+			output_path
+		);
 		assert_eq!(unit.summary, summary);
 		assert_eq!(materialized.review.summary().total, 1);
 	}
@@ -3403,7 +3515,7 @@ mod tests {
 	fn plan_entry_for<'a>(plan: &'a MergePlanResult, path: &str) -> &'a MergePlanEntry {
 		plan.paths
 			.iter()
-			.find(|entry| entry.output_path() == path)
+			.find(|entry| entry.output_path().as_str() == path)
 			.expect("merge plan entry exists")
 	}
 
@@ -3431,13 +3543,14 @@ mod tests {
 		for (mod_id, relative_path, content, precedence, is_base_game) in contributors {
 			let root = test_root.join(mod_id);
 			write_file(&root, relative_path, content);
+			let relative_path = GamePathBuf::parse(relative_path).expect("valid game path");
 			file_inventory
-				.entry((*relative_path).to_string())
+				.entry(relative_path.clone())
 				.or_insert_with(Vec::new)
 				.push(ResolvedInputContributor {
 					mod_id: (*mod_id).to_string(),
 					root_path: root.clone(),
-					absolute_path: root.join(relative_path),
+					relative_path,
 					precedence: *precedence,
 					is_base_game: *is_base_game,
 					is_synthetic_base: false,
@@ -3479,11 +3592,11 @@ mod tests {
 				("mod_b", target, "from b\n", 20, false),
 			],
 		);
-		let contributors = input.file_inventory[target]
+		let contributors = input.file_inventory[GamePath::new(target).expect("valid game path")]
 			.iter()
 			.map(|contributor| MergePlanContributor {
 				mod_id: contributor.mod_id.clone(),
-				source_path: contributor.absolute_path.to_string_lossy().into_owned(),
+				source_path: contributor.absolute_path().display().to_string(),
 				precedence: contributor.precedence,
 				is_base_game: contributor.is_base_game,
 			})
@@ -3492,7 +3605,7 @@ mod tests {
 			playset_name: "ordinary-structural-provenance".to_string(),
 			paths: vec![MergePlanEntry {
 				target: MergePlanTarget::File {
-					path: target.to_string(),
+					path: game_path(target),
 				},
 				strategy: MergePlanStrategy::StructuralMerge,
 				contributors,
@@ -3600,7 +3713,7 @@ mod tests {
 			assert!(!plan.has_fatal_errors(), "{:?}", plan.fatal_errors);
 			assert_eq!(plan.paths.len(), 1);
 			assert_eq!(plan.paths[0].target.input_paths().len(), 2);
-			assert_eq!(plan.paths[0].target.output_paths(), expected_outputs);
+			assert_eq!(texts(plan.paths[0].target.output_paths()), expected_outputs);
 			let materialized: MaterializedMerge = materialize_analyzed_input(
 				request,
 				MaterializeOutput {
@@ -3626,7 +3739,10 @@ mod tests {
 				units[0].id,
 				"module:CStaticModifierDataBase/CStaticModifierDataBase"
 			);
-			assert_eq!(units[0].output_paths, expected_outputs);
+			assert_eq!(
+				texts(units[0].output_paths.iter().map(GamePathBuf::as_game_path)),
+				expected_outputs
+			);
 			// Each contribution lands in the file for its own directory.
 			let merged_first: String = fs::read_to_string(
 				out_dir.join("common/static_modifiers/zzz_foch_static_modifiers.txt"),
@@ -3786,10 +3902,10 @@ mod tests {
 			super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
 		// The reset is on the non-primary output.
 		let outputs = plan.paths[0].target.module_outputs();
-		assert_eq!(outputs[0].replace_prefix, None);
+		assert_eq!(outputs[0].replace_prefix(), None);
 		assert_eq!(
-			outputs[1].replace_prefix.as_deref(),
-			Some("common/static_modifiers")
+			outputs[1].replace_prefix(),
+			Some(game_path("common/static_modifiers").as_game_path())
 		);
 		materialize_analyzed_input(
 			request,
@@ -3850,7 +3966,7 @@ mod tests {
 			.expect("the direct-child file still forms a module");
 		assert_eq!(
 			module.target.input_paths(),
-			&["common/government_names/a.txt"]
+			&[game_path("common/government_names/a.txt")]
 		);
 		let materialized: MaterializedMerge = materialize_analyzed_input(
 			request,
@@ -3938,12 +4054,13 @@ mod tests {
 		// Whatever the review claims was written must exist, and every file
 		// that exists must be claimed.
 		for path in &unit.output_paths {
-			assert!(out_dir.join(path).is_file(), "review claims {path}");
+			assert!(path.to_path(&out_dir).is_file(), "review claims {path}");
 		}
 		for directory in ["static_modifiers", "event_modifiers"] {
-			let path: String = format!("common/{directory}/zzz_foch_{directory}.txt");
+			let path: GamePathBuf =
+				game_path(&format!("common/{directory}/zzz_foch_{directory}.txt"));
 			assert_eq!(
-				out_dir.join(&path).is_file(),
+				path.to_path(&out_dir).is_file(),
 				unit.output_paths.contains(&path),
 				"{path} on disk vs review {:?}",
 				unit.output_paths
@@ -3983,8 +4100,12 @@ mod tests {
 			assert!(localisation.contains(language), "{localisation}");
 		}
 		assert_eq!(localisation.matches("FOCH_PROVENANCE_fixed").count(), 4);
-		assert!(report.definition_provenance.contains_key(target));
-		assert!(report.merge_trace.contains_key(target));
+		assert!(
+			report
+				.definition_provenance
+				.contains_key(&game_path(target))
+		);
+		assert!(report.merge_trace.contains_key(&game_path(target)));
 	}
 
 	#[test]
@@ -3995,7 +4116,7 @@ mod tests {
 		fs::write(&external_path, "external = yes\n").expect("write external payload");
 		let mut output = structural_output_with_provenance(target);
 		output.external_file_resolutions.insert(
-			PathBuf::from(target),
+			game_path(target),
 			ExternalFileResolution::Live(external_path),
 		);
 
@@ -4007,8 +4128,12 @@ mod tests {
 			"external = yes\n",
 		);
 		assert!(!out_dir.join("localisation").exists());
-		assert!(!report.definition_provenance.contains_key(target));
-		assert!(!report.merge_trace.contains_key(target));
+		assert!(
+			!report
+				.definition_provenance
+				.contains_key(&game_path(target))
+		);
+		assert!(!report.merge_trace.contains_key(&game_path(target)));
 	}
 
 	#[test]
@@ -4076,7 +4201,8 @@ mod tests {
 
 		super::apply_mod_priority_boosts(&mut input, &boosts);
 
-		let contributors = &input.file_inventory["events/test.txt"];
+		let contributors =
+			&input.file_inventory[GamePath::new("events/test.txt").expect("valid game path")];
 		assert_eq!(contributors[0].mod_id, "mod_b");
 		assert_eq!(contributors[0].precedence, 2);
 		assert_eq!(contributors[1].mod_id, "mod_a");
@@ -4087,8 +4213,8 @@ mod tests {
 		out_dir: &Path,
 		input: &ResolvedInput,
 		generated_path: &str,
-	) -> (BTreeSet<String>, MergeReport) {
-		let generated_paths = BTreeSet::from([generated_path.to_string()]);
+	) -> (BTreeSet<GamePathBuf>, MergeReport) {
+		let generated_paths = BTreeSet::from([game_path(generated_path)]);
 		let mut counted_generated_paths = generated_paths.clone();
 		let mut report = MergeReport {
 			generated_file_count: 1,
@@ -4156,7 +4282,10 @@ mod tests {
 				("merged_input", generated_path, content, 2, false),
 			],
 		);
-		let copied_entry = copy_through_entry(copied_path, &input.file_inventory[copied_path][0]);
+		let copied_entry = copy_through_entry(
+			copied_path,
+			&input.file_inventory[GamePath::new(copied_path).expect("valid game path")][0],
+		);
 		let mut pending_copy_through = Vec::new();
 		let mut report = MergeReport {
 			generated_file_count: 1,
@@ -4179,12 +4308,12 @@ mod tests {
 			&input,
 			&out_dir,
 			&pending_copy_through,
-			BTreeSet::from([generated_path.to_string()]),
+			BTreeSet::from([game_path(generated_path)]),
 			eu4(),
 			&mut report,
 		)
 		.expect("flush pending winner before cross-file pruning");
-		let mut counted_generated_paths = BTreeSet::from([generated_path.to_string()]);
+		let mut counted_generated_paths = BTreeSet::from([game_path(generated_path)]);
 		let mut provenance_localisation = BTreeMap::new();
 		super::reconcile_surviving_output_facts(
 			&MergePlanResult::default(),
@@ -4202,7 +4331,7 @@ mod tests {
 		assert!(prune_result.surviving_generated_paths.is_empty());
 		assert_eq!(
 			prune_result.pruned_paths,
-			BTreeSet::from([generated_path.to_string()])
+			BTreeSet::from([game_path(generated_path)])
 		);
 		assert_eq!(report.generated_file_count, 0);
 		assert_eq!(report.copied_file_count, 1);
@@ -4225,23 +4354,27 @@ mod tests {
 				("merge_b", generated_path, "from_b = yes\n", 3, false),
 			],
 		);
-		let copied_entry = copy_through_entry(copied_path, &input.file_inventory[copied_path][0]);
-		let contributors = input.file_inventory[generated_path]
-			.iter()
-			.map(|contributor| MergePlanContributor {
-				mod_id: contributor.mod_id.clone(),
-				source_path: contributor.absolute_path.to_string_lossy().into_owned(),
-				precedence: contributor.precedence,
-				is_base_game: contributor.is_base_game,
-			})
-			.collect();
+		let copied_entry = copy_through_entry(
+			copied_path,
+			&input.file_inventory[GamePath::new(copied_path).expect("valid game path")][0],
+		);
+		let contributors = input.file_inventory
+			[GamePath::new(generated_path).expect("valid game path")]
+		.iter()
+		.map(|contributor| MergePlanContributor {
+			mod_id: contributor.mod_id.clone(),
+			source_path: contributor.absolute_path().display().to_string(),
+			precedence: contributor.precedence,
+			is_base_game: contributor.is_base_game,
+		})
+		.collect();
 		let plan = MergePlanResult {
 			playset_name: "cross-file-review".to_string(),
 			paths: vec![
 				copied_entry,
 				MergePlanEntry {
 					target: MergePlanTarget::File {
-						path: generated_path.to_string(),
+						path: game_path(generated_path),
 					},
 					strategy: MergePlanStrategy::StructuralMerge,
 					contributors,
@@ -4276,7 +4409,7 @@ mod tests {
 			.review
 			.units()
 			.iter()
-			.filter(|unit| unit.path == generated_path)
+			.filter(|unit| unit.path.as_str() == generated_path)
 			.collect::<Vec<_>>();
 		assert_eq!(pruned.len(), 1);
 		assert_eq!(pruned[0].disposition, MergeDisposition::Safe);
@@ -4291,10 +4424,10 @@ mod tests {
 			.review
 			.units()
 			.iter()
-			.find(|unit| unit.path == copied_path)
+			.find(|unit| unit.path.as_str() == copied_path)
 			.expect("copied review unit");
 		assert_eq!(copied.disposition, MergeDisposition::Copy);
-		assert_eq!(copied.output_path.as_deref(), Some(copied_path));
+		assert_eq!(copied.output_path, Some(game_path(copied_path)));
 		assert!(!out_dir.join(generated_path).exists());
 		assert!(out_dir.join(copied_path).is_file());
 	}
@@ -4314,10 +4447,7 @@ mod tests {
 					module_name: family.to_string(),
 				},
 				input_paths: Vec::new(),
-				outputs: vec![MergeModuleOutput::new(
-					path.to_string(),
-					Some(prefix.to_string()),
-				)],
+				outputs: single_output(path, Some(prefix)),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -4343,35 +4473,35 @@ mod tests {
 			definition_module_generated_count: 2,
 			definition_provenance: BTreeMap::from([
 				(
-					dropped_path.to_string(),
+					game_path(dropped_path),
 					BTreeMap::from([("dropped".to_string(), vec!["mod_a".to_string()])]),
 				),
 				(
-					kept_path.to_string(),
+					game_path(kept_path),
 					BTreeMap::from([("kept".to_string(), vec!["mod_b".to_string()])]),
 				),
 			]),
 			merge_trace: BTreeMap::from([
 				(
-					dropped_path.to_string(),
+					game_path(dropped_path),
 					BTreeMap::from([("dropped".to_string(), trace.clone())]),
 				),
 				(
-					kept_path.to_string(),
+					game_path(kept_path),
 					BTreeMap::from([("kept".to_string(), trace)]),
 				),
 			]),
 			..MergeReport::default()
 		};
 		let mut counted_generated_paths =
-			BTreeSet::from([dropped_path.to_string(), kept_path.to_string()]);
+			BTreeSet::from([game_path(dropped_path), game_path(kept_path)]);
 		let mut localisation_by_script = BTreeMap::from([
 			(
-				dropped_path.to_string(),
+				game_path(dropped_path),
 				BTreeMap::from([("FOCH_DROPPED".to_string(), "dropped".to_string())]),
 			),
 			(
-				kept_path.to_string(),
+				game_path(kept_path),
 				BTreeMap::from([("FOCH_KEPT".to_string(), "kept".to_string())]),
 			),
 		]);
@@ -4387,7 +4517,7 @@ mod tests {
 		write_file(temp.path(), kept_path, kept_trigger);
 		let prune_result = super::prune_cross_file_noop_duplicates(
 			temp.path(),
-			BTreeSet::from([dropped_path.to_string(), kept_path.to_string()]),
+			BTreeSet::from([game_path(dropped_path), game_path(kept_path)]),
 			&input,
 			eu4(),
 			&mut report,
@@ -4427,7 +4557,7 @@ mod tests {
 		let descriptor = fs::read_to_string(descriptor_path).expect("read descriptor");
 
 		let localisation =
-			fs::read_to_string(temp.path().join(&localisation_path)).expect("read localisation");
+			fs::read_to_string(localisation_path.to_path(temp.path())).expect("read localisation");
 		assert!(localisation.contains("FOCH_KEPT"));
 		assert!(!localisation.contains("FOCH_DROPPED"));
 		assert!(!temp.path().join(dropped_path).exists());
@@ -4437,12 +4567,20 @@ mod tests {
 		assert_eq!(report.overlay_file_count, 4);
 		assert_eq!(report.cross_file_noop_skipped_file_count, 1);
 		assert_eq!(report.definition_module_generated_count, 1);
-		assert!(!report.merge_trace.contains_key(dropped_path));
-		assert!(!report.definition_provenance.contains_key(dropped_path));
-		assert!(!localisation_by_script.contains_key(dropped_path));
-		assert!(report.merge_trace.contains_key(kept_path));
-		assert!(report.definition_provenance.contains_key(kept_path));
-		assert!(localisation_by_script.contains_key(kept_path));
+		assert!(!report.merge_trace.contains_key(&game_path(dropped_path)));
+		assert!(
+			!report
+				.definition_provenance
+				.contains_key(&game_path(dropped_path))
+		);
+		assert!(!localisation_by_script.contains_key(&game_path(dropped_path)));
+		assert!(report.merge_trace.contains_key(&game_path(kept_path)));
+		assert!(
+			report
+				.definition_provenance
+				.contains_key(&game_path(kept_path))
+		);
+		assert!(localisation_by_script.contains_key(&game_path(kept_path)));
 		assert!(!descriptor.contains("replace_path=\"common/scripted_effects\""));
 		assert!(descriptor.contains("replace_path=\"common/scripted_triggers\""));
 	}
@@ -4468,7 +4606,7 @@ mod tests {
 			prune_single_generated_path(&out_dir, &input, generated_path);
 
 		assert!(out_dir.join(generated_path).exists());
-		assert!(generated_paths.contains(generated_path));
+		assert!(generated_paths.contains(&game_path(generated_path)));
 		assert_eq!(report.generated_file_count, 1);
 		assert_eq!(report.cross_file_noop_skipped_file_count, 0);
 	}
@@ -4494,7 +4632,7 @@ mod tests {
 			prune_single_generated_path(&out_dir, &input, generated_path);
 
 		assert!(out_dir.join(generated_path).exists());
-		assert!(generated_paths.contains(generated_path));
+		assert!(generated_paths.contains(&game_path(generated_path)));
 		assert_eq!(report.generated_file_count, 1);
 		assert_eq!(report.cross_file_noop_skipped_file_count, 0);
 	}
@@ -4519,7 +4657,7 @@ mod tests {
 			prune_single_generated_path(&out_dir, &input, generated_path);
 
 		assert!(out_dir.join(generated_path).exists());
-		assert!(generated_paths.contains(generated_path));
+		assert!(generated_paths.contains(&game_path(generated_path)));
 		assert_eq!(report.generated_file_count, 1);
 		assert_eq!(report.cross_file_noop_skipped_file_count, 0);
 	}
@@ -4546,11 +4684,11 @@ mod tests {
 		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.keep_existing_paths
-			.insert(PathBuf::from(relative_path));
+			.insert(game_path(relative_path));
 		let mut report = MergeReport::default();
 
 		let materialization = super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&staging_dir,
 			Some(&prior_out_dir),
@@ -4575,7 +4713,7 @@ mod tests {
 		);
 		assert!(report.warnings.is_empty());
 		assert_eq!(report.handler_resolutions.len(), 1);
-		assert_eq!(report.handler_resolutions[0].path, relative_path);
+		assert_eq!(report.handler_resolutions[0].path.as_str(), relative_path);
 		assert_eq!(report.handler_resolutions[0].action, "kept_existing");
 		assert_eq!(report.handler_resolutions[0].source.as_deref(), None);
 	}
@@ -4594,11 +4732,11 @@ mod tests {
 		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.keep_existing_paths
-			.insert(PathBuf::from(relative_path));
+			.insert(game_path(relative_path));
 		let mut report = MergeReport::default();
 
 		let error = super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&staging_dir,
 			Some(&prior_out_dir),
@@ -4618,6 +4756,77 @@ mod tests {
 		assert!(report.handler_resolutions.is_empty());
 	}
 
+	/// A generated file lands at its game path's components under the output
+	/// root, and a kept file is read from the same components under the prior
+	/// output.
+	#[test]
+	fn structural_outputs_are_written_and_kept_at_the_components_of_their_game_path() {
+		let temp = TempDir::new().expect("temp dir");
+		let prior_out_dir = temp.path().join("prior-out");
+		let staging_dir = temp.path().join("staging");
+		let written = game_path("common/ideas/00 national ideas.txt");
+		let kept = game_path("history/countries/FRA - France.txt");
+		fs::create_dir_all(prior_out_dir.join("history").join("countries"))
+			.expect("create prior output");
+		fs::write(
+			prior_out_dir
+				.join("history")
+				.join("countries")
+				.join("FRA - France.txt"),
+			"kept = yes\n",
+		)
+		.expect("write prior output");
+		let mut report = MergeReport::default();
+
+		let mut merge_output = structural_merge_output("merged = yes\n");
+		super::write_structural_merge_output(
+			&written,
+			&mut merge_output,
+			&staging_dir,
+			Some(&prior_out_dir),
+			&ResolutionMap::default(),
+			&BTreeMap::new(),
+			&mut report,
+		)
+		.expect("write merged output");
+		let mut merge_output = structural_merge_output("merged = yes\n");
+		merge_output.keep_existing_paths.insert(kept.clone());
+		super::write_structural_merge_output(
+			&kept,
+			&mut merge_output,
+			&staging_dir,
+			Some(&prior_out_dir),
+			&ResolutionMap::default(),
+			&BTreeMap::new(),
+			&mut report,
+		)
+		.expect("carry kept output");
+
+		assert_eq!(
+			fs::read_to_string(
+				staging_dir
+					.join("common")
+					.join("ideas")
+					.join("00 national ideas.txt")
+			)
+			.expect("read merged output"),
+			"merged = yes\n"
+		);
+		assert_eq!(
+			fs::read_to_string(
+				staging_dir
+					.join("history")
+					.join("countries")
+					.join("FRA - France.txt")
+			)
+			.expect("read kept output"),
+			"kept = yes\n"
+		);
+		assert_eq!(report.handler_resolutions.len(), 1);
+		assert_eq!(report.handler_resolutions[0].path, kept);
+		assert_eq!(report.handler_resolutions[0].action, "kept_existing");
+	}
+
 	#[test]
 	fn materialize_file_level_keep_existing_resolution_skips_write_when_output_exists() {
 		let temp = TempDir::new().expect("temp dir");
@@ -4627,14 +4836,13 @@ mod tests {
 
 		let mut merge_output = structural_merge_output("merged\n");
 		let mut resolution_map = ResolutionMap::default();
-		resolution_map.by_file.insert(
-			PathBuf::from(relative_path),
-			ResolutionDecision::KeepExisting,
-		);
+		resolution_map
+			.by_file
+			.insert(game_path(relative_path), ResolutionDecision::KeepExisting);
 		let mut report = MergeReport::default();
 
 		let materialization = super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&out_dir,
 			Some(&out_dir),
@@ -4655,7 +4863,7 @@ mod tests {
 		assert!(
 			merge_output
 				.keep_existing_paths
-				.contains(&PathBuf::from(relative_path))
+				.contains(&game_path(relative_path))
 		);
 		assert_eq!(report.handler_resolutions.len(), 1);
 		assert_eq!(report.handler_resolutions[0].action, "kept_existing");
@@ -4669,11 +4877,11 @@ mod tests {
 		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.keep_existing_paths
-			.insert(PathBuf::from(relative_path));
+			.insert(game_path(relative_path));
 		let mut report = MergeReport::default();
 
 		let materialization = super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&out_dir,
 			Some(&out_dir),
@@ -4694,7 +4902,13 @@ mod tests {
 		assert_eq!(report.handler_resolutions.len(), 0);
 		assert_eq!(report.warnings.len(), 1);
 		assert!(report.warnings[0].contains("keep_existing_failed"));
-		assert!(report.warnings[0].contains(relative_path));
+		// The warning names the missing prior-output file in host spelling.
+		let missing = game_path(relative_path).to_path(&out_dir);
+		assert!(
+			report.warnings[0].contains(&missing.display().to_string()),
+			"{}",
+			report.warnings[0]
+		);
 	}
 
 	#[test]
@@ -4706,7 +4920,7 @@ mod tests {
 		merge_output
 			.handler_resolutions
 			.push(HandlerResolutionRecord {
-				path: relative_path.to_string(),
+				path: game_path(relative_path),
 				action: "dep_implied".to_string(),
 				source: Some("mod_a".to_string()),
 				rationale: Some("mod mod_a declares dep on mod_b".to_string()),
@@ -4714,7 +4928,7 @@ mod tests {
 		let mut report = MergeReport::default();
 
 		let materialization = super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&out_dir,
 			None,
@@ -4750,7 +4964,7 @@ mod tests {
 
 		let mut merge_output = structural_merge_output("merged\n");
 		merge_output.external_file_resolutions.insert(
-			PathBuf::from(relative_path),
+			game_path(relative_path),
 			ExternalFileResolution::Frozen(external_path.clone()),
 		);
 		let frozen_external_files =
@@ -4759,7 +4973,7 @@ mod tests {
 		let mut report = MergeReport::default();
 
 		let materialization = super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&out_dir,
 			None,
@@ -4779,7 +4993,7 @@ mod tests {
 		);
 		assert!(report.warnings.is_empty());
 		assert_eq!(report.handler_resolutions.len(), 1);
-		assert_eq!(report.handler_resolutions[0].path, relative_path);
+		assert_eq!(report.handler_resolutions[0].path.as_str(), relative_path);
 		assert_eq!(report.handler_resolutions[0].action, "external");
 		let external_source = external_path.display().to_string();
 		assert_eq!(
@@ -4798,7 +5012,7 @@ mod tests {
 
 		let mut merge_output = structural_merge_output("merged\n");
 		merge_output.external_file_resolutions.insert(
-			PathBuf::from(relative_path),
+			game_path(relative_path),
 			ExternalFileResolution::Live(external_path.clone()),
 		);
 		let frozen_external_files =
@@ -4806,7 +5020,7 @@ mod tests {
 		let mut report = MergeReport::default();
 
 		super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&out_dir,
 			None,
@@ -4830,13 +5044,13 @@ mod tests {
 		let relative_path = "common/ideas/missing-external.txt";
 		let mut merge_output = structural_merge_output("merged\n");
 		merge_output.external_file_resolutions.insert(
-			PathBuf::from(relative_path),
+			game_path(relative_path),
 			ExternalFileResolution::Live(external_path.clone()),
 		);
 		let mut report = MergeReport::default();
 
 		let err = super::write_structural_merge_output(
-			relative_path,
+			&game_path(relative_path),
 			&mut merge_output,
 			&out_dir,
 			None,
@@ -4952,8 +5166,8 @@ mod tests {
 		let temp = TempDir::new().expect("temp dir");
 		let descriptor_path = temp.path().join("descriptor.mod");
 		let replace_prefixes = BTreeSet::from([
-			"common/governments".to_string(),
-			"common/advisortypes".to_string(),
+			game_path("common/governments"),
+			game_path("common/advisortypes"),
 		]);
 
 		super::io::write_generated_descriptor(
@@ -5012,7 +5226,7 @@ mod tests {
 		let module_path = "common/governments/zzz_foch_governments.txt";
 		let unit = &materialized.review.units()[0];
 		assert_eq!(materialized.review.units().len(), 1);
-		assert_eq!(unit.path, module_path);
+		assert_eq!(unit.path.as_str(), module_path);
 		assert_eq!(unit.disposition, MergeDisposition::UnsupportedInput);
 		assert_eq!(unit.output_path, None);
 		assert!(
@@ -5239,7 +5453,7 @@ mod tests {
 			)
 			.target,
 			MergePlanTarget::Module { outputs, .. }
-				if outputs[0].replace_prefix.as_deref() == Some("common/powerprojection")
+				if outputs[0].replace_prefix().map(GamePath::as_str) == Some("common/powerprojection")
 		));
 	}
 
@@ -5577,5 +5791,183 @@ mod tests {
 		);
 		assert!(out_dir.join("pdx_browser/overlap.bin").exists());
 		assert!(out_dir.join("pdx_browser/icon.png").exists());
+	}
+
+	fn salt_of(map: &ResolutionMap) -> String {
+		super::resolution_map_cache_salt(map).expect("a salted resolution map")
+	}
+
+	fn by_file_salt(file: &str, decision: ResolutionDecision) -> String {
+		salt_of(&ResolutionMap {
+			by_file: BTreeMap::from([(game_path(file), decision)]),
+			..ResolutionMap::default()
+		})
+	}
+
+	/// The resolution salt keys the base and diff caches, so resolutions
+	/// that differ must never share one, and a map with no resolutions must
+	/// leave the cache key as it is.
+	#[test]
+	fn the_resolution_cache_salt_separates_every_resolution() {
+		assert_eq!(
+			super::resolution_map_cache_salt(&ResolutionMap::default()),
+			None
+		);
+		assert_eq!(
+			super::cache_game_version_with_resolution_salt("1.37", &ResolutionMap::default()),
+			"1.37"
+		);
+
+		let keep = || ResolutionDecision::KeepExisting;
+		// A `-` in a name against a directory: distinct game paths.
+		assert_ne!(
+			by_file_salt("events/a-b.txt", keep()),
+			by_file_salt("events/a/b.txt", keep())
+		);
+		let manual = PathBuf::from("manual/x.txt");
+		assert_ne!(
+			by_file_salt("events/a.txt", ResolutionDecision::UseFile(manual.clone())),
+			by_file_salt("events/a.txt", ResolutionDecision::UseLiveFile(manual))
+		);
+		assert_ne!(
+			by_file_salt("events/a.txt", ResolutionDecision::PreferCandidate(1)),
+			by_file_salt("events/a.txt", ResolutionDecision::PreferCandidate(2))
+		);
+		// On Unix `manual\x.txt` is one name, another file than `manual/x.txt`.
+		#[cfg(unix)]
+		assert_ne!(
+			by_file_salt(
+				"events/a.txt",
+				ResolutionDecision::UseFile(PathBuf::from(r"manual\x.txt"))
+			),
+			by_file_salt(
+				"events/a.txt",
+				ResolutionDecision::UseFile(PathBuf::from("manual/x.txt"))
+			)
+		);
+		// The same selector text in another section is another resolution.
+		assert_ne!(
+			by_file_salt("ab12cd34", keep()),
+			salt_of(&ResolutionMap {
+				by_conflict_id: BTreeMap::from([("ab12cd34".to_string(), keep())]),
+				..ResolutionMap::default()
+			})
+		);
+
+		let salted = super::cache_game_version_with_resolution_salt(
+			"1.37",
+			&ResolutionMap {
+				by_file: BTreeMap::from([(
+					game_path("events/PirateEvents.txt"),
+					ResolutionDecision::PreferMod("1234567890".to_string()),
+				)]),
+				by_conflict_id: BTreeMap::from([(
+					"ab12cd34".to_string(),
+					ResolutionDecision::PreferCandidate(0),
+				)]),
+				mod_priority_boost: BTreeMap::from([("1234567890".to_string(), 100)]),
+				..ResolutionMap::default()
+			},
+		);
+		assert_eq!(
+			salted,
+			"1.37 resolutions:04f30d8a20c2d53af9d9e1522c787606ff5923db746f5628e3976bde57b4a86a"
+		);
+	}
+
+	fn copy_contributor(
+		mod_id: &str,
+		root: PathBuf,
+		precedence: usize,
+	) -> ResolvedInputContributor {
+		test_contributor_with_path(mod_id, root, "events/a.txt", precedence, false, false)
+	}
+
+	fn planned_as(
+		contributor: &ResolvedInputContributor,
+		source_path: &str,
+	) -> MergePlanContributor {
+		MergePlanContributor {
+			mod_id: contributor.mod_id.clone(),
+			source_path: source_path.to_string(),
+			precedence: contributor.precedence,
+			is_base_game: contributor.is_base_game,
+		}
+	}
+
+	fn copy_entry(winner: MergePlanContributor) -> MergePlanEntry {
+		MergePlanEntry {
+			target: MergePlanTarget::File {
+				path: game_path("events/a.txt"),
+			},
+			strategy: MergePlanStrategy::CopyThrough,
+			contributors: vec![winner.clone()],
+			winner: Some(winner),
+			notes: Vec::new(),
+		}
+	}
+
+	/// On disk: two contributor roots, `a\b` as one Unix name and `a/b` as
+	/// two, hold different bytes for one game path and render as the same
+	/// text. Each planned winner's own bytes are copied, whatever the plan
+	/// displays as its source.
+	#[cfg(unix)]
+	#[test]
+	fn copy_winner_file_copies_the_planned_contributor_when_physical_spellings_fold_together() {
+		let temp = TempDir::new().expect("temp dir");
+		let contributors = [
+			copy_contributor("backslash", temp.path().join(r"a\b"), 1),
+			copy_contributor("nested", temp.path().join("a").join("b"), 2),
+		];
+		for (contributor, content) in contributors.iter().zip(["backslash\n", "nested\n"]) {
+			let source = contributor.absolute_path();
+			fs::create_dir_all(source.parent().expect("source parent")).expect("create source");
+			fs::write(&source, content).expect("write source");
+		}
+		let folded_source = temp.path().join("a/b/events/a.txt").display().to_string();
+		let mut input = input_with_contributor("events/a.txt", contributors[0].clone());
+		input
+			.file_inventory
+			.insert(game_path("events/a.txt"), contributors.to_vec());
+
+		for (contributor, content) in contributors.iter().zip(["backslash\n", "nested\n"]) {
+			let out_dir = temp.path().join(format!("out-{}", contributor.mod_id));
+			super::io::copy_winner_file(
+				&input,
+				&copy_entry(planned_as(contributor, &folded_source)),
+				&out_dir,
+			)
+			.expect("copy the planned winner");
+			assert_eq!(
+				fs::read_to_string(out_dir.join("events").join("a.txt")).expect("read copy"),
+				content,
+				"{}",
+				contributor.mod_id
+			);
+		}
+	}
+
+	/// A plan whose winner no inventory contributor answers to fails, and the
+	/// message names the selector that did not match and the output path.
+	#[test]
+	fn copy_winner_file_names_a_winner_missing_from_the_inventory() {
+		let temp = TempDir::new().expect("temp dir");
+		let present = copy_contributor("present", temp.path().join("present"), 1);
+		let input = input_with_contributor("events/a.txt", present.clone());
+		let mut missing = planned_as(&present, "/mods/present/events/a.txt");
+		missing.mod_id = "absent".to_string();
+		missing.precedence = 7;
+
+		let error = super::io::copy_winner_file(&input, &copy_entry(missing), temp.path())
+			.expect_err("no contributor answers to the winner");
+		let MergeError::Validation { message, .. } = &error else {
+			panic!("expected a validation error, got {error}");
+		};
+		assert!(
+			message.contains("winner absent at precedence 7"),
+			"{message}"
+		);
+		assert!(message.contains("events/a.txt"), "{message}");
+		assert!(!temp.path().join("events").exists());
 	}
 }

@@ -714,7 +714,10 @@ mod tests {
 {{
 	"0" {{ "path" "{}" }}
 }}"#,
-				steam_root.to_string_lossy().replace('\\', "\\\\")
+				steam_root
+					.to_str()
+					.expect("UTF-8 fixture path")
+					.replace('\\', "\\\\")
 			),
 		)
 		.expect("write Steam library list");
@@ -824,7 +827,8 @@ remote_file_id="43"
 
 	#[derive(Debug, Eq, PartialEq)]
 	struct FileSystemEntrySnapshot {
-		path: String,
+		/// The entry's host path relative to the snapshot root.
+		path: PathBuf,
 		kind: &'static str,
 		permissions: u32,
 		modified: Option<SystemTime>,
@@ -847,7 +851,7 @@ remote_file_id="43"
 	fn file_system_snapshot(root: &Path) -> Vec<FileSystemEntrySnapshot> {
 		let mut entries = WalkDir::new(root)
 			.into_iter()
-			.filter_map(Result::ok)
+			.map(|entry| entry.expect("walk snapshot tree"))
 			.filter(|entry| entry.path() != root)
 			.map(|entry| {
 				let path = entry.path();
@@ -857,8 +861,7 @@ remote_file_id="43"
 					path: path
 						.strip_prefix(root)
 						.expect("fixture-relative path")
-						.to_string_lossy()
-						.replace('\\', "/"),
+						.to_path_buf(),
 					kind: if file_type.is_file() {
 						"file"
 					} else if file_type.is_dir() {
@@ -1016,7 +1019,7 @@ remote_file_id="43"
 		assert_eq!(request.expected_game_root.as_ref(), Some(&game_root));
 		assert!(request.base_snapshot_lease.is_some());
 		assert!(request.expected_base_snapshot_identity.is_some());
-		let manifest = resolve_product_input_manifest(&request, None).expect("frozen manifest");
+		let manifest = resolve_product_input_manifest(&request).expect("frozen manifest");
 		assert_eq!(manifest.mods.len(), 2);
 		assert_eq!(manifest.mods[0].mod_id, FIRST_ID);
 		assert_eq!(manifest.mods[0].precedence, 1);
@@ -1171,7 +1174,7 @@ remote_file_id="43"
 		assert_eq!(prepared.source_mod_count, 2);
 		assert_eq!(prepared.recovery.as_ref(), Some(&recovery));
 		let manifest =
-			resolve_product_input_manifest(&prepared.request, None).expect("selected manifest");
+			resolve_product_input_manifest(&prepared.request).expect("selected manifest");
 		assert_eq!(manifest.mods.len(), 1);
 		assert_eq!(manifest.mods[0].mod_id, FIRST_ID);
 		assert_eq!(manifest.mods[0].precedence, 1);

@@ -1,12 +1,13 @@
 use super::super::content::{MergeKeySource, eu4};
 use super::super::script::{count_symbol_references_resolving_to_mod, is_decision_container_key};
 use crate::model::{
-	CheckContext, DepMisuseEvidence, DepMisuseFinding, Finding, FindingChannel, ModCandidate,
-	ScopeKind, ScopeNode, SemanticIndex, Severity, SymbolKind, VersionMismatchFinding,
+	CheckContext, DepMisuseEvidence, DepMisuseFinding, Finding, FindingChannel, GamePath,
+	GamePathBuf, ModCandidate, ScopeKind, ScopeNode, SemanticIndex, Severity, SymbolKind,
+	VersionMismatchFinding,
 };
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 
 pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 	let mut findings = Vec::new();
@@ -27,7 +28,8 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 				channel: FindingChannel::Strict,
 				message: format!("mod entry {idx} missing displayName"),
 				mod_id: mod_id.clone(),
-				path: Some(ctx.playlist_path.clone()),
+				path: None,
+				source_file: Some(ctx.playlist_path.clone()),
 				evidence: None,
 				line: None,
 				column: None,
@@ -48,7 +50,8 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 				channel: FindingChannel::Strict,
 				message: format!("mod entry {idx} missing steamId"),
 				mod_id: None,
-				path: Some(ctx.playlist_path.clone()),
+				path: None,
+				source_file: Some(ctx.playlist_path.clone()),
 				evidence: None,
 				line: None,
 				column: None,
@@ -63,7 +66,8 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 				channel: FindingChannel::Strict,
 				message: format!("mod entry {idx} missing position"),
 				mod_id,
-				path: Some(ctx.playlist_path.clone()),
+				path: None,
+				source_file: Some(ctx.playlist_path.clone()),
 				evidence: None,
 				line: None,
 				column: None,
@@ -91,7 +95,8 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 						"steamId conflict: {steam_id} (first seen at index {first_idx})"
 					),
 					mod_id: Some(steam_id.clone()),
-					path: Some(ctx.playlist_path.clone()),
+					path: None,
+					source_file: Some(ctx.playlist_path.clone()),
 					evidence: Some(format!("duplicate entry index: {idx}")),
 					line: None,
 					column: None,
@@ -112,7 +117,8 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 						"position conflict: {position} (first seen at index {first_idx})"
 					),
 					mod_id: entry.steam_id.clone(),
-					path: Some(ctx.playlist_path.clone()),
+					path: None,
+					source_file: Some(ctx.playlist_path.clone()),
 					evidence: Some(format!("duplicate entry index: {idx}")),
 					line: None,
 					column: None,
@@ -146,7 +152,8 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				channel: FindingChannel::Strict,
 				message: "failed to locate descriptor.mod".to_string(),
 				mod_id: Some(mod_item.mod_id.clone()),
-				path: mod_item.root_path.clone(),
+				path: None,
+				source_file: mod_item.root_path.clone(),
 				evidence: None,
 				line: None,
 				column: None,
@@ -158,7 +165,8 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				channel: FindingChannel::Strict,
 				message: "failed to parse descriptor.mod".to_string(),
 				mod_id: Some(mod_item.mod_id.clone()),
-				path: Some(path.clone()),
+				path: None,
+				source_file: Some(path.clone()),
 				evidence: Some(err.clone()),
 				line: None,
 				column: None,
@@ -170,7 +178,8 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				channel: FindingChannel::Strict,
 				message: "descriptor.mod does not exist".to_string(),
 				mod_id: Some(mod_item.mod_id.clone()),
-				path: Some(path.clone()),
+				path: None,
+				source_file: Some(path.clone()),
 				evidence: None,
 				line: None,
 				column: None,
@@ -184,24 +193,24 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 }
 
 pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
-	let mut file_owners: HashMap<String, Vec<String>> = HashMap::new();
+	// Ordered by game path, so findings come out in a stable order.
+	let mut file_owners: BTreeMap<&GamePath, Vec<&str>> = BTreeMap::new();
 	for mod_item in &ctx.mods {
 		for file in &mod_item.files {
-			let key = file.to_string_lossy().to_string();
 			file_owners
-				.entry(key)
+				.entry(file)
 				.or_default()
-				.push(mod_item.mod_id.clone());
+				.push(mod_item.mod_id.as_str());
 		}
 	}
 
 	let mut findings = Vec::new();
 	for (path, owners) in file_owners {
-		let unique: Vec<String> = {
+		let unique: Vec<&str> = {
 			let mut seen = HashSet::new();
 			owners
 				.into_iter()
-				.filter(|owner| seen.insert(owner.clone()))
+				.filter(|owner| seen.insert(*owner))
 				.collect()
 		};
 
@@ -209,7 +218,7 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 			continue;
 		}
 
-		let mergeable = is_structurally_mergeable_path(&path);
+		let mergeable = is_structurally_mergeable_path(path);
 		let message = if mergeable {
 			format!("file overwrite conflict (structural auto-merge candidate): {path}")
 		} else {
@@ -226,8 +235,9 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
 			message,
-			mod_id: unique.last().cloned(),
-			path: Some(path.into()),
+			mod_id: unique.last().map(|owner| (*owner).to_string()),
+			path: Some(path.to_owned()),
+			source_file: None,
 			evidence: Some(evidence),
 			line: None,
 			column: None,
@@ -238,22 +248,34 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 	findings
 }
 
-fn is_structurally_mergeable_path(path: &str) -> bool {
-	let normalized = path.replace('\\', "/").to_ascii_lowercase();
-	if normalized.ends_with(".gui") || normalized.ends_with(".gfx") {
-		return normalized.starts_with("interface/")
-			|| normalized.starts_with("common/interface/")
-			|| normalized.starts_with("gfx/");
+/// Names compare ignoring ASCII case.
+fn is_structurally_mergeable_path(path: &GamePath) -> bool {
+	let inside_any = |directories: &[&[&str]]| {
+		directories
+			.iter()
+			.any(|directory| path.is_inside(directory, str::eq_ignore_ascii_case))
+	};
+	let has_extension = |extensions: &[&str]| {
+		path.extension().is_some_and(|extension| {
+			extensions
+				.iter()
+				.any(|expected| extension.eq_ignore_ascii_case(expected))
+		})
+	};
+	if has_extension(&["gui", "gfx"]) {
+		return inside_any(&[&["interface"], &["common", "interface"], &["gfx"]]);
 	}
-	if normalized.ends_with(".txt") || normalized.ends_with(".lua") {
-		return normalized.starts_with("events/")
-			|| normalized.starts_with("decisions/")
-			|| normalized.starts_with("common/scripted_effects/")
-			|| normalized.starts_with("common/diplomatic_actions/")
-			|| normalized.starts_with("common/triggered_modifiers/")
-			|| normalized.starts_with("common/defines/")
-			|| normalized.starts_with("interface/")
-			|| normalized.starts_with("common/interface/");
+	if has_extension(&["txt", "lua"]) {
+		return inside_any(&[
+			&["events"],
+			&["decisions"],
+			&["common", "scripted_effects"],
+			&["common", "diplomatic_actions"],
+			&["common", "triggered_modifiers"],
+			&["common", "defines"],
+			&["interface"],
+			&["common", "interface"],
+		]);
 	}
 	false
 }
@@ -278,7 +300,8 @@ pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
 				channel: FindingChannel::Advisory,
 				message: "missing dependency".to_string(),
 				mod_id: Some(mod_item.mod_id.clone()),
-				path: mod_item.descriptor_path.clone(),
+				path: None,
+				source_file: mod_item.descriptor_path.clone(),
 				evidence: Some(format!("{} depends on {dependency}", descriptor.name)),
 				line: None,
 				column: None,
@@ -457,7 +480,7 @@ fn collect_content_family_merge_keys(
 	keys_by_mod
 }
 
-fn dependency_merge_key_source_for_path(path: &Path) -> Option<(&'static str, MergeKeySource)> {
+fn dependency_merge_key_source_for_path(path: &GamePath) -> Option<(&'static str, MergeKeySource)> {
 	let descriptor = eu4().classify_content_family(path)?;
 	let source = descriptor.merge_key_source?;
 	is_dependency_merge_key_source(source).then_some((descriptor.id.as_str(), source))
@@ -512,38 +535,17 @@ fn has_declared_dependency_semantic_signal(
 		|| replace_path_covers_dependency_content(mod_item, dep_mod)
 }
 
+/// Whether a directory `mod_item` replaces holds a file `dep_mod` ships.
 fn replace_path_covers_dependency_content(mod_item: &ModCandidate, dep_mod: &ModCandidate) -> bool {
 	let Some(descriptor) = mod_item.descriptor.as_ref() else {
 		return false;
 	};
-	let prefixes: Vec<String> = descriptor
-		.replace_path
-		.iter()
-		.map(|path| normalize_path_prefix(path))
-		.filter(|path| !path.is_empty())
-		.collect();
-	if prefixes.is_empty() {
-		return false;
-	}
-
 	dep_mod.files.iter().any(|file| {
-		let normalized = normalize_path_prefix(&normalize_relative_path(file));
-		prefixes
+		descriptor
+			.replace_path
 			.iter()
-			.any(|prefix| path_is_under_prefix(&normalized, prefix))
+			.any(|prefix| file.starts_with(prefix))
 	})
-}
-
-fn normalize_path_prefix(raw: &str) -> String {
-	raw.trim().trim_matches('/').replace('\\', "/")
-}
-
-fn normalize_relative_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
-fn path_is_under_prefix(normalized_file: &str, prefix: &str) -> bool {
-	normalized_file == prefix || normalized_file.starts_with(&format!("{prefix}/"))
 }
 
 fn is_dependency_merge_key_source(source: MergeKeySource) -> bool {
@@ -629,7 +631,8 @@ pub fn check_version_mismatch(ctx: &CheckContext, game_version: &str) -> Vec<Fin
 				channel: FindingChannel::Advisory,
 				message: finding.message.clone(),
 				mod_id: Some(finding.mod_id.clone()),
-				path: ctx
+				path: None,
+				source_file: ctx
 					.mods
 					.iter()
 					.find(|mod_item| mod_item.mod_id == finding.mod_id)
@@ -659,7 +662,8 @@ pub fn check_dependency_misuse(ctx: &CheckContext) -> Vec<Finding> {
 					finding.mod_id, finding.suspicious_dep_id
 				),
 				mod_id: Some(finding.mod_id.clone()),
-				path: ctx
+				path: None,
+				source_file: ctx
 					.mods
 					.iter()
 					.find(|mod_item| mod_item.mod_id == finding.mod_id)
@@ -768,7 +772,7 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 
 		let evidence = defs
 			.iter()
-			.map(|def| format!("{}:{}#L{}", def.mod_id, def.path.display(), def.line))
+			.map(|def| format!("{}:{}#L{}", def.mod_id, def.path, def.line))
 			.collect::<Vec<_>>()
 			.join("; ");
 		let Some(last) = defs.last() else {
@@ -781,6 +785,7 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 			message: format!("duplicate scripted effect: {name}"),
 			mod_id: Some(last.mod_id.clone()),
 			path: Some(last.path.clone()),
+			source_file: None,
 			evidence: Some(evidence),
 			line: Some(last.line),
 			column: Some(last.column),
@@ -797,7 +802,8 @@ struct FindingArgs<'a> {
 	channel: FindingChannel,
 	message: String,
 	mod_id: Option<String>,
-	path: Option<PathBuf>,
+	path: Option<GamePathBuf>,
+	source_file: Option<PathBuf>,
 	evidence: Option<String>,
 	line: Option<usize>,
 	column: Option<usize>,
@@ -812,6 +818,7 @@ fn new_finding(args: FindingArgs<'_>) -> Finding {
 		message,
 		mod_id,
 		path,
+		source_file,
 		evidence,
 		line,
 		column,
@@ -824,6 +831,7 @@ fn new_finding(args: FindingArgs<'_>) -> Finding {
 		message,
 		mod_id,
 		path,
+		source_file,
 		evidence,
 		line,
 		column,
@@ -836,7 +844,7 @@ mod tests {
 	use super::*;
 	use crate::game::eu4::script::{build_semantic_index, parse_script_file};
 	use crate::model::{
-		LocalisationDefinition, MaybeScope, ModCandidate, ScopeSet, SemanticIndex,
+		GamePathBuf, LocalisationDefinition, MaybeScope, ModCandidate, ScopeSet, SemanticIndex,
 		SymbolDefinition, SymbolReference, test_support,
 	};
 	use crate::playset::descriptor::ModDescriptor;
@@ -888,7 +896,8 @@ mod tests {
 			module: "common.scripted_effects".to_string(),
 			local_name: local_name.to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from("common/scripted_effects/test.txt"),
+			path: crate::model::GamePathBuf::parse("common/scripted_effects/test.txt")
+				.expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id: 0,
@@ -910,7 +919,8 @@ mod tests {
 			name: name.to_string(),
 			module: "common.scripted_effects".to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from("common/scripted_effects/caller.txt"),
+			path: crate::model::GamePathBuf::parse("common/scripted_effects/caller.txt")
+				.expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id: 0,
@@ -933,7 +943,10 @@ mod tests {
 
 	fn with_files(mut mod_item: ModCandidate, root: PathBuf, files: &[&str]) -> ModCandidate {
 		mod_item.root_path = Some(root);
-		mod_item.files = files.iter().map(PathBuf::from).collect();
+		mod_item.files = files
+			.iter()
+			.map(|file| GamePathBuf::parse(file).expect("valid game path"))
+			.collect();
 		mod_item
 	}
 
@@ -956,7 +969,8 @@ mod tests {
 		LocalisationDefinition {
 			key: key.to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from("localisation/test_l_english.yml"),
+			path: crate::model::GamePathBuf::parse("localisation/test_l_english.yml")
+				.expect("valid game path"),
 			line: 2,
 			column: 2,
 		}
@@ -1101,9 +1115,10 @@ mod tests {
 			relative,
 			"shared_modifier = { global_tax_modifier = 0.10 }\n",
 		);
+		let game_path = crate::model::GamePath::new(relative).expect("valid game path");
 		let parsed = vec![
-			parse_script_file("100", &main_root, &main_root.join(relative)).expect("main parsed"),
-			parse_script_file("200", &dep_root, &dep_root.join(relative)).expect("dep parsed"),
+			parse_script_file("100", &main_root, game_path),
+			parse_script_file("200", &dep_root, game_path),
 		];
 		let semantic_index = build_semantic_index(&parsed);
 		let ctx = context(
@@ -1130,14 +1145,39 @@ mod tests {
 	#[test]
 	fn does_not_flag_dependency_with_replace_path_coverage() {
 		let mut main = candidate("100", "Main Mod", "main", &["Dependency Mod"]);
-		main.descriptor.as_mut().unwrap().replace_path = vec!["common/missions".to_string()];
+		main.descriptor.as_mut().unwrap().replace_path =
+			vec![GamePathBuf::parse("common/missions").expect("valid game path")];
 		let mut dep = candidate("200", "Dependency Mod", "Dependency Mod", &[]);
-		dep.files = vec![PathBuf::from("common/missions/dep_missions.txt")];
+		dep.files =
+			vec![GamePathBuf::parse("common/missions/dep_missions.txt").expect("valid game path")];
 		let ctx = context(vec![main, dep], SemanticIndex::default());
 
 		let findings = detect_dependency_misuse(&ctx);
 
 		assert!(findings.is_empty());
+	}
+
+	/// A `replace_path` covers the files in and below the directory it names,
+	/// compared by whole components.
+	#[test]
+	fn replace_path_covers_dependency_files_in_and_below_its_directory_only() {
+		let mut main = candidate("100", "Main Mod", "main", &["Dependency Mod"]);
+		main.descriptor.as_mut().unwrap().replace_path =
+			vec![GamePathBuf::parse("common/ideas").expect("valid game path")];
+		for (file, covered) in [
+			("common/ideas/x.txt", true),
+			("common/ideas/nested/x.txt", true),
+			("common/ideas", true),
+			("common/ideas_extra/x.txt", false),
+		] {
+			let mut dep = candidate("200", "Dependency Mod", "Dependency Mod", &[]);
+			dep.files = vec![GamePathBuf::parse(file).expect("valid game path")];
+			assert_eq!(
+				replace_path_covers_dependency_content(&main, &dep),
+				covered,
+				"{file}"
+			);
+		}
 	}
 
 	#[test]
@@ -1159,5 +1199,76 @@ mod tests {
 
 		assert_eq!(findings.len(), 1);
 		assert_eq!(findings[0].suspicious_dep_id, "300");
+	}
+
+	/// The same verdicts the lowercased `starts_with`/`ends_with` text checks
+	/// gave, now over whole components.
+	#[test]
+	fn structurally_mergeable_paths_match_whole_components_ignoring_ascii_case() {
+		for (path, mergeable) in [
+			("interface/x.gui", true),
+			("Interface/X.GUI", true),
+			("gfx/a.gfx", true),
+			("common/interface/a.gfx", true),
+			("common/Scripted_Effects/a.txt", true),
+			("common/defines/x.lua", true),
+			("events/sub/x.txt", true),
+			("interface/x.txt", true),
+			("common/scripted_effects_extra/a.txt", false),
+			("events.txt", false),
+			("interface.gui", false),
+			("events/x.gui", false),
+			("gfx/x.txt", false),
+			("common/ideas/x.txt", false),
+			("events/x.yml", false),
+		] {
+			assert_eq!(
+				is_structurally_mergeable_path(GamePath::new(path).expect("valid game path")),
+				mergeable,
+				"{path}"
+			);
+		}
+	}
+
+	#[test]
+	fn file_conflicts_come_out_in_game_path_byte_order_and_name_merge_candidates() {
+		let files = [
+			"events/b.txt",
+			"common/a-b.txt",
+			"common/a/b.txt",
+			"events/a.txt",
+		];
+		let ctx = context(
+			vec![
+				with_files(candidate("100", "A", "a", &[]), PathBuf::from("a"), &files),
+				with_files(candidate("200", "B", "b", &[]), PathBuf::from("b"), &files),
+			],
+			SemanticIndex::default(),
+		);
+
+		let findings = check_file_conflict(&ctx);
+
+		assert_eq!(
+			findings
+				.iter()
+				.map(|finding| finding.path.as_deref().map(GamePath::as_str))
+				.collect::<Vec<_>>(),
+			[
+				Some("common/a-b.txt"),
+				Some("common/a/b.txt"),
+				Some("events/a.txt"),
+				Some("events/b.txt"),
+			]
+		);
+		assert_eq!(
+			findings[2].message,
+			"file overwrite conflict (structural auto-merge candidate): events/a.txt"
+		);
+		assert!(
+			!findings[0].message.contains("auto-merge"),
+			"{}",
+			findings[0].message
+		);
+		assert!(findings.iter().all(|finding| finding.source_file.is_none()));
 	}
 }

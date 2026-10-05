@@ -1,5 +1,6 @@
+use crate::model::{GamePath, GamePathBuf};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Span {
@@ -78,9 +79,10 @@ pub enum AstStatement {
 	},
 }
 
+/// A parsed script identified by the game path it is loaded at.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AstFile {
-	pub path: PathBuf,
+	pub path: GamePathBuf,
 	pub statements: Vec<AstStatement>,
 }
 
@@ -94,6 +96,59 @@ pub struct ParseDiagnostic {
 pub struct ParseResult {
 	pub ast: AstFile,
 	pub diagnostics: Vec<ParseDiagnostic>,
+}
+
+/// The statements of a script before it is given a game path. This is all the
+/// parser itself produces: which file a script is, and so how content
+/// families and rules apply to it, is decided by the caller that knows the
+/// root it was loaded from.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ParsedStatements {
+	pub statements: Vec<AstStatement>,
+	pub diagnostics: Vec<ParseDiagnostic>,
+}
+
+impl ParsedStatements {
+	/// Identifies the statements as the script loaded at `path`.
+	pub fn into_parse_result(self, path: GamePathBuf) -> ParseResult {
+		ParseResult {
+			ast: AstFile {
+				path,
+				statements: self.statements,
+			},
+			diagnostics: self.diagnostics,
+		}
+	}
+}
+
+/// The grammar a script is read with. The game reads `.lua` files (defines
+/// and random-map tweaks) with Lua comments and everything else as plain
+/// Clausewitz script.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ScriptSyntax {
+	Clausewitz,
+	Lua,
+}
+
+impl ScriptSyntax {
+	/// The syntax of a file with this extension; `lua` matches in any case.
+	pub fn from_extension(extension: Option<&str>) -> Self {
+		if extension.is_some_and(|extension| extension.eq_ignore_ascii_case("lua")) {
+			Self::Lua
+		} else {
+			Self::Clausewitz
+		}
+	}
+
+	pub fn for_game_path(path: &GamePath) -> Self {
+		Self::from_extension(path.extension())
+	}
+
+	/// The syntax of a physical file, for callers that read a file without
+	/// knowing the root it would be loaded from.
+	pub fn for_physical_path(path: &Path) -> Self {
+		Self::from_extension(path.extension().and_then(|extension| extension.to_str()))
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -503,10 +558,10 @@ impl ParserState {
 		}
 	}
 
-	fn parse_file(mut self, path: PathBuf) -> ParseResult {
+	fn parse_file(mut self) -> ParsedStatements {
 		let statements = self.parse_statements(false);
-		ParseResult {
-			ast: AstFile { path, statements },
+		ParsedStatements {
+			statements,
 			diagnostics: self.diagnostics,
 		}
 	}
@@ -833,42 +888,49 @@ impl ParserState {
 	}
 }
 
-pub fn parse_clausewitz_file(path: &Path) -> ParseResult {
+/// Reads and parses a physical file without giving it a game path, for
+/// callers that hold a file but not the root it would be loaded from. The
+/// syntax follows the file's extension; a read failure is a diagnostic.
+pub fn parse_clausewitz_file(path: &Path) -> ParsedStatements {
 	match std::fs::read(path) {
 		Ok(bytes) => {
 			let content = crate::game::eu4::text::decode_paradox_bytes(&bytes);
-			parse_clausewitz_content(path.to_path_buf(), &content)
+			parse_clausewitz_statements(ScriptSyntax::for_physical_path(path), &content)
 		}
-		Err(err) => ParseResult {
-			ast: AstFile {
-				path: path.to_path_buf(),
-				statements: Vec::new(),
-			},
-			diagnostics: vec![ParseDiagnostic {
-				message: format!("failed to read file: {err}"),
-				span: SpanRange {
-					start: Span {
-						line: 1,
-						column: 1,
-						offset: 0,
-					},
-					end: Span {
-						line: 1,
-						column: 1,
-						offset: 0,
-					},
-				},
-			}],
-		},
+		Err(err) => read_failure(&err),
 	}
 }
 
-pub fn parse_clausewitz_content(path: PathBuf, content: &str) -> ParseResult {
-	let lua_mode = path
-		.extension()
-		.and_then(|ext| ext.to_str())
-		.is_some_and(|ext| ext.eq_ignore_ascii_case("lua"));
-	let mut lexer = Lexer::new(content, lua_mode);
+/// The result for a script that could not be read: no statements and one
+/// diagnostic at the start of the file.
+pub(crate) fn read_failure(err: &std::io::Error) -> ParsedStatements {
+	let start = Span {
+		line: 1,
+		column: 1,
+		offset: 0,
+	};
+	ParsedStatements {
+		statements: Vec::new(),
+		diagnostics: vec![ParseDiagnostic {
+			message: format!("failed to read file: {err}"),
+			span: SpanRange {
+				start: start.clone(),
+				end: start,
+			},
+		}],
+	}
+}
+
+/// Parses the script loaded at `path`; the syntax follows its extension and
+/// the AST carries the path.
+pub fn parse_clausewitz_content(path: &GamePath, content: &str) -> ParseResult {
+	parse_clausewitz_statements(ScriptSyntax::for_game_path(path), content)
+		.into_parse_result(path.to_owned())
+}
+
+/// Parses script text in `syntax` without identifying which file it is.
+pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> ParsedStatements {
+	let mut lexer = Lexer::new(content, syntax == ScriptSyntax::Lua);
 	let mut tokens = Vec::new();
 	loop {
 		let token = lexer.next_token();
@@ -880,20 +942,120 @@ pub fn parse_clausewitz_content(path: PathBuf, content: &str) -> ParseResult {
 	}
 	let lexer_diagnostics = lexer.take_diagnostics();
 
-	let mut result = ParserState::new(tokens).parse_file(path);
+	let mut result = ParserState::new(tokens).parse_file();
 	result.diagnostics.extend(lexer_diagnostics);
 	result
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{AstStatement, AstValue, ScalarValue, parse_clausewitz_content};
-	use std::path::PathBuf;
+	use super::{
+		AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_content,
+		parse_clausewitz_file, parse_clausewitz_statements,
+	};
+	use crate::model::GamePath;
+	use std::fs;
+	use std::path::Path;
+
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
+	fn assignment_keys(statements: &[AstStatement]) -> Vec<&str> {
+		statements
+			.iter()
+			.filter_map(|statement| match statement {
+				AstStatement::Assignment { key, .. } => Some(key.as_str()),
+				_ => None,
+			})
+			.collect()
+	}
+
+	#[test]
+	fn the_ast_carries_the_game_path_it_was_parsed_at() {
+		let path = game_path("common/scripted_effects/a.txt");
+		let parsed = parse_clausewitz_content(path, "a = { }\n");
+		assert_eq!(parsed.ast.path.as_game_path(), path);
+		assert_eq!(assignment_keys(&parsed.ast.statements), vec!["a"]);
+	}
+
+	#[test]
+	fn a_lua_game_path_is_parsed_with_lua_comments_in_any_case() {
+		let has_comment = |statements: &[AstStatement]| {
+			statements
+				.iter()
+				.any(|statement| matches!(statement, AstStatement::Comment { .. }))
+		};
+		let source = "-- comment\nx = 1\n";
+		for text in [
+			"common/defines/00_defines.lua",
+			"common/defines/00_DEFINES.LUA",
+		] {
+			let parsed = parse_clausewitz_content(game_path(text), source);
+			assert!(
+				parsed.diagnostics.is_empty(),
+				"{text}: {:?}",
+				parsed.diagnostics
+			);
+			assert!(has_comment(&parsed.ast.statements), "{text}");
+			assert_eq!(assignment_keys(&parsed.ast.statements), vec!["x"], "{text}");
+		}
+		let script = parse_clausewitz_content(game_path("common/defines/00_defines.txt"), source);
+		assert!(
+			!has_comment(&script.ast.statements),
+			"`--` is not a comment outside Lua"
+		);
+	}
+
+	#[test]
+	fn syntax_follows_the_extension_of_either_kind_of_path() {
+		assert_eq!(
+			ScriptSyntax::for_game_path(game_path("map/random/tweaks.lua")),
+			ScriptSyntax::Lua
+		);
+		assert_eq!(
+			ScriptSyntax::for_game_path(game_path("interface/a.gui")),
+			ScriptSyntax::Clausewitz
+		);
+		assert_eq!(
+			ScriptSyntax::for_physical_path(Path::new("/tmp/Defines.Lua")),
+			ScriptSyntax::Lua
+		);
+		assert_eq!(
+			ScriptSyntax::for_physical_path(Path::new("/tmp/no_extension")),
+			ScriptSyntax::Clausewitz
+		);
+	}
+
+	#[test]
+	fn statements_are_parsed_without_any_path() {
+		let parsed = parse_clausewitz_statements(ScriptSyntax::Lua, "-- c\nx = 1\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(assignment_keys(&parsed.statements), vec!["x"]);
+	}
+
+	#[test]
+	fn a_physical_file_is_parsed_without_a_game_path() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let file = temp.path().join("tweaks.lua");
+		fs::write(&file, "-- c\nx = 1\n").expect("write script");
+		let parsed = parse_clausewitz_file(&file);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(assignment_keys(&parsed.statements), vec!["x"]);
+
+		let missing = parse_clausewitz_file(&temp.path().join("missing.txt"));
+		assert!(missing.statements.is_empty());
+		assert!(
+			missing.diagnostics[0]
+				.message
+				.starts_with("failed to read file")
+		);
+	}
 
 	#[test]
 	fn parser_handles_assignments_and_lists() {
 		let parsed = parse_clausewitz_content(
-			PathBuf::from("test.txt"),
+			game_path("test.txt"),
 			"name = \"x\"\ntags = {\n\t\"A\"\n\t\"B\"\n}\n",
 		);
 		assert!(parsed.diagnostics.is_empty());
@@ -913,7 +1075,7 @@ mod tests {
 	#[test]
 	fn parser_treats_digit_leading_identifier_as_assignment_key() {
 		let parsed = parse_clausewitz_content(
-			PathBuf::from("common/powerprojection/00_static.txt"),
+			game_path("common/powerprojection/00_static.txt"),
 			"25_permanent_power_projection = { yearly_decay = 1 }\n",
 		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -941,7 +1103,7 @@ mod tests {
 	#[test]
 	fn parser_accepts_nested_equals_assignment_forms() {
 		let parsed = parse_clausewitz_content(
-			PathBuf::from("missions.txt"),
+			game_path("missions.txt"),
 			"custom_tooltip = njd_unite_arabia_tooltip = { factor = 1 }\ncenter_of_trade = 1 = yes\n286 = = { owner = ROOT }\n",
 		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -960,7 +1122,7 @@ mod tests {
 	#[test]
 	fn parser_accepts_implicit_block_assignments_without_equals() {
 		let parsed = parse_clausewitz_content(
-			PathBuf::from("scripted_effects.txt"),
+			game_path("scripted_effects.txt"),
 			"some_effect {\n\t$who$ = {\n\t\ttrigger_switch = { 100 = { PREV = { add_prestige = 1 } } }\n\t}\n}\n",
 		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -990,7 +1152,7 @@ mod tests {
 			("v = Yes\n", ScalarValue::Identifier("Yes".to_string())),
 			("v = NO\n", ScalarValue::Identifier("NO".to_string())),
 		] {
-			let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), source);
+			let parsed = parse_clausewitz_content(game_path("test.txt"), source);
 			assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 			let [AstStatement::Assignment { value, .. }] = parsed.ast.statements.as_slice() else {
 				panic!("expected one assignment for {source:?}")
@@ -1005,7 +1167,7 @@ mod tests {
 	/// The round trip must not change which value the game reads.
 	#[test]
 	fn emitting_a_non_lowercase_yes_keeps_its_spelling() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), "v = YES\n");
+		let parsed = parse_clausewitz_content(game_path("test.txt"), "v = YES\n");
 		let rendered =
 			crate::game::eu4::script::emit::emit_clausewitz_statements(&parsed.ast.statements)
 				.expect("emit");
@@ -1016,7 +1178,7 @@ mod tests {
 	#[test]
 	fn parser_keeps_escaped_quotes_inside_multiline_strings() {
 		let parsed = parse_clausewitz_content(
-			PathBuf::from("scripted_effects.txt"),
+			game_path("scripted_effects.txt"),
 			r#"event_wrapper = {
 	effect = "
 		if = {
@@ -1058,7 +1220,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_recognizes_double_dash_line_comment() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "-- foo\nbar=1\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "-- foo\nbar=1\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 2);
 
@@ -1075,7 +1237,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_recognizes_inline_comment_after_value() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = 1 -- trail\ny = 2\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "x = 1 -- trail\ny = 2\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 3);
 
@@ -1105,7 +1267,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_recognizes_inline_comment_after_identifier_no_space() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = yes--c\ny = 2\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "x = yes--c\ny = 2\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 3);
 
@@ -1135,7 +1297,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_recognizes_inline_comment_after_number_no_space() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = 60--c\ny = 2\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "x = 60--c\ny = 2\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 3);
 
@@ -1165,7 +1327,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_recognizes_inline_comment_after_string_no_space() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = \"a\"--c\ny = 2\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "x = \"a\"--c\ny = 2\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 3);
 
@@ -1195,8 +1357,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_negative_number_still_works() {
-		let parsed =
-			parse_clausewitz_content(PathBuf::from("test.lua"), "a = -1\nb = -0.5\nc = -\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "a = -1\nb = -0.5\nc = -\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 3);
 
@@ -1230,7 +1391,7 @@ next_effect = { add_prestige = 1 }
 	#[test]
 	fn lua_mode_comma_separates_numeric_scalars_and_preserves_exponents() {
 		let parsed = parse_clausewitz_content(
-			PathBuf::from("defines.lua"),
+			game_path("defines.lua"),
 			"plain = 75,\npositive_exp = 1e-5,\nnegative_exp = -1e-5,\nstandalone = -,\n",
 		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -1259,7 +1420,7 @@ next_effect = { add_prestige = 1 }
 	#[test]
 	fn lua_mode_block_comment_level_zero() {
 		let parsed = parse_clausewitz_content(
-			PathBuf::from("test.lua"),
+			game_path("test.lua"),
 			"--[[ first line\nsecond line ]]\nx = 1\n",
 		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -1284,7 +1445,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_block_comment_level_two() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "--[==[ a ]==]\nx = 1\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "--[==[ a ]==]\nx = 1\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 2);
 
@@ -1305,7 +1466,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_unterminated_block_comment_emits_diagnostic() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "--[[ no end\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "--[[ no end\n");
 		assert!(!parsed.diagnostics.is_empty());
 		assert!(parsed.diagnostics.iter().any(|diagnostic| {
 			diagnostic
@@ -1324,8 +1485,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_dotted_keys_normalize_to_assignment() {
-		let parsed =
-			parse_clausewitz_content(PathBuf::from("test.lua"), "NDefines.NCountry.X = 0.5\n");
+		let parsed = parse_clausewitz_content(game_path("test.lua"), "NDefines.NCountry.X = 0.5\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 1);
 
@@ -1341,7 +1501,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn non_lua_mode_treats_double_dash_as_numbers() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), "-- foo\n");
+		let parsed = parse_clausewitz_content(game_path("test.txt"), "-- foo\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert!(parsed.ast.statements.len() >= 2);
 		assert!(
@@ -1365,7 +1525,7 @@ next_effect = { add_prestige = 1 }
 
 	#[test]
 	fn lua_mode_off_for_unknown_extension() {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.gui"), "-- foo\n");
+		let parsed = parse_clausewitz_content(game_path("test.gui"), "-- foo\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert!(parsed.ast.statements.len() >= 2);
 		assert!(

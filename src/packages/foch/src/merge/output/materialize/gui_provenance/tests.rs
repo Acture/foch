@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 use super::*;
 use crate::game::eu4::script::emit::emit_clausewitz_statements;
@@ -10,7 +9,7 @@ use crate::merge::model::{
 use crate::merge::structured::{ClausewitzFileAdapter, TreePartitionAdapter};
 
 fn parsed(source: &str) -> AstFile {
-	let parsed = parse_clausewitz_content(PathBuf::from("interface/test.gui"), source);
+	let parsed = parse_clausewitz_content(GamePath::new("interface/test.gui").unwrap(), source);
 	assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 	parsed.ast
 }
@@ -73,7 +72,7 @@ fn render(file: &AstFile, lineage: &SemanticMergeComputation) -> ProvenanceToolt
 	materialize_gui_provenance_tooltips(
 		true,
 		VanillaBaseMode::Required,
-		"interface/test.gui",
+		GamePath::new("interface/test.gui").unwrap(),
 		file.statements.clone(),
 		lineage,
 		&MergePolicies::default(),
@@ -192,7 +191,7 @@ fn transformed_ast_disabled_mode_and_unrelated_paths_are_not_annotated() {
 		let output = materialize_gui_provenance_tooltips(
 			enabled,
 			VanillaBaseMode::Required,
-			path,
+			GamePath::new(path).unwrap(),
 			file.statements.clone(),
 			&lineage,
 			&MergePolicies::default(),
@@ -266,7 +265,7 @@ fn generated_wrappers_are_idempotent_and_bound_to_the_output_path() {
 	let other_path = materialize_gui_provenance_tooltips(
 		true,
 		VanillaBaseMode::Required,
-		"common/interface/other.gui",
+		GamePath::new("common/interface/other.gui").unwrap(),
 		file.statements.clone(),
 		&lineage,
 		&MergePolicies::default(),
@@ -299,7 +298,7 @@ fn missing_tooltip_requires_a_verified_ancestor_even_with_mod_only_origins() {
 		let output = materialize_gui_provenance_tooltips(
 			true,
 			mode,
-			"interface/test.gui",
+			GamePath::new("interface/test.gui").unwrap(),
 			file.statements.clone(),
 			&lineage,
 			&MergePolicies::default(),
@@ -314,7 +313,7 @@ fn missing_tooltip_requires_a_verified_ancestor_even_with_mod_only_origins() {
 	let output = materialize_gui_provenance_tooltips(
 		true,
 		VanillaBaseMode::ExplicitlyDisabled,
-		"interface/test.gui",
+		GamePath::new("interface/test.gui").unwrap(),
 		authored.statements.clone(),
 		&semantic(&authored, false),
 		&MergePolicies::default(),

@@ -1,12 +1,11 @@
 //! Address-patch implementation of the neutral DAG execution protocols.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use crate::game::eu4::content::{MergeKeySource, MergePolicies, ScriptFileKind};
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
-use crate::model::HandlerResolutionRecord;
+use crate::model::{GamePath, HandlerResolutionRecord};
 
 use crate::merge::address_patch::cache::{DagBaseCache, ModDiffCache};
 use crate::merge::planning::dag::{FileDag, ModId};
@@ -53,7 +52,7 @@ pub(crate) struct ReferenceDagCaches<'a> {
 
 struct CachedDiffArgs<'a> {
 	cache: Option<&'a ModDiffCache>,
-	target_path: &'a str,
+	target_path: &'a GamePath,
 	mod_hash: Option<&'a str>,
 	base_view_hash: Option<&'a str>,
 	current_base: &'a ParsedScriptFile,
@@ -66,7 +65,7 @@ struct CachedDiffArgs<'a> {
 struct CachedApplyArgs<'a> {
 	cache: Option<&'a DagBaseCache>,
 	deps_hash: Option<&'a str>,
-	file_path: &'a str,
+	file_path: &'a GamePath,
 	current_statements: &'a [AstStatement],
 	resolved_patches: &'a [ClausewitzPatch],
 	merge_key_source: MergeKeySource,
@@ -640,7 +639,7 @@ fn append_unique_patch(target: &mut Vec<ClausewitzPatch>, patch: &ClausewitzPatc
 }
 
 fn build_branch_patches(
-	file_path: &str,
+	file_path: &GamePath,
 	template: Option<&ParsedScriptFile>,
 	base_statements: &[AstStatement],
 	effective_statements: &[AstStatement],
@@ -784,7 +783,7 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 				.cloned()
 				.collect::<Vec<_>>();
 			let (branch_patches, branch_intent_only) = build_branch_patches(
-				request.file_dag.file_path(),
+				self.file_dag.file_path(),
 				self.template,
 				&request.base.statements,
 				&revision.state.statements,
@@ -811,7 +810,7 @@ impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 			patch_sets,
 			self.policies,
 			self.handler,
-			Some(Path::new(request.file_dag.file_path())),
+			request.file_dag.file_path(),
 		)
 		.map_err(|error| error.to_string())?;
 		normalize_merge_result(&mut merge_result);
@@ -890,7 +889,7 @@ fn record_downstream_resolutions(
 	merge_result: &mut PatchMergeResult,
 	seen_pending: &[PatchResolution],
 	final_pending: &[PatchResolution],
-	file_path: &str,
+	file_path: &GamePath,
 ) {
 	for conflict in seen_pending {
 		if final_pending.contains(conflict) {
@@ -910,7 +909,7 @@ fn record_downstream_resolutions(
 		merge_result
 			.handler_resolutions
 			.push(HandlerResolutionRecord {
-				path: file_path.to_string(),
+				path: file_path.to_owned(),
 				action: "downstream_override".to_string(),
 				source: Some(format!("{}::{}", address.path.join("/"), address.key)),
 				rationale: Some(format!(
@@ -977,30 +976,30 @@ pub(crate) fn extend_merge_result(target: &mut PatchMergeResult, source: PatchMe
 }
 
 fn synthesized_parsed_file(
-	file_path: &str,
+	file_path: &GamePath,
 	template: Option<&ParsedScriptFile>,
 	statements: Vec<AstStatement>,
 ) -> ParsedScriptFile {
-	let path = PathBuf::from(file_path);
 	let mut parsed = template.cloned().unwrap_or_else(|| ParsedScriptFile {
 		mod_id: "__foch_running_base__".to_string(),
-		path: path.clone(),
-		relative_path: path.clone(),
+		path: None,
+		relative_path: file_path.to_owned(),
 		content_family: None,
 		file_kind: ScriptFileKind::new("other"),
 		module_name: "running_base".to_string(),
 		ast: AstFile {
-			path: path.clone(),
+			path: file_path.to_owned(),
 			statements: Vec::new(),
 		},
 		source: String::new(),
 		parse_issues: Vec::new(),
 		parse_cache_hit: false,
 	});
+	// A synthesized running base exists only in memory.
 	parsed.mod_id = "__foch_running_base__".to_string();
-	parsed.path = path.clone();
-	parsed.relative_path = path.clone();
-	parsed.ast.path = path;
+	parsed.path = None;
+	parsed.relative_path = file_path.to_owned();
+	parsed.ast.path = file_path.to_owned();
 	parsed.ast.statements = statements;
 	parsed.source.clear();
 	parsed.parse_issues.clear();

@@ -1,7 +1,7 @@
+use crate::model::GamePathBuf;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
-use std::path::PathBuf;
 
 use crate::game::eu4::script::parser::{
 	AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange,
@@ -107,7 +107,7 @@ pub(crate) fn normalize_ast_with_findings(
 }
 
 pub(crate) fn denormalize_ast(
-	path: PathBuf,
+	path: GamePathBuf,
 	tree: &NormalizedTree,
 ) -> Result<AstFile, AstAdapterError> {
 	let root = tree.node(tree.root())?;

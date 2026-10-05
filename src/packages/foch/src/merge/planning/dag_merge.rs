@@ -396,7 +396,7 @@ fn compute_semantic_definition_provenance(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::path::{Path, PathBuf};
+	use std::path::PathBuf;
 
 	use crate::game::eu4::content::{ListMergePolicy, MergeKeySource, ScriptFileKind};
 	use crate::game::eu4::script::parser::AstValue;
@@ -441,7 +441,10 @@ mod tests {
 			descriptor: Some(ModDescriptor {
 				name: name.to_string(),
 				dependencies: deps.into_iter().map(str::to_string).collect(),
-				replace_path: replace_path.into_iter().map(str::to_string).collect(),
+				replace_path: replace_path
+					.into_iter()
+					.map(|path| crate::model::GamePathBuf::parse(path).expect("valid game path"))
+					.collect(),
 				..ModDescriptor::default()
 			}),
 			workshop_identity: None,
@@ -465,7 +468,8 @@ mod tests {
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
 			root_path: PathBuf::from(format!("/mods/{mod_id}")),
-			absolute_path: PathBuf::from(format!("/mods/{mod_id}/common/foo.txt")),
+			relative_path: crate::model::GamePathBuf::parse("common/foo.txt")
+				.expect("valid game path"),
 			precedence,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -475,12 +479,11 @@ mod tests {
 	}
 
 	fn parsed_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/foo.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse("common/foo.txt").expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("other"),
@@ -493,13 +496,12 @@ mod tests {
 	}
 
 	fn parsed_event_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("events/test.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse("events/test.txt").expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("events"),
@@ -512,13 +514,14 @@ mod tests {
 	}
 
 	fn parsed_definition_module_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/institutions/zzz_foch_institutions.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path =
+			crate::model::GamePathBuf::parse("common/institutions/zzz_foch_institutions.txt")
+				.expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("institutions"),
@@ -531,13 +534,15 @@ mod tests {
 	}
 
 	fn parsed_diplomatic_actions_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/diplomatic_actions/zzz_foch_diplomatic_actions.txt");
-		let parsed =
-			crate::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
+		let path = crate::model::GamePathBuf::parse(
+			"common/diplomatic_actions/zzz_foch_diplomatic_actions.txt",
+		)
+		.expect("valid game path");
+		let parsed = crate::game::eu4::script::parser::parse_clausewitz_content(&path, source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
-			path: path.clone(),
+			path: None,
 			relative_path: path,
 			content_family: None,
 			file_kind: ScriptFileKind::new("diplomatic_actions"),
@@ -564,7 +569,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"events/test.txt",
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -575,7 +580,9 @@ mod tests {
 			(mid("right"), parsed_event_file("right", right_source)),
 		]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new("events/test.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+			)
 			.expect("events content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -599,7 +606,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"events/test.txt",
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -607,7 +614,9 @@ mod tests {
 		let vanilla = vanilla_source.map(|source| parsed_event_file("__game__", source));
 		let inventory = HashMap::from([(mid("only"), parsed_event_file("only", source))]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new("events/test.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+			)
 			.expect("events content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -635,7 +644,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			path,
+			crate::model::GamePath::new(path).expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -652,7 +661,7 @@ mod tests {
 			),
 		]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.expect("institutions content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -681,7 +690,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			path,
+			crate::model::GamePath::new(path).expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -699,7 +708,7 @@ mod tests {
 			),
 		]);
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new(path))
+			.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 			.expect("diplomatic actions content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
@@ -982,7 +991,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1033,7 +1042,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1072,7 +1081,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&ignore,
 			dep_overrides,
@@ -1107,7 +1116,7 @@ mod tests {
 		);
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&ignore,
 			dep_overrides,
@@ -1144,7 +1153,7 @@ mod tests {
 		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 		let fdag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contribs,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1267,7 +1276,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"events/test.txt",
+			crate::model::GamePath::new("events/test.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1291,7 +1300,9 @@ mod tests {
 			})
 			.collect::<HashMap<_, _>>();
 		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(Path::new("events/test.txt"))
+			.classify_content_family(
+				crate::model::GamePath::new("events/test.txt").expect("valid game path"),
+			)
 			.expect("events content family");
 		let mut handler = DeferHandler;
 
@@ -1329,7 +1340,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],
@@ -1378,7 +1389,7 @@ mod tests {
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			crate::model::GamePath::new("common/foo.txt").expect("valid game path"),
 			&contributors,
 			&IgnoreReplacePath::None,
 			&[],

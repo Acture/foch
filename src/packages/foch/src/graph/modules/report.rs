@@ -1,5 +1,5 @@
 use super::model::{CollisionHotspot, ModSummary, ModulePartition, ModuleReport, SymbolGraph};
-use crate::model::{MergeTraceEdge, MergeTraceEntry};
+use crate::model::{GamePathBuf, MergeTraceEdge, MergeTraceEntry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -82,8 +82,10 @@ pub fn build_module_report(graph: &SymbolGraph, partition: &ModulePartition) -> 
 	}
 }
 
+/// One edge per contributor of each traced definition. `merged_definition`
+/// is display text naming the output file and the definition key.
 pub fn merge_trace_edges_from_trace(
-	trace: &BTreeMap<String, BTreeMap<String, MergeTraceEntry>>,
+	trace: &BTreeMap<GamePathBuf, BTreeMap<String, MergeTraceEntry>>,
 ) -> Vec<MergeTraceEdge> {
 	let mut edges = Vec::new();
 	for (path, definitions) in trace {
@@ -165,7 +167,7 @@ mod tests {
 
 		let mut trace = BTreeMap::new();
 		trace.insert(
-			"common/scripted_effects/test.txt".to_string(),
+			GamePathBuf::parse("common/scripted_effects/test.txt").expect("valid game path"),
 			BTreeMap::from([(
 				"test_shared_effect".to_string(),
 				MergeTraceEntry {
@@ -191,6 +193,10 @@ mod tests {
 		let second = merge_trace_edges_from_trace(&trace);
 		assert_eq!(first, second);
 		assert_eq!(first.len(), 2);
+		assert_eq!(
+			first[0].merged_definition,
+			"common/scripted_effects/test.txt::test_shared_effect"
+		);
 		assert_eq!(first[0].source_mod, "mod_a");
 		assert_eq!(first[0].policy, MergeTracePolicy::Union);
 		assert_eq!(first[0].decision, MergeTraceDecision::Unioned);

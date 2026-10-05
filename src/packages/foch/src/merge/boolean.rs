@@ -180,7 +180,6 @@ fn synthetic_span() -> SpanRange {
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
 
 	use crate::game::eu4::script::emit::emit_clausewitz_statements;
 	use crate::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
@@ -188,7 +187,10 @@ mod tests {
 	use super::{canonical_boolean_or_body, simplify_boolean_or_body};
 
 	fn body(source: &str) -> Vec<AstStatement> {
-		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), source);
+		let parsed = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("test.txt").expect("valid game path"),
+			source,
+		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast.statements
 	}

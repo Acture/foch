@@ -4,7 +4,7 @@ use super::commit::{
 	ProductInputCommitGuard,
 };
 use super::conflict_handler::ConflictHandler;
-use super::error::MergeError;
+use super::error::{MergeError, MergeErrorSubject};
 use super::materialize::{
 	MaterializeOutput, MergeMaterializeOptions, freeze_path_plan, materialize_analyzed_input,
 };
@@ -20,12 +20,13 @@ use crate::input::{
 	resolve_input_summary,
 };
 use crate::model::{
-	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
+	AnalysisMode, ChannelMode, Finding, GamePathBuf, MERGE_EXECUTION_ATTESTATION_SCHEMA,
 	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
 	MergeExecutionAttestation, MergePlanResult, MergeProvenanceArtifact, MergeProvenanceFile,
 	MergeReport, MergeReportBaseSnapshot, MergeReportScope, MergeReportStatus,
 	MergeReportValidation,
 };
+use crate::playset::descriptor::{descriptor_path_text, escape_descriptor_value};
 use crate::project::{AppliedDepOverride, Project, ResolutionDecision, ResolutionMap};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -66,9 +67,11 @@ pub struct MergeAnalysisOptions {
 	/// the output does not depend on it, and fewer run while their estimated
 	/// memory does not fit. Interactive prompts still come in plan order.
 	pub merge_workers: NonZeroUsize,
-	/// Optional relative-path retention set for scoring callers that only need
-	/// target corpus paths. Full production merge leaves this unset.
-	pub retained_paths: Option<BTreeSet<String>>,
+	/// Optional game-path retention set for scoring callers that only need
+	/// target corpus paths. Full production merge leaves this unset. A caller
+	/// holding text parses it with [`GamePathBuf::parse`], which names the
+	/// text it rejects.
+	pub retained_paths: Option<BTreeSet<GamePathBuf>>,
 }
 
 /// Worker count for callers that do not choose one: the detected available
@@ -342,13 +345,10 @@ fn analyze_merge_with_backend_and_observer(
 		Ok(inventory) => BaseSnapshotCommitGuard::from_inventory(inventory)?,
 		Err(_) => None,
 	};
-	let product_input_commit_guard = inventory_result.as_ref().ok().and_then(|inventory| {
-		ProductInputCommitGuard::from_inventory(
-			request.clone(),
-			options.retained_paths.clone(),
-			inventory,
-		)
-	});
+	let product_input_commit_guard = inventory_result
+		.as_ref()
+		.ok()
+		.and_then(|inventory| ProductInputCommitGuard::from_inventory(request.clone(), inventory));
 	let execution_attestation = merge_execution_attestation(
 		backend_id,
 		options.retained_paths.is_some(),
@@ -562,7 +562,7 @@ fn complete_merge_analysis(
 			Some(report.generated_file_count as u64),
 		);
 		let config: Config = output_validation_config.ok_or_else(|| MergeError::Validation {
-			path: None,
+			subject: None,
 			message: "output validation requires a resolved input".to_string(),
 		})?;
 		report.validation = revalidate_generated_output(
@@ -765,18 +765,20 @@ fn load_merge_policy(
 		.unwrap_or_else(|| Path::new("."));
 	let config = if let Some(path) = explicit_path {
 		Project::load_from_path(path).map_err(|err| MergeError::Validation {
-			path: Some(path.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(path.to_path_buf())),
 			message: err.to_string(),
 		})?
 	} else {
 		Project::try_load(playset_root).map_err(|err| MergeError::Validation {
-			path: Some(playset_root.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(playset_root.to_path_buf())),
 			message: err.to_string(),
 		})?
 	};
 	let resolution_map =
 		ResolutionMap::from_entries(&config.resolutions).map_err(|err| MergeError::Validation {
-			path: Some(explicit_path.unwrap_or(playset_root).display().to_string()),
+			subject: Some(MergeErrorSubject::Host(
+				explicit_path.unwrap_or(playset_root).to_path_buf(),
+			)),
 			message: err.to_string(),
 		})?;
 	let emit_options = EmitOptions::with_indent(config.emit_indent());
@@ -811,7 +813,7 @@ fn freeze_external_resolution_files(
 	let mut frozen = BTreeMap::new();
 	for path in sources {
 		let bytes = fs::read(&path).map_err(|err| MergeError::Validation {
-			path: Some(path.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(path.to_path_buf())),
 			message: format!("failed to freeze external resolution source: {err}"),
 		})?;
 		frozen.insert(path, bytes);
@@ -832,22 +834,30 @@ fn revalidate_generated_output(
 	let parent_dir = canonical_out_dir
 		.parent()
 		.ok_or_else(|| MergeError::Validation {
-			path: Some(canonical_out_dir.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(canonical_out_dir.to_path_buf())),
 			message: format!(
 				"generated output {} has no parent directory",
 				canonical_out_dir.display()
 			),
 		})?;
+	let out_dir_text =
+		descriptor_path_text(&canonical_out_dir).map_err(|reason| MergeError::Validation {
+			subject: Some(MergeErrorSubject::Host(canonical_out_dir.to_path_buf())),
+			message: format!(
+				"generated output {} cannot be named in a descriptor: {reason}",
+				canonical_out_dir.display()
+			),
+		})?;
 	let out_dir_name = canonical_out_dir
 		.file_name()
+		.and_then(|name| name.to_str())
 		.ok_or_else(|| MergeError::Validation {
-			path: Some(canonical_out_dir.display().to_string()),
+			subject: Some(MergeErrorSubject::Host(canonical_out_dir.to_path_buf())),
 			message: format!(
 				"generated output {} has no terminal directory name",
 				canonical_out_dir.display()
 			),
-		})?
-		.to_string_lossy();
+		})?;
 	let validation_dir = validation_playlist_dir(parent_dir);
 	fs::create_dir_all(validation_dir.join("mod")).map_err(|err| {
 		MergeError::Io(io::Error::other(format!(
@@ -870,8 +880,8 @@ fn revalidate_generated_output(
 	fs::write(&dlc_load_path, dlc_load_bytes)?;
 	let descriptor_body = format!(
 		"name=\"{}\"\npath=\"{}\"\nremote_file_id=\"{}\"\n",
-		escape_descriptor_value(&out_dir_name),
-		escape_descriptor_value(&normalize_descriptor_path(&canonical_out_dir)),
+		escape_descriptor_value(out_dir_name),
+		out_dir_text,
 		escape_descriptor_value(&synthetic_steam_id)
 	);
 	fs::write(validation_dir.join(&descriptor_rel), descriptor_body)?;
@@ -978,23 +988,13 @@ fn write_provenance_artifact(out_dir: &Path, report: &MergeReport) -> Result<(),
 	}
 	let mut files = BTreeMap::new();
 	for (relative, definitions) in &report.definition_provenance {
-		if relative.contains(['\\', ':'])
-			|| relative
-				.split('/')
-				.any(|part| part.is_empty() || matches!(part, "." | ".."))
-		{
-			return Err(MergeError::Validation {
-				path: Some(relative.clone()),
-				message: "provenance output path is not a safe relative path".to_string(),
-			});
-		}
 		let mut output_path = out_dir.to_path_buf();
-		for component in relative.split('/') {
+		for component in relative.iter() {
 			output_path.push(component);
 			let metadata = fs::symlink_metadata(&output_path)?;
 			if metadata.is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
 				return Err(MergeError::Validation {
-					path: Some(relative.clone()),
+					subject: Some(MergeErrorSubject::Game(relative.clone())),
 					message: "provenance output contains a symlink or special file".to_string(),
 				});
 			}
@@ -1055,14 +1055,6 @@ fn validation_playlist_dir(parent_dir: &Path) -> PathBuf {
 		.map(|duration| duration.as_nanos())
 		.unwrap_or_default();
 	parent_dir.join(format!(".foch-merge-validation-{pid}-{nanos}-{nonce}"))
-}
-
-fn normalize_descriptor_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
-fn escape_descriptor_value(value: &str) -> String {
-	value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(test)]
@@ -1133,8 +1125,7 @@ mod tests {
 	}
 
 	#[test]
-	fn provenance_artifact_rejects_unsafe_output_paths() {
-		let temp = tempfile::TempDir::new().expect("temporary output");
+	fn provenance_artifact_rejects_unsafe_serialized_paths() {
 		for path in [
 			"../outside.txt",
 			"/absolute.txt",
@@ -1144,19 +1135,16 @@ mod tests {
 			"common//outside.txt",
 			"",
 		] {
-			let report = report_with(|report| {
-				report.definition_provenance.insert(
-					path.to_string(),
-					BTreeMap::from([("effect".to_string(), vec!["mod_a".to_string()])]),
-				);
+			let serialized: serde_json::Value = serde_json::json!({
+				"version": 1,
+				"files": {path: {
+					"content_hash": "unused",
+					"definitions": {"effect": ["mod_a"]}
+				}},
+				"mod_names": {"mod_a": "A"}
 			});
-			let error = write_provenance_artifact(temp.path(), &report)
-				.expect_err("unsafe paths must be rejected before reading output");
-			assert!(
-				matches!(error, MergeError::Validation { .. }),
-				"{path:?}: {error}"
-			);
-			assert!(!temp.path().join(MERGE_PROVENANCE_ARTIFACT_PATH).exists());
+			serde_json::from_value::<MergeProvenanceArtifact>(serialized)
+				.expect_err("unsafe paths must be rejected before provenance is consumed");
 		}
 	}
 
@@ -1469,7 +1457,7 @@ mod tests {
 	fn compute_merge_status_partial_on_handler_resolutions() {
 		let report = report_with(|report| {
 			report.handler_resolutions.push(HandlerResolutionRecord {
-				path: "common/test.txt".to_string(),
+				path: crate::model::GamePathBuf::parse("common/test.txt").expect("valid game path"),
 				action: "last_writer".to_string(),
 				source: None,
 				rationale: None,
@@ -1670,7 +1658,7 @@ mod tests {
 			paradox_dir.join("mod/ugc_100.mod"),
 			format!(
 				"name=\"Test Mod\"\npath=\"{}\"\nremote_file_id=\"100\"\n",
-				escape_descriptor_value(&normalize_descriptor_path(&mod_root))
+				descriptor_path_text(&mod_root).expect("UTF-8 mod root")
 			),
 		)
 		.expect("write mod descriptor");

@@ -2,7 +2,6 @@
 //! See docs/provenance-gui-assessment.md for the exact examples and limits.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{
@@ -14,6 +13,7 @@ use crate::merge::model::{
 	VanillaBaseMode,
 };
 use crate::merge::structured::{ClausewitzFileAdapter, TreePartitionAdapter};
+use crate::model::GamePath;
 
 use super::provenance_tooltip::{
 	PROVENANCE_KEY_PREFIX, ProvenanceTooltipOutput, display_name, is_safe_localisation_key,
@@ -35,7 +35,7 @@ struct WidgetProjection {
 pub(super) fn materialize_gui_provenance_tooltips(
 	enabled: bool,
 	vanilla_base_mode: VanillaBaseMode,
-	target_path: &str,
+	target_path: &GamePath,
 	statements: Vec<AstStatement>,
 	semantic: &SemanticMergeComputation,
 	policies: &MergePolicies,
@@ -45,10 +45,10 @@ pub(super) fn materialize_gui_provenance_tooltips(
 		statements,
 		localisation: BTreeMap::new(),
 	};
-	let target = target_path.replace('\\', "/");
 	if !enabled
-		|| !target.ends_with(".gui")
-		|| !(target.starts_with("interface/") || target.starts_with("common/interface/"))
+		|| target_path.extension() != Some("gui")
+		|| !(target_path.is_inside(&["interface"], str::eq)
+			|| target_path.is_inside(&["common", "interface"], str::eq))
 		|| semantic.partition_lineage.len() != 1
 	{
 		return Ok(output);
@@ -60,7 +60,7 @@ pub(super) fn materialize_gui_provenance_tooltips(
 		return Ok(output);
 	}
 	let file = AstFile {
-		path: PathBuf::from(&target),
+		path: target_path.to_owned(),
 		statements: output.statements.clone(),
 	};
 	let Ok(final_tree) = ClausewitzFileAdapter
@@ -110,7 +110,7 @@ pub(super) fn materialize_gui_provenance_tooltips(
 		else {
 			continue;
 		};
-		let key = wrapper_key(&target, widget.node, field, original.as_deref());
+		let key = wrapper_key(target_path, widget.node, field, original.as_deref());
 		let names = sources
 			.iter()
 			.map(|id| display_name(id, display_names))
@@ -359,10 +359,10 @@ fn tooltip_target(
 	Some((field, Some(index), Some(original.to_string())))
 }
 
-fn wrapper_key(target: &str, node: NodeId, field: &str, original: Option<&str>) -> String {
+fn wrapper_key(target: &GamePath, node: NodeId, field: &str, original: Option<&str>) -> String {
 	let mut hasher = blake3::Hasher::new();
 	hasher.update(b"foch-gui-provenance-v1\0");
-	for part in [target, field, original.unwrap_or("")] {
+	for part in [target.as_str(), field, original.unwrap_or("")] {
 		hasher.update(&(part.len() as u64).to_le_bytes());
 		hasher.update(part.as_bytes());
 	}

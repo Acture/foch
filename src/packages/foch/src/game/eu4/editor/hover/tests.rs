@@ -76,6 +76,33 @@ fn provenance_hover_verification_uses_bytes_before_script_decoding() {
 	);
 }
 
+#[cfg(unix)]
+#[test]
+fn provenance_hover_does_not_alias_a_literal_backslash_filename() {
+	let nested: &str = "common/scripted_effects/a/b.txt";
+	let (root, nested_path): (TempDir, PathBuf) = fixture(nested, TEXT, &["nested"]);
+	let literal_path: PathBuf = root.path().join(r"common/scripted_effects/a\b.txt");
+	fs::write(&literal_path, TEXT).unwrap();
+	write_sidecar(
+		root.path(),
+		json!({
+			"version": 1,
+			"files": {nested: {
+				"content_hash": blake3::hash(TEXT.as_bytes()).to_hex().as_str(),
+				"definitions": {"shared": ["nested"]}
+			}},
+			"mod_names": {}
+		}),
+	);
+	assert!(
+		hover(&nested_path, TEXT)
+			.unwrap()
+			.markdown
+			.contains("nested")
+	);
+	assert!(hover(&literal_path, TEXT).is_none());
+}
+
 #[test]
 fn provenance_hover_rejects_unknown_or_incomplete_verified_records() {
 	let (root, path) = fixture(RELATIVE, TEXT, &["940"]);
@@ -242,7 +269,7 @@ fn provenance_hover_recovers_schema_path_from_the_output_root() {
 	let schema = EditorSchema::load_from_directory_with_cache(schema_dir.path(), None).unwrap();
 	let result = document_hover(
 		&path,
-		Some(Path::new("wrong/root/test.txt")),
+		Some(GamePath::new("wrong/root/test.txt").unwrap()),
 		TEXT,
 		EditorPosition::default(),
 		Some(&schema),
@@ -269,7 +296,7 @@ fn provenance_hover_keeps_schema_on_hits_and_broken_sidecars() {
 	let lookup = || {
 		document_hover(
 			&path,
-			Some(Path::new(RELATIVE)),
+			Some(GamePath::new(RELATIVE).unwrap()),
 			TEXT,
 			EditorPosition::default(),
 			Some(&schema),
@@ -278,7 +305,12 @@ fn provenance_hover_keeps_schema_on_hits_and_broken_sidecars() {
 		.unwrap()
 	};
 	let expected = schema
-		.hover(Path::new(RELATIVE), TEXT, EditorPosition::default(), None)
+		.hover(
+			GamePath::new(RELATIVE).unwrap(),
+			TEXT,
+			EditorPosition::default(),
+			None,
+		)
 		.unwrap();
 	let result = lookup();
 	assert!(result.markdown.contains(&expected.markdown));
@@ -310,12 +342,17 @@ fn provenance_hover_keeps_caller_schema_beneath_unrelated_metadata() {
 	)
 	.unwrap();
 	let schema = EditorSchema::load_from_directory_with_cache(schema_dir.path(), None).unwrap();
-	let expected = schema.hover(Path::new(RELATIVE), TEXT, EditorPosition::default(), None);
+	let expected = schema.hover(
+		GamePath::new(RELATIVE).unwrap(),
+		TEXT,
+		EditorPosition::default(),
+		None,
+	);
 	assert!(expected.is_some());
 	assert_eq!(
 		document_hover(
 			&path,
-			Some(Path::new(RELATIVE)),
+			Some(GamePath::new(RELATIVE).unwrap()),
 			TEXT,
 			EditorPosition::default(),
 			Some(&schema),

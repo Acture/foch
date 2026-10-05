@@ -44,15 +44,14 @@ fn unknown_handler_diagnostic(name: &str, view: &ConflictView) -> String {
 	let lower_name = name.to_ascii_lowercase();
 	format!(
 		"[foch] unknown merge handler `{lower_name}`; deferring conflict at {}::{}",
-		view.file_path.display(),
-		view.address_key
+		view.file_path, view.address_key
 	)
 }
 
 fn defer(view: &ConflictView) -> ConflictDecision {
 	ConflictDecision::Defer {
 		record: Some(HandlerResolutionRecord {
-			path: view.file_path.to_string_lossy().replace('\\', "/"),
+			path: view.file_path.clone(),
 			action: "defer".to_string(),
 			source: None,
 			rationale: Some("matched DSL handler=defer rule".to_string()),
@@ -96,7 +95,7 @@ fn last_writer(view: &ConflictView) -> ConflictDecision {
 	ConflictDecision::PickCandidate {
 		candidate,
 		record: Some(HandlerResolutionRecord {
-			path: view.file_path.to_string_lossy().replace('\\', "/"),
+			path: view.file_path.clone(),
 			action: "last_writer".to_string(),
 			source: Some(winner),
 			rationale: Some(rationale),
@@ -106,14 +105,13 @@ fn last_writer(view: &ConflictView) -> ConflictDecision {
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
-
 	use super::*;
 	use crate::merge::conflict_view::{CandidateView, ConflictView};
+	use crate::model::GamePathBuf;
 
 	fn view_for(file: &str, candidates: &[(&str, usize)]) -> ConflictView {
 		ConflictView {
-			file_path: PathBuf::from(file),
+			file_path: GamePathBuf::parse(file).expect("valid game path"),
 			address_path: vec!["province".to_string(), "12".to_string()],
 			address_key: "owner".to_string(),
 			conflict_id: "test-conflict-id".to_string(),
@@ -148,7 +146,7 @@ mod tests {
 				assert_eq!(record.action, "last_writer");
 				assert_eq!(record.source.as_deref(), Some("mod-b"));
 				assert!(record.rationale.unwrap().contains("mod-b"));
-				assert_eq!(record.path, "history/provinces/12-foo.txt");
+				assert_eq!(record.path.as_str(), "history/provinces/12-foo.txt");
 			}
 			other => panic!("expected PickCandidate with record, got {other:?}"),
 		}
@@ -184,7 +182,7 @@ mod tests {
 			ConflictDecision::Defer {
 				record: Some(record),
 			} => {
-				assert_eq!(record.path, "foo.txt");
+				assert_eq!(record.path.as_str(), "foo.txt");
 				assert_eq!(record.action, "defer");
 				assert_eq!(record.source, None);
 				assert_eq!(

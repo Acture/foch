@@ -83,7 +83,8 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 					name
 				),
 				mod_id: Some(focus.mod_id.clone()),
-				path: Some(focus.path.clone().into()),
+				path: Some(focus.path.clone()),
+				source_file: None,
 				evidence: Some(evidence),
 				line: Some(focus.line),
 				column: Some(focus.column),
@@ -99,7 +100,8 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 					name
 				),
 				mod_id: Some(focus.mod_id.clone()),
-				path: Some(focus.path.clone().into()),
+				path: Some(focus.path.clone()),
+				source_file: None,
 				evidence: Some(evidence),
 				line: Some(focus.line),
 				column: Some(focus.column),
@@ -115,7 +117,8 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 					name
 				),
 				mod_id: Some(focus.mod_id.clone()),
-				path: Some(focus.path.clone().into()),
+				path: Some(focus.path.clone()),
+				source_file: None,
 				evidence: Some(evidence),
 				line: Some(focus.line),
 				column: Some(focus.column),

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::game::eu4::cwt::merge::classify_conflict_kind;
 use crate::game::eu4::script::ParsedScriptFile;
-use crate::model::{LeafConflictDetail, MergeReportConflictContributor};
+use crate::model::{GamePath, LeafConflictDetail, MergeReportConflictContributor};
 use crate::project::{ResolutionMap, compute_conflict_id};
 
 use super::super::{
@@ -25,7 +25,7 @@ use crate::merge::address_patch::dag_merge::{
 use crate::merge::address_patch::patch_merge::{
 	AttributedPatch, PatchConflict, PatchMergeResult, PatchResolution,
 };
-use crate::merge::error::MergeError;
+use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::planning::dag_input::{
 	DagMergeInputRequest, merge_ancestor_statements, template_for,
 };
@@ -35,7 +35,7 @@ use crate::merge::resolution::conflict_view::ConflictView;
 use crate::merge::structured::observe_merge_trace;
 
 pub(crate) fn merge_structural_file(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
@@ -57,7 +57,7 @@ pub(crate) fn merge_structural_file(
 }
 
 pub(crate) fn merge_definition_module(
-	target_path: &str,
+	target_path: &GamePath,
 	views: &CrossFileModuleViews,
 	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
@@ -77,7 +77,7 @@ pub(crate) fn merge_definition_module(
 }
 
 fn finish_reference_structural_merge<F>(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: StructuralMergeContext<'_>,
 	vanilla: Option<ParsedScriptFile>,
@@ -164,7 +164,7 @@ where
 	)
 	.map_err(|message| {
 		StructuralMergeFailure::Merge(MergeError::Validation {
-			path: Some(target_path.to_string()),
+			subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 			message,
 		})
 	})?;
@@ -198,7 +198,7 @@ where
 }
 
 fn run_reference_structural_file_engine(
-	target_path: &str,
+	target_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	context: &StructuralMergeContext<'_>,
 	resolution_map: &ResolutionMap,
@@ -222,13 +222,13 @@ fn run_reference_structural_file_engine(
 		&mut handler,
 	)
 	.map_err(|error| MergeError::Validation {
-		path: Some(target_path.to_string()),
+		subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 		message: format!("address-patch reference DAG merge failed: {error}"),
 	})
 }
 
 fn run_reference_definition_module_engine(
-	target_path: &str,
+	target_path: &GamePath,
 	views: &CrossFileModuleViews,
 	context: &StructuralMergeContext<'_>,
 	resolution_map: &ResolutionMap,
@@ -248,13 +248,13 @@ fn run_reference_definition_module_engine(
 		game_version: context.cache_game_version,
 	})
 	.map_err(|error| MergeError::Validation {
-		path: Some(target_path.to_string()),
+		subject: Some(MergeErrorSubject::Game(target_path.to_owned())),
 		message: format!("address-patch reference definition-module DAG merge failed: {error}"),
 	})
 }
 
 pub(super) fn survivor_views(
-	target_path: &str,
+	target_path: &GamePath,
 	merge_result: &PatchMergeResult,
 	vanilla: Option<&ParsedScriptFile>,
 	mod_display_names: &HashMap<String, String>,
@@ -274,10 +274,9 @@ pub(super) fn survivor_views(
 		})
 		.map(|(address, patches, reason)| {
 			let address_path = address.path.join("/");
-			let conflict_id =
-				compute_conflict_id(Path::new(target_path), &address_path, &address.key);
+			let conflict_id = compute_conflict_id(target_path, &address_path, &address.key);
 			build_conflict_view(
-				Path::new(target_path),
+				target_path,
 				address,
 				&PatchConflict {
 					patches: patches.clone(),
@@ -293,7 +292,7 @@ pub(super) fn survivor_views(
 }
 
 pub(super) fn unresolved_report(
-	target_path: &str,
+	target_path: &GamePath,
 	merge_result: &PatchMergeResult,
 	mod_versions: &HashMap<String, String>,
 	resolution_map: &crate::project::ResolutionMap,
@@ -324,7 +323,7 @@ pub(super) fn unresolved_report(
 }
 
 fn leaf_conflicts(
-	target_path: &str,
+	target_path: &GamePath,
 	conflicts: &[PatchResolution],
 	mod_versions: &HashMap<String, String>,
 ) -> Vec<LeafConflictDetail> {
@@ -341,12 +340,8 @@ fn leaf_conflicts(
 				Some(LeafConflictDetail {
 					address_path: address_path.clone(),
 					address_key: address.key.clone(),
-					conflict_id: compute_conflict_id(
-						Path::new(target_path),
-						&address_path,
-						&address.key,
-					),
-					kind: classify_conflict_kind(Path::new(target_path), &ast_path, reason),
+					conflict_id: compute_conflict_id(target_path, &address_path, &address.key),
+					kind: classify_conflict_kind(target_path, &ast_path, reason),
 					contributors: leaf_conflict_contributors(patches, mod_versions),
 				})
 			}

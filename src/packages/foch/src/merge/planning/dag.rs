@@ -20,7 +20,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::model::ModCandidate;
+use crate::model::{GamePath, GamePathBuf, ModCandidate};
 use crate::playset::dependency::ModIdentityIndex;
 use crate::project::DepOverride;
 
@@ -99,9 +99,8 @@ pub struct ModDag {
 	/// Mods declared a dep that wasn't in the playset (collected for
 	/// diagnostics; the dep is treated as absent for DAG purposes).
 	missing_deps: Vec<(ModId, String)>,
-	/// `replace_path` prefixes per mod (already trimmed of leading/trailing
-	/// slashes for direct prefix-matching).
-	replace_paths: HashMap<ModId, Vec<String>>,
+	/// The directories each mod's `replace_path` declares.
+	replace_paths: HashMap<ModId, Vec<GamePathBuf>>,
 }
 
 impl ModDag {
@@ -131,7 +130,7 @@ impl ModDag {
 		self.position.get(mod_id).copied()
 	}
 
-	pub fn replace_paths(&self, mod_id: &ModId) -> &[String] {
+	pub fn replace_paths(&self, mod_id: &ModId) -> &[GamePathBuf] {
 		self.replace_paths
 			.get(mod_id)
 			.map(|v| v.as_slice())
@@ -157,7 +156,7 @@ pub fn build_mod_dag(mods: &[ModCandidate]) -> (ModDag, Vec<DagDiagnostic>) {
 
 	let mut parents: HashMap<ModId, Vec<ModId>> = HashMap::new();
 	let mut missing_deps: Vec<(ModId, String)> = Vec::new();
-	let mut replace_paths: HashMap<ModId, Vec<String>> = HashMap::new();
+	let mut replace_paths: HashMap<ModId, Vec<GamePathBuf>> = HashMap::new();
 
 	for (idx, candidate) in mods.iter().enumerate() {
 		let me = ids[idx].clone();
@@ -197,17 +196,8 @@ pub fn build_mod_dag(mods: &[ModCandidate]) -> (ModDag, Vec<DagDiagnostic>) {
 		}
 		parents.insert(me.clone(), my_parents);
 
-		// Record replace_path prefixes (normalized).
 		if !descriptor.replace_path.is_empty() {
-			let cleaned: Vec<String> = descriptor
-				.replace_path
-				.iter()
-				.map(|p| normalize_path_prefix(p))
-				.filter(|p| !p.is_empty())
-				.collect();
-			if !cleaned.is_empty() {
-				replace_paths.insert(me.clone(), cleaned);
-			}
+			replace_paths.insert(me.clone(), descriptor.replace_path.clone());
 		}
 	}
 
@@ -239,10 +229,6 @@ pub fn build_mod_dag(mods: &[ModCandidate]) -> (ModDag, Vec<DagDiagnostic>) {
 		replace_paths,
 	};
 	(dag, diagnostics)
-}
-
-fn normalize_path_prefix(raw: &str) -> String {
-	raw.trim().trim_matches('/').replace('\\', "/").to_string()
 }
 
 /// Tarjan SCC: find any cycle, then drop the edge whose *child* has the
@@ -427,9 +413,9 @@ fn topo_sort(ids: &[ModId], parents: &HashMap<ModId, Vec<ModId>>) -> Vec<ModId> 
 // FileDag (per-file induced subgraph)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct FileDag {
-	pub file_path: String,
+	pub file_path: GamePathBuf,
 	/// Contributing mods in playlist order (after replace_path filtering).
 	contributors: Vec<ModId>,
 	contributor_set: HashSet<ModId>,
@@ -441,7 +427,20 @@ pub struct FileDag {
 }
 
 impl FileDag {
-	pub fn file_path(&self) -> &str {
+	/// A DAG for `file_path` with no contributors.
+	#[cfg(test)]
+	pub(crate) fn empty(file_path: GamePathBuf) -> Self {
+		Self {
+			file_path,
+			contributors: Vec::new(),
+			contributor_set: HashSet::new(),
+			parents: HashMap::new(),
+			replace_path_owners: HashSet::new(),
+			position: HashMap::new(),
+		}
+	}
+
+	pub fn file_path(&self) -> &GamePath {
 		&self.file_path
 	}
 	pub fn contributors(&self) -> &[ModId] {
@@ -587,7 +586,7 @@ impl IgnoreReplacePath {
 /// the DAG node set).
 pub fn induced_file_dag(
 	global: &ModDag,
-	file_path: &str,
+	file_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	ignore: &IgnoreReplacePath,
 ) -> FileDag {
@@ -596,13 +595,11 @@ pub fn induced_file_dag(
 
 pub fn induced_file_dag_with_overrides(
 	global: &ModDag,
-	file_path: &str,
+	file_path: &GamePath,
 	contributors: &[ResolvedInputContributor],
 	ignore: &IgnoreReplacePath,
 	dep_overrides: &[DepOverride],
 ) -> FileDag {
-	let normalized_file = normalize_path_prefix(file_path);
-
 	// Initial contributor list (mod ids only — base-game/synthetic dropped).
 	let mut active: Vec<(ModId, usize)> = contributors
 		.iter()
@@ -620,14 +617,11 @@ pub fn induced_file_dag_with_overrides(
 		if ignore.applies_to(mid) {
 			continue;
 		}
-		let prefixes = global.replace_paths(mid);
-		if prefixes.is_empty() {
-			continue;
-		}
-		let covers = prefixes
+		if global
+			.replace_paths(mid)
 			.iter()
-			.any(|p| normalized_file == *p || normalized_file.starts_with(&format!("{p}/")));
-		if covers {
+			.any(|prefix| file_path.starts_with(prefix))
+		{
 			replace_path_owners.insert(mid.clone());
 			// Drop everything with strictly lower precedence than `prec`
 			// from active. Track the highest such cut-off.
@@ -659,7 +653,7 @@ pub fn induced_file_dag_with_overrides(
 	}
 
 	FileDag {
-		file_path: file_path.to_string(),
+		file_path: file_path.to_owned(),
 		contributors: contributors_ordered,
 		contributor_set,
 		parents,
@@ -753,7 +747,10 @@ mod tests {
 		let descriptor = ModDescriptor {
 			name: name.to_string(),
 			dependencies: dependencies.into_iter().map(str::to_string).collect(),
-			replace_path: replace_path.into_iter().map(str::to_string).collect(),
+			replace_path: replace_path
+				.into_iter()
+				.map(|path| GamePathBuf::parse(path).expect("valid game path"))
+				.collect(),
 			..ModDescriptor::default()
 		};
 		let entry = PlaysetEntry {
@@ -776,11 +773,16 @@ mod tests {
 		ModId(s.to_string())
 	}
 
+	fn game_path(text: &str) -> &GamePath {
+		GamePath::new(text).expect("valid game path")
+	}
+
 	fn file_contributor(mod_id: &str, precedence: usize) -> ResolvedInputContributor {
 		ResolvedInputContributor {
 			mod_id: mod_id.to_string(),
 			root_path: PathBuf::from(format!("/mods/{mod_id}")),
-			absolute_path: PathBuf::from(format!("/mods/{mod_id}/common/foo.txt")),
+			relative_path: crate::model::GamePathBuf::parse("common/foo.txt")
+				.expect("valid game path"),
 			precedence,
 			is_base_game: false,
 			is_synthetic_base: false,
@@ -811,7 +813,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		for m in ["a", "b", "c"] {
 			assert!(fdag.parents_of(&mid(m)).is_empty(), "{m}");
 			assert!(fdag.ancestors_of(&mid(m)).is_empty(), "{m}");
@@ -830,7 +837,12 @@ mod tests {
 		assert_eq!(dag.children_of(&mid("a")), &[mid("b")]);
 
 		let contribs = vec![file_contributor("a", 1), file_contributor("b", 2)];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert!(fdag.parents_of(&mid("a")).is_empty());
 		assert_eq!(fdag.parents_of(&mid("b")), &[mid("a")]);
 		assert_eq!(fdag.ancestors_of(&mid("b")), vec![mid("a")]);
@@ -855,7 +867,7 @@ mod tests {
 		let overrides = vec![DepOverride::new("b", "a")];
 		let fdag = induced_file_dag_with_overrides(
 			&dag,
-			"common/foo.txt",
+			game_path("common/foo.txt"),
 			&contribs,
 			&IgnoreReplacePath::None,
 			&overrides,
@@ -882,7 +894,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("d", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert_eq!(fdag.parents_of(&mid("d")), &[mid("a"), mid("b")]);
 		assert_eq!(fdag.ancestors_of(&mid("d")), vec![mid("a"), mid("b")]);
 	}
@@ -909,7 +926,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert_eq!(fdag.parents_of(&mid("c")), &[mid("b")]);
 		assert_eq!(fdag.parents_of(&mid("b")), &[mid("a")]);
 		assert_eq!(fdag.parents_of(&mid("a")), &[] as &[ModId]);
@@ -963,7 +985,12 @@ mod tests {
 		let (dag, _diags) = build_mod_dag(&mods);
 		// Only B is in the file inventory.
 		let contribs = vec![file_contributor("b", 2)];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		// A is not a contributor → B's per-file parents are empty →
 		// the shared DAG walker starts B from the root state.
 		assert_eq!(fdag.parents_of(&mid("b")), &[] as &[ModId]);
@@ -985,7 +1012,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		// Only C remains as a contributor.
 		assert_eq!(fdag.contributors(), &[mid("c")]);
 		assert!(fdag.replaces_path(&mid("c")));
@@ -1006,7 +1038,12 @@ mod tests {
 			file_contributor("c", 3),
 		];
 		// All replace_path overrides → priors stay.
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::All);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::All,
+		);
 		assert_eq!(fdag.contributors(), &[mid("a"), mid("b"), mid("c")]);
 		assert!(!fdag.replaces_path(&mid("c")));
 	}
@@ -1066,7 +1103,7 @@ mod tests {
 		let contribs = vec![file_contributor("ee", 1), file_contributor("bx", 2)];
 		let fdag = induced_file_dag(
 			&dag,
-			"common/achievements.txt",
+			game_path("common/achievements.txt"),
 			&contribs,
 			&IgnoreReplacePath::None,
 		);
@@ -1089,7 +1126,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert_eq!(fdag.ancestors_of(&mid("c")), vec![mid("a"), mid("b")]);
 	}
 
@@ -1109,7 +1151,12 @@ mod tests {
 			file_contributor("c", 3),
 			file_contributor("d", 4),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert_eq!(
 			fdag.ancestors_of(&mid("d")),
 			vec![mid("a"), mid("b"), mid("c")]
@@ -1126,7 +1173,12 @@ mod tests {
 		let (dag, diags) = build_mod_dag(&mods);
 		assert!(diags.is_empty());
 		let contribs = vec![file_contributor("a", 1), file_contributor("c", 3)];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert_eq!(fdag.parents_of(&mid("c")), &[mid("a")]);
 		assert_eq!(fdag.ancestors_of(&mid("c")), vec![mid("a")]);
 	}
@@ -1145,7 +1197,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert_eq!(fdag.contributors(), &[mid("b"), mid("c")]);
 		assert!(fdag.replaces_path(&mid("b")));
 		assert!(fdag.parents_of(&mid("b")).is_empty());
@@ -1166,7 +1223,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::All);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::All,
+		);
 		assert_eq!(fdag.contributors(), &[mid("a"), mid("b"), mid("c")]);
 		assert!(!fdag.replaces_path(&mid("b")));
 		assert_eq!(fdag.ancestors_of(&mid("c")), vec![mid("a"), mid("b")]);
@@ -1186,7 +1248,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		let parents = BTreeSet::from([mid("a"), mid("b"), mid("c")]);
 		assert_eq!(
 			topo_levels(&parents, &fdag),
@@ -1208,7 +1275,12 @@ mod tests {
 			file_contributor("b", 2),
 			file_contributor("c", 3),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		let parents = BTreeSet::from([mid("c"), mid("a"), mid("b")]);
 		assert_eq!(
 			topo_levels(&parents, &fdag),
@@ -1232,7 +1304,12 @@ mod tests {
 			file_contributor("c", 3),
 			file_contributor("d", 4),
 		];
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let fdag = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		let parents = BTreeSet::from([mid("a"), mid("b"), mid("c")]);
 		assert_eq!(
 			topo_levels(&parents, &fdag),
@@ -1272,11 +1349,45 @@ mod tests {
 			file_contributor("c", 3),
 			file_contributor("d", 4),
 		];
-		let f1 = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
-		let f2 = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let f1 = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
+		let f2 = induced_file_dag(
+			&dag,
+			game_path("common/foo.txt"),
+			&contribs,
+			&IgnoreReplacePath::None,
+		);
 		assert_eq!(f1.contributors(), f2.contributors());
 		for m in [mid("a"), mid("b"), mid("c"), mid("d")] {
 			assert_eq!(f1.parents_of(&m), f2.parents_of(&m));
+		}
+	}
+
+	/// A mod's `replace_path` drops earlier contributors of every file in the
+	/// directory it names and below, compared by whole components, and of
+	/// nothing else.
+	#[test]
+	fn replace_path_owns_the_files_in_and_below_its_directory_only() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec![], vec!["common/ideas"]),
+		];
+		let (dag, _) = build_mod_dag(&mods);
+		let contribs = vec![file_contributor("a", 1), file_contributor("b", 2)];
+		for (file, owned) in [
+			("common/ideas/x.txt", true),
+			("common/ideas/nested/x.txt", true),
+			("common/ideas", true),
+			("common/ideas_extra/x.txt", false),
+			("common/idea/x.txt", false),
+		] {
+			let fdag = induced_file_dag(&dag, game_path(file), &contribs, &IgnoreReplacePath::None);
+			assert_eq!(fdag.replaces_path(&mid("b")), owned, "{file}");
+			assert_eq!(fdag.ships(&mid("a")), !owned, "{file}");
 		}
 	}
 }

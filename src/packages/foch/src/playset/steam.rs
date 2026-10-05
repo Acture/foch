@@ -227,7 +227,7 @@ impl SteamWorkshopCatalog {
 				})?;
 		library_roots.push(steam_root.to_path_buf());
 		let mut seen = HashSet::new();
-		library_roots.retain(|path| seen.insert(normalize_candidate(path)));
+		library_roots.retain(|path| seen.insert(path.clone()));
 
 		let mut libraries = Vec::new();
 		for library_root in library_roots {
@@ -1073,7 +1073,7 @@ pub fn steam_library_paths(steam_root: &Path) -> Vec<PathBuf> {
 	paths.push(steam_root.to_path_buf());
 
 	let mut seen = HashSet::new();
-	paths.retain(|path| seen.insert(normalize_candidate(path)));
+	paths.retain(|path| seen.insert(path.clone()));
 	paths
 }
 
@@ -1097,10 +1097,6 @@ pub fn steam_game_install_path(steam_root: &Path, app_id: u32) -> Option<PathBuf
 		.map(|app| app.game_root)
 }
 
-fn normalize_candidate(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
 #[cfg(test)]
 mod tests {
 	use super::{
@@ -1113,7 +1109,9 @@ mod tests {
 	use tempfile::TempDir;
 
 	fn vdf_path_value(path: &Path) -> String {
-		path.to_string_lossy().replace('\\', "\\\\")
+		path.to_str()
+			.expect("UTF-8 fixture path")
+			.replace('\\', "\\\\")
 	}
 
 	fn write_steam_fixture() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {

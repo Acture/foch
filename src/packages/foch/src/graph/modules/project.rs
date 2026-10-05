@@ -1,30 +1,31 @@
 use super::model::{SymbolGraph, SymbolNodeId};
-use crate::model::{SemanticIndex, SymbolDefinition, SymbolKind};
+use crate::model::{GamePath, SemanticIndex, SymbolDefinition, SymbolKind};
+use relative_path::RelativePath;
 use std::collections::BTreeMap;
-use std::path::Path;
 
 fn node_id(kind: SymbolKind, name: &str) -> SymbolNodeId {
 	SymbolNodeId::new(kind.as_str(), name)
 }
 
 /// Root family used as the clustering seed: for paths under common/, history/,
-/// map/ use the first TWO segments (e.g. "common/religions"); otherwise the
-/// first segment (e.g. "events"). Deterministic.
-fn seed_for_path(path: &Path) -> String {
-	let normalized = path.to_string_lossy().replace('\\', "/");
-	let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-	match parts.first() {
-		Some(&head @ ("common" | "history" | "map")) => match parts.get(1) {
-			Some(group) => format!("{head}/{}", strip_ext(group)),
-			None => head.to_string(),
-		},
-		Some(first) => strip_ext(first).to_string(),
-		None => "misc".to_string(),
+/// map/ use the first TWO components (e.g. "common/religions"); otherwise the
+/// first component (e.g. "events"), each without its extension. The seed is a
+/// cluster label, not a path. Deterministic.
+fn seed_for_path(path: &GamePath) -> String {
+	let mut components = path.iter();
+	let head = components
+		.next()
+		.expect("a valid game path has a first component");
+	match (head, components.next()) {
+		("common" | "history" | "map", Some(group)) => format!("{head}/{}", stem(group)),
+		("common" | "history" | "map", None) => head.to_string(),
+		(first, _) => stem(first).to_string(),
 	}
 }
 
-fn strip_ext(value: &str) -> &str {
-	value.rsplit_once('.').map_or(value, |(stem, _)| stem)
+/// A component name without its extension.
+fn stem(name: &str) -> &str {
+	RelativePath::new(name).file_stem().unwrap_or(name)
 }
 
 pub fn project_symbol_graph(index: &SemanticIndex) -> SymbolGraph {
@@ -111,7 +112,7 @@ mod tests {
 			module: String::new(),
 			local_name: name.to_string(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			line: 1,
 			column: 1,
 			scope_id,
@@ -133,7 +134,7 @@ mod tests {
 			name: name.to_string(),
 			module: String::new(),
 			mod_id: mod_id.to_string(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			line: 2,
 			column: 1,
 			scope_id,
@@ -150,7 +151,7 @@ mod tests {
 			this_type: MaybeScope::Unknown,
 			aliases: Default::default(),
 			mod_id: String::new(),
-			path: PathBuf::from(path),
+			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			span: SourceSpan { line: 1, column: 1 },
 			key: String::new(),
 		}
@@ -237,6 +238,26 @@ mod tests {
 			Some("common/religions")
 		);
 		assert_eq!(g.seeds.get(&event).map(String::as_str), Some("events"));
+	}
+
+	#[test]
+	fn seeds_are_read_from_game_path_components() {
+		for (path, seed) in [
+			("common/religions/x.txt", "common/religions"),
+			("common/defines.lua", "common/defines"),
+			("history/countries/SWE - Sweden.txt", "history/countries"),
+			("map/area.txt", "map/area"),
+			("events/y.txt", "events"),
+			("descriptor.mod", "descriptor"),
+			// A name that only starts with `.` has no extension to strip; the
+			// old text split cut it to an empty seed.
+			(".hidden/x.txt", ".hidden"),
+			("common/.hidden/x.txt", "common/.hidden"),
+			("common/.hidden.txt", "common/.hidden"),
+		] {
+			let path = crate::model::GamePath::new(path).expect("valid game path");
+			assert_eq!(seed_for_path(path), seed, "{path}");
+		}
 	}
 
 	#[test]

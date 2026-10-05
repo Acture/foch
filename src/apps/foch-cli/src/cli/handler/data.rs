@@ -182,7 +182,11 @@ fn handle_data_list(args: &DataListArgs) -> HandlerResult {
 	for entry in entries {
 		println!(
 			"game={} version={} schema={} source={:?} path={}",
-			entry.game, entry.game_version, entry.schema_version, entry.source, entry.install_path
+			entry.game,
+			entry.game_version,
+			entry.schema_version,
+			entry.source,
+			entry.install_path.display()
 		);
 	}
 

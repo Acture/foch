@@ -13,11 +13,10 @@ use super::script::{
 	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
 };
 use crate::model::{
-	AnalysisMode, Finding, FindingChannel, ScopeSet, SemanticDiagnostics, SemanticIndex, Severity,
-	SymbolKind, base_scope,
+	AnalysisMode, Finding, FindingChannel, GamePath, GamePathBuf, ScopeSet, SemanticDiagnostics,
+	SemanticIndex, Severity, SymbolKind, base_scope,
 };
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 #[derive(Clone, Debug, Default)]
 pub struct AnalyzeOptions {
@@ -206,10 +205,7 @@ fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
 			.map(|item| {
 				format!(
 					"{}:{}:{}:{}",
-					item.mod_id,
-					item.path.display(),
-					item.line,
-					item.column
+					item.mod_id, item.path, item.line, item.column
 				)
 			})
 			.collect::<Vec<_>>()
@@ -224,6 +220,7 @@ fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
 			message: format!("duplicate definition: {} {}", symbol_kind_text(kind), name),
 			mod_id: Some(last.mod_id.clone()),
 			path: Some(last.path.clone()),
+			source_file: None,
 			evidence: Some(evidence),
 			line: Some(last.line),
 			column: Some(last.column),
@@ -313,13 +310,12 @@ fn check_unresolved_call_targets(
 			_ => {}
 		}
 
-		let dedup_key = format!(
-			"{:?}:{}:{}:{}:{}",
+		let dedup_key = (
 			reference.kind,
-			reference.path.display(),
+			&reference.path,
 			reference.line,
 			reference.column,
-			reference.name
+			reference.name.as_str(),
 		);
 		if !seen.insert(dedup_key) {
 			continue;
@@ -351,6 +347,7 @@ fn check_unresolved_call_targets(
 			),
 			mod_id: Some(reference.mod_id.clone()),
 			path: Some(reference.path.clone()),
+			source_file: None,
 			evidence: None,
 			line: Some(reference.line),
 			column: Some(reference.column),
@@ -377,18 +374,12 @@ fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Fi
 		// noise. The same skip is applied by `unknown-scope-type` and
 		// `scope-type-mismatch`.
 		if profile
-			.classify_content_family(usage.path.as_path())
+			.classify_content_family(&usage.path)
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
 		{
 			continue;
 		}
-		let dedup_key = format!(
-			"{}:{}:{}:{}",
-			usage.path.display(),
-			usage.line,
-			usage.column,
-			usage.alias
-		);
+		let dedup_key = (&usage.path, usage.line, usage.column, usage.alias.as_str());
 		if !seen.insert(dedup_key) {
 			continue;
 		}
@@ -415,6 +406,7 @@ fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Fi
 			message: format!("invisible alias reference: {}", usage.alias),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
+			source_file: None,
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -464,12 +456,11 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 				.collect()
 		};
 		for message in missing_messages {
-			let dedup_key = format!(
-				"{}:{}:{}:{}",
-				reference.path.display(),
+			let dedup_key = (
+				&reference.path,
 				reference.line,
 				reference.column,
-				message
+				message.clone(),
 			);
 			if !seen.insert(dedup_key) {
 				continue;
@@ -481,11 +472,8 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 				message,
 				mod_id: Some(reference.mod_id.clone()),
 				path: Some(reference.path.clone()),
-				evidence: Some(format!(
-					"definition location {}:{}",
-					def.path.display(),
-					def.line
-				)),
+				source_file: None,
+				evidence: Some(format!("definition location {}:{}", def.path, def.line)),
 				line: Some(reference.line),
 				column: Some(reference.column),
 				confidence: Some(0.88),
@@ -521,7 +509,7 @@ fn check_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 		// implicit scope (callables, UI, customizable_localization,
 		// on_actions, scripted_functions). Unknown is by-design there.
 		if profile
-			.classify_content_family(usage.path.as_path())
+			.classify_content_family(&usage.path)
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
 		{
 			continue;
@@ -551,6 +539,7 @@ fn check_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 			message: format!("unknown-scope path: key={} in Unknown scope", usage.key),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
+			source_file: None,
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -585,7 +574,7 @@ fn check_scope_type_mismatch(index: &SemanticIndex) -> Vec<Finding> {
 		// unknown there, so flagging Province usage of country effects is
 		// noise — same skip applied by unknown-scope-type.
 		if profile
-			.classify_content_family(usage.path.as_path())
+			.classify_content_family(&usage.path)
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
 		{
 			continue;
@@ -609,6 +598,7 @@ fn check_scope_type_mismatch(index: &SemanticIndex) -> Vec<Finding> {
 			),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
+			source_file: None,
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -655,6 +645,7 @@ fn check_cross_mod_overlap_advisories(index: &SemanticIndex) -> Vec<Finding> {
 			),
 			mod_id: Some(last.mod_id.clone()),
 			path: Some(last.path.clone()),
+			source_file: None,
 			evidence: Some(evidence),
 			line: Some(last.line),
 			column: Some(last.column),
@@ -683,7 +674,7 @@ struct FlagTemplateUsage {
 	param_name: String,
 	prefix: String,
 	suffix: String,
-	path: std::path::PathBuf,
+	path: GamePathBuf,
 	line: usize,
 	column: usize,
 }
@@ -871,13 +862,12 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 						let Some(flag) = apply_flag_template(template, bound_value) else {
 							continue;
 						};
-						let dedup_key = format!(
-							"{}:{}:{}:{}:{}",
-							reference.path.display(),
+						let dedup_key = (
+							&reference.path,
 							reference.line,
 							reference.column,
 							template.kind,
-							flag
+							flag.clone(),
 						);
 						if defined_flags.contains(&(template.kind.to_string(), flag.clone())) {
 							continue;
@@ -903,12 +893,13 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 							),
 							mod_id: Some(reference.mod_id.clone()),
 							path: Some(reference.path.clone()),
+							source_file: None,
 							evidence: Some(format!(
 								"call {} binds {}={}; template {}:{}:{} has {} = {}${}${}; inferred value {}",
 								def_name,
 								template.param_name,
 								bound_value,
-								template.path.display(),
+								template.path,
 								template.line,
 								template.column,
 								template.op_key,
@@ -948,13 +939,12 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 					if flag_is_allowlisted(template.kind, flag.as_str()) {
 						continue;
 					}
-					let dedup_key = format!(
-						"{}:{}:{}:{}:{}",
-						reference.path.display(),
+					let dedup_key = (
+						&reference.path,
 						reference.line,
 						reference.column,
 						template.kind,
-						flag
+						flag.clone(),
 					);
 					if !seen.insert(dedup_key) {
 						continue;
@@ -974,12 +964,13 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 						),
 						mod_id: Some(reference.mod_id.clone()),
 						path: Some(reference.path.clone()),
+						source_file: None,
 						evidence: Some(format!(
 							"call {} binds {}={}; template {}:{}:{} has {} = {}${}${}; inferred value {}",
 							def_name,
 							template.param_name,
 							bound_value,
-							template.path.display(),
+							template.path,
 							template.line,
 							template.column,
 							template.op_key,
@@ -1021,7 +1012,7 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for usage in &index.scalar_assignments {
-		if path_disables_localisation_reference_check(usage.path.as_path()) {
+		if path_disables_localisation_reference_check(&usage.path) {
 			continue;
 		}
 		let Some(key) = normalized_static_symbol(usage.value.as_str()) else {
@@ -1039,13 +1030,7 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 		if defined_keys.contains(key.as_str()) {
 			continue;
 		}
-		let dedup_key = format!(
-			"{}:{}:{}:{}",
-			usage.path.display(),
-			usage.line,
-			usage.column,
-			key
-		);
+		let dedup_key = (&usage.path, usage.line, usage.column, key.clone());
 		if !seen.insert(dedup_key) {
 			continue;
 		}
@@ -1056,6 +1041,7 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 			message: format!("localisation key not found: {}", key),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
+			source_file: None,
 			evidence: Some(format!("reference field {} = {}", usage.key, key)),
 			line: Some(usage.line),
 			column: Some(usage.column),
@@ -1069,11 +1055,10 @@ fn check_duplicate_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for duplicate in &index.localisation_duplicates {
-		let dedup_key = format!(
-			"{}:{}:{}",
-			duplicate.path.display(),
-			duplicate.key,
-			duplicate.duplicate_line
+		let dedup_key = (
+			&duplicate.path,
+			duplicate.key.as_str(),
+			duplicate.duplicate_line,
 		);
 		if !seen.insert(dedup_key) {
 			continue;
@@ -1085,6 +1070,7 @@ fn check_duplicate_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 			message: format!("duplicate localisation key: {}", duplicate.key),
 			mod_id: Some(duplicate.mod_id.clone()),
 			path: Some(duplicate.path.clone()),
+			source_file: None,
 			evidence: Some(format!(
 				"first defined at line {}, duplicate at line {}",
 				duplicate.first_line, duplicate.duplicate_line
@@ -1253,22 +1239,22 @@ fn is_localisation_reference_key(key: &str, value: &str) -> bool {
 /// Files whose `name`/`tooltip`/`title`/`desc` fields are structural identifiers
 /// (GUI element names, sprite names, customizable_localization macro IDs, map names),
 /// not Clausewitz localisation key references.
-fn path_disables_localisation_reference_check(path: &Path) -> bool {
-	if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-		let lower = ext.to_ascii_lowercase();
-		if matches!(lower.as_str(), "gui" | "gfx") {
-			return true;
-		}
-	}
-	let normalized = path.to_string_lossy().replace('\\', "/");
-	let top = normalized.split('/').next().unwrap_or("");
-	if matches!(
-		top,
-		"interface" | "gfx" | "map" | "tweakergui_assets" | "customizable_localization"
-	) {
+fn path_disables_localisation_reference_check(path: &GamePath) -> bool {
+	if path
+		.extension()
+		.is_some_and(|ext| ext.eq_ignore_ascii_case("gui") || ext.eq_ignore_ascii_case("gfx"))
+	{
 		return true;
 	}
-	normalized.starts_with("common/custom_gui/")
+	if path.iter().next().is_some_and(|top| {
+		matches!(
+			top,
+			"interface" | "gfx" | "map" | "tweakergui_assets" | "customizable_localization"
+		)
+	}) {
+		return true;
+	}
+	path.is_inside(&["common", "custom_gui"], str::eq)
 }
 
 /// Values that pass `is_localisation_reference_key` but are not loc keys:
@@ -1323,8 +1309,38 @@ fn symbol_kind_text(kind: SymbolKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-	use super::ANALYSIS_CHECKS;
+	use super::{ANALYSIS_CHECKS, path_disables_localisation_reference_check};
+	use crate::model::GamePath;
 	use std::collections::HashSet;
+
+	/// The verdicts the `split('/')`/`starts_with` text checks gave: the
+	/// extension compares ignoring ASCII case, directory names as spelled.
+	#[test]
+	fn localisation_reference_checks_skip_interface_and_map_content() {
+		for (path, disabled) in [
+			("interface/x.gui", true),
+			("common/x.GFX", true),
+			("interface", true),
+			("gfx/x.txt", true),
+			("map/x.txt", true),
+			("tweakergui_assets/x.txt", true),
+			("customizable_localization/x.txt", true),
+			("common/custom_gui/x.txt", true),
+			("common/custom_gui", false),
+			("common/Custom_Gui/x.txt", false),
+			("Map/x.txt", false),
+			("common/ideas/x.txt", false),
+			("events/x.txt", false),
+		] {
+			assert_eq!(
+				path_disables_localisation_reference_check(
+					GamePath::new(path).expect("valid game path")
+				),
+				disabled,
+				"{path}"
+			);
+		}
+	}
 
 	#[test]
 	fn analysis_checks_keep_explicit_order() {

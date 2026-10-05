@@ -21,7 +21,7 @@ use crate::merge_quality::lifecycle::{
 	executable_hash,
 };
 
-pub const RUNNER_PROTOCOL_VERSION: &str = "foch-cli-committable-merge-report-v6";
+pub const RUNNER_PROTOCOL_VERSION: &str = "foch-cli-committable-merge-report-v7";
 const MAX_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
 const MAX_PLAN_BYTES: u64 = 4 * 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -594,9 +594,9 @@ struct CompletedCacheDiagnostics {
 	disk_hit_mod_ids: Vec<String>,
 }
 
-fn parse_completed_cache_diagnostics(
-	diagnostics: &str,
-) -> Result<CompletedCacheDiagnostics, String> {
+/// Input resolution ends before generated-output revalidation loads its
+/// temporary mod. Only the former must persist Workshop source snapshots.
+pub(crate) fn completed_input_cache_diagnostics(diagnostics: &str) -> Result<&str, String> {
 	if diagnostics.trim().is_empty() {
 		return Err("cache diagnostics are missing".to_string());
 	}
@@ -606,6 +606,23 @@ fn parse_completed_cache_diagnostics(
 	{
 		return Err("cache diagnostics are incomplete".to_string());
 	}
+	let mut offset: usize = 0;
+	let mut input_end: Option<usize> = None;
+	for line in diagnostics.split_inclusive('\n') {
+		offset += line.len();
+		if line.starts_with("[merge] resolve_input: done ") && input_end.replace(offset).is_some() {
+			return Err("expected exactly one completed input cache summary".to_string());
+		}
+	}
+	let end: usize = input_end
+		.ok_or_else(|| "expected exactly one completed input cache summary".to_string())?;
+	Ok(&diagnostics[..end])
+}
+
+fn parse_completed_cache_diagnostics(
+	diagnostics: &str,
+) -> Result<CompletedCacheDiagnostics, String> {
+	let diagnostics: &str = completed_input_cache_diagnostics(diagnostics)?;
 	let lines = diagnostics.lines().collect::<Vec<_>>();
 
 	let workspace_summaries = lines
@@ -1527,6 +1544,27 @@ mod tests {
 	}
 
 	#[test]
+	fn completed_cache_diagnostics_exclude_output_revalidation() {
+		for (parsed, disk_hits) in [(&["a", "b"][..], &[][..]), (&[][..], &["a", "b"][..])] {
+			let source: String = completed_cache_diagnostics(parsed, disk_hits);
+			let diagnostics: String = format!(
+				"{source}[merge] mod_snapshot: start mod_id=validation_output files=1\n\
+				[merge] mod_snapshot: parse_done mod_id=validation_output elapsed_ms=1 cache_hits=0 cache_misses=1\n\
+				[merge] mod_snapshot: cache_store mod_id=validation_output state=skipped elapsed_ms=0 total_ms=1 compressed_bytes=0 uncompressed_bytes=0\n"
+			);
+			assert_eq!(
+				parse_completed_cache_diagnostics(&diagnostics)
+					.expect("output revalidation does not persist a source snapshot"),
+				parse_completed_cache_diagnostics(&source).expect("complete source diagnostics")
+			);
+			assert!(
+				parse_completed_cache_diagnostics(&format!("{diagnostics}{source}")).is_err(),
+				"multiple input completion boundaries must be rejected"
+			);
+		}
+	}
+
+	#[test]
 	fn completed_cache_diagnostic_parser_is_fail_closed() {
 		let diagnostics = completed_cache_diagnostics(&["a", "b"], &["c"]);
 		assert_eq!(
@@ -1574,6 +1612,13 @@ mod tests {
 			.collect::<Vec<_>>()
 			.join("\n");
 		assert!(parse_completed_cache_diagnostics(&missing_store).is_err());
+		assert!(
+			parse_completed_cache_diagnostics(
+				&diagnostics.replace("state=stored", "state=skipped")
+			)
+			.is_err(),
+			"a source snapshot must still be stored"
+		);
 	}
 
 	#[test]
