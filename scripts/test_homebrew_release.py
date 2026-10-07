@@ -36,30 +36,67 @@ def render(version: str) -> str:
 	return run([str(RENDER), "Acture/foch", version, url, "a" * 64], REPO_ROOT).stdout
 
 
+def write_files(root: Path, paths: tuple[str, ...]) -> None:
+	for path in paths:
+		(root / path).parent.mkdir(parents=True, exist_ok=True)
+		(root / path).write_text(path)
+
+
+def init_repo(repo: Path, paths: tuple[str, ...]) -> None:
+	run(["git", "init", "--quiet", "--initial-branch=master", str(repo)], repo.parent)
+	write_files(repo, paths)
+	run(["git", "add", "--all"], repo)
+	run(["git", "commit", "--quiet", "-m", "init"], repo)
+
+
 def check_archive() -> None:
 	with tempfile.TemporaryDirectory() as raw:
-		source: Path = Path(raw)
-		kept: tuple[str, ...] = ("Cargo.toml", "src/lib.rs", "src/notes/kept.txt")
-		dropped: tuple[str, ...] = (
-			".git/HEAD",
-			"vendor/schema/.git",
-			"target/debug/foch",
-			"node_modules/pkg/index.js",
-			".direnv/env",
-			"notes/private.md",
-			"dist/stale-source.tar.gz",
-		)
-		for path in (*kept, *dropped):
-			(source / path).parent.mkdir(parents=True, exist_ok=True)
-			(source / path).write_text(path)
+		work: Path = Path(raw)
+		init_repo(work / "schema", ("schema.cwt",))
+		init_repo(work / "private", ("private.md",))
+		source: Path = work / "foch"
+		tracked: tuple[str, ...] = ("Cargo.toml", "src/lib.rs", "src/notes/kept.txt")
+		init_repo(source, tracked)
+		(source / ".gitignore").write_text(".env\ntarget/\n")
+		run(["git", "add", ".gitignore"], source)
+		for path, url in (("vendor/schema", "schema"), ("notes", "private")):
+			run(
+				[
+					"git",
+					"-c",
+					"protocol.file.allow=always",
+					"submodule",
+					"add",
+					"--quiet",
+					str(work / url),
+					path,
+				],
+				source,
+			)
+		run(["git", "commit", "--quiet", "-m", "submodules"], source)
+		write_files(source, (".env", "target/debug/foch", "untracked.txt"))
+
 		output: str = run([str(ARCHIVE), "1.2.3", "dist"], source).stdout.strip()
 		if Path(output) != (source / "dist/foch-1.2.3-source.tar.gz").resolve():
 			raise SystemExit(f"unexpected archive path: {output}")
 		with tarfile.open(output) as archive:
 			files: set[str] = {m.name for m in archive.getmembers() if m.isfile()}
+		kept: tuple[str, ...] = (
+			*tracked,
+			".gitignore",
+			".gitmodules",
+			"vendor/schema/schema.cwt",
+		)
 		expected: set[str] = {f"foch-1.2.3/{path}" for path in kept}
 		if files != expected:
 			raise SystemExit(f"archive files {sorted(files)} != {sorted(expected)}")
+
+		run(
+			["git", "submodule", "deinit", "--quiet", "--force", "vendor/schema"],
+			source,
+		)
+		if run([str(ARCHIVE), "1.2.3", "dist"], source, check=False).returncode == 0:
+			raise SystemExit("archive must require initialized public submodules")
 
 
 def check_render() -> None:
@@ -149,11 +186,19 @@ def check_rejected_taps(work: Path, formula: Path) -> None:
 	run(["git", "rm", "--quiet", "-r", "Formula"], outside)
 	(work / "elsewhere").mkdir()
 	(outside / "Formula").symlink_to(work / "elsewhere", target_is_directory=True)
-	for tap in (missing, outside):
+	linked: Path = work / "linked"
+	init_tap(linked, "Formula")
+	target: Path = work / "linked-target.rb"
+	target.write_text("outside")
+	(linked / "Formula/foch.rb").unlink()
+	(linked / "Formula/foch.rb").symlink_to(target)
+	for tap in (missing, outside, linked):
 		if commit(tap, formula, "1.2.3").returncode == 0:
 			raise SystemExit(f"{tap.name} tap must be rejected")
 	if any((work / "elsewhere").iterdir()) or (missing / "Formula").exists():
 		raise SystemExit("rejected taps must not be written")
+	if target.read_text() != "outside":
+		raise SystemExit("a formula symlink must not be written through")
 
 
 def check_commit() -> None:

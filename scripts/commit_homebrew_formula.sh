@@ -26,6 +26,10 @@ case "$formula_dir" in
 	*) echo "Formula resolves outside the tap: $formula_dir" >&2; exit 1 ;;
 esac
 path="${formula_dir#"$root"/}/$name"
+if [ -L "$path" ]; then
+	echo "$path is a symlink; refusing to write through it" >&2
+	exit 1
+fi
 
 cp "$formula_file" "Formula/$name"
 git add -- "$path"
