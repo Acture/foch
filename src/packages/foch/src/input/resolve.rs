@@ -1983,7 +1983,7 @@ path = "alpha"
 		.expect("write launcher descriptor");
 
 		assert_eq!(
-			resolve_mod_from_ugc_descriptor(&game_data_dir, "1001"),
+			resolve_mod_from_ugc_descriptor(&game_data_dir, "1001").expect("readable descriptor"),
 			None,
 			"the nested directory is not what the descriptor names"
 		);
@@ -1991,7 +1991,7 @@ path = "alpha"
 		let literal = game_data_dir.join(r"mod\local_mod");
 		fs::create_dir(&literal).expect("literal-backslash directory");
 		assert_eq!(
-			resolve_mod_from_ugc_descriptor(&game_data_dir, "1001"),
+			resolve_mod_from_ugc_descriptor(&game_data_dir, "1001").expect("readable descriptor"),
 			Some(literal)
 		);
 	}
