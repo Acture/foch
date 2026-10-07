@@ -219,7 +219,6 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			)
 			.kind(ScriptFileKind::new("new_diplomatic_actions"))
 			.module_name(ModuleNameRule::Tail {
-				prefix_len: 2,
 				fallback: "new_diplomatic_actions",
 			})
 			.scope(country_from_scope(base_scope::country()))
@@ -280,7 +279,6 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects")
 				.kind(ScriptFileKind::new("scripted_effects"))
 				.module_name(ModuleNameRule::Tail {
-					prefix_len: 2,
 					fallback: "scripted_effects",
 				})
 				.scope(dynamic_scope_policy())
@@ -294,7 +292,6 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			ContentFamilyDescriptor::prefix("common/scripted_triggers", "common/scripted_triggers")
 				.kind(ScriptFileKind::new("scripted_triggers"))
 				.module_name(ModuleNameRule::Tail {
-					prefix_len: 2,
 					fallback: "scripted_triggers",
 				})
 				.scope(dynamic_scope_policy())
@@ -312,7 +309,6 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			)
 			.kind(ScriptFileKind::new("triggered_modifiers"))
 			.module_name(ModuleNameRule::Tail {
-				prefix_len: 2,
 				fallback: "triggered_modifiers",
 			})
 			.scope(scope(base_scope::country()))
@@ -322,7 +318,6 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			ContentFamilyDescriptor::prefix("common/defines", "common/defines")
 				.kind(ScriptFileKind::new("defines"))
 				.module_name(ModuleNameRule::Tail {
-					prefix_len: 2,
 					fallback: "defines",
 				})
 				.scope(unknown_scope())
@@ -346,7 +341,6 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			)
 			.kind(ScriptFileKind::new("diplomatic_actions"))
 			.module_name(ModuleNameRule::Tail {
-				prefix_len: 2,
 				fallback: "diplomatic_actions",
 			})
 			.scope(country_from_scope(base_scope::country()))
@@ -364,7 +358,6 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			)
 			.kind(ScriptFileKind::new("new_diplomatic_actions"))
 			.module_name(ModuleNameRule::Tail {
-				prefix_len: 2,
 				fallback: "new_diplomatic_actions",
 			})
 			.scope(country_from_scope(base_scope::country()))
@@ -1776,7 +1769,7 @@ mod tests {
 			(
 				"common/defines/nested/x.lua",
 				Some("common/defines"),
-				Some("defines"),
+				Some("defines.nested"),
 				None,
 				None,
 			),
@@ -1868,17 +1861,33 @@ mod tests {
 			(
 				"common/scripted_effects/sub/y.txt",
 				Some("common/scripted_effects"),
-				Some("scripted_effects"),
+				Some("scripted_effects.sub"),
 				Some(EFFECTS),
 				None,
 			),
-			// `Tail { prefix_len: 2 }` skips the first subdirectory: HEAD
-			// behaviour, kept as it is.
+			// The tail is every directory below the family prefix.
 			(
 				"common/scripted_effects/a/b/c.txt",
 				Some("common/scripted_effects"),
-				Some("scripted_effects.b"),
+				Some("scripted_effects.a.b"),
 				Some(EFFECTS),
+				None,
+			),
+			(
+				"common/scripted_triggers/sub/x.txt",
+				Some("common/scripted_triggers"),
+				Some("scripted_triggers.sub"),
+				Some((
+					"common/scripted_triggers",
+					"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				)),
+				None,
+			),
+			(
+				"events/common/new_diplomatic_actions/sub/x.txt",
+				Some("events/common/new_diplomatic_actions"),
+				Some("new_diplomatic_actions.sub"),
+				None,
 				None,
 			),
 			(
