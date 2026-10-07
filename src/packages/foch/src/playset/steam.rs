@@ -1077,7 +1077,10 @@ pub fn steam_library_paths(steam_root: &Path) -> Vec<PathBuf> {
 	paths
 }
 
+/// The installed Workshop item directory for `steam_id` in any Steam library.
+/// An id that is not a single plain path component names no item.
 pub fn steam_workshop_mod_path(steam_root: &Path, app_id: u32, steam_id: &str) -> Option<PathBuf> {
+	let steam_id = super::single_path_component(steam_id)?;
 	steam_library_paths(steam_root)
 		.into_iter()
 		.map(|library| {

@@ -22,6 +22,7 @@ use crate::model::{
 };
 use crate::playset::ParseErrorKind;
 use crate::playset::descriptor::{load_descriptor, load_launcher_descriptor};
+use crate::playset::single_path_component;
 use crate::playset::steam::{
 	SteamWorkshopCatalog, WorkshopInstallIdentity, steam_workshop_mod_path,
 };
@@ -284,9 +285,10 @@ fn playset_from_project_config(
 				}
 				for mut entry in imported.mods {
 					if entry.root_path.is_none()
-						&& let Some(steam_id) = entry.steam_id.as_deref()
+						&& let Some(steam_id) =
+							entry.steam_id.as_deref().and_then(single_path_component)
 					{
-						entry.root_path = resolve_mod_from_ugc_descriptor(&import_root, steam_id);
+						entry.root_path = resolve_mod_from_ugc_descriptor(&import_root, steam_id)?;
 					}
 					entry.position = Some(next_position);
 					next_position += 1;
@@ -342,6 +344,17 @@ fn playset_entry_from_project_mod(
 		.as_ref()
 		.map(|id| id.trim().to_string())
 		.filter(|id| !id.is_empty());
+	if let Some(steam_id) = steam_id.as_deref()
+		&& single_path_component(steam_id).is_none()
+	{
+		return Err(InputResolveError {
+			kind: InputResolveErrorKind::PlaylistFormat,
+			path: manifest_path.to_path_buf(),
+			message: format!(
+				"[[project.mods]] steam_id `{steam_id}` must be a single plain path component"
+			),
+		});
+	}
 	if root_path.is_none() && steam_id.is_none() {
 		return Err(InputResolveError {
 			kind: InputResolveErrorKind::PlaylistFormat,
@@ -427,7 +440,7 @@ pub fn resolve_input_summary(
 ) -> Result<InputResolveSummary, InputResolveError> {
 	let loaded = load_input_source(request)?;
 	let mut mods =
-		build_mod_candidates_metadata(&loaded.source_root, &loaded.config, &loaded.playlist);
+		build_mod_candidates_metadata(&loaded.source_root, &loaded.config, &loaded.playlist)?;
 	for mod_item in &mut mods {
 		load_mod_candidate_descriptor(mod_item)?;
 	}
@@ -500,7 +513,7 @@ pub fn resolve_product_input_manifest(
 					message: format!("product input {mod_id} has no trusted Workshop ACF identity"),
 				})?;
 			let root =
-				resolve_mod_root(&loaded.source_root, &loaded.config, &loaded.playlist, entry);
+				resolve_mod_root(&loaded.source_root, &loaded.config, &loaded.playlist, entry)?;
 			validate_workshop_lease(
 				&mod_id,
 				entry.steam_id.as_deref(),
@@ -625,7 +638,7 @@ pub(crate) fn build_input_inventory_for_paths(
 			FileFilter::for_game(playlist.game)
 		}
 	};
-	let mods = build_mod_candidates_metadata(&source_root, &config, &playlist);
+	let mods = build_mod_candidates_metadata(&source_root, &config, &playlist)?;
 	let unavailable: Vec<String> = mods
 		.iter()
 		.filter(|item| item.root_path.as_ref().is_none_or(|root| !root.is_dir()))
@@ -1059,7 +1072,7 @@ pub(crate) fn build_mod_candidates_metadata(
 	source_root: &Path,
 	config: &Config,
 	playlist: &Playset,
-) -> Vec<ModCandidate> {
+) -> Result<Vec<ModCandidate>, InputResolveError> {
 	let mut entries = playlist.mods.clone();
 	entries.sort_by_key(|entry| entry.position.unwrap_or(usize::MAX));
 
@@ -1069,11 +1082,11 @@ pub(crate) fn build_mod_candidates_metadata(
 		.map(|entry| {
 			let mod_id = mod_id_for_entry(&entry);
 
-			let root_path = resolve_mod_root(source_root, config, playlist, &entry);
+			let root_path = resolve_mod_root(source_root, config, playlist, &entry)?;
 			let descriptor_path = root_path.as_ref().map(|path| path.join("descriptor.mod"));
 
 			let workshop_identity = entry.workshop_identity.clone();
-			ModCandidate {
+			Ok(ModCandidate {
 				entry,
 				mod_id,
 				root_path,
@@ -1082,7 +1095,7 @@ pub(crate) fn build_mod_candidates_metadata(
 				workshop_identity,
 				descriptor_error: None,
 				files: Vec::new(),
-			}
+			})
 		})
 		.collect()
 }
@@ -1226,19 +1239,23 @@ fn update_cache_key_field(hasher: &mut blake3::Hasher, value: &str) {
 	hasher.update(value.as_bytes());
 }
 
+/// Finds an entry's mod root. A steam id or display name is joined onto a
+/// search root only when it is a single plain path component; any other text
+/// could name a directory outside that root, so it yields no candidate. A
+/// `ugc_<id>.mod` descriptor that exists but cannot be read is an error.
 fn resolve_mod_root(
 	source_root: &Path,
 	config: &Config,
 	playlist: &Playset,
 	entry: &PlaysetEntry,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>, InputResolveError> {
 	if let Some(path) = entry.root_path.as_ref() {
-		return Some(path.clone());
+		return Ok(Some(path.clone()));
 	}
 
 	let mut candidates = Vec::new();
 
-	if let Some(steam_id) = entry.steam_id.as_ref() {
+	if let Some(steam_id) = entry.steam_id.as_deref().and_then(single_path_component) {
 		candidates.push(source_root.join(steam_id));
 		candidates.push(source_root.join(format!("mod_{steam_id}")));
 
@@ -1248,7 +1265,7 @@ fn resolve_mod_root(
 		// user has separately configured `paradox_data_path`. This makes
 		// playset discovery work end-to-end without forcing every test fixture
 		// to additionally pin a config field.
-		if let Some(root) = resolve_mod_from_ugc_descriptor(source_root, steam_id) {
+		if let Some(root) = resolve_mod_from_ugc_descriptor(source_root, steam_id)? {
 			candidates.push(root);
 		}
 		candidates.push(source_root.join("mod").join(steam_id));
@@ -1256,7 +1273,7 @@ fn resolve_mod_root(
 
 		if let Some(path) = config.paradox_data_path.as_ref() {
 			for game_data_dir in paradox_game_data_dirs(path, &playlist.game) {
-				if let Some(root) = resolve_mod_from_ugc_descriptor(&game_data_dir, steam_id) {
+				if let Some(root) = resolve_mod_from_ugc_descriptor(&game_data_dir, steam_id)? {
 					candidates.push(root);
 				}
 				candidates.push(game_data_dir.join("mod").join(steam_id));
@@ -1281,14 +1298,17 @@ fn resolve_mod_root(
 		}
 	}
 
-	if let Some(name) = entry.display_name.as_ref() {
-		candidates.push(source_root.join(name));
-		candidates.push(source_root.join(name.replace(' ', "_")));
+	if let Some(name) = entry.display_name.as_deref() {
+		for name in [name.to_string(), name.replace(' ', "_")] {
+			if single_path_component(&name).is_some() {
+				candidates.push(source_root.join(name));
+			}
+		}
 	}
 
-	dedup_candidates(candidates)
+	Ok(dedup_candidates(candidates)
 		.into_iter()
-		.find(|candidate| candidate.is_dir())
+		.find(|candidate| candidate.is_dir()))
 }
 
 /// Drops repeated physical candidates, keeping the first. Candidates compare
@@ -1310,18 +1330,35 @@ fn paradox_game_data_dirs(base: &Path, game: &Eu4) -> Vec<PathBuf> {
 	dedup_candidates(dirs)
 }
 
-fn resolve_mod_from_ugc_descriptor(game_data_dir: &Path, steam_id: &str) -> Option<PathBuf> {
+/// The root a `mod/ugc_<id>.mod` descriptor points at. Only a missing
+/// descriptor means "no candidate"; one that exists but is not a readable,
+/// parseable regular file is reported with its path.
+fn resolve_mod_from_ugc_descriptor(
+	game_data_dir: &Path,
+	steam_id: &str,
+) -> Result<Option<PathBuf>, InputResolveError> {
 	let metadata = game_data_dir
 		.join("mod")
 		.join(format!("ugc_{steam_id}.mod"));
-	if !metadata.is_file() {
-		return None;
+	match fs::symlink_metadata(&metadata) {
+		Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+		Err(err) => {
+			return Err(input_error_from_playset_parse(
+				crate::playset::ParseError::io(metadata, err),
+			));
+		}
+		Ok(_) => {}
 	}
 
-	let path = load_launcher_descriptor(&metadata).ok()?.path?;
-	descriptor_path_candidates(game_data_dir, &path)
+	let Some(path) = load_launcher_descriptor(&metadata)
+		.map_err(input_error_from_playset_parse)?
+		.path
+	else {
+		return Ok(None);
+	};
+	Ok(descriptor_path_candidates(game_data_dir, &path)
 		.into_iter()
-		.find(|candidate| candidate.is_dir())
+		.find(|candidate| candidate.is_dir()))
 }
 
 /// Where a launcher descriptor's `path` may point. The descriptor reader has
@@ -1863,6 +1900,52 @@ path = "alpha"
 			diagnostic.physical.clone()
 		});
 		assert_ne!(diagnostics[0], diagnostics[1]);
+	}
+
+	#[test]
+	fn manifest_rejects_a_steam_id_that_is_not_one_path_component() {
+		let temp = TempDir::new().expect("tempdir");
+		let manifest_path = temp.path().join("foch.toml");
+		for bad in ["..", "../../x", "a/b"] {
+			fs::write(
+				&manifest_path,
+				format!("[project]\ngame = \"eu4\"\n\n[[project.mods]]\nsteam_id = \"{bad}\"\n"),
+			)
+			.expect("write manifest");
+			let err = resolve_input_summary(&request_for_manifest(&manifest_path))
+				.expect_err("a traversing steam id must fail");
+			assert_eq!(err.path, manifest_path, "{err}");
+			assert!(err.message.contains("single plain path component"), "{err}");
+		}
+	}
+
+	/// A local descriptor's `name` is a mod-root candidate under the data
+	/// directory only when it is one plain directory name. `..` would resolve
+	/// to the data directory's parent, which exists, and be taken as the mod.
+	#[test]
+	fn a_display_name_that_leaves_the_data_directory_is_not_a_mod_root() {
+		let temp = TempDir::new().expect("tempdir");
+		let paradox_dir = temp.path().join("Europa Universalis IV");
+		fs::create_dir_all(paradox_dir.join("mod")).expect("create launcher mod dir");
+		fs::write(
+			paradox_dir.join("dlc_load.json"),
+			r#"{"enabled_mods":["mod/local.mod"],"disabled_dlcs":[]}"#,
+		)
+		.expect("write dlc_load");
+		for name in ["..", "../Europa Universalis IV", "mod/.."] {
+			fs::write(
+				paradox_dir.join("mod").join("local.mod"),
+				format!("name=\"{name}\"\n"),
+			)
+			.expect("write local descriptor");
+			let summary = resolve_input_summary(&InputRequest::from_playset_path(
+				paradox_dir.join("dlc_load.json"),
+				Config::default(),
+			))
+			.expect("resolve summary");
+			assert_eq!(summary.mods.len(), 1);
+			assert_eq!(summary.mods[0].root_path, None, "name {name:?}");
+		}
 	}
 
 	#[test]
