@@ -566,7 +566,15 @@ impl FilesystemConfigWriter {
 		parent.join(name)
 	}
 
-	fn append_resolution(&self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>> {
+	fn append_resolution(&self, mut entry: ResolutionEntry) -> Result<(), Box<dyn Error>> {
+		// A file chosen during this run was read relative to the working
+		// directory, but the config reads a relative `use_file` from its own
+		// directory. Record the absolute path so both name the same file.
+		if let Some(use_file) = entry.use_file.as_mut()
+			&& use_file.is_relative()
+		{
+			*use_file = std::path::absolute(&*use_file)?;
+		}
 		if let Some(parent) = self
 			.path
 			.parent()
@@ -1875,6 +1883,37 @@ dep = "b"
 		assert!(content.contains(r#"prefer_mod = "mod_a""#));
 		let parsed = crate::project::Project::from_toml_str(&content).expect("parse config");
 		assert_eq!(parsed.resolutions.len(), 1);
+	}
+
+	/// A file picked during the run was read relative to the working
+	/// directory. The config would read the same text from its own directory,
+	/// so the recorded `use_file` is absolute and reloads to the picked file.
+	#[test]
+	fn filesystem_config_writer_records_a_relative_use_file_as_absolute() {
+		let root = project_test_dir("filesystem_config_writer_records_absolute_use_file");
+		let path = root.join("nested").join("foch.toml");
+		let picked = PathBuf::from("resolutions").join("PirateEvents.txt");
+		FilesystemConfigWriter::new(path.clone())
+			.append_resolution(ResolutionEntry {
+				file: None,
+				conflict_id: Some("abc12345".to_string()),
+				mod_id: None,
+				r#match: None,
+				prefer_mod: None,
+				prefer_candidate: None,
+				use_file: Some(picked.clone()),
+				keep_existing: None,
+				priority_boost: None,
+				handler: None,
+				policy: None,
+			})
+			.expect("append resolution");
+
+		let reloaded = crate::project::Project::load_from_path(&path).expect("reload config");
+		assert_eq!(
+			reloaded.resolutions[0].use_file,
+			Some(std::path::absolute(&picked).expect("absolute picked path"))
+		);
 	}
 
 	/// A config's staging sibling extends its name as it is: two configs
