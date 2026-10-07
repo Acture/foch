@@ -350,6 +350,9 @@ pub enum UnwritableDescriptorPath {
 	Backslash,
 	/// A name holds a `"`, which would end the value.
 	Quote,
+	/// A name holds a line break, which would end the line: a value could be
+	/// read differently by another launcher, and a comment would end early.
+	LineBreak,
 	/// A device or verbatim prefix names no directory the launcher reads.
 	DevicePrefix,
 }
@@ -360,6 +363,7 @@ impl fmt::Display for UnwritableDescriptorPath {
 			Self::NotUtf8 => "the path is not valid UTF-8",
 			Self::Backslash => "a descriptor path cannot hold a `\\` inside a name",
 			Self::Quote => "a descriptor path cannot hold a `\"`",
+			Self::LineBreak => "a descriptor path cannot hold a line break",
 			Self::DevicePrefix => "a device or verbatim prefix has no descriptor spelling",
 		})
 	}
@@ -374,7 +378,8 @@ impl fmt::Display for UnwritableDescriptorPath {
 /// as the same separator as `\`, and a verbatim (`\\?\`) drive or UNC prefix
 /// is written as the plain one. Elsewhere `\` is an ordinary name character,
 /// but a Windows launcher splits on it and one before the closing quote
-/// escapes that quote. A name that is not UTF-8, a name holding `\` or `"`,
+/// escapes that quote. A name that is not UTF-8, a name holding `\`, `"` or a
+/// line break,
 /// and a device or other verbatim prefix are errors, never a text naming some
 /// other directory.
 pub fn descriptor_path_text(path: &Path) -> Result<String, UnwritableDescriptorPath> {
@@ -435,6 +440,9 @@ pub(crate) fn slash_path_text(path: &Path) -> Result<String, UnwritableDescripto
 
 fn descriptor_name(name: &OsStr) -> Result<&str, UnwritableDescriptorPath> {
 	let name = name.to_str().ok_or(UnwritableDescriptorPath::NotUtf8)?;
+	if name.contains(['\n', '\r']) {
+		return Err(UnwritableDescriptorPath::LineBreak);
+	}
 	if name.contains('\\') {
 		return Err(UnwritableDescriptorPath::Backslash);
 	}
@@ -454,6 +462,22 @@ pub fn replace_path_text(directory: &GamePath) -> Result<&str, UnwritableDescrip
 	Ok(text)
 }
 
+/// `text` made safe for the rest of a `#` comment line: every control
+/// character, line breaks included, is written as its Rust escape (`\n`,
+/// `\u{85}`). A line break would end the comment and let the remaining text
+/// be read as descriptor fields.
+pub fn descriptor_comment_text(text: &str) -> String {
+	let mut escaped = String::with_capacity(text.len());
+	for character in text.chars() {
+		if character.is_control() {
+			escaped.extend(character.escape_default());
+		} else {
+			escaped.push(character);
+		}
+	}
+	escaped
+}
+
 /// A value quoted for a descriptor: `"` and `\` are escaped, so the value
 /// cannot end the quotes early. Only for the text fields jomini decodes, such
 /// as `name` and `remote_file_id`: jomini turns `\"` back into `"` but drops
@@ -468,8 +492,9 @@ pub fn escape_descriptor_value(value: &str) -> String {
 mod tests {
 	use super::{
 		DescriptorParseError, ModDescriptor, ReplacePathError, UnwritableDescriptorPath,
-		descriptor_path_text, escape_descriptor_value, load_descriptor, load_launcher_descriptor,
-		parse_descriptor_bytes, parse_replace_path, replace_path_text, slash_path_text,
+		descriptor_comment_text, descriptor_path_text, escape_descriptor_value, load_descriptor,
+		load_launcher_descriptor, parse_descriptor_bytes, parse_replace_path, replace_path_text,
+		slash_path_text,
 	};
 	use crate::model::{GamePath, GamePathErrorKind};
 	use crate::playset::ParseErrorKind;
@@ -705,6 +730,27 @@ mod tests {
 	/// and a name that is not UTF-8 has no text at all. Off Windows either can
 	/// be part of a directory name, so such a directory is refused instead of
 	/// being written as some other one.
+	/// A line break would end a `path` value's line or a comment early, so a
+	/// directory holding one has no descriptor text; comment text escapes it.
+	#[test]
+	fn a_line_break_has_no_descriptor_path_text_and_is_escaped_in_comments() {
+		for name in ["out\nput", "out\rput"] {
+			let path = Path::new("/merged").join(name);
+			assert_eq!(
+				descriptor_path_text(&path),
+				Err(UnwritableDescriptorPath::LineBreak)
+			);
+			assert_eq!(
+				slash_path_text(&path),
+				Err(UnwritableDescriptorPath::LineBreak)
+			);
+		}
+		assert_eq!(
+			descriptor_comment_text("a\nb=\"c\"\r\n\u{85}d"),
+			r#"a\nb="c"\r\n\u{85}d"#
+		);
+	}
+
 	#[cfg(unix)]
 	#[test]
 	fn a_directory_a_descriptor_cannot_name_is_an_error() {

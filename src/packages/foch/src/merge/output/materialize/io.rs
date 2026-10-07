@@ -7,7 +7,8 @@ use crate::model::{
 	MERGE_REPORT_ARTIFACT_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult, MergeReport,
 };
 use crate::playset::descriptor::{
-	descriptor_path_text, escape_descriptor_value, replace_path_text, slash_path_text,
+	descriptor_comment_text, descriptor_path_text, escape_descriptor_value, replace_path_text,
+	slash_path_text,
 };
 use crate::project::{ResolutionDecision, ResolutionMap};
 use serde::Serialize;
@@ -331,7 +332,8 @@ pub(super) fn write_conflict_placeholder(
 /// both written verbatim, and a directory the format cannot name fails the
 /// merge. The source playset is only a comment: it keeps its `/`-joined
 /// spelling, escaped, even with a `"` a `path` value could not hold, and a
-/// path with no such spelling is shown as the host displays it.
+/// path with no such spelling is shown as the host displays it. A line break
+/// in either is escaped so it cannot end the comment.
 pub(super) fn write_generated_descriptor(
 	out_dir: &Path,
 	playset_path: &Path,
@@ -352,7 +354,7 @@ pub(super) fn write_generated_descriptor(
 	let playset_text =
 		slash_path_text(playset_path).unwrap_or_else(|_| playset_path.display().to_string());
 	let escaped_name = escape_descriptor_value(&format!("{playset_name} (Merged)"));
-	let escaped_playset = escape_descriptor_value(&playset_text);
+	let escaped_playset = descriptor_comment_text(&escape_descriptor_value(&playset_text));
 	let mut descriptor = format!(
 		"# Source playset: {escaped_playset}\nname=\"{escaped_name}\"\npath=\"{out_dir_text}\"\n"
 	);
@@ -678,6 +680,31 @@ mod tests {
 			written.lines().next(),
 			Some(r#"# Source playset: /tmp/p \"q\"/dlc_load.json"#)
 		);
+	}
+
+	/// A line break in the playset path would end the comment and turn the
+	/// rest of the name into descriptor fields. It is escaped instead, so the
+	/// descriptor still has exactly the fields Foch wrote.
+	#[test]
+	fn a_line_break_in_the_source_playset_cannot_add_descriptor_fields() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let descriptor = temp.path().join("descriptor.mod");
+		write_generated_descriptor(
+			&temp.path().join("merged"),
+			Path::new("/tmp/x\nreplace_path=\"common\"\r\n#/dlc_load.json"),
+			"playset",
+			&BTreeSet::new(),
+			&descriptor,
+		)
+		.expect("write descriptor");
+		let written = std::fs::read_to_string(&descriptor).expect("read descriptor");
+		assert_eq!(
+			written.lines().next(),
+			Some(r#"# Source playset: /tmp/x\nreplace_path=\"common\"\r\n#/dlc_load.json"#)
+		);
+		let parsed = crate::playset::descriptor::load_descriptor(&descriptor)
+			.expect("parse generated descriptor");
+		assert!(parsed.replace_path.is_empty(), "{written}");
 	}
 
 	#[test]
