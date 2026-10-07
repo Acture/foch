@@ -3712,7 +3712,7 @@ path = "local-mod"
 		let schema = load_lsp_schema();
 		let snapshot = build_workspace_snapshot_with_schema(&targets, Some(schema.clone()));
 		let codes = |path: &Path| {
-			document_diagnostics(path, &text, Some(&snapshot), &targets, Some(&schema))
+			super::document_diagnostics(path, &text, Some(&snapshot), &targets, Some(&schema))
 				.into_iter()
 				.filter_map(|diagnostic| match diagnostic.code {
 					Some(NumberOrString::String(code)) => Some(code),
