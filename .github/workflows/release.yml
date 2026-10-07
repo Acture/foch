@@ -28,6 +28,18 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       sha: ${{ steps.meta.outputs.sha }}
     steps:
+      - name: Require Homebrew tap credential
+        if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
+        shell: bash
+        env:
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+          TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        run: |
+          if [ "$TAP_TOKEN_SET" != "true" ]; then
+            echo "HOMEBREW_TAP_TOKEN must be a repository secret with write access to $TAP_REPO before publishing" >&2
+            exit 1
+          fi
+
       - name: Checkout release refs
         uses: actions/checkout@v6
         with:
@@ -217,18 +229,9 @@ jobs:
 
       - name: Create source tarball
         shell: bash
-        run: |
-          version="${{ needs.release-metadata.outputs.version }}"
-          root="foch-${version}"
-          mkdir -p dist stage/"${root}"
-          rsync -a \
-            --exclude='.git' \
-            --exclude='.direnv' \
-            --exclude='target' \
-            --exclude='node_modules' \
-            --exclude='/notes/' \
-            ./ stage/"${root}"/
-          tar -C stage -czf "dist/${root}-source.tar.gz" "${root}"
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: ./scripts/build_source_archive.sh "$VERSION" dist
 
       - name: Upload source artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

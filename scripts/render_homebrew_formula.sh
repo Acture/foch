@@ -24,6 +24,7 @@ class Foch < Formula
   url "${url}"
   sha256 "${sha256}"
   license all_of: ["AGPL-3.0-only", "GPL-3.0-only", "MIT"]
+
   depends_on "rust" => :build
 
   def install

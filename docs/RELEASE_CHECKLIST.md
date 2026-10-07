@@ -17,15 +17,25 @@ the maintainer must take over those parts of the release workflow.
 6. ☐ Confirm the `Cargo.toml` workspace version is `0.0.1`.
 7. ☐ Confirm the VS Code/LSP claim still matches
    [`lsp-0.1-preview.md`](./lsp-0.1-preview.md).
-8. ☐ Tag: `git tag v0.0.1`
-9. ☐ Push tags: `git push origin v0.0.1`
-10. ☐ Build release artifacts: `cargo build --release --workspace`
-11. ☐ Manually build the macOS Intel binary on an Intel Mac; this requires the
+8. ☐ Confirm `gh secret list --repo Acture/foch` lists `HOMEBREW_TAP_TOKEN`: a
+   fine-grained token for `Acture/homebrew-ac` only, with Contents read and
+   write. The release workflow refuses to publish while the `HOMEBREW_TAP_REPO`
+   target lacks the secret; it does not test the token's permissions.
+9. ☐ Tag: `git tag v0.0.1`
+10. ☐ Push tags: `git push origin v0.0.1`
+11. ☐ Build release artifacts: `cargo build --release --workspace`
+12. ☐ Manually build the macOS Intel binary on an Intel Mac; this requires the
     maintainer-side toolchain and hardware.
-12. ☐ Smoke-test the VS Code extension package:
+13. ☐ Smoke-test the VS Code extension package:
     `bun run --cwd src/apps/vscode-foch test`
-13. ☐ Build the VS Code extension package:
+14. ☐ Build the VS Code extension package:
     `bun run --cwd src/apps/vscode-foch package:vsix`
-14. ☐ Create the GitHub Release with binaries and the extension VSIX.
-15. ☐ Write an announcement from the verified release state and current public
+15. ☐ Create the GitHub Release with binaries and the extension VSIX.
+16. ☐ Confirm the release workflow's Homebrew tap job committed
+    `packaging/homebrew/Formula/foch.rb` for this version, and that the tap's
+    Brew CI installed and tested it on macOS and Linux. To retry the sync for an
+    existing release: `gh workflow run sync-homebrew-tap.yml -f tag=v0.0.1`.
+    The first sync replaces the HEAD-only formula, so the tap's README and
+    status must then list the stable `brew install acture/ac/foch`.
+17. ☐ Write an announcement from the verified release state and current public
     documentation.
