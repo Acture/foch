@@ -1176,6 +1176,17 @@ fn scan_target_mod_id(ordinal: usize, target: &ScanTarget) -> String {
 	}
 }
 
+/// The mod id of `target`, a scan target [`match_scan_target`] chose from
+/// `targets`: the same slice, in the same order, the workspace was indexed
+/// from.
+fn matched_scan_target_mod_id(targets: &[ScanTarget], target: &ScanTarget) -> String {
+	let ordinal = targets
+		.iter()
+		.position(|candidate| std::ptr::eq(candidate, target))
+		.expect("the matched scan target comes from the same slice");
+	scan_target_mod_id(ordinal, target)
+}
+
 /// The diagnostic a document gets when its name has no game path, so it is
 /// neither indexed nor matched against the schema.
 fn unportable_path_diagnostic(error: &GamePathError) -> Diagnostic {
@@ -1436,9 +1447,10 @@ fn resolve_definition_locations(
 	let session = snapshot.session.as_ref()?;
 	let path = uri.to_file_path().ok()?;
 	// A document without a game path was told so by its diagnostics.
-	let (_, Ok(relative_path)) = match_scan_target(targets, &path)? else {
+	let (target, Ok(relative_path)) = match_scan_target(targets, &path)? else {
 		return None;
 	};
+	let mod_id = matched_scan_target_mod_id(targets, target);
 	let line = text.lines().nth(position.line as usize)?;
 	let cursor = position.character as usize;
 	let (token, _token_start, _) = extract_token_at_cursor(line, cursor)?;
@@ -1449,7 +1461,8 @@ fn resolve_definition_locations(
 	if !on_value_side && cursor >= key_start && cursor <= key_end {
 		let current_column = key_start + 1;
 		for reference in &session.index.references {
-			if reference.path != relative_path
+			if reference.mod_id != mod_id
+				|| reference.path != relative_path
 				|| reference.line != position.line as usize + 1
 				|| reference.column != current_column
 				|| reference.name != assignment_key
@@ -1556,9 +1569,10 @@ fn resolve_reference_locations(
 	let session = snapshot.session.as_ref()?;
 	let path = uri.to_file_path().ok()?;
 	// A document without a game path was told so by its diagnostics.
-	let (_, Ok(relative_path)) = match_scan_target(targets, &path)? else {
+	let (target, Ok(relative_path)) = match_scan_target(targets, &path)? else {
 		return None;
 	};
+	let mod_id = matched_scan_target_mod_id(targets, target);
 	let line = text.lines().nth(position.line as usize)?;
 	let cursor = position.character as usize;
 	let (token, _token_start, _) = extract_token_at_cursor(line, cursor)?;
@@ -1576,6 +1590,7 @@ fn resolve_reference_locations(
 	let target_indices = symbol_target_indices_at_cursor(
 		session,
 		uri,
+		&mod_id,
 		&relative_path,
 		position,
 		&token,
@@ -1621,9 +1636,13 @@ fn resolve_reference_locations(
 	}
 }
 
+/// The definitions the symbol at the cursor names. A reference matches only
+/// in the document's own scan root (`mod_id`): another root can hold the same
+/// game path with a different symbol at the same position.
 fn symbol_target_indices_at_cursor(
 	session: &WorkspaceSession,
 	uri: &Url,
+	mod_id: &str,
 	relative_path: &GamePath,
 	position: Position,
 	token: &str,
@@ -1654,7 +1673,8 @@ fn symbol_target_indices_at_cursor(
 	};
 	let current_column = key_start + 1;
 	for reference in &session.index.references {
-		if *reference.path != *relative_path
+		if reference.mod_id != mod_id
+			|| *reference.path != *relative_path
 			|| reference.line != line_number
 			|| reference.column != current_column
 			|| reference.name != *assignment_key
@@ -3038,6 +3058,89 @@ path = "local-mod"
 			Url::from_file_path(root.join("common").join("scripted_triggers").join("a.txt"))
 				.expect("trigger uri")
 		);
+	}
+
+	/// Two scan roots hold the same game path with `foo` at the same position,
+	/// an effect call in one and a trigger call in the other. Going to the
+	/// definition or finding references from the first root follows only its
+	/// own call, never the other root's.
+	#[test]
+	fn cursor_resolution_stays_in_the_documents_scan_root() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let effect_root = tmp.path().join("a");
+		let trigger_root = tmp.path().join("b");
+		fs::create_dir_all(effect_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(trigger_root.join("common").join("scripted_triggers"))
+			.expect("create scripted triggers");
+		fs::write(
+			effect_root
+				.join("common")
+				.join("scripted_effects")
+				.join("x.txt"),
+			"foo = { set_country_flag = TEST_FLAG }\n",
+		)
+		.expect("write effect");
+		fs::write(
+			trigger_root
+				.join("common")
+				.join("scripted_triggers")
+				.join("x.txt"),
+			"foo = { has_country_flag = TEST_FLAG }\n",
+		)
+		.expect("write trigger");
+		for (root, body) in [
+			(&effect_root, "test_decision = { effect = { foo = { } } }\n"),
+			(
+				&trigger_root,
+				"test_decision = { allow  = { foo = { } } }\n",
+			),
+		] {
+			fs::create_dir_all(root.join("decisions")).expect("create decisions");
+			fs::write(root.join("decisions").join("d.txt"), body).expect("write decision");
+		}
+		let targets = [&effect_root, &trigger_root].map(|root| ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		});
+		let snapshot = build_workspace_snapshot(&targets);
+		let document = effect_root.join("decisions").join("d.txt");
+		let text = fs::read_to_string(&document).expect("read decision");
+		let uri = Url::from_file_path(&document).expect("uri");
+		let position = Position {
+			line: 0,
+			character: text.find("foo").expect("call token") as u32,
+		};
+		let effect_uri = Url::from_file_path(
+			effect_root
+				.join("common")
+				.join("scripted_effects")
+				.join("x.txt"),
+		)
+		.expect("effect uri");
+
+		let definitions = resolve_definition_locations(&snapshot, &targets, &uri, &text, position)
+			.expect("definition locations");
+		assert_eq!(
+			definitions
+				.iter()
+				.map(|location| &location.uri)
+				.collect::<Vec<_>>(),
+			[&effect_uri]
+		);
+
+		let references =
+			resolve_reference_locations(&snapshot, &targets, &uri, &text, position, true)
+				.expect("reference locations");
+		let mut reference_uris = references
+			.iter()
+			.map(|location| location.uri.clone())
+			.collect::<Vec<_>>();
+		reference_uris.sort();
+		let mut expected = vec![effect_uri, uri];
+		expected.sort();
+		assert_eq!(reference_uris, expected);
 	}
 
 	#[test]
