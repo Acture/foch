@@ -543,6 +543,36 @@ fn intra_mod_overlap_does_not_emit_mergeable_overlap() {
 	);
 }
 
+/// Two mods shipping the same file with the same unresolved call at the same
+/// position are two findings: the later mod's copy is the one the game loads,
+/// so keeping only the first would hide it.
+#[test]
+fn identical_findings_in_two_mods_are_reported_for_each_mod() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_dlc_load(&playlist_path, &[("8011", "A"), ("8012", "B")]);
+	for id in ["8011", "8012"] {
+		let root = temp.path().join(id);
+		write_descriptor(&root, id, &[]);
+		write_script_file(
+			&root,
+			"events/x.txt",
+			"country_event = {\n\tid = test.1\n\timmediate = {\n\t\tmissing_effect = { FLAG = TEST }\n\t}\n}\n",
+		);
+	}
+
+	let result = run_checks_no_base(request_for(&playlist_path));
+	let mut mods = result
+		.findings
+		.iter()
+		.filter(|f| f.rule_id == "unresolved-call-target")
+		.filter_map(|f| f.mod_id.as_deref())
+		.collect::<Vec<_>>();
+	mods.sort();
+	assert_eq!(mods, ["8011", "8012"]);
+}
+
 #[test]
 fn unresolved_scripted_effect_reports_unresolved_call_target() {
 	let temp = TempDir::new().expect("temp dir");

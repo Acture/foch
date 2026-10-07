@@ -311,6 +311,7 @@ fn check_unresolved_call_targets(
 		}
 
 		let dedup_key = (
+			reference.mod_id.as_str(),
 			reference.kind,
 			&reference.path,
 			reference.line,
@@ -379,7 +380,13 @@ fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Fi
 		{
 			continue;
 		}
-		let dedup_key = (&usage.path, usage.line, usage.column, usage.alias.as_str());
+		let dedup_key = (
+			usage.mod_id.as_str(),
+			&usage.path,
+			usage.line,
+			usage.column,
+			usage.alias.as_str(),
+		);
 		if !seen.insert(dedup_key) {
 			continue;
 		}
@@ -457,6 +464,7 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 		};
 		for message in missing_messages {
 			let dedup_key = (
+				reference.mod_id.as_str(),
 				&reference.path,
 				reference.line,
 				reference.column,
@@ -863,6 +871,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 							continue;
 						};
 						let dedup_key = (
+							reference.mod_id.as_str(),
 							&reference.path,
 							reference.line,
 							reference.column,
@@ -940,6 +949,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 						continue;
 					}
 					let dedup_key = (
+						reference.mod_id.as_str(),
 						&reference.path,
 						reference.line,
 						reference.column,
@@ -1030,7 +1040,13 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 		if defined_keys.contains(key.as_str()) {
 			continue;
 		}
-		let dedup_key = (&usage.path, usage.line, usage.column, key.clone());
+		let dedup_key = (
+			usage.mod_id.as_str(),
+			&usage.path,
+			usage.line,
+			usage.column,
+			key.clone(),
+		);
 		if !seen.insert(dedup_key) {
 			continue;
 		}
@@ -1056,6 +1072,7 @@ fn check_duplicate_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 	let mut seen = HashSet::new();
 	for duplicate in &index.localisation_duplicates {
 		let dedup_key = (
+			duplicate.mod_id.as_str(),
 			&duplicate.path,
 			duplicate.key.as_str(),
 			duplicate.duplicate_line,
