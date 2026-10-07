@@ -197,12 +197,13 @@ fn playset_entry_from_descriptor(
 }
 
 /// Returns `text` when it is exactly one ordinary path component on every
-/// host: not empty, not `.` or `..`, no `/` or `\` separator, no drive or
-/// root, and no NUL. Mod ids and names are joined onto search roots only
-/// through this check, so they can never name a directory outside the root
-/// they are joined to.
+/// host: not empty, not `.` or `..`, no `/` or `\` separator, no `:` (a
+/// Windows drive or stream prefix, judged the same on every host), and no
+/// NUL. Mod ids and names are joined onto search roots only through this
+/// check, so they can never name a directory outside the root they are
+/// joined to.
 pub(crate) fn single_path_component(text: &str) -> Option<&str> {
-	if text.is_empty() || text.contains(['/', '\\', '\0']) {
+	if text.is_empty() || text.contains(['/', '\\', ':', '\0']) {
 		return None;
 	}
 	let mut components = Path::new(text).components();
