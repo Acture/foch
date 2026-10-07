@@ -573,6 +573,36 @@ fn identical_findings_in_two_mods_are_reported_for_each_mod() {
 	assert_eq!(mods, ["8011", "8012"]);
 }
 
+/// `Common/ideas/x.txt` and `common/ideas/x.txt` stay separate game paths,
+/// but check names the pair instead of silently treating them as unrelated.
+#[test]
+fn paths_differing_only_in_case_are_reported() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_dlc_load(&playlist_path, &[("8021", "A"), ("8022", "B")]);
+	for (id, relative) in [
+		("8021", "Common/ideas/x.txt"),
+		("8022", "common/ideas/x.txt"),
+	] {
+		let root = temp.path().join(id);
+		write_descriptor(&root, id, &[]);
+		write_script_file(&root, relative, "x_ideas = { }\n");
+	}
+
+	let result = run_checks_no_base(request_for(&playlist_path));
+	let findings = result
+		.findings
+		.iter()
+		.filter(|f| f.rule_id == "case-only-path-collision")
+		.collect::<Vec<_>>();
+	assert_eq!(findings.len(), 1, "{findings:?}");
+	assert_eq!(
+		findings[0].evidence.as_deref(),
+		Some("Common/ideas/x.txt [8021]; common/ideas/x.txt [8022]")
+	);
+}
+
 #[test]
 fn unresolved_scripted_effect_reports_unresolved_call_target() {
 	let temp = TempDir::new().expect("temp dir");

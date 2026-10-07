@@ -322,6 +322,7 @@ pub(crate) fn materialize_analyzed_input(
 	record_plan_unsupported_inputs(&mut report, &plan);
 
 	let input = input_result?;
+	record_case_only_path_collisions(&mut report, &input);
 	let (mod_dag, dag_diagnostics) = stage_log_with("build_mod_dag", || {
 		let (dag, diags) = build_mod_dag(&input.mods);
 		let summary = format!("nodes={} diagnostics={}", dag.topo().len(), diags.len());
@@ -2229,6 +2230,32 @@ fn structured_merge_unsupported(entry: &MergePlanEntry, reason: &str) -> MergeEr
 	}
 }
 
+/// Warns once per group of input game paths that differ only in case. The
+/// merge keeps them as separate units, but committing them to a
+/// case-insensitive filesystem leaves one file for the whole group, and a
+/// spelling that misses its family or vanilla ancestor merges without them.
+fn record_case_only_path_collisions(report: &mut MergeReport, input: &ResolvedInput) {
+	for group in
+		crate::model::case_only_path_groups(input.file_inventory.keys().map(|path| &**path))
+	{
+		let spellings = group
+			.iter()
+			.map(|path| {
+				let mods = input.file_inventory[*path]
+					.iter()
+					.map(|contributor| contributor.mod_id.as_str())
+					.collect::<Vec<_>>()
+					.join(", ");
+				format!("{path} [{mods}]")
+			})
+			.collect::<Vec<_>>()
+			.join("; ");
+		report.warnings.push(format!(
+			"case_only_path_collision: {spellings}; these paths differ only in letter case, so a case-insensitive filesystem keeps one file for all of them"
+		));
+	}
+}
+
 fn record_plan_unsupported_inputs(report: &mut MergeReport, plan: &MergePlanResult) {
 	for entry in &plan.paths {
 		if entry.strategy != MergePlanStrategy::ManualConflict {
@@ -3510,6 +3537,40 @@ mod tests {
 				!with_scripts
 			);
 		}
+	}
+
+	/// Spellings that differ only in case stay separate inputs, but the report
+	/// names them: committed to a case-insensitive filesystem they are one
+	/// file, and one spelling's output would replace the other's.
+	#[test]
+	fn the_report_warns_about_paths_that_differ_only_in_case() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let out_dir = temp.path().join("out");
+		write_dlc_load(&playlist_path, &[("111", "A"), ("222", "B")]);
+		for (id, relative) in [("111", "Gfx/test.dds"), ("222", "gfx/test.dds")] {
+			write_descriptor(&temp.path().join(id), id);
+			write_file(&temp.path().join(id), relative, b"texture");
+		}
+
+		let materialized = run_materialization_with_review(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		);
+
+		let warnings = materialized
+			.report
+			.warnings
+			.iter()
+			.filter(|warning| warning.starts_with("case_only_path_collision:"))
+			.collect::<Vec<_>>();
+		assert_eq!(warnings.len(), 1, "{:?}", materialized.report.warnings);
+		assert!(
+			warnings[0].contains("Gfx/test.dds [111]; gfx/test.dds [222]"),
+			"{}",
+			warnings[0]
+		);
 	}
 
 	fn plan_entry_for<'a>(plan: &'a MergePlanResult, path: &str) -> &'a MergePlanEntry {

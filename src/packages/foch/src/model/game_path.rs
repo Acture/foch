@@ -400,6 +400,37 @@ impl fmt::Debug for GamePathBuf {
 	}
 }
 
+/// Groups of distinct paths in `paths` that differ only in letter case,
+/// each group and the groups themselves in byte order.
+///
+/// Identity stays case-sensitive: EU4's own case behavior is not verified,
+/// so such paths remain separate entries. They are reported because a
+/// case-insensitive filesystem (default NTFS and APFS) holds only one of
+/// them, so writing both lets one replace the other, and because a family or
+/// vanilla ancestor matched by exact spelling misses the other spelling.
+/// Case is folded with Unicode lowercase mapping.
+pub fn case_only_path_groups<'a>(
+	paths: impl IntoIterator<Item = &'a GamePath>,
+) -> Vec<Vec<&'a GamePath>> {
+	let mut by_folded = std::collections::BTreeMap::<String, Vec<&'a GamePath>>::new();
+	for path in paths {
+		by_folded
+			.entry(path.as_str().to_lowercase())
+			.or_default()
+			.push(path);
+	}
+	let mut groups = by_folded
+		.into_values()
+		.filter_map(|mut group| {
+			group.sort();
+			group.dedup();
+			(group.len() > 1).then_some(group)
+		})
+		.collect::<Vec<_>>();
+	groups.sort();
+	groups
+}
+
 impl FromStr for GamePathBuf {
 	type Err = GamePathError;
 
@@ -497,6 +528,34 @@ mod tests {
 			component: component.to_string(),
 			character,
 		}
+	}
+
+	/// Paths stay distinct identities; only spellings that differ solely in
+	/// case are grouped, in byte order, with repeats counted once.
+	#[test]
+	fn case_only_groups_collect_spellings_that_fold_together() {
+		let paths = [
+			"common/ideas/x.txt",
+			"Common/ideas/x.txt",
+			"common/ideas/y.txt",
+			"common/ideas/x.txt",
+			"events/Ä.txt",
+			"events/ä.txt",
+			"events/a.txt",
+		]
+		.map(|text| GamePath::new(text).expect("valid"));
+		let groups = case_only_path_groups(paths)
+			.into_iter()
+			.map(|group| group.into_iter().map(GamePath::as_str).collect::<Vec<_>>())
+			.collect::<Vec<_>>();
+		assert_eq!(
+			groups,
+			[
+				vec!["Common/ideas/x.txt", "common/ideas/x.txt"],
+				vec!["events/Ä.txt", "events/ä.txt"],
+			]
+		);
+		assert_ne!(paths[0], paths[1], "identity stays case-sensitive");
 	}
 
 	#[test]
