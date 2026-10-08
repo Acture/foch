@@ -27,7 +27,7 @@ jobs:
           args: -color
 
       - name: Test release scripts
-        run: python3 scripts/test_render_homebrew_formula.py
+        run: python3 scripts/test_homebrew_release.py
 
       - name: Set up Python
         uses: actions/setup-python@v6

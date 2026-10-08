@@ -69,7 +69,11 @@ carry no EU4 base data; users build it from their own game installation.
    authorization for every registry upload. Set the repository variables
    `CRATES_IO_PUBLISH` and `PYPI_PUBLISH` to `true` only when a release should
    publish there. The Homebrew sync needs `HOMEBREW_TAP_REPO` and the
-   `HOMEBREW_TAP_TOKEN` secret; it has no environment and also runs for
+   `HOMEBREW_TAP_TOKEN` secret, a fine-grained token for `Acture/homebrew-ac`
+   only with Contents read and write; confirm it with
+   `gh secret list --repo Acture/foch`. The release workflow refuses to publish
+   while the `HOMEBREW_TAP_REPO` target lacks the secret, but does not test the
+   token's permissions. The sync has no environment and also runs for
    pre-release tags.
 5. ☐ Register the PyPI pending publisher for project `foch`: owner `Acture`,
    repository `foch`, workflow `release.yml`, environment `pypi`. It does not
@@ -142,15 +146,21 @@ carry no EU4 base data; users build it from their own game installation.
     without arguments prints usage and exits 2, so validation should run
     `foch.exe --version`. Review can take weeks; later versions can be
     automated only after the package exists.
-18. ☐ After each channel has published, run the post-publication check on clean
+18. ☐ Homebrew: confirm the release workflow's Homebrew tap job committed
+    `packaging/homebrew/Formula/foch.rb` for this version, and that the tap's
+    Brew CI installed and tested it on macOS and Linux. To retry the sync for an
+    existing release: `gh workflow run sync-homebrew-tap.yml -f tag=vX.Y.Z`.
+    The first sync replaces the HEAD-only formula, so the tap's README and
+    status must then list the stable `brew install acture/ac/foch`.
+19. ☐ After each channel has published, run the post-publication check on clean
     runners for the live channels, for example
     `gh workflow run verify-install.yml -f tag=vX.Y.Z -f channels=cargo,uv`.
     WinGet is live only after its pull request merges.
-19. ☐ Record each channel's verify-install run and result in the Distribution
+20. ☐ Record each channel's verify-install run and result in the Distribution
     section of [`project-status.md`](./project-status.md). Installation
     results and merge-quality acceptance are separate facts; record them
     separately.
-20. ☐ For each channel whose verify-install run passed, update the README
+21. ☐ For each channel whose verify-install run passed, update the README
     Install section: mark that channel available, and rewrite the "Not
     available yet" banner and "Building from source is the current way to run
     Foch" to match. Once the crates are published, also update "neither is
@@ -158,5 +168,5 @@ carry no EU4 base data; users build it from their own game installation.
     project-status Distribution section. A channel without a passing run,
     including WinGet before its pull request merges, stays marked not
     available. This is a docs commit on `master`; do not retag.
-21. ☐ Write the announcement from the verified release state and current public
+22. ☐ Write the announcement from the verified release state and current public
     documentation.
