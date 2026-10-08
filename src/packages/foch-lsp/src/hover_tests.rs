@@ -83,6 +83,34 @@ fn markdown(hover: Hover) -> String {
 }
 
 #[tokio::test]
+async fn annotation_hover_handler_works_without_schema_or_scan_target() {
+	let root = TempDir::new().unwrap();
+	let uri = Url::from_file_path(root.path().join("events/test.txt")).unwrap();
+	let (service, _socket) = LspService::new(Backend::new);
+	let backend = service.inner();
+	backend.state.write().await.docs.insert(
+		uri.clone(),
+		OpenDocument {
+			text: Some("#test(name=\"😀\", tag=SWE)".into()),
+			version: 1,
+		},
+	);
+	let result = backend
+		.hover(
+			serde_json::from_value(json!({
+				"textDocument": {"uri": uri},
+				"position": {"line": 0, "character": 18}
+			}))
+			.unwrap(),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(result.range.unwrap().start, Position::new(0, 17));
+	assert!(markdown(result).contains("country tag"));
+}
+
+#[tokio::test]
 async fn provenance_hover_handler_composes_schema_and_cleans_up_on_close() {
 	let fixture = Fixture::new();
 	let (service, _socket) = LspService::new(Backend::new);
