@@ -83,10 +83,17 @@ byte-identical archives twice, and `dist smoke` installed it offline through
 `release preflight --tag v0.0.1` fails on exactly two blockers: crates.io has
 no `tree-sitter-paradox` 0.3.0, and `foch` 0.1.0 is not yanked.
 
-Never run: any Linux or Windows build, the WinGet smoke script (only parsed;
-`winget validate` has not run), and every new or changed workflow, including
-the third-party license check. WinGet manifests have been checked only in unit
-tests against the vendored 1.12.0 schemas.
+GitHub CI on [PR #74](https://github.com/Acture/foch/pull/74) at `f765523`
+ran `dist.yml` on hosted runners: wheels and archives for `linux-x64`
+(manylinux_2_28), `darwin-arm64` and `win32-x64`, each installed through uvx
+and uv tool; the out-of-tree crate install; the third-party license check; and
+the WinGet smoke with winget v1.29.380, which passed `winget validate` and
+installed, upgraded and uninstalled `Acture.Foch` from local manifests. Every
+install reported the identity above.
+
+Never run: `release.yml` and `verify-install.yml`, so no GitHub release,
+registry upload, release-mode WinGet install or post-publication install has
+happened.
 
 The Homebrew tap already offers an unverified `--HEAD` source build of
 `master`. It fails from the merge of this source layout until its formula
@@ -94,8 +101,8 @@ lists the moved `src/packages/foch/vendor/cwtools-eu4-config` submodule.
 
 Pending maintainer actions, in the [release runbook](RELEASE_CHECKLIST.md):
 
-- push and publish `tree-sitter-paradox` 0.3.0 (`release/0.3.0`); until then
-  CI and source builds cannot check out the gitlink;
+- publish `tree-sitter-paradox` 0.3.0 from its pushed `release/0.3.0` branch;
+  until then `foch` cannot be published to crates.io;
 - update the tap's HEAD formula submodule path when merging this layout
   (OSS-302), and add its token and sync path;
 - yank `foch` 0.1.0;

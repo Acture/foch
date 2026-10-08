@@ -29,10 +29,11 @@ carry no EU4 base data; users build it from their own game installation.
 ## One-time setup
 
 1. ☐ Release `tree-sitter-paradox` 0.3.0 from its own repository, at the commit
-   the `src/packages/tree-sitter-paradox` gitlink records: the head of the local
+   the `src/packages/tree-sitter-paradox` gitlink records: the head of the
    `release/0.3.0` branch (`c0e946a` version bump, `0e8eab4` anchored include
-   patterns). Until that branch is pushed, no CI job and no source build of
-   Foch can check out the gitlink.
+   patterns). The branch is pushed to
+   `Acture/tree-sitter-paradox`, which keeps the gitlink fetchable; it is not
+   on that repository's `master` and is not published.
    - Configure the publishers its `package.yml` uses first: the crates.io
      trusted publisher (workflow `package.yml`, environment `release`), the
      PyPI trusted publisher for project `tree-sitter-paradox` (workflow
