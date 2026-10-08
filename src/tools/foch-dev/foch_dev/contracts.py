@@ -698,7 +698,8 @@ def cargo_metadata(repo_root: Path) -> CargoMetadata:
 		],
 		cwd=repo_root,
 		check=True,
-		capture_output=True,
+		# cargo's diagnostics go straight to stderr; CalledProcessError omits them.
+		stdout=subprocess.PIPE,
 		text=True,
 		encoding="utf-8",
 	)
