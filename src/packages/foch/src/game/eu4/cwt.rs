@@ -16,7 +16,7 @@ use crate::model::{GamePath, ScopeKind, ScopeType, base_scope};
 
 pub mod merge;
 
-/// The rule pack `build.rs` compiled from `vendor/cwtools-eu4-config`.
+/// The rule pack `build.rs` compiled from the package's `vendor/cwtools-eu4-config`.
 static EMBEDDED_RULE_PACK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cwt-rules.pack"));
 
 /// `cwt_schema_id` of the rule pack compiled into this binary.
@@ -1074,7 +1074,7 @@ mod tests {
 	use crate::model::{GamePath, ScopeKind, ScopeRegistry, base_scope};
 
 	fn vendored_schema_dir() -> PathBuf {
-		Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../vendor/cwtools-eu4-config")
+		Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")
 	}
 
 	#[test]

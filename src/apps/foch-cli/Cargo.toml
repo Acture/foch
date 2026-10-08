@@ -2,12 +2,24 @@
 name = "foch-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 homepage.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 default-run = "foch"
-description = "Paradox mod static analysis toolkit with CLI and EU4-focused language tooling"
+description = "EU4 mod analysis, merge and language server CLI"
+# The binary and its feature-gated maintainer examples. Integration tests and
+# the merge-quality corpus stay in the repository.
+include = [
+	"/src/**",
+	"/examples/**",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
 
 [dependencies]
 clap.workspace = true

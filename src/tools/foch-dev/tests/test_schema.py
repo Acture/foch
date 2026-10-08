@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from foch_dev.repository import find_repository
-from foch_dev.schema import cwt_snapshot_hash
+from foch_dev.schema import cwt_files, cwt_snapshot_hash
 
 
 class SchemaTests(unittest.TestCase):
@@ -19,6 +19,26 @@ class SchemaTests(unittest.TestCase):
 			self.assertEqual(
 				cwt_snapshot_hash(root),
 				hashlib.sha256(b"first\nsecond\nline\n").hexdigest(),
+			)
+
+	def test_file_order_matches_the_rust_schema_order(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			root: Path = Path(directory)
+			for relative in (
+				"c.cwt",
+				"B.cwt",
+				"a/b.cwt",
+				"a.cwt",
+				"a-b.cwt",
+				"a/x.txt",
+			):
+				path: Path = root / relative
+				path.parent.mkdir(parents=True, exist_ok=True)
+				path.write_text("types = { }\n")
+			(root / "linked.cwt").symlink_to(root / "c.cwt")
+			self.assertEqual(
+				[path.relative_to(root).as_posix() for path in cwt_files(root)],
+				["a-b.cwt", "a.cwt", "a/b.cwt", "B.cwt", "c.cwt"],
 			)
 
 	def test_empty_schema_and_non_checkout_fail(self) -> None:

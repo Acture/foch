@@ -30,7 +30,7 @@ none substitutes for product merge evidence.
   schemas are useful evidence, but they do not by themselves prove runtime
   load or merge semantics.
 - The CWT schema decides output bytes (numeric canonicalization reads its
-  field types), so `src/packages/foch/build.rs` compiles `vendor/cwtools-eu4-config` into a rule
+  field types), so `src/packages/foch/build.rs` compiles `src/packages/foch/vendor/cwtools-eu4-config` into a rule
   pack the binary embeds, and its `cwt_schema_id` enters
   `analysis_rules_version`, the mod-snapshot cache key, `foch --version` and
   the merge-quality scorer identity. `FOCH_CWTOOLS_SCHEMA_DIR` is a
@@ -175,7 +175,7 @@ symlinks to `CLAUDE.md`.
 - `src/apps/vscode-foch` — VS Code extension
 - `src/tools/eu4-analysis` — PyGhidra analysis and builtin catalog generation
 - `src/tools/foch-dev` — internal Python package for repository contracts and diagnostics
-- `vendor/cwtools-eu4-config` — external build input, compiled into the binary
+- `src/packages/foch/vendor/cwtools-eu4-config` — external build input, compiled into the binary
 
 The root Cargo manifest only configures the workspace. The main library's
 `tests/`, `fuzz/` and `build.rs` live in `src/packages/foch/`. Keep fuzz as an
@@ -205,6 +205,9 @@ Rust library or the Workshop acceptance harness. See the tool README for command
 - `uv run --locked --project src/tools/foch-dev python -m unittest discover -s src/tools/foch-dev/tests` — maintenance unit tests
 - `uv run --locked --project src/tools/foch-dev ruff check src/tools/foch-dev` and `ruff format --check src/tools/foch-dev` — maintenance lint/format (run both through the same uv environment)
 - `uv run --locked --project src/tools/foch-dev ty check src/tools/foch-dev` — maintenance type check
+- `uv run --locked --project src/tools/foch-dev python -m foch_dev crate-smoke` — package the crates and install `foch` from them out of tree (release build)
+- `uv run --locked --project src/tools/foch-dev python -m foch_dev release preflight --tag vX.Y.Z` — read-only check that every distribution channel can take the tag
+- `cargo about generate --frozen -m src/apps/foch-cli/Cargo.toml -o THIRD-PARTY-LICENSES.txt src/apps/foch-cli/about.hbs` — regenerate the crate license notice after any `Cargo.lock` or crate version change (cargo-about 0.9.2; `dist.yml` fails on a stale file)
 
 - `cargo fmt --all --check` — verify Rust formatting
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — strict Rust linting
@@ -213,6 +216,11 @@ Rust library or the Workshop acceptance harness. See the tool README for command
 - `bun run --cwd src/packages/tree-sitter-paradox test` — test the grammar package
 - `bun run --cwd src/apps/vscode-foch smoke` — smoke-test the VS Code extension
 - `set EU4_ROOT "$HOME/Library/Application Support/Steam/steamapps/common/Europa Universalis IV"; target/debug/foch data build eu4 --from-game-path "$EU4_ROOT" --game-version auto --output-dir /tmp/foch-probe` — default macOS Steam probe command to hand off after analyzer changes
+
+Distribution (crates.io, PyPI, WinGet, Homebrew, GitHub releases) follows
+`docs/RELEASE_CHECKLIST.md`. Agents build and verify packages locally or in CI
+but never tag, publish, upload, yank or submit; those steps are the
+maintainer's.
 
 ## Coding Style & Naming Conventions
 
@@ -243,10 +251,10 @@ Use `direnv` in the repo root and keep Node on the supported line: `>=22 <25`. R
 Both build submodules must be checked out before anything builds, and `git worktree add` initializes none of the submodules:
 
 ```fish
-git submodule update --init src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
+git submodule update --init src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
 ```
 
-A missing `src/packages/tree-sitter-paradox` fails at manifest load. A missing or empty `vendor/cwtools-eu4-config` fails the main library's build script, which compiles it into the embedded CWT rule pack; there is no schema-less build.
+A missing `src/packages/tree-sitter-paradox` fails at manifest load. A missing or empty `src/packages/foch/vendor/cwtools-eu4-config` fails the main library's build script, which compiles it into the embedded CWT rule pack; there is no schema-less build.
 
 The private `notes/` submodule is separate and optional for builds. CI and public
 source packages initialize only the two build submodules listed above.

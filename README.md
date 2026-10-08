@@ -40,16 +40,43 @@ Linear owns active milestones, issues, and dependencies. The repository records
 the verified implementation state in [the current checkpoint](./docs/project-status.md)
 and the stable execution contract in [the architecture](docs/architecture.md).
 
+## Install
+
+> **Not available yet.** No channel below has published Foch. Each becomes
+> usable only once the first release has been installed and verified from it,
+> which [the project status](./docs/project-status.md#distribution) records.
+> Until then, build from source as described in the next section.
+
+Every channel installs the same `foch` program, including `foch lsp`, for
+Linux x64, macOS arm64 and Windows x64:
+
+| Channel | Command, once released |
+| --- | --- |
+| WinGet (Windows x64) | `winget install --id Acture.Foch -e` |
+| Homebrew (macOS arm64, Linux x64) | `brew install <tap>/foch`, from the Foch tap named in the release notes |
+| crates.io | `cargo install foch-cli --locked` |
+| PyPI through uv | `uvx foch <command>` to run it once, or `uv tool install foch` |
+
+All of them report one identity: `foch --version` prints `foch-cli <version>`
+and the `cwt-schema` id of the rules embedded at that release.
+
+The crates.io `foch 0.1.0` package is an older, superseded product, not this
+source line. If you installed it, remove it with `cargo uninstall foch` before
+installing `foch-cli`; both provide a `foch` executable.
+
+An installed program is not yet ready to merge. Its first run needs an EU4
+base-data snapshot built from your own game installation (`foch data build eu4
+... --install`, below), and merge quality is a separate acceptance gate, not a
+property of any install channel; see the [current boundary](#current-boundary).
+
 ## Build and try it
 
-There is no released binary matching this source line. The crates.io
-`foch 0.1.0` package is an older, superseded build; do not use `cargo install
-foch` for this repository.
+Building from source is the current way to run Foch:
 
 ```fish
 git clone https://github.com/Acture/foch.git
 cd foch
-git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
+git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
 cargo install --path src/apps/foch-cli
 ```
 
@@ -162,7 +189,8 @@ Run `foch <command> --help` for authoritative options.
 ## Repository layout
 
 - `src/packages/foch` — the main Rust library, with its own `src/`, `tests/`,
-  `fuzz/`, and `build.rs`
+  `fuzz/`, `build.rs`, and `vendor/` (the externally maintained CWT rules,
+  pinned as a build submodule)
 - `src/apps/foch-cli` — the `foch` executable, LSP, integration tests, and test-only
   merge-quality harness
 - `src/apps/foch-desktop` — the Tauri desktop product, linked directly to `foch`
@@ -170,19 +198,22 @@ Run `foch <command> --help` for authoritative options.
 - `src/apps/vscode-foch` — independently versioned VS Code extension
 - `src/tools/eu4-analysis` — maintainer tooling for extracting EU4 loading rules
 - `src/tools/foch-dev` — reusable repository checks and diagnostic workflows
-- `vendor/` — externally maintained CWT rules, pinned as a build submodule
 - `scripts/` — build, release, and repository maintenance workflows
 - `docs/` — current public usage, contributor guides, architecture, and status
 - `notes/research/` — private research, experimental interpretation, and design history
   in the [unified notes repository](https://github.com/Acture/obsidian-vault/tree/project/foch)
 
-The root Cargo manifest is a virtual workspace. Foch's Rust library is built
-from the complete workspace, including `vendor/`; release source archives carry
-both public submodules and exclude private notes. It is not published as a
-standalone crates.io package.
+The root Cargo manifest is a virtual workspace. The `foch` library package
+carries its CWT build input, so the packaged `foch` and `foch-cli` crates build
+without the rest of the checkout; `python -m foch_dev crate-smoke` packages them
+with the pinned grammar and installs `foch` from those crates outside the
+repository. `foch` and `foch-cli` are the crates.io packages a release
+publishes, against `tree-sitter-paradox` released from its own repository;
+neither is published yet. Release source archives carry both public submodules
+and exclude private notes.
 
 The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
-`tree-sitter-paradox` at `0.2.0`. Cache and report schema generations are
+`tree-sitter-paradox` at `0.3.0`. Cache and report schema generations are
 versioned independently.
 
 ## Development
@@ -196,7 +227,7 @@ bun run --cwd src/packages/tree-sitter-paradox test
 bun run --cwd src/apps/vscode-foch smoke
 ```
 
-EU4 CWT schemas are vendored at `vendor/cwtools-eu4-config`. The build
+EU4 CWT schemas are vendored at `src/packages/foch/vendor/cwtools-eu4-config`. The build
 compiles that directory into a rule pack embedded in the binary, so the
 submodule must be checked out to build at all; `foch --version` names the
 embedded pack's `cwt-schema` identity. Refreshing that submodule and its
@@ -286,8 +317,9 @@ uv run --locked --project src/tools/foch-dev python -m foch_dev check
 uv run --locked --project src/tools/foch-dev python -m foch_dev schema-hash
 ```
 
-Its `smoke` and `compare` subcommands run diagnostic checks and compare summaries.
-Use `--help` for their inputs. These diagnostics are separate from `cargo acceptance`.
+Its `smoke` and `compare` subcommands run diagnostic checks and compare summaries;
+`crate-smoke`, `dist`, `winget` and `release preflight` build and verify the
+release channels. Use `--help` for their inputs. These diagnostics are separate from `cargo acceptance`.
 Root `scripts/` holds hooks and release wrappers; the desktop app owns its
 Windows installer smoke script. Ordinary Foch users do not need these Python tools.
 
@@ -379,4 +411,11 @@ and content remain available in each repository's Git history.
 
 ## License
 
-AGPL-3.0-only. See [LICENSE](./LICENSE).
+Foch's own code is AGPL-3.0-only ([LICENSE](./LICENSE)). The `foch` library,
+and every distributed `foch` program, also contains an adaptation of Mergiraf
+(GPL-3.0-only, [LICENSE-MERGIRAF.txt](./LICENSE-MERGIRAF.txt)) and embeds a rule
+pack compiled from the CWTools EU4 config (MIT), so both are distributed as
+`AGPL-3.0-only AND GPL-3.0-only AND MIT`; the `foch-cli` crate's own source is
+AGPL-3.0-only. Each program also statically links Rust crates under their own
+licenses, given in [THIRD-PARTY-LICENSES.txt](./THIRD-PARTY-LICENSES.txt). See
+[NOTICE.md](./NOTICE.md).

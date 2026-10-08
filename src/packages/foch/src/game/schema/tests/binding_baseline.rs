@@ -461,7 +461,7 @@ fn fixture_file(path: &str) -> PathBuf {
 
 /// The build embeds this directory, so it is present whenever the crate compiles.
 fn vendor_schema_dir() -> PathBuf {
-	PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../vendor/cwtools-eu4-config")
+	PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")
 }
 
 fn cwt_files(root: &Path) -> Vec<PathBuf> {

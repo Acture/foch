@@ -1,8 +1,9 @@
 # Project Status
 
 Last verified: 2026-10-04, source layout `f73eab9` and documentation follow-up
-`2fc9387`. This page records the current product state; it is not a development
-log. Active work, dependencies and blockers live in the Linear Foch project.
+`2fc9387`; the Distribution section states its own checks. This page records
+the current product state; it is not a development log. Active work,
+dependencies and blockers live in the Linear Foch project.
 
 ## Product state
 
@@ -52,6 +53,58 @@ cargo acceptance
 Acceptance re-parses and semantically scores generated output. It does not
 launch EU4 or establish in-game playability. Follow the
 [acceptance contract](merge-quality-dataset.md) before interpreting results.
+
+## Distribution
+
+No channel has published a Foch release. The supported binary targets are
+`linux-x64` (glibc 2.17), `darwin-arm64` (macOS 11) and `win32-x64`. Every
+channel must install a `foch` whose `--version` prints `foch-cli <version>` and
+the `cwt-schema` id embedded at the release tag. Installation results are not
+merge-quality results; a release also needs a completed `cargo acceptance`
+(see Product acceptance).
+
+Implemented: maturin bin wheels for PyPI project `foch`, release archives made
+from them, the publishable `foch` and `foch-cli` crates, WinGet manifests for
+`Acture.Foch`, the `dist.yml`, `release.yml` and `verify-install.yml`
+workflows, and `THIRD-PARTY-LICENSES.txt`, the license texts of every crate
+linked into `foch`, which the wheels and archives carry.
+
+Checked on darwin-arm64 on 2026-10-08, on the OSS-343 change set over
+`4ad1a98` (tree-sitter-paradox gitlink `0e8eab4`): the foch-dev gates and
+`foch_dev check`, Rust formatting, strict Clippy and the workspace test build;
+`crate-smoke` packaged `foch`, `foch-cli` and `tree-sitter-paradox` 0.3.0 and
+installed `foch` from them outside the checkout; a 0.0.1 wheel built with
+maturin 1.15.0 passed `twine check --strict`, `dist archive` wrote
+byte-identical archives twice, and `dist smoke` installed it offline through
+`uvx`, `uv tool install`, `upgrade` (no newer version, so no upgrade path) and
+`uninstall`, matching the archive's executable. Each install reported
+`foch-cli 0.0.1` and
+`cwt-schema 5d636ca3ec1497a27308b712b2601fef9cb8993a14d777824486c6930a7070f3 (embedded)`.
+`release preflight --tag v0.0.1` fails on exactly two blockers: crates.io has
+no `tree-sitter-paradox` 0.3.0, and `foch` 0.1.0 is not yanked.
+
+Never run: any Linux or Windows build, the WinGet smoke script (only parsed;
+`winget validate` has not run), and every new or changed workflow, including
+the third-party license check. WinGet manifests have been checked only in unit
+tests against the vendored 1.12.0 schemas.
+
+The Homebrew tap already offers an unverified `--HEAD` source build of
+`master`. It fails from the merge of this source layout until its formula
+lists the moved `src/packages/foch/vendor/cwtools-eu4-config` submodule.
+
+Pending maintainer actions, in the [release runbook](RELEASE_CHECKLIST.md):
+
+- push and publish `tree-sitter-paradox` 0.3.0 (`release/0.3.0`); until then
+  CI and source builds cannot check out the gitlink;
+- update the tap's HEAD formula submodule path when merging this layout
+  (OSS-302), and add its token and sync path;
+- yank `foch` 0.1.0;
+- create the `crates-io` and `pypi` environments and publish variables, and
+  register the PyPI pending publisher;
+- the first, token-based crates.io publish of `foch-cli`, and the WinGet
+  community pull request.
+
+Channel results from `verify-install.yml`: none yet.
 
 ## Development verification
 

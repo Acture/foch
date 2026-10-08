@@ -1,0 +1,368 @@
+# Build and verify every binary distribution of one commit.
+#
+# maturin builds one `foch` bin wheel per supported target; its executable is
+# the release archive's (`foch_dev dist archive`), which the GitHub release and
+# WinGet publish. Each target installs its wheel through uvx and uv tool and
+# checks the archive; the crate job installs `foch` from the packaged crates
+# outside the checkout; WinGet installs, upgrades and uninstalls the Windows
+# archive from local manifests. Every install must print exactly the
+# `foch --version` the metadata job derives from this checkout, so they all
+# report one identity. The third-party-licenses job keeps the license texts the
+# archives and wheels carry in step with Cargo.lock.
+#
+# release.yml calls this workflow with the tag's commit and version. Pull
+# requests and pushes that touch a packaging input run it on their own commit.
+name: dist
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to build, such as the release tag's SHA"
+        required: true
+        type: string
+      version:
+        description: "Version every build must report: the release tag without v"
+        required: true
+        type: string
+    outputs:
+      cwt-schema-id:
+        description: "Embedded CWT schema id every build reported"
+        value: ${{ jobs.metadata.outputs.cwt-schema-id }}
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - pyproject.toml
+      - rust-toolchain.toml
+      - .gitmodules
+      - LICENSE
+      - LICENSE-MERGIRAF.txt
+      - NOTICE.md
+      - THIRD-PARTY-LICENSES.txt
+      - src/packages/**
+      - src/apps/foch-cli/**
+      - src/tools/foch-dev/**
+      - .github/workflows/dist.yml
+      - .github/workflows/release.yml
+  push:
+    branches: [master]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - pyproject.toml
+      - rust-toolchain.toml
+      - .gitmodules
+      - LICENSE
+      - LICENSE-MERGIRAF.txt
+      - NOTICE.md
+      - THIRD-PARTY-LICENSES.txt
+      - src/packages/**
+      - src/apps/foch-cli/**
+      - src/tools/foch-dev/**
+      - .github/workflows/dist.yml
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve the expected identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      cwt-schema-id: ${{ steps.identity.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialize the CWT submodule
+        run: git submodule update --init src/packages/foch/vendor/cwtools-eu4-config
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Read the workspace version and CWT schema id
+        id: identity
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          foch_dev=(uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev)
+          # With a version, `version --tag` fails unless the workspace has it.
+          metadata="$("${foch_dev[@]}" version ${EXPECTED_VERSION:+--tag "v$EXPECTED_VERSION"})"
+          schema_id="$("${foch_dev[@]}" schema-hash)"
+          printf '%s\ncwt-schema-id=%s\n' "$metadata" "$schema_id" | tee -a "$GITHUB_OUTPUT"
+
+  cli:
+    name: Wheel and archive (${{ matrix.target }})
+    needs: metadata
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+            rust-target: x86_64-unknown-linux-gnu
+            # quay.io/pypa/manylinux2014_x86_64: glibc 2.17.
+            manylinux: "2014"
+            rustflags: ""
+          - target: darwin-arm64
+            runner: macos-15
+            rust-target: aarch64-apple-darwin
+            manylinux: ""
+            rustflags: ""
+          - target: win32-x64
+            runner: windows-2025
+            rust-target: x86_64-pc-windows-msvc
+            manylinux: ""
+            # No VCRUNTIME140.dll dependency for WinGet's portable install.
+            rustflags: "-C target-feature=+crt-static"
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      FOCH_VERSION: ${{ needs.metadata.outputs.version }}
+      CWT_SCHEMA_ID: ${{ needs.metadata.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialize public build submodules
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Read build inputs
+        id: pins
+        run: |
+          set -euo pipefail
+          # Every archive entry, and wheels built outside a container, get the commit time.
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          # An explicit version: maturin-action would otherwise resolve the pin
+          # itself and fall back to the latest maturin, with only a warning, when
+          # its manifest lacks the pinned version.
+          echo "maturin=$(uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev dist maturin-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Build the wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        with:
+          maturin-version: ${{ steps.pins.outputs.maturin }}
+          command: build
+          target: ${{ matrix.rust-target }}
+          manylinux: ${{ matrix.manylinux }}
+          # maturin reads the root pyproject.toml.
+          args: --out wheels
+
+      - name: Package the release archive
+        run: |
+          set -euo pipefail
+          wheels=(wheels/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "expected one wheel, found: ${wheels[*]}" >&2
+            exit 1
+          fi
+          uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev dist archive \
+            --wheel "${wheels[0]}" --target "$TARGET" --out release
+
+      - name: Require the static MSVC runtime
+        if: matrix.target == 'win32-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive -Path "release/foch-$env:FOCH_VERSION-win32-x64.zip" -DestinationPath crt-check
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Sort-Object FullName | Select-Object -Last 1
+          $dependents = & $dumpbin.FullName /nologo /dependents crt-check\foch.exe
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
+          $dependents
+          if ($dependents | Select-String -Pattern '^\s*(VCRUNTIME|MSVCP)\S*\.dll\s*$') {
+            throw 'foch.exe imports the dynamic MSVC runtime'
+          }
+
+      - name: Install through uvx and uv tool and check the archive
+        run: |
+          set -euo pipefail
+          uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev dist smoke \
+            --wheel wheels/*.whl --archive release/foch-* \
+            --expect-version "$FOCH_VERSION" --expect-cwt-schema-id "$CWT_SCHEMA_ID"
+
+      - name: Upload the wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.target }}
+          path: wheels/*.whl
+          if-no-files-found: error
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error
+
+  crate:
+    name: Crates installed out of tree
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      FOCH_VERSION: ${{ needs.metadata.outputs.version }}
+      CWT_SCHEMA_ID: ${{ needs.metadata.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialize public build submodules
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.95.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      # Packages the committed crates (no --allow-dirty), unpacks them outside
+      # the checkout and runs `cargo install --locked` from them alone.
+      - name: Package the crates and install foch from them
+        run: uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev crate-smoke --work-dir "$RUNNER_TEMP/crate-smoke"
+
+      # crate-smoke derives its expectation from the checkout; this holds the
+      # installed crate to the metadata job's, which every other job uses.
+      - name: Check the installed foch against the expected identity
+        run: |
+          uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev dist check-binary \
+            "$RUNNER_TEMP/crate-smoke/root/bin/foch" \
+            --expect-version "$FOCH_VERSION" --expect-cwt-schema-id "$CWT_SCHEMA_ID"
+
+  winget-smoke:
+    name: WinGet smoke (win32-x64)
+    needs: [metadata, cli]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      FOCH_VERSION: ${{ needs.metadata.outputs.version }}
+      CWT_SCHEMA_ID: ${{ needs.metadata.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Download the Windows archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-win32-x64
+          path: dist
+
+      - name: Install, upgrade and uninstall through WinGet
+        shell: pwsh
+        run: |
+          $fochDev = 'uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev'
+          ./src/apps/foch-cli/scripts/smoke_winget.ps1 -Mode local `
+            -ZipPath "dist/foch-$env:FOCH_VERSION-win32-x64.zip" `
+            -Version $env:FOCH_VERSION -ExpectedCwtSchemaId $env:CWT_SCHEMA_ID -FochDev $fochDev
+
+      - name: Upload WinGet logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: winget-smoke-logs
+          path: ${{ runner.temp }}/foch-winget-smoke/logs
+          if-no-files-found: ignore
+
+  third-party-licenses:
+    name: Third-party licenses match Cargo.lock
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_ABOUT_VERSION: 0.9.2
+      CARGO_ABOUT_SHA256: 9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialize public build submodules
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.95.0
+
+      - name: Install cargo-about
+        run: |
+          set -euo pipefail
+          name="cargo-about-$CARGO_ABOUT_VERSION-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/$CARGO_ABOUT_VERSION/$name.tar.gz"
+          echo "$CARGO_ABOUT_SHA256  $RUNNER_TEMP/$name.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+
+      # --frozen reads only packaged license files, so the output depends on
+      # Cargo.lock alone; `cargo fetch` caches every target's crates first.
+      - name: Require THIRD-PARTY-LICENSES.txt to match its regeneration
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          cargo about generate --frozen -m src/apps/foch-cli/Cargo.toml \
+            -o "$RUNNER_TEMP/THIRD-PARTY-LICENSES.txt" src/apps/foch-cli/about.hbs
+          if ! cmp THIRD-PARTY-LICENSES.txt "$RUNNER_TEMP/THIRD-PARTY-LICENSES.txt"; then
+            diff -u THIRD-PARTY-LICENSES.txt "$RUNNER_TEMP/THIRD-PARTY-LICENSES.txt" | head -n 200 >&2 || true
+            echo "THIRD-PARTY-LICENSES.txt is stale; regenerate it as src/apps/foch-cli/about.toml describes" >&2
+            exit 1
+          fi

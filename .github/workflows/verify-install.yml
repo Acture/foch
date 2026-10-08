@@ -1,0 +1,326 @@
+# Post-publication acceptance: install a released tag from each public channel
+# on a clean runner, the way a user would, and check that the installed `foch`
+# reports the tag's version and the CWT schema id embedded at that tag.
+#
+# Run it by hand after a channel has published the release. Each channel is
+# its own job, so the run records each result separately. Installing proves
+# the channel delivers the release; it says nothing about merge quality,
+# which `cargo acceptance` measures.
+name: verify-install
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag, such as v0.0.1"
+        required: true
+        type: string
+      channels:
+        description: "Channels to verify, comma-separated: cargo, uv, winget, homebrew"
+        required: true
+        default: "cargo,uv,winget,homebrew"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve the expected identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      pep440: ${{ steps.resolve.outputs.pep440 }}
+      cwt-schema-id: ${{ steps.resolve.outputs.cwt-schema-id }}
+      cargo: ${{ steps.resolve.outputs.cargo }}
+      uv: ${{ steps.resolve.outputs.uv }}
+      winget: ${{ steps.resolve.outputs.winget }}
+      homebrew: ${{ steps.resolve.outputs.homebrew }}
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialize the CWT submodule
+        run: git submodule update --init src/packages/foch/vendor/cwtools-eu4-config
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Resolve the tag and channels
+        id: resolve
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          CHANNELS: ${{ inputs.channels }}
+        run: |
+          set -euo pipefail
+          foch_dev=(uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev)
+          metadata="$("${foch_dev[@]}" version --tag "$TAG")"
+          schema_id="$("${foch_dev[@]}" schema-hash)"
+          declare -A requested=([cargo]=false [uv]=false [winget]=false [homebrew]=false)
+          IFS=', ' read -r -a names <<< "$CHANNELS"
+          for name in "${names[@]}"; do
+            [ -n "$name" ] || continue
+            if [ -z "${requested[$name]+known}" ]; then
+              echo "unknown channel '$name'; expected cargo, uv, winget or homebrew" >&2
+              exit 1
+            fi
+            requested[$name]=true
+          done
+          {
+            echo "$metadata"
+            echo "cwt-schema-id=$schema_id"
+            for name in cargo uv winget homebrew; do
+              echo "$name=${requested[$name]}"
+            done
+          } | tee -a "$GITHUB_OUTPUT"
+
+  cargo:
+    name: cargo install (${{ matrix.target }})
+    needs: resolve
+    if: needs.resolve.outputs.cargo == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: linux-x64, runner: ubuntu-24.04}
+          - {target: darwin-arm64, runner: macos-15}
+          - {target: win32-x64, runner: windows-2025}
+    defaults:
+      run:
+        shell: bash
+    env:
+      FOCH_VERSION: ${{ needs.resolve.outputs.version }}
+      CWT_SCHEMA_ID: ${{ needs.resolve.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.95.0
+
+      # Outside the checkout, with an empty CARGO_HOME: only crates.io is used.
+      - name: Install foch-cli from crates.io
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home"
+          cargo install foch-cli --locked --version "=$FOCH_VERSION" --root "$RUNNER_TEMP/cargo-root"
+
+      - name: Check the installed foch
+        run: |
+          set -euo pipefail
+          suffix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
+          uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev dist check-binary \
+            "$RUNNER_TEMP/cargo-root/bin/foch$suffix" \
+            --expect-version "$FOCH_VERSION" --expect-cwt-schema-id "$CWT_SCHEMA_ID"
+
+      - name: Uninstall
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home"
+          cargo uninstall foch-cli --root "$RUNNER_TEMP/cargo-root"
+          # Relative: Git Bash on Windows would read RUNNER_TEMP's backslashes
+          # as glob escapes, and the pattern would match nothing.
+          if compgen -G 'cargo-root/bin/foch*' >/dev/null; then
+            echo "cargo uninstall left foch in $RUNNER_TEMP/cargo-root/bin" >&2
+            exit 1
+          fi
+
+  uv:
+    name: uvx and uv tool (${{ matrix.target }})
+    needs: resolve
+    if: needs.resolve.outputs.uv == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: linux-x64, runner: ubuntu-24.04}
+          - {target: darwin-arm64, runner: macos-15}
+          - {target: win32-x64, runner: windows-2025}
+    defaults:
+      run:
+        shell: bash
+    env:
+      FOCH_VERSION: ${{ needs.resolve.outputs.version }}
+      PEP440_VERSION: ${{ needs.resolve.outputs.pep440 }}
+      CWT_SCHEMA_ID: ${{ needs.resolve.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      # uvx --from, uv tool install, upgrade and uninstall from PyPI, each checked.
+      - name: Install from PyPI through uvx and uv tool
+        run: |
+          set -euo pipefail
+          uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev dist smoke \
+            --index-requirement "foch==$PEP440_VERSION" \
+            --expect-version "$FOCH_VERSION" --expect-cwt-schema-id "$CWT_SCHEMA_ID"
+
+      - name: Run uvx foch@<version> --version
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          uvx "foch@$PEP440_VERSION" --version > uvx-version.txt
+          printf 'foch-cli %s\ncwt-schema %s (embedded)\n' "$FOCH_VERSION" "$CWT_SCHEMA_ID" | cmp - uvx-version.txt
+
+  winget:
+    name: winget install (win32-x64)
+    needs: resolve
+    if: needs.resolve.outputs.winget == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      FOCH_VERSION: ${{ needs.resolve.outputs.version }}
+      CWT_SCHEMA_ID: ${{ needs.resolve.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Install from the winget source and uninstall
+        shell: pwsh
+        run: |
+          $fochDev = 'uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev'
+          ./src/apps/foch-cli/scripts/smoke_winget.ps1 -Mode source `
+            -Version $env:FOCH_VERSION -ExpectedCwtSchemaId $env:CWT_SCHEMA_ID -FochDev $fochDev
+
+      - name: Upload WinGet logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: winget-verify-logs
+          path: ${{ runner.temp }}/foch-winget-smoke/logs
+          if-no-files-found: ignore
+
+  homebrew:
+    name: brew install (${{ matrix.target }})
+    needs: resolve
+    if: needs.resolve.outputs.homebrew == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: linux-x64, runner: ubuntu-24.04}
+          - {target: darwin-arm64, runner: macos-15}
+    defaults:
+      run:
+        shell: bash
+    env:
+      FOCH_VERSION: ${{ needs.resolve.outputs.version }}
+      CWT_SCHEMA_ID: ${{ needs.resolve.outputs.cwt-schema-id }}
+      HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Put Homebrew on PATH
+        run: |
+          set -euo pipefail
+          if [ -z "$HOMEBREW_TAP_REPO" ]; then
+            echo "the HOMEBREW_TAP_REPO repository variable names no tap" >&2
+            exit 1
+          fi
+          # The Linux image installs Homebrew without adding it to PATH.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+          fi
+
+      - name: Install foch from the tap
+        run: |
+          set -euo pipefail
+          owner="${HOMEBREW_TAP_REPO%%/*}"
+          repository="${HOMEBREW_TAP_REPO#*/}"
+          tap="$owner/${repository#homebrew-}"
+          echo "TAP=$tap" >> "$GITHUB_ENV"
+          brew tap "$tap" "https://github.com/$HOMEBREW_TAP_REPO"
+          brew install "$tap/foch"
+          brew test "$tap/foch"
+
+      - name: Check the installed foch
+        run: |
+          set -euo pipefail
+          uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev dist check-binary \
+            "$(brew --prefix)/bin/foch" \
+            --expect-version "$FOCH_VERSION" --expect-cwt-schema-id "$CWT_SCHEMA_ID"
+
+      - name: Uninstall
+        run: |
+          set -euo pipefail
+          brew uninstall "$TAP/foch"
+          if [ -e "$(brew --prefix)/bin/foch" ]; then
+            echo "brew uninstall left $(brew --prefix)/bin/foch" >&2
+            exit 1
+          fi
+          brew untap "$TAP"

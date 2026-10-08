@@ -5,7 +5,12 @@ import re
 import subprocess
 import tomllib
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
+
+from .dist import DISTRIBUTION
+from .schema import SCHEMA_DIR
+from .winget import LICENSE_EXPRESSION
+from .winget import REPOSITORY_URL as WINGET_REPOSITORY_URL
 
 CargoTarget = TypedDict(
 	"CargoTarget",
@@ -22,11 +27,16 @@ class CargoDependency(TypedDict):
 	kind: str | None
 	name: str
 	target: str | None
+	req: str
+	path: NotRequired[str]
 
 
 class CargoPackage(TypedDict):
 	name: str
+	version: str
+	publish: list[str] | None
 	manifest_path: str
+	repository: str | None
 	targets: list[CargoTarget]
 	dependencies: list[CargoDependency]
 
@@ -43,6 +53,19 @@ EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 	("foch-cli", "parse_stats", ("dev-tools",)),
 	("foch-cli", "symbol_dump", ("dev-tools",)),
 )
+PUBLISHABLE_PACKAGES: frozenset[str] = frozenset({"foch", "foch-cli"})
+# Workspace members released from their own repository, resolved from the
+# registry by published crates like any third-party dependency.
+EXTERNALLY_RELEASED_PACKAGES: frozenset[str] = frozenset({"tree-sitter-paradox"})
+# Dependency kinds a registry build of a published crate resolves.
+CLOSURE_DEPENDENCY_KINDS: frozenset[str | None] = frozenset({None, "build"})
+SCHEMA_PACKAGE: str = "foch"
+BUILD_SCHEMA_DIR: re.Pattern[str] = re.compile(
+	r'\bconst\s+SCHEMA_DIR\s*:\s*&\s*str\s*=\s*"([^"]+)"\s*;'
+)
+FOCH_DEV_PYPROJECT: Path = Path("src/tools/foch-dev/pyproject.toml")
+LIBRARY_MANIFEST: Path = Path("src/packages/foch/Cargo.toml")
+REQUIRES_PYTHON_FLOOR: re.Pattern[str] = re.compile(r">=\s*([0-9]+\.[0-9]+)")
 REQUIRED_DESKTOP_RUNTIME_CRATES: frozenset[str] = frozenset({"foch", "tauri"})
 ALLOWED_DESKTOP_TAURI_PLUGIN_CRATES: frozenset[str] = frozenset()
 ALLOWED_DESKTOP_PROCESS_HELPER_CRATES: frozenset[str] = frozenset()
@@ -507,7 +530,163 @@ def verify_desktop_contract(repo_root: Path, packages: list[CargoPackage]) -> No
 	verify_desktop_sources(desktop_root)
 
 
-def verify_repository(repo_root: Path) -> None:
+def is_publishable(package: CargoPackage) -> bool:
+	return package["publish"] != []
+
+
+def publishable_closure_problems(packages: list[CargoPackage]) -> list[str]:
+	"""Why the published crates would not build from registry artifacts alone.
+
+	Each path dependency a registry build resolves must pin exactly the version
+	of its path package, so the published closure is the one built here, and no
+	published crate may depend on a package that is never published.
+	"""
+	publishable = sorted(
+		package["name"]
+		for package in packages
+		if is_publishable(package)
+		and package["name"] not in EXTERNALLY_RELEASED_PACKAGES
+	)
+	if frozenset(publishable) != PUBLISHABLE_PACKAGES:
+		return [
+			"publishable workspace packages must be exactly "
+			f"{sorted(PUBLISHABLE_PACKAGES)}; found {publishable}"
+		]
+	by_directory: dict[Path, CargoPackage] = {
+		Path(package["manifest_path"]).parent.resolve(): package for package in packages
+	}
+	violations: list[str] = []
+	for package in packages:
+		if package["name"] not in PUBLISHABLE_PACKAGES:
+			continue
+		for dependency in package["dependencies"]:
+			path = dependency.get("path")
+			if path is None:
+				continue
+			edge = f"{package['name']} -> {dependency_description(dependency)}"
+			target = by_directory.get(Path(path).resolve())
+			if target is None:
+				violations.append(f"{edge}: {path} is not a workspace package")
+			elif not is_publishable(target):
+				violations.append(f"{edge}: {target['name']} is never published")
+			elif (
+				dependency["kind"] in CLOSURE_DEPENDENCY_KINDS
+				and dependency["req"] != f"={target['version']}"
+			):
+				violations.append(
+					f"{edge}: requires {dependency['req']!r}, "
+					f"expected '={target['version']}'"
+				)
+	return violations
+
+
+def verify_publishable_closure(packages: list[CargoPackage]) -> None:
+	problems: list[str] = publishable_closure_problems(packages)
+	if problems:
+		raise ValueError(
+			"publishable crates must resolve from registry artifacts:\n"
+			+ "\n".join(problems)
+		)
+
+
+def verify_schema_in_package(repo_root: Path, packages: list[CargoPackage]) -> None:
+	"""The CWT input `build.rs` compiles must ship inside the `foch` crate."""
+	package = next(
+		(package for package in packages if package["name"] == SCHEMA_PACKAGE),
+		None,
+	)
+	if package is None:
+		raise ValueError(f"{SCHEMA_PACKAGE} Cargo package is missing")
+	package_root = Path(package["manifest_path"]).parent.resolve()
+	build_script = package_root / "build.rs"
+	source = mask_source(
+		build_script.read_text(encoding="utf-8"), "rust", mask_literals=False
+	)
+	match = BUILD_SCHEMA_DIR.search(source)
+	if match is None:
+		raise ValueError(f"{build_script} must name its CWT input as SCHEMA_DIR")
+	schema_dir = (package_root / match.group(1)).resolve()
+	if not schema_dir.is_relative_to(package_root):
+		raise ValueError(
+			f"{build_script} compiles {schema_dir}, outside the {SCHEMA_PACKAGE} "
+			f"package {package_root}; its crate would not carry the schema"
+		)
+	expected = (repo_root / SCHEMA_DIR).resolve()
+	if schema_dir != expected:
+		raise ValueError(
+			f"{build_script} compiles {schema_dir}, but foch_dev hashes {expected}"
+		)
+	if not schema_dir.is_dir():
+		raise ValueError(f"CWT schema directory is missing: {schema_dir}")
+
+
+def toml_value(path: Path, *keys: str) -> object:
+	"""The value at `keys` in a TOML file, or None if a table is missing."""
+	value: object = tomllib.loads(path.read_text(encoding="utf-8"))
+	for key in keys:
+		if not isinstance(value, dict):
+			return None
+		value = cast(dict[str, object], value).get(key)
+	return value
+
+
+def distribution_problems(repo_root: Path) -> list[str]:
+	"""Release identities that several files spell, and where they disagree.
+
+	The PyPI project, the WinGet manifests and the `foch` crate describe one
+	binary, so they share its name, repository and license expression. The
+	root pyproject also sets the Python version ty checks foch-dev at, which
+	must stay foch-dev's own floor.
+	"""
+	root: Path = repo_root / "pyproject.toml"
+	cargo: Path = repo_root / "Cargo.toml"
+	library: Path = repo_root / LIBRARY_MANIFEST
+	tools: Path = repo_root / FOCH_DEV_PYPROJECT
+	floor_spec: object = toml_value(tools, "project", "requires-python")
+	floor: re.Match[str] | None = (
+		REQUIRES_PYTHON_FLOOR.fullmatch(floor_spec)
+		if isinstance(floor_spec, str)
+		else None
+	)
+	expected: tuple[tuple[str, object, object], ...] = (
+		(f"{root} [project] name", toml_value(root, "project", "name"), DISTRIBUTION),
+		(
+			f"{cargo} [workspace.package] repository",
+			toml_value(cargo, "workspace", "package", "repository"),
+			WINGET_REPOSITORY_URL,
+		),
+		(
+			f"{root} [project] license",
+			toml_value(root, "project", "license"),
+			LICENSE_EXPRESSION,
+		),
+		(
+			f"{library} [package] license",
+			toml_value(library, "package", "license"),
+			LICENSE_EXPRESSION,
+		),
+		(
+			f"{root} [tool.ty.environment] python-version",
+			toml_value(root, "tool", "ty", "environment", "python-version"),
+			None if floor is None else floor.group(1),
+		),
+	)
+	return [
+		f"{where} is {actual!r}, expected {wanted!r}"
+		for where, actual, wanted in expected
+		if wanted is None or actual != wanted
+	]
+
+
+def verify_distribution_metadata(repo_root: Path) -> None:
+	problems: list[str] = distribution_problems(repo_root)
+	if problems:
+		raise ValueError(
+			"distribution metadata disagrees across channels:\n" + "\n".join(problems)
+		)
+
+
+def cargo_metadata(repo_root: Path) -> CargoMetadata:
 	result = subprocess.run(
 		[
 			"cargo",
@@ -521,9 +700,17 @@ def verify_repository(repo_root: Path) -> None:
 		check=True,
 		capture_output=True,
 		text=True,
+		encoding="utf-8",
 	)
-	metadata = cast(CargoMetadata, json.loads(result.stdout))
+	return cast(CargoMetadata, json.loads(result.stdout))
+
+
+def verify_repository(repo_root: Path) -> None:
+	metadata = cargo_metadata(repo_root)
 	verify_desktop_contract(repo_root, metadata["packages"])
+	verify_publishable_closure(metadata["packages"])
+	verify_schema_in_package(repo_root, metadata["packages"])
+	verify_distribution_metadata(repo_root)
 	actual = tuple(
 		sorted(
 			(package["name"], target["name"])

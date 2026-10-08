@@ -36,9 +36,9 @@ use std::path::PathBuf;
 use query::CompiledRulePack;
 use source::SchemaPack;
 
-const SCHEMA_DIR: &str = "../../../vendor/cwtools-eu4-config";
-const SUBMODULE_HINT: &str =
-	"git submodule update --init src/packages/tree-sitter-paradox vendor/cwtools-eu4-config";
+/// Relative to the package root, so a packaged crate carries its own schema.
+const SCHEMA_DIR: &str = "vendor/cwtools-eu4-config";
+const SUBMODULE_HINT: &str = "git submodule update --init src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config";
 
 fn main() {
 	// The compiler modules need no entry: rustc records them as this script's
