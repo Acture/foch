@@ -66,7 +66,7 @@ ManifestType: "installer"
 ManifestVersion: "1.12.0"
 """,
 	"Acture.Foch.locale.en-US.yaml": """\
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultlocale.1.12.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: "Acture.Foch"
 PackageVersion: "0.0.1"
@@ -265,13 +265,15 @@ class CheckTests(WingetTestCase):
 		with self.assertRaisesRegex(ValueError, "'2026-13-40' is not a 'date'"):
 			check_manifests(directory, release=False)
 
-	def test_header_must_be_the_schema_id(self) -> None:
+	def test_header_must_spell_the_manifest_type(self) -> None:
+		# The schema $id is lower-case, but winget validate parses the type from
+		# the header case-sensitively and rejects "defaultlocale".
 		directory: Path = self.render()
 		self.edit(
 			directory,
 			"Acture.Foch.locale.en-US.yaml",
-			"winget-manifest.defaultlocale.",
 			"winget-manifest.defaultLocale.",
+			"winget-manifest.defaultlocale.",
 		)
 		with self.assertRaisesRegex(ValueError, "first line must be"):
 			check_manifests(directory, release=False)

@@ -14,7 +14,7 @@ microsoft/winget-cli at `WINGET_CLI_COMMIT` under its MIT license
 (`schemas/winget/LICENSE`). Their SHA-256 is asserted on every load.
 Validation uses JSON Schema Draft 7 with format checking, and then checks what
 the schemas cannot express: one identity across the three files, the per-file
-`ManifestType`, the `$schema` header equal to the schema `$id`, the
+`ManifestType`, the `$schema` header spelling it and naming the schema `$id`, the
 winget-pkgs directory layout, and the archive name in the installer URL.
 `--release` also requires a releasable version and the canonical release URL.
 
@@ -216,8 +216,20 @@ def load_schema(manifest_type: str) -> dict[str, object]:
 	return schema_from_bytes(resource.read_bytes(), SCHEMA_SHA256[manifest_type], name)
 
 
-def schema_header(schema: Mapping[str, object]) -> str:
-	return f"# yaml-language-server: $schema={schema['$id']}"
+def schema_header(manifest_type: str, schema: Mapping[str, object]) -> str:
+	"""The `$schema` comment WinGet requires on a manifest's first line.
+
+	WinGet reads the manifest type from this URL case-sensitively, so it must
+	spell `ManifestType` (`defaultLocale`), while it matches the whole URL to
+	the schema `$id` case-insensitively; the 1.12.0 defaultLocale `$id` is
+	lower-case, so copying it fails `winget validate`.
+	"""
+	url: str = (
+		f"https://aka.ms/winget-manifest.{manifest_type}.{MANIFEST_VERSION}.schema.json"
+	)
+	if url.lower() != str(schema["$id"]).lower():
+		raise ValueError(f"{url} does not name the schema {schema['$id']}")
+	return f"# yaml-language-server: $schema={url}"
 
 
 def version_manifest(release: Release) -> dict[str, object]:
@@ -329,7 +341,8 @@ def yaml_sequence(items: list[object], indent: str) -> list[str]:
 
 
 def manifest_text(document: Mapping[str, object], schema: Mapping[str, object]) -> str:
-	return "\n".join([schema_header(schema), "", *yaml_mapping(document, "")]) + "\n"
+	header: str = schema_header(str(document["ManifestType"]), schema)
+	return "\n".join([header, "", *yaml_mapping(document, "")]) + "\n"
 
 
 def render_manifests(release: Release) -> dict[str, str]:
@@ -414,9 +427,10 @@ def load_manifests(directory: Path) -> dict[str, dict[str, object]]:
 			continue
 		schema: dict[str, object] = load_schema(manifest_type)
 		header: str = text.split("\n", 1)[0]
-		if header != schema_header(schema):
+		expected: str = schema_header(manifest_type, schema)
+		if header != expected:
 			problems.append(
-				f"{name}: first line must be {schema_header(schema)!r}, found {header!r}"
+				f"{name}: first line must be {expected!r}, found {header!r}"
 			)
 		problems.extend(f"{name}: {error}" for error in schema_errors(schema, manifest))
 		documents[manifest_type] = manifest
