@@ -10,7 +10,7 @@ on:
     secrets:
       HOMEBREW_TAP_TOKEN:
         description: "Token with write access to the Homebrew tap repository"
-        required: true
+        required: false
   workflow_dispatch:
     inputs:
       tag:
@@ -32,6 +32,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Require tap credential
+        shell: bash
+        env:
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+          TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        run: |
+          if [ "$TAP_TOKEN_SET" != "true" ]; then
+            echo "HOMEBREW_TAP_TOKEN must be a repository secret with write access to $TAP_REPO" >&2
+            exit 1
+          fi
+
       - name: Checkout current repository
         uses: actions/checkout@v6
         with:
@@ -84,25 +95,19 @@ jobs:
 
       - name: Render formula
         shell: bash
-        run: |
-          mkdir -p tap/Formula
-          ./scripts/render_homebrew_formula.sh \
-            "${{ steps.meta.outputs.repo }}" \
-            "${{ steps.meta.outputs.version }}" \
-            "${{ steps.meta.outputs.url }}" \
-            "${{ steps.archive.outputs.sha256 }}" \
-            > tap/Formula/foch.rb
+        env:
+          REPO: ${{ steps.meta.outputs.repo }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          URL: ${{ steps.meta.outputs.url }}
+          SHA256: ${{ steps.archive.outputs.sha256 }}
+        run: ./scripts/render_homebrew_formula.sh "$REPO" "$VERSION" "$URL" "$SHA256" > "$RUNNER_TEMP/foch.rb"
 
       - name: Commit and push formula update
         shell: bash
-        working-directory: tap
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/foch.rb
-          if git diff --cached --quiet; then
-            echo "Formula already up to date"
-            exit 0
-          fi
-          git commit -m "foch ${{ steps.meta.outputs.version }}"
-          git push
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./scripts/commit_homebrew_formula.sh tap "$RUNNER_TEMP/foch.rb" "$VERSION"
+          git -C tap push
