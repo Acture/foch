@@ -80,8 +80,8 @@ byte-identical archives twice, and `dist smoke` installed it offline through
 `uninstall`, matching the archive's executable. Each install reported
 `foch-cli 0.0.1` and
 `cwt-schema 5d636ca3ec1497a27308b712b2601fef9cb8993a14d777824486c6930a7070f3 (embedded)`.
-`release preflight --tag v0.0.1` fails on exactly two blockers: crates.io has
-no `tree-sitter-paradox` 0.3.0, and `foch` 0.1.0 is not yanked.
+`release preflight --tag v0.0.1` fails on one blocker, after the 2026-10-08
+yank of `foch` 0.1.0: crates.io has no `tree-sitter-paradox` 0.3.0.
 
 GitHub CI on [PR #74](https://github.com/Acture/foch/pull/74) at `f765523`
 ran `dist.yml` on hosted runners: wheels and archives for `linux-x64`
@@ -101,11 +101,12 @@ lists the moved `src/packages/foch/vendor/cwtools-eu4-config` submodule.
 
 Pending maintainer actions, in the [release runbook](RELEASE_CHECKLIST.md):
 
-- publish `tree-sitter-paradox` 0.3.0 from its pushed `release/0.3.0` branch;
-  until then `foch` cannot be published to crates.io;
+- publish `tree-sitter-paradox` 0.3.0 by merging
+  [Acture/tree-sitter-paradox#12](https://github.com/Acture/tree-sitter-paradox/pull/12)
+  after configuring its publishers; until then `foch` cannot be published to
+  crates.io;
 - update the tap's HEAD formula submodule path when merging this layout
   (OSS-302), and add its token and sync path;
-- yank `foch` 0.1.0;
 - create the `crates-io` and `pypi` environments and publish variables, and
   register the PyPI pending publisher;
 - the first, token-based crates.io publish of `foch-cli`, and the WinGet

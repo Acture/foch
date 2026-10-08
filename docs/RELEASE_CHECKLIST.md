@@ -28,30 +28,26 @@ carry no EU4 base data; users build it from their own game installation.
 
 ## One-time setup
 
-1. ☐ Release `tree-sitter-paradox` 0.3.0 from its own repository, at the commit
-   the `src/packages/tree-sitter-paradox` gitlink records: the head of the
-   `release/0.3.0` branch (`c0e946a` version bump, `0e8eab4` anchored include
-   patterns). The branch is pushed to
-   `Acture/tree-sitter-paradox`, which keeps the gitlink fetchable; it is not
-   on that repository's `master` and is not published.
+1. ☐ Release `tree-sitter-paradox` 0.3.0 from its own repository through
+   [Acture/tree-sitter-paradox#12](https://github.com/Acture/tree-sitter-paradox/pull/12)
+   (`release/0.3.0`: the CWT grammar, the 0.3.0 version bump, anchored crate
+   include patterns, and dispatch of its publishing workflows). The crate
+   contents equal those of `0e8eab4`, the commit Foch's gitlink records.
    - Configure the publishers its `package.yml` uses first: the crates.io
-     trusted publisher (workflow `package.yml`, environment `release`), the
-     PyPI trusted publisher for project `tree-sitter-paradox` (workflow
-     `package.yml`, environment `pypi`) and its npm token. Its repository has
-     the `crates`, `npm` and `pypi` environments; create `release`, optionally
-     with you as required reviewer.
-   - Push the branch, fast-forward its `master` to it and push the tag in one
-     atomic push:
-     `git -C src/packages/tree-sitter-paradox tag -a v0.3.0 -m v0.3.0`, then
-     `git -C src/packages/tree-sitter-paradox push --atomic origin release/0.3.0:master v0.3.0`.
-     Its `version-tag.yml` then finds the tag and skips. A tag that
-     `version-tag.yml` pushes with `GITHUB_TOKEN` starts no workflow, so
-     `package.yml` would never run; in that case publish the crate yourself
-     with `cargo publish` from a clean checkout of `v0.3.0`.
+     trusted publisher for `tree-sitter-paradox` (workflow `package.yml`,
+     environment `release`), the PyPI trusted publisher for project
+     `tree-sitter-paradox` (workflow `package.yml`, environment `pypi`) and its
+     `NPM_TOKEN` secret.
+   - Merge the pull request. `version-tag.yml` then tags `v0.3.0` and
+     dispatches `package.yml` and `release.yml` on that tag, because a tag it
+     pushes with `GITHUB_TOKEN` starts no `push` workflow.
    - Confirm crates.io lists it:
      `curl -fsS https://index.crates.io/tr/ee/tree-sitter-paradox | tail -n 1`.
-   - Keep Foch's gitlink on that published commit. The preflight compares the
-     crates.io `.crate` with `cargo package` of the checkout byte for byte.
+   - Move Foch's gitlink to the released commit
+     (`git -C src/packages/tree-sitter-paradox fetch --tags origin` and
+     `git -C src/packages/tree-sitter-paradox checkout v0.3.0`) and commit it.
+     The preflight compares the crates.io `.crate` with `cargo package` of the
+     checkout byte for byte.
 2. ☐ Merge this source layout to `master` only together with the Homebrew
    tap's HEAD formula. `Acture/homebrew-ac` `packaging/homebrew/Formula/foch.rb`
    lists `public_submodules: %w[src/packages/tree-sitter-paradox vendor/cwtools-eu4-config]`
@@ -61,9 +57,8 @@ carry no EU4 base data; users build it from their own game installation.
    change it to
    `%w[src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config]`
    (OSS-302 owns the tap).
-3. ☐ Yank the superseded product: `cargo yank --version 0.1.0 foch`, with a
-   crates.io API token that has the yank scope for `foch` (or after
-   `cargo login`). Until then `cargo install foch` can install it, and the
+3. ☑ Yank the superseded product: `cargo yank --version 0.1.0 foch` (done on
+   2026-10-08). While it is unyanked, `cargo install foch` installs it and the
    preflight refuses to publish.
 4. ☐ In the GitHub repository settings, create the environments `crates-io` and
    `pypi`, each with you as required reviewer: that approval is the
