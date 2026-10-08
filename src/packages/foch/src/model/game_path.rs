@@ -408,14 +408,21 @@ impl fmt::Debug for GamePathBuf {
 /// case-insensitive filesystem (default NTFS and APFS) holds only one of
 /// them, so writing both lets one replace the other, and because a family or
 /// vanilla ancestor matched by exact spelling misses the other spelling.
-/// Case is folded with Unicode lowercase mapping.
+/// Case is folded per character by uppercasing then lowercasing, so letters
+/// with several lowercase forms (`Σ`, `σ`, `ς`) share one key.
 pub fn case_only_path_groups<'a>(
 	paths: impl IntoIterator<Item = &'a GamePath>,
 ) -> Vec<Vec<&'a GamePath>> {
 	let mut by_folded = std::collections::BTreeMap::<String, Vec<&'a GamePath>>::new();
 	for path in paths {
 		by_folded
-			.entry(path.as_str().to_lowercase())
+			.entry(
+				path.as_str()
+					.chars()
+					.flat_map(char::to_uppercase)
+					.flat_map(char::to_lowercase)
+					.collect(),
+			)
 			.or_default()
 			.push(path);
 	}
@@ -542,6 +549,8 @@ mod tests {
 			"events/Ä.txt",
 			"events/ä.txt",
 			"events/a.txt",
+			"events/AΣ1.txt",
+			"events/aσ1.txt",
 		]
 		.map(|text| GamePath::new(text).expect("valid"));
 		let groups = case_only_path_groups(paths)
@@ -552,6 +561,7 @@ mod tests {
 			groups,
 			[
 				vec!["Common/ideas/x.txt", "common/ideas/x.txt"],
+				vec!["events/AΣ1.txt", "events/aσ1.txt"],
 				vec!["events/Ä.txt", "events/ä.txt"],
 			]
 		);
