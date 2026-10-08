@@ -23,18 +23,15 @@ on:
   push:
     tags:
       - "v*"
+  # Re-release an existing tag by dispatching on that tag:
+  # gh workflow run release.yml --ref vX.Y.Z
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to package and release"
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -46,7 +43,6 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
       pep440: ${{ steps.meta.outputs.pep440 }}
-      sha: ${{ steps.meta.outputs.sha }}
       release-date: ${{ steps.meta.outputs.release-date }}
       source-date-epoch: ${{ steps.meta.outputs.source-date-epoch }}
     steps:
@@ -80,31 +76,30 @@ jobs:
         id: meta
         shell: bash
         env:
-          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="$REQUESTED_TAG"
-          if ! git show-ref --verify --quiet "refs/tags/$tag"; then
-            echo "release tag does not exist: $tag" >&2
+          # Every job builds github.sha, so the run must be on the tag itself.
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "run release.yml on a tag ref (gh workflow run release.yml --ref vX.Y.Z), not $REF_TYPE $REQUESTED_TAG" >&2
             exit 1
           fi
+          tag="$REQUESTED_TAG"
           sha="$(git rev-list -n 1 "refs/tags/$tag")"
-          if [ "$EVENT_NAME" = "push" ] && [ "$sha" != "$GITHUB_SHA" ]; then
-            echo "tag $tag resolves to $sha, expected pushed SHA $GITHUB_SHA" >&2
+          if [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "tag $tag resolves to $sha, but this run checked out $GITHUB_SHA" >&2
             exit 1
           fi
 
           # The tag's own rules: vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N naming the
           # workspace version, never build metadata; also its PyPI spelling.
-          git checkout --quiet --detach "$sha"
           metadata="$(uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev version --tag "$tag")"
           # The commit time dates the release reproducibly on every re-run.
           epoch="$(git log -1 --format=%ct "$sha")"
           release_date="$(date -u -d "@$epoch" +%F)"
           {
             echo "$metadata"
-            echo "sha=$sha"
             echo "release-date=$release_date"
             echo "source-date-epoch=$epoch"
           } | tee -a "$GITHUB_OUTPUT"
@@ -118,7 +113,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
           persist-credentials: false
 
@@ -150,7 +144,6 @@ jobs:
     needs: [release-metadata, preflight]
     uses: ./.github/workflows/dist.yml
     with:
-      ref: ${{ needs.release-metadata.outputs.sha }}
       version: ${{ needs.release-metadata.outputs.version }}
 
   package-vsix:
@@ -175,7 +168,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
           persist-credentials: false
 
@@ -188,9 +180,6 @@ jobs:
         with:
           toolchain: 1.95.0
 
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -201,15 +190,6 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-
-      - name: Cache Bun
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
@@ -234,7 +214,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
           persist-credentials: false
 
@@ -275,7 +254,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
           persist-credentials: false
 
@@ -407,7 +385,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
           persist-credentials: false
 
@@ -487,7 +464,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
           persist-credentials: false
 

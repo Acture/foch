@@ -10,17 +10,14 @@
 # report one identity. The third-party-licenses job keeps the license texts the
 # archives and wheels carry in step with Cargo.lock.
 #
-# release.yml calls this workflow with the tag's commit and version. Pull
+# release.yml calls this workflow from the tag's own run, so github.sha is the
+# tagged commit, and passes its version. Pull
 # requests and pushes that touch a packaging input run it on their own commit.
 name: dist
 
 on:
   workflow_call:
     inputs:
-      ref:
-        description: "Commit to build, such as the release tag's SHA"
-        required: true
-        type: string
       version:
         description: "Version every build must report: the release tag without v"
         required: true
@@ -79,7 +76,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
 
@@ -144,7 +140,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
 
@@ -241,7 +236,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
 
@@ -286,7 +280,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
 
@@ -331,7 +324,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
           submodules: false
           persist-credentials: false
 

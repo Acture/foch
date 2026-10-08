@@ -53,7 +53,7 @@ Linux x64, macOS arm64 and Windows x64:
 | Channel | Command, once released |
 | --- | --- |
 | WinGet (Windows x64) | `winget install --id Acture.Foch -e` |
-| Homebrew (macOS arm64, Linux x64) | `brew install <tap>/foch`, from the Foch tap named in the release notes |
+| Homebrew (macOS arm64, Linux x64) | `brew install acture/ac/foch` |
 | crates.io | `cargo install foch-cli --locked` |
 | PyPI through uv | `uvx foch <command>` to run it once, or `uv tool install foch` |
 
