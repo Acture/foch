@@ -1,0 +1,72 @@
+{
+  "case": "ci-inline-comments-20261002",
+  "game_version": "EU4 1.37.5",
+  "input_sha256": "89869a330ddfbcce6735d1cc8f58b2e21bdea91db710a66a7a053c906cadc23a",
+  "baseline_sha256": "3c68126904edf9591404200d0fb57f7bdb9b54219bf58fba6c70e2943f3190ea",
+  "only_change": "Appended full-line comment test; no preprocessing before EU4 loads it",
+  "comment_block": "# @test modifier_expires = {\n#     time = 1444.11.11\n#     tag = SWE\n#     fire_event = foch_probe.1\n#     advance_days = 2\n#     expect = { has_country_modifier = foch_probe_short_modifier }\n#     advance_days = 8\n#     expect = { NOT = { has_country_modifier = foch_probe_short_modifier } }\n# }",
+  "start_time": "2026-10-01T16:52:21+00:00",
+  "end_time": "2026-10-01T16:53:36+00:00",
+  "error_log_bytes": 0,
+  "judge": {
+    "status": "pass",
+    "exit_code": 0,
+    "started": true,
+    "completed": true,
+    "passed": [
+      "modifier_applied",
+      "event_immediate",
+      "delayed_event_state",
+      "modifier_present_day_2",
+      "delayed_event_completed",
+      "modifier_expired"
+    ],
+    "failed": [],
+    "missing": [],
+    "records": [
+      [
+        "1444.11.11",
+        "BEGIN",
+        null
+      ],
+      [
+        "1444.11.11",
+        "PASS",
+        "modifier_applied"
+      ],
+      [
+        "1444.11.11",
+        "PASS",
+        "event_immediate"
+      ],
+      [
+        "1444.11.13",
+        "PASS",
+        "delayed_event_state"
+      ],
+      [
+        "1444.11.13",
+        "PASS",
+        "modifier_present_day_2"
+      ],
+      [
+        "1444.11.21",
+        "PASS",
+        "delayed_event_completed"
+      ],
+      [
+        "1444.11.21",
+        "PASS",
+        "modifier_expired"
+      ],
+      [
+        "1444.11.21",
+        "END",
+        null
+      ]
+    ],
+    "evaluated_at_utc": "2026-10-01T16:53:21Z",
+    "termination": "controller-requested"
+  },
+  "scope": "Direct game loading compatibility only; Foch test extraction and execution are not implemented"
+}

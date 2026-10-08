@@ -1,0 +1,7 @@
+log = "FOCH_CI_BEGIN"
+country_event = { id = foch_probe.1 }
+if = {
+	limit = { has_country_flag = foch_probe_fired }
+	log = "FOCH_CI_PASS event_immediate"
+	else = { log = "FOCH_CI_FAIL event_immediate" }
+}

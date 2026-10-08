@@ -1,0 +1,164 @@
+{
+  "date": "2026-10-01",
+  "environment": "Local WSL2, isolated Ubuntu 24.04.5, Wine 9, Xvfb, llvmpipe; no Steam client, no GPU device; not a hosted CI run",
+  "game_exe_sha256": "9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a",
+  "fixtures_sha256": {
+    "commands.txt": "3f32f1e11ef49d0bf07acb81058f90426b15c4c2e3b46a1c1064c362c0ef32a4",
+    "mechanics-start.txt": "098d7d5814d609fde81322717c9af545cedf0fc83bb97abb1255c8a975f1be72",
+    "events\\foch_probe.txt": "3c68126904edf9591404200d0fb57f7bdb9b54219bf58fba6c70e2943f3190ea",
+    "common\\event_modifiers\\foch_probe.txt": "37a052db8511fd8ba69cf4ebe3e29cdc3773c3fc313136f69d25f73672c74934",
+    "judge.py": "068c3aa66e619609702da18718d622ac857c94b7af89cbd88246a75205cf8dc1"
+  },
+  "cases": {
+    "ci-positive": {
+      "result": {
+        "status": "pass",
+        "exit_code": 0,
+        "started": true,
+        "completed": true,
+        "passed": [
+          "always_yes",
+          "tag_SWE",
+          "year_1445"
+        ],
+        "failed": [],
+        "missing": [],
+        "records": [
+          [
+            "1444.11.11",
+            "BEGIN",
+            null
+          ],
+          [
+            "1444.11.11",
+            "PASS",
+            "always_yes"
+          ],
+          [
+            "1444.11.11",
+            "PASS",
+            "tag_SWE"
+          ],
+          [
+            "1445.01.01",
+            "PASS",
+            "year_1445"
+          ],
+          [
+            "1445.01.01",
+            "END",
+            null
+          ]
+        ],
+        "evaluated_at_utc": "2026-10-01T13:29:13Z",
+        "termination": "controller-requested"
+      },
+      "start_utc": "2026-10-01T13:27:36+00:00",
+      "cleanup_completed_utc": "2026-10-01T13:29:22+00:00",
+      "engine_error_bytes": 0,
+      "game_log_sha256": "a07d307f53865c48a57b95999f1b1941a88b7fb8dbf3a95ba3106a4b5cc5aeba"
+    },
+    "ci-negative-4cpu": {
+      "result": {
+        "status": "fail",
+        "exit_code": 1,
+        "started": true,
+        "completed": true,
+        "passed": [],
+        "failed": [
+          "always_no"
+        ],
+        "missing": [],
+        "records": [
+          [
+            "1444.11.11",
+            "BEGIN",
+            null
+          ],
+          [
+            "1444.11.11",
+            "FAIL",
+            "always_no"
+          ],
+          [
+            "1444.11.11",
+            "END",
+            null
+          ]
+        ],
+        "evaluated_at_utc": "2026-10-01T13:31:33Z",
+        "termination": "controller-requested"
+      },
+      "start_utc": "2026-10-01T13:30:31+00:00",
+      "cleanup_completed_utc": "2026-10-01T13:31:47+00:00",
+      "engine_error_bytes": 0,
+      "game_log_sha256": "8936abe2249301701c5fa00eed66251b9aeed68ec2a3a079d432b6e7818f974f"
+    },
+    "ci-mechanics-final": {
+      "result": {
+        "status": "pass",
+        "exit_code": 0,
+        "started": true,
+        "completed": true,
+        "passed": [
+          "modifier_applied",
+          "event_immediate",
+          "delayed_event_state",
+          "modifier_present_day_2",
+          "delayed_event_completed",
+          "modifier_expired"
+        ],
+        "failed": [],
+        "missing": [],
+        "records": [
+          [
+            "1444.11.11",
+            "BEGIN",
+            null
+          ],
+          [
+            "1444.11.11",
+            "PASS",
+            "modifier_applied"
+          ],
+          [
+            "1444.11.11",
+            "PASS",
+            "event_immediate"
+          ],
+          [
+            "1444.11.13",
+            "PASS",
+            "delayed_event_state"
+          ],
+          [
+            "1444.11.13",
+            "PASS",
+            "modifier_present_day_2"
+          ],
+          [
+            "1444.11.21",
+            "PASS",
+            "delayed_event_completed"
+          ],
+          [
+            "1444.11.21",
+            "PASS",
+            "modifier_expired"
+          ],
+          [
+            "1444.11.21",
+            "END",
+            null
+          ]
+        ],
+        "evaluated_at_utc": "2026-10-01T13:44:43Z",
+        "termination": "controller-requested"
+      },
+      "start_utc": "2026-10-01T13:43:40+00:00",
+      "cleanup_completed_utc": "2026-10-01T13:44:56+00:00",
+      "engine_error_bytes": 0,
+      "game_log_sha256": "5e719230b90890214256c53eb2cce7c02aa308754f0563886b1fc3ef5d30ff4d"
+    }
+  }
+}

@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "recorded_date": "2026-10-02",
+  "timezone": "Asia/Shanghai",
+  "scope": "Uncommitted product event-testing framework; bounded real-game evidence, not merge acceptance or hosted CI acceptance.",
+  "repository_base": "4e8862e737f0669a57e46a4a53c8af46122e15d7",
+  "foch_binary_sha256": "4fe72a046210dd52918ada346f7a2d7842e19c837a943f3035ca9e932f652684",
+  "source_sha256": {
+    "apps/foch-cli/src/cli/arg.rs": "44719a8494e8f0db7fca220cfaf7e8de20f1fb00ab93e4ad376ba0c282785aed",
+    "apps/foch-cli/src/cli/handler/testing.rs": "c445ca66636dfc4fa802d02c0e477bb2d6a3895bdcc3eba2af9a7c5856d97641",
+    "apps/foch-cli/src/lsp.rs": "2e048762b258490026a36916fe4032a9d27b2664bc6b6a3411e8c000db5f9763",
+    "apps/foch-cli/src/main.rs": "22516388126524526e415cd70245155bbecf076dddd3b4c360518ab85ee9f77b",
+    "src/game/eu4/mod.rs": "5910c767972cef220bcb340d9385dead6675d54670711bd59e4a11d0e58ba714",
+    "src/game/eu4/testing/annotation.rs": "403ae71a6cf0effb2678f1d682a9b560aff68a7762509bf9656f823a73bad36f",
+    "src/game/eu4/testing/api.rs": "3ce2c91baa3cf05fc6f7755a0098ed3c5a4a98b61068938da795cc4c4c278a86",
+    "src/game/eu4/testing/compile.rs": "4e0aec24d9997a4f323027c5fd4fba2d15b7d12583130c82a2278096dda384df",
+    "src/game/eu4/testing/editor.rs": "af39948212d8f42d48feea02ea6f628d332db31146173c60888cff17a2ae05c8",
+    "src/game/eu4/testing/mod.rs": "f06f1cce8d923f03289a2ca2d7ab8186f60c6720d290cc77699e359bae2e19c7",
+    "src/game/eu4/testing/report.rs": "54156adddad5b280f578dee2fbba7bb266dd8645620ad7afae40c7c3e0934060",
+    "tests/fixtures/runtime-tests/events/annotated.txt": "214230169688b982a641d9a582be6d7cef6324b7c7710d00d08a1a153a0d74b5"
+  },
+  "engine": {
+    "version": "EU4 v1.37.5.0 Inca",
+    "sha256": "9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a",
+    "provenance": "Existing isolated runtime uses eu4.exe.backup from the local installation; not a fresh Steam download or integrity verification.",
+    "plugins": "Original version.dll, d3d9.dll and plugin directories excluded by the existing isolated runtime setup."
+  },
+  "environment": {
+    "host": "Windows / WSL archlinux",
+    "runtime": "Isolated Ubuntu 24.04.5 rootfs, Wine 9.0, Xvfb, Mesa llvmpipe",
+    "cpu_affinity": "0-3",
+    "wine_prefix_and_resource_cache_reused": true,
+    "case_profiles": "Fresh per case",
+    "display": "Virtual display; no user desktop or physical GPU; rendering still occurs.",
+    "steam": "No Steam client in isolated runtime; external helper acknowledges stock warning, no executable or Steam API patch.",
+    "enabled_mod_order": [
+      "repository-owned runtime-tests fixture",
+      "Foch-generated test_mod"
+    ],
+    "dlc_selection": "Existing staged runtime DLC set; dlc_load.json disabled_dlcs=[]; no cross-DLC equivalence claim."
+  },
+  "adapter_sha256": {
+    "product-runner.py": "9b967516a653fa1e8525152d72027ad4bfc71c9034f93043f92c424c701c8a37",
+    "product-runner-linux.py": "65cc11eecc6cc09a09fe0fa16b228dad27eeaa68b18958b51e05450d5b1e2950"
+  },
+  "command": "foch test tests/fixtures/runtime-tests --runner <Windows Python> --runner-arg <local product-runner.py> --out target/foch-runtime-validation-20261002-c --timeout 210 --format json",
+  "run_id": "59140_1790885588579833100",
+  "expected_cli_exit_code": 1,
+  "observed_cli_exit_code": 1,
+  "exit_explanation": "The intentional_failure case asserts always=no. Three positive cases pass, and this negative assertion fails without runtime errors.",
+  "result_json_sha256": "cad814649d6061cd821d9a63b7a6a8249c4381965f3618a69b443695326818c6",
+  "artifacts": "target/foch-runtime-validation-20261002-c (local ignored logs, bundles, result.json)",
+  "cases": [
+    {
+      "case": {
+        "advance_days": 0,
+        "effect": null,
+        "event_id": "foch_framework_example.1",
+        "expect": null,
+        "id": "events/annotated.txt::smoke",
+        "kind": "smoke",
+        "name": "smoke",
+        "source": "events/annotated.txt",
+        "span": {
+          "end": {
+            "column": 44,
+            "line": 3,
+            "offset": 79
+          },
+          "start": {
+            "column": 1,
+            "line": 3,
+            "offset": 36
+          }
+        },
+        "tag": "SWE",
+        "time": "1444.11.11"
+      },
+      "marker_prefix": "FOCH_TEST_V1 59140_1790885588579833100 318310ccfe37b61955d59393fa827bde6631c4c8d2c90289c0bbb3435c3906dc",
+      "required_start_date": "1444.11.11",
+      "expected_end_date": "1444.11.11",
+      "outcome": {
+        "failed": [],
+        "message": "all expected checks completed on the required engine dates",
+        "missing": [],
+        "passed": [
+          "scope",
+          "invoked"
+        ],
+        "status": "pass"
+      },
+      "process_exit_code": 0,
+      "runtime_error": null,
+      "engine_start_utc": "2026-10-01T20:13:22+00:00",
+      "engine_cleanup_utc": "2026-10-01T20:14:26+00:00",
+      "source_loaded_byte_identical": true,
+      "error_log_bytes": 0,
+      "game_log_sha256": "a68da4f148dfd5467995a9037afa2681da69b9784ae5640f921b78dadeaf7aa7",
+      "bundle_sha256": "c82d6652f51a677e1e2aedb4c9c5e2d1be13e335eff800424035afb00e4beaa5",
+      "generated_file_sha256": {
+        "commands.txt": "51da672da86d3535a1bf32120c63359f922e5ef46051cb30ea645c1743ca7505",
+        "foch_test_318310ccfe37b61955d59393_start.txt": "862d0cef92036169fcf018bdccfa4c3b9800bdb779e8446da5117da5650e737d",
+        "test_mod/descriptor.mod": "c5ff897bea9e9a0d23546a7e1137b6027e8110f17af8629a0fd8f744114b4bff",
+        "test_mod/events/foch_test_318310ccfe37b61955d59393.txt": "c451bb6b92562ab1a0ef8c01abfa5932302f24f7ce1106362d3dacd8034dcb1a"
+      },
+      "engine_records": [
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 318310ccfe37b61955d59393fa827bde6631c4c8d2c90289c0bbb3435c3906dc BEGIN",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 318310ccfe37b61955d59393fa827bde6631c4c8d2c90289c0bbb3435c3906dc PASS scope",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 318310ccfe37b61955d59393fa827bde6631c4c8d2c90289c0bbb3435c3906dc PASS invoked",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 318310ccfe37b61955d59393fa827bde6631c4c8d2c90289c0bbb3435c3906dc END"
+      ]
+    },
+    {
+      "case": {
+        "advance_days": 0,
+        "effect": null,
+        "event_id": "foch_framework_example.1",
+        "expect": "has_country_flag = foch_framework_called",
+        "id": "events/annotated.txt::flag_is_set",
+        "kind": "assertion",
+        "name": "flag_is_set",
+        "source": "events/annotated.txt",
+        "span": {
+          "end": {
+            "column": 103,
+            "line": 4,
+            "offset": 182
+          },
+          "start": {
+            "column": 1,
+            "line": 4,
+            "offset": 80
+          }
+        },
+        "tag": "SWE",
+        "time": "1444.11.11"
+      },
+      "marker_prefix": "FOCH_TEST_V1 59140_1790885588579833100 3e7cb25d5b64b2c1d67cee4d9fd2035c988ef7b5f8e793916aab48d42bb5362b",
+      "required_start_date": "1444.11.11",
+      "expected_end_date": "1444.11.11",
+      "outcome": {
+        "failed": [],
+        "message": "all expected checks completed on the required engine dates",
+        "missing": [],
+        "passed": [
+          "scope",
+          "invoked",
+          "expect"
+        ],
+        "status": "pass"
+      },
+      "process_exit_code": 0,
+      "runtime_error": null,
+      "engine_start_utc": "2026-10-01T20:14:37+00:00",
+      "engine_cleanup_utc": "2026-10-01T20:15:38+00:00",
+      "source_loaded_byte_identical": true,
+      "error_log_bytes": 0,
+      "game_log_sha256": "b000802e5ac1e3b51398e6fec06a49e01885202a943bcacadac8290f293fa21b",
+      "bundle_sha256": "69af762ea9e45eecb5d634b14865eda33b73a3775d6bcc4d65ff882cbab676f6",
+      "generated_file_sha256": {
+        "commands.txt": "d844d9a8d8930383ee797d7efff0a2527180708a89921ef35117dce9859c1a61",
+        "foch_test_3e7cb25d5b64b2c1d67cee4d_start.txt": "28ae5ec1dbace8632675dc9d7ffd81e58c5883b50d967345b1795aedfbfcc3b0",
+        "test_mod/descriptor.mod": "25dff11dcff90ffe0c0ba656b3f82d35f6687f247ea69852367cea4510043e85",
+        "test_mod/events/foch_test_3e7cb25d5b64b2c1d67cee4d.txt": "0349c4070d8cab06fc1566b1ac4f532616f1bdb7de2ae98e089a8f3149b0d9eb"
+      },
+      "engine_records": [
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 3e7cb25d5b64b2c1d67cee4d9fd2035c988ef7b5f8e793916aab48d42bb5362b BEGIN",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 3e7cb25d5b64b2c1d67cee4d9fd2035c988ef7b5f8e793916aab48d42bb5362b PASS scope",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 3e7cb25d5b64b2c1d67cee4d9fd2035c988ef7b5f8e793916aab48d42bb5362b PASS invoked",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 3e7cb25d5b64b2c1d67cee4d9fd2035c988ef7b5f8e793916aab48d42bb5362b PASS expect",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 3e7cb25d5b64b2c1d67cee4d9fd2035c988ef7b5f8e793916aab48d42bb5362b END"
+      ]
+    },
+    {
+      "case": {
+        "advance_days": 2,
+        "effect": null,
+        "event_id": "foch_framework_example.1",
+        "expect": "has_country_flag = foch_framework_called",
+        "id": "events/annotated.txt::delayed_flag",
+        "kind": "assertion",
+        "name": "delayed_flag",
+        "source": "events/annotated.txt",
+        "span": {
+          "end": {
+            "column": 120,
+            "line": 5,
+            "offset": 302
+          },
+          "start": {
+            "column": 1,
+            "line": 5,
+            "offset": 183
+          }
+        },
+        "tag": "SWE",
+        "time": "1444.11.11"
+      },
+      "marker_prefix": "FOCH_TEST_V1 59140_1790885588579833100 5ed98d436a5d59425b2be3807e1756ea86d767686e6e0640a9e49cbd0f873d54",
+      "required_start_date": "1444.11.11",
+      "expected_end_date": "1444.11.13",
+      "outcome": {
+        "failed": [],
+        "message": "all expected checks completed on the required engine dates",
+        "missing": [],
+        "passed": [
+          "scope",
+          "invoked",
+          "expect"
+        ],
+        "status": "pass"
+      },
+      "process_exit_code": 0,
+      "runtime_error": null,
+      "engine_start_utc": "2026-10-01T20:15:48+00:00",
+      "engine_cleanup_utc": "2026-10-01T20:16:49+00:00",
+      "source_loaded_byte_identical": true,
+      "error_log_bytes": 0,
+      "game_log_sha256": "5c1ff184a3074baa10b2dc243029a0e4a9a07bbf46e47a19dde02a0396db0b4a",
+      "bundle_sha256": "25e2087870784919013e28132e208322328bd66350538d9bec4e07255f5a866d",
+      "generated_file_sha256": {
+        "commands.txt": "05ec81f533e45f7aeba3c12c54a5cfb0c14657fa724ffbf12cb8cfbafd28000c",
+        "foch_test_5ed98d436a5d59425b2be380_start.txt": "030d36df9fb535a33193833242ad89af02e14f0ab7a98f21eae6fbfe79d38de8",
+        "test_mod/descriptor.mod": "f161a9a16c1a777ce72aad42cc110ba688fa0339592eacce5d8c87c87b7236d5",
+        "test_mod/events/foch_test_5ed98d436a5d59425b2be380.txt": "f4182652ef02f19cf45fcf0bc93bd7d41d657c6feb4e5dd57093f7803806874f"
+      },
+      "engine_records": [
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 5ed98d436a5d59425b2be3807e1756ea86d767686e6e0640a9e49cbd0f873d54 BEGIN",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 5ed98d436a5d59425b2be3807e1756ea86d767686e6e0640a9e49cbd0f873d54 PASS scope",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 5ed98d436a5d59425b2be3807e1756ea86d767686e6e0640a9e49cbd0f873d54 PASS invoked",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.13]:FOCH_TEST_V1 59140_1790885588579833100 5ed98d436a5d59425b2be3807e1756ea86d767686e6e0640a9e49cbd0f873d54 PASS expect",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.13]:FOCH_TEST_V1 59140_1790885588579833100 5ed98d436a5d59425b2be3807e1756ea86d767686e6e0640a9e49cbd0f873d54 END"
+      ]
+    },
+    {
+      "case": {
+        "advance_days": 0,
+        "effect": null,
+        "event_id": "foch_framework_example.1",
+        "expect": "always = no",
+        "id": "events/annotated.txt::intentional_failure",
+        "kind": "assertion",
+        "name": "intentional_failure",
+        "source": "events/annotated.txt",
+        "span": {
+          "end": {
+            "column": 82,
+            "line": 6,
+            "offset": 384
+          },
+          "start": {
+            "column": 1,
+            "line": 6,
+            "offset": 303
+          }
+        },
+        "tag": "SWE",
+        "time": "1444.11.11"
+      },
+      "marker_prefix": "FOCH_TEST_V1 59140_1790885588579833100 cd2731cb59eecacca70c94340ed122e7e926572a4f1fe7799421ebe1f837f22f",
+      "required_start_date": "1444.11.11",
+      "expected_end_date": "1444.11.11",
+      "outcome": {
+        "failed": [
+          "expect"
+        ],
+        "message": "failed checks: expect",
+        "missing": [],
+        "passed": [
+          "scope",
+          "invoked"
+        ],
+        "status": "fail"
+      },
+      "process_exit_code": 0,
+      "runtime_error": null,
+      "engine_start_utc": "2026-10-01T20:17:00+00:00",
+      "engine_cleanup_utc": "2026-10-01T20:17:59+00:00",
+      "source_loaded_byte_identical": true,
+      "error_log_bytes": 0,
+      "game_log_sha256": "cf8bc18dfb7634c618f5b1680163924a388fb2ec150c4998555199934b32c101",
+      "bundle_sha256": "9247ed4ab863b5b5544e45276f8ab956ec9d81724bd3f3f58c90d17c290f1584",
+      "generated_file_sha256": {
+        "commands.txt": "36a5b70797cb066915264e49f791194fc9a4fd0ac4c9bf978ab6725d13b68200",
+        "foch_test_cd2731cb59eecacca70c9434_start.txt": "acc0c6f58e5a6723c55c0bc6d1cb0177f8541d504ef2d06ba61e39f1a2e48e04",
+        "test_mod/descriptor.mod": "bfd7b6382c937f2dcad561b437f35328818dd5b8477b39f8bc8315c9c33dcc8c",
+        "test_mod/events/foch_test_cd2731cb59eecacca70c9434.txt": "82af119b8411fa06ca5ffb366c44ac2fbee6999b5216d43a503150b65a806710"
+      },
+      "engine_records": [
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 cd2731cb59eecacca70c94340ed122e7e926572a4f1fe7799421ebe1f837f22f BEGIN",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 cd2731cb59eecacca70c94340ed122e7e926572a4f1fe7799421ebe1f837f22f PASS scope",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 cd2731cb59eecacca70c94340ed122e7e926572a4f1fe7799421ebe1f837f22f PASS invoked",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 cd2731cb59eecacca70c94340ed122e7e926572a4f1fe7799421ebe1f837f22f FAIL expect",
+        "[effectimplementation.cpp:25375]: EVENT [1444.11.11]:FOCH_TEST_V1 59140_1790885588579833100 cd2731cb59eecacca70c94340ed122e7e926572a4f1fe7799421ebe1f837f22f END"
+      ]
+    }
+  ],
+  "preceding_runtime_regression": "Run b completed the expected markers but generated hidden events lacked title/desc/picture. Every case was correctly blocked by nonempty error.log. Generator and fixture were corrected; this run records empty error.log for all four cases.",
+  "limits": [
+    "No platform-hosted CI job or cold-start benchmark.",
+    "Only the genuine 1444.11.11 SWE opening tested.",
+    "No fuzz, automatic replay, or natural-trigger/interactive-option coverage.",
+    "Per-case sequential launches; no state-sharing optimization.",
+    "Adapter remains a local verification tool, not a distributed game runtime."
+  ]
+}

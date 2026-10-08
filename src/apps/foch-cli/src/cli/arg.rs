@@ -44,6 +44,7 @@ fn long_version() -> &'static str {
 
 #[derive(Subcommand, Debug)]
 pub enum FochCliCommands {
+	Test(TestArgs),
 	Check(CheckArgs),
 	Merge(MergeArgs),
 	Graph(GraphArgs),
@@ -53,6 +54,62 @@ pub enum FochCliCommands {
 	Config(ConfigArgs),
 	Input(InputArgs),
 	Lsp(LspArgs),
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Collect or run EU4 event tests from #test annotations",
+	after_help = foch_annotation::builtin::TEST_DESCRIPTION
+)]
+pub struct TestArgs {
+	/// Mod directory, its events directory, an event .txt file, or
+	/// FILE::EVENT[::NAME] to select inside a file.
+	#[arg(default_value = ".", value_name = "PATH")]
+	pub path: PathBuf,
+	#[arg(long, conflicts_with_all = ["out", "no_run"])]
+	pub collect_only: bool,
+	/// Generate the test layer and session bundles into --out without
+	/// launching the game, like `cargo test --no-run`.
+	#[arg(long)]
+	pub no_run: bool,
+	/// Keyword expression over node IDs, such as "reform and not slow".
+	#[arg(short = 'k', value_name = "EXPRESSION")]
+	pub filter: Option<String>,
+	/// Mark expression over #mark labels, such as "war and not slow".
+	#[arg(short = 'm', value_name = "EXPRESSION")]
+	pub marks: Option<String>,
+	/// Also run #ignore cases.
+	#[arg(long, conflicts_with = "ignored")]
+	pub include_ignored: bool,
+	/// Run only #ignore cases.
+	#[arg(long)]
+	pub ignored: bool,
+	/// Run every case in its own game session.
+	#[arg(long)]
+	pub isolate: bool,
+	/// Launch the game despite findings from Foch's own script model.
+	/// Malformed tests still block.
+	#[arg(long)]
+	pub run_anyway: bool,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
+	/// Describe annotations and parameters without a game installation.
+	#[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "NAME", conflicts_with_all = ["collect_only", "out", "filter"])]
+	pub api: Option<String>,
+	/// EU4 install to launch; defaults to the configured or Steam install.
+	#[arg(long, value_name = "PATH")]
+	pub game_path: Option<PathBuf>,
+	/// Real EU4 user directory to guard; defaults to
+	/// Documents/Paradox Interactive/Europa Universalis IV.
+	#[arg(long, value_name = "PATH")]
+	pub eu4_user_dir: Option<PathBuf>,
+	/// Maximum seconds per game launch.
+	#[arg(long, default_value = "300", value_parser = clap::value_parser!(u64).range(1..))]
+	pub timeout: u64,
+	/// Write bundles, logs, result.json and junit.xml here; must be new or
+	/// empty and outside the mod. Defaults to a new temporary directory.
+	#[arg(long, value_name = "PATH")]
+	pub out: Option<PathBuf>,
 }
 
 /// Run the foch language server on stdio. The subcommand intentionally
