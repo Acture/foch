@@ -88,7 +88,7 @@ class Target:
 	"""A supported platform: its wheel tags, executable and archive format.
 
 	`platform_tag` fixes the platform floor every wheel tag must name: glibc
-	2.17 (manylinux2014) and macOS 11.0, so a build that drifts to a newer floor
+	2.28 (manylinux_2_28) and macOS 11.0, so a build that drifts to a newer floor
 	fails here instead of narrowing the support matrix unnoticed.
 	"""
 
@@ -107,7 +107,7 @@ TARGETS: dict[str, Target] = {
 			"linux-x64",
 			"Linux",
 			frozenset({"x86_64", "amd64"}),
-			re.compile(r"manylinux_2_17_x86_64|manylinux2014_x86_64"),
+			re.compile(r"manylinux_2_28_x86_64"),
 			"foch",
 			".tar.gz",
 		),

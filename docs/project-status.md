@@ -57,7 +57,7 @@ launch EU4 or establish in-game playability. Follow the
 ## Distribution
 
 No channel has published a Foch release. The supported binary targets are
-`linux-x64` (glibc 2.17), `darwin-arm64` (macOS 11) and `win32-x64`. Every
+`linux-x64` (glibc 2.28), `darwin-arm64` (macOS 11) and `win32-x64`. Every
 channel must install a `foch` whose `--version` prints `foch-cli <version>` and
 the `cwt-schema` id embedded at the release tag. Installation results are not
 merge-quality results; a release also needs a completed `cargo acceptance`

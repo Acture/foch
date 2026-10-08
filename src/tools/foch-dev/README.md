@@ -85,7 +85,7 @@ uv run --locked --project src/tools/foch-dev python -m foch_dev dist check-binar
 `archive` writes `foch-<version>-<target>.tar.gz` (`.zip` for `win32-x64`) with
 the wheel's executable and license texts at its root; its bytes depend only on
 the wheel and `SOURCE_DATE_EPOCH`. The supported targets are `linux-x64`
-(manylinux2014), `darwin-arm64` (macOS 11) and `win32-x64`; a wheel tagged for
+(manylinux_2_28), `darwin-arm64` (macOS 11) and `win32-x64`; a wheel tagged for
 another platform floor is refused. `smoke` installs a local wheel offline, or
 `--index-requirement foch==<pep440>` from an index, through `uvx`, `uv tool
 install`, `upgrade` and `uninstall` in an isolated uv home, and requires the

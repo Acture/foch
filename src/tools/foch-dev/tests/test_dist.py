@@ -39,7 +39,7 @@ LICENSES: dict[str, bytes] = {
 	name: f"text of {name}\n".encode() for name in ARCHIVE_LICENSES
 }
 PLATFORMS: dict[str, str] = {
-	"linux-x64": "manylinux_2_17_x86_64.manylinux2014_x86_64",
+	"linux-x64": "manylinux_2_28_x86_64",
 	"darwin-arm64": "macosx_11_0_arm64",
 	"win32-x64": "win_amd64",
 }
@@ -176,9 +176,9 @@ class ArchiveTests(unittest.TestCase):
 		cases: list[tuple[str, Target]] = [
 			(PLATFORMS["linux-x64"], DARWIN),
 			("linux_x86_64", LINUX),
-			("manylinux_2_17_x86_64.manylinux_2_17_aarch64", LINUX),
+			("manylinux_2_28_x86_64.manylinux_2_28_aarch64", LINUX),
 			("manylinux_2_39_x86_64", LINUX),
-			("manylinux_2_28_x86_64.manylinux2014_x86_64", LINUX),
+			("manylinux_2_17_x86_64.manylinux2014_x86_64", LINUX),
 			("macosx_11_0_x86_64", DARWIN),
 			("macosx_14_0_arm64", DARWIN),
 			("win32", WINDOWS),
