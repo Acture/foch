@@ -6,6 +6,8 @@ pub mod localisation;
 pub mod parse_cache;
 pub mod parser;
 
+pub use self::emit::emit_native_statements;
+
 use self::localisation::collect_localisation_definitions_from_root;
 use self::parser::{
 	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content, read_failure,

@@ -1366,6 +1366,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-annotation"
+version = "0.0.1"
+dependencies = [
+ "foch",
+ "jomini",
+ "serde",
+]
+
+[[package]]
 name = "foch-cli"
 version = "0.0.1"
 dependencies = [
@@ -1375,6 +1384,10 @@ dependencies = [
  "crossterm",
  "dirs",
  "foch",
+ "foch-annotation",
+ "foch-lsp",
+ "foch-runner",
+ "foch-test",
  "keyvalues-parser",
  "libc",
  "ratatui",
@@ -1385,7 +1398,6 @@ dependencies = [
  "tempfile",
  "time",
  "tiny_http",
- "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tower-lsp",
  "tracing",
@@ -1403,6 +1415,42 @@ dependencies = [
  "tauri",
  "tauri-build",
  "uuid",
+]
+
+[[package]]
+name = "foch-lsp"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "foch",
+ "foch-annotation",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower-lsp",
+ "walkdir",
+]
+
+[[package]]
+name = "foch-runner"
+version = "0.0.1"
+dependencies = [
+ "foch",
+ "foch-test",
+ "tempfile",
+]
+
+[[package]]
+name = "foch-test"
+version = "0.0.1"
+dependencies = [
+ "foch",
+ "foch-annotation",
+ "jomini",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

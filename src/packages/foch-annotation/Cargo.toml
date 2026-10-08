@@ -1,0 +1,15 @@
+[package]
+name = "foch-annotation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Foch annotations carried in EU4 script comments: extraction, schemas, validation and editor support"
+# Internal workspace library; its Rust API carries no semver promise.
+publish = false
+
+[dependencies]
+foch.workspace = true
+jomini.workspace = true
+serde.workspace = true

@@ -49,6 +49,12 @@ pub(crate) fn emit_clausewitz_statements(
 	emit_clausewitz_statements_with_options(statements, &EmitOptions::default())
 }
 
+/// Emits native statements with the default indent for callers outside the
+/// merge pipeline, such as generated runtime tests.
+pub fn emit_native_statements(statements: &[AstStatement]) -> Result<String, String> {
+	emit_clausewitz_statements(statements).map_err(|error| error.to_string())
+}
+
 pub(crate) fn emit_clausewitz_statements_with_options(
 	statements: &[AstStatement],
 	options: &EmitOptions,
