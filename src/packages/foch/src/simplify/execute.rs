@@ -29,7 +29,15 @@ pub fn run_simplify_with_options(
 		.as_ref()
 		.ok_or_else(|| format!("target mod {} has no root path", options.target_mod_id))?;
 	let destination_root = options.out_dir.clone();
-	ensure_output_is_separate(source_root, &destination_root)?;
+	ensure_output_is_separate(&options.target_mod_id, source_root, &destination_root)?;
+	for item in &input.mods {
+		if item.mod_id == options.target_mod_id {
+			continue;
+		}
+		if let Some(root) = item.root_path.as_ref() {
+			ensure_output_is_separate(&item.mod_id, root, &destination_root)?;
+		}
+	}
 	copy_directory(source_root, &destination_root)?;
 
 	let mut removals_by_path = BTreeMap::<GamePathBuf, Vec<(usize, usize)>>::new();
@@ -132,13 +140,18 @@ fn apply_removals(
 	Ok(removed_file_count)
 }
 
-/// Refuses an output directory that is, contains, or lies inside the source
+/// Refuses an output directory that is, contains, or lies inside an input
 /// mod root. Copying replaces the output directory, so any overlap would
-/// rewrite or delete the read-only source mod.
-fn ensure_output_is_separate(source: &Path, destination: &Path) -> Result<(), String> {
+/// rewrite or delete a read-only source mod, whether it is the target or
+/// another mod of the playset.
+fn ensure_output_is_separate(
+	mod_id: &str,
+	source: &Path,
+	destination: &Path,
+) -> Result<(), String> {
 	let source = fs::canonicalize(source).map_err(|err| {
 		format!(
-			"failed to resolve target mod root {}: {err}",
+			"failed to resolve input mod {mod_id} root {}: {err}",
 			source.display()
 		)
 	})?;
@@ -150,7 +163,7 @@ fn ensure_output_is_separate(source: &Path, destination: &Path) -> Result<(), St
 	})?;
 	if destination.starts_with(&source) || source.starts_with(&destination) {
 		return Err(format!(
-			"simplify output {} overlaps the target mod root {}; source mods are read-only, choose a separate --out directory",
+			"simplify output {} overlaps the root of input mod {mod_id} at {}; source mods are read-only, choose a separate --out directory",
 			destination.display(),
 			source.display()
 		));

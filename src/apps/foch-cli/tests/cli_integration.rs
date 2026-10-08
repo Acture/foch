@@ -1509,7 +1509,7 @@ fn simplify_command_refuses_to_write_into_the_source_mod() {
 		);
 		assert_ne!(code, 0, "output {out_str} overlaps the source mod");
 		assert!(
-			stderr.contains("overlaps the target mod root"),
+			stderr.contains("overlaps the root of input mod 9031"),
 			"stderr: {stderr}"
 		);
 	}
@@ -1519,6 +1519,76 @@ fn simplify_command_refuses_to_write_into_the_source_mod() {
 "
 	);
 	assert!(!mod_a.join("simplify-report.json").exists());
+	assert!(!nested_out.exists());
+}
+
+#[test]
+fn simplify_command_refuses_an_output_inside_another_input_mod() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let game_root = tmp.path().join("eu4-game");
+	let mod_a = tmp.path().join("9031");
+	let mod_b = tmp.path().join("9032");
+	let other_file = mod_b
+		.join("common")
+		.join("scripted_effects")
+		.join("other.txt");
+
+	write_dlc_load(&playlist_path, &[("9031", "A"), ("9032", "B")]);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	write_game_version(&game_root, "12.2.0-test");
+	fs::create_dir_all(game_root.join("common").join("scripted_effects"))
+		.expect("create base effects dir");
+	fs::create_dir_all(mod_a.join("common").join("scripted_effects"))
+		.expect("create mod a effects dir");
+	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
+		.expect("create mod b effects dir");
+	fs::write(
+		mod_a
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"shared_effect = { log = a }
+",
+	)
+	.expect("write mod a effect");
+	fs::write(
+		&other_file,
+		"other_effect = { log = b }
+",
+	)
+	.expect("write mod b effect");
+	write_game_path_config(tmp.path(), &game_root);
+	build_base_data_install(tmp.path(), &game_root);
+
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let nested_out = mod_b.join("clean");
+	for out in [mod_b.as_path(), nested_out.as_path()] {
+		let out_str = path_text(out).to_owned();
+		let (code, _stdout, stderr) = run_foch(
+			&[
+				"simplify",
+				playlist_str.as_str(),
+				"--target",
+				"9031",
+				"--out",
+				out_str.as_str(),
+			],
+			tmp.path(),
+		);
+		assert_ne!(code, 0, "output {out_str} overlaps another input mod");
+		assert!(
+			stderr.contains("overlaps the root of input mod 9032"),
+			"stderr: {stderr}"
+		);
+	}
+	assert_eq!(
+		fs::read_to_string(&other_file).expect("other input mod is untouched"),
+		"other_effect = { log = b }
+"
+	);
+	assert!(!mod_b.join("simplify-report.json").exists());
 	assert!(!nested_out.exists());
 }
 
