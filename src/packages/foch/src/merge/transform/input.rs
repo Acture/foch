@@ -236,7 +236,7 @@ pub(crate) fn repair_text(source: &str, edits: &[SourceEdit]) -> Result<String, 
 	Ok(result)
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
 	format!("{:x}", Sha256::digest(bytes))
 }
 fn invalid(subject: MergeErrorSubject, message: impl Into<String>) -> MergeError {

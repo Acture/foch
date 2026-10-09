@@ -26,28 +26,33 @@ pub(crate) fn parse_localisation_file(
 	absolute_path: &Path,
 	relative_path: &GamePath,
 ) -> ParsedLocalisationFile {
-	let mut entries = Vec::new();
-	let mut duplicates = Vec::new();
-	let mut parse_issues = Vec::new();
-	let raw = match fs::read(absolute_path) {
-		Ok(raw) => raw,
-		Err(err) => {
-			parse_issues.push(ParseIssue {
+	match fs::read(absolute_path) {
+		Ok(raw) => parse_localisation_bytes(mod_id, relative_path, &raw),
+		Err(err) => ParsedLocalisationFile {
+			entries: Vec::new(),
+			duplicates: Vec::new(),
+			parse_issues: vec![ParseIssue {
 				mod_id: mod_id.to_string(),
 				path: relative_path.to_owned(),
 				line: 1,
 				column: 1,
 				message: format!("unable to read localisation file: {err}"),
-			});
-			return ParsedLocalisationFile {
-				entries,
-				duplicates,
-				parse_issues,
-			};
-		}
-	};
+			}],
+		},
+	}
+}
 
-	let normalized = match normalize_localisation_source(&raw) {
+/// Parse localisation bytes that may not exist on disk, such as a generated
+/// merge output.
+pub(crate) fn parse_localisation_bytes(
+	mod_id: &str,
+	relative_path: &GamePath,
+	raw: &[u8],
+) -> ParsedLocalisationFile {
+	let mut entries = Vec::new();
+	let mut duplicates = Vec::new();
+	let mut parse_issues = Vec::new();
+	let normalized = match normalize_localisation_source(raw) {
 		Ok(bytes) => bytes,
 		Err(message) => {
 			parse_issues.push(ParseIssue {
@@ -390,7 +395,10 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-	use super::{collect_localisation_definitions_from_root, parse_localisation_file};
+	use super::{
+		collect_localisation_definitions_from_root, parse_localisation_bytes,
+		parse_localisation_file,
+	};
 	use crate::model::GamePath;
 	use std::fs;
 	use std::path::Path;
@@ -624,5 +632,17 @@ mod tests {
 		assert_eq!(parsed.entries.len(), 1);
 		assert_eq!(parsed.entries[0].definition.key, "OPT2");
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+	}
+
+	#[test]
+	fn bytes_and_file_parsing_agree() {
+		let parsed = parse_localisation_bytes(
+			"mod",
+			GamePath::new("localisation/a_l_english.yml").expect("game path"),
+			"\u{feff}l_english:\n a_key:0 \"A\"\n".as_bytes(),
+		);
+		assert!(parsed.parse_issues.is_empty());
+		assert_eq!(parsed.entries[0].definition.key, "a_key");
+		assert_eq!(parsed.entries[0].definition.line, 2);
 	}
 }

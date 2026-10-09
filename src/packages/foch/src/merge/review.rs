@@ -400,6 +400,7 @@ fn strategy_name(strategy: MergePlanStrategy) -> &'static str {
 		MergePlanStrategy::StructuralMerge => "structural_merge",
 		MergePlanStrategy::LocalisationMerge => "localisation_merge",
 		MergePlanStrategy::ManualConflict => "manual_conflict",
+		MergePlanStrategy::Generated => "generated",
 	}
 }
 
