@@ -45,6 +45,19 @@ Foch no longer has a full merge-output/modset archive cache. Increasing
 Optimize the total-conversion path only if a current acceptance result
 reproduces the timeout.
 
+## Paths that differ only in letter case are reported, not unified
+
+Foch keeps game paths case-sensitive because EU4's own case behavior has not
+been verified. `Common/ideas/x.txt` and `common/ideas/x.txt` therefore stay
+separate inputs: the unexpected spelling misses its content family and vanilla
+ancestor, and committing both to a case-insensitive filesystem (default NTFS
+or APFS) leaves one file for the pair. `foch check` reports each group as
+`case-only-path-collision`, and the merge report warns with
+`case_only_path_collision`.
+
+**Workaround:** treat the warning as a review item. Check which spelling the
+game loads and fix the source mods or the merged output by hand.
+
 ## TUI conflict resolver has limited Windows coverage
 
 The terminal conflict resolver works on Linux and macOS in regular TTYs. Windows terminal behavior has had less alpha testing.

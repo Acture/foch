@@ -6,8 +6,9 @@ use std::path::PathBuf;
 pub struct SimplifyOptions {
 	pub include_game_base: bool,
 	pub target_mod_id: String,
-	pub out_dir: Option<PathBuf>,
-	pub in_place: bool,
+	/// The separate directory the simplified copy is written to. It must not
+	/// overlap the target mod's root: source mods are read-only inputs.
+	pub out_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Default)]

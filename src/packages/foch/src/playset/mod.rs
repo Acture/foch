@@ -90,7 +90,7 @@ impl Playset {
 			let entry = if require_descriptors {
 				read_dlc_load_entry_required(&parent, position, rel)?
 			} else {
-				read_dlc_load_entry(&parent, position, rel)
+				read_dlc_load_entry(&parent, position, rel)?
 			};
 			mods.push(entry);
 		}
@@ -134,14 +134,22 @@ fn enabled_mod_descriptor_path(paradox_data_dir: &Path, rel: &RelativePath) -> P
 		.fold(paradox_data_dir.to_path_buf(), |path, name| path.join(name))
 }
 
+/// Reads an entry whose descriptor may be absent: only a missing file falls
+/// back to the filename's steam id. A descriptor that exists but cannot be
+/// opened as a regular file, read, or parsed is an error naming that file,
+/// since guessing past it could resolve a different mod.
 fn read_dlc_load_entry(
 	paradox_data_dir: &Path,
 	position: usize,
 	rel: &RelativePath,
-) -> PlaysetEntry {
-	let descriptor =
-		load_launcher_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel)).ok();
-	playset_entry_from_descriptor(position, rel, descriptor)
+) -> Result<PlaysetEntry, ParseError> {
+	let path = enabled_mod_descriptor_path(paradox_data_dir, rel);
+	let descriptor = match std::fs::symlink_metadata(&path) {
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+		Err(err) => return Err(ParseError::io(path, err)),
+		Ok(_) => Some(load_launcher_descriptor(&path)?),
+	};
+	playset_entry_from_descriptor(&path, position, rel, descriptor)
 }
 
 fn read_dlc_load_entry_required(
@@ -149,28 +157,35 @@ fn read_dlc_load_entry_required(
 	position: usize,
 	rel: &RelativePath,
 ) -> Result<PlaysetEntry, ParseError> {
-	let descriptor = load_launcher_descriptor(&enabled_mod_descriptor_path(paradox_data_dir, rel))?;
-	Ok(playset_entry_from_descriptor(
-		position,
-		rel,
-		Some(descriptor),
-	))
+	let path = enabled_mod_descriptor_path(paradox_data_dir, rel);
+	let descriptor = load_launcher_descriptor(&path)?;
+	playset_entry_from_descriptor(&path, position, rel, Some(descriptor))
 }
 
 fn playset_entry_from_descriptor(
+	descriptor_path: &Path,
 	position: usize,
 	rel: &RelativePath,
 	descriptor: Option<LauncherDescriptor>,
-) -> PlaysetEntry {
-	let steam_id = descriptor
+) -> Result<PlaysetEntry, ParseError> {
+	let remote_file_id = descriptor
 		.as_ref()
 		.and_then(|d| d.remote_file_id.clone())
-		.or_else(|| extract_steam_id_from_descriptor_path(rel));
+		.filter(|id| !id.trim().is_empty());
+	if let Some(id) = remote_file_id.as_deref()
+		&& single_path_component(id).is_none()
+	{
+		return Err(ParseError::format(
+			descriptor_path.to_path_buf(),
+			format!("remote_file_id `{id}` must be a single plain path component"),
+		));
+	}
+	let steam_id = remote_file_id.or_else(|| extract_steam_id_from_descriptor_path(rel));
 	let display_name = descriptor
 		.as_ref()
 		.and_then(|d| (!d.name.trim().is_empty()).then(|| d.name.clone()))
 		.or_else(|| steam_id.as_ref().map(|id| format!("ugc_{id}")));
-	PlaysetEntry {
+	Ok(PlaysetEntry {
 		id: None,
 		display_name,
 		enabled: true,
@@ -178,6 +193,23 @@ fn playset_entry_from_descriptor(
 		steam_id,
 		workshop_identity: None,
 		root_path: None,
+	})
+}
+
+/// Returns `text` when it is exactly one ordinary path component on every
+/// host: not empty, not `.` or `..`, no `/` or `\` separator, no `:` (a
+/// Windows drive or stream prefix, judged the same on every host), and no
+/// NUL. Mod ids and names are joined onto search roots only through this
+/// check, so they can never name a directory outside the root they are
+/// joined to.
+pub(crate) fn single_path_component(text: &str) -> Option<&str> {
+	if text.is_empty() || text.contains(['/', '\\', ':', '\0']) {
+		return None;
+	}
+	let mut components = Path::new(text).components();
+	match (components.next(), components.next()) {
+		(Some(std::path::Component::Normal(name)), None) if name == text => Some(text),
+		_ => None,
 	}
 }
 
@@ -270,6 +302,64 @@ mod tests {
 			Playset::from_dlc_load_with_required_descriptors(&game_dir.join("dlc_load.json"))
 				.expect_err("current-input inspection must require the sibling descriptor");
 		assert!(strict_error.path.ends_with("mod/ugc_999.mod"));
+	}
+
+	/// Only a missing descriptor falls back to the filename. One that exists
+	/// but is not a regular file, or does not parse, names its own path
+	/// instead of surfacing later as an unresolved `<missing-steam-id>`.
+	#[test]
+	fn an_unreadable_or_unparseable_descriptor_is_reported_with_its_path() {
+		let temp = TempDir::new().unwrap();
+		let game_dir = temp.path().join("Europa Universalis IV");
+		fs::create_dir_all(game_dir.join("mod").join("ugc_1.mod")).unwrap();
+		fs::write(game_dir.join("mod").join("ugc_2.mod"), "name = { a = ").unwrap();
+		for (id, expected_kind) in [("1", ParseErrorKind::Io), ("2", ParseErrorKind::Format)] {
+			let dlc_load = game_dir.join("dlc_load.json");
+			fs::write(
+				&dlc_load,
+				format!(r#"{{"enabled_mods":["mod/ugc_{id}.mod"],"disabled_dlcs":[]}}"#),
+			)
+			.unwrap();
+			let error = Playset::from_dlc_load(&dlc_load).expect_err(id);
+			assert_eq!(error.kind, expected_kind, "{error}");
+			assert!(error.path.ends_with(format!("mod/ugc_{id}.mod")), "{error}");
+		}
+	}
+
+	#[test]
+	fn a_remote_file_id_that_is_not_one_path_component_is_rejected() {
+		let temp = TempDir::new().unwrap();
+		let game_dir = temp.path().join("Europa Universalis IV");
+		write_dlc_load(&game_dir, &[("1001", "Named")]);
+		let dlc_load = game_dir.join("dlc_load.json");
+		let launcher_copy = game_dir.join("mod").join("ugc_1001.mod");
+		for bad in ["..", "../../x", "a/b", "/abs"] {
+			fs::write(
+				&launcher_copy,
+				format!("name=\"Named\"\nremote_file_id=\"{bad}\"\n"),
+			)
+			.unwrap();
+			for result in [
+				Playset::from_dlc_load(&dlc_load),
+				Playset::from_dlc_load_with_required_descriptors(&dlc_load),
+			] {
+				let error = result.expect_err(bad);
+				assert_eq!(error.kind, ParseErrorKind::Format, "{error}");
+				assert!(error.path.ends_with("mod/ugc_1001.mod"), "{error}");
+			}
+		}
+	}
+
+	#[test]
+	fn single_path_component_accepts_only_one_plain_name() {
+		for good in ["1001", "My Mod", "汉化", "mod.v2"] {
+			assert_eq!(single_path_component(good), Some(good));
+		}
+		for bad in [
+			"", ".", "..", "a/b", r"a\b", "/abs", "a/", "./a", "a\0b", r"C:\x", "C:",
+		] {
+			assert_eq!(single_path_component(bad), None, "{bad:?}");
+		}
 	}
 
 	/// The launcher's copy of a descriptor is read for the mod's name and id

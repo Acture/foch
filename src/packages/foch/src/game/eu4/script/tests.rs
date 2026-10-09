@@ -7900,14 +7900,14 @@ fn module_names_derived_from_components_match_the_text_derivation() {
 	let root = Path::new("/mod");
 	for (relative, expected) in [
 		("common/scripted_effects/x.txt", "scripted_effects"),
-		// The tail rule skips one directory below the family prefix.
+		// The tail rule keeps every directory below the family prefix.
 		(
 			"common/scripted_effects/sub-dir/nested/x.txt",
-			"scripted_effects.nested",
+			"scripted_effects.sub_dir.nested",
 		),
 		(
 			"common/scripted_effects/a/sub-dir/x.txt",
-			"scripted_effects.sub_dir",
+			"scripted_effects.a.sub_dir",
 		),
 		(
 			"events/common/new_diplomatic_actions/a-b/x.txt",

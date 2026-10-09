@@ -21,7 +21,7 @@ use crate::merge::namespace::{
 use crate::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
 	Finding, FindingChannel, GamePathBuf, ParseFamilyStats, ParseIssueReportItem, SemanticIndex,
-	Severity, SymbolDefinition,
+	Severity, SymbolDefinition, case_only_path_groups,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
@@ -304,6 +304,9 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 			.findings
 			.extend(check_duplicate_scripted_effect(&ctx));
 	}
+	result
+		.findings
+		.extend(check_case_only_path_collisions(&resolved.file_inventory));
 
 	result.analysis_meta = AnalysisMeta {
 		text_documents: ctx.semantic_index.documents.len(),
@@ -447,6 +450,51 @@ const NAMESPACE_CHECK_FAMILIES: &[&str] = &["common/scripted_effects", "common/s
 /// Only checks `scripted_effects` and `scripted_triggers` — the families
 /// where two mods silently redefining the same key is a common source of
 /// broken gameplay.
+/// One finding per group of game paths that differ only in case. They stay
+/// separate files, but a case-insensitive filesystem holds only one of them
+/// and exact-spelling family and vanilla matches miss the others. The finding
+/// is attributed to the first spelling's last (loaded) contributor.
+fn check_case_only_path_collisions(
+	file_inventory: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
+) -> Vec<Finding> {
+	case_only_path_groups(file_inventory.keys().map(GamePathBuf::as_game_path))
+		.into_iter()
+		.map(|group| {
+			let evidence = group
+				.iter()
+				.map(|path| {
+					let mods = file_inventory[*path]
+						.iter()
+						.map(|contributor| contributor.mod_id.as_str())
+						.collect::<Vec<_>>()
+						.join(", ");
+					format!("{path} [{mods}]")
+				})
+				.collect::<Vec<_>>()
+				.join("; ");
+			let primary = group[0];
+			Finding {
+				rule_id: "case-only-path-collision".to_string(),
+				severity: Severity::Warning,
+				channel: FindingChannel::Advisory,
+				message: format!(
+					"{} game paths differ only in letter case; a case-insensitive filesystem keeps only one",
+					group.len()
+				),
+				mod_id: file_inventory[primary]
+					.last()
+					.map(|contributor| contributor.mod_id.clone()),
+				path: Some(primary.to_owned()),
+				source_file: None,
+				evidence: Some(evidence),
+				line: None,
+				column: None,
+				confidence: Some(1.0),
+			}
+		})
+		.collect()
+}
+
 fn check_namespace_conflicts(
 	file_inventory: &BTreeMap<GamePathBuf, Vec<ResolvedInputContributor>>,
 	mod_dag: &ModDag,

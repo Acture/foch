@@ -372,11 +372,10 @@ pub struct SimplifyArgs {
 	#[arg(long)]
 	pub target: String,
 
+	/// Separate directory for the simplified copy; the source mod is never
+	/// modified.
 	#[arg(long)]
-	pub out: Option<PathBuf>,
-
-	#[arg(long)]
-	pub in_place: bool,
+	pub out: PathBuf,
 
 	/// Skip loading vanilla game files; the lowest-precedence enabled mod
 	/// is treated as a synthetic base for diff-and-merge.

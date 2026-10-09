@@ -705,10 +705,41 @@ impl Project {
 		if content.trim().is_empty() {
 			return Ok(Self::default());
 		}
-		Self::from_toml_str(&content).map_err(|source| FochConfigLoadError::Parse {
-			path: path.to_path_buf(),
-			source,
-		})
+		let mut config =
+			Self::from_toml_str(&content).map_err(|source| FochConfigLoadError::Parse {
+				path: path.to_path_buf(),
+				source,
+			})?;
+		config.anchor_relative_use_files(path)?;
+		Ok(config)
+	}
+
+	/// A relative `use_file` names a file next to the `foch.toml` that
+	/// declares it, wherever the process runs. Anchoring it at load keeps that
+	/// meaning when several configs merge and when the merge freezes or
+	/// fingerprints the source.
+	fn anchor_relative_use_files(&mut self, config_path: &Path) -> Result<(), FochConfigLoadError> {
+		if !self
+			.resolutions
+			.iter()
+			.any(|entry| entry.use_file.as_deref().is_some_and(Path::is_relative))
+		{
+			return Ok(());
+		}
+		let config_path =
+			std::path::absolute(config_path).map_err(|source| FochConfigLoadError::Io {
+				path: config_path.to_path_buf(),
+				source,
+			})?;
+		let config_dir = config_path.parent().unwrap_or(Path::new(""));
+		for entry in &mut self.resolutions {
+			if let Some(use_file) = entry.use_file.as_mut()
+				&& use_file.is_relative()
+			{
+				*use_file = config_dir.join(&*use_file);
+			}
+		}
+		Ok(())
 	}
 
 	fn search_paths(playset_root: &Path) -> Vec<PathBuf> {
@@ -1271,6 +1302,51 @@ prefer_mod = "conflict-mod"
 		assert_eq!(
 			config.overrides,
 			vec![DepOverride::new("a", "b"), DepOverride::new("c", "d")]
+		);
+	}
+
+	/// Each config's relative `use_file` is read from that config's own
+	/// directory, not the process working directory; an absolute one is kept.
+	#[test]
+	fn a_relative_use_file_is_anchored_at_its_declaring_config() {
+		let temp = TempDir::new().expect("temp dir");
+		let project_dir = temp.path().join("project");
+		let user_dir = temp.path().join("user");
+		fs::create_dir_all(&project_dir).expect("create project dir");
+		fs::create_dir_all(&user_dir).expect("create user dir");
+		let absolute = temp.path().join("shared").join("Absolute.txt");
+		let first = project_dir.join("foch.toml");
+		let second = user_dir.join("foch.toml");
+		fs::write(
+			&first,
+			"[[resolutions]]\nfile = \"events/PirateEvents.txt\"\nuse_file = \"resolutions/PirateEvents.txt\"\n",
+		)
+		.expect("write project config");
+		let absolute_text = toml_edit::value(absolute.to_str().expect("UTF-8 temp path"));
+		fs::write(
+			&second,
+			format!(
+				"[[resolutions]]\nfile = \"events/A.txt\"\nuse_file = \"A.txt\"\n\n[[resolutions]]\nfile = \"events/B.txt\"\nuse_file = {absolute_text}\n"
+			),
+		)
+		.expect("write user config");
+
+		let config = Project::try_load_from_paths(vec![first, second]).expect("load configs");
+
+		let use_files = config
+			.resolutions
+			.iter()
+			.map(|entry| entry.use_file.clone().expect("use_file entry"))
+			.collect::<Vec<_>>();
+		assert_eq!(
+			use_files,
+			vec![
+				std::path::absolute(&project_dir)
+					.unwrap()
+					.join("resolutions/PirateEvents.txt"),
+				std::path::absolute(&user_dir).unwrap().join("A.txt"),
+				absolute,
+			]
 		);
 	}
 

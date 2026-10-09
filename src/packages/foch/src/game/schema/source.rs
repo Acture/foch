@@ -60,16 +60,42 @@ impl SchemaPack {
 	}
 }
 
+/// The identity of the schema below `root`. Compilation reads where each
+/// rule lives (a `type` without `path` defaults to its file's directory) and
+/// lets a later file override an earlier one, so the id binds every file's
+/// name below `root` and its content, each length-prefixed so neither a
+/// moved file nor bytes shifted across a file boundary keep the old id.
+/// Names are joined with `/` in their exact case; content has its line
+/// endings normalized.
 pub fn cwt_schema_id_from_dir(root: &Path) -> Result<CwtSchemaId, CwtLoadError> {
 	let mut hasher = Sha256::new();
+	hasher.update(b"foch-cwt-schema-id/v2\n");
 	for path in cwt_files(root)? {
 		let bytes = std::fs::read(&path).map_err(|source| CwtLoadError::Io {
 			path: path.clone(),
 			source,
 		})?;
-		hasher.update(normalize_line_endings(&bytes));
+		let name = schema_file_name(root, &path);
+		let content = normalize_line_endings(&bytes);
+		hasher.update((name.len() as u64).to_le_bytes());
+		hasher.update(&name);
+		hasher.update((content.len() as u64).to_le_bytes());
+		hasher.update(&content);
 	}
 	Ok(CwtSchemaId(hasher.finalize().into()))
+}
+
+/// A schema file's name below `root`, its components joined with `/`.
+fn schema_file_name(root: &Path, path: &Path) -> Vec<u8> {
+	let relative = path.strip_prefix(root).unwrap_or(path);
+	let mut name = Vec::new();
+	for (index, component) in relative.iter().enumerate() {
+		if index > 0 {
+			name.push(b'/');
+		}
+		name.extend_from_slice(component.as_encoded_bytes());
+	}
+	name
 }
 
 pub(crate) fn normalize_line_endings(bytes: &[u8]) -> Cow<'_, [u8]> {
@@ -210,6 +236,32 @@ mod tests {
 		assert_eq!(CwtSchemaId::from_hex(&id.to_hex()), Some(id));
 		assert_eq!(CwtSchemaId::from_hex("abc"), None);
 		assert_eq!(CwtSchemaId::from_hex(&"zz".repeat(32)), None);
+	}
+
+	/// A `type` without `path` defaults to its file's directory, so moving a
+	/// file changes the compiled schema and must change its id. So must
+	/// moving bytes from one file into the next, which keeps their
+	/// concatenation but changes which file overrides which.
+	#[test]
+	fn schema_id_binds_file_names_and_boundaries() {
+		let id_of = |files: &[(&str, &str)]| {
+			let root = tempfile::tempdir().unwrap();
+			for (relative, content) in files {
+				let path = root.path().join(relative);
+				fs::create_dir_all(path.parent().unwrap()).unwrap();
+				fs::write(path, content).unwrap();
+			}
+			cwt_schema_id_from_dir(root.path()).unwrap()
+		};
+		let types = "types = { type[x] = { } }\n";
+
+		let in_common = id_of(&[("common/types.cwt", types)]);
+		assert_eq!(in_common, id_of(&[("common/types.cwt", types)]));
+		assert_ne!(in_common, id_of(&[("events/types.cwt", types)]));
+		assert_ne!(
+			id_of(&[("a.cwt", "types = { }\n"), ("b.cwt", "enums = { }\n")]),
+			id_of(&[("a.cwt", "types = { }\nenums = { }\n"), ("b.cwt", "")])
+		);
 	}
 
 	#[test]
