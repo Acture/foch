@@ -2991,3 +2991,28 @@ fn an_ambiguity_only_one_revision_touches_is_not_a_conflict() {
 	let outcome = merge_clausewitz_files_n_way(&base, &[&replaced, &edited], &policies).unwrap();
 	assert!(!outcome.conflicts().is_empty());
 }
+
+#[test]
+fn an_effect_lifted_out_of_a_removed_conditional_leaves_no_orphan() {
+	// EE drops the `if` around the Stadthalter reform's event and keeps the
+	// event. The `if` it removed must stay removed rather than be revived as
+	// an ancestor of the event that no longer lives under it.
+	let path = "common/government_reforms/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let base = parse_at(
+		path,
+		"reform = {\n\tremoved_effect = {\n\t\tif = {\n\t\t\tlimit = { is_lesser_in_union = no }\n\t\t\tcountry_event = { id = dutch.33 }\n\t\t}\n\t}\n}\n",
+	);
+	let lifted = parse_at(
+		path,
+		"reform = {\n\tremoved_effect = {\n\t\tcountry_event = { id = dutch.33 }\n\t}\n}\n",
+	);
+	for revisions in [vec![&lifted, &base], vec![&base, &lifted]] {
+		let outcome = merge_clausewitz_files_n_way(&base, &revisions, &policies).unwrap();
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		assert_eq!(emit(outcome.tentative_ast()), emit(&lifted));
+	}
+}
