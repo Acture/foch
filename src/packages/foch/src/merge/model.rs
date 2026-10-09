@@ -100,7 +100,18 @@ pub(crate) struct SemanticMergeFacts {
 	pub sources: BTreeMap<RevisionId, SemanticMergeSource>,
 	pub base_tree: NormalizedTree,
 	pub revision_trees: BTreeMap<RevisionId, NormalizedTree>,
+	pub input_rewrites: BTreeMap<RevisionId, InputRewrite>,
 	pub outcome: MergeOutcome,
+}
+
+/// A revision the merge read in a rewritten form. Its lineage is that of the
+/// mod's own file, `original`; every node of the rewritten tree traces to the
+/// original node it was matched to, or else to the nearest matched ancestor,
+/// which is the part of the mod's file the rewrite replaced.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InputRewrite {
+	pub original: NormalizedTree,
+	pub nodes: BTreeMap<NodeId, NodeId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -3043,3 +3043,69 @@ fn a_multiline_string_differing_only_in_line_endings_is_unchanged() {
 	let outcome = merge_clausewitz_files_n_way(&base, &[&crlf, &trimmed], &policies).unwrap();
 	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
 }
+
+#[test]
+fn a_replaced_trigger_chain_merges_branch_by_branch() {
+	// EE replaces Persia's DLC split with one condition list; RCE adds a culture
+	// to each branch. Branch by branch both are ordinary edits of the same list,
+	// and the branches agree once merged, so the split goes away.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let potential = |body: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\tpotential = {{\n\t\t\tNOT = {{ tag = MUG }}\n{body}\t\t\tis_colonial_nation = no\n\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let split = |with_dlc: &str, without_dlc: &str| {
+		format!(
+			"\t\t\tif = {{\n\t\t\t\tlimit = {{ has_dlc = \"King of Kings\" }}\n\t\t\t\tOR = {{ {with_dlc} }}\n\t\t\t}}\n\t\t\telse = {{\n\t\t\t\tOR = {{ {without_dlc} }}\n\t\t\t}}\n"
+		)
+	};
+	let base = potential(&split(
+		"culture_group = iranian",
+		"culture_group = iranian tag = AKK",
+	));
+	let replaced = potential("\t\t\tOR = { culture_group = iranian tag = AKK was_tag = AKK }\n");
+	let both_branches = potential(&split(
+		"culture_group = iranian primary_culture = azeri_culture",
+		"culture_group = iranian primary_culture = azeri_culture tag = AKK",
+	));
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&replaced, &both_branches], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert_eq!(
+		emit(outcome.tentative_ast()),
+		emit(&potential(
+			"\t\t\tOR = {\n\t\t\t\tculture_group = iranian\n\t\t\t\tprimary_culture = azeri_culture\n\t\t\t\ttag = AKK\n\t\t\t\twas_tag = AKK\n\t\t\t}\n"
+		))
+	);
+
+	// An edit to one branch only keeps the branches apart.
+	let default_only = potential(&split(
+		"culture_group = iranian",
+		"culture_group = iranian primary_culture = azeri_culture tag = AKK",
+	));
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&replaced, &default_only], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert_eq!(
+		emit(outcome.tentative_ast()),
+		emit(&potential(&split(
+			"culture_group = iranian tag = AKK was_tag = AKK",
+			"culture_group = iranian primary_culture = azeri_culture tag = AKK was_tag = AKK",
+		)))
+	);
+
+	// Removing the chain outright is still a delete against a modify.
+	let removed = potential("");
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&removed, &both_branches], &policies).unwrap();
+	assert_eq!(outcome.conflicts().len(), 1, "{:?}", outcome.conflicts());
+	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
+}

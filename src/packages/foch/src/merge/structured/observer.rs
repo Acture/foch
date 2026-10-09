@@ -890,6 +890,7 @@ mod tests {
 				]),
 				base_tree: facts.base_tree,
 				revision_trees: facts.revision_trees,
+				input_rewrites: facts.input_rewrites,
 				outcome: facts.outcome,
 			}],
 			partition_lineage: BTreeMap::new(),

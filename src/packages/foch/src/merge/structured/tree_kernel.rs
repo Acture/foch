@@ -437,6 +437,7 @@ fn attribute_kernel_facts(
 				sources: sources.clone(),
 				base_tree: fact.base_tree,
 				revision_trees: fact.revision_trees,
+				input_rewrites: fact.input_rewrites,
 				outcome: fact.outcome,
 			})
 		})
@@ -1183,6 +1184,17 @@ fn compose_join_lineage(
 		let mut original_sources = BTreeSet::new();
 		let mut original_origins = BTreeSet::new();
 		for input_source in input_sources.iter() {
+			// A rewritten revision traces through the mod's own file.
+			let rewrite = facts.input_rewrites.get(&input_source.revision);
+			let input_node = match rewrite {
+				Some(rewrite) => *rewrite.nodes.get(&input_source.node).ok_or_else(|| {
+					format!(
+						"rewritten merge input has no trace for node {}",
+						input_source.node.get()
+					)
+				})?,
+				None => input_source.node,
+			};
 			let (expected_tree, lineage) = if input_source.revision == RevisionId::BASE {
 				(
 					&facts.base_tree,
@@ -1201,9 +1213,12 @@ fn compose_join_lineage(
 				let lineage = revision_lineage
 					.get(&input_source.revision)
 					.and_then(|partitions| partitions.get(&facts.partition));
-				(expected_tree, lineage)
+				(
+					rewrite.map_or(expected_tree, |rewrite| &rewrite.original),
+					lineage,
+				)
 			};
-			expected_tree.node(input_source.node).map_err(|error| {
+			expected_tree.node(input_node).map_err(|error| {
 				format!(
 					"merge provenance references an invalid input node {}: {error}",
 					input_source.node.get()
@@ -1226,13 +1241,13 @@ fn compose_join_lineage(
 				}
 			}
 			if let Some(lineage) = lineage {
-				if let Some(node_sources) = lineage.sources.get(&input_source.node) {
+				if let Some(node_sources) = lineage.sources.get(&input_node) {
 					original_sources.extend(node_sources.iter().cloned());
 				}
-				let node_origins = lineage.origins.get(&input_source.node).ok_or_else(|| {
+				let node_origins = lineage.origins.get(&input_node).ok_or_else(|| {
 					format!(
 						"lineage is missing origins for input node {} in partition {:?}",
-						input_source.node.get(),
+						input_node.get(),
 						facts.partition,
 					)
 				})?;

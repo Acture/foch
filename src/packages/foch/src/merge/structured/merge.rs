@@ -9,14 +9,14 @@ use crate::game::eu4::script::{classify_script_file, script_container_scope_kind
 use crate::game::schema::query::CwtQuery;
 use crate::merge::kernel::{
 	ConflictKind, ConflictResolution, MergeOutcome, MergeRevision, NormalizedTree, RevisionId,
-	SourceSet, StructuralConflict, StructuralConflictDraft, n_way_merge_with_policy,
+	SourceSet, StructuralConflict, StructuralConflictDraft, TreeMatcher, n_way_merge_with_policy,
 	n_way_merge_with_policy_and_resolutions,
 };
 use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, ScopeKind};
 
 use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body};
-use crate::merge::model::SemanticPartitionId;
+use crate::merge::model::{InputRewrite, SemanticPartitionId};
 
 use super::ast_adapter::{
 	AstAdapterError, denormalize_ast, normalize_ast, normalize_ast_with_findings,
@@ -29,6 +29,7 @@ pub struct ClausewitzMergeOutcome {
 	tentative_ast: AstFile,
 	base_tree: NormalizedTree,
 	revision_trees: BTreeMap<RevisionId, NormalizedTree>,
+	input_rewrites: BTreeMap<RevisionId, InputRewrite>,
 	kernel: MergeOutcome,
 }
 
@@ -37,6 +38,7 @@ pub(crate) struct ClausewitzKernelFacts {
 	pub partition: SemanticPartitionId,
 	pub base_tree: NormalizedTree,
 	pub revision_trees: BTreeMap<RevisionId, NormalizedTree>,
+	pub input_rewrites: BTreeMap<RevisionId, InputRewrite>,
 	pub outcome: MergeOutcome,
 }
 
@@ -76,6 +78,7 @@ impl ClausewitzMergeOutcome {
 				partition,
 				base_tree: self.base_tree,
 				revision_trees: self.revision_trees,
+				input_rewrites: self.input_rewrites,
 				outcome: self.kernel,
 			},
 		)
@@ -206,6 +209,32 @@ pub(super) fn merge_clausewitz_files_with_context(
 	entity_transform: Option<&dyn EntityTransform>,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
 	let entity_transform = entity_transform.filter(|transform| transform.applies_to(&base.path));
+	let resolved_chains = super::trigger_cases::resolve_replaced_trigger_chains(
+		base,
+		revisions,
+		&mut |branch_base, branch_revisions| {
+			let Ok(outcome) = merge_clausewitz_files_with_context(
+				branch_base,
+				branch_revisions,
+				policies,
+				schema,
+				false,
+				&[],
+				None,
+			) else {
+				return Ok(None);
+			};
+			Ok(outcome
+				.conflicts()
+				.is_empty()
+				.then_some(outcome.tentative_ast))
+		},
+	)?;
+	let original_revisions = revisions;
+	let resolved_revisions = resolved_chains
+		.as_ref()
+		.map(|files| files.iter().collect::<Vec<_>>());
+	let revisions = resolved_revisions.as_deref().unwrap_or(revisions);
 	if let Some(transform) = entity_transform {
 		for file in std::iter::once(base).chain(revisions.iter().copied()) {
 			transform
@@ -267,6 +296,19 @@ pub(super) fn merge_clausewitz_files_with_context(
 			Ok((revision_id, tree))
 		})
 		.collect::<Result<Vec<_>, AstAdapterError>>()?;
+	let mut input_rewrites = BTreeMap::new();
+	for ((revision, tree), (original, read)) in revision_trees.iter().zip(
+		original_revisions
+			.iter()
+			.zip(resolved_chains.iter().flatten()),
+	) {
+		if **original != *read {
+			let original = canonicalize_for_merge(original, policies, schema, &mut scope_cache);
+			let (original, _) = detach_trivia(&original);
+			let (original, _) = normalize_ast_with_findings(&original, &policy)?;
+			input_rewrites.insert(*revision, input_rewrite(tree, original));
+		}
+	}
 	let kernel_revisions = revision_trees
 		.iter()
 		.map(|(revision, tree)| MergeRevision::new(*revision, tree))
@@ -313,8 +355,24 @@ pub(super) fn merge_clausewitz_files_with_context(
 		tentative_ast,
 		base_tree,
 		revision_trees: revision_trees.into_iter().collect(),
+		input_rewrites,
 		kernel,
 	})
+}
+
+/// Trace each node of a rewritten revision to the mod's own file: to the node
+/// it matches, or else to its nearest ancestor that does.
+fn input_rewrite(read: &NormalizedTree, original: NormalizedTree) -> InputRewrite {
+	let matching = TreeMatcher::default().match_trees(read, &original);
+	let mut nodes = BTreeMap::new();
+	let mut pending = vec![(read.root(), original.root())];
+	while let Some((id, inherited)) = pending.pop() {
+		let traced = matching.get_from_left(id).unwrap_or(inherited);
+		nodes.insert(id, traced);
+		let node = read.node(id).expect("a tree node");
+		pending.extend(node.children.iter().map(|child| (*child, traced)));
+	}
+	InputRewrite { original, nodes }
 }
 
 /// Normalize a Clausewitz file through the same semantic representation used
@@ -484,7 +542,7 @@ fn simplify_boolean_or_definitions(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScriptContext {
+pub(super) enum ScriptContext {
 	Data,
 	Trigger,
 	Effect,
@@ -566,7 +624,7 @@ impl BooleanConditionTransformer<'_> {
 	}
 }
 
-fn script_context(
+pub(super) fn script_context(
 	parent: ScriptContext,
 	key: &str,
 	scope_kind: Option<ScopeKind>,
