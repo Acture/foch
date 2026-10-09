@@ -4,7 +4,7 @@ use crate::game::eu4::content::{
 	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
 };
 use crate::game::eu4::cwt::rule_engine;
-use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
+use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
 use crate::game::eu4::script::{classify_script_file, script_container_scope_kind};
 use crate::game::schema::query::CwtQuery;
 use crate::merge::kernel::{
@@ -416,8 +416,37 @@ fn canonicalize_for_merge(
 	schema: Option<&CwtQuery>,
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
 ) -> AstFile {
-	let file = crate::merge::numeric::canonicalize_numeric_values(file, schema);
+	let mut file = crate::merge::numeric::canonicalize_numeric_values(file, schema);
+	canonicalize_multiline_strings(&mut file.statements);
 	canonicalize_boolean_or_definitions(&file, policies, scope_cache)
+}
+
+/// A quoted string that spans lines holds script the game parses again, such
+/// as an `effect_tooltip`, so its line endings and the blanks before them are
+/// formatting. Mods that resave a file with other line endings or trimmed
+/// lines would otherwise appear to change the value.
+fn canonicalize_multiline_strings(statements: &mut [AstStatement]) {
+	for statement in statements {
+		let (AstStatement::Assignment { value, .. } | AstStatement::Item { value, .. }) = statement
+		else {
+			continue;
+		};
+		match value {
+			AstValue::Block { items, .. } => canonicalize_multiline_strings(items),
+			AstValue::Scalar {
+				value: ScalarValue::String(text),
+				..
+			} if text.contains(['\n', '\r']) => {
+				*text = text
+					.replace('\r', "")
+					.split('\n')
+					.map(|line| line.trim_end_matches([' ', '\t']))
+					.collect::<Vec<_>>()
+					.join("\n");
+			}
+			AstValue::Scalar { .. } => {}
+		}
+	}
 }
 
 fn canonicalize_boolean_or_definitions(

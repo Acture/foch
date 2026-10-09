@@ -3016,3 +3016,30 @@ fn an_effect_lifted_out_of_a_removed_conditional_leaves_no_orphan() {
 		assert_eq!(emit(outcome.tentative_ast()), emit(&lifted));
 	}
 }
+
+#[test]
+fn a_multiline_string_differing_only_in_line_endings_is_unchanged() {
+	// Vanilla's Crimean Khaganate mission quotes script in an `effect_tooltip`
+	// with a trailing blank; EE resaves the file with CRLF and RCE trims the
+	// blank. Neither changes the script, so neither is an edit.
+	let path = "missions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let mission = |tooltip: &str| {
+		parse_at(
+			path,
+			&format!(
+				"tree = {{\n\tm = {{\n\t\teffect = {{\n\t\t\tif = {{\n\t\t\t\tlimit = {{ has_country_flag = cri }}\n\t\t\t\tcountry_event_with_insight = {{\n\t\t\t\t\tid = flavor_tur.251\n\t\t\t\t\teffect_tooltip = \"{tooltip}\"\n\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let base = mission("\n\t\t\t\tadd_country_modifier = { \n\t\t\t\t\tduration = 7300\n\t\t\t\t}");
+	let crlf =
+		mission("\r\n\t\t\t\tadd_country_modifier = { \r\n\t\t\t\t\tduration = 7300\r\n\t\t\t\t}");
+	let trimmed =
+		mission("\n\t\t\t\tadd_country_modifier = {\n\t\t\t\t\tduration = 7300\n\t\t\t\t}");
+	let outcome = merge_clausewitz_files_n_way(&base, &[&crlf, &trimmed], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+}
