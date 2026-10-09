@@ -19,8 +19,8 @@ fn repository_root() -> PathBuf {
 
 fn lsp_fixture_dir() -> PathBuf {
 	repository_root()
-		.join("../../apps")
-		.join("foch-cli")
+		.join("..")
+		.join("foch-lsp")
 		.join("tests")
 		.join("fixtures")
 		.join("lsp")

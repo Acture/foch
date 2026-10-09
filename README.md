@@ -23,7 +23,9 @@ Foch can currently:
   contributors;
 - commit supported output to a separate merged-mod directory after explicit
   confirmation; and
-- record machine-readable artifacts below the output's `.foch/` directory.
+- record machine-readable artifacts below the output's `.foch/` directory;
+- collect and compile native comment-based event tests, expose annotation
+  help in the CLI/LSP, and judge an explicitly configured runtime runner.
 
 What is not established:
 
@@ -297,6 +299,8 @@ Windows installer smoke script. Ordinary Foch users do not need these Python too
 - [Project status](./docs/project-status.md)
 - [Architecture](docs/architecture.md)
 - [Merge design](docs/merge-design.md)
+- [Mod authoring product design (in progress)](docs/foch-authoring-design.md)
+- [Inline EU4 runtime tests and runner contract](docs/foch-runtime-tests.md)
 - [`foch.toml` project manifest](./docs/foch-project-manifest.md)
 - [Resolution DSL](./docs/foch-toml-resolutions.md)
 - [VS Code/LSP preview](./docs/lsp-0.1-preview.md)

@@ -2,11 +2,15 @@
 resolver = "2"
 members = [
 	"src/packages/foch",
+	"src/packages/foch-annotation",
+	"src/packages/foch-lsp",
+	"src/packages/foch-runner",
+	"src/packages/foch-test",
 	"src/apps/foch-cli",
 	"src/apps/foch-desktop/src-tauri",
 	"src/packages/tree-sitter-paradox",
 ]
-default-members = ["src/packages/foch", "src/apps/foch-cli"]
+default-members = ["src/packages/foch", "src/packages/foch-annotation", "src/packages/foch-lsp", "src/packages/foch-runner", "src/packages/foch-test", "src/apps/foch-cli"]
 
 [workspace.package]
 version = "0.0.1"
@@ -20,6 +24,10 @@ categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 foch = { path = "src/packages/foch" }
+foch-annotation = { path = "src/packages/foch-annotation" }
+foch-lsp = { path = "src/packages/foch-lsp" }
+foch-runner = { path = "src/packages/foch-runner" }
+foch-test = { path = "src/packages/foch-test" }
 tree-sitter-paradox = { path = "src/packages/tree-sitter-paradox" }
 bincode = "1.3.3"
 chardetng = "1.0.0"

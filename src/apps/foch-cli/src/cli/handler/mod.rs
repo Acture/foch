@@ -6,6 +6,7 @@ pub mod graph;
 pub mod input;
 pub mod merge;
 pub mod simplify;
+pub mod testing;
 
 pub type HandlerResult = Result<i32, Box<dyn std::error::Error>>;
 

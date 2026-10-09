@@ -10,6 +10,7 @@ separate notes repository. Linear owns active work and dependencies.
 - [Project manifest](foch-project-manifest.md) — compose ordered inputs in `foch.toml`.
 - [Resolution reference](foch-toml-resolutions.md) — review and resolve conflicts.
 - [VS Code/LSP preview](lsp-0.1-preview.md) — editor setup and supported behavior.
+- [Inline EU4 runtime tests](foch-runtime-tests.md) — annotations, commands and the runner contract.
 - [Known issues](known-issues.md) — public limitations.
 
 ## Contributors
@@ -17,6 +18,8 @@ separate notes repository. Linear owns active work and dependencies.
 - [Architecture](architecture.md) — source layout and dependency boundaries.
 - [Merge contract](merge-design.md) — analyze, review and commit behavior.
 - [Cache architecture](cache-architecture.md) — identities and lifecycle.
+- [Mod authoring product design](foch-authoring-design.md) — current decisions and future capabilities.
+- [Test framework API design](foch-test-framework-design.md) — pytest/Rust-inspired marks, selection, sessions and reporting; partly implemented.
 - [Development commands](../README.md#development) — build and quality checks.
 - [Release checklist](RELEASE_CHECKLIST.md) — packaging and release gates.
 

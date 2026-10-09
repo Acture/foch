@@ -9,7 +9,10 @@ use foch::game::eu4::editor::schema::{
 	SchemaWorkspace,
 };
 use foch::game::eu4::editor::workspace::{WorkspaceFiles, WorkspaceSession};
-use foch::game::eu4::editor::{hover::document_hover, position::byte_offset};
+use foch::game::eu4::editor::{
+	hover::document_hover as eu4_document_hover,
+	position::{byte_offset, position_at},
+};
 use foch::game::eu4::script::localisation::{
 	localisation_definitions_in_files, walk_localisation_files,
 };
@@ -27,6 +30,8 @@ use foch::model::{
 	LocalisationDefinition, SemanticIndex, Severity, SymbolDefinition,
 	SymbolKind as FochSymbolKind,
 };
+use foch_annotation::builtin::REGISTRY as ANNOTATIONS;
+use foch_annotation::source::RelPath;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -491,7 +496,9 @@ impl LanguageServer for Backend {
 		let context = detect_completion_context(text, position);
 		let prefix_lower = prefix.to_ascii_lowercase();
 
-		let mut candidates = if let Some(schema) = schema.as_ref()
+		let mut candidates = if let Some(items) = annotation_completions(text, position) {
+			items.into_iter().map(schema_completion_candidate).collect()
+		} else if let Some(schema) = schema.as_ref()
 			&& let Ok(path) = uri.to_file_path()
 			&& let Some((_, Ok(relative_path))) = match_scan_target(&state.targets, &path)
 			&& let Some(candidates) = schema_completion_candidates_with_index(
@@ -691,6 +698,18 @@ fn lsp_range_from_editor(range: EditorRange) -> Range {
 	}
 }
 
+fn document_hover(
+	file_path: &Path,
+	schema_path: Option<&GamePath>,
+	text: &str,
+	position: EditorPosition,
+	schema: Option<&EditorSchema>,
+	workspace: Option<&SchemaWorkspace>,
+) -> Option<SchemaHover> {
+	annotation_hover(text, position)
+		.or_else(|| eu4_document_hover(file_path, schema_path, text, position, schema, workspace))
+}
+
 fn schema_hover_view(hover: SchemaHover) -> Hover {
 	Hover {
 		contents: HoverContents::Markup(MarkupContent {
@@ -709,6 +728,9 @@ fn schema_completion_candidates_with_index(
 	prefix_lower: &str,
 	workspace: Option<&SchemaWorkspace>,
 ) -> Option<Vec<CompletionCandidate>> {
+	if let Some(items) = annotation_completions(text, position) {
+		return Some(items.into_iter().map(schema_completion_candidate).collect());
+	}
 	schema
 		.completions(
 			file_path,
@@ -1025,6 +1047,18 @@ fn build_workspace_snapshot_with_schema(
 			.or_default()
 			.push(unportable_path_diagnostic(error));
 	}
+	for file in &parsed {
+		let Some(physical) = file.path.as_deref() else {
+			continue;
+		};
+		let diagnostics = annotation_diagnostics_for_text(&file.source);
+		if !diagnostics.is_empty() {
+			diagnostics_by_path
+				.entry(physical.to_path_buf())
+				.or_default()
+				.extend(diagnostics);
+		}
+	}
 	if let Some(schema) = schema.as_ref() {
 		for file in &parsed {
 			let schema_path = &file.relative_path;
@@ -1268,7 +1302,75 @@ fn parse_diagnostics_for_text(path: &Path, text: &str) -> Vec<Diagnostic> {
 		.map(|item| {
 			parse_issue_to_diagnostic(item.span.start.line, item.span.start.column, &item.message)
 		})
+		.chain(annotation_diagnostics_for_text(text))
 		.collect()
+}
+
+fn annotation_diagnostics_for_text(text: &str) -> Vec<Diagnostic> {
+	// Spans are read by byte offset below, so any valid relative path works.
+	let path = RelPath::new("annotations.txt").expect("valid relative path");
+	foch_annotation::extract(&path, text, &ANNOTATIONS)
+		.diagnostics
+		.into_iter()
+		// The native parser already publishes these through the existing path.
+		.filter(|diagnostic| diagnostic.code != foch_annotation::Code::Parse)
+		.filter_map(|diagnostic| {
+			Some(Diagnostic {
+				range: editor_range(
+					text,
+					diagnostic.span.start.offset,
+					diagnostic.span.end.offset,
+				)?,
+				severity: Some(match diagnostic.severity {
+					foch_annotation::Severity::Error => DiagnosticSeverity::ERROR,
+					foch_annotation::Severity::Warning => DiagnosticSeverity::WARNING,
+				}),
+				code: serde_json::to_value(diagnostic.code).ok().and_then(|code| {
+					code.as_str()
+						.map(|code| NumberOrString::String(code.to_owned()))
+				}),
+				source: Some("foch-annotation".to_owned()),
+				message: diagnostic.message,
+				..Diagnostic::default()
+			})
+		})
+		.collect()
+}
+
+/// Annotation completions; `Some`, even empty, claims the cursor position.
+fn annotation_completions(text: &str, position: Position) -> Option<Vec<SchemaCompletion>> {
+	let offset = byte_offset(text, editor_position(position))?;
+	let items = foch_annotation::editor::completions(text, offset, &ANNOTATIONS)?;
+	Some(
+		items
+			.into_iter()
+			.map(|item| SchemaCompletion {
+				label: item.label,
+				insert_text: item.insert_text,
+				kind: SchemaCompletionKind::Field,
+				detail: item.detail,
+			})
+			.collect(),
+	)
+}
+
+fn annotation_hover(text: &str, position: EditorPosition) -> Option<SchemaHover> {
+	let offset = byte_offset(text, position)?;
+	let hover = foch_annotation::editor::hover(text, offset, &ANNOTATIONS)?;
+	Some(SchemaHover {
+		markdown: hover.markdown,
+		range: EditorRange {
+			start: position_at(text, hover.range.start)?,
+			end: position_at(text, hover.range.end)?,
+		},
+	})
+}
+
+fn editor_range(text: &str, start: usize, end: usize) -> Option<Range> {
+	Some(lsp_range_from_editor(EditorRange {
+		start: position_at(text, start)?,
+		end: position_at(text, end)?,
+	}))
 }
 
 fn parse_issue_to_diagnostic(line: usize, column: usize, message: &str) -> Diagnostic {
@@ -2426,27 +2528,28 @@ mod tests {
 	use super::{
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
-		dedup_scan_targets, detect_completion_context, document_diagnostics, document_symbols,
+		dedup_scan_targets, detect_completion_context, document_hover, document_symbols,
 		extract_completion_prefix, localisation_stub_code_actions, match_scan_target,
-		parse_scan_targets_json, resolve_definition_locations, resolve_reference_locations,
-		scan_targets_from_project_manifest_path, schema_completion_candidate, schema_diagnostic,
+		parse_diagnostics_for_text, parse_scan_targets_json, resolve_definition_locations,
+		resolve_reference_locations, scan_targets_from_project_manifest_path,
+		schema_completion_candidate, schema_completion_candidates_with_index, schema_diagnostic,
 		schema_hover_view, select_completion_candidates, workspace_symbols,
 	};
 	use foch::game::eu4::editor::schema::{
 		EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
 		SchemaDiagnostic as EditorSchemaDiagnostic, SchemaHover,
 	};
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 	use foch::input::Config;
 	use foch::model::{GamePath, Severity, test_support};
 	use foch::playset::descriptor::descriptor_path_text;
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
-	use tower_lsp::lsp_types::CompletionItemKind;
 	use tower_lsp::lsp_types::{
-		CodeActionContext, CodeActionOrCommand, CodeActionParams, Diagnostic, DiagnosticSeverity,
-		HoverContents, NumberOrString, PartialResultParams, Position, Range,
-		TextDocumentIdentifier, Url, WorkDoneProgressParams,
+		CodeActionContext, CodeActionOrCommand, CodeActionParams, CompletionItemKind, Diagnostic,
+		DiagnosticSeverity, HoverContents, MarkupKind, NumberOrString, PartialResultParams,
+		Position, Range, TextDocumentIdentifier, Url, WorkDoneProgressParams,
 	};
 
 	#[test]
@@ -2460,6 +2563,104 @@ mod tests {
 			},
 		);
 		assert_eq!(prefix, "add_country_mod");
+	}
+
+	#[test]
+	fn test_annotation_completion_is_available_on_existing_schema_path() {
+		let schema = load_lsp_schema();
+		let source = "#test(time=1444.11.11, ta";
+		let items = schema_completion_candidates_with_index(
+			&schema,
+			foch::model::GamePath::new("events/test.txt").unwrap(),
+			source,
+			Position {
+				line: 0,
+				character: source.len() as u32,
+			},
+			"ta",
+			None,
+		)
+		.expect("annotation completions");
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].label, "tag");
+		assert_eq!(items[0].kind, CompletionItemKind::FIELD);
+	}
+
+	#[test]
+	fn test_annotation_hover_is_available_on_existing_schema_path() {
+		let schema = load_lsp_schema();
+		let source = "#test(name=\"😀\", tag=SWE)";
+		let info = document_hover(
+			Path::new("events/test.txt"),
+			Some(foch::model::GamePath::new("events/test.txt").unwrap()),
+			source,
+			EditorPosition {
+				line: 0,
+				character: 18,
+			},
+			Some(&schema),
+			None,
+		)
+		.map(schema_hover_view)
+		.expect("annotation hover");
+		let HoverContents::Markup(markup) = info.contents else {
+			panic!("Markdown hover");
+		};
+		assert_eq!(markup.kind, MarkupKind::Markdown);
+		assert!(markup.value.contains("country tag"));
+		assert_eq!(info.range.unwrap().start.character, 17);
+	}
+
+	#[test]
+	fn test_annotation_diagnostics_share_collection_and_do_not_duplicate_native_parse_errors() {
+		let path = Path::new("events/test.txt");
+		let source = "#test(time=1444.11.11, tag=sweden)\ncountry_event = { id = test.1 hidden = yes is_triggered_only = yes }\n";
+		let diagnostics = parse_diagnostics_for_text(path, source);
+		assert_eq!(diagnostics.len(), 1);
+		assert_eq!(diagnostics[0].source.as_deref(), Some("foch-annotation"));
+		assert!(diagnostics[0].message.contains("tag"));
+		assert_eq!(diagnostics[0].range.start.line, 0);
+
+		let broken = "country_event =";
+		let native = parse_clausewitz_content(
+			foch::model::GamePath::new("events/test.txt").unwrap(),
+			broken,
+		);
+		let diagnostics = parse_diagnostics_for_text(path, broken);
+		assert!(!diagnostics.is_empty());
+		assert_eq!(diagnostics.len(), native.diagnostics.len());
+		assert!(
+			diagnostics
+				.iter()
+				.all(|item| item.source.as_deref() == Some("foch"))
+		);
+	}
+
+	#[test]
+	fn test_annotation_workspace_diagnostics_use_current_source() {
+		let tmp = TempDir::new().expect("temp dir");
+		fs::create_dir_all(tmp.path().join("events")).expect("events directory");
+		let path = tmp.path().join("events/test.txt");
+		fs::write(
+			&path,
+			"#test(time=1444.11.11, tag=sweden)\ncountry_event = { id = test.1 hidden = yes is_triggered_only = yes }\n",
+		)
+		.expect("event");
+		let snapshot = build_workspace_snapshot_with_schema(
+			&[ScanTarget {
+				path: tmp.path().to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			None,
+		);
+		let annotation_diagnostics = snapshot
+			.diagnostics_by_path
+			.values()
+			.flatten()
+			.filter(|item| item.source.as_deref() == Some("foch-annotation"))
+			.count();
+		let _ = &path;
+		assert_eq!(annotation_diagnostics, 1);
 	}
 
 	#[test]

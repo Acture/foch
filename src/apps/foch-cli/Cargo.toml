@@ -12,20 +12,22 @@ description = "Paradox mod static analysis toolkit with CLI and EU4-focused lang
 [dependencies]
 clap.workspace = true
 clap-verbosity-flag.workspace = true
+dirs.workspace = true
 foch.workspace = true
+foch-annotation.workspace = true
+foch-lsp.workspace = true
+foch-runner.workspace = true
+foch-test.workspace = true
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-tower-lsp.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
 blake3 = "1.5.5"
-dirs.workspace = true
 foch = { workspace = true, features = ["test-utils"] }
 keyvalues-parser.workspace = true
 libc = "0.2.186"
@@ -34,6 +36,7 @@ reqwest.workspace = true
 tempfile.workspace = true
 time.workspace = true
 tiny_http.workspace = true
+tower-lsp.workspace = true
 toml.workspace = true
 
 [features]

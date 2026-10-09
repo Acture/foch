@@ -1,0 +1,2 @@
+run mechanics-start.txt
+speed 5

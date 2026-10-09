@@ -1,0 +1,18 @@
+[package]
+name = "foch-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Launches a real EU4 install in isolation to execute Foch test bundles"
+# Internal workspace library; its Rust API carries no semver promise.
+publish = false
+
+[dependencies]
+foch.workspace = true
+foch-test.workspace = true
+
+
+[dev-dependencies]
+tempfile.workspace = true

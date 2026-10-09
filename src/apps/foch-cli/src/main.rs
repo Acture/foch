@@ -88,11 +88,12 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	tracing::subscriber::set_global_default(subscriber)?;
 
 	match &cliargs.command {
+		arg::FochCliCommands::Test(args) => return handler::testing::handle_test(args),
 		arg::FochCliCommands::Cache(cache_args) => return handler::cache::handle_cache(cache_args),
 		arg::FochCliCommands::Input(input_args) => {
 			return handler::input::handle_input(input_args, load_config_read_only()?);
 		}
-		arg::FochCliCommands::Lsp(_lsp_args) => return Ok(foch_cli::lsp::run()),
+		arg::FochCliCommands::Lsp(_lsp_args) => return Ok(foch_lsp::run()),
 		_ => {}
 	}
 
@@ -106,6 +107,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 		}
 		arg::FochCliCommands::Data(data_args) => handler::data::handle_data(data_args, config),
 		arg::FochCliCommands::Cache(_)
+		| arg::FochCliCommands::Test(_)
 		| arg::FochCliCommands::Input(_)
 		| arg::FochCliCommands::Lsp(_) => unreachable!("handled before config initialization"),
 		arg::FochCliCommands::Config(config_args) => {

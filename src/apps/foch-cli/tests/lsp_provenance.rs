@@ -73,7 +73,7 @@ fn merged_definition_hover_uses_recorded_sources_only_for_unchanged_content() {
 	fs::create_dir_all(&schema).expect("isolated schema root");
 	fs::write(
 		schema.join("scripted_effects.cwt"),
-		include_str!("fixtures/lsp/schema/scripted_effects.cwt"),
+		include_str!("../../../packages/foch-lsp/tests/fixtures/lsp/schema/scripted_effects.cwt"),
 	)
 	.expect("write fixture schema");
 	let uri = Url::from_file_path(&script_path)
