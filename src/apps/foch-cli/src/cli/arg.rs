@@ -169,7 +169,7 @@ pub enum CheckOutputFormat {
 	Json,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug, Eq, PartialEq)]
 #[command(
 	about = "Analyze a merge, review its frozen plan, then optionally commit it",
 	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod                 # analyze, review, then confirm in a TTY\n  foch merge ./foch.toml --out ./merged-mod --confirm          # analyze and explicitly commit\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # analysis only\n  foch merge ./playlist.json --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path\n  foch merge ./playlist.json --out ./merged-mod --force --confirm\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
@@ -194,6 +194,13 @@ pub struct MergeArgs {
 	/// Also write unchanged vanilla base-game files into the merged output (off by default; the game already ships them).
 	#[arg(long)]
 	pub include_base: bool,
+
+	/// Leave a mod of the current EU4 playset out of the analysis, by
+	/// Workshop id or `#POSITION` as `foch input inspect` lists them.
+	/// Repeatable; only without INPUT_SOURCE. The result does not represent
+	/// the full playset.
+	#[arg(long = "exclude", value_name = "MOD")]
+	pub exclude: Vec<String>,
 
 	/// Merge divergent same-name GUI containers into scroll-stack parents instead of manual conflicts.
 	#[arg(long)]
@@ -244,6 +251,55 @@ pub struct MergeArgs {
 	/// prompts still come in plan order, with the other units paused.
 	#[arg(long, value_name = "N")]
 	pub jobs: Option<NonZeroUsize>,
+}
+
+impl MergeArgs {
+	/// The arguments after `foch` that parse back to exactly these. Bare
+	/// `foch` shows this for the analysis it runs, so a script or agent can
+	/// run the same one.
+	pub fn command_line(&self) -> Vec<String> {
+		let mut args = vec!["merge".to_string()];
+		if let Some(path) = &self.playset_path {
+			args.push(path.display().to_string());
+		}
+		args.push("--out".to_string());
+		args.push(self.out.display().to_string());
+		let flags = [
+			(self.force, "--force"),
+			(self.no_game_base, "--no-game-base"),
+			(self.include_base, "--include-base"),
+			(self.gui_scroll_merge, "--gui-scroll-merge"),
+			(self.ignore_replace_path, "--ignore-replace-path"),
+			(self.provenance, "--provenance"),
+			(self.confirm, "--confirm"),
+			(self.non_interactive, "--non-interactive"),
+			(self.review_all, "--review-all"),
+			(self.cli_prompt, "--cli-prompt"),
+		];
+		args.extend(
+			flags
+				.into_iter()
+				.filter(|(set, _)| *set)
+				.map(|(_, flag)| flag.to_string()),
+		);
+		for dep in &self.ignore_dep {
+			args.push("--ignore-dep".to_string());
+			args.push(format!("{}:{}", dep.mod_id, dep.dep_id));
+		}
+		if let Some(config) = &self.config {
+			args.push("--config".to_string());
+			args.push(config.display().to_string());
+		}
+		if let Some(jobs) = self.jobs {
+			args.push("--jobs".to_string());
+			args.push(jobs.to_string());
+		}
+		for name in &self.exclude {
+			args.push("--exclude".to_string());
+			args.push(name.clone());
+		}
+		args
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -519,9 +575,18 @@ pub enum FochCliInputCommands {
 }
 
 #[derive(Parser, Debug)]
+#[command(
+	about = "Show the game and ordered mod inputs Foch will use",
+	after_help = "Without INPUT_SOURCE, inspects the installed EU4 game and its current launcher playset exactly as bare `foch` does, reporting each mod's position, Workshop id and whether it can be analyzed.\n\nExamples:\n  foch input inspect\n  foch input inspect --format json\n  foch input inspect ./foch.toml"
+)]
 pub struct InputInspectArgs {
 	#[arg(value_name = "INPUT_SOURCE")]
-	pub source_path: PathBuf,
+	pub source_path: Option<PathBuf>,
+
+	/// `json` describes the current EU4 input for scripts and agents; it is
+	/// available only without INPUT_SOURCE.
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

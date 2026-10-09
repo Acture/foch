@@ -1,6 +1,9 @@
-use crate::cli::arg::{FochCliInputCommands, InputArgs, InputInspectArgs};
+use crate::cli::arg::{CheckOutputFormat, FochCliInputCommands, InputArgs, InputInspectArgs};
 use crate::cli::handler::HandlerResult;
-use foch::input::{Config, InputRequest, InputResolveSummary, InputSource, resolve_input_summary};
+use foch::input::{
+	BaseDataState, Config, CurrentEu4Input, InputReadiness, InputRequest, InputResolveSummary,
+	InputSource, inspect_current_eu4_input, resolve_input_summary,
+};
 
 pub fn handle_input(args: &InputArgs, config: Config) -> HandlerResult {
 	match &args.command {
@@ -9,10 +12,86 @@ pub fn handle_input(args: &InputArgs, config: Config) -> HandlerResult {
 }
 
 fn handle_input_inspect(args: &InputInspectArgs, config: Config) -> HandlerResult {
-	let request = InputRequest::new(InputSource::from_path(args.source_path.clone()), config);
+	let Some(source_path) = &args.source_path else {
+		let input = inspect_current_eu4_input();
+		match args.format {
+			CheckOutputFormat::Text => println!("{}", render_current_input(&input)),
+			CheckOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&input)?),
+		}
+		return Ok(match input.readiness {
+			InputReadiness::Blocked => 2,
+			InputReadiness::Ready | InputReadiness::ReadyWithOmissions => 0,
+		});
+	};
+	if args.format == CheckOutputFormat::Json {
+		return Err("`--format json` describes the current EU4 input; omit INPUT_SOURCE".into());
+	}
+	let request = InputRequest::new(InputSource::from_path(source_path.clone()), config);
 	let summary = resolve_input_summary(&request)?;
 	println!("{}", render_input_summary(&summary));
 	Ok(0)
+}
+
+/// The current EU4 input as bare `foch` shows it first: the game, base data,
+/// each playset mod with the position and id `foch merge --exclude` takes,
+/// and every issue.
+fn render_current_input(input: &CurrentEu4Input) -> String {
+	let mut lines = vec![
+		format!(
+			"readiness: {}",
+			match input.readiness {
+				InputReadiness::Ready => "ready",
+				InputReadiness::ReadyWithOmissions => "ready_with_omissions",
+				InputReadiness::Blocked => "blocked",
+			}
+		),
+		format!(
+			"game: {} {}",
+			input.game.name,
+			input.game.version.as_deref().unwrap_or("<unknown version>")
+		),
+		format!(
+			"base_data: {} {}",
+			match input.base_data.state {
+				BaseDataState::Ready => "ready",
+				BaseDataState::Missing => "missing",
+				BaseDataState::Stale => "stale",
+			},
+			input.base_data.detail
+		),
+	];
+	if let Some(playset) = &input.playset {
+		lines.push(format!(
+			"playset: {} ({} mods) {}",
+			playset.name,
+			playset.mods.len(),
+			playset.source_path.display()
+		));
+		for playset_mod in &playset.mods {
+			let status = match &playset_mod.source_error {
+				None => "ok".to_string(),
+				Some(error) => format!("cannot_analyze: {error}"),
+			};
+			lines.push(format!(
+				"  #{} {} {} [{status}]",
+				playset_mod.position, playset_mod.id, playset_mod.name
+			));
+		}
+	} else {
+		lines.push("playset: <none>".to_string());
+	}
+	if input.issues.is_empty() {
+		lines.push("issues: none".to_string());
+	} else {
+		lines.push("issues:".to_string());
+		for issue in &input.issues {
+			lines.push(format!("  - {}: {}", issue.title, issue.detail));
+			if let Some(action) = &issue.action {
+				lines.push(format!("    action: {action}"));
+			}
+		}
+	}
+	lines.join("\n")
 }
 
 fn render_input_summary(summary: &InputResolveSummary) -> String {
