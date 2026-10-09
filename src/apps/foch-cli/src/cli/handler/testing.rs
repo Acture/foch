@@ -323,7 +323,7 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 	};
 	let plan = match expand(&collection, &options) {
 		Ok(expanded) => {
-			let linted = lint(&expanded, &ProjectFacts::default());
+			let linted = lint(&expanded, &project_facts());
 			diagnostics.extend(linted.diagnostics.iter().cloned());
 			group(
 				expanded,
@@ -353,6 +353,37 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 		plan,
 		diagnostics,
 	})
+}
+
+/// Static facts for the pre-launch lint, drawn from the embedded EU4 builtin
+/// catalog. Effect and trigger names let the linter catch an effect used in a
+/// condition block or a trigger used in an effect block before any game runs.
+///
+/// Scope changers, iterators and special blocks are valid in both kinds of
+/// block, so they go in both sets and are never flagged. Country tags and the
+/// full event set are left unknown: they would need the base snapshot, and a
+/// mod-only tag set would wrongly flag vanilla countries. See the static-layer
+/// follow-up for wiring those from the analyzed snapshot.
+fn project_facts() -> ProjectFacts {
+	use foch::game::eu4::base::builtin::{
+		builtin_effect_names, builtin_iterator_names, builtin_scope_changer_names,
+		builtin_special_block_names, builtin_trigger_names,
+	};
+	let shared: std::collections::BTreeSet<String> = builtin_scope_changer_names()
+		.iter()
+		.chain(builtin_iterator_names())
+		.chain(builtin_special_block_names())
+		.cloned()
+		.collect();
+	let with_shared = |names: &[String]| -> std::collections::BTreeSet<String> {
+		names.iter().chain(shared.iter()).cloned().collect()
+	};
+	ProjectFacts {
+		tags: None,
+		events: None,
+		effects: Some(with_shared(builtin_effect_names())),
+		triggers: Some(with_shared(builtin_trigger_names())),
+	}
 }
 
 fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
