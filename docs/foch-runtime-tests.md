@@ -113,9 +113,15 @@ Foch 按"一局"运行，每局在 `--out` 下有独立目录 `session_NNNN`（�
 | `failed` | 有 expect 条件不成立，报告指向该条件的源码行 |
 | `setup_error` | 国家 scope 或 fixture 前置条件不成立 |
 | `incomplete` / `protocol_error` | 记录不完整 / 身份、日期、顺序或清单不一致 |
-| `runtime_error` | 启动失败、退出非零、超时、缺日志、`error.log` 非空或真实 profile 内容被改动 |
+| `runtime_error` | 启动失败、退出非零、超时、缺日志、`error.log` 中出现归因于生成测试层的条目，或真实 profile 内容被改动 |
 
 超时后 Foch 结束自己启动的游戏进程。输出根目录保存 `result.json`（汇总、每局启动详情和每个用例的结果）与 `junit.xml`。只得到布尔 trigger 结果，不伪造内部状态数值。
+
+EU4 每次启动都会往 `error.log` 写入与测试无关的环境条目（缺本地化、其他 mod、原版告警），因此"非空"本身不算失败。判定按条目归因：引用了生成测试层（唯一命名空间或测试 mod 名）的条目才让该局 `runtime_error`，其余条目仅作为提示列出、不改变判定。
+
+被测 mod 在其 `descriptor.mod` 里声明的依赖会按安装注册表（用户目录下的 `mod/*.mod`）解析并一并加载：依赖先于被测 mod、测试层最后，`dlc_load.json` 据此排序。传递依赖按"被依赖者在前"的顺序展开；未安装的依赖会告警并在没有它的情况下继续。
+
+启动时若上一次运行被强杀而没能清理，残留的运行层会在超过宽限期后被清扫；`Ctrl-C` 会在当前这一局拆解后停止，不留下游戏进程或运行层。
 
 示例夹具在 `src/packages/foch-test/tests/fixtures/runtime-tests`，包含冒烟、即时断言、延迟两天断言和一个故意失败的断言。因此全量运行这组夹具预期返回非零。
 
@@ -125,7 +131,7 @@ Foch 按"一局"运行，每局在 `--out` 下有独立目录 `session_NNNN`（�
 
 ## 编辑器与后续范围
 
-`foch lsp` 使用同一份注解定义为 `#test`、`#skip`、`#ignore`、`#xfail` 和 `#mark` 提供参数补全、悬停和注解诊断。跨注解的规则（同名用例、`xfail` 缺少 `expect`）只在 `foch test --collect-only` 时报告。当前没有注解内部原生 effects/triggers 补全、测试运行按钮或失败跳转操作。
+`foch lsp` 使用同一份注解定义为 `#test`、`#skip`、`#ignore`、`#xfail`、`#mark` 和 `#parametrize` 提供参数补全、悬停和注解诊断。跨注解的规则（同名用例、`xfail` 缺少 `expect`）只在 `foch test --collect-only` 时报告。当前没有注解内部原生 effects/triggers 补全、测试运行按钮或失败跳转操作。
 
 尚未实现：CLI 收集 `tests/` 中的多步骤测试和 fixture（需先验证 EU4 不加载该目录，并让合并等主库功能识别它）、读取项目信息的静态检查、参数化、fuzz、`--last-failed`、独立 `foch lint`、任意日期的内置开局准备，以及平台托管 CI 的真实验收。已有本地运行环境只验证真实 `1444.11.11` 开局。
 
