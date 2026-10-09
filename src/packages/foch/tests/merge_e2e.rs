@@ -2507,6 +2507,35 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 }
 
 #[test]
+fn eu4_on_actions_from_other_files_add_to_each_other() {
+	// Patch 1.36 made on_actions additive: each mod's own file that defines
+	// `on_startup` runs alongside the base file's, so none of them is an edit
+	// of another and every file keeps its own definition.
+	let (result, out_dir) = run_merge_for_fixture("eu4_on_actions_additive", false);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let on_actions = out_dir.join("common").join("on_actions");
+	assert!(
+		!on_actions.join("zzz_foch_on_actions.txt").exists(),
+		"additive on_actions must not be folded into one module"
+	);
+	for (file, event) in [
+		("00_on_actions.txt", "base.1"),
+		("a_on_actions.txt", "a.1"),
+		("b_on_actions.txt", "b.1"),
+	] {
+		let path = on_actions.join(file);
+		if path.exists() {
+			let text = fs::read_to_string(&path).expect("read");
+			assert!(text.contains(event), "{file}: {text}");
+		}
+	}
+}
+
+#[test]
 fn eu4_replaced_trigger_chain_merges_branch_by_branch_through_the_dag() {
 	// One mod replaces Persia's DLC split with one condition list, another adds
 	// a culture to both branches. The merge rewrites its inputs branch by
