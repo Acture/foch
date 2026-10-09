@@ -6,21 +6,30 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::KeyEvent;
-use foch::input::{
-	CurrentEu4Input, InputPreparationMode, InputReadiness, InputRequest, inspect_current_eu4_input,
-};
-use foch::merge::{
-	CancellationToken, MergeAnalysisOptions, MergeError, MergeProgress, ProgressObserver,
-	analyze_merge,
-};
+use foch::input::{Config, CurrentEu4Input, inspect_current_eu4_input};
+use foch::merge::{CancellationToken, MergeError, MergeProgress, ProgressObserver, analyze_merge};
 
-use super::app::{AnalysisSettings, AnalysisView, App, AppCommand, Phase};
+use super::app::{AnalysisView, App, AppCommand, Phase};
+use crate::cli::arg::MergeArgs;
+use crate::cli::handler::merge::{PreparedMerge, prepare_merge};
 
-/// One read-only look at the current input: what to show, and the frozen
-/// request an analysis of exactly that input would consume.
+/// What an analysis of an inspected input reads, as `foch merge` takes it.
+#[derive(Clone, Debug)]
+pub enum AnalysisInput {
+	/// The current EU4 playset, frozen at inspection. `foch merge` without
+	/// INPUT_SOURCE inspects and prepares it the same way.
+	Current(Box<CurrentEu4Input>),
+	/// An explicit `foch merge` INPUT_SOURCE with its configuration.
+	Path { path: PathBuf, config: Config },
+}
+
+/// One read-only look at the current input: what to show, and what an
+/// analysis of exactly that input reads.
 pub struct Inspection {
 	pub input: CurrentEu4Input,
-	pub request: Option<InputRequest>,
+	/// `None` when nothing about this input can be analyzed, whatever is
+	/// excluded.
+	pub analysis: Option<AnalysisInput>,
 	/// Whether this source can supply the analyzed EU4 base as the merge
 	/// ancestor.
 	pub game_base_available: bool,
@@ -33,24 +42,19 @@ pub trait BrowserSource: Send + Sync {
 }
 
 /// The installed EU4 game and its current launcher playset, inspected without
-/// initializing configuration.
+/// initializing configuration, as `foch input inspect` reports it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CurrentEu4Source;
 
 impl BrowserSource for CurrentEu4Source {
 	fn inspect(&self) -> Inspection {
 		let input = inspect_current_eu4_input();
-		let mode = match input.readiness {
-			InputReadiness::Ready => Some(InputPreparationMode::Complete),
-			InputReadiness::ReadyWithOmissions => Some(InputPreparationMode::AvailableOnly),
-			InputReadiness::Blocked => None,
-		};
-		let request = mode
-			.and_then(|mode| input.clone().prepare(mode))
-			.map(|prepared| prepared.request);
+		let analysis = input
+			.can_select_mods()
+			.then(|| AnalysisInput::Current(Box::new(input.clone())));
 		Inspection {
 			input,
-			request,
+			analysis,
 			game_base_available: true,
 		}
 	}
@@ -94,7 +98,7 @@ pub struct Session {
 	tx: Sender<WorkerMessage>,
 	rx: Receiver<WorkerMessage>,
 	generation: u64,
-	pending: Option<InputRequest>,
+	pending: Option<AnalysisInput>,
 	cancellation: Option<CancellationToken>,
 	busy: bool,
 }
@@ -171,13 +175,16 @@ impl Session {
 			} if generation == self.generation => {
 				let Inspection {
 					input,
-					request,
+					analysis,
 					game_base_available,
 				} = *inspection;
-				self.pending = request;
 				self.busy = false;
 				self.app
-					.inspected(input, self.pending.is_some(), game_base_available);
+					.inspected(input, analysis.is_some(), game_base_available);
+				if let Some(AnalysisInput::Path { path, .. }) = &analysis {
+					self.app.source_path = Some(path.clone());
+				}
+				self.pending = analysis;
 				if self.app.take_analyze_after_inspection() {
 					self.start_analysis();
 				}
@@ -230,13 +237,14 @@ impl Session {
 	fn start_analysis(&mut self) {
 		// An input snapshot is analyzed once; a later analysis needs a new
 		// snapshot from an explicit refresh.
-		let Some(request) = self.pending.take() else {
+		let Some(input) = self.pending.take() else {
 			return;
 		};
+		let out_dir = unused_analysis_target();
+		let merge_args = self.app.merge_args(out_dir);
 		self.generation += 1;
 		self.busy = true;
 		self.app.analyzing();
-		let settings = self.app.effective_settings();
 		let generation = self.generation;
 		let cancellation = CancellationToken::new();
 		self.cancellation = Some(cancellation.clone());
@@ -247,7 +255,7 @@ impl Session {
 				tx: tx.clone(),
 			};
 			let result = catch_unwind(AssertUnwindSafe(|| {
-				analyze_input(request, &settings, &progress, &cancellation)
+				analyze_input(&merge_args, input, &progress, &cancellation)
 			}))
 			.unwrap_or_else(|panic| Err(format!("analysis panicked: {}", panic_text(&*panic))))
 			.map(Box::new);
@@ -278,42 +286,31 @@ fn spawn_with_merge_stack(work: impl FnOnce() + Send + 'static) {
 		.expect("spawn analysis thread");
 }
 
-/// Run the complete N-way analysis of one frozen input. The browser never
-/// commits, so the target only names where a commit would have gone; it is a
-/// fresh path that analysis must leave untouched.
+/// Run the complete N-way analysis `foch merge` runs for `merge_args`, over
+/// the inspected input. The browser never commits, so `merge_args.out` only
+/// names where a commit would have gone; it is a fresh path that analysis
+/// leaves untouched.
 pub fn analyze_input(
-	request: InputRequest,
-	settings: &AnalysisSettings,
+	merge_args: &MergeArgs,
+	input: AnalysisInput,
 	progress: &dyn ProgressObserver,
 	cancellation: &CancellationToken,
 ) -> Result<AnalysisView, String> {
-	let out_dir = unused_analysis_target();
-	let analyzed = analyze_merge(
-		request,
-		MergeAnalysisOptions {
-			out_dir: out_dir.clone(),
-			include_game_base: settings.game_base,
-			include_base: false,
-			gui_scroll_merge: settings.gui_scroll_merge,
-			force: settings.force,
-			ignore_replace_path: settings.ignore_replace_path,
-			dep_overrides: Vec::new(),
-			resolution_config_path: None,
-			interactive_conflict_handler: None,
-			interactive_resolution_config_path: None,
-			playset_fingerprint: None,
-			provenance: false,
-			merge_workers: settings.merge_workers,
-			retained_paths: None,
-		},
-		progress,
-		cancellation,
-	)
-	.map_err(|error| match error {
-		MergeError::Cancelled => "analysis cancelled".to_string(),
-		other => other.to_string(),
-	})?;
-	debug_assert!(!out_dir.exists(), "analysis must not create its target");
+	let (config, current) = match input {
+		AnalysisInput::Current(current) => (Config::default(), Some(*current)),
+		AnalysisInput::Path { config, .. } => (config, None),
+	};
+	let PreparedMerge { request, options } =
+		prepare_merge(merge_args, config, current).map_err(|error| error.to_string())?;
+	let analyzed =
+		analyze_merge(request, options, progress, cancellation).map_err(|error| match error {
+			MergeError::Cancelled => "analysis cancelled".to_string(),
+			other => other.to_string(),
+		})?;
+	debug_assert!(
+		!merge_args.out.exists(),
+		"analysis must not create its target"
+	);
 	Ok(AnalysisView::from_analyzed(&analyzed))
 }
 

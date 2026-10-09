@@ -52,8 +52,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	if let Some(cursor) = app.options {
 		draw_options(frame, app, cursor);
 	}
-	if app.confirming_omissions {
-		draw_omission_prompt(frame, app);
+	if app.confirming_exclusions {
+		draw_exclusion_prompt(frame, app);
 	}
 }
 
@@ -177,29 +177,49 @@ fn next_step(app: &App) -> (Line<'static>, Color) {
 			]),
 			OK,
 		),
-		_ if app.can_analyze && app.omits_mods() => {
-			let recovery = app.input.as_ref().and_then(|input| input.recovery.as_ref());
-			let (omitted, included) = recovery.map_or((0, 0), |recovery| {
-				(recovery.omitted_mods.len(), recovery.included_mod_count)
-			});
+		_ if app.selectable && !app.problem_mods().is_empty() => {
+			let problems = app.problem_mods().len();
 			(
 				Line::from(vec![
 					Span::raw(format!(
-						"⚠ {omitted} of {mod_count} mods are unavailable. Press "
+						"⚠ {problems} of {mod_count} mods cannot be analyzed. Press "
 					)),
+					key("X"),
+					Span::raw(" to exclude them (or "),
+					key("x"),
+					Span::raw(" on one), then "),
 					key("a"),
-					Span::raw(format!(" to review them and analyze the other {included}.")),
+					Span::raw("."),
 				]),
 				WARN,
 			)
 		}
-		_ if app.can_analyze => (
+		_ if app.can_analyze() && !app.effective_exclusions().is_empty() => (
+			Line::from(vec![
+				Span::raw(format!(
+					"✔ Ready without {} excluded mods. Press ",
+					app.effective_exclusions().len()
+				)),
+				key("a"),
+				Span::raw(format!(" to analyze the other {}.", app.included_count())),
+			]),
+			OK,
+		),
+		_ if app.can_analyze() => (
 			Line::from(vec![
 				Span::raw("✔ Ready. Press "),
 				key("a"),
 				Span::raw(format!(" to analyze all {mod_count} mods.")),
 			]),
 			OK,
+		),
+		_ if app.selectable => (
+			Line::from(vec![
+				Span::raw("⚠ Every mod is excluded. Press "),
+				key("x"),
+				Span::raw(" on a mod to include it again."),
+			]),
+			WARN,
 		),
 		_ => (
 			Line::from(vec![
@@ -225,11 +245,18 @@ fn next_step(app: &App) -> (Line<'static>, Color) {
 
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 	let [banner_area, main] =
-		Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(area);
-	let (step, color) = next_step(app);
+		Layout::vertical([Constraint::Length(5), Constraint::Min(3)]).areas(area);
+	let (step, color) = match &app.refusal {
+		Some(refusal) => (Line::from(format!("✖ {refusal}")), BAD),
+		None => next_step(app),
+	};
+	let command = Line::from(vec![
+		Span::styled("CLI  ", Style::new().fg(DIM)),
+		Span::styled(app.cli_command(), Style::new().fg(Color::Gray)),
+	]);
 	frame.render_widget(
-		Paragraph::new(step)
-			.style(Style::new().fg(color).bold())
+		Paragraph::new(vec![step.style(Style::new().fg(color).bold()), command])
+			.wrap(Wrap { trim: false })
 			.block(panel(" Next step ", color)),
 		banner_area,
 	);
@@ -250,71 +277,83 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_mod_table(frame: &mut Frame<'_>, app: &App, mods: &[DetectedPlaysetMod], area: Rect) {
+	// The name and id always show; the version gives way on narrow screens.
+	let with_version = area.width >= 90;
 	let rows = mods
 		.iter()
 		.map(|playset_mod| {
 			let (status, color) = mod_status(app, playset_mod);
-			Row::new(vec![
+			let name_style = if app.is_excluded(playset_mod) {
+				Style::new().fg(DIM).crossed_out()
+			} else {
+				Style::new()
+			};
+			let mut cells = vec![
 				Cell::from(Span::styled(
 					format!("{:>3}", playset_mod.position),
 					Style::new().fg(DIM),
 				)),
-				Cell::from(playset_mod.name.clone()),
+				Cell::from(Span::styled(playset_mod.name.clone(), name_style)),
 				Cell::from(Span::styled(playset_mod.id.clone(), Style::new().fg(DIM))),
-				Cell::from(Span::styled(
+			];
+			if with_version {
+				cells.push(Cell::from(Span::styled(
 					playset_mod.version.clone().unwrap_or_default(),
 					Style::new().fg(DIM),
-				)),
-				Cell::from(Span::styled(format!("● {status}"), Style::new().fg(color))),
-			])
+				)));
+			}
+			cells.push(Cell::from(Span::styled(
+				format!("● {status}"),
+				Style::new().fg(color),
+			)));
+			Row::new(cells)
 		})
 		.collect::<Vec<_>>();
-	let header = Row::new(["  #", "Mod", "Workshop id", "Version", "Status"])
-		.style(Style::new().fg(ACCENT).bold());
-	let table = Table::new(
-		rows,
-		[
-			Constraint::Length(3),
-			Constraint::Fill(1),
-			Constraint::Length(11),
-			Constraint::Length(9),
-			Constraint::Length(13),
-		],
-	)
-	.header(header)
-	.column_spacing(2)
-	.row_highlight_style(Style::new().bg(Color::Rgb(40, 52, 64)).bold())
-	.highlight_symbol("▶ ")
-	.block(panel(
-		format!(" Mods · {} in load order (later wins) ", mods.len()),
-		ACCENT,
-	));
+	let (header, widths) = if with_version {
+		(
+			Row::new(["  #", "Mod", "Workshop id", "Version", "Status"]),
+			vec![
+				Constraint::Length(3),
+				Constraint::Min(12),
+				Constraint::Length(10),
+				Constraint::Length(9),
+				Constraint::Length(16),
+			],
+		)
+	} else {
+		(
+			Row::new(["  #", "Mod", "Workshop id", "Status"]),
+			vec![
+				Constraint::Length(3),
+				Constraint::Min(12),
+				Constraint::Length(10),
+				Constraint::Length(16),
+			],
+		)
+	};
+	let table = Table::new(rows, widths)
+		.header(header.style(Style::new().fg(ACCENT).bold()))
+		.column_spacing(1)
+		.row_highlight_style(Style::new().bg(Color::Rgb(40, 52, 64)).bold())
+		.highlight_symbol("▶ ")
+		.block(panel(
+			format!(" Mods · {} in load order (later wins) ", mods.len()),
+			ACCENT,
+		));
 	let mut state =
 		TableState::default().with_selected((!mods.is_empty()).then_some(app.mod_scroll));
 	frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn mod_status(app: &App, playset_mod: &DetectedPlaysetMod) -> (&'static str, Color) {
-	if !playset_mod.enabled {
-		return ("disabled", DIM);
-	}
-	if playset_mod.source_error.is_none() {
-		return ("ok", OK);
-	}
-	let omitted = app
-		.input
-		.as_ref()
-		.and_then(|input| input.recovery.as_ref())
-		.is_some_and(|recovery| {
-			recovery
-				.omitted_mods
-				.iter()
-				.any(|omitted| omitted.position == playset_mod.position)
-		});
-	if omitted {
-		("unavailable", WARN)
+	if app.is_excluded(playset_mod) {
+		("excluded", DIM)
+	} else if !playset_mod.enabled {
+		("disabled", DIM)
+	} else if playset_mod.source_error.is_some() {
+		("cannot analyze", BAD)
 	} else {
-		("error", BAD)
+		("ok", OK)
 	}
 }
 
@@ -365,10 +404,21 @@ fn draw_selected_mod(
 	}
 	if let Some(error) = &playset_mod.source_error {
 		lines.push(Line::from(Span::styled(
-			error.clone(),
+			clean(error),
 			Style::new().fg(color),
 		)));
 	}
+	lines.push(Line::from(vec![
+		key("x"),
+		Span::styled(
+			if app.is_excluded(playset_mod) {
+				" include in the analysis"
+			} else {
+				" exclude from the analysis"
+			},
+			Style::new().fg(DIM),
+		),
+	]));
 	frame.render_widget(
 		Paragraph::new(lines)
 			.wrap(Wrap { trim: false })
@@ -384,10 +434,7 @@ fn draw_issues(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			"✖ Analysis failed",
 			Style::new().fg(BAD).bold(),
 		)));
-		lines.push(Line::from(Span::styled(
-			error.clone(),
-			Style::new().fg(BAD),
-		)));
+		lines.push(Line::from(Span::styled(clean(error), Style::new().fg(BAD))));
 		lines.push(Line::from(""));
 	}
 	let issues = app
@@ -400,7 +447,7 @@ fn draw_issues(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			Style::new().fg(WARN).bold(),
 		)));
 		lines.push(Line::from(Span::styled(
-			issue.detail.clone(),
+			clean(&issue.detail),
 			Style::new().fg(DIM),
 		)));
 		if let Some(action) = &issue.action {
@@ -538,6 +585,12 @@ fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			Style::new().fg(DIM),
 		)],
 	};
+	if let Some(refusal) = &app.refusal {
+		search = vec![Span::styled(
+			format!("✖ {refusal}"),
+			Style::new().fg(BAD).bold(),
+		)];
+	}
 	if app.settings_changed() {
 		search.push(Span::styled(
 			"   Options changed: press r to re-analyze.",
@@ -695,35 +748,44 @@ pub fn unit_detail(unit: &MergeUnitOutcome) -> Text<'static> {
 	Text::from(lines)
 }
 
-fn draw_omission_prompt(frame: &mut Frame<'_>, app: &App) {
-	let Some(recovery) = app.input.as_ref().and_then(|input| input.recovery.as_ref()) else {
-		return;
-	};
+fn draw_exclusion_prompt(frame: &mut Frame<'_>, app: &App) {
+	let excluded = app
+		.mods()
+		.iter()
+		.filter(|playset_mod| app.is_excluded(playset_mod))
+		.collect::<Vec<_>>();
 	let mut lines = vec![
 		Line::from(Span::styled(
 			format!(
-				"{} of {} playset mods are unavailable.",
-				recovery.omitted_mods.len(),
-				recovery.source_mod_count
+				"Analyze {} of {} mods, leaving these {} out?",
+				app.included_count(),
+				app.mods().len(),
+				excluded.len()
 			),
 			Style::new().bold(),
 		)),
 		Line::from(Span::styled(
-			format!(
-				"Analyzing the other {} will not represent your full playset.",
-				recovery.included_mod_count
-			),
+			"The result will not represent your full playset. Nothing is changed in the launcher.",
 			Style::new().fg(DIM),
 		)),
 		Line::from(""),
 	];
-	for omitted in &recovery.omitted_mods {
+	for playset_mod in &excluded {
+		lines.push(Line::from(vec![
+			Span::styled(
+				format!("  #{} {}", playset_mod.position, playset_mod.name),
+				Style::new().fg(WARN),
+			),
+			Span::styled(format!("  {}", playset_mod.id), Style::new().fg(DIM)),
+		]));
 		lines.push(Line::from(Span::styled(
-			format!("  #{} {}", omitted.position, omitted.name),
-			Style::new().fg(WARN),
-		)));
-		lines.push(Line::from(Span::styled(
-			format!("     {}", omitted.reason),
+			format!(
+				"     {}",
+				playset_mod
+					.source_error
+					.as_deref()
+					.map_or_else(|| "excluded by you".to_string(), clean)
+			),
 			Style::new().fg(DIM),
 		)));
 	}
@@ -735,12 +797,12 @@ fn draw_omission_prompt(frame: &mut Frame<'_>, app: &App) {
 		Span::raw(" cancel"),
 	]));
 	let height = lines.len() as u16 + 2;
-	let popup = centered(frame.area(), 96, height);
+	let popup = centered(frame.area(), 100, height);
 	frame.render_widget(Clear, popup);
 	frame.render_widget(
 		Paragraph::new(lines)
 			.wrap(Wrap { trim: false })
-			.block(panel(" Unavailable mods ", WARN)),
+			.block(panel(" Leave mods out? ", WARN)),
 		popup,
 	);
 }
@@ -798,6 +860,10 @@ fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {
 		Style::new().fg(DIM),
 	)));
 	lines.push(Line::from(vec![
+		Span::styled("  CLI  ", Style::new().fg(DIM)),
+		Span::styled(app.cli_command(), Style::new().fg(Color::Gray)),
+	]));
+	lines.push(Line::from(vec![
 		Span::raw("  "),
 		key("↑↓"),
 		Span::raw(" select  "),
@@ -819,7 +885,7 @@ fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {
 
 fn footer_keys(app: &App) -> Line<'static> {
 	let pairs: &[(&str, &str)] = match (&app.phase, app.screen, app.focus) {
-		_ if app.confirming_omissions => &[("y", "analyze without them"), ("Esc", "cancel")],
+		_ if app.confirming_exclusions => &[("y", "analyze without them"), ("Esc", "cancel")],
 		_ if app.options.is_some() => &[("Space", "toggle"), ("Esc", "close")],
 		(Phase::Inspecting, _, _) => &[("o", "options"), ("q", "quit")],
 		(Phase::Analyzing { .. }, _, _) => &[("o", "options"), ("q", "cancel and quit")],
@@ -854,9 +920,18 @@ fn footer_keys(app: &App) -> Line<'static> {
 			("o", "options"),
 			("q", "quit"),
 		],
-		_ if app.can_analyze => &[
+		_ if app.can_analyze() => &[
 			("a", "analyze"),
 			("↑↓", "mods"),
+			("x", "exclude"),
+			("r", "refresh"),
+			("o", "options"),
+			("q", "quit"),
+		],
+		_ if app.selectable => &[
+			("↑↓", "mods"),
+			("x", "exclude"),
+			("X", "exclude broken"),
 			("r", "refresh"),
 			("o", "options"),
 			("q", "quit"),
@@ -925,6 +1000,11 @@ fn push_section(lines: &mut Vec<Line<'static>>, text: &'static str) {
 
 fn source_line(path: &str) -> Line<'static> {
 	Line::from(Span::styled(format!("       {path}"), Style::new().fg(DIM)))
+}
+
+/// Text for display, without Windows' verbatim `\\?\` path prefix.
+fn clean(text: &str) -> String {
+	text.replace(r"\\?\", "")
 }
 
 /// A path for display, without Windows' verbatim `\\?\` prefix.

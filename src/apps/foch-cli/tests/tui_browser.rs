@@ -7,9 +7,11 @@
 //! starts.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use foch::input::{Config, CurrentEu4Input, InputRequest, InputSource};
+use foch::input::{Config, CurrentEu4Input};
 use foch::merge::MergeDisposition;
-use foch_cli::tui::browser::{BrowserSource, Focus, Inspection, Phase, Screen, Session, draw};
+use foch_cli::tui::browser::{
+	AnalysisInput, BrowserSource, Focus, Inspection, Phase, Screen, Session, draw,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::json;
@@ -38,10 +40,10 @@ impl BrowserSource for FixtureSource {
 			.insert("eu4".to_string(), self.root.join("eu4-game"));
 		Inspection {
 			input: displayed_input(&self.playlist),
-			request: Some(InputRequest::new(
-				InputSource::from_path(self.playlist.clone()),
+			analysis: Some(AnalysisInput::Path {
+				path: self.playlist.clone(),
 				config,
-			)),
+			}),
 			game_base_available: false,
 		}
 	}
@@ -207,11 +209,19 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	session.wait_idle();
 	assert!(matches!(session.app().phase, Phase::Inspected));
 	assert_shows(&session, "Fixture playset");
-	assert_shows(&session, "1  Fixture A");
-	assert_shows(&session, "2  Fixture B");
+	assert_shows(&session, "1 Fixture A");
+	assert_shows(&session, "2 Fixture B");
 	assert_shows(&session, "Press  a  to analyze all 2 mods.");
 	key(&mut session, KeyCode::Down);
 	assert_shows(&session, "depends on: Fixture A");
+
+	// x leaves a mod out; the banner names the matching CLI command.
+	assert_shows(&session, "--out <OUT> --no-game-base --non-interactive");
+	key(&mut session, KeyCode::Char('x'));
+	assert_shows(&session, "--exclude 7252");
+	assert_shows(&session, "excluded");
+	key(&mut session, KeyCode::Char('x'));
+	assert!(session.app().excluded_positions().is_empty());
 
 	// Analyze every contributor.
 	key(&mut session, KeyCode::Char('a'));
@@ -286,7 +296,11 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	assert_eq!(source.inspections.load(Ordering::SeqCst), 2);
 	assert!(matches!(session.app().phase, Phase::Reviewed(_)));
 	assert_shows(&session, "4 unsupported_input 1");
-	let analyzed_with = session.app().analyzed_with.expect("analysis settings");
+	let (analyzed_with, _) = session
+		.app()
+		.analyzed_with
+		.clone()
+		.expect("analysis settings");
 	assert!(analyzed_with.ignore_replace_path);
 	assert!(!analyzed_with.game_base);
 	assert!(!session.app().settings_changed());

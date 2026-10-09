@@ -12,7 +12,9 @@ pub use app::{
 	disposition_label,
 };
 pub use render::{draw, unit_detail};
-pub use session::{BrowserSource, CurrentEu4Source, Inspection, Session, analyze_input};
+pub use session::{
+	AnalysisInput, BrowserSource, CurrentEu4Source, Inspection, Session, analyze_input,
+};
 
 use std::io::{self, IsTerminal};
 use std::sync::Arc;

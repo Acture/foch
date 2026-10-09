@@ -151,7 +151,7 @@ changes a reader invalidates the equivalences, not just their precision.
 | Command | Purpose |
 | --- | --- |
 | `foch` | Open a read-only terminal browser over the current EU4 playset and its full merge analysis. |
-| `foch input inspect` | Show the game and ordered mod inputs Foch will use. |
+| `foch input inspect` | Show the game and ordered mod inputs Foch will use; without a path, the current EU4 input bare `foch` shows (`--format json` for scripts). |
 | `foch check` | Parse and analyze an input without writing a merge. |
 | `foch merge` | Analyze and review a semantic result; commit only after confirmation. |
 | `foch graph` | Write call, definition-dependency, mod-dependency, and semantic graphs. |
@@ -159,6 +159,12 @@ changes a reader invalidates the equivalences, not just their precision.
 | `foch data` | Build, install, and inspect EU4 base-data snapshots. |
 | `foch cache` | Inspect and explicitly maintain persistent caches. |
 | `foch lsp` | Run the language server used by the VS Code extension. |
+
+Every analysis the browser runs is a `foch merge` it displays: without
+INPUT_SOURCE, `foch merge` analyzes the current EU4 playset exactly as the
+browser does, and `--exclude <WORKSHOP_ID|#POSITION>` leaves a mod out as the
+browser's `x` does. Agents and scripts can therefore reproduce any browser
+analysis from the command it shows.
 
 Run `foch <command> --help` for authoritative options.
 

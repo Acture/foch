@@ -1,8 +1,12 @@
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::cli::arg::MergeArgs;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use foch::input::CurrentEu4Input;
+use foch::input::{CurrentEu4Input, DetectedPlaysetMod};
 use foch::merge::{
 	AnalyzedMerge, MergeAnalysisStatus, MergeDisposition, MergeProgress, MergeReviewSummary,
 	MergeUnitOutcome, default_merge_workers,
@@ -156,7 +160,15 @@ pub struct App {
 	pub screen: Screen,
 	pub focus: Focus,
 	pub input: Option<CurrentEu4Input>,
-	pub can_analyze: bool,
+	/// Whether the current input snapshot can still be analyzed with some
+	/// selection of its mods. Each snapshot is analyzed at most once.
+	pub selectable: bool,
+	/// Mods, by playset id, the user left out of the next analysis. Kept
+	/// across refreshes; ids no longer in the playset are ignored.
+	pub excluded: BTreeSet<String>,
+	/// The INPUT_SOURCE `foch merge` takes for this input, or `None` for the
+	/// current EU4 playset.
+	pub source_path: Option<PathBuf>,
 	pub mod_scroll: usize,
 	pub filter: Option<MergeDisposition>,
 	pub query: String,
@@ -164,14 +176,16 @@ pub struct App {
 	pub selected: usize,
 	pub detail_scroll: u16,
 	pub settings: AnalysisSettings,
-	/// The settings of the analysis being run or browsed.
-	pub analyzed_with: Option<AnalysisSettings>,
+	/// The settings and exclusions of the analysis being run or browsed.
+	pub analyzed_with: Option<(AnalysisSettings, BTreeSet<String>)>,
 	/// Whether the input source can supply the EU4 base as an ancestor.
 	pub game_base_available: bool,
 	/// Cursor row while the options panel is open.
 	pub options: Option<usize>,
-	/// Asking whether to analyze without the playset's unavailable mods.
-	pub confirming_omissions: bool,
+	/// Asking whether to analyze without the excluded mods.
+	pub confirming_exclusions: bool,
+	/// Why the last key could not do what it asks, until the next key.
+	pub refusal: Option<String>,
 	analyze_after_inspection: bool,
 }
 
@@ -182,7 +196,9 @@ impl Default for App {
 			screen: Screen::Input,
 			focus: Focus::Units,
 			input: None,
-			can_analyze: false,
+			selectable: false,
+			excluded: BTreeSet::new(),
+			source_path: None,
 			mod_scroll: 0,
 			filter: None,
 			query: String::new(),
@@ -192,7 +208,8 @@ impl Default for App {
 			analyzed_with: None,
 			game_base_available: true,
 			options: None,
-			confirming_omissions: false,
+			confirming_exclusions: false,
+			refusal: None,
 			analyze_after_inspection: false,
 		}
 	}
@@ -214,18 +231,115 @@ impl App {
 		}
 	}
 
-	/// Whether the options changed since the browsed analysis ran.
+	/// Whether the options or exclusions changed since the browsed analysis
+	/// ran.
 	pub fn settings_changed(&self) -> bool {
 		self.analyzed_with
-			.is_some_and(|analyzed| analyzed != self.effective_settings())
+			.as_ref()
+			.is_some_and(|(settings, excluded)| {
+				*settings != self.effective_settings() || *excluded != self.effective_exclusions()
+			})
 	}
 
-	/// Whether analyzing this input leaves out unavailable playset mods,
-	/// which the user must accept explicitly.
-	pub fn omits_mods(&self) -> bool {
+	pub fn mods(&self) -> &[DetectedPlaysetMod] {
 		self.input
 			.as_ref()
-			.is_some_and(|input| input.recovery.is_some())
+			.and_then(|input| input.playset.as_ref())
+			.map_or(&[], |playset| &playset.mods)
+	}
+
+	pub fn is_excluded(&self, playset_mod: &DetectedPlaysetMod) -> bool {
+		self.excluded.contains(&playset_mod.id)
+	}
+
+	/// The exclusions that name a mod of the current playset.
+	pub fn effective_exclusions(&self) -> BTreeSet<String> {
+		self.mods()
+			.iter()
+			.filter(|playset_mod| self.is_excluded(playset_mod))
+			.map(|playset_mod| playset_mod.id.clone())
+			.collect()
+	}
+
+	/// Playset positions of the excluded mods, as input preparation takes
+	/// them.
+	pub fn excluded_positions(&self) -> BTreeSet<usize> {
+		self.mods()
+			.iter()
+			.filter(|playset_mod| self.is_excluded(playset_mod))
+			.map(|playset_mod| playset_mod.position)
+			.collect()
+	}
+
+	/// Mods that cannot be analyzed and are not excluded yet.
+	pub fn problem_mods(&self) -> Vec<&DetectedPlaysetMod> {
+		self.mods()
+			.iter()
+			.filter(|playset_mod| {
+				playset_mod.source_error.is_some() && !self.is_excluded(playset_mod)
+			})
+			.collect()
+	}
+
+	pub fn included_count(&self) -> usize {
+		self.mods()
+			.iter()
+			.filter(|playset_mod| !self.is_excluded(playset_mod))
+			.count()
+	}
+
+	pub fn can_analyze(&self) -> bool {
+		self.selectable
+			&& !self.is_working()
+			&& self.problem_mods().is_empty()
+			&& self.included_count() > 0
+	}
+
+	/// The `foch merge` arguments of the analysis `a` runs. The browser
+	/// analyzes through exactly these, writing nothing, so `cli_command`
+	/// reproduces its analysis.
+	pub fn merge_args(&self, out: PathBuf) -> MergeArgs {
+		let settings = self.effective_settings();
+		MergeArgs {
+			playset_path: self.source_path.clone(),
+			out,
+			force: settings.force,
+			no_game_base: !settings.game_base,
+			include_base: false,
+			exclude: self
+				.mods()
+				.iter()
+				.filter(|playset_mod| self.is_excluded(playset_mod))
+				.map(|playset_mod| playset_mod.id.clone())
+				.collect(),
+			gui_scroll_merge: settings.gui_scroll_merge,
+			ignore_replace_path: settings.ignore_replace_path,
+			ignore_dep: Vec::new(),
+			config: None,
+			provenance: false,
+			confirm: false,
+			non_interactive: true,
+			review_all: false,
+			cli_prompt: false,
+			jobs: (settings.merge_workers != default_merge_workers())
+				.then_some(settings.merge_workers),
+		}
+	}
+
+	/// The `foch` command that runs the analysis `a` would run, so a script
+	/// or agent can reproduce it without the browser.
+	pub fn cli_command(&self) -> String {
+		let args = self.merge_args(PathBuf::from("<OUT>")).command_line();
+		std::iter::once("foch".to_string())
+			.chain(args.into_iter().map(|arg| {
+				if arg.contains(char::is_whitespace) {
+					format!("\"{arg}\"")
+				} else {
+					arg
+				}
+			}))
+			.collect::<Vec<_>>()
+			.join(" ")
 	}
 
 	pub fn is_working(&self) -> bool {
@@ -259,8 +373,8 @@ impl App {
 
 	pub(super) fn inspecting(&mut self, analyze_after: bool) {
 		self.phase = Phase::Inspecting;
-		self.confirming_omissions = false;
-		self.can_analyze = false;
+		self.confirming_exclusions = false;
+		self.selectable = false;
 		self.analyze_after_inspection = analyze_after;
 		self.focus = Focus::Units;
 	}
@@ -268,32 +382,33 @@ impl App {
 	pub(super) fn inspected(
 		&mut self,
 		input: CurrentEu4Input,
-		can_analyze: bool,
+		selectable: bool,
 		game_base_available: bool,
 	) {
 		self.input = Some(input);
+		self.source_path = None;
 		self.game_base_available = game_base_available;
-		self.can_analyze = can_analyze;
+		self.selectable = selectable;
 		self.phase = Phase::Inspected;
 		self.screen = Screen::Input;
 		self.mod_scroll = 0;
 	}
 
 	pub(super) fn take_analyze_after_inspection(&mut self) -> bool {
-		if !std::mem::take(&mut self.analyze_after_inspection) || !self.can_analyze {
+		if !std::mem::take(&mut self.analyze_after_inspection) || !self.can_analyze() {
 			return false;
 		}
-		if self.omits_mods() {
-			// A refresh never omits mods on its own; ask again.
-			self.confirming_omissions = true;
+		if !self.effective_exclusions().is_empty() {
+			// A refresh never leaves mods out on its own; ask again.
+			self.confirming_exclusions = true;
 			return false;
 		}
 		true
 	}
 
 	pub(super) fn analyzing(&mut self) {
-		self.can_analyze = false;
-		self.analyzed_with = Some(self.effective_settings());
+		self.selectable = false;
+		self.analyzed_with = Some((self.effective_settings(), self.effective_exclusions()));
 		self.phase = Phase::Analyzing {
 			started: Instant::now(),
 			progress: None,
@@ -326,6 +441,7 @@ impl App {
 		if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
 			return Some(AppCommand::Quit);
 		}
+		self.refusal = None;
 		if self.focus == Focus::Search {
 			self.handle_search_key(key);
 			return None;
@@ -333,15 +449,15 @@ impl App {
 		if let Some(cursor) = self.options {
 			return self.handle_options_key(key, cursor);
 		}
-		if self.confirming_omissions {
+		if self.confirming_exclusions {
 			return match key.code {
 				KeyCode::Char('q') => Some(AppCommand::Quit),
 				KeyCode::Char('y') => {
-					self.confirming_omissions = false;
+					self.confirming_exclusions = false;
 					Some(AppCommand::Analyze)
 				}
 				KeyCode::Char('n') | KeyCode::Esc => {
-					self.confirming_omissions = false;
+					self.confirming_exclusions = false;
 					None
 				}
 				_ => None,
@@ -354,12 +470,16 @@ impl App {
 				return None;
 			}
 			KeyCode::Char('r') if !self.is_working() => return Some(AppCommand::Refresh),
-			KeyCode::Char('a') if self.can_analyze && !self.is_working() => {
-				if self.omits_mods() {
-					self.confirming_omissions = true;
+			KeyCode::Char('a') if self.can_analyze() => {
+				if !self.effective_exclusions().is_empty() {
+					self.confirming_exclusions = true;
 					return None;
 				}
 				return Some(AppCommand::Analyze);
+			}
+			KeyCode::Char('a') => {
+				self.refusal = Some(self.analyze_refusal());
+				return None;
 			}
 			KeyCode::Char('i') | KeyCode::Char('p') if self.analysis().is_some() => {
 				self.screen = match self.screen {
@@ -375,6 +495,31 @@ impl App {
 			Screen::Review => self.handle_review_key(key),
 		}
 		None
+	}
+
+	/// Why `a` cannot start an analysis right now.
+	fn analyze_refusal(&self) -> String {
+		let problems = self.problem_mods().len();
+		match self.phase {
+			Phase::Inspecting => {
+				"Still inspecting the input; analysis can start when it finishes.".to_string()
+			}
+			Phase::Analyzing { .. } => "An analysis is already running.".to_string(),
+			Phase::Reviewed(_) | Phase::Failed(_) => {
+				"This input snapshot was already analyzed. Press r to re-inspect and analyze again."
+					.to_string()
+			}
+			Phase::Inspected if !self.selectable => {
+				"Cannot analyze: the issues listed under Issues block this input. Fix them, then press r."
+					.to_string()
+			}
+			Phase::Inspected if problems > 0 => format!(
+				"{problems} mod{} cannot be analyzed. Press X to exclude {}, or x on a selected mod.",
+				if problems == 1 { "" } else { "s" },
+				if problems == 1 { "it" } else { "them all" }
+			),
+			Phase::Inspected => "Every mod is excluded; press x to include one again.".to_string(),
+		}
 	}
 
 	fn handle_options_key(&mut self, key: KeyEvent, cursor: usize) -> Option<AppCommand> {
@@ -398,11 +543,27 @@ impl App {
 	}
 
 	fn handle_input_key(&mut self, key: KeyEvent) {
-		let last = self
-			.input
-			.as_ref()
-			.and_then(|input| input.playset.as_ref())
-			.map_or(0, |playset| playset.mods.len().saturating_sub(1));
+		match key.code {
+			KeyCode::Char('x') => {
+				if let Some(id) = self.mods().get(self.mod_scroll).map(|m| m.id.clone())
+					&& !self.excluded.remove(&id)
+				{
+					self.excluded.insert(id);
+				}
+				return;
+			}
+			KeyCode::Char('X') => {
+				let problems = self
+					.problem_mods()
+					.into_iter()
+					.map(|playset_mod| playset_mod.id.clone())
+					.collect::<Vec<_>>();
+				self.excluded.extend(problems);
+				return;
+			}
+			_ => {}
+		}
+		let last = self.mods().len().saturating_sub(1);
 		self.mod_scroll = step(self.mod_scroll, key.code, last);
 		if key.code == KeyCode::Esc && self.analysis().is_some() {
 			self.screen = Screen::Review;
@@ -507,20 +668,26 @@ mod tests {
 	use super::*;
 	use serde_json::json;
 
-	fn input_omitting_one_mod() -> CurrentEu4Input {
+	/// Mod 2 cannot be analyzed; mod 1 can.
+	fn input_with_a_broken_mod() -> CurrentEu4Input {
+		let playset_mod = |position: usize, id: &str, error: Option<&str>| {
+			json!({
+				"id": id, "name": format!("Mod {id}"), "position": position, "enabled": true,
+				"workshopId": id, "workshopManifestId": null, "version": null,
+				"declaredDependencies": [], "descriptorPath": null, "sourceError": error
+			})
+		};
 		serde_json::from_value(json!({
-			"readiness": "ready_with_omissions",
+			"readiness": "blocked",
 			"game": { "name": "Europa Universalis IV", "version": "1.37.5", "installPath": null },
 			"baseData": { "state": "ready", "version": "1.37.5", "detail": "ready" },
-			"playset": null,
+			"playset": {
+				"name": "Current EU4 playset",
+				"sourcePath": "dlc_load.json",
+				"mods": [playset_mod(1, "41", None), playset_mod(2, "43", Some("missing"))]
+			},
 			"issues": [],
-			"recovery": {
-				"sourceModCount": 2,
-				"omittedMods": [
-					{ "id": "43", "name": "ugc_43", "position": 2, "reason": "missing" }
-				],
-				"includedModCount": 1
-			}
+			"recovery": null
 		}))
 		.expect("input view")
 	}
@@ -530,30 +697,99 @@ mod tests {
 	}
 
 	#[test]
-	fn analyzing_without_unavailable_mods_needs_explicit_consent() {
+	fn a_broken_mod_must_be_excluded_and_the_exclusion_confirmed() {
 		let mut app = App::default();
-		app.inspected(input_omitting_one_mod(), true, true);
+		app.inspected(input_with_a_broken_mod(), true, true);
+
+		assert!(!app.can_analyze());
+		assert_eq!(press(&mut app, KeyCode::Char('a')), None);
+		assert!(
+			app.refusal
+				.as_deref()
+				.is_some_and(|refusal| refusal.contains("Press X"))
+		);
+
+		press(&mut app, KeyCode::Char('X'));
+		assert_eq!(app.excluded_positions(), BTreeSet::from([2]));
+		assert!(app.can_analyze());
+		assert!(app.cli_command().ends_with("--exclude 43"));
 
 		assert_eq!(press(&mut app, KeyCode::Char('a')), None);
-		assert!(app.confirming_omissions);
+		assert!(app.confirming_exclusions);
 		assert_eq!(press(&mut app, KeyCode::Esc), None);
-		assert!(!app.confirming_omissions);
-
+		assert!(!app.confirming_exclusions);
 		press(&mut app, KeyCode::Char('a'));
 		assert_eq!(
 			press(&mut app, KeyCode::Char('y')),
 			Some(AppCommand::Analyze)
 		);
-		assert!(!app.confirming_omissions);
+	}
+
+	/// The command the browser shows parses, through the CLI's own parser,
+	/// back to exactly the arguments the browser analyzes with.
+	#[test]
+	fn the_shown_command_is_the_analysis_the_browser_runs() {
+		use crate::cli::arg::{FochCli, FochCliCommands};
+		use clap::Parser;
+
+		let mut app = App::default();
+		app.inspected(input_with_a_broken_mod(), true, true);
+		app.excluded.insert("43".to_string());
+		app.settings.game_base = false;
+		app.settings.gui_scroll_merge = true;
+		app.settings.ignore_replace_path = true;
+		app.settings.force = true;
+		app.settings.merge_workers = NonZeroUsize::new(3).expect("non-zero");
+		for source_path in [None, Some(PathBuf::from("dir with space/dlc_load.json"))] {
+			app.source_path = source_path;
+			let expected = app.merge_args(PathBuf::from("<OUT>"));
+			let argv = std::iter::once("foch".to_string()).chain(expected.command_line());
+			let parsed = FochCli::try_parse_from(argv).expect("shown command parses");
+			let Some(FochCliCommands::Merge(parsed)) = parsed.command else {
+				panic!("shown command is not `foch merge`");
+			};
+			assert_eq!(parsed, expected);
+		}
+		assert!(
+			app.cli_command()
+				.starts_with("foch merge \"dir with space/dlc_load.json\"")
+		);
 	}
 
 	#[test]
-	fn a_refresh_asks_again_before_omitting_mods() {
+	fn x_toggles_any_selected_mod() {
 		let mut app = App::default();
+		app.inspected(input_with_a_broken_mod(), true, true);
+
+		press(&mut app, KeyCode::Char('x'));
+		assert_eq!(app.excluded_positions(), BTreeSet::from([1]));
+		press(&mut app, KeyCode::Char('x'));
+		assert!(app.excluded_positions().is_empty());
+	}
+
+	#[test]
+	fn a_blocked_analyze_key_says_why_until_the_next_key() {
+		let mut app = App::default();
+		app.inspected(input_with_a_broken_mod(), false, true);
+
+		assert_eq!(press(&mut app, KeyCode::Char('a')), None);
+		assert!(
+			app.refusal
+				.as_deref()
+				.is_some_and(|refusal| refusal.contains("press r"))
+		);
+		press(&mut app, KeyCode::Down);
+		assert!(app.refusal.is_none());
+	}
+
+	#[test]
+	fn a_refresh_asks_again_before_leaving_mods_out() {
+		let mut app = App::default();
+		app.excluded.insert("43".to_string());
 		app.inspecting(true);
-		app.inspected(input_omitting_one_mod(), true, true);
+		app.inspected(input_with_a_broken_mod(), true, true);
 
 		assert!(!app.take_analyze_after_inspection());
-		assert!(app.confirming_omissions);
+		assert!(app.confirming_exclusions);
 	}
 }
