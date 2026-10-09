@@ -13,8 +13,8 @@ use ratatui::widgets::{
 };
 
 use super::app::{
-	App, DISPOSITIONS, Focus, HitAreas, InputPane, KEY_HELP, OPTION_COUNT, Phase, Screen,
-	disposition_label,
+	App, BUILD_STAGES, DISPOSITIONS, Focus, HitAreas, InputPane, KEY_HELP, OPTION_COUNT, Phase,
+	Screen, disposition_label,
 };
 
 const ACCENT: Color = Color::Cyan;
@@ -42,7 +42,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	draw_top_bar(frame, app, top);
 	draw_header(frame, app, header);
 	match (&app.phase, app.screen) {
-		(Phase::Building { started }, _) => draw_building(frame, app, body, started.elapsed()),
+		(
+			Phase::Building {
+				started,
+				stage,
+				finished,
+			},
+			_,
+		) => draw_building(
+			frame,
+			app,
+			body,
+			started.elapsed(),
+			stage.as_deref(),
+			*finished,
+		),
 		(Phase::Analyzing { started, progress }, _) => {
 			let elapsed = progress
 				.map(|progress| progress.elapsed)
@@ -181,31 +195,71 @@ fn draw_build_prompt(frame: &mut Frame<'_>, app: &App) {
 	);
 }
 
-fn draw_building(frame: &mut Frame<'_>, app: &App, area: Rect, elapsed: std::time::Duration) {
-	let popup = centered(area, 80, 8);
-	let spinner = ["◐", "◓", "◑", "◒"][(elapsed.as_millis() / 250 % 4) as usize];
+fn draw_building(
+	frame: &mut Frame<'_>,
+	app: &App,
+	area: Rect,
+	elapsed: std::time::Duration,
+	stage: Option<&str>,
+	finished: usize,
+) {
+	let popup = centered(area, 80, BUILD_STAGES.len() as u16 + 8);
+	let block = panel(" Building EU4 base data ", ACCENT);
+	let inner = block.inner(popup);
+	frame.render_widget(Clear, popup);
+	frame.render_widget(block, popup);
+	let [from_area, gauge_area, _, stages_area, note_area] = Layout::vertical([
+		Constraint::Length(1),
+		Constraint::Length(1),
+		Constraint::Length(1),
+		Constraint::Length(BUILD_STAGES.len() as u16),
+		Constraint::Min(1),
+	])
+	.areas(inner);
 	let from = app
 		.data_build_args()
 		.map(|args| display(&args.from_game_path))
 		.unwrap_or_default();
-	let lines = vec![
-		Line::from(Span::styled(
-			format!("{spinner} Building EU4 base data… {}s", elapsed.as_secs()),
-			Style::new().fg(ACCENT).bold(),
-		)),
-		Line::from(Span::styled(format!("from {from}"), Style::new().fg(DIM))),
-		Line::from(""),
-		Line::from(Span::styled(
-			"The input is inspected again when the build finishes.",
-			Style::new().fg(DIM),
-		)),
-	];
-	frame.render_widget(Clear, popup);
 	frame.render_widget(
-		Paragraph::new(lines)
-			.wrap(Wrap { trim: false })
-			.block(panel(" Base data ", ACCENT)),
-		popup,
+		Paragraph::new(Span::styled(format!("  from {from}"), Style::new().fg(DIM))),
+		from_area,
+	);
+	let total = BUILD_STAGES.len();
+	frame.render_widget(
+		Gauge::default()
+			.gauge_style(Style::new().fg(ACCENT).bg(Color::Rgb(30, 36, 44)))
+			.ratio((finished as f64 / total as f64).clamp(0.0, 1.0))
+			.label(format!(
+				"stage {}/{total}  {}s",
+				(finished + 1).min(total),
+				elapsed.as_secs()
+			)),
+		gauge_area,
+	);
+	let spinner = ["◐", "◓", "◑", "◒"][(elapsed.as_millis() / 250 % 4) as usize];
+	let current = stage.and_then(|name| BUILD_STAGES.iter().position(|(key, _)| *key == name));
+	let lines = BUILD_STAGES
+		.iter()
+		.enumerate()
+		.map(|(index, (_, label))| {
+			let (mark, style) = if index < finished {
+				("✔", Style::new().fg(OK))
+			} else if Some(index) == current || (current.is_none() && index == finished) {
+				(spinner, Style::new().fg(ACCENT).bold())
+			} else {
+				("○", Style::new().fg(DIM))
+			};
+			Line::from(Span::styled(format!("  {mark} {label}"), style))
+		})
+		.collect::<Vec<_>>();
+	frame.render_widget(Paragraph::new(lines), stages_area);
+	frame.render_widget(
+		Paragraph::new(Span::styled(
+			"  Parsing takes most of the time. The input is inspected again when the build finishes.",
+			Style::new().fg(DIM),
+		))
+		.wrap(Wrap { trim: false }),
+		note_area,
 	);
 }
 
@@ -1162,6 +1216,20 @@ fn footer_keys(app: &App) -> Line<'static> {
 			("q", "quit"),
 		],
 	};
+	let mut pairs = pairs.to_vec();
+	let offers_build = matches!(
+		app.phase,
+		Phase::Inspected | Phase::Reviewed(_) | Phase::Failed(_)
+	) && !app.game_base_available
+		&& app.options.is_none()
+		&& !app.confirming_exclusions
+		&& !app.confirming_build
+		&& !app.help
+		&& app.focus != Focus::Search
+		&& app.data_build_args().is_some();
+	if offers_build {
+		pairs.insert(0, ("B", "build base data"));
+	}
 	let mut spans = vec![Span::raw(" ")];
 	for (name, action) in pairs {
 		spans.push(key(name));

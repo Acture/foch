@@ -230,6 +230,10 @@ pub enum Phase {
 	/// Building EU4 base data from the game installation.
 	Building {
 		started: Instant,
+		/// The stage running now, by its name in [`BUILD_STAGES`].
+		stage: Option<String>,
+		/// How many stages have finished.
+		finished: usize,
 	},
 }
 
@@ -255,6 +259,19 @@ pub enum Effect {
 	/// selection.
 	MouseCapture(bool),
 }
+
+/// The stages of a base data build, as `foch data build` names them, with
+/// what each does.
+pub const BUILD_STAGES: [(&str, &str); 8] = [
+	("detect_version", "Detect the game version"),
+	("collect_inventory", "Collect game files"),
+	("discover_documents", "Find script documents"),
+	("parse_documents", "Parse every document"),
+	("build_semantic_index", "Index definitions and references"),
+	("materialize_snapshot", "Assemble the snapshot"),
+	("encode_snapshot", "Encode the snapshot"),
+	("write_outputs", "Install into Foch's data directory"),
+];
 
 /// Every key, with the `foch` command that does the same outside the
 /// browser, as the help panel lists them.
@@ -507,7 +524,21 @@ impl App {
 	pub(super) fn building(&mut self) {
 		self.phase = Phase::Building {
 			started: Instant::now(),
+			stage: None,
+			finished: 0,
 		};
+	}
+
+	pub(super) fn build_stage(&mut self, name: String, done: bool) {
+		if let Phase::Building {
+			stage, finished, ..
+		} = &mut self.phase
+		{
+			if done {
+				*finished += 1;
+			}
+			*stage = Some(name);
+		}
 	}
 
 	pub(super) fn built(&mut self, result: Result<Vec<String>, String>) {
@@ -1370,6 +1401,44 @@ mod tests {
 			panic!("shown command is not `foch data build`");
 		};
 		assert_eq!(parsed, expected);
+	}
+
+	#[test]
+	fn missing_base_data_offers_b_in_the_footer_and_the_build_shows_its_stages() {
+		use ratatui::Terminal;
+		use ratatui::backend::TestBackend;
+
+		let mut input = input_with_a_broken_mod();
+		input.game.install_path = Some(PathBuf::from("G:/EU4"));
+		let mut app = App::default();
+		app.inspected(input, true, false);
+		let screen = |app: &App| {
+			let mut terminal = Terminal::new(TestBackend::new(160, 40)).expect("terminal");
+			terminal
+				.draw(|frame| super::super::render::draw(frame, app))
+				.expect("draw");
+			let buffer = terminal.backend().buffer().clone();
+			(0..buffer.area.height)
+				.map(|y| {
+					(0..buffer.area.width)
+						.map(|x| buffer[(x, y)].symbol())
+						.collect::<String>()
+				})
+				.collect::<Vec<_>>()
+				.join(
+					"
+",
+				)
+		};
+		assert!(screen(&app).contains(" B  build base data"));
+
+		app.building();
+		app.build_stage("detect_version".to_string(), false);
+		app.build_stage("detect_version".to_string(), true);
+		app.build_stage("collect_inventory".to_string(), false);
+		let shown = screen(&app);
+		assert!(shown.contains("stage 2/8"), "{shown}");
+		assert!(shown.contains("✔ Detect the game version"), "{shown}");
 	}
 
 	#[test]

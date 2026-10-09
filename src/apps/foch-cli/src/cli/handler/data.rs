@@ -41,7 +41,8 @@ fn handle_data_install(args: &DataInstallArgs, config: Config) -> HandlerResult 
 }
 
 fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
-	for line in run_data_build(args, config)? {
+	let observer = BaseBuildObserver::stderr(&args.game_name);
+	for line in run_data_build(args, config, observer)? {
 		println!("{line}");
 	}
 	Ok(0)
@@ -53,6 +54,7 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 pub fn run_data_build(
 	args: &DataBuildArgs,
 	config: &Config,
+	mut observer: BaseBuildObserver,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
 	let mut report = Vec::new();
 	if !args.install && args.output_dir.is_none() && !args.release_asset {
@@ -69,7 +71,6 @@ pub fn run_data_build(
 	};
 	let filter = FileFilter::new(game, &config.extra_ignore_patterns)
 		.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
-	let mut observer = BaseBuildObserver::stderr(game.key());
 	let build = build_base_snapshot_with_observer(
 		&game,
 		&args.from_game_path,

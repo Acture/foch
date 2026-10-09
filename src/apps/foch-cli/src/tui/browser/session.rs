@@ -6,6 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::KeyEvent;
+use foch::game::eu4::base::snapshot::BaseBuildObserver;
 use foch::input::{Config, CurrentEu4Input, inspect_current_eu4_input};
 use foch::merge::{CancellationToken, MergeError, MergeProgress, ProgressObserver, analyze_merge};
 
@@ -82,6 +83,11 @@ enum WorkerMessage {
 	Built {
 		generation: u64,
 		result: Result<Vec<String>, String>,
+	},
+	BuildStage {
+		generation: u64,
+		name: String,
+		done: bool,
 	},
 }
 
@@ -238,6 +244,14 @@ impl Session {
 				self.app.progress(progress);
 				true
 			}
+			WorkerMessage::BuildStage {
+				generation,
+				name,
+				done,
+			} if generation == self.generation => {
+				self.app.build_stage(name, done);
+				true
+			}
 			WorkerMessage::Built { generation, result } if generation == self.generation => {
 				self.busy = false;
 				self.app.built(result);
@@ -293,11 +307,21 @@ impl Session {
 		self.app.building();
 		let generation = self.generation;
 		let tx = self.tx.clone();
+		let stages = self.tx.clone();
 		spawn_with_merge_stack(move || {
+			let observer = BaseBuildObserver::silent(&args.game_name).with_stage_listener(
+				Box::new(move |name: &str, done: bool| {
+					let _ = stages.send(WorkerMessage::BuildStage {
+						generation,
+						name: name.to_string(),
+						done,
+					});
+				}),
+			);
 			let result = catch_unwind(AssertUnwindSafe(|| {
 				let config =
 					foch::input::load_config_read_only().map_err(|error| error.to_string())?;
-				crate::cli::handler::data::run_data_build(&args, &config)
+				crate::cli::handler::data::run_data_build(&args, &config, observer)
 					.map_err(|error| error.to_string())
 			}))
 			.unwrap_or_else(|panic| {
