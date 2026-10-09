@@ -5,6 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 pub(crate) mod generation;
 mod layer;
@@ -54,7 +55,8 @@ static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Publish `bytes` at `path` through a temporary sibling that no other writer
 /// shares, then rename it into place. Merge workers store cache entries
 /// concurrently, and two writers of the same entry must not truncate or rename
-/// one temporary file under each other; the last complete rename wins.
+/// one temporary file under each other. Writers of one entry write equivalent
+/// bytes, so whichever complete file is published last stands.
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 	let (temporary, mut file) = loop {
 		let sequence: u64 = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -71,12 +73,46 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 	};
 	let written: io::Result<()> = file.write_all(bytes).and_then(|()| {
 		drop(file);
-		fs::rename(&temporary, path)
+		rename_replacing(&temporary, path)
 	});
 	if written.is_err() {
 		let _ = fs::remove_file(&temporary);
 	}
 	written
+}
+
+/// Rename `from` over `to`. Windows refuses (access denied) to replace a
+/// file while another writer is replacing it or a handle holds it without
+/// delete sharing. Those last moments, so the rename is retried with backoff
+/// for a bounded time. A writer that keeps losing the race to other writers
+/// of the same entry gives way: an equivalent complete file is already
+/// published, so its own copy is discarded instead of failing the write.
+fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
+	const RETRY_FOR: Duration = Duration::from_secs(2);
+	const MAX_BACKOFF: Duration = Duration::from_millis(50);
+	let deadline = Instant::now() + RETRY_FOR;
+	let mut backoff = Duration::from_millis(1);
+	loop {
+		match fs::rename(from, to) {
+			Err(error)
+				if cfg!(windows)
+					&& error.kind() == io::ErrorKind::PermissionDenied
+					&& Instant::now() < deadline =>
+			{
+				std::thread::sleep(backoff);
+				backoff = (backoff * 2).min(MAX_BACKOFF);
+			}
+			Err(error)
+				if cfg!(windows)
+					&& error.kind() == io::ErrorKind::PermissionDenied
+					&& to.is_file() =>
+			{
+				let _ = fs::remove_file(from);
+				return Ok(());
+			}
+			result => return result,
+		}
+	}
 }
 
 /// `path` with `.<pid>.<sequence>.tmp` appended to its extension. The
@@ -230,6 +266,32 @@ mod tests {
 			super::temporary_sibling(path, 7).as_os_str(),
 			OsStr::from_bytes(&bytes)
 		);
+	}
+
+	/// Windows refuses to replace a file while another handle holds it
+	/// without delete sharing, as a concurrent writer or reader briefly
+	/// does. The write waits for the handle instead of failing.
+	#[cfg(windows)]
+	#[test]
+	fn a_write_waits_for_a_brief_exclusive_hold_on_the_entry() {
+		use std::os::windows::fs::OpenOptionsExt;
+
+		let root: tempfile::TempDir = tempfile::tempdir().expect("cache root");
+		let entry: std::path::PathBuf = root.path().join("entry.bin");
+		std::fs::write(&entry, b"old").expect("seed entry");
+		let held = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(0)
+			.open(&entry)
+			.expect("hold entry exclusively");
+		let release = std::thread::spawn(move || {
+			std::thread::sleep(std::time::Duration::from_millis(150));
+			drop(held);
+		});
+
+		super::write_atomically(&entry, b"new").expect("write after the hold ends");
+		release.join().expect("release thread");
+		assert_eq!(std::fs::read(&entry).expect("read entry"), b"new");
 	}
 
 	#[test]

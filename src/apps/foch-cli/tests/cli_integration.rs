@@ -339,6 +339,89 @@ fn top_level_help_exposes_only_current_merge_commands() {
 }
 
 #[test]
+fn bare_foch_needs_a_terminal_and_initializes_nothing() {
+	let tmp = TempDir::new().expect("temp dir");
+	let config_dir = tmp.path().join("absent-config");
+	let output = Command::new(env!("CARGO_BIN_EXE_foch"))
+		.env("FOCH_CONFIG_DIR", &config_dir)
+		.env("HOME", tmp.path().join("home"))
+		.env("FOCH_CACHE_ROOT", tmp.path().join("cache"))
+		.output()
+		.expect("run bare foch");
+
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+	assert!(stderr.contains("needs a TTY"), "stderr: {stderr}");
+	assert!(output.stdout.is_empty());
+	assert!(
+		!config_dir.exists(),
+		"bare foch must not initialize configuration"
+	);
+}
+
+/// Without INPUT_SOURCE, `foch input inspect` reports the current EU4 input
+/// bare `foch` shows. What it finds depends on the machine, so only the
+/// shape is checked.
+#[test]
+fn input_inspect_without_a_source_describes_the_current_input_as_json() {
+	let tmp = TempDir::new().expect("temp dir");
+	let config_dir = tmp.path().join("absent-config");
+	let output = Command::new(env!("CARGO_BIN_EXE_foch"))
+		.env("FOCH_CONFIG_DIR", &config_dir)
+		.env("HOME", tmp.path().join("home"))
+		.env("FOCH_CACHE_ROOT", tmp.path().join("cache"))
+		.args(["input", "inspect", "--format", "json"])
+		.output()
+		.expect("run input inspect");
+
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	assert!(
+		matches!(output.status.code(), Some(0 | 2)),
+		"stderr: {}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let input: serde_json::Value = serde_json::from_str(&stdout).expect("JSON input");
+	assert!(input.get("readiness").is_some(), "{stdout}");
+	assert!(input.get("issues").is_some(), "{stdout}");
+	assert!(
+		!config_dir.exists(),
+		"inspection must not create configuration"
+	);
+}
+
+#[test]
+fn exclusions_and_json_apply_only_to_the_current_input() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist = tmp.path().join("playlist.json");
+	write_dlc_load(&playlist, &[("7251", "A")]);
+	write_descriptor(&tmp.path().join("7251"), "mod-a");
+	let playlist = path_text(&playlist).to_owned();
+	let out = path_text(&tmp.path().join("out")).to_owned();
+
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"merge",
+			playlist.as_str(),
+			"--out",
+			out.as_str(),
+			"--non-interactive",
+			"--exclude",
+			"7251",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 1, "stderr: {stderr}");
+	assert!(stderr.contains("omit INPUT_SOURCE"), "stderr: {stderr}");
+
+	let (code, _stdout, stderr) = run_foch(
+		&["input", "inspect", playlist.as_str(), "--format", "json"],
+		tmp.path(),
+	);
+	assert_eq!(code, 1, "stderr: {stderr}");
+	assert!(stderr.contains("omit INPUT_SOURCE"), "stderr: {stderr}");
+}
+
+#[test]
 fn version_names_the_embedded_cwt_schema_and_any_override() {
 	let version = |override_dir: Option<&str>| {
 		let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));

@@ -32,10 +32,15 @@ fn main() {
 
 fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	let cliargs = arg::FochCli::parse();
+	// Bare `foch` opens the browser before any logging is installed: stderr
+	// shares the terminal the browser draws on.
+	let Some(command) = &cliargs.command else {
+		return Ok(foch_cli::tui::browser::run()?);
+	};
 	let verbose_level = cliargs.verbose.tracing_level_filter();
-	let show_semantic_graph_progress = matches!(&cliargs.command, arg::FochCliCommands::Graph(graph_args) if graph_args.mode == arg::GraphModeArg::Semantic);
+	let show_semantic_graph_progress = matches!(command, arg::FochCliCommands::Graph(graph_args) if graph_args.mode == arg::GraphModeArg::Semantic);
 	let show_check_progress = matches!(
-		&cliargs.command,
+		command,
 		arg::FochCliCommands::Check(_) | arg::FochCliCommands::Merge(_)
 	);
 	let semantic_graph_progress_level = if show_semantic_graph_progress {
@@ -87,7 +92,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 
 	tracing::subscriber::set_global_default(subscriber)?;
 
-	match &cliargs.command {
+	match command {
 		arg::FochCliCommands::Test(args) => return handler::testing::handle_test(args),
 		arg::FochCliCommands::Cache(cache_args) => return handler::cache::handle_cache(cache_args),
 		arg::FochCliCommands::Input(input_args) => {
@@ -98,7 +103,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	}
 
 	let (mut config, config_file) = load_or_init_config()?;
-	match &cliargs.command {
+	match command {
 		arg::FochCliCommands::Check(check_args) => handler::check::handle_check(check_args, config),
 		arg::FochCliCommands::Merge(merge_args) => handler::merge::handle_merge(merge_args, config),
 		arg::FochCliCommands::Graph(graph_args) => handler::graph::handle_graph(graph_args, config),

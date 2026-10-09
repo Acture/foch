@@ -1,7 +1,10 @@
 use crate::cli::arg::MergeArgs;
 use crate::cli::handler::{HandlerResult, resolve_input_source};
 use foch::game::eu4::analysis::report::{merge_plan_exit_code, render_merge_report_text};
-use foch::input::{Config, InputRequest, InputSource, resolve_product_input_manifest};
+use foch::input::{
+	Config, CurrentEu4Input, InputRequest, InputSource, inspect_current_eu4_input,
+	resolve_product_input_manifest,
+};
 use foch::merge::{
 	AnalyzedMerge, CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
 	MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition, MergeUnitKind,
@@ -17,23 +20,70 @@ use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
-	let source = resolve_input_source(merge_args.playset_path.as_deref(), &config)?;
 	let paradox_data_path = config.paradox_data_path.clone();
-	let request = InputRequest::new(source.clone(), config);
+	let PreparedMerge { request, options } = prepare_merge(merge_args, config, None)?;
+	let analyzed = analyze_merge(
+		request,
+		options,
+		&NoopProgressObserver,
+		&CancellationToken::new(),
+	)?;
+	report_and_commit(merge_args, analyzed, paradox_data_path)
+}
+
+/// The frozen input and analysis options of one `foch merge`.
+pub struct PreparedMerge {
+	pub request: InputRequest,
+	pub options: MergeAnalysisOptions,
+}
+
+/// Turn `foch merge` arguments into the input and options analysis takes.
+/// Without INPUT_SOURCE the input is the current EU4 playset, inspected as
+/// bare `foch` and the desktop app inspect it; `current` supplies an
+/// inspection already made. Bare `foch` analyzes through this function with
+/// the arguments it shows as a command, so the two cannot diverge.
+pub fn prepare_merge(
+	merge_args: &MergeArgs,
+	config: Config,
+	current: Option<CurrentEu4Input>,
+) -> Result<PreparedMerge, Box<dyn std::error::Error>> {
+	let (source, request) = match &merge_args.playset_path {
+		Some(path) => {
+			if !merge_args.exclude.is_empty() {
+				return Err(
+					"`--exclude` selects mods of the current EU4 playset; omit INPUT_SOURCE".into(),
+				);
+			}
+			let source = resolve_input_source(Some(path), &config)?;
+			(source.clone(), InputRequest::new(source, config))
+		}
+		None => {
+			let current = current.unwrap_or_else(inspect_current_eu4_input);
+			let request =
+				current_input_excluding(current, &merge_args.exclude, !merge_args.no_game_base)?;
+			(request.source.clone(), request)
+		}
+	};
 	let local_config = load_local_foch_config(merge_args, &source)?;
-	let fingerprint = compute_fingerprint_for_source(&request, &local_config);
+	// The fingerprint hashes the whole playset file, which an exclusion no
+	// longer matches; the report then carries no fingerprint.
+	let fingerprint = if merge_args.exclude.is_empty() {
+		compute_fingerprint_for_source(&request, &local_config)
+	} else {
+		None
+	};
 	let dep_overrides = applied_dep_overrides(merge_args, &local_config);
 	let (interactive_conflict_handler, interactive_resolution_config_path) =
 		build_interactive_conflict_handler(merge_args, &source);
-	let analyzed = analyze_merge(
+	Ok(PreparedMerge {
 		request,
-		MergeAnalysisOptions {
+		options: MergeAnalysisOptions {
 			out_dir: merge_args.out.clone(),
 			include_game_base: !merge_args.no_game_base,
 			include_base: merge_args.include_base,
@@ -54,9 +104,14 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 				.unwrap_or_else(foch::merge::default_merge_workers),
 			retained_paths: None,
 		},
-		&NoopProgressObserver,
-		&CancellationToken::new(),
-	)?;
+	})
+}
+
+fn report_and_commit(
+	merge_args: &MergeArgs,
+	analyzed: AnalyzedMerge,
+	paradox_data_path: Option<PathBuf>,
+) -> HandlerResult {
 	let analysis = analyzed.analysis();
 	println!(
 		"{}",
@@ -93,6 +148,55 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
+}
+
+/// The current EU4 input without the named mods. A mod is named by its
+/// Workshop id or `#POSITION`, as `foch input inspect` lists them.
+fn current_input_excluding(
+	input: CurrentEu4Input,
+	exclude: &[String],
+	include_game_base: bool,
+) -> Result<InputRequest, String> {
+	let mods = input
+		.playset
+		.as_ref()
+		.map(|playset| playset.mods.as_slice())
+		.unwrap_or_default();
+	let mut positions = BTreeSet::new();
+	for name in exclude {
+		let position = match name.strip_prefix('#') {
+			Some(position) => position
+				.parse::<usize>()
+				.ok()
+				.filter(|position| mods.iter().any(|m| m.position == *position)),
+			None => mods
+				.iter()
+				.find(|playset_mod| playset_mod.id == *name)
+				.map(|playset_mod| playset_mod.position),
+		};
+		let position = position.ok_or_else(|| {
+			format!(
+				"`--exclude {name}` names no mod of the current EU4 playset; see `foch input inspect`"
+			)
+		})?;
+		positions.insert(position);
+	}
+	let prepared = input
+		.clone()
+		.prepare_excluding(&positions, include_game_base)?;
+	if let Some(recovery) = &prepared.recovery {
+		eprintln!(
+			"[foch] analyzing {} of {} playset mods; excluded:",
+			recovery.included_mod_count, recovery.source_mod_count
+		);
+		for omitted in &recovery.omitted_mods {
+			eprintln!(
+				"  #{} {} {} ({})",
+				omitted.position, omitted.id, omitted.name, omitted.reason
+			);
+		}
+	}
+	Ok(prepared.request)
 }
 
 fn render_merge_review_text(analyzed: &AnalyzedMerge, review_all: bool) -> String {

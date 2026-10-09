@@ -38,10 +38,11 @@ as proof of compatibility.
 ### Applications and packages
 
 - `src/apps/foch-cli` owns the `foch` binary, CLI adapters, terminal conflict
-  UI, integration tests, and the test-only merge-quality harness. `foch lsp`
-  starts the server from `foch-lsp`; `foch test` plans with `foch-test`,
-  launches the game through `foch-runner`, and owns only file discovery,
-  output protection, the isolation choice and reporting.
+  UI, the read-only analysis browser opened by bare `foch`, integration tests,
+  and the test-only merge-quality harness. `foch lsp` starts the server from
+  `foch-lsp`; `foch test` plans with `foch-test`, launches the game through
+  `foch-runner`, and owns only file discovery, output protection, the isolation
+  choice and reporting.
 - `src/apps/foch-desktop` owns the Tauri/React player interface and IPC adapters.
   Its Rust backend links `foch` directly; it does not spawn or bundle the CLI.
 - `src/packages/foch-lsp` is the language server library linked into `foch`.
