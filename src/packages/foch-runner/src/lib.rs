@@ -32,6 +32,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
+/// A mod the mod under test declares a dependency on, resolved to its
+/// installed directory. Loaded read-only before the source mod so the mod's
+/// content that relies on it resolves.
+#[derive(Clone, Debug)]
+pub struct DependencyMod {
+	pub name: String,
+	pub path: PathBuf,
+}
+
 /// The game installation to launch and where to stage the throwaway runtime.
 #[derive(Clone, Debug)]
 pub struct Installation {
@@ -202,6 +211,7 @@ impl ProfileGuard {
 pub fn run_session(
 	bundle: &Bundle,
 	source_mod: &Path,
+	dependencies: &[DependencyMod],
 	session_dir: &Path,
 	installation: &Installation,
 	options: &RunOptions,
@@ -215,7 +225,13 @@ pub fn run_session(
 		.real_user_dir
 		.as_ref()
 		.map(|dir| dir.join("settings.txt"));
-	assemble_profile(bundle, source_mod, &user_dir, real_settings.as_deref())?;
+	assemble_profile(
+		bundle,
+		source_mod,
+		dependencies,
+		&user_dir,
+		real_settings.as_deref(),
+	)?;
 
 	let guard = installation
 		.real_user_dir
@@ -306,6 +322,7 @@ fn watch(
 fn assemble_profile(
 	bundle: &Bundle,
 	source_mod: &Path,
+	dependencies: &[DependencyMod],
 	user_dir: &Path,
 	real_settings: Option<&Path>,
 ) -> io::Result<()> {
@@ -325,20 +342,28 @@ fn assemble_profile(
 		fs::write(destination, content)?;
 	}
 
+	// Enable declared dependencies first, then the source mod, then the test
+	// layer last so its events win any tie.
+	let mut enabled = Vec::new();
+	for (index, dependency) in dependencies.iter().enumerate() {
+		let file = format!("dep_{index:03}.mod");
+		write_descriptor(&mod_dir.join(&file), &dependency.name, &dependency.path)?;
+		enabled.push(file);
+	}
 	write_descriptor(
 		&mod_dir.join("source_mod.mod"),
 		"Foch source mod",
 		source_mod,
 	)?;
+	enabled.push("source_mod.mod".to_string());
 	write_descriptor(
 		&mod_dir.join("test_mod.mod"),
 		&bundle.test_mod_name,
 		&test_mod,
 	)?;
-	fs::write(
-		user_dir.join("dlc_load.json"),
-		layout::dlc_load(&["source_mod.mod", "test_mod.mod"]),
-	)?;
+	enabled.push("test_mod.mod".to_string());
+	let enabled: Vec<&str> = enabled.iter().map(String::as_str).collect();
+	fs::write(user_dir.join("dlc_load.json"), layout::dlc_load(&enabled))?;
 
 	if let Some(path) = real_settings
 		&& let Ok(template) = fs::read_to_string(path)

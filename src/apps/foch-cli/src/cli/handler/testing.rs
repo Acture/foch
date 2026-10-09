@@ -10,7 +10,7 @@ use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
 use foch::input::load_config_read_only;
 use foch_annotation::builtin::SCHEMAS;
 use foch_annotation::value::scalar;
-use foch_runner::{Installation, RunOptions};
+use foch_runner::{DependencyMod, Installation, RunOptions};
 use foch_test::judge::CaseResult;
 use foch_test::model::RunId;
 use foch_test::plan::{IgnoredMode, Isolation, Plan, SessionId};
@@ -88,6 +88,12 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	let config = load_config_read_only()?;
 	let game_root = foch_runner::locate_game(&config, args.game_path.as_deref())?;
 	let real_user_dir = args.eu4_user_dir.clone().or_else(default_eu4_user_dir);
+	// Load the mod's declared dependencies (resolved against installed mods)
+	// so content that relies on them works; unresolved ones are reported.
+	let dependencies = resolve_dependencies(&planned.root, real_user_dir.as_deref());
+	for warning in &dependencies.unresolved {
+		eprintln!("warning: dependency {warning:?} is not installed; testing without it");
+	}
 	// Ctrl-C stops the current launch gracefully: the flag is observed by the
 	// runner's watch loop, which stops the game and lets the layer tear down.
 	let cancel = Arc::new(AtomicBool::new(false));
@@ -125,6 +131,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 			&planned.plan,
 			bundle,
 			&planned.root,
+			&dependencies.mods,
 			&directory,
 			&installation,
 			&options,
@@ -151,6 +158,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 				&rerun,
 				&bundle,
 				&planned.root,
+				&dependencies.mods,
 				&directory,
 				&installation,
 				&options,
@@ -372,6 +380,91 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 		plan,
 		diagnostics,
 	})
+}
+
+/// The mod's declared dependencies, resolved to installed directories, plus
+/// the names that could not be resolved.
+struct ResolvedDependencies {
+	mods: Vec<DependencyMod>,
+	unresolved: Vec<String>,
+}
+
+/// Resolve the mod under test's declared dependencies (transitively) against
+/// the mods installed in the player's user directory. Dependencies are ordered
+/// so each appears before the mod that declares it. Resolution needs the user
+/// directory's `mod/*.mod` registry; without it, nothing is resolved.
+fn resolve_dependencies(source_root: &Path, user_dir: Option<&Path>) -> ResolvedDependencies {
+	use foch::playset::descriptor::{load_descriptor, load_launcher_descriptor};
+	let mut result = ResolvedDependencies {
+		mods: Vec::new(),
+		unresolved: Vec::new(),
+	};
+	let Ok(root_descriptor) = load_descriptor(&source_root.join("descriptor.mod")) else {
+		return result;
+	};
+	if root_descriptor.dependencies.is_empty() {
+		return result;
+	}
+	// name -> directory, from the launcher's installed-mod registry.
+	let mut index = BTreeMap::new();
+	if let Some(user_dir) = user_dir {
+		for entry in fs::read_dir(user_dir.join("mod"))
+			.into_iter()
+			.flatten()
+			.flatten()
+		{
+			if entry.path().extension().and_then(|v| v.to_str()) != Some("mod") {
+				continue;
+			}
+			if let Ok(descriptor) = load_launcher_descriptor(&entry.path())
+				&& let Some(path) = descriptor.path
+			{
+				index.entry(descriptor.name).or_insert(path);
+			}
+		}
+	}
+	let mut visited = std::collections::BTreeSet::new();
+	let mut emitted = std::collections::BTreeSet::new();
+	visit_dependencies(
+		&root_descriptor.dependencies,
+		&index,
+		&mut visited,
+		&mut emitted,
+		&mut result,
+	);
+	result
+}
+
+/// Post-order over the dependency graph: a dependency's own dependencies are
+/// emitted before it, each mod once, cycles broken by the visited set.
+fn visit_dependencies(
+	names: &[String],
+	index: &BTreeMap<String, PathBuf>,
+	visited: &mut std::collections::BTreeSet<String>,
+	emitted: &mut std::collections::BTreeSet<String>,
+	result: &mut ResolvedDependencies,
+) {
+	use foch::playset::descriptor::load_descriptor;
+	for name in names {
+		if !visited.insert(name.clone()) {
+			continue;
+		}
+		let Some(path) = index.get(name) else {
+			if !result.unresolved.contains(name) {
+				result.unresolved.push(name.clone());
+			}
+			continue;
+		};
+		if let Ok(descriptor) = load_descriptor(&path.join("descriptor.mod")) {
+			visit_dependencies(&descriptor.dependencies, index, visited, emitted, result);
+		}
+		if emitted.insert(name.clone()) {
+			result.mods.push(DependencyMod {
+				name: name.clone(),
+				path: path.clone(),
+			});
+		}
+	}
 }
 
 /// Install a Ctrl-C handler that sets `cancel`, so the run stops after the
@@ -677,10 +770,12 @@ struct SessionRecord {
 
 /// Build one session's test layer, launch the game through `foch-runner`,
 /// judge the log, and record what was launched.
+#[allow(clippy::too_many_arguments)]
 fn run_one_session(
 	plan: &Plan,
 	bundle: &Bundle,
 	source_root: &Path,
+	dependencies: &[DependencyMod],
 	directory: &Path,
 	installation: &Installation,
 	options: &RunOptions,
@@ -688,7 +783,14 @@ fn run_one_session(
 	// Write the full bundle (test layer, commands, manifest) for inspection;
 	// the runner reuses the test layer it leaves in `directory`.
 	materialize(bundle, source_root, directory)?;
-	let outcome = foch_runner::run_session(bundle, source_root, directory, installation, options)?;
+	let outcome = foch_runner::run_session(
+		bundle,
+		source_root,
+		dependencies,
+		directory,
+		installation,
+		options,
+	)?;
 	let results = judge(
 		bundle,
 		plan,
@@ -842,4 +944,66 @@ fn materialize(bundle: &Bundle, source_root: &Path, directory: &Path) -> Result<
 	let path = directory.join("bundle.json");
 	write_new(&path, &serde_json::to_vec_pretty(&manifest)?)?;
 	Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn write(path: &Path, text: &str) {
+		fs::create_dir_all(path.parent().unwrap()).unwrap();
+		fs::write(path, text).unwrap();
+	}
+
+	fn forward(path: &Path) -> String {
+		path.display().to_string().replace('\\', "/")
+	}
+
+	#[test]
+	fn dependencies_resolve_transitively_and_report_missing() {
+		let temp = tempfile::tempdir().unwrap();
+		let base = temp.path();
+		// Installed mods: Dep A depends on Dep B; Dep B stands alone.
+		let dep_a = base.join("installed/a");
+		let dep_b = base.join("installed/b");
+		write(
+			&dep_a.join("descriptor.mod"),
+			"name=\"Dep A\"\ndependencies={ \"Dep B\" }\n",
+		);
+		write(&dep_b.join("descriptor.mod"), "name=\"Dep B\"\n");
+		// The launcher registry under the user directory names both.
+		let user_dir = base.join("user");
+		write(
+			&user_dir.join("mod/a.mod"),
+			&format!("name=\"Dep A\"\npath=\"{}\"\n", forward(&dep_a)),
+		);
+		write(
+			&user_dir.join("mod/b.mod"),
+			&format!("name=\"Dep B\"\npath=\"{}\"\n", forward(&dep_b)),
+		);
+		// The mod under test depends on Dep A and a mod that is not installed.
+		let source = base.join("source");
+		write(
+			&source.join("descriptor.mod"),
+			"name=\"Src\"\ndependencies={ \"Dep A\" \"Ghost\" }\n",
+		);
+
+		let resolved = resolve_dependencies(&source, Some(&user_dir));
+		let order: Vec<_> = resolved.mods.iter().map(|m| m.name.as_str()).collect();
+		assert_eq!(
+			order,
+			["Dep B", "Dep A"],
+			"a dependency precedes its dependent"
+		);
+		assert_eq!(resolved.unresolved, ["Ghost"]);
+	}
+
+	#[test]
+	fn a_mod_without_dependencies_resolves_to_nothing() {
+		let temp = tempfile::tempdir().unwrap();
+		let source = temp.path().join("source");
+		write(&source.join("descriptor.mod"), "name=\"Src\"\n");
+		let resolved = resolve_dependencies(&source, None);
+		assert!(resolved.mods.is_empty() && resolved.unresolved.is_empty());
+	}
 }
