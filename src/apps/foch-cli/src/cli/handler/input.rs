@@ -1,13 +1,18 @@
-use crate::cli::arg::{CheckOutputFormat, FochCliInputCommands, InputArgs, InputInspectArgs};
+use crate::cli::arg::{
+	CheckOutputFormat, FochCliInputCommands, InputArgs, InputInspectArgs, InputRepairArgs,
+};
 use crate::cli::handler::HandlerResult;
 use foch::input::{
 	BaseDataState, Config, CurrentEu4Input, InputReadiness, InputRequest, InputResolveSummary,
 	InputSource, inspect_current_eu4_input, resolve_input_summary,
 };
+use std::io;
+use std::process::{Command, Stdio};
 
 pub fn handle_input(args: &InputArgs, config: Config) -> HandlerResult {
 	match &args.command {
 		FochCliInputCommands::Inspect(inspect_args) => handle_input_inspect(inspect_args, config),
+		FochCliInputCommands::Repair(repair_args) => handle_input_repair(repair_args),
 	}
 }
 
@@ -30,6 +35,135 @@ fn handle_input_inspect(args: &InputInspectArgs, config: Config) -> HandlerResul
 	let summary = resolve_input_summary(&request)?;
 	println!("{}", render_input_summary(&summary));
 	Ok(0)
+}
+
+fn handle_input_repair(args: &InputRepairArgs) -> HandlerResult {
+	let input = inspect_current_eu4_input();
+	let targets = repair_targets(&input, &args.mods)?;
+	if targets.is_empty() {
+		println!("every mod of the current EU4 playset can be analyzed");
+		return Ok(0);
+	}
+	for target in &targets {
+		println!(
+			"#{} {} {}: {}",
+			target.position,
+			target.id,
+			target.name,
+			target.reason.as_deref().unwrap_or("selected")
+		);
+		match target.workshop_id.as_deref() {
+			Some(id) => println!("  {}", workshop_web_url(id)),
+			None => println!("  not a Workshop item; repair it outside Steam"),
+		}
+	}
+	if args.open {
+		let opened = open_workshop_pages(&targets)?;
+		println!(
+			"opened {opened} Workshop page(s) in Steam: unsubscribe and subscribe again, wait for the download, then inspect again"
+		);
+	}
+	Ok(0)
+}
+
+/// A playset mod to repair, as `foch input repair` and bare `foch` list it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepairTarget {
+	pub position: usize,
+	pub id: String,
+	pub name: String,
+	/// Why it cannot be analyzed; `None` for a working mod named explicitly.
+	pub reason: Option<String>,
+	/// The numeric Workshop id Steam can open, if it is a Workshop item.
+	pub workshop_id: Option<String>,
+}
+
+/// The mods to repair: those named by Workshop id or `#POSITION`, or every
+/// mod that cannot be analyzed when none is named.
+pub fn repair_targets(
+	input: &CurrentEu4Input,
+	named: &[String],
+) -> Result<Vec<RepairTarget>, String> {
+	let mods = input
+		.playset
+		.as_ref()
+		.map(|playset| playset.mods.as_slice())
+		.unwrap_or_default();
+	let target = |playset_mod: &foch::input::DetectedPlaysetMod| RepairTarget {
+		position: playset_mod.position,
+		id: playset_mod.id.clone(),
+		name: playset_mod.name.clone(),
+		reason: playset_mod.source_error.clone(),
+		workshop_id: playset_mod
+			.workshop_id
+			.clone()
+			.filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())),
+	};
+	if named.is_empty() {
+		return Ok(mods
+			.iter()
+			.filter(|playset_mod| playset_mod.source_error.is_some())
+			.map(target)
+			.collect());
+	}
+	named
+		.iter()
+		.map(|name| {
+			mods.iter()
+				.find(|playset_mod| match name.strip_prefix('#') {
+					Some(position) => position.parse() == Ok(playset_mod.position),
+					None => playset_mod.id == *name,
+				})
+				.map(target)
+				.ok_or_else(|| {
+					format!(
+						"`{name}` names no mod of the current EU4 playset; see `foch input inspect`"
+					)
+				})
+		})
+		.collect()
+}
+
+pub fn workshop_web_url(workshop_id: &str) -> String {
+	format!("https://steamcommunity.com/sharedfiles/filedetails/?id={workshop_id}")
+}
+
+/// Open each target's Workshop page in the Steam client. Returns how many
+/// opened; targets that are not Workshop items are skipped.
+pub fn open_workshop_pages(targets: &[RepairTarget]) -> io::Result<usize> {
+	let mut opened = 0;
+	for workshop_id in targets
+		.iter()
+		.filter_map(|target| target.workshop_id.as_deref())
+	{
+		open_url(&format!("steam://url/CommunityFilePage/{workshop_id}"))?;
+		opened += 1;
+	}
+	Ok(opened)
+}
+
+/// Hand a URL to the desktop's handler. Callers pass only URLs built from
+/// numeric Workshop ids.
+fn open_url(url: &str) -> io::Result<()> {
+	let mut command = if cfg!(windows) {
+		let mut command = Command::new("rundll32");
+		command.args(["url.dll,FileProtocolHandler", url]);
+		command
+	} else if cfg!(target_os = "macos") {
+		let mut command = Command::new("open");
+		command.arg(url);
+		command
+	} else {
+		let mut command = Command::new("xdg-open");
+		command.arg(url);
+		command
+	};
+	command
+		.stdin(Stdio::null())
+		.stdout(Stdio::null())
+		.stderr(Stdio::null())
+		.spawn()
+		.map(|_| ())
 }
 
 /// The current EU4 input as bare `foch` shows it first: the game, base data,

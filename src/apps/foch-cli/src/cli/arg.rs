@@ -572,6 +572,27 @@ pub struct InputArgs {
 #[derive(Subcommand, Debug)]
 pub enum FochCliInputCommands {
 	Inspect(InputInspectArgs),
+	Repair(InputRepairArgs),
+}
+
+/// Guide the repair of current-playset mods that cannot be analyzed. Foch
+/// changes nothing itself: it names each broken Workshop item and can open
+/// its page in Steam, where unsubscribing and subscribing again makes Steam
+/// download it afresh.
+#[derive(Parser, Debug)]
+#[command(
+	about = "Guide the repair of current-playset mods that cannot be analyzed",
+	after_help = "Bare `foch` runs the same repair: R opens every broken mod, w the selected one.\n\nExamples:\n  foch input repair\n  foch input repair --open\n  foch input repair --open --mod 1804289844"
+)]
+pub struct InputRepairArgs {
+	/// Open each Workshop page in Steam (`steam://url/CommunityFilePage/<id>`).
+	#[arg(long)]
+	pub open: bool,
+
+	/// Only this mod, by Workshop id or `#POSITION`; repeatable. Any mod can
+	/// be named, broken or not.
+	#[arg(long = "mod", value_name = "MOD")]
+	pub mods: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
