@@ -12,7 +12,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PARSE_CACHE_VERSION: &str = "12.0.0";
+const PARSE_CACHE_VERSION: &str = "13.0.0";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const OBSOLETE_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 
