@@ -2555,6 +2555,10 @@ mod tests {
 		schema_completion_candidate, schema_completion_candidates_with_index, schema_diagnostic,
 		schema_hover_view, select_completion_candidates, workspace_symbols,
 	};
+	// Used only by the unix-only path tests below; importing it unconditionally
+	// would be an unused import on Windows.
+	#[cfg(unix)]
+	use super::document_diagnostics;
 	use foch::game::eu4::editor::schema::{
 		EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
 		SchemaDiagnostic as EditorSchemaDiagnostic, SchemaHover,
