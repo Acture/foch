@@ -310,12 +310,18 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 			.strip_prefix(&root)?
 			.to_string_lossy()
 			.replace('\\', "/");
+		// Files under tests/ are test-only: the game loads events/ but not a
+		// top-level tests/ directory, so these carry test and fixture blocks
+		// (and tests/events/ helper events) rather than inline annotations.
+		let kind = if relative == "tests" || relative.starts_with("tests/") {
+			SourceKind::TestsDir
+		} else {
+			SourceKind::Inline
+		};
 		sources.push(SourceFile {
 			mod_name: mod_name.clone(),
 			path: RelPath::new(&relative)?,
-			// The tests/ directory is not collected until EU4 is verified to
-			// ignore it and merge treats it as test-only content.
-			kind: SourceKind::Inline,
+			kind,
 			text: fs::read_to_string(&file)?,
 		});
 	}
@@ -541,6 +547,7 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 		// Collect the whole mod so fire targets and grouping see every event;
 		// the file itself is selected by node pattern.
 		let mut files = event_files(&root)?;
+		files.extend(tests_files(&root)?);
 		if !files.contains(&path) {
 			files.push(path);
 		}
@@ -556,8 +563,36 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 	} else {
 		path
 	};
-	let files = event_files(&root)?;
+	let mut files = event_files(&root)?;
+	files.extend(tests_files(&root)?);
 	Ok((root, files))
+}
+
+/// `.txt` files under the mod's `tests/` directory. The game does not load
+/// this directory, so these hold test and fixture blocks (and, under
+/// `tests/events/`, helper events for the generated test layer only).
+fn tests_files(root: &Path) -> Result<Vec<PathBuf>> {
+	let tests = root.join("tests");
+	let mut files = Vec::new();
+	match fs::symlink_metadata(&tests) {
+		Ok(metadata) if metadata.file_type().is_symlink() => {
+			return Err("tests directory must not be a symlink".into());
+		}
+		Ok(_) => {
+			for entry in WalkDir::new(tests).follow_links(false) {
+				let entry = entry?;
+				if entry.file_type().is_file()
+					&& entry.path().extension().and_then(|v| v.to_str()) == Some("txt")
+				{
+					files.push(entry.into_path());
+				}
+			}
+		}
+		Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+		Err(err) => return Err(err.into()),
+	}
+	files.sort();
+	Ok(files)
 }
 
 fn event_files(root: &Path) -> Result<Vec<PathBuf>> {

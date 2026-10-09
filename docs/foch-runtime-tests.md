@@ -133,7 +133,7 @@ EU4 每次启动都会往 `error.log` 写入与测试无关的环境条目（缺
 
 `foch lsp` 使用同一份注解定义为 `#test`、`#skip`、`#ignore`、`#xfail`、`#mark` 和 `#parametrize` 提供参数补全、悬停和注解诊断。跨注解的规则（同名用例、`xfail` 缺少 `expect`）只在 `foch test --collect-only` 时报告。当前没有注解内部原生 effects/triggers 补全、测试运行按钮或失败跳转操作。
 
-尚未实现：CLI 收集 `tests/` 中的多步骤测试和 fixture（需先验证 EU4 不加载该目录，并让合并等主库功能识别它）、读取项目信息的静态检查、参数化、fuzz、`--last-failed`、独立 `foch lint`、任意日期的内置开局准备，以及平台托管 CI 的真实验收。已有本地运行环境只验证真实 `1444.11.11` 开局。
+已实现：CLI 收集 `tests/` 中的多步骤测试和 fixture（依赖 EU4 不加载顶层 `tests/` 的目录模型，真实游戏实测待补，合并侧的识别另行处理）、`#parametrize` 参数化、基于内置目录的 effect/trigger 静态检查、被测 mod 声明依赖的加载。尚未实现：从基础快照补全静态检查的国家与事件集合、fuzz、`--last-failed`、独立 `foch lint`、书签以外任意日期的内置开局准备，以及平台托管 CI 的真实验收。已有本地运行环境只验证真实 `1444.11.11` 开局。
 
 ## 已记录的真实游戏验证（协议 v1）
 
