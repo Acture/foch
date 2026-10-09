@@ -339,6 +339,27 @@ fn top_level_help_exposes_only_current_merge_commands() {
 }
 
 #[test]
+fn bare_foch_needs_a_terminal_and_initializes_nothing() {
+	let tmp = TempDir::new().expect("temp dir");
+	let config_dir = tmp.path().join("absent-config");
+	let output = Command::new(env!("CARGO_BIN_EXE_foch"))
+		.env("FOCH_CONFIG_DIR", &config_dir)
+		.env("HOME", tmp.path().join("home"))
+		.env("FOCH_CACHE_ROOT", tmp.path().join("cache"))
+		.output()
+		.expect("run bare foch");
+
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+	assert!(stderr.contains("needs a TTY"), "stderr: {stderr}");
+	assert!(output.stdout.is_empty());
+	assert!(
+		!config_dir.exists(),
+		"bare foch must not initialize configuration"
+	);
+}
+
+#[test]
 fn version_names_the_embedded_cwt_schema_and_any_override() {
 	let version = |override_dir: Option<&str>| {
 		let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));

@@ -150,6 +150,7 @@ changes a reader invalidates the equivalences, not just their precision.
 
 | Command | Purpose |
 | --- | --- |
+| `foch` | Open a read-only terminal browser over the current EU4 playset and its full merge analysis. |
 | `foch input inspect` | Show the game and ordered mod inputs Foch will use. |
 | `foch check` | Parse and analyze an input without writing a merge. |
 | `foch merge` | Analyze and review a semantic result; commit only after confirmation. |

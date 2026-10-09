@@ -16,8 +16,9 @@ use std::sync::OnceLock;
 	long_about = None
 )]
 pub struct FochCli {
+	/// Without a subcommand, `foch` opens the read-only analysis browser.
 	#[command(subcommand)]
-	pub command: FochCliCommands,
+	pub command: Option<FochCliCommands>,
 
 	#[command(flatten)]
 	pub verbose: Verbosity<WarnLevel>,
@@ -614,7 +615,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert_eq!(
@@ -644,7 +645,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.non_interactive);
@@ -663,7 +664,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.confirm);
@@ -682,7 +683,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.non_interactive);
@@ -700,7 +701,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.cli_prompt);
@@ -720,7 +721,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Graph(args) = cli.command else {
+		let FochCliCommands::Graph(args) = cli.command.expect("subcommand") else {
 			panic!("expected graph command");
 		};
 		assert_eq!(
