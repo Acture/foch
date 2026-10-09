@@ -122,13 +122,22 @@ pub fn judge(bundle: &Bundle, plan: &Plan, artifacts: &RunArtifacts) -> Vec<Case
 		}
 		RunnerExit::Cancelled => runtime.push("run was cancelled".into()),
 	}
+	// EU4 writes ambient entries to error.log on every launch (missing
+	// localisation, other mods, vanilla warnings), so a non-empty log is not
+	// itself a failure. Only entries attributable to the generated test layer
+	// make the run untrustworthy; the rest are reported but do not fail it.
+	let mut info = Vec::new();
 	match artifacts.error_log {
 		None => runtime.push("runner must produce an isolated error.log".into()),
-		Some(log) if !log.trim().is_empty() => {
-			runtime
-				.push("engine error.log is not empty; inspect it before trusting results".into());
+		Some(log) => {
+			let analysis = analyze_error_log(&bundle.namespace, &bundle.test_mod_name, log);
+			if !analysis.attributed.is_empty() {
+				runtime.push(analysis.attributed_summary());
+			}
+			if analysis.ambient > 0 {
+				info.push(analysis.ambient_summary());
+			}
 		}
-		Some(_) => {}
 	}
 	if artifacts.game_log.is_none() {
 		runtime.push("runner must produce game.log".into());
@@ -175,6 +184,7 @@ pub fn judge(bundle: &Bundle, plan: &Plan, artifacts: &RunArtifacts) -> Vec<Case
 				isolation,
 				notes: runtime.clone(),
 			};
+			result.notes.extend(info.iter().cloned());
 			let records = match &records {
 				Ok(records) => records.get(&index).cloned().unwrap_or_default(),
 				Err(message) => {
@@ -265,6 +275,88 @@ pub fn reconcile(shared: &CaseResult, isolated: CaseResult) -> CaseResult {
 			.push("failure in a shared session confirmed by an isolated re-run".into());
 	}
 	result
+}
+
+/// A reading of the engine `error.log`, splitting entries that the generated
+/// test layer caused from the ambient entries every launch produces.
+#[derive(Clone, Debug, Default)]
+struct ErrorAnalysis {
+	/// Entries that name the generated test layer, so the run cannot be trusted.
+	attributed: Vec<String>,
+	/// How many entries were unrelated to the test layer.
+	ambient: usize,
+	/// A few ambient entries, for a readable note.
+	ambient_sample: Vec<String>,
+}
+
+impl ErrorAnalysis {
+	fn attributed_summary(&self) -> String {
+		format!(
+			"engine error.log reports {} error(s) in the generated test layer:\n\t{}",
+			self.attributed.len(),
+			self.attributed.join("\n\t")
+		)
+	}
+
+	fn ambient_summary(&self) -> String {
+		let plural = if self.ambient == 1 {
+			"entry"
+		} else {
+			"entries"
+		};
+		let mut summary = format!(
+			"engine error.log has {} {plural} unrelated to the test layer; not failing this run",
+			self.ambient
+		);
+		if !self.ambient_sample.is_empty() {
+			summary.push_str(":\n\t");
+			summary.push_str(&self.ambient_sample.join("\n\t"));
+			if self.ambient > self.ambient_sample.len() {
+				summary.push_str("\n\t...");
+			}
+		}
+		summary
+	}
+}
+
+/// Attribute `error.log` entries to the generated test layer or to ambient
+/// engine noise. The namespace prefixes every generated event id and file
+/// name, and the test mod descriptor name is equally unique, so an entry that
+/// quotes either is one the test layer caused.
+fn analyze_error_log(namespace: &str, test_mod_name: &str, log: &str) -> ErrorAnalysis {
+	let mut analysis = ErrorAnalysis::default();
+	for entry in error_entries(log) {
+		if entry.contains(namespace) || entry.contains(test_mod_name) {
+			analysis.attributed.push(entry);
+		} else {
+			analysis.ambient += 1;
+			if analysis.ambient_sample.len() < 3 {
+				analysis.ambient_sample.push(entry);
+			}
+		}
+	}
+	analysis
+}
+
+/// Split the engine `error.log` into entries. EU4 begins each with a
+/// `[time][source]:` header line; lines that do not start with `[` continue
+/// the entry above them. Blank lines are dropped.
+fn error_entries(log: &str) -> Vec<String> {
+	let mut entries: Vec<String> = Vec::new();
+	for line in log.lines() {
+		let line = line.trim();
+		if line.is_empty() {
+			continue;
+		}
+		if line.starts_with('[') || entries.is_empty() {
+			entries.push(line.to_string());
+		} else {
+			let entry = entries.last_mut().expect("entries is non-empty");
+			entry.push(' ');
+			entry.push_str(line);
+		}
+	}
+	entries
 }
 
 #[derive(Clone, Debug)]
@@ -422,5 +514,62 @@ fn expect_date(actual: GameDate, expected: GameDate, stage: &str) -> Result<(), 
 		Err(format!(
 			"{stage} engine date is {actual}; expected {expected}"
 		))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn error_entries_group_continuation_lines() {
+		let log = "\
+[gui.cpp:1]: missing sprite\n\
+[events.cpp:2]: unexpected token\n\tin foch_test_mod_abc.1\n\
+\n\
+[save.cpp:3]: warning";
+		assert_eq!(
+			error_entries(log),
+			[
+				"[gui.cpp:1]: missing sprite",
+				"[events.cpp:2]: unexpected token in foch_test_mod_abc.1",
+				"[save.cpp:3]: warning",
+			]
+		);
+	}
+
+	#[test]
+	fn only_test_layer_entries_are_attributed() {
+		let namespace = "foch_test_mymod_abc123";
+		let test_mod = "My Mod tests [abc123]";
+		let log = format!(
+			"[pdx_d3d9]: device lost\n\
+			[localization.cpp:9]: missing key KEY_X\n\
+			[events.cpp:2]: invalid effect in {namespace}.txt\n\
+			[mods.cpp:4]: could not load mod \"{test_mod}\"\n\
+			[map.cpp:7]: province 1 has no owner",
+		);
+		let analysis = analyze_error_log(namespace, test_mod, &log);
+		assert_eq!(analysis.attributed.len(), 2);
+		assert!(analysis.attributed[0].contains(namespace));
+		assert_eq!(analysis.ambient, 3);
+		assert_eq!(analysis.ambient_sample.len(), 3);
+		assert!(
+			analysis
+				.attributed_summary()
+				.contains("generated test layer")
+		);
+		assert!(analysis.ambient_summary().contains("not failing this run"));
+	}
+
+	#[test]
+	fn ambient_only_log_attributes_nothing() {
+		let analysis = analyze_error_log(
+			"foch_test_x_000000",
+			"X tests [000000]",
+			"[a.cpp:1]: one\n[b.cpp:2]: two",
+		);
+		assert!(analysis.attributed.is_empty());
+		assert_eq!(analysis.ambient, 2);
 	}
 }
