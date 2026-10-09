@@ -1342,6 +1342,10 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 }
 
 impl Eu4 {
+	pub(crate) fn content_families(&self) -> &'static [ContentFamilyDescriptor] {
+		eu4_content_families()
+	}
+
 	pub fn classify_content_family(
 		&self,
 		relative: &GamePath,

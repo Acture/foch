@@ -1,0 +1,6 @@
+# Syntactically balanced, but the name list escaped its culture group.
+germanic = {
+	graphical_culture = westerngfx
+	example_culture = { primary = AAA }
+}
+male_names = { ExampleName }

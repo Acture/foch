@@ -1,0 +1,8 @@
+# Deliberately malformed: the second closing brace has no opener.
+germanic = {
+	graphical_culture = westerngfx
+}
+}
+iberian = {
+	graphical_culture = westerngfx
+}

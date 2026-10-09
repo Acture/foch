@@ -267,6 +267,14 @@ pub(super) fn copy_winner_file(
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
+	if let Some(winner) = &entry.winner
+		&& let Some(bytes) = input
+			.script_cache
+			.overlay_bytes(&winner.mod_id, entry.output_path())
+	{
+		fs::write(target, bytes)?;
+		return Ok(false);
+	}
 	copy_file(&source, &target).map_err(MergeError::from)
 }
 

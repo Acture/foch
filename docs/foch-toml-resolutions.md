@@ -7,6 +7,10 @@ The authoritative schema, validation, lookup map, and match parser live in
 Use narrow rules for conflicts you understand. A broad rule can deliberately
 turn large parts of a playset into load-order behavior.
 
+Source-bound culture mappings and syntax repairs use the separate
+[`cultures` configuration](./foch-project-manifest.md#reviewed-culture-transformations).
+They are validated analysis inputs, rather than conflict winner policies.
+
 ## Resolution chain
 
 For each structural conflict, analysis tries:

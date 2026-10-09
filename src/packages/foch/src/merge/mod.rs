@@ -23,6 +23,7 @@ pub(crate) mod resolution;
 mod review;
 pub(crate) mod semantic_fingerprint;
 pub(crate) mod structured;
+pub(crate) mod transform;
 
 #[cfg(test)]
 pub(crate) use address_patch::patch_apply;

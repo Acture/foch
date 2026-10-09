@@ -39,6 +39,148 @@ fn emit(file: &AstFile) -> String {
 	emit_clausewitz_statements(&file.statements).expect("emit Clausewitz AST")
 }
 
+#[test]
+fn culture_entity_rename_reaches_kernel_delta_and_preserves_independent_edit() {
+	use crate::merge::kernel::{DeltaOperation, RevisionId};
+	let path = "common/cultures/test.txt";
+	let base = parse_at(path, "g = { old_culture = { male_names = { Johann } } }");
+	let renamed = parse_at(path, "g = { new_culture = { male_names = { Johann } } }");
+	let edited = parse_at(
+		path,
+		"g = { old_culture = { male_names = { Johann Otto } } }",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome = merge_clausewitz_files_n_way(&base, &[&renamed, &edited, &base], policies)
+		.expect("merge cultures");
+	let rename_delta = &outcome.kernel().revision_deltas[&RevisionId::LEFT];
+	assert!(
+		rename_delta
+			.operations
+			.iter()
+			.any(|operation| matches!(operation,
+				DeltaOperation::Rename { from, to, .. }
+					if from.value.as_deref() == Some("old_culture") && to.value.as_deref() == Some("new_culture")
+			)),
+		"rename must reach the generic delta: {:?}",
+		rename_delta.operations
+	);
+	assert!(!rename_delta.operations.iter().any(|operation| matches!(
+		operation,
+		DeltaOperation::Delete { .. } | DeltaOperation::Insert { .. }
+	)));
+	assert!(
+		outcome.kernel().revision_deltas[&RevisionId::new(3)]
+			.operations
+			.is_empty()
+	);
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("rename and independent edit merge"),
+	);
+	assert!(output.contains("new_culture"), "{output}");
+	assert!(!output.contains("old_culture"), "{output}");
+	assert!(output.contains("Otto"), "{output}");
+}
+
+#[test]
+fn culture_entity_rename_rejects_indistinguishable_candidates() {
+	let path = "common/cultures/test.txt";
+	let base = parse_at(path, "g = { old_culture = { male_names = { Johann } } }");
+	let revision = parse_at(
+		path,
+		"g = { first_culture = { male_names = { Johann } } second_culture = { male_names = { Johann } } }",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	assert!(
+		merge_clausewitz_files_n_way(&base, &[&revision], policies).is_err(),
+		"two identical targets must require review rather than positional correspondence"
+	);
+}
+
+#[test]
+fn culture_entity_matching_does_not_rename_metadata_keywords() {
+	use crate::merge::kernel::{DeltaOperation, RevisionId};
+	let path = "common/cultures/test.txt";
+	let base = parse_at(
+		path,
+		"g = { old_culture = { country = { global_tax_modifier = 1 } } }",
+	);
+	let revision = parse_at(
+		path,
+		"g = { old_culture = { province = { global_tax_modifier = 1 } } }",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome = merge_clausewitz_files_n_way(&base, &[&revision], policies).unwrap();
+	let delta = &outcome.kernel().revision_deltas[&RevisionId::LEFT];
+	assert!(
+		!delta
+			.operations
+			.iter()
+			.any(|operation| matches!(operation, DeltaOperation::Rename { .. })),
+		"{:?}",
+		delta.operations
+	);
+	assert!(
+		delta
+			.operations
+			.iter()
+			.any(|operation| matches!(operation, DeltaOperation::Delete { .. }))
+	);
+	assert!(
+		delta
+			.operations
+			.iter()
+			.any(|operation| matches!(operation, DeltaOperation::Insert { .. }))
+	);
+}
+
+#[test]
+fn culture_entity_move_and_changed_body_keep_the_existing_identity() {
+	use crate::merge::kernel::{DeltaOperation, RevisionId};
+	let path = "common/cultures/test.txt";
+	let base = parse_at(
+		path,
+		"g = { same_culture = { male_names = { Johann } } } h = {}",
+	);
+	let revision = parse_at(
+		path,
+		"g = {} h = { same_culture = { male_names = { Otto } } }",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome = merge_clausewitz_files_n_way(&base, &[&revision], policies).unwrap();
+	let delta = &outcome.kernel().revision_deltas[&RevisionId::LEFT];
+	assert!(
+		delta
+			.operations
+			.iter()
+			.any(|operation| matches!(operation, DeltaOperation::Move { .. }))
+	);
+	assert!(
+		!delta
+			.operations
+			.iter()
+			.any(|operation| matches!(operation, DeltaOperation::Rename { .. }))
+	);
+	let output = emit(outcome.resolved_ast().unwrap());
+	assert!(
+		output.contains("same_culture") && output.contains("Otto") && !output.contains("Johann"),
+		"{output}"
+	);
+}
+
 fn repeated_block_keys_by_identity(
 	file: &AstFile,
 	repeated_key: &str,

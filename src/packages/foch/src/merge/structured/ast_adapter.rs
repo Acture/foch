@@ -15,6 +15,8 @@ use super::policy::ClausewitzTreePolicy;
 
 const FILE_KIND: &str = "clausewitz.file";
 const ASSIGNMENT_KIND_PREFIX: &str = "clausewitz.assignment:";
+const ENTITY_ASSIGNMENT_KIND: &str = "clausewitz.assignment.entity";
+const ENTITY_BLOCK_KIND: &str = "clausewitz.block:entity";
 const ITEM_KIND: &str = "clausewitz.item";
 pub(super) const COMMENT_KIND: &str = "clausewitz.comment";
 const BLOCK_KIND_PREFIX: &str = "clausewitz.block";
@@ -93,17 +95,37 @@ pub(crate) fn normalize_ast_with_findings(
 	policy: &impl ClausewitzTreePolicy,
 ) -> Result<(NormalizedTree, Vec<String>), AstAdapterError> {
 	let mut findings = Vec::new();
-	let children = normalize_statements(&file.statements, None, policy, &mut findings)?;
-	NormalizedTree::from_root(branch(
+	let children = normalize_statements(
+		&file.statements,
+		None,
+		&mut Vec::new(),
+		policy,
+		&mut findings,
+	)?;
+	let tree = NormalizedTree::from_root(branch(
 		FILE_KIND,
 		None,
 		None,
 		ChildOrder::Ordered,
 		ChildCardinality::Many,
 		children,
-	))
-	.map(|tree| (tree, findings))
-	.map_err(AstAdapterError::from)
+	))?;
+	let mut entities = BTreeMap::new();
+	for (_, node) in tree
+		.nodes()
+		.filter(|(_, node)| node.kind == ENTITY_ASSIGNMENT_KIND)
+	{
+		let Some(identity) = &node.anchor else {
+			continue;
+		};
+		if let Some(previous) = entities.insert(identity, node.value.as_deref()) {
+			return Err(AstAdapterError::InvalidTree(format!(
+				"entity assignments {previous:?} and {:?} share canonical identity {}:{}; correspondence needs review",
+				node.value, identity.namespace, identity.value,
+			)));
+		}
+	}
+	Ok((tree, findings))
 }
 
 pub(crate) fn denormalize_ast(
@@ -124,6 +146,7 @@ pub(crate) fn denormalize_ast(
 fn normalize_statements(
 	statements: &[AstStatement],
 	parent_assignment_key: Option<&str>,
+	ancestors: &mut Vec<String>,
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<Vec<TreeNode>, AstAdapterError> {
@@ -157,6 +180,7 @@ fn normalize_statements(
 			children.push(normalize_statement_with_item_anchor(
 				&statements[index],
 				parent_assignment_key,
+				ancestors,
 				policy,
 				item_anchor,
 				control_flow_findings,
@@ -179,31 +203,46 @@ pub(super) fn normalize_statement_with_findings(
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<TreeNode, AstAdapterError> {
-	normalize_statement_with_item_anchor(statement, None, policy, None, control_flow_findings)
+	normalize_statement_with_item_anchor(
+		statement,
+		None,
+		&mut Vec::new(),
+		policy,
+		None,
+		control_flow_findings,
+	)
 }
 
 fn normalize_statement_with_item_anchor(
 	statement: &AstStatement,
 	parent_assignment_key: Option<&str>,
+	ancestors: &mut Vec<String>,
 	policy: &impl ClausewitzTreePolicy,
 	item_anchor: Option<SemanticKey>,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<TreeNode, AstAdapterError> {
 	Ok(match statement {
 		AstStatement::Assignment { key, value, .. } => {
-			let kind = format!("{ASSIGNMENT_KIND_PREFIX}{key}");
+			let entity = policy.entity_identity(ancestors, key, value);
+			let kind = if entity.is_some() {
+				ENTITY_ASSIGNMENT_KIND.to_owned()
+			} else {
+				format!("{ASSIGNMENT_KIND_PREFIX}{key}")
+			};
+			ancestors.push(key.clone());
+			let mut child =
+				normalize_value_at(value, Some(key), ancestors, policy, control_flow_findings)?;
+			ancestors.pop();
+			if entity.is_some() {
+				child.kind = ENTITY_BLOCK_KIND.to_owned();
+			}
 			let mut node = branch(
 				&kind,
 				Some(key.clone()),
-				policy.assignment_anchor(parent_assignment_key, key, value),
+				entity.or_else(|| policy.assignment_anchor(parent_assignment_key, key, value)),
 				ChildOrder::Ordered,
 				ChildCardinality::ExactlyOne,
-				vec![normalize_value_with_findings(
-					value,
-					Some(key),
-					policy,
-					control_flow_findings,
-				)?],
+				vec![child],
 			);
 			node.signature = policy.assignment_signature(key, value);
 			node
@@ -214,9 +253,10 @@ fn normalize_statement_with_item_anchor(
 			item_anchor,
 			ChildOrder::Ordered,
 			ChildCardinality::ExactlyOne,
-			vec![normalize_value_with_findings(
+			vec![normalize_value_at(
 				value,
 				None,
+				ancestors,
 				policy,
 				control_flow_findings,
 			)?],
@@ -268,6 +308,22 @@ pub(super) fn normalize_value_with_findings(
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<TreeNode, AstAdapterError> {
+	normalize_value_at(
+		value,
+		assignment_key,
+		&mut Vec::new(),
+		policy,
+		control_flow_findings,
+	)
+}
+
+fn normalize_value_at(
+	value: &AstValue,
+	assignment_key: Option<&str>,
+	ancestors: &mut Vec<String>,
+	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
+) -> Result<TreeNode, AstAdapterError> {
 	Ok(match value {
 		AstValue::Scalar { value, .. } => match value {
 			ScalarValue::Identifier(value) => leaf(IDENTIFIER_KIND, value.clone()),
@@ -281,7 +337,13 @@ pub(super) fn normalize_value_with_findings(
 			None,
 			policy.block_child_order(assignment_key),
 			ChildCardinality::Many,
-			normalize_statements(items, assignment_key, policy, control_flow_findings)?,
+			normalize_statements(
+				items,
+				assignment_key,
+				ancestors,
+				policy,
+				control_flow_findings,
+			)?,
 		),
 	})
 }
@@ -318,9 +380,11 @@ pub(super) fn denormalize_statement(
 	id: NodeId,
 ) -> Result<AstStatement, AstAdapterError> {
 	let node = tree.node(id)?;
-	if node.kind.starts_with(ASSIGNMENT_KIND_PREFIX) {
+	if is_assignment_node(node) {
 		let key = required_value(node, "assignment key")?.to_string();
-		if node.kind != format!("{ASSIGNMENT_KIND_PREFIX}{key}") {
+		if node.kind != ENTITY_ASSIGNMENT_KIND
+			&& node.kind != format!("{ASSIGNMENT_KIND_PREFIX}{key}")
+		{
 			return Err(AstAdapterError::InvalidTree(format!(
 				"node {} assignment kind and key disagree",
 				id.get()
@@ -420,10 +484,17 @@ pub(crate) fn semantic_node_address(
 }
 
 fn is_statement_node(node: &NormalizedNode) -> bool {
-	node.kind.starts_with(ASSIGNMENT_KIND_PREFIX) || node.kind == ITEM_KIND
+	is_assignment_node(node) || node.kind == ITEM_KIND
+}
+
+fn is_assignment_node(node: &NormalizedNode) -> bool {
+	node.kind.starts_with(ASSIGNMENT_KIND_PREFIX) || node.kind == ENTITY_ASSIGNMENT_KIND
 }
 
 fn semantic_statement_label(node: &NormalizedNode) -> Option<&str> {
+	if node.kind == ENTITY_ASSIGNMENT_KIND {
+		return node.value.as_deref();
+	}
 	node.anchor
 		.as_ref()
 		.map(|anchor| anchor.value.as_str())

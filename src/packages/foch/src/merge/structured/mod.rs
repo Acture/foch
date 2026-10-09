@@ -28,8 +28,9 @@ pub use merge::{
 pub(crate) use observer::observe_merge_trace;
 pub(crate) use tree_kernel::{
 	ClausewitzFileAdapter, ClausewitzFileJoin, DefinitionModuleAdapter, DefinitionModuleJoin,
-	EventFileAdapter, EventFileJoin, TreeDagProtocol, TreeDagState, TreeJoinProtocol,
-	TreeMergeUnit, TreePartitionAdapter, semantic_conflict_id, semantic_conflict_view,
+	EventFileAdapter, EventFileJoin, TransformModuleAdapter, TreeDagProtocol, TreeDagState,
+	TreeJoinProtocol, TreeMergeUnit, TreePartitionAdapter, semantic_conflict_id,
+	semantic_conflict_view,
 };
 
 #[cfg(test)]

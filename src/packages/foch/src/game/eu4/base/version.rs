@@ -3,7 +3,7 @@ use crate::game::eu4::active_cwt_schema_id;
 use crate::game::eu4::analysis::param_contracts::registered_param_contracts_hash;
 use std::sync::OnceLock;
 
-pub const ANALYSIS_RULES_VERSION: u32 = 26;
+pub const ANALYSIS_RULES_VERSION: u32 = 28;
 
 static ANALYSIS_RULES_ID: OnceLock<String> = OnceLock::new();
 

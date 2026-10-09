@@ -23,7 +23,7 @@ fn collect_localisation_definitions(mod_id: &str, root: &Path) -> Vec<Localisati
 fn corpus_root(mod_name: &str) -> PathBuf {
 	Path::new(env!("CARGO_MANIFEST_DIR"))
 		.join("tests")
-		.join("corpus")
+		.join("fixtures")
 		.join(mod_name)
 }
 

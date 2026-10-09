@@ -35,6 +35,8 @@ windows-sys = { workspace = true, features = ["Win32_System_Console"] }
 
 [dev-dependencies]
 blake3 = "1.5.5"
+sha2.workspace = true
+dirs.workspace = true
 foch = { workspace = true, features = ["test-utils"] }
 keyvalues-parser.workspace = true
 libc = "0.2.186"

@@ -11,8 +11,9 @@ use crate::input::{InputScriptCache, ResolvedInputContributor};
 use crate::merge::kernel::{DeltaOperation, NodeId, TreeMatcher};
 use crate::merge::model::{SemanticDeltaPartition, SemanticSourceDelta};
 use crate::merge::structured::{
-	DefinitionModuleAdapter, TreePartitionAdapter, semantic_node_address,
+	DefinitionModuleAdapter, TransformModuleAdapter, TreePartitionAdapter, semantic_node_address,
 };
+use crate::merge::transform::tree::EntityTransform;
 use crate::model::{DepMisuseFinding, GamePath, StaleVanillaTargetDescriptor};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map::Entry};
 
@@ -140,11 +141,20 @@ pub(super) fn collect_semantic_stale_vanilla_targets(
 	vanilla: Option<&ParsedScriptFile>,
 	policies: &MergePolicies,
 	mod_versions: &HashMap<String, String>,
+	entity_transform: Option<&dyn EntityTransform>,
 ) -> Result<Vec<StaleVanillaTargetDescriptor>, String> {
 	let Some(vanilla) = vanilla else {
 		return Ok(Vec::new());
 	};
-	let prepared = DefinitionModuleAdapter.prepare(&vanilla.ast);
+	// Vanilla and source deltas must use the same entity kinds and identity anchors.
+	let transformed = entity_transform
+		.filter(|transform| transform.applies_to(file_path))
+		.map(|transform| TransformModuleAdapter { transform });
+	let adapter: &dyn TreePartitionAdapter = match &transformed {
+		Some(adapter) => adapter,
+		None => &DefinitionModuleAdapter,
+	};
+	let prepared = adapter.prepare(&vanilla.ast);
 	let mut vanilla_trees = BTreeMap::new();
 	let mut findings = Vec::new();
 	for source_delta in source_deltas {
@@ -316,6 +326,7 @@ fn semantic_remove_count(source_delta: &SemanticSourceDelta) -> usize {
 						.node(tombstone.deleted.node)
 						.is_ok_and(|node| {
 							node.kind.starts_with("clausewitz.assignment:")
+								|| node.kind == "clausewitz.assignment.entity"
 								|| node.kind == "clausewitz.item"
 						}),
 					DeltaOperation::Insert { .. }
@@ -354,6 +365,7 @@ pub(super) fn apply_dep_misuse_remove_counts(
 
 #[cfg(test)]
 mod tests {
+	use crate::game::eu4::cultures::correspondence::CultureCorrespondence;
 	use std::fs;
 
 	use crate::game::eu4::content::ScriptFileKind;
@@ -442,6 +454,110 @@ mod tests {
 	}
 
 	#[test]
+	fn semantic_remove_count_includes_deleted_culture_roots_but_not_renames() {
+		let parse = |source| {
+			parse_clausewitz_content(
+				&crate::model::GamePathBuf::parse("common/cultures/test.txt")
+					.expect("valid game path"),
+				source,
+			)
+			.ast
+		};
+		let base = parse(
+			"g = { removed_culture = { primary = AAA male_names = { Johann } } old_culture = { primary = BBB } }",
+		);
+		let revision = parse("g = { renamed_culture = { primary = BBB } }");
+		let correspondence = CultureCorrespondence::from_files(&base, &[&revision])
+			.unwrap()
+			.unwrap();
+		let adapter = TransformModuleAdapter {
+			transform: &correspondence,
+		};
+		let policies = MergePolicies::default();
+		let normalize = |file: &crate::game::eu4::script::parser::AstFile| {
+			adapter
+				.prepare(file)
+				.normalize(&SemanticPartitionId::File, &policies)
+				.unwrap()
+		};
+		let source = source_delta(normalize(&base), normalize(&revision));
+		let partition = &source.partitions[0];
+		assert!(partition.delta.operations.iter().any(|operation| matches!(operation, DeltaOperation::Rename { from, to, .. }
+			if from.value.as_deref() == Some("old_culture") && to.value.as_deref() == Some("renamed_culture"))));
+		let deleted = partition.delta.tombstones().collect::<Vec<_>>();
+		assert_eq!(deleted.len(), 1, "one deleted statement subtree");
+		assert_eq!(
+			partition
+				.base_tree
+				.node(deleted[0].deleted.node)
+				.unwrap()
+				.value
+				.as_deref(),
+			Some("removed_culture")
+		);
+		assert_eq!(semantic_remove_count(&source), 1);
+	}
+
+	#[test]
+	fn culture_stale_detection_uses_the_same_identity_as_the_source_delta() {
+		use crate::game::eu4::cultures::correspondence::CultureCorrespondence;
+		use crate::merge::structured::TransformModuleAdapter;
+
+		let path =
+			&crate::model::GamePathBuf::parse("common/cultures/test.txt").expect("valid game path");
+		let parsed = |source| {
+			let mut file = parsed_vanilla(source);
+			file.relative_path = path.clone();
+			file.ast.path = path.clone();
+			file
+		};
+		let vanilla = parsed("g = { old = { primary = AAA } }");
+		let parent = parsed("g = { old = { primary = AAA } dependency_old = { primary = BBB } }");
+		let revision =
+			parsed("g = { renamed = { primary = AAA } dependency_new = { primary = BBB } }");
+		let correspondence = CultureCorrespondence::from_files(&parent.ast, &[&revision.ast])
+			.unwrap()
+			.unwrap();
+		let adapter = TransformModuleAdapter {
+			transform: &correspondence,
+		};
+		let policies = MergePolicies::default();
+		let normalize = |file: &ParsedScriptFile| {
+			adapter
+				.prepare(&file.ast)
+				.normalize(&SemanticPartitionId::File, &policies)
+				.unwrap()
+		};
+		let delta = source_delta(normalize(&parent), normalize(&revision));
+		assert_eq!(
+			delta.partitions[0]
+				.delta
+				.operations
+				.iter()
+				.filter(|operation| matches!(operation, DeltaOperation::Rename { .. }))
+				.count(),
+			2
+		);
+		let findings = collect_semantic_stale_vanilla_targets(
+			path,
+			&[delta],
+			Some(&vanilla),
+			&policies,
+			&HashMap::new(),
+			Some(&correspondence),
+		)
+		.unwrap();
+		assert_eq!(
+			findings.len(),
+			1,
+			"the vanilla culture must not be reported as missing: {findings:?}"
+		);
+		assert_eq!(findings[0].target_key.as_deref(), Some("dependency_old"));
+		assert_eq!(findings[0].target_path, ["g"]);
+		assert_eq!(findings[0].patch_kind, "Rename");
+	}
+
+	#[test]
 	fn semantic_stale_detection_compares_remove_targets_with_original_vanilla() {
 		let present = source_delta(
 			normalized(vec![assignment("present", "yes")]),
@@ -460,6 +576,7 @@ mod tests {
 			Some(&vanilla),
 			&MergePolicies::default(),
 			&versions,
+			None,
 		)
 		.expect("inspect present semantic target");
 		let absent_findings = collect_semantic_stale_vanilla_targets(
@@ -468,6 +585,7 @@ mod tests {
 			Some(&vanilla),
 			&MergePolicies::default(),
 			&versions,
+			None,
 		)
 		.expect("inspect absent semantic target");
 

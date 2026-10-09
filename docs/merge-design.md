@@ -18,6 +18,21 @@ Localisation and unsupported content families may use narrower strategies. CWT
 rules are evidence for shape and editor behavior, not proof of runtime load or
 merge semantics.
 
+The local implementation for preserving gameplay mechanisms across definition
+and reference changes is described in
+[the culture reference merge design](./superpowers/specs/2026-10-01-culture-reference-merge-design.md).
+`merge::transform` owns source-bound edits, frozen transformation plans, cache
+identities, and connected output dependencies. `ContentFamilyDescriptor` selects
+an adapter; `game::eu4::cultures` supplies culture identity inference, typed
+reference adaptation, group semantics and output validation. Tree matching and
+DAG merging consume the generic `EntityTransform` contract. Culture is the first
+production adapter; this does not establish support for transformations in
+other content families. See the [boundary refactor](./superpowers/plans/2026-10-01-generic-transform-adapter.md).
+
+Transformation outputs that share a merge unit are committed or withheld
+together, transitively. An incomplete group does not withdraw an independent
+group, and `--force` cannot bypass the group's output validation.
+
 ## Product flow
 
 ```text

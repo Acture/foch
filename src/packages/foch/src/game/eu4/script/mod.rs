@@ -281,6 +281,37 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 		});
 		index.parse_issues.extend(file.parse_issues.clone());
 		build_file_index(file, &map_groups, cwt_rule_engine, &mut index);
+		let cultures = super::cultures::collect_culture_references(&file.ast, &file.relative_path);
+		index
+			.resource_references
+			.extend(
+				cultures
+					.references
+					.into_iter()
+					.map(|reference| ResourceReference {
+						key: "culture_reference".to_owned(),
+						value: reference.id,
+						mod_id: file.mod_id.clone(),
+						path: reference.location.relative_path,
+						line: reference.location.span.start.line,
+						column: reference.location.span.start.column,
+					}),
+			);
+		index
+			.resource_references
+			.extend(
+				cultures
+					.group_references
+					.into_iter()
+					.map(|reference| ResourceReference {
+						key: "culture_group_reference".to_owned(),
+						value: reference.group,
+						mod_id: file.mod_id.clone(),
+						path: reference.location.relative_path,
+						line: reference.location.span.start.line,
+						column: reference.location.span.start.column,
+					}),
+			);
 	}
 	infer_definition_scope_from_references(&mut index);
 	infer_definition_dynamic_alias_masks_from_references(&mut index);
