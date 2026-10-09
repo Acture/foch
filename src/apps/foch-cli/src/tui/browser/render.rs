@@ -42,6 +42,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	draw_top_bar(frame, app, top);
 	draw_header(frame, app, header);
 	match (&app.phase, app.screen) {
+		(Phase::Building { started }, _) => draw_building(frame, app, body, started.elapsed()),
 		(Phase::Analyzing { started, progress }, _) => {
 			let elapsed = progress
 				.map(|progress| progress.elapsed)
@@ -58,12 +59,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	if app.confirming_exclusions {
 		draw_exclusion_prompt(frame, app);
 	}
+	if app.confirming_build {
+		draw_build_prompt(frame, app);
+	}
 	if app.help {
 		draw_help(frame);
 	}
 	if let Some(selection) = app.selection {
 		let buffer = frame.buffer_mut();
-		for position in selected_cells(selection, buffer.area) {
+		let bounds = app.selection_bounds.intersection(buffer.area);
+		for position in selected_cells(selection, bounds) {
 			buffer[position]
 				.modifier
 				.toggle(ratatui::style::Modifier::REVERSED);
@@ -71,8 +76,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	}
 }
 
-/// The cells from one corner of a drag to the other, in reading order, as
-/// a terminal selects: whole rows between the first and the last.
+/// The cells from one corner of a drag to the other, in reading order within
+/// `area` (the panel the drag started in): whole panel rows between the
+/// first and the last.
 fn selected_cells((start, end): (Position, Position), area: Rect) -> Vec<Position> {
 	let (start, end) = if (start.y, start.x) <= (end.y, end.x) {
 		(start, end)
@@ -96,12 +102,16 @@ fn selected_cells((start, end): (Position, Position), area: Rect) -> Vec<Positio
 
 /// The text a drag covered in a drawn frame: wide characters once, panel
 /// borders and trailing blanks dropped.
-pub fn selected_text(selection: (Position, Position), buffer: &ratatui::buffer::Buffer) -> String {
+pub fn selected_text(
+	selection: (Position, Position),
+	bounds: Rect,
+	buffer: &ratatui::buffer::Buffer,
+) -> String {
 	const BORDERS: &[char] = &['│', '┃', '─', '━', '╭', '╮', '╰', '╯', '┏', '┓', '┗', '┛'];
 	let mut lines: Vec<String> = Vec::new();
 	let mut row = None;
 	let mut skip = 0;
-	for position in selected_cells(selection, buffer.area) {
+	for position in selected_cells(selection, bounds.intersection(buffer.area)) {
 		if row != Some(position.y) {
 			row = Some(position.y);
 			skip = 0;
@@ -124,6 +134,79 @@ pub fn selected_text(selection: (Position, Position), buffer: &ratatui::buffer::
 		.join("\n")
 		.trim_matches('\n')
 		.to_string()
+}
+
+fn draw_build_prompt(frame: &mut Frame<'_>, app: &App) {
+	let Some(args) = app.data_build_args() else {
+		return;
+	};
+	let command = std::iter::once("foch".to_string())
+		.chain(args.command_line())
+		.collect::<Vec<_>>()
+		.join(" ");
+	let lines = vec![
+		Line::from(Span::styled(
+			"Build EU4 base data from your game installation?",
+			Style::new().bold(),
+		)),
+		Line::from(Span::styled(
+			format!("Reads {}", display(&args.from_game_path)),
+			Style::new().fg(DIM),
+		)),
+		Line::from(Span::styled(
+			"Parses the whole game (several minutes) and installs the result into Foch's data directory. Game files are not changed.",
+			Style::new().fg(DIM),
+		)),
+		Line::from(""),
+		Line::from(vec![
+			Span::styled("CLI  ", Style::new().fg(DIM)),
+			Span::styled(command, Style::new().fg(Color::Gray)),
+		]),
+		Line::from(""),
+		Line::from(vec![
+			key("y"),
+			Span::raw(" build   "),
+			key("Esc"),
+			Span::raw(" cancel"),
+		]),
+	];
+	let height = lines.len() as u16 + 4;
+	let popup = centered(frame.area(), 100, height);
+	frame.render_widget(Clear, popup);
+	frame.render_widget(
+		Paragraph::new(lines)
+			.wrap(Wrap { trim: false })
+			.block(panel(" Build base data ", WARN)),
+		popup,
+	);
+}
+
+fn draw_building(frame: &mut Frame<'_>, app: &App, area: Rect, elapsed: std::time::Duration) {
+	let popup = centered(area, 80, 8);
+	let spinner = ["◐", "◓", "◑", "◒"][(elapsed.as_millis() / 250 % 4) as usize];
+	let from = app
+		.data_build_args()
+		.map(|args| display(&args.from_game_path))
+		.unwrap_or_default();
+	let lines = vec![
+		Line::from(Span::styled(
+			format!("{spinner} Building EU4 base data… {}s", elapsed.as_secs()),
+			Style::new().fg(ACCENT).bold(),
+		)),
+		Line::from(Span::styled(format!("from {from}"), Style::new().fg(DIM))),
+		Line::from(""),
+		Line::from(Span::styled(
+			"The input is inspected again when the build finishes.",
+			Style::new().fg(DIM),
+		)),
+	];
+	frame.render_widget(Clear, popup);
+	frame.render_widget(
+		Paragraph::new(lines)
+			.wrap(Wrap { trim: false })
+			.block(panel(" Base data ", ACCENT)),
+		popup,
+	);
 }
 
 fn draw_help(frame: &mut Frame<'_>) {
@@ -175,7 +258,7 @@ fn draw_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
 	frame.render_widget(Paragraph::new(left), area);
 	frame.render_widget(
 		Paragraph::new(Span::styled(
-			"read-only · nothing is written ",
+			"analysis writes nothing ",
 			Style::new().fg(DIM),
 		))
 		.alignment(Alignment::Right),
@@ -192,6 +275,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
 		Some(input) => header_lines(input),
 	};
 	frame.render_widget(Paragraph::new(lines).block(panel(" Input ", DIM)), area);
+	record(app, |hit| hit.header = area);
 }
 
 fn header_lines(input: &CurrentEu4Input) -> Vec<Line<'static>> {
@@ -275,9 +359,11 @@ fn next_step(app: &App) -> (Line<'static>, Color) {
 		),
 		_ if app.selectable && app.needs_base_data() => (
 			Line::from(vec![
-				Span::raw("⚠ The EU4 base data is not ready. Build it (see Issues), or press "),
+				Span::raw("⚠ The EU4 base data is not ready. Press "),
+				key("B"),
+				Span::raw(" to build it here, or "),
 				key("o"),
-				Span::raw(" and turn off the EU4 base as ancestor (--no-game-base)."),
+				Span::raw(" to turn off the EU4 base as ancestor (--no-game-base)."),
 			]),
 			WARN,
 		),
@@ -365,6 +451,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			.block(panel(" Next step ", color)),
 		banner_area,
 	);
+	record(app, |hit| hit.banner = banner_area);
 
 	let [mods_area, side] =
 		Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(main);
@@ -729,6 +816,7 @@ fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			.block(panel(format!(" Analysis · {status} "), color)),
 		summary_area,
 	);
+	record(app, |hit| hit.summary = summary_area);
 
 	let [list_area, detail_area] =
 		Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(main);
@@ -1024,6 +1112,8 @@ fn footer_keys(app: &App) -> Line<'static> {
 	let pairs: &[(&str, &str)] = match (&app.phase, app.screen, app.focus) {
 		_ if app.help => &[("any key", "close")],
 		_ if app.confirming_exclusions => &[("y", "analyze without them"), ("Esc", "cancel")],
+		_ if app.confirming_build => &[("y", "build"), ("Esc", "cancel")],
+		(Phase::Building { .. }, _, _) => &[("q", "quit")],
 		_ if app.options.is_some() => &[("Space", "toggle"), ("Esc", "close")],
 		(Phase::Inspecting, _, _) => &[("?", "keys"), ("q", "quit")],
 		(Phase::Analyzing { .. }, _, _) => &[("?", "keys"), ("q", "cancel and quit")],
@@ -1204,9 +1294,23 @@ mod tests {
 		buffer.set_string(0, 0, "│欧陆扩展 ok      │", Style::new());
 		buffer.set_string(0, 1, "│second line      │", Style::new());
 
-		let text = selected_text((Position::new(0, 0), Position::new(19, 1)), &buffer);
+		let all = buffer.area;
+		let text = selected_text((Position::new(0, 0), Position::new(19, 1)), all, &buffer);
 		assert_eq!(text, "欧陆扩展 ok\nsecond line");
-		let partial = selected_text((Position::new(3, 0), Position::new(5, 1)), &buffer);
+		let partial = selected_text((Position::new(3, 0), Position::new(5, 1)), all, &buffer);
 		assert_eq!(partial, "陆扩展 ok\nsecon");
+	}
+
+	/// A selection confined to one panel copies only that panel's columns,
+	/// row by row, even where a neighbouring panel shares the rows.
+	#[test]
+	fn a_drag_copies_only_the_panel_it_started_in() {
+		let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 2));
+		buffer.set_string(0, 0, "│left one  ││right one│", Style::new());
+		buffer.set_string(0, 1, "│left two  ││right two│", Style::new());
+
+		let left = Rect::new(1, 0, 10, 2);
+		let text = selected_text((Position::new(1, 0), Position::new(10, 1)), left, &buffer);
+		assert_eq!(text, "left one\nleft two");
 	}
 }

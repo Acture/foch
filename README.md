@@ -165,7 +165,9 @@ Every analysis the browser runs is a `foch merge` it displays: without
 INPUT_SOURCE, `foch merge` analyzes the current EU4 playset exactly as the
 browser does, and `--exclude <WORKSHOP_ID|#POSITION>` leaves a mod out as the
 browser's `x` does; `foch input repair --open` opens the same Workshop pages as
-the browser's `R`. The browser's `?` panel lists every key with its command.
+the browser's `R`, and `foch data build eu4 --from-game-path <GAME> --install`
+builds base data as the browser's `B` does. The browser's `?` panel lists
+every key with its command.
 Agents and scripts can therefore reproduce any browser analysis from the
 command it shows.
 

@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::cli::arg::MergeArgs;
+use crate::cli::arg::{DataBuildArgs, MergeArgs};
 use crate::cli::handler::input::{RepairTarget, repair_targets};
 
 use crossterm::event::{
@@ -168,13 +168,51 @@ impl InputPane {
 /// showed, so a mouse position maps back to a panel and a row.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HitAreas {
+	pub header: Rect,
+	pub banner: Rect,
 	pub mods: Rect,
 	pub mods_offset: usize,
 	pub selected_mod: Rect,
 	pub issues: Rect,
+	pub summary: Rect,
 	pub units: Rect,
 	pub units_offset: usize,
 	pub detail: Rect,
+}
+
+impl HitAreas {
+	/// The panels the current screen shows, for confining a text selection.
+	fn panels(&self, reviewing: bool) -> Vec<Rect> {
+		if reviewing {
+			vec![self.header, self.summary, self.units, self.detail]
+		} else {
+			vec![
+				self.header,
+				self.banner,
+				self.mods,
+				self.selected_mod,
+				self.issues,
+			]
+		}
+	}
+}
+
+/// The inside of a bordered panel.
+fn inner(area: Rect) -> Rect {
+	Rect::new(
+		area.x.saturating_add(1),
+		area.y.saturating_add(1),
+		area.width.saturating_sub(2),
+		area.height.saturating_sub(2),
+	)
+}
+
+/// `at` moved into `bounds`.
+fn clamp(at: Position, bounds: Rect) -> Position {
+	Position::new(
+		at.x.clamp(bounds.x, bounds.right().saturating_sub(1).max(bounds.x)),
+		at.y.clamp(bounds.y, bounds.bottom().saturating_sub(1).max(bounds.y)),
+	)
 }
 
 const WHEEL_STEP: usize = 3;
@@ -189,6 +227,10 @@ pub enum Phase {
 	},
 	Reviewed(Box<AnalysisView>),
 	Failed(String),
+	/// Building EU4 base data from the game installation.
+	Building {
+		started: Instant,
+	},
 }
 
 /// What the session must do in response to a key.
@@ -197,6 +239,7 @@ pub enum AppCommand {
 	Quit,
 	Analyze,
 	Refresh,
+	BuildBaseData,
 }
 
 /// Something outside the browser a key asked for, carried out by the run
@@ -242,6 +285,11 @@ pub const KEY_HELP: &[(&str, &str, &str)] = &[
 		"foch input repair --open --mod <MOD>",
 	),
 	("r", "inspect the input again", "foch input inspect"),
+	(
+		"B",
+		"build EU4 base data from the game",
+		"foch data build eu4 --from-game-path <GAME> --install",
+	),
 	(
 		"o",
 		"analysis options",
@@ -295,6 +343,8 @@ pub struct App {
 	pub options: Option<usize>,
 	/// Asking whether to analyze without the excluded mods.
 	pub confirming_exclusions: bool,
+	/// Asking whether to build base data, which writes Foch's data directory.
+	pub confirming_build: bool,
 	/// Why the last key could not do what it asks, until the next key.
 	pub refusal: Option<String>,
 	/// What the last key did, until the next key.
@@ -308,6 +358,9 @@ pub struct App {
 	/// The screen cells a drag covers, from where it started to where it
 	/// is; highlighted, and copied when the button is released.
 	pub selection: Option<(Position, Position)>,
+	/// The inside of the panel the drag started in: a selection never
+	/// leaves it, so it copies only that panel's text and no borders.
+	pub selection_bounds: Rect,
 	/// The finished selection is waiting to be copied from the next frame.
 	pub copy_selection: bool,
 	analyze_after_inspection: bool,
@@ -337,6 +390,7 @@ impl Default for App {
 			game_base_available: true,
 			options: None,
 			confirming_exclusions: false,
+			confirming_build: false,
 			refusal: None,
 			notice: None,
 			effect: None,
@@ -344,6 +398,7 @@ impl Default for App {
 			help: false,
 			drag_anchor: None,
 			selection: None,
+			selection_bounds: Rect::default(),
 			copy_selection: false,
 			analyze_after_inspection: false,
 		}
@@ -434,6 +489,38 @@ impl App {
 			&& self.included_count() > 0
 	}
 
+	/// The `foch data build` arguments `B` runs: the inspected EU4
+	/// installation, installed into Foch's data directory.
+	pub fn data_build_args(&self) -> Option<DataBuildArgs> {
+		let game_root = self.input.as_ref()?.game.install_path.clone()?;
+		Some(DataBuildArgs {
+			game_name: "eu4".to_string(),
+			from_game_path: game_root,
+			game_version: "auto".to_string(),
+			install: true,
+			output_dir: None,
+			release_asset: false,
+			profile_out: None,
+		})
+	}
+
+	pub(super) fn building(&mut self) {
+		self.phase = Phase::Building {
+			started: Instant::now(),
+		};
+	}
+
+	pub(super) fn built(&mut self, result: Result<Vec<String>, String>) {
+		match result {
+			Ok(report) => {
+				self.notice = Some(format!("Base data built. {}", report.join(" ")));
+			}
+			Err(error) => {
+				self.refusal = Some(format!("Building base data failed: {error}"));
+			}
+		}
+	}
+
 	/// The `foch merge` arguments of the analysis `a` runs. The browser
 	/// analyzes through exactly these, writing nothing, so `cli_command`
 	/// reproduces its analysis.
@@ -482,7 +569,10 @@ impl App {
 	}
 
 	pub fn is_working(&self) -> bool {
-		matches!(self.phase, Phase::Inspecting | Phase::Analyzing { .. })
+		matches!(
+			self.phase,
+			Phase::Inspecting | Phase::Analyzing { .. } | Phase::Building { .. }
+		)
 	}
 
 	/// Indices of the units that pass the disposition filter and the query,
@@ -596,6 +686,14 @@ impl App {
 		if let Some(cursor) = self.options {
 			return self.handle_options_key(key, cursor);
 		}
+		if self.confirming_build {
+			self.confirming_build = false;
+			return match key.code {
+				KeyCode::Char('q') => Some(AppCommand::Quit),
+				KeyCode::Char('y') => Some(AppCommand::BuildBaseData),
+				_ => None,
+			};
+		}
 		if self.confirming_exclusions {
 			return match key.code {
 				KeyCode::Char('q') => Some(AppCommand::Quit),
@@ -646,6 +744,21 @@ impl App {
 			}
 			KeyCode::Char('R') => {
 				self.repair(Vec::new());
+				return None;
+			}
+			KeyCode::Char('B') => {
+				match (self.is_working(), self.data_build_args()) {
+					(true, _) => {
+						self.refusal = Some("Wait for the current work to finish.".to_string())
+					}
+					(false, None) => {
+						self.refusal = Some(
+							"The EU4 installation was not found, so there is nothing to build base data from."
+								.to_string(),
+						);
+					}
+					(false, Some(_)) => self.confirming_build = true,
+				}
 				return None;
 			}
 			KeyCode::Char('w') => {
@@ -782,13 +895,16 @@ impl App {
 			Phase::Inspecting => {
 				"Still inspecting the input; analysis can start when it finishes.".to_string()
 			}
+			Phase::Building { .. } => {
+				"Base data is being built; analysis can start when it finishes.".to_string()
+			}
 			Phase::Analyzing { .. } => "An analysis is already running.".to_string(),
 			Phase::Reviewed(_) | Phase::Failed(_) => {
 				"This input snapshot was already analyzed. Press r to re-inspect and analyze again."
 					.to_string()
 			}
 			Phase::Inspected if self.selectable && self.needs_base_data() => {
-				"The EU4 base data is not ready. Build it (see Issues), or press o and turn off the EU4 base as ancestor (--no-game-base)."
+				"The EU4 base data is not ready. Press B to build it here, or press o and turn off the EU4 base as ancestor (--no-game-base)."
 					.to_string()
 			}
 			Phase::Inspected if !self.selectable => {
@@ -905,12 +1021,21 @@ impl App {
 		// click without a drag focuses and selects.
 		match mouse.kind {
 			MouseEventKind::Down(MouseButton::Left) => {
-				self.drag_anchor = Some(at);
+				let reviewing = self.analysis().is_some() && self.screen == Screen::Review;
+				self.selection_bounds = self
+					.hit
+					.get()
+					.panels(reviewing)
+					.into_iter()
+					.find(|panel| panel.contains(at))
+					.map(inner)
+					.unwrap_or(Rect::new(0, at.y, u16::MAX, 1));
+				self.drag_anchor = Some(clamp(at, self.selection_bounds));
 				self.selection = None;
 			}
 			MouseEventKind::Drag(MouseButton::Left) => {
 				if let Some(anchor) = self.drag_anchor {
-					self.selection = Some((anchor, at));
+					self.selection = Some((anchor, clamp(at, self.selection_bounds)));
 				}
 				return;
 			}
@@ -1209,6 +1334,42 @@ mod tests {
 		assert_eq!(app.issues_scroll, 3);
 		app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 12));
 		assert_eq!(app.input_pane, InputPane::Mod);
+	}
+
+	#[test]
+	fn b_builds_base_data_with_the_command_it_shows_after_consent() {
+		use crate::cli::arg::{FochCli, FochCliCommands, FochCliDataCommands};
+		use clap::Parser;
+
+		let mut app = App::default();
+		app.inspected(input_with_a_broken_mod(), true, false);
+		assert_eq!(press(&mut app, KeyCode::Char('B')), None);
+		assert!(
+			app.refusal
+				.as_deref()
+				.is_some_and(|refusal| refusal.contains("not found"))
+		);
+
+		let mut input = input_with_a_broken_mod();
+		input.game.install_path = Some(PathBuf::from("G:/Steam Library/EU4"));
+		app.inspected(input, true, false);
+		assert_eq!(press(&mut app, KeyCode::Char('B')), None);
+		assert!(app.confirming_build);
+		assert_eq!(
+			press(&mut app, KeyCode::Char('y')),
+			Some(AppCommand::BuildBaseData)
+		);
+
+		let expected = app.data_build_args().expect("build arguments");
+		let argv = std::iter::once("foch".to_string()).chain(expected.command_line());
+		let parsed = FochCli::try_parse_from(argv).expect("shown command parses");
+		let Some(FochCliCommands::Data(data)) = parsed.command else {
+			panic!("shown command is not `foch data`");
+		};
+		let FochCliDataCommands::Build(parsed) = data.command else {
+			panic!("shown command is not `foch data build`");
+		};
+		assert_eq!(parsed, expected);
 	}
 
 	#[test]

@@ -468,7 +468,7 @@ pub struct DataInstallArgs {
 	pub release_tag: Option<String>,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug, Eq, PartialEq)]
 pub struct DataBuildArgs {
 	pub game_name: String,
 
@@ -489,6 +489,36 @@ pub struct DataBuildArgs {
 
 	#[arg(long)]
 	pub profile_out: Option<PathBuf>,
+}
+
+impl DataBuildArgs {
+	/// The arguments after `foch` that parse back to exactly these.
+	pub fn command_line(&self) -> Vec<String> {
+		let mut args = vec![
+			"data".to_string(),
+			"build".to_string(),
+			self.game_name.clone(),
+			"--from-game-path".to_string(),
+			self.from_game_path.display().to_string(),
+			"--game-version".to_string(),
+			self.game_version.clone(),
+		];
+		if self.install {
+			args.push("--install".to_string());
+		}
+		if let Some(dir) = &self.output_dir {
+			args.push("--output-dir".to_string());
+			args.push(dir.display().to_string());
+		}
+		if self.release_asset {
+			args.push("--release-asset".to_string());
+		}
+		if let Some(path) = &self.profile_out {
+			args.push("--profile-out".to_string());
+			args.push(path.display().to_string());
+		}
+		args
+	}
 }
 
 #[derive(Parser, Debug)]

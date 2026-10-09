@@ -79,6 +79,10 @@ enum WorkerMessage {
 		generation: u64,
 		result: Result<Box<AnalysisView>, String>,
 	},
+	Built {
+		generation: u64,
+		result: Result<Vec<String>, String>,
+	},
 }
 
 struct ChannelProgress {
@@ -143,6 +147,7 @@ impl Session {
 				return false;
 			}
 			Some(AppCommand::Analyze) => self.start_analysis(),
+			Some(AppCommand::BuildBaseData) => self.start_build(),
 			Some(AppCommand::Refresh) => {
 				// Refreshing a browsed analysis replaces both the input
 				// snapshot and the analysis; before one, it only re-inspects.
@@ -165,7 +170,8 @@ impl Session {
 		if !std::mem::take(&mut self.app.copy_selection) {
 			return None;
 		}
-		let text = super::render::selected_text(self.app.selection?, buffer);
+		let text =
+			super::render::selected_text(self.app.selection?, self.app.selection_bounds, buffer);
 		self.app.notice = Some(format!(
 			"Copied {} selected characters.",
 			text.chars().count()
@@ -232,6 +238,13 @@ impl Session {
 				self.app.progress(progress);
 				true
 			}
+			WorkerMessage::Built { generation, result } if generation == self.generation => {
+				self.busy = false;
+				self.app.built(result);
+				// The new base data changes what can be analyzed.
+				self.start_inspection(false);
+				true
+			}
 			WorkerMessage::Analyzed { generation, result } if generation == self.generation => {
 				self.busy = false;
 				self.cancellation = None;
@@ -266,6 +279,31 @@ impl Session {
 				},
 			};
 			let _ = tx.send(message);
+		});
+	}
+
+	/// Build base data through the same `foch data build` code the CLI runs.
+	fn start_build(&mut self) {
+		let Some(args) = self.app.data_build_args() else {
+			return;
+		};
+		self.cancel_running();
+		self.generation += 1;
+		self.busy = true;
+		self.app.building();
+		let generation = self.generation;
+		let tx = self.tx.clone();
+		spawn_with_merge_stack(move || {
+			let result = catch_unwind(AssertUnwindSafe(|| {
+				let config =
+					foch::input::load_config_read_only().map_err(|error| error.to_string())?;
+				crate::cli::handler::data::run_data_build(&args, &config)
+					.map_err(|error| error.to_string())
+			}))
+			.unwrap_or_else(|panic| {
+				Err(format!("base data build panicked: {}", panic_text(&*panic)))
+			});
+			let _ = tx.send(WorkerMessage::Built { generation, result });
 		});
 	}
 
