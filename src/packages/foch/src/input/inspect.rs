@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::game::eu4::Eu4;
@@ -129,10 +130,39 @@ struct PreparedCurrentEu4Input {
 	config: Config,
 	game_root: PathBuf,
 	playset_path: PathBuf,
-	playset: Playset,
+	/// The playset of every usable mod, or `None` when a mod blocks the
+	/// standard preparation modes.
+	playset: Option<Playset>,
 	source_mod_count: usize,
 	recovery: Option<AvailableInputRecovery>,
 	base_snapshot_identity: InstalledBaseSnapshotIdentity,
+	selection: PlaysetSelection,
+}
+
+/// Every playset mod in load order, kept so a caller can analyze an explicit
+/// subset: the playset without its mods, plus each mod's entry and, when it
+/// cannot be analyzed, why.
+#[derive(Clone, Debug)]
+struct PlaysetSelection {
+	template: Playset,
+	mods: Vec<SelectableMod>,
+}
+
+#[derive(Clone, Debug)]
+struct SelectableMod {
+	position: usize,
+	id: String,
+	name: String,
+	entry: PlaysetEntry,
+	problem: Option<String>,
+}
+
+/// What `inspect_playset` hands on once Steam Workshop data is available.
+struct PlaysetPreparation {
+	playset_path: PathBuf,
+	playset: Option<Playset>,
+	recovery: Option<AvailableInputRecovery>,
+	selection: PlaysetSelection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -221,6 +251,7 @@ impl CurrentEu4Input {
 
 	pub fn prepare(self, mode: InputPreparationMode) -> Option<PreparedAnalysisInput> {
 		let prepared = self.prepared?;
+		let playset = prepared.playset?;
 		let prepared_mode = if prepared.recovery.is_some() {
 			InputPreparationMode::AvailableOnly
 		} else {
@@ -235,9 +266,68 @@ impl CurrentEu4Input {
 				.with_expected_base_snapshot_identity(identity_label)
 				.with_base_snapshot_lease(Some(prepared.base_snapshot_identity))
 				.with_expected_game_root(prepared.game_root)
-				.with_preloaded_playset(prepared.playset),
+				.with_preloaded_playset(playset),
 			source_mod_count: prepared.source_mod_count,
 			recovery: prepared.recovery,
+		})
+	}
+
+	/// Whether [`CurrentEu4Input::prepare_excluding`] can build a request:
+	/// the game, base data and Steam Workshop data are usable, whatever the
+	/// state of individual playset mods.
+	pub fn can_select_mods(&self) -> bool {
+		self.prepared.is_some()
+	}
+
+	/// Prepare the playset without the mods at `excluded` playset positions
+	/// (1-based, as [`DetectedPlaysetMod::position`]). Every mod that cannot
+	/// be analyzed must be excluded. Asking the user before analyzing less
+	/// than the full playset is the caller's job.
+	pub fn prepare_excluding(
+		self,
+		excluded: &BTreeSet<usize>,
+	) -> Result<PreparedAnalysisInput, String> {
+		let prepared = self.prepared.ok_or_else(|| {
+			"the game, base data or Steam Workshop data is not ready; see the issues".to_string()
+		})?;
+		let PlaysetSelection { mut template, mods } = prepared.selection;
+		let mut omitted_mods = Vec::new();
+		for selectable in mods {
+			if excluded.contains(&selectable.position) {
+				omitted_mods.push(OmittedPlaysetMod {
+					id: selectable.id,
+					name: selectable.name,
+					position: selectable.position,
+					reason: selectable
+						.problem
+						.unwrap_or_else(|| "excluded by the user".to_string()),
+				});
+			} else if let Some(problem) = selectable.problem {
+				return Err(format!(
+					"mod #{} {} cannot be analyzed ({problem}); exclude it to analyze the rest",
+					selectable.position, selectable.name
+				));
+			} else {
+				template.mods.push(selectable.entry);
+			}
+		}
+		if template.mods.is_empty() {
+			return Err("no mods remain to analyze".to_string());
+		}
+		let recovery = (!omitted_mods.is_empty()).then_some(AvailableInputRecovery {
+			source_mod_count: prepared.source_mod_count,
+			omitted_mods,
+			included_mod_count: template.mods.len(),
+		});
+		let identity_label = prepared.base_snapshot_identity.as_label();
+		Ok(PreparedAnalysisInput {
+			request: InputRequest::from_playset_path(prepared.playset_path, prepared.config)
+				.with_expected_base_snapshot_identity(identity_label)
+				.with_base_snapshot_lease(Some(prepared.base_snapshot_identity))
+				.with_expected_game_root(prepared.game_root)
+				.with_preloaded_playset(template),
+			source_mod_count: prepared.source_mod_count,
+			recovery,
 		})
 	}
 }
@@ -264,7 +354,7 @@ pub(crate) fn inspect_current_eu4_input_with_environment(
 			.game_path
 			.insert(Eu4::KEY.to_string(), game_root.clone());
 	}
-	let (playset_view, prepared_playset, playset_recovery) = inspect_playset(&config, &mut issues);
+	let (playset_view, preparation) = inspect_playset(&config, &mut issues);
 	let source_mod_count = playset_view
 		.as_ref()
 		.map_or(0, |playset| playset.mods.len());
@@ -272,30 +362,34 @@ pub(crate) fn inspect_current_eu4_input_with_environment(
 		inspect_base_data(game_version.as_deref(), &mut issues);
 
 	let prepared = match (
-		prepared_playset,
+		preparation,
 		base_snapshot_identity,
 		game_root.as_ref(),
 		game_version.as_ref(),
 	) {
-		(Some((playset_path, playset)), Some(base_snapshot_identity), Some(game_root), Some(_)) => {
+		(Some(preparation), Some(base_snapshot_identity), Some(game_root), Some(_)) => {
 			Some(PreparedCurrentEu4Input {
 				config,
 				game_root: game_root.clone(),
-				playset_path,
-				playset,
+				playset_path: preparation.playset_path,
+				playset: preparation.playset,
 				source_mod_count,
-				recovery: playset_recovery.clone(),
+				recovery: preparation.recovery,
 				base_snapshot_identity,
+				selection: preparation.selection,
 			})
 		}
 		_ => None,
 	};
+	let ready = prepared
+		.as_ref()
+		.is_some_and(|prepared| prepared.playset.is_some());
 	let recovery = prepared
 		.as_ref()
 		.and_then(|prepared| prepared.recovery.clone());
 
 	CurrentEu4Input {
-		readiness: match (prepared.is_some(), recovery.is_some()) {
+		readiness: match (ready, recovery.is_some()) {
 			(false, _) => InputReadiness::Blocked,
 			(true, false) => InputReadiness::Ready,
 			(true, true) => InputReadiness::ReadyWithOmissions,
@@ -368,11 +462,7 @@ fn inspect_game(
 fn inspect_playset(
 	config: &Config,
 	issues: &mut Vec<InputReadinessIssue>,
-) -> (
-	Option<DetectedPlayset>,
-	Option<(PathBuf, Playset)>,
-	Option<AvailableInputRecovery>,
-) {
+) -> (Option<DetectedPlayset>, Option<PlaysetPreparation>) {
 	let candidates = paradox_data_candidates(config.paradox_data_path.as_deref());
 	let playset_path = candidates
 		.iter()
@@ -386,7 +476,7 @@ fn inspect_playset(
 			"Foch could not determine where the current EU4 dlc_load.json lives.",
 			Some("Select the EU4 user data directory."),
 		));
-		return (None, None, None);
+		return (None, None);
 	};
 	let (mut playset, missing_descriptors) =
 		match Playset::from_dlc_load_with_required_descriptors(&playset_path) {
@@ -398,7 +488,7 @@ fn inspect_playset(
 					error.to_string(),
 					Some("Start the EU4 Launcher and select a playset, then retry."),
 				));
-				return (None, None, None);
+				return (None, None);
 			}
 		};
 	playset.name = CURRENT_PLAYSET_NAME.to_string();
@@ -423,6 +513,7 @@ fn inspect_playset(
 	let catalog_ready = catalog.is_ok();
 	let source_mods = std::mem::take(&mut playset.mods);
 	let mut classified_mods = Vec::with_capacity(source_mods.len());
+	let mut selectable_mods = Vec::with_capacity(source_mods.len());
 	for (index, mut entry) in source_mods.into_iter().enumerate() {
 		let workshop_id = entry.steam_id.clone();
 		let mut detected = DetectedPlaysetMod {
@@ -543,6 +634,13 @@ fn inspect_playset(
 				classification
 			}
 		};
+		selectable_mods.push(SelectableMod {
+			position: detected.position,
+			id: detected.id.clone(),
+			name: detected.name.clone(),
+			entry: entry.clone(),
+			problem: detected.source_error.clone(),
+		});
 		classified_mods.push(ClassifiedPlaysetMod {
 			entry,
 			detected,
@@ -556,7 +654,16 @@ fn inspect_playset(
 		source_path: playset_path.clone(),
 		mods: views.detected,
 	};
-	let prepared = if catalog_ready && !views.has_blocking {
+	if !catalog_ready {
+		return (Some(detected), None);
+	}
+	let selection = PlaysetSelection {
+		template: playset.clone(),
+		mods: selectable_mods,
+	};
+	let usable = if views.has_blocking {
+		None
+	} else {
 		playset.mods = views.usable;
 		if playset.mods.is_empty() && !views.omittable.is_empty() {
 			issues.push(issue(
@@ -567,19 +674,25 @@ fn inspect_playset(
 			));
 			None
 		} else {
-			Some((playset_path, playset))
+			Some(playset)
 		}
-	} else {
-		None
 	};
-	let recovery = prepared.as_ref().and_then(|(_, playset)| {
+	let recovery = usable.as_ref().and_then(|playset| {
 		(!views.omittable.is_empty()).then_some(AvailableInputRecovery {
 			source_mod_count: detected.mods.len(),
 			omitted_mods: views.omittable,
 			included_mod_count: playset.mods.len(),
 		})
 	});
-	(Some(detected), prepared, recovery)
+	(
+		Some(detected),
+		Some(PlaysetPreparation {
+			playset_path,
+			playset: usable,
+			recovery,
+			selection,
+		}),
+	)
 }
 
 fn paradox_data_candidates(path: Option<&Path>) -> Vec<PathBuf> {
@@ -1116,6 +1229,55 @@ remote_file_id="43"
 				.is_some_and(|error| error.contains("empty name"))
 		);
 		assert!(unnamed.into_request().is_none());
+	}
+
+	#[test]
+	fn a_blocking_mod_can_be_excluded_to_analyze_the_rest() {
+		let _lock = BASE_DATA_ENV_LOCK
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let temp = TempDir::new().expect("fixture root");
+		let _data_guard = EnvVarGuard::set(BASE_DATA_DIR_ENV, &temp.path().join("base-data"));
+		let (game_root, content_root) = setup_input_fixture(temp.path());
+		install_matching_base_data(&game_root);
+		fs::remove_file(content_root.join(SECOND_ID).join("descriptor.mod"))
+			.expect("remove Workshop descriptor");
+		let before = file_system_snapshot(temp.path());
+
+		let inspection =
+			inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+		assert_eq!(inspection.readiness, InputReadiness::Blocked);
+		assert!(inspection.can_select_mods());
+		assert!(inspection.clone().into_request().is_none());
+		assert!(
+			inspection
+				.clone()
+				.prepare_excluding(&BTreeSet::new())
+				.expect_err("the blocking mod must be excluded first")
+				.contains("#2")
+		);
+
+		let prepared = inspection
+			.clone()
+			.prepare_excluding(&BTreeSet::from([2]))
+			.expect("analyze without the blocking mod");
+		let recovery = prepared.recovery.as_ref().expect("omission record");
+		assert_eq!(recovery.source_mod_count, 2);
+		assert_eq!(recovery.included_mod_count, 1);
+		assert_eq!(recovery.omitted_mods[0].position, 2);
+		let manifest =
+			resolve_product_input_manifest(&prepared.request).expect("selected manifest");
+		assert_eq!(manifest.mods.len(), 1);
+		assert_eq!(manifest.mods[0].mod_id, FIRST_ID);
+
+		// A healthy mod can be excluded too, but not every mod.
+		assert!(
+			inspection
+				.clone()
+				.prepare_excluding(&BTreeSet::from([1, 2]))
+				.is_err()
+		);
+		assert_eq!(before, file_system_snapshot(temp.path()));
 	}
 
 	#[test]
