@@ -1,6 +1,6 @@
 # EU4 测试框架：借鉴 pytest 与 Rust 的 API 设计
 
-状态：部分实施，2026-10-09。注解机制在 `foch-annotation`，测试库在 `foch-test`，内置运行器在 `foch-runner`，CLI 与 `foch-lsp` 已接入，主库旧模块已删除；当前用法见 [使用说明](foch-runtime-tests.md)。内置运行器、关闭 AI、按条件拆分的检查已在原生 Windows 真实游戏端到端验证；真实目录保护靠备份+按内容校验/恢复。未完成：游戏完全不碰真实目录（文件 API 层方案，见私有 notes）；`tests/` 目录尚未得到 EU4 不加载的实测与 Foch 本体（合并、检查）的特殊处理，CLI 因此不收集它；共用一局、参数化、`--last-failed`、读取项目信息的静态检查、托管 CI（Linux + Wine）。基于本地工作树已有的首版事件测试（[使用说明](foch-runtime-tests.md)）和拆分前的设计记录（已归入私有 notes）。产品要求以 [作者工具链设计](foch-authoring-design.md) 为准；本文回答其中"继续设计的事项"里的多步骤、准备内容组织、参数化、失败定位和工作流部分。
+状态：部分实施，2026-10-09。注解机制在 `foch-annotation`，测试库在 `foch-test`，内置运行器在 `foch-runner`，CLI 与 `foch-lsp` 已接入，主库旧模块已删除；当前用法见 [使用说明](foch-runtime-tests.md)。内置运行器、关闭 AI、按条件拆分的检查已在原生 Windows 真实游戏端到端验证；真实目录保护靠备份+按内容校验/恢复。已接入：CLI 收集 `tests/` 目录（依赖 EU4 不加载该目录的目录模型，真实实测与合并侧处理待补）、`#parametrize` 参数化、基于内置目录的 effect/trigger 静态检查、声明依赖的加载、中断与残留运行层清理。未完成：游戏完全不碰真实目录（文件 API 层方案，见私有 notes）；从基础快照补全静态检查的国家与事件集合；共用一局、`--last-failed`、托管 CI（Linux + Wine）。基于本地工作树已有的首版事件测试（[使用说明](foch-runtime-tests.md)）和拆分前的设计记录（已归入私有 notes）。产品要求以 [作者工具链设计](foch-authoring-design.md) 为准；本文回答其中"继续设计的事项"里的多步骤、准备内容组织、参数化、失败定位和工作流部分。
 
 ## 设计前提：EU4 与 pytest/Rust 的根本差异
 

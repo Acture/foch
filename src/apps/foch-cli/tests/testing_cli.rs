@@ -90,6 +90,43 @@ fn static_layer_flags_an_effect_used_as_a_condition() {
 }
 
 #[test]
+fn collects_test_blocks_and_helpers_under_the_tests_directory() {
+	let dir = fixture();
+	fs::create_dir_all(dir.path().join("mod/tests/events")).unwrap();
+	// The game does not load tests/, so this file holds a test block.
+	fs::write(
+		dir.path().join("mod/tests/war.txt"),
+		"test = {\n name = declare\n time = 1444.11.11\n tag = SWE\n fire = helper.1\n}\n",
+	)
+	.unwrap();
+	// A helper event that only the generated test layer uses.
+	fs::write(
+		dir.path().join("mod/tests/events/helper.txt"),
+		"namespace = helper\ncountry_event = { id = helper.1 hidden = yes is_triggered_only = yes immediate = {} }\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	let report = json(&output);
+	let cases = report["cases"].as_array().unwrap();
+	// The two inline cases plus the tests/ block, with no fire-target errors.
+	assert_eq!(cases.len(), 3, "{report}");
+	assert!(
+		cases.iter().any(|case| case["node_id"]
+			.as_str()
+			.unwrap_or_default()
+			.contains("tests/war.txt::declare")),
+		"{report}"
+	);
+	assert!(
+		report["diagnostics"].as_array().unwrap().is_empty(),
+		"{report}"
+	);
+}
+
+#[test]
 fn discover_only_event_text_files_and_allow_explicit_files() {
 	let dir = fixture();
 	fs::create_dir_all(dir.path().join("mod/common")).unwrap();
