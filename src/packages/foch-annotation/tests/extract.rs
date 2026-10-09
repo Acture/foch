@@ -1,6 +1,7 @@
 use foch_annotation::builtin::REGISTRY;
+use foch_annotation::schema::{AnnotationKind, AnnotationSchema, ParamSchema, Registry};
 use foch_annotation::source::RelPath;
-use foch_annotation::value::Value;
+use foch_annotation::value::{Value, ValueType};
 use foch_annotation::{Code, Severity, extract};
 
 const EVENT: &str = "country_event = {\n\tid = a.1\n\thidden = yes\n\tis_triggered_only = yes\n\toption = { name = OK }\n}\n";
@@ -71,7 +72,6 @@ fn every_problem_is_reported_at_its_position() {
 		(Code::Orphan, 1),
 		(Code::InvalidValue, 3),
 		(Code::UnknownParameter, 4),
-		(Code::MissingParameter, 4),
 		(Code::DuplicateModifier, 6),
 		(Code::UnknownAnnotation, 8),
 		(Code::UnsupportedTarget, 15),
@@ -90,6 +90,35 @@ fn every_problem_is_reported_at_its_position() {
 		.filter(|diagnostic| diagnostic.severity == Severity::Warning)
 		.count();
 	assert_eq!(warnings, 1, "only the unknown annotation is a warning");
+}
+
+#[test]
+fn a_missing_required_parameter_is_reported() {
+	// The builtin #test has no unconditionally required parameter (tag and
+	// time may come from #parametrize), so the required-parameter mechanism is
+	// exercised here with a small synthetic registry.
+	const SCHEMAS: &[AnnotationSchema] = &[AnnotationSchema {
+		name: "need",
+		kind: AnnotationKind::Primary,
+		description: "",
+		params: &[ParamSchema {
+			name: "x",
+			value_type: ValueType::Text,
+			required: true,
+			description: "",
+			example: "1",
+		}],
+		positional: None,
+		target: None,
+	}];
+	const REG: Registry = Registry { schemas: SCHEMAS };
+	let codes: Vec<_> = extract(&path(), "#need(y=1)\nfoo = { }\n", &REG)
+		.diagnostics
+		.iter()
+		.map(|diagnostic| diagnostic.code)
+		.collect();
+	assert!(codes.contains(&Code::MissingParameter), "{codes:?}");
+	assert!(codes.contains(&Code::UnknownParameter), "{codes:?}");
 }
 
 #[test]

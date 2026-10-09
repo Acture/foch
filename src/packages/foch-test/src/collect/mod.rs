@@ -12,7 +12,7 @@ mod tests_dir;
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::model::{
 	AiMode, EventInfo, Fixture, FixtureName, GameDate, HelperFile, MAX_ADVANCE_DAYS,
-	SessionRequest, Step, Tag, TestCase, valid_case_name, valid_mod_name,
+	SessionRequest, Start, Step, Tag, TestCase, valid_case_name, valid_mod_name,
 };
 use crate::source::{SourceFile, SourceKind, SourceSpan};
 use foch::game::eu4::script::parser::{
@@ -22,6 +22,11 @@ use foch_annotation::builtin::TEST_PARAMS;
 use foch_annotation::value::{EventId, Value, ValueType, parse_value, scalar};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+
+/// Upper bound on the cases one `#parametrize`d test may expand to, so a large
+/// Cartesian product cannot exhaust memory during collection. The run-wide
+/// `--max-cases` budget still applies on top of this.
+pub(super) const MAX_PARAMETRIZE_CASES: usize = 256;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Collection {
@@ -273,6 +278,99 @@ fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<V
 			.map_err(|message| format!("fire: {message}")),
 		_ => Ok(None),
 	}
+}
+
+/// The start dimensions a case varies over. Empty when nothing is parametrized.
+#[derive(Default)]
+pub(super) struct Axes {
+	pub tags: Option<Vec<Tag>>,
+	pub times: Option<Vec<GameDate>>,
+}
+
+/// One resolved start dimension: its values, and whether it varies (so an
+/// instance records it as a node parameter).
+pub(super) struct Dimension<T> {
+	pub values: Vec<T>,
+	pub varies: bool,
+}
+
+/// Resolves one start dimension from the value given directly on the test and
+/// the list given by `#parametrize`. Giving it in both places is an error, as
+/// is giving it in neither.
+pub(super) fn dimension<T>(
+	direct: Option<T>,
+	axis: Option<Vec<T>>,
+	name: &str,
+) -> Result<Dimension<T>, String> {
+	match (direct, axis) {
+		(Some(_), Some(_)) => Err(format!(
+			"{name} is given by both the test and parametrize; give it in only one"
+		)),
+		(None, Some(values)) => Ok(Dimension {
+			values,
+			varies: true,
+		}),
+		(Some(value), None) => Ok(Dimension {
+			values: vec![value],
+			varies: false,
+		}),
+		(None, None) => Err(format!("missing required test parameter {name}")),
+	}
+}
+
+/// Expands one collected test into its parametrized instances. `base` carries
+/// the shared steps, marks and node; its start is overwritten per instance.
+/// This sets each instance's start and the node parameters that distinguish
+/// it, and recomputes its content identity.
+pub(super) fn expand_cases(
+	base: TestCase,
+	tag: Dimension<Tag>,
+	time: Dimension<GameDate>,
+) -> Result<Vec<TestCase>, String> {
+	let (tags, tag_varies) = (tag.values, tag.varies);
+	let (times, time_varies) = (time.values, time.varies);
+	if let Some(duplicate) = first_duplicate(tags.iter().map(Tag::as_str)) {
+		return Err(format!("parametrize lists tag {duplicate} twice"));
+	}
+	if let Some(duplicate) = first_duplicate(times.iter().map(|time| time.to_string())) {
+		return Err(format!("parametrize lists time {duplicate} twice"));
+	}
+	let product = tags.len() * times.len();
+	if product > MAX_PARAMETRIZE_CASES {
+		return Err(format!(
+			"parametrize expands to {product} cases, more than the limit of {MAX_PARAMETRIZE_CASES}; shorten the lists"
+		));
+	}
+	let mut cases = Vec::with_capacity(product);
+	for date in &times {
+		for tag in &tags {
+			let mut case = base.clone();
+			case.start = Start {
+				date: *date,
+				tag: tag.clone(),
+			};
+			case.node.params = Vec::new();
+			if tag_varies {
+				case.node.params.push(("tag".into(), tag.to_string()));
+			}
+			if time_varies {
+				case.node.params.push(("time".into(), date.to_string()));
+			}
+			case.compute_content_id();
+			cases.push(case);
+		}
+	}
+	Ok(cases)
+}
+
+fn first_duplicate<T: AsRef<str>>(values: impl Iterator<Item = T>) -> Option<String> {
+	let mut seen = HashSet::new();
+	for value in values {
+		if !seen.insert(value.as_ref().to_string()) {
+			return Some(value.as_ref().to_string());
+		}
+	}
+	None
 }
 
 fn total_days(steps: &[Step]) -> Result<(), String> {
