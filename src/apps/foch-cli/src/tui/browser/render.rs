@@ -1,22 +1,42 @@
-use foch::input::{BaseDataState, CurrentEu4Input, InputReadiness};
-use foch::merge::{MergeAnalysisStatus, MergeDisposition, MergeUnitKind, MergeUnitOutcome};
+use foch::input::{BaseDataState, CurrentEu4Input, DetectedPlaysetMod};
+use foch::merge::{
+	MergeAnalysisStage, MergeAnalysisStatus, MergeDisposition, MergeProgress, MergeUnitKind,
+	MergeUnitOutcome,
+};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+	Block, BorderType, Borders, Cell, Clear, Gauge, List, ListItem, ListState, Paragraph, Row,
+	Table, TableState, Wrap,
+};
 
 use super::app::{App, DISPOSITIONS, Focus, OPTION_COUNT, Phase, Screen, disposition_label};
 
-const TITLE: &str = " foch · EU4 analysis browser (read-only) ";
+const ACCENT: Color = Color::Cyan;
+const DIM: Color = Color::DarkGray;
+const OK: Color = Color::Green;
+const WARN: Color = Color::Yellow;
+const BAD: Color = Color::Red;
+
+const STAGES: [(MergeAnalysisStage, &str); 5] = [
+	(MergeAnalysisStage::Inventory, "Inventory inputs"),
+	(MergeAnalysisStage::ResolveInput, "Resolve the playset"),
+	(MergeAnalysisStage::SemanticMerge, "Merge every unit"),
+	(MergeAnalysisStage::ValidateOutput, "Validate the result"),
+	(MergeAnalysisStage::FreezeArtifacts, "Freeze the result"),
+];
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
-	let [header, body, footer] = Layout::vertical([
-		Constraint::Length(6),
-		Constraint::Min(5),
+	let [top, header, body, footer] = Layout::vertical([
+		Constraint::Length(1),
+		Constraint::Length(5),
+		Constraint::Min(6),
 		Constraint::Length(1),
 	])
 	.areas(frame.area());
+	draw_top_bar(frame, app, top);
 	draw_header(frame, app, header);
 	match (&app.phase, app.screen) {
 		(Phase::Analyzing { started, progress }, _) => {
@@ -28,10 +48,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 		(Phase::Reviewed(_), Screen::Review) => draw_review(frame, app, body),
 		_ => draw_input(frame, app, body),
 	}
-	frame.render_widget(
-		Paragraph::new(footer_text(app)).style(Style::new().fg(Color::DarkGray)),
-		footer,
-	);
+	frame.render_widget(Paragraph::new(footer_keys(app)), footer);
 	if let Some(cursor) = app.options {
 		draw_options(frame, app, cursor);
 	}
@@ -40,64 +57,701 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	}
 }
 
+fn draw_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let tab = |name: &'static str, active: bool| {
+		if active {
+			Span::styled(
+				format!(" {name} "),
+				Style::new().fg(Color::Black).bg(ACCENT).bold(),
+			)
+		} else {
+			Span::styled(format!(" {name} "), Style::new().fg(DIM))
+		}
+	};
+	let reviewing = matches!(app.phase, Phase::Reviewed(_)) && app.screen == Screen::Review;
+	let left = Line::from(vec![
+		Span::styled(" foch ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+		Span::styled("  EU4 merge analysis   ", Style::new().bold()),
+		tab("Playset", !reviewing),
+		Span::raw(" "),
+		tab("Review", reviewing),
+	]);
+	frame.render_widget(Paragraph::new(left), area);
+	frame.render_widget(
+		Paragraph::new(Span::styled(
+			"read-only · nothing is written ",
+			Style::new().fg(DIM),
+		))
+		.alignment(Alignment::Right),
+		area,
+	);
+}
+
+fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let lines = match &app.input {
+		None => vec![Line::from(Span::styled(
+			"◌ Inspecting the installed EU4 game and launcher playset…",
+			Style::new().fg(ACCENT),
+		))],
+		Some(input) => header_lines(input),
+	};
+	frame.render_widget(Paragraph::new(lines).block(panel(" Input ", DIM)), area);
+}
+
+fn header_lines(input: &CurrentEu4Input) -> Vec<Line<'static>> {
+	let game = Line::from(vec![
+		field("Game"),
+		Span::raw(format!(
+			"{} {}",
+			input.game.name,
+			input.game.version.as_deref().unwrap_or("(version unknown)")
+		)),
+		Span::styled(
+			input.game.install_path.as_ref().map_or_else(
+				|| "  not found".to_string(),
+				|path| format!("  {}", display(path)),
+			),
+			Style::new().fg(DIM),
+		),
+	]);
+	let (base_state, base_color) = match input.base_data.state {
+		BaseDataState::Ready => ("ready", OK),
+		BaseDataState::Missing => ("missing", BAD),
+		BaseDataState::Stale => ("stale", WARN),
+	};
+	let base = Line::from(vec![
+		field("Base data"),
+		badge(base_state, base_color),
+		Span::raw(format!(
+			" {}",
+			input.base_data.version.as_deref().unwrap_or_default()
+		)),
+		Span::styled(
+			format!("  {}", input.base_data.detail),
+			Style::new().fg(DIM),
+		),
+	]);
+	let playset = match &input.playset {
+		None => Line::from(vec![
+			field("Playset"),
+			Span::styled("no launcher playset found", Style::new().fg(BAD)),
+		]),
+		Some(playset) => Line::from(vec![
+			field("Playset"),
+			Span::raw(format!("{} · {} mods", playset.name, playset.mods.len())),
+			Span::styled(
+				format!("  {}", display(&playset.source_path)),
+				Style::new().fg(DIM),
+			),
+		]),
+	};
+	vec![game, base, playset]
+}
+
+/// What the user can do next, stated before anything else on the screen.
+fn next_step(app: &App) -> (Line<'static>, Color) {
+	let mod_count = app
+		.input
+		.as_ref()
+		.and_then(|input| input.playset.as_ref())
+		.map_or(0, |playset| playset.mods.len());
+	let issue_count = app.input.as_ref().map_or(0, |input| input.issues.len());
+	let mut step = match &app.phase {
+		Phase::Inspecting => (
+			Line::from("◌ Inspecting the installed EU4 game and launcher playset…"),
+			ACCENT,
+		),
+		Phase::Failed(_) => (
+			Line::from(vec![
+				Span::raw("✖ The analysis failed; the reason is under Issues. Press "),
+				key("r"),
+				Span::raw(" to inspect and try again."),
+			]),
+			BAD,
+		),
+		Phase::Reviewed(_) => (
+			Line::from(vec![
+				Span::raw("✔ Analysis complete. Press "),
+				key("i"),
+				Span::raw(" to return to the review."),
+			]),
+			OK,
+		),
+		_ if app.can_analyze && app.omits_mods() => {
+			let recovery = app.input.as_ref().and_then(|input| input.recovery.as_ref());
+			let (omitted, included) = recovery.map_or((0, 0), |recovery| {
+				(recovery.omitted_mods.len(), recovery.included_mod_count)
+			});
+			(
+				Line::from(vec![
+					Span::raw(format!(
+						"⚠ {omitted} of {mod_count} mods are unavailable. Press "
+					)),
+					key("a"),
+					Span::raw(format!(" to review them and analyze the other {included}.")),
+				]),
+				WARN,
+			)
+		}
+		_ if app.can_analyze => (
+			Line::from(vec![
+				Span::raw("✔ Ready. Press "),
+				key("a"),
+				Span::raw(format!(" to analyze all {mod_count} mods.")),
+			]),
+			OK,
+		),
+		_ => (
+			Line::from(vec![
+				Span::raw(format!(
+					"✖ Analysis is blocked by {issue_count} issue{} listed below. Fix {}, then press ",
+					if issue_count == 1 { "" } else { "s" },
+					if issue_count == 1 { "it" } else { "them" }
+				)),
+				key("r"),
+				Span::raw("."),
+			]),
+			BAD,
+		),
+	};
+	if app.settings_changed() {
+		step.0.spans.push(Span::styled(
+			"   Options changed: press r to re-analyze.",
+			Style::new().fg(WARN),
+		));
+	}
+	step
+}
+
+fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let [banner_area, main] =
+		Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(area);
+	let (step, color) = next_step(app);
+	frame.render_widget(
+		Paragraph::new(step)
+			.style(Style::new().fg(color).bold())
+			.block(panel(" Next step ", color)),
+		banner_area,
+	);
+
+	let [mods_area, side] =
+		Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(main);
+	let [selected_area, issues_area] =
+		Layout::vertical([Constraint::Length(9), Constraint::Min(3)]).areas(side);
+
+	let mods = app
+		.input
+		.as_ref()
+		.and_then(|input| input.playset.as_ref())
+		.map_or(&[][..], |playset| &playset.mods);
+	draw_mod_table(frame, app, mods, mods_area);
+	draw_selected_mod(frame, app, mods.get(app.mod_scroll), selected_area);
+	draw_issues(frame, app, issues_area);
+}
+
+fn draw_mod_table(frame: &mut Frame<'_>, app: &App, mods: &[DetectedPlaysetMod], area: Rect) {
+	let rows = mods
+		.iter()
+		.map(|playset_mod| {
+			let (status, color) = mod_status(app, playset_mod);
+			Row::new(vec![
+				Cell::from(Span::styled(
+					format!("{:>3}", playset_mod.position),
+					Style::new().fg(DIM),
+				)),
+				Cell::from(playset_mod.name.clone()),
+				Cell::from(Span::styled(playset_mod.id.clone(), Style::new().fg(DIM))),
+				Cell::from(Span::styled(
+					playset_mod.version.clone().unwrap_or_default(),
+					Style::new().fg(DIM),
+				)),
+				Cell::from(Span::styled(format!("● {status}"), Style::new().fg(color))),
+			])
+		})
+		.collect::<Vec<_>>();
+	let header = Row::new(["  #", "Mod", "Workshop id", "Version", "Status"])
+		.style(Style::new().fg(ACCENT).bold());
+	let table = Table::new(
+		rows,
+		[
+			Constraint::Length(3),
+			Constraint::Fill(1),
+			Constraint::Length(11),
+			Constraint::Length(9),
+			Constraint::Length(13),
+		],
+	)
+	.header(header)
+	.column_spacing(2)
+	.row_highlight_style(Style::new().bg(Color::Rgb(40, 52, 64)).bold())
+	.highlight_symbol("▶ ")
+	.block(panel(
+		format!(" Mods · {} in load order (later wins) ", mods.len()),
+		ACCENT,
+	));
+	let mut state =
+		TableState::default().with_selected((!mods.is_empty()).then_some(app.mod_scroll));
+	frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn mod_status(app: &App, playset_mod: &DetectedPlaysetMod) -> (&'static str, Color) {
+	if !playset_mod.enabled {
+		return ("disabled", DIM);
+	}
+	if playset_mod.source_error.is_none() {
+		return ("ok", OK);
+	}
+	let omitted = app
+		.input
+		.as_ref()
+		.and_then(|input| input.recovery.as_ref())
+		.is_some_and(|recovery| {
+			recovery
+				.omitted_mods
+				.iter()
+				.any(|omitted| omitted.position == playset_mod.position)
+		});
+	if omitted {
+		("unavailable", WARN)
+	} else {
+		("error", BAD)
+	}
+}
+
+fn draw_selected_mod(
+	frame: &mut Frame<'_>,
+	app: &App,
+	playset_mod: Option<&DetectedPlaysetMod>,
+	area: Rect,
+) {
+	let Some(playset_mod) = playset_mod else {
+		frame.render_widget(
+			Paragraph::new(Span::styled("No mod selected.", Style::new().fg(DIM)))
+				.block(panel(" Selected mod ", DIM)),
+			area,
+		);
+		return;
+	};
+	let (status, color) = mod_status(app, playset_mod);
+	let mut lines = vec![
+		Line::from(Span::styled(playset_mod.name.clone(), Style::new().bold())),
+		Line::from(vec![
+			badge(status, color),
+			Span::styled(
+				format!(
+					"  #{} · {}{}",
+					playset_mod.position,
+					playset_mod.id,
+					playset_mod
+						.version
+						.as_deref()
+						.map(|version| format!(" · v{version}"))
+						.unwrap_or_default()
+				),
+				Style::new().fg(DIM),
+			),
+		]),
+	];
+	if playset_mod.declared_dependencies.is_empty() {
+		lines.push(Line::from(Span::styled(
+			"No declared dependencies",
+			Style::new().fg(DIM),
+		)));
+	} else {
+		lines.push(Line::from(vec![
+			Span::styled("depends on: ", Style::new().fg(ACCENT)),
+			Span::raw(playset_mod.declared_dependencies.join(", ")),
+		]));
+	}
+	if let Some(error) = &playset_mod.source_error {
+		lines.push(Line::from(Span::styled(
+			error.clone(),
+			Style::new().fg(color),
+		)));
+	}
+	frame.render_widget(
+		Paragraph::new(lines)
+			.wrap(Wrap { trim: false })
+			.block(panel(" Selected mod ", DIM)),
+		area,
+	);
+}
+
+fn draw_issues(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let mut lines = Vec::new();
+	if let Phase::Failed(error) = &app.phase {
+		lines.push(Line::from(Span::styled(
+			"✖ Analysis failed",
+			Style::new().fg(BAD).bold(),
+		)));
+		lines.push(Line::from(Span::styled(
+			error.clone(),
+			Style::new().fg(BAD),
+		)));
+		lines.push(Line::from(""));
+	}
+	let issues = app
+		.input
+		.as_ref()
+		.map_or(&[][..], |input| &input.issues[..]);
+	for issue in issues {
+		lines.push(Line::from(Span::styled(
+			format!("⚠ {}", issue.title),
+			Style::new().fg(WARN).bold(),
+		)));
+		lines.push(Line::from(Span::styled(
+			issue.detail.clone(),
+			Style::new().fg(DIM),
+		)));
+		if let Some(action) = &issue.action {
+			lines.push(Line::from(Span::styled(
+				format!("→ {action}"),
+				Style::new().fg(ACCENT),
+			)));
+		}
+		lines.push(Line::from(""));
+	}
+	let color = if lines.is_empty() {
+		lines.push(Line::from(Span::styled("✔ No issues", Style::new().fg(OK))));
+		DIM
+	} else {
+		WARN
+	};
+	frame.render_widget(
+		Paragraph::new(lines)
+			.wrap(Wrap { trim: false })
+			.block(panel(format!(" Issues · {} ", issues.len()), color)),
+		area,
+	);
+}
+
+fn draw_progress(
+	frame: &mut Frame<'_>,
+	area: Rect,
+	progress: Option<MergeProgress>,
+	elapsed: std::time::Duration,
+) {
+	let popup = centered(area, 72, 13);
+	let block = panel(" Analyzing every contributor ", ACCENT);
+	let inner = block.inner(popup);
+	frame.render_widget(block, popup);
+	let [gauge_area, _, stages_area, note_area] = Layout::vertical([
+		Constraint::Length(1),
+		Constraint::Length(1),
+		Constraint::Length(STAGES.len() as u16),
+		Constraint::Min(1),
+	])
+	.areas(inner);
+
+	let (ratio, units) = match progress.and_then(|p| p.completed_units.zip(p.total_units)) {
+		Some((done, total)) if total > 0 => (
+			(done as f64 / total as f64).clamp(0.0, 1.0),
+			format!("{done}/{total} units"),
+		),
+		_ => (0.0, String::new()),
+	};
+	frame.render_widget(
+		Gauge::default()
+			.gauge_style(Style::new().fg(ACCENT).bg(Color::Rgb(30, 36, 44)))
+			.ratio(ratio)
+			.label(format!("{units}  {}s", elapsed.as_secs())),
+		gauge_area,
+	);
+
+	let current = progress.map(|progress| {
+		let index = STAGES
+			.iter()
+			.position(|(stage, _)| *stage == progress.stage)
+			.unwrap_or(0);
+		(index, progress.completed)
+	});
+	let stages = STAGES
+		.iter()
+		.enumerate()
+		.map(|(index, (_, name))| {
+			let (mark, style) = match current {
+				Some((at, completed)) if index < at || (index == at && completed) => {
+					("✔", Style::new().fg(OK))
+				}
+				Some((at, _)) if index == at => ("◐", Style::new().fg(ACCENT).bold()),
+				_ => ("○", Style::new().fg(DIM)),
+			};
+			Line::from(Span::styled(format!("  {mark} {name}"), style))
+		})
+		.collect::<Vec<_>>();
+	frame.render_widget(Paragraph::new(stages), stages_area);
+	frame.render_widget(
+		Paragraph::new(Line::from(vec![
+			Span::styled(
+				"  Runs to completion over the frozen input. Press ",
+				Style::new().fg(DIM),
+			),
+			key("q"),
+			Span::styled(" to cancel and quit.", Style::new().fg(DIM)),
+		]))
+		.wrap(Wrap { trim: false }),
+		note_area,
+	);
+}
+
+fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let Some(view) = app.analysis() else {
+		return;
+	};
+	let [summary_area, main] =
+		Layout::vertical([Constraint::Length(4), Constraint::Min(3)]).areas(area);
+
+	let mut chips = vec![chip(
+		format!("0 all {}", view.summary.total),
+		Color::White,
+		app.filter.is_none(),
+	)];
+	for (index, disposition) in DISPOSITIONS.iter().enumerate() {
+		chips.push(Span::raw(" "));
+		chips.push(chip(
+			format!(
+				"{} {} {}",
+				index + 1,
+				disposition_label(*disposition),
+				view.count(*disposition)
+			),
+			disposition_color(*disposition),
+			app.filter == Some(*disposition),
+		));
+	}
+	let (status, color) = match view.status {
+		MergeAnalysisStatus::ReadyToCommit => ("ready to commit", OK),
+		MergeAnalysisStatus::CommittableWithDeferrals => ("committable with deferrals", WARN),
+		MergeAnalysisStatus::Blocked => ("blocked", BAD),
+	};
+	let mut search = match (app.focus, app.query.is_empty()) {
+		(Focus::Search, _) => vec![
+			Span::styled("search ", Style::new().fg(ACCENT)),
+			Span::raw(format!("{}▏", app.query)),
+		],
+		(_, false) => vec![
+			Span::styled("search ", Style::new().fg(ACCENT)),
+			Span::raw(app.query.clone()),
+		],
+		(_, true) => vec![Span::styled(
+			"press / to search paths",
+			Style::new().fg(DIM),
+		)],
+	};
+	if app.settings_changed() {
+		search.push(Span::styled(
+			"   Options changed: press r to re-analyze.",
+			Style::new().fg(WARN),
+		));
+	}
+	frame.render_widget(
+		Paragraph::new(vec![Line::from(chips), Line::from(search)])
+			.block(panel(format!(" Analysis · {status} "), color)),
+		summary_area,
+	);
+
+	let [list_area, detail_area] =
+		Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(main);
+	let visible = app.visible_units();
+	let items = visible
+		.iter()
+		.map(|index| {
+			let unit = &view.units[*index];
+			ListItem::new(Line::from(vec![
+				Span::styled(
+					format!("{:<6}", short_disposition(unit.disposition)),
+					Style::new().fg(disposition_color(unit.disposition)).bold(),
+				),
+				Span::raw(" "),
+				Span::raw(unit.path.as_str().to_owned()),
+			]))
+		})
+		.collect::<Vec<_>>();
+	let mut state =
+		ListState::default().with_selected((!visible.is_empty()).then_some(app.selected));
+	frame.render_stateful_widget(
+		List::new(items)
+			.block(panel(
+				format!(" Units · {}/{} ", visible.len(), view.units.len()),
+				focus_color(app.focus == Focus::Units),
+			))
+			.highlight_style(Style::new().bg(Color::Rgb(40, 52, 64)).bold())
+			.highlight_symbol("▶ "),
+		list_area,
+		&mut state,
+	);
+
+	let detail = app.selected_unit().map_or_else(
+		|| {
+			Text::from(Span::styled(
+				"No unit matches this filter.",
+				Style::new().fg(DIM),
+			))
+		},
+		unit_detail,
+	);
+	frame.render_widget(
+		Paragraph::new(detail)
+			.wrap(Wrap { trim: false })
+			.scroll((app.detail_scroll, 0))
+			.block(panel(" Detail ", focus_color(app.focus == Focus::Detail))),
+		detail_area,
+	);
+}
+
+/// Everything the analysis knows about one unit: the vanilla ancestor, every
+/// contributor in precedence order with its source files, and the outputs
+/// the analysis would commit.
+pub fn unit_detail(unit: &MergeUnitOutcome) -> Text<'static> {
+	let mut lines = vec![
+		Line::from(Span::styled(
+			unit.path.as_str().to_owned(),
+			Style::new().bold(),
+		)),
+		Line::from(vec![
+			badge(
+				disposition_label(unit.disposition),
+				disposition_color(unit.disposition),
+			),
+			Span::styled(
+				format!(
+					"  {} · {} · {}",
+					unit.family,
+					match unit.kind {
+						MergeUnitKind::File => "file",
+						MergeUnitKind::DefinitionModule => "definition module",
+					},
+					unit.strategy
+				),
+				Style::new().fg(DIM),
+			),
+		]),
+	];
+	if !unit.summary.is_empty() {
+		lines.push(Line::from(""));
+		lines.push(Line::from(unit.summary.clone()));
+	}
+
+	push_section(&mut lines, "Ancestor");
+	let ancestors = unit
+		.contributors
+		.iter()
+		.filter(|contributor| contributor.is_base_game)
+		.collect::<Vec<_>>();
+	if ancestors.is_empty() {
+		lines.push(Line::from(Span::styled(
+			"  none: no vanilla definition at this unit",
+			Style::new().fg(DIM),
+		)));
+	}
+	for ancestor in ancestors {
+		lines.push(Line::from(format!("  {}", ancestor.name)));
+		for path in &ancestor.source_paths {
+			lines.push(source_line(path));
+		}
+	}
+
+	push_section(&mut lines, "Contributors (precedence order)");
+	let mut contributors = unit
+		.contributors
+		.iter()
+		.filter(|contributor| !contributor.is_base_game)
+		.collect::<Vec<_>>();
+	contributors.sort_by_key(|contributor| contributor.precedence);
+	for contributor in contributors {
+		lines.push(Line::from(vec![
+			Span::styled("  ▸ ", Style::new().fg(ACCENT)),
+			Span::raw(contributor.name.clone()),
+			Span::styled(
+				format!(
+					"  {} · precedence {}",
+					contributor.mod_id, contributor.precedence
+				),
+				Style::new().fg(DIM),
+			),
+		]));
+		for path in &contributor.source_paths {
+			lines.push(source_line(path));
+		}
+	}
+
+	push_section(&mut lines, "Result");
+	if unit.output_paths.is_empty() {
+		lines.push(Line::from(Span::styled(
+			"  no output: this unit would be deferred",
+			Style::new().fg(DIM),
+		)));
+	}
+	for path in &unit.output_paths {
+		lines.push(Line::from(format!("  → {}", path.as_str())));
+	}
+
+	if !unit.notes.is_empty() {
+		push_section(&mut lines, "Notes");
+		for note in &unit.notes {
+			lines.push(Line::from(format!("  {note}")));
+		}
+	}
+	Text::from(lines)
+}
+
 fn draw_omission_prompt(frame: &mut Frame<'_>, app: &App) {
 	let Some(recovery) = app.input.as_ref().and_then(|input| input.recovery.as_ref()) else {
 		return;
 	};
 	let mut lines = vec![
-		Line::from(format!(
-			" {} of {} playset mods are unavailable. Analyze the other {} without them?",
-			recovery.omitted_mods.len(),
-			recovery.source_mod_count,
-			recovery.included_mod_count
+		Line::from(Span::styled(
+			format!(
+				"{} of {} playset mods are unavailable.",
+				recovery.omitted_mods.len(),
+				recovery.source_mod_count
+			),
+			Style::new().bold(),
+		)),
+		Line::from(Span::styled(
+			format!(
+				"Analyzing the other {} will not represent your full playset.",
+				recovery.included_mod_count
+			),
+			Style::new().fg(DIM),
 		)),
 		Line::from(""),
 	];
 	for omitted in &recovery.omitted_mods {
-		lines.push(Line::from(vec![
-			Span::styled(
-				format!(" #{} {}", omitted.position, omitted.name),
-				Style::new().fg(Color::Yellow),
-			),
-			Span::styled(
-				format!("  {}", omitted.reason),
-				Style::new().fg(Color::DarkGray),
-			),
-		]));
+		lines.push(Line::from(Span::styled(
+			format!("  #{} {}", omitted.position, omitted.name),
+			Style::new().fg(WARN),
+		)));
+		lines.push(Line::from(Span::styled(
+			format!("     {}", omitted.reason),
+			Style::new().fg(DIM),
+		)));
 	}
 	lines.push(Line::from(""));
-	lines.push(Line::from(Span::styled(
-		" The analysis will not represent your full playset.  [y] analyze without them  [Esc] cancel",
-		Style::new().add_modifier(Modifier::BOLD),
-	)));
-	let area = frame.area();
-	let width = 100.min(area.width);
-	let height = (lines.len() as u16 + 2).min(area.height);
-	let popup = Rect::new(
-		area.x + (area.width - width) / 2,
-		area.y + (area.height - height) / 2,
-		width,
-		height,
-	);
+	lines.push(Line::from(vec![
+		key("y"),
+		Span::raw(" analyze without them   "),
+		key("Esc"),
+		Span::raw(" cancel"),
+	]));
+	let height = lines.len() as u16 + 2;
+	let popup = centered(frame.area(), 96, height);
 	frame.render_widget(Clear, popup);
 	frame.render_widget(
-		Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-			Block::new()
-				.borders(Borders::ALL)
-				.border_style(Style::new().fg(Color::Yellow))
-				.title(" Unavailable mods "),
-		),
+		Paragraph::new(lines)
+			.wrap(Wrap { trim: false })
+			.block(panel(" Unavailable mods ", WARN)),
 		popup,
 	);
 }
 
 fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {
 	let settings = &app.settings;
-	let check = |on: bool| if on { "[x]" } else { "[ ]" };
+	let check = |on: bool| if on { "■" } else { "□" };
 	let game_base = if app.game_base_available {
 		format!("{} Use the EU4 base as ancestor", check(settings.game_base))
 	} else {
-		"[-] Use the EU4 base as ancestor (unavailable for this input)".to_string()
+		"– Use the EU4 base as ancestor (unavailable for this input)".to_string()
 	};
 	let rows: [(String, &str); OPTION_COUNT] = [
 		(game_base, "off = --no-game-base"),
@@ -117,551 +771,178 @@ fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {
 			"--force",
 		),
 		(
-			format!("    Workers  ◀ {} ▶", settings.merge_workers),
-			"speed only; output is the same",
+			format!("  Workers  ◀ {} ▶", settings.merge_workers),
+			"speed only; same output",
 		),
 	];
 	let mut lines = rows
 		.iter()
 		.enumerate()
 		.map(|(index, (text, hint))| {
-			let style = if index == cursor {
-				Style::new().add_modifier(Modifier::REVERSED)
+			let selected = index == cursor;
+			let style = if selected {
+				Style::new().fg(Color::Black).bg(ACCENT).bold()
 			} else {
 				Style::new()
 			};
 			Line::from(vec![
-				Span::styled(format!(" {text:<44}"), style),
-				Span::styled(format!(" {hint}"), Style::new().fg(Color::DarkGray)),
+				Span::styled(if selected { "▶ " } else { "  " }, Style::new().fg(ACCENT)),
+				Span::styled(format!("{text:<58}"), style),
+				Span::styled(format!("  {hint}"), Style::new().fg(DIM)),
 			])
 		})
 		.collect::<Vec<_>>();
 	lines.push(Line::from(""));
 	lines.push(Line::from(Span::styled(
-		" Options apply to the next analysis and are not saved.",
-		Style::new().fg(Color::DarkGray),
+		"  Options apply to the next analysis and are not saved.",
+		Style::new().fg(DIM),
 	)));
-	lines.push(Line::from(Span::styled(
-		" [↑↓] select  [Space] toggle  [←→] workers  [Esc] close",
-		Style::new().fg(Color::DarkGray),
-	)));
-	let area = frame.area();
-	let width = 84.min(area.width);
-	let height = (lines.len() as u16 + 2).min(area.height);
-	let popup = Rect::new(
-		area.x + (area.width - width) / 2,
-		area.y + (area.height - height) / 2,
-		width,
-		height,
-	);
+	lines.push(Line::from(vec![
+		Span::raw("  "),
+		key("↑↓"),
+		Span::raw(" select  "),
+		key("Space"),
+		Span::raw(" toggle  "),
+		key("←→"),
+		Span::raw(" workers  "),
+		key("Esc"),
+		Span::raw(" close"),
+	]));
+	let height = lines.len() as u16 + 2;
+	let popup = centered(frame.area(), 90, height);
 	frame.render_widget(Clear, popup);
 	frame.render_widget(
-		Paragraph::new(lines).block(
-			Block::new()
-				.borders(Borders::ALL)
-				.border_style(Style::new().fg(Color::Cyan))
-				.title(" Analysis options "),
-		),
+		Paragraph::new(lines).block(panel(" Analysis options ", ACCENT)),
 		popup,
 	);
 }
 
-fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
-	let block = Block::new().borders(Borders::ALL).title(TITLE);
-	let lines = match &app.input {
-		None => vec![Line::from(
-			"Inspecting the installed EU4 game and launcher playset…",
-		)],
-		Some(input) => header_lines(input, app),
+fn footer_keys(app: &App) -> Line<'static> {
+	let pairs: &[(&str, &str)] = match (&app.phase, app.screen, app.focus) {
+		_ if app.confirming_omissions => &[("y", "analyze without them"), ("Esc", "cancel")],
+		_ if app.options.is_some() => &[("Space", "toggle"), ("Esc", "close")],
+		(Phase::Inspecting, _, _) => &[("o", "options"), ("q", "quit")],
+		(Phase::Analyzing { .. }, _, _) => &[("o", "options"), ("q", "cancel and quit")],
+		(_, _, Focus::Search) => &[
+			("type", "filter paths"),
+			("Enter", "keep"),
+			("Esc", "clear"),
+		],
+		(Phase::Reviewed(_), Screen::Review, Focus::Detail) => &[
+			("↑↓", "scroll"),
+			("Esc", "units"),
+			("0-6", "filter"),
+			("i", "playset"),
+			("r", "refresh"),
+			("o", "options"),
+			("q", "quit"),
+		],
+		(Phase::Reviewed(_), Screen::Review, _) => &[
+			("↑↓", "select"),
+			("Enter", "detail"),
+			("0-6", "filter"),
+			("/", "search"),
+			("i", "playset"),
+			("r", "refresh"),
+			("o", "options"),
+			("q", "quit"),
+		],
+		(Phase::Reviewed(_), Screen::Input, _) => &[
+			("i", "review"),
+			("↑↓", "mods"),
+			("r", "refresh"),
+			("o", "options"),
+			("q", "quit"),
+		],
+		_ if app.can_analyze => &[
+			("a", "analyze"),
+			("↑↓", "mods"),
+			("r", "refresh"),
+			("o", "options"),
+			("q", "quit"),
+		],
+		_ => &[
+			("↑↓", "mods"),
+			("r", "refresh"),
+			("o", "options"),
+			("q", "quit"),
+		],
 	};
-	frame.render_widget(Paragraph::new(lines).block(block), area);
+	let mut spans = vec![Span::raw(" ")];
+	for (name, action) in pairs {
+		spans.push(key(name));
+		spans.push(Span::styled(format!(" {action}   "), Style::new().fg(DIM)));
+	}
+	Line::from(spans)
 }
 
-fn header_lines(input: &CurrentEu4Input, app: &App) -> Vec<Line<'static>> {
-	let game = format!(
-		"{} {}  {}",
-		input.game.name,
-		input.game.version.as_deref().unwrap_or("(unknown version)"),
-		input.game.install_path.as_ref().map_or_else(
-			|| "(not found)".to_string(),
-			|path| path.display().to_string()
-		)
-	);
-	let (base_label, base_color) = match input.base_data.state {
-		BaseDataState::Ready => ("ready", Color::Green),
-		BaseDataState::Missing => ("missing", Color::Red),
-		BaseDataState::Stale => ("stale", Color::Yellow),
-	};
-	let base = format!(
-		" {}  {}",
-		input.base_data.version.as_deref().unwrap_or(""),
-		input.base_data.detail
-	);
-	let playset = input.playset.as_ref().map_or_else(
-		|| "(no playset detected)".to_string(),
-		|playset| {
-			format!(
-				"{}  {} mods  {}",
-				playset.name,
-				playset.mods.len(),
-				playset.source_path.display()
-			)
-		},
-	);
-	let (readiness, readiness_color) = match input.readiness {
-		InputReadiness::Ready => ("ready".to_string(), Color::Green),
-		InputReadiness::ReadyWithOmissions => (
-			format!(
-				"ready without {} unavailable mods",
-				input
-					.recovery
-					.as_ref()
-					.map_or(0, |recovery| recovery.omitted_mods.len())
-			),
-			Color::Yellow,
-		),
-		InputReadiness::Blocked => ("blocked".to_string(), Color::Red),
-	};
-	let mut status = vec![
-		label("Input   "),
-		Span::styled(readiness, Style::new().fg(readiness_color)),
-	];
-	if let Some(view) = app.analysis() {
-		let (text, color) = match view.status {
-			MergeAnalysisStatus::ReadyToCommit => ("ready to commit", Color::Green),
-			MergeAnalysisStatus::CommittableWithDeferrals => {
-				("committable with deferrals", Color::Yellow)
-			}
-			MergeAnalysisStatus::Blocked => ("blocked", Color::Red),
-		};
-		status.push(Span::raw("   "));
-		status.push(label("Analysis "));
-		status.push(Span::styled(text, Style::new().fg(color)));
-	}
-	if app.settings_changed() {
-		status.push(Span::styled(
-			"   options changed: [r] re-analyzes",
-			Style::new().fg(Color::Yellow),
-		));
-	}
-	vec![
-		Line::from(vec![label("Game    "), Span::raw(game)]),
-		Line::from(vec![
-			label("Base    "),
-			Span::styled(base_label, Style::new().fg(base_color)),
-			Span::raw(base),
-		]),
-		Line::from(vec![label("Playset "), Span::raw(playset)]),
-		Line::from(status),
-	]
-}
-
-fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
-	let Some(input) = &app.input else {
-		let text = match &app.phase {
-			Phase::Failed(error) => {
-				Line::from(Span::styled(error.clone(), Style::new().fg(Color::Red)))
-			}
-			_ => Line::from(""),
-		};
-		frame.render_widget(
-			Paragraph::new(text)
-				.wrap(Wrap { trim: false })
-				.block(Block::new().borders(Borders::ALL)),
-			area,
-		);
-		return;
-	};
-	let mut notices = Vec::new();
-	if let Phase::Failed(error) = &app.phase {
-		notices.push(Line::from(Span::styled(
-			format!("Analysis failed: {error}"),
-			Style::new().fg(Color::Red),
-		)));
-	}
-	for issue in &input.issues {
-		notices.push(Line::from(vec![
-			Span::styled(issue.title.clone(), Style::new().fg(Color::Yellow)),
-			Span::raw(format!(": {}", issue.detail)),
-		]));
-		if let Some(action) = &issue.action {
-			notices.push(Line::from(format!("  → {action}")));
-		}
-	}
-	if let Some(recovery) = &input.recovery {
-		for omitted in &recovery.omitted_mods {
-			notices.push(Line::from(format!(
-				"omitted #{} {}: {}",
-				omitted.position, omitted.name, omitted.reason
-			)));
-		}
-	}
-	let notice_height = if notices.is_empty() {
-		0
-	} else {
-		(notices.len() as u16 + 2).min(area.height / 3)
-	};
-	let [mods_area, notices_area] =
-		Layout::vertical([Constraint::Min(3), Constraint::Length(notice_height)]).areas(area);
-
-	let mods = input
-		.playset
-		.as_ref()
-		.map_or(&[][..], |playset| &playset.mods);
-	let items = mods
-		.iter()
-		.map(|playset_mod| {
-			let mut spans = vec![
-				Span::styled(
-					format!("{:>3} ", playset_mod.position),
-					Style::new().fg(Color::DarkGray),
-				),
-				Span::raw(playset_mod.name.clone()),
-				Span::styled(
-					format!(
-						"  {}{}",
-						playset_mod.id,
-						playset_mod
-							.version
-							.as_deref()
-							.map(|version| format!("  v{version}"))
-							.unwrap_or_default()
-					),
-					Style::new().fg(Color::DarkGray),
-				),
-			];
-			if !playset_mod.enabled {
-				spans.push(Span::styled("  disabled", Style::new().fg(Color::DarkGray)));
-			}
-			if let Some(error) = &playset_mod.source_error {
-				spans.push(Span::styled(
-					format!("  {error}"),
-					Style::new().fg(Color::Red),
-				));
-			}
-			let mut lines = vec![Line::from(spans)];
-			if !playset_mod.declared_dependencies.is_empty() {
-				lines.push(Line::from(Span::styled(
-					format!(
-						"      depends on: {}",
-						playset_mod.declared_dependencies.join(", ")
-					),
-					Style::new().fg(Color::Cyan),
-				)));
-			}
-			ListItem::new(lines)
-		})
-		.collect::<Vec<_>>();
-	let mut state = ListState::default().with_selected(Some(app.mod_scroll));
-	frame.render_stateful_widget(
-		List::new(items)
-			.block(
-				Block::new()
-					.borders(Borders::ALL)
-					.title(" Ordered mods (load order, last wins) "),
-			)
-			.highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-		mods_area,
-		&mut state,
-	);
-	if notice_height > 0 {
-		frame.render_widget(
-			Paragraph::new(notices)
-				.wrap(Wrap { trim: false })
-				.block(Block::new().borders(Borders::ALL).title(" Notices ")),
-			notices_area,
-		);
-	}
-}
-
-fn draw_progress(
-	frame: &mut Frame<'_>,
-	area: Rect,
-	progress: Option<foch::merge::MergeProgress>,
-	elapsed: std::time::Duration,
-) {
-	let block = Block::new()
-		.borders(Borders::ALL)
-		.title(" Analyzing every contributor ");
-	let (ratio, label) = match progress {
-		Some(progress) => {
-			let stage = format!("{:?}", progress.stage);
-			match (progress.completed_units, progress.total_units) {
-				(Some(done), Some(total)) if total > 0 => (
-					(done as f64 / total as f64).clamp(0.0, 1.0),
-					format!("{stage}: {done}/{total} units"),
-				),
-				_ => (0.0, stage),
-			}
-		}
-		None => (0.0, "starting".to_string()),
-	};
-	let [gauge_area, _, note_area] = Layout::vertical([
-		Constraint::Length(3),
-		Constraint::Length(1),
-		Constraint::Min(1),
-	])
-	.areas(block.inner(area));
-	frame.render_widget(block, area);
-	frame.render_widget(
-		Gauge::default()
-			.gauge_style(Style::new().fg(Color::Cyan))
-			.ratio(ratio)
-			.label(format!("{label}  ({}s)", elapsed.as_secs())),
-		gauge_area,
-	);
-	frame.render_widget(
-		Paragraph::new(
-			"The analysis runs to completion over the frozen input. Nothing is written.",
-		)
-		.style(Style::new().fg(Color::DarkGray)),
-		note_area,
-	);
-}
-
-fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
-	let Some(view) = app.analysis() else {
-		return;
-	};
-	let [summary_area, main] =
-		Layout::vertical([Constraint::Length(4), Constraint::Min(3)]).areas(area);
-
-	let mut spans = vec![Span::styled(
-		format!("[0] all {}", view.summary.total),
-		filter_style(app.filter.is_none(), Color::White),
-	)];
-	for (index, disposition) in DISPOSITIONS.iter().enumerate() {
-		spans.push(Span::raw("  "));
-		spans.push(Span::styled(
-			format!(
-				"[{}] {} {}",
-				index + 1,
-				disposition_label(*disposition),
-				view.count(*disposition)
-			),
-			filter_style(
-				app.filter == Some(*disposition),
-				disposition_color(*disposition),
-			),
-		));
-	}
-	let search_title = match (app.focus, app.query.is_empty()) {
-		(Focus::Search, _) => format!(" Summary · search: {}▏ ", app.query),
-		(_, false) => format!(" Summary · search: {} ", app.query),
-		(_, true) => " Summary ".to_string(),
-	};
-	frame.render_widget(
-		Paragraph::new(Line::from(spans))
-			.wrap(Wrap { trim: true })
-			.block(Block::new().borders(Borders::ALL).title(search_title)),
-		summary_area,
-	);
-
-	let [list_area, detail_area] =
-		Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main);
-	let visible = app.visible_units();
-	let items = visible
-		.iter()
-		.map(|index| {
-			let unit = &view.units[*index];
-			ListItem::new(Line::from(vec![
-				Span::styled(
-					format!("{:<6} ", short_disposition(unit.disposition)),
-					Style::new().fg(disposition_color(unit.disposition)),
-				),
-				Span::raw(unit.path.as_str().to_owned()),
-			]))
-		})
-		.collect::<Vec<_>>();
-	let selected = (!visible.is_empty()).then_some(app.selected);
-	let mut state = ListState::default().with_selected(selected);
-	frame.render_stateful_widget(
-		List::new(items)
-			.block(focus_block(
-				format!(" Units {}/{} ", visible.len(), view.units.len()),
-				app.focus == Focus::Units,
-			))
-			.highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-		list_area,
-		&mut state,
-	);
-
-	let detail = app
-		.selected_unit()
-		.map_or_else(|| Text::from("No unit matches this filter."), unit_detail);
-	frame.render_widget(
-		Paragraph::new(detail)
-			.wrap(Wrap { trim: false })
-			.scroll((app.detail_scroll, 0))
-			.block(focus_block(
-				" Detail ".to_string(),
-				app.focus == Focus::Detail,
-			)),
-		detail_area,
-	);
-}
-
-/// Everything the analysis knows about one unit: the vanilla ancestor, every
-/// contributor in precedence order with its source files, and the outputs
-/// the analysis would commit.
-pub fn unit_detail(unit: &MergeUnitOutcome) -> Text<'static> {
-	let mut lines = vec![
-		Line::from(vec![label("Unit        "), Span::raw(unit.id.clone())]),
-		Line::from(vec![
-			label("Family      "),
-			Span::raw(format!(
-				"{} ({})",
-				unit.family,
-				match unit.kind {
-					MergeUnitKind::File => "file",
-					MergeUnitKind::DefinitionModule => "definition module",
-				}
-			)),
-		]),
-		Line::from(vec![
-			label("Disposition "),
-			Span::styled(
-				disposition_label(unit.disposition),
-				Style::new()
-					.fg(disposition_color(unit.disposition))
-					.add_modifier(Modifier::BOLD),
-			),
-		]),
-		Line::from(vec![
-			label("Strategy    "),
-			Span::raw(unit.strategy.clone()),
-		]),
-	];
-	if !unit.summary.is_empty() {
-		lines.push(Line::from(""));
-		lines.push(Line::from(unit.summary.clone()));
-	}
-
-	lines.push(Line::from(""));
-	lines.push(section("Ancestor"));
-	let ancestors = unit
-		.contributors
-		.iter()
-		.filter(|contributor| contributor.is_base_game)
-		.collect::<Vec<_>>();
-	if ancestors.is_empty() {
-		lines.push(Line::from(Span::styled(
-			"  none: no vanilla definition at this unit",
-			Style::new().fg(Color::DarkGray),
-		)));
-	}
-	for ancestor in ancestors {
-		lines.push(Line::from(format!("  {}", ancestor.name)));
-		for path in &ancestor.source_paths {
-			lines.push(source_line(path));
-		}
-	}
-
-	lines.push(Line::from(""));
-	lines.push(section("Contributors (precedence order)"));
-	let mut contributors = unit
-		.contributors
-		.iter()
-		.filter(|contributor| !contributor.is_base_game)
-		.collect::<Vec<_>>();
-	contributors.sort_by_key(|contributor| contributor.precedence);
-	for contributor in contributors {
-		lines.push(Line::from(vec![
-			Span::styled(
-				format!("  #{} ", contributor.precedence),
-				Style::new().fg(Color::DarkGray),
-			),
-			Span::raw(contributor.name.clone()),
-			Span::styled(
-				format!("  {}", contributor.mod_id),
-				Style::new().fg(Color::DarkGray),
-			),
-		]));
-		for path in &contributor.source_paths {
-			lines.push(source_line(path));
-		}
-	}
-
-	lines.push(Line::from(""));
-	lines.push(section("Result"));
-	if unit.output_paths.is_empty() {
-		lines.push(Line::from(Span::styled(
-			"  no output: this unit would be deferred",
-			Style::new().fg(Color::DarkGray),
-		)));
-	}
-	for path in &unit.output_paths {
-		lines.push(Line::from(format!("  → {}", path.as_str())));
-	}
-
-	if !unit.notes.is_empty() {
-		lines.push(Line::from(""));
-		lines.push(section("Notes"));
-		for note in &unit.notes {
-			lines.push(Line::from(format!("  {note}")));
-		}
-	}
-	Text::from(lines)
-}
-
-fn footer_text(app: &App) -> String {
-	let keys = match (&app.phase, app.screen, app.focus) {
-		(Phase::Inspecting | Phase::Analyzing { .. }, _, _) => "[o] options  [q] quit",
-		(_, _, Focus::Search) => "type to filter units  [Enter] keep  [Esc] clear",
-		(Phase::Reviewed(_), Screen::Review, Focus::Detail) => {
-			"[↑↓] scroll  [Esc] units  [0-6] filter  [i] input  [r] refresh  [o] options  [q] quit"
-		}
-		(Phase::Reviewed(_), Screen::Review, _) => {
-			"[↑↓] select  [Enter] detail  [0-6] filter  [/] search  [i] input  [r] refresh  [o] options  [q] quit"
-		}
-		(Phase::Reviewed(_), Screen::Input, _) => {
-			"[↑↓] scroll  [i] review  [r] refresh  [o] options  [q] quit"
-		}
-		_ if app.can_analyze => "[a] analyze  [↑↓] scroll  [r] refresh  [o] options  [q] quit",
-		_ => "[↑↓] scroll  [r] refresh  [o] options  [q] quit",
-	};
-	format!(" {keys}")
-}
-
-fn focus_block(title: String, focused: bool) -> Block<'static> {
-	let style = if focused {
-		Style::new().fg(Color::Cyan)
-	} else {
-		Style::new()
-	};
+fn panel(title: impl Into<Line<'static>>, color: Color) -> Block<'static> {
 	Block::new()
 		.borders(Borders::ALL)
-		.border_style(style)
+		.border_type(BorderType::Rounded)
+		.border_style(Style::new().fg(color))
 		.title(title)
+		.title_style(Style::new().fg(color).bold())
 }
 
-fn filter_style(active: bool, color: Color) -> Style {
-	let style = Style::new().fg(color);
+fn focus_color(focused: bool) -> Color {
+	if focused { ACCENT } else { DIM }
+}
+
+fn key(name: &str) -> Span<'static> {
+	Span::styled(
+		format!(" {name} "),
+		Style::new().fg(Color::Black).bg(ACCENT).bold(),
+	)
+}
+
+fn chip(text: String, color: Color, active: bool) -> Span<'static> {
 	if active {
-		style.add_modifier(Modifier::REVERSED | Modifier::BOLD)
+		Span::styled(
+			format!(" {text} "),
+			Style::new().fg(Color::Black).bg(color).bold(),
+		)
 	} else {
-		style
+		Span::styled(format!(" {text} "), Style::new().fg(color))
 	}
 }
 
-fn label(text: &'static str) -> Span<'static> {
-	Span::styled(text, Style::new().add_modifier(Modifier::BOLD))
+fn badge(text: &str, color: Color) -> Span<'static> {
+	Span::styled(format!("● {text}"), Style::new().fg(color).bold())
 }
 
-fn section(text: &'static str) -> Line<'static> {
-	Line::from(Span::styled(
-		text,
-		Style::new()
-			.add_modifier(Modifier::BOLD)
-			.add_modifier(Modifier::UNDERLINED),
-	))
+fn field(name: &'static str) -> Span<'static> {
+	Span::styled(format!("{name:<11}"), Style::new().fg(DIM))
+}
+
+fn push_section(lines: &mut Vec<Line<'static>>, text: &'static str) {
+	lines.push(Line::from(""));
+	lines.push(Line::from(Span::styled(
+		format!("── {text} "),
+		Style::new().fg(ACCENT).bold(),
+	)));
 }
 
 fn source_line(path: &str) -> Line<'static> {
-	Line::from(Span::styled(
-		format!("      {path}"),
-		Style::new().fg(Color::DarkGray),
-	))
+	Line::from(Span::styled(format!("       {path}"), Style::new().fg(DIM)))
+}
+
+/// A path for display, without Windows' verbatim `\\?\` prefix.
+fn display(path: &std::path::Path) -> String {
+	let text = path.display().to_string();
+	text.strip_prefix(r"\\?\")
+		.map_or(text.clone(), str::to_string)
+}
+
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+	let width = width.min(area.width);
+	let height = height.min(area.height);
+	Rect::new(
+		area.x + (area.width - width) / 2,
+		area.y + (area.height - height) / 2,
+		width,
+		height,
+	)
 }
 
 fn short_disposition(disposition: MergeDisposition) -> &'static str {
@@ -677,11 +958,11 @@ fn short_disposition(disposition: MergeDisposition) -> &'static str {
 
 fn disposition_color(disposition: MergeDisposition) -> Color {
 	match disposition {
-		MergeDisposition::Safe => Color::Green,
+		MergeDisposition::Safe => OK,
 		MergeDisposition::Copy => Color::Blue,
-		MergeDisposition::NeedsUserChoice => Color::Yellow,
+		MergeDisposition::NeedsUserChoice => WARN,
 		MergeDisposition::UnsupportedInput => Color::Magenta,
-		MergeDisposition::EngineFailure => Color::Red,
-		MergeDisposition::Deferred => Color::DarkGray,
+		MergeDisposition::EngineFailure => BAD,
+		MergeDisposition::Deferred => DIM,
 	}
 }

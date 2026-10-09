@@ -207,10 +207,11 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	session.wait_idle();
 	assert!(matches!(session.app().phase, Phase::Inspected));
 	assert_shows(&session, "Fixture playset");
-	assert_shows(&session, "  1 Fixture A");
-	assert_shows(&session, "  2 Fixture B");
+	assert_shows(&session, "1  Fixture A");
+	assert_shows(&session, "2  Fixture B");
+	assert_shows(&session, "Press  a  to analyze all 2 mods.");
+	key(&mut session, KeyCode::Down);
 	assert_shows(&session, "depends on: Fixture A");
-	assert_shows(&session, "[a] analyze");
 
 	// Analyze every contributor.
 	key(&mut session, KeyCode::Char('a'));
@@ -223,8 +224,8 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	};
 	assert_eq!(session.app().screen, Screen::Review);
 	assert_eq!(analysis.summary.unsupported_input, 1, "{analysis:?}");
-	assert_shows(&session, "[4] unsupported_input 1");
-	assert_shows(&session, "[5] engine_failure 0");
+	assert_shows(&session, "4 unsupported_input 1");
+	assert_shows(&session, "5 engine_failure 0");
 	// The input snapshot was analyzed once; only a refresh analyzes again.
 	key(&mut session, KeyCode::Char('a'));
 	assert!(!session.is_busy());
@@ -276,7 +277,7 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	key(&mut session, KeyCode::Esc);
 	assert!(session.app().options.is_none());
 	assert!(session.app().settings_changed());
-	assert_shows(&session, "options changed: [r] re-analyzes");
+	assert_shows(&session, "Options changed: press r to re-analyze.");
 
 	// An explicit refresh takes a new input snapshot and a new analysis.
 	key(&mut session, KeyCode::Char('r'));
@@ -284,7 +285,7 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	session.wait_idle();
 	assert_eq!(source.inspections.load(Ordering::SeqCst), 2);
 	assert!(matches!(session.app().phase, Phase::Reviewed(_)));
-	assert_shows(&session, "[4] unsupported_input 1");
+	assert_shows(&session, "4 unsupported_input 1");
 	let analyzed_with = session.app().analyzed_with.expect("analysis settings");
 	assert!(analyzed_with.ignore_replace_path);
 	assert!(!analyzed_with.game_base);
