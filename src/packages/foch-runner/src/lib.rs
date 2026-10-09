@@ -28,7 +28,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 /// The game installation to launch and where to stage the throwaway runtime.
 #[derive(Clone, Debug)]
@@ -46,14 +48,46 @@ pub struct Installation {
 #[derive(Clone, Debug)]
 pub struct RunOptions {
 	pub timeout: Duration,
+	/// Set from outside (e.g. a Ctrl-C handler) to stop the current launch. The
+	/// game is stopped gracefully and the runtime layer is still torn down.
+	pub cancel: Arc<AtomicBool>,
 }
 
 impl Default for RunOptions {
 	fn default() -> Self {
 		Self {
 			timeout: Duration::from_secs(300),
+			cancel: Arc::new(AtomicBool::new(false)),
 		}
 	}
+}
+
+/// Remove runtime layers left under `runtime_base` by earlier runs that exited
+/// without their [`RuntimeLayer`] drop (a crash or a hard kill). Only entries
+/// older than `max_age` are removed, so a concurrent run's fresh layer is never
+/// touched. Junctions are unlinked rather than followed, so linked game data is
+/// never deleted. Best-effort: inaccessible entries are left alone.
+pub fn sweep_runtime_base(runtime_base: &Path, max_age: Duration) {
+	let now = SystemTime::now();
+	let Ok(entries) = fs::read_dir(runtime_base) else {
+		return;
+	};
+	for entry in entries.flatten() {
+		let Ok(metadata) = entry.metadata() else {
+			continue;
+		};
+		if metadata.is_dir()
+			&& metadata
+				.modified()
+				.is_ok_and(|modified| is_stale(modified, now, max_age))
+		{
+			platform::remove_layer(&entry.path());
+		}
+	}
+}
+
+fn is_stale(modified: SystemTime, now: SystemTime, max_age: Duration) -> bool {
+	now.duration_since(modified).is_ok_and(|age| age > max_age)
 }
 
 /// What one launch produced, ready to turn into a `foch_test::RunArtifacts`.
@@ -200,7 +234,7 @@ pub fn run_session(
 	let started = Instant::now();
 	let mut process = platform::spawn(&launch)?;
 	let launch_detail = launch.detail();
-	let exit = watch(&mut process, bundle, &log, options.timeout);
+	let exit = watch(&mut process, bundle, &log, options.timeout, &options.cancel);
 	let timing = Timing {
 		wall_ms: started.elapsed().as_millis() as u64,
 		..Timing::default()
@@ -235,9 +269,14 @@ fn watch(
 	bundle: &Bundle,
 	log: &Path,
 	timeout: Duration,
+	cancel: &AtomicBool,
 ) -> RunnerExit {
 	let started = Instant::now();
 	loop {
+		if cancel.load(Ordering::Relaxed) {
+			process.stop();
+			return RunnerExit::Cancelled;
+		}
 		if let Some(code) = process.exit_code() {
 			return if code == 0 {
 				RunnerExit::Success
@@ -408,4 +447,20 @@ fn deepest_relative(root: &Path, dir_name_len: usize) -> usize {
 		deepest
 	}
 	walk(root, dir_name_len)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn stale_layers_are_older_than_the_grace_period() {
+		let now = SystemTime::now();
+		let max_age = Duration::from_secs(3600);
+		// A layer touched two hours ago is stale; one from a minute ago is not.
+		assert!(is_stale(now - Duration::from_secs(7200), now, max_age));
+		assert!(!is_stale(now - Duration::from_secs(60), now, max_age));
+		// A modification time in the future (clock skew) is never stale.
+		assert!(!is_stale(now + Duration::from_secs(60), now, max_age));
+	}
 }

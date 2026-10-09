@@ -26,8 +26,14 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
+
+/// Runtime layers left by a run that was killed before cleanup are swept once
+/// they are older than this, so a concurrent run's fresh layer is never hit.
+const STALE_LAYER_GRACE: Duration = Duration::from_secs(2 * 3600);
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -82,8 +88,13 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	let config = load_config_read_only()?;
 	let game_root = foch_runner::locate_game(&config, args.game_path.as_deref())?;
 	let real_user_dir = args.eu4_user_dir.clone().or_else(default_eu4_user_dir);
+	// Ctrl-C stops the current launch gracefully: the flag is observed by the
+	// runner's watch loop, which stops the game and lets the layer tear down.
+	let cancel = Arc::new(AtomicBool::new(false));
+	install_cancel_handler(&cancel);
 	let options = RunOptions {
 		timeout: Duration::from_secs(args.timeout),
+		cancel: cancel.clone(),
 	};
 	let requested_output = match &args.out {
 		Some(output) => output.clone(),
@@ -95,6 +106,8 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	// Keep the game's own files within MAX_PATH: a short base, not `output`.
 	let runtime_base = fs::canonicalize(std::env::temp_dir())?.join("foch-rt");
 	fs::create_dir_all(&runtime_base)?;
+	// Clear layers a previously killed run could not tear down itself.
+	foch_runner::sweep_runtime_base(&runtime_base, STALE_LAYER_GRACE);
 	let installation = Installation {
 		game_root: game_root.clone(),
 		runtime_base,
@@ -104,6 +117,9 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	let mut sessions = Vec::new();
 	let mut results = Vec::new();
 	for bundle in &bundles {
+		if cancel.load(Ordering::Relaxed) {
+			break;
+		}
 		let directory = output.join(format!("session_{:04}", bundle.session.0 + 1));
 		let (record, session_results) = run_one_session(
 			&planned.plan,
@@ -123,9 +139,12 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 		.filter(|result| result.isolation == Isolation::Shared && !result.status.is_success())
 		.map(|result| result.index)
 		.collect();
-	if !suspicious.is_empty() {
+	if !suspicious.is_empty() && !cancel.load(Ordering::Relaxed) {
 		let rerun = planned.plan.isolated_rerun(&suspicious);
 		for session in &rerun.sessions {
+			if cancel.load(Ordering::Relaxed) {
+				break;
+			}
 			let bundle = compile(&rerun, session.id, &context)?;
 			let directory = output.join(format!("rerun_{:04}", session.id.0 + 1));
 			let (record, mut isolated) = run_one_session(
@@ -353,6 +372,23 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 		plan,
 		diagnostics,
 	})
+}
+
+/// Install a Ctrl-C handler that sets `cancel`, so the run stops after the
+/// current launch is torn down. A second Ctrl-C exits immediately. If a handler
+/// is already installed (e.g. the host set one), the run simply has no handler
+/// rather than failing.
+fn install_cancel_handler(cancel: &Arc<AtomicBool>) {
+	let flag = cancel.clone();
+	let _ = ctrlc::set_handler(move || {
+		if flag.swap(true, Ordering::SeqCst) {
+			// Already asked once; the user wants out now.
+			std::process::exit(130);
+		}
+		eprintln!(
+			"interrupt received; stopping after the current game is torn down (Ctrl-C again to force)"
+		);
+	});
 }
 
 /// Static facts for the pre-launch lint, drawn from the embedded EU4 builtin
