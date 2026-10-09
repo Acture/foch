@@ -834,12 +834,14 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.build(),
+			// `custom_button = { name = ... }`: the GUI binds each definition by
+			// its `name`, so the block key is a type, not an identity.
 			ContentFamilyDescriptor::prefix("common/custom_gui", "common/custom_gui")
 				.kind(ScriptFileKind::new("custom_gui"))
 				.module_name(ModuleNameRule::Static("custom_gui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
-				.merge_key(MergeKeySource::AssignmentKey)
+				.merge_key(MergeKeySource::FieldValue("name"))
 				.build(),
 			ContentFamilyDescriptor::prefix("common/advisortypes", "common/advisortypes")
 				.kind(ScriptFileKind::new("advisortypes"))

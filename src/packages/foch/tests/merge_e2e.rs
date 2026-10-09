@@ -1139,6 +1139,43 @@ fn eu4_gfx_sprite_types_union_different_names_without_conflict() {
 }
 
 #[test]
+fn eu4_custom_gui_definitions_are_distinct_by_name() {
+	// Each `custom_button`/`custom_window` is identified by its `name`, as the
+	// GUI binds it; different names from different mods must not conflict.
+	let (result, out_dir) = run_merge_for_fixture("eu4_custom_gui_union_named_buttons", false);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"distinct custom GUI names should merge; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let mut merged = String::new();
+	for entry in fs::read_dir(out_dir.join("common").join("custom_gui")).expect("custom_gui output")
+	{
+		merged.push_str(&fs::read_to_string(entry.expect("entry").path()).expect("read"));
+	}
+	for name in [
+		"baseline_button",
+		"gui_a_window",
+		"gui_a_button",
+		"gui_b_button",
+	] {
+		assert_eq!(
+			merged.matches(name).count(),
+			1,
+			"{name} kept once; got:
+{merged}"
+		);
+	}
+	assert!(merged.contains("adm_power = 50") && merged.contains("add_dip_power = 10"));
+}
+
+#[test]
 fn eu4_gfx_sprite_types_same_name_divergence_conflicts() {
 	let (result, _out_dir) =
 		run_merge_for_fixture("eu4_gfx_sprite_types_same_name_conflict", false);
