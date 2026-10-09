@@ -1176,6 +1176,44 @@ fn eu4_custom_gui_definitions_are_distinct_by_name() {
 }
 
 #[test]
+fn eu4_bookmarks_and_customizable_localization_are_distinct_by_name() {
+	// `bookmark = { name = ... }` and `defined_text = { name = ... }` blocks
+	// share their key; each mod's differently named definition must survive.
+	let (result, out_dir) = run_merge_for_fixture("eu4_named_definitions_union", false);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"distinct names should merge; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let read_all = |dir: PathBuf| {
+		let mut merged = String::new();
+		for entry in fs::read_dir(&dir).unwrap_or_else(|err| panic!("{}: {err}", dir.display())) {
+			merged.push_str(&fs::read_to_string(entry.expect("entry").path()).expect("read"));
+		}
+		merged
+	};
+	let bookmarks = read_all(out_dir.join("common").join("bookmarks"));
+	let commands = read_all(out_dir.join("customizable_localization"));
+	for mod_dir in ["baseline", "named_a", "named_b"] {
+		assert_eq!(
+			bookmarks.matches(&format!("\"BM_{mod_dir}\"")).count(),
+			1,
+			"{bookmarks}"
+		);
+	}
+	// Both mods override the same file, each adding a different command.
+	for command in ["GetBaselineText", "Getnamed_aText", "Getnamed_bText"] {
+		assert_eq!(commands.matches(command).count(), 1, "{commands}");
+	}
+}
+
+#[test]
 fn eu4_gfx_sprite_types_same_name_divergence_conflicts() {
 	let (result, _out_dir) =
 		run_merge_for_fixture("eu4_gfx_sprite_types_same_name_conflict", false);

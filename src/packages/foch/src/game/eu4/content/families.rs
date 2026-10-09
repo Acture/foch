@@ -508,12 +508,13 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.build(),
+			// `bookmark = { name = ... }`: the block key is a type, not an identity.
 			ContentFamilyDescriptor::prefix("common/bookmarks", "common/bookmarks")
 				.kind(ScriptFileKind::new("bookmarks"))
 				.module_name(ModuleNameRule::Static("bookmarks"))
 				.scope(unknown_scope())
 				.capabilities(semantic_complete_and_merge_ready())
-				.merge_key(MergeKeySource::AssignmentKey)
+				.merge_key(MergeKeySource::FieldValue("name"))
 				.build(),
 			ContentFamilyDescriptor::prefix("common/policies", "common/policies")
 				.kind(ScriptFileKind::new("policies"))
@@ -872,6 +873,7 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.build(),
+			// `defined_text = { name = ... }`: commands are called by `name`.
 			ContentFamilyDescriptor::prefix(
 				"customizable_localization",
 				"customizable_localization",
@@ -880,7 +882,7 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			.module_name(ModuleNameRule::Static("customizable_localization"))
 			.scope(dynamic_scope_policy())
 			.capabilities(semantic_complete_and_merge_ready())
-			.merge_key(MergeKeySource::AssignmentKey)
+			.merge_key(MergeKeySource::FieldValue("name"))
 			.build(),
 			ContentFamilyDescriptor::prefix("missions", "missions")
 				.kind(ScriptFileKind::new("missions"))
