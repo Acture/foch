@@ -2914,3 +2914,80 @@ fn a_delete_modify_conflict_keeps_the_modified_node_whole() {
 	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
 	assert_eq!(emit(outcome.tentative_ast()), emit(&edited));
 }
+
+#[test]
+fn an_ambiguity_only_one_revision_touches_is_not_a_conflict() {
+	// EE replaces two of a privilege's conditional modifiers with three
+	// similar-looking ones. However its new modifiers pair with the removed
+	// ones, the result is EE's list, because no other mod touched them.
+	let path = "common/estate_privileges/02_noble_privileges.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let modifier = |trigger: &str, modifier: &str| {
+		format!(
+			"\tconditional_modifier = {{\n\t\ttrigger = {{ {trigger} }}\n\t\tmodifier = {{ {modifier} }}\n\t}}\n"
+		)
+	};
+	let privilege = |modifiers: &[String]| {
+		parse_at(
+			path,
+			&format!(
+				"estate_nobles_nobility_primacy = {{\n\testate = estate_nobles\n{}}}\n",
+				modifiers.concat()
+			),
+		)
+	};
+	let russian = modifier(
+		"has_government_mechanic = russian_modernization_mechanic",
+		"monthly_russian_modernization = -0.05",
+	);
+	let german = modifier(
+		"has_country_flag = GER_upgrade_primacy_of_the_nobility_flag",
+		"mil_tech_cost_modifier = -0.1",
+	);
+	let aztec = modifier(
+		"has_country_flag = azt_imperial_tributes_flag",
+		"monarch_power_tribute = 1",
+	);
+	let base = privilege(&[russian.clone(), german.clone(), aztec]);
+	let replaced = privilege(&[
+		modifier(
+			"has_country_modifier = ME_reign_of_terror",
+			"core_creation = -0.1",
+		),
+		modifier(
+			"has_country_flag = EE_CLT_reduce_absolutism_nobles",
+			"max_absolutism = 5",
+		),
+		modifier(
+			"has_country_modifier = ME_golden_age_maintained_privileges",
+			"mil_tech_cost_modifier = -0.05",
+		),
+		russian.clone(),
+	]);
+	let outcome = merge_clausewitz_files_n_way(&base, &[&replaced, &base], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert!(
+		super::clausewitz_files_semantically_equivalent(
+			outcome.tentative_ast(),
+			&replaced,
+			&policies
+		)
+		.unwrap()
+	);
+
+	// Once a second mod edits a modifier the first one replaced, the pairing
+	// decides where that edit lands, so the ambiguity stays a conflict.
+	let edited = privilege(&[
+		russian,
+		german.replace("-0.1", "-0.2"),
+		modifier(
+			"has_country_flag = azt_imperial_tributes_flag",
+			"monarch_power_tribute = 2",
+		),
+	]);
+	let outcome = merge_clausewitz_files_n_way(&base, &[&replaced, &edited], &policies).unwrap();
+	assert!(!outcome.conflicts().is_empty());
+}
