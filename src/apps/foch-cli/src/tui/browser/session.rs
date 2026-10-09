@@ -50,7 +50,7 @@ impl BrowserSource for CurrentEu4Source {
 	fn inspect(&self) -> Inspection {
 		let input = inspect_current_eu4_input();
 		let analysis = input
-			.can_select_mods()
+			.can_select_mods(false)
 			.then(|| AnalysisInput::Current(Box::new(input.clone())));
 		Inspection {
 			input,

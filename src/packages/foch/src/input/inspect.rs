@@ -135,7 +135,9 @@ struct PreparedCurrentEu4Input {
 	playset: Option<Playset>,
 	source_mod_count: usize,
 	recovery: Option<AvailableInputRecovery>,
-	base_snapshot_identity: InstalledBaseSnapshotIdentity,
+	/// The installed base data, or `None` when it is missing or stale; only
+	/// an analysis without the game base can then be prepared.
+	base_snapshot_identity: Option<InstalledBaseSnapshotIdentity>,
 	selection: PlaysetSelection,
 }
 
@@ -252,6 +254,7 @@ impl CurrentEu4Input {
 	pub fn prepare(self, mode: InputPreparationMode) -> Option<PreparedAnalysisInput> {
 		let prepared = self.prepared?;
 		let playset = prepared.playset?;
+		let base_snapshot_identity = prepared.base_snapshot_identity?;
 		let prepared_mode = if prepared.recovery.is_some() {
 			InputPreparationMode::AvailableOnly
 		} else {
@@ -260,11 +263,11 @@ impl CurrentEu4Input {
 		if mode != prepared_mode {
 			return None;
 		}
-		let identity_label = prepared.base_snapshot_identity.as_label();
+		let identity_label = base_snapshot_identity.as_label();
 		Some(PreparedAnalysisInput {
 			request: InputRequest::from_playset_path(prepared.playset_path, prepared.config)
 				.with_expected_base_snapshot_identity(identity_label)
-				.with_base_snapshot_lease(Some(prepared.base_snapshot_identity))
+				.with_base_snapshot_lease(Some(base_snapshot_identity))
 				.with_expected_game_root(prepared.game_root)
 				.with_preloaded_playset(playset),
 			source_mod_count: prepared.source_mod_count,
@@ -273,23 +276,36 @@ impl CurrentEu4Input {
 	}
 
 	/// Whether [`CurrentEu4Input::prepare_excluding`] can build a request:
-	/// the game, base data and Steam Workshop data are usable, whatever the
-	/// state of individual playset mods.
-	pub fn can_select_mods(&self) -> bool {
-		self.prepared.is_some()
+	/// the game and Steam Workshop data are usable, and so is the base data
+	/// when the analysis uses the game base, whatever the state of individual
+	/// playset mods.
+	pub fn can_select_mods(&self, include_game_base: bool) -> bool {
+		self.prepared
+			.as_ref()
+			.is_some_and(|prepared| !include_game_base || prepared.base_snapshot_identity.is_some())
 	}
 
 	/// Prepare the playset without the mods at `excluded` playset positions
 	/// (1-based, as [`DetectedPlaysetMod::position`]). Every mod that cannot
 	/// be analyzed must be excluded. Asking the user before analyzing less
 	/// than the full playset is the caller's job.
+	///
+	/// Without the game base (`--no-game-base`) the base data is not used,
+	/// so missing or stale base data does not prevent the analysis.
 	pub fn prepare_excluding(
 		self,
 		excluded: &BTreeSet<usize>,
+		include_game_base: bool,
 	) -> Result<PreparedAnalysisInput, String> {
 		let prepared = self.prepared.ok_or_else(|| {
-			"the game, base data or Steam Workshop data is not ready; see the issues".to_string()
+			"the game or Steam Workshop data is not ready; see the issues".to_string()
 		})?;
+		if include_game_base && prepared.base_snapshot_identity.is_none() {
+			return Err(
+				"the EU4 base data is not ready; install or build it, or analyze without the game base (--no-game-base)"
+					.to_string(),
+			);
+		}
 		let PlaysetSelection { mut template, mods } = prepared.selection;
 		let mut omitted_mods = Vec::new();
 		for selectable in mods {
@@ -319,13 +335,16 @@ impl CurrentEu4Input {
 			omitted_mods,
 			included_mod_count: template.mods.len(),
 		});
-		let identity_label = prepared.base_snapshot_identity.as_label();
+		let mut request = InputRequest::from_playset_path(prepared.playset_path, prepared.config)
+			.with_expected_game_root(prepared.game_root)
+			.with_preloaded_playset(template);
+		if include_game_base && let Some(identity) = prepared.base_snapshot_identity {
+			request = request
+				.with_expected_base_snapshot_identity(identity.as_label())
+				.with_base_snapshot_lease(Some(identity));
+		}
 		Ok(PreparedAnalysisInput {
-			request: InputRequest::from_playset_path(prepared.playset_path, prepared.config)
-				.with_expected_base_snapshot_identity(identity_label)
-				.with_base_snapshot_lease(Some(prepared.base_snapshot_identity))
-				.with_expected_game_root(prepared.game_root)
-				.with_preloaded_playset(template),
+			request,
 			source_mod_count: prepared.source_mod_count,
 			recovery,
 		})
@@ -361,31 +380,27 @@ pub(crate) fn inspect_current_eu4_input_with_environment(
 	let (base_data, base_snapshot_identity) =
 		inspect_base_data(game_version.as_deref(), &mut issues);
 
-	let prepared = match (
-		preparation,
-		base_snapshot_identity,
-		game_root.as_ref(),
-		game_version.as_ref(),
-	) {
-		(Some(preparation), Some(base_snapshot_identity), Some(game_root), Some(_)) => {
-			Some(PreparedCurrentEu4Input {
-				config,
-				game_root: game_root.clone(),
-				playset_path: preparation.playset_path,
-				playset: preparation.playset,
-				source_mod_count,
-				recovery: preparation.recovery,
-				base_snapshot_identity,
-				selection: preparation.selection,
-			})
-		}
+	let prepared = match (preparation, game_root.as_ref(), game_version.as_ref()) {
+		(Some(preparation), Some(game_root), Some(_)) => Some(PreparedCurrentEu4Input {
+			config,
+			game_root: game_root.clone(),
+			playset_path: preparation.playset_path,
+			playset: preparation.playset,
+			source_mod_count,
+			recovery: preparation.recovery,
+			base_snapshot_identity,
+			selection: preparation.selection,
+		}),
 		_ => None,
 	};
-	let ready = prepared
-		.as_ref()
-		.is_some_and(|prepared| prepared.playset.is_some());
+	// The standard preparation modes analyze with the game base, so they
+	// also need the base data.
+	let ready = prepared.as_ref().is_some_and(|prepared| {
+		prepared.playset.is_some() && prepared.base_snapshot_identity.is_some()
+	});
 	let recovery = prepared
 		.as_ref()
+		.filter(|_| ready)
 		.and_then(|prepared| prepared.recovery.clone());
 
 	CurrentEu4Input {
@@ -1232,6 +1247,35 @@ remote_file_id="43"
 	}
 
 	#[test]
+	fn missing_base_data_blocks_only_an_analysis_that_uses_the_game_base() {
+		let _lock = BASE_DATA_ENV_LOCK
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let temp = TempDir::new().expect("fixture root");
+		let _data_guard = EnvVarGuard::set(BASE_DATA_DIR_ENV, &temp.path().join("base-data"));
+		setup_input_fixture(temp.path());
+
+		let inspection =
+			inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+		assert_eq!(inspection.readiness, InputReadiness::Blocked);
+		assert!(inspection.clone().into_request().is_none());
+		assert!(!inspection.can_select_mods(true));
+		assert!(inspection.can_select_mods(false));
+		assert!(
+			inspection
+				.clone()
+				.prepare_excluding(&BTreeSet::new(), true)
+				.expect_err("the game base needs base data")
+				.contains("--no-game-base")
+		);
+		let prepared = inspection
+			.prepare_excluding(&BTreeSet::new(), false)
+			.expect("an analysis without the game base needs no base data");
+		assert!(prepared.request.expected_base_snapshot_identity.is_none());
+		assert!(prepared.recovery.is_none());
+	}
+
+	#[test]
 	fn a_blocking_mod_can_be_excluded_to_analyze_the_rest() {
 		let _lock = BASE_DATA_ENV_LOCK
 			.lock()
@@ -1247,19 +1291,19 @@ remote_file_id="43"
 		let inspection =
 			inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
 		assert_eq!(inspection.readiness, InputReadiness::Blocked);
-		assert!(inspection.can_select_mods());
+		assert!(inspection.can_select_mods(true));
 		assert!(inspection.clone().into_request().is_none());
 		assert!(
 			inspection
 				.clone()
-				.prepare_excluding(&BTreeSet::new())
+				.prepare_excluding(&BTreeSet::new(), true)
 				.expect_err("the blocking mod must be excluded first")
 				.contains("#2")
 		);
 
 		let prepared = inspection
 			.clone()
-			.prepare_excluding(&BTreeSet::from([2]))
+			.prepare_excluding(&BTreeSet::from([2]), true)
 			.expect("analyze without the blocking mod");
 		let recovery = prepared.recovery.as_ref().expect("omission record");
 		assert_eq!(recovery.source_mod_count, 2);
@@ -1274,7 +1318,7 @@ remote_file_id="43"
 		assert!(
 			inspection
 				.clone()
-				.prepare_excluding(&BTreeSet::from([1, 2]))
+				.prepare_excluding(&BTreeSet::from([1, 2]), true)
 				.is_err()
 		);
 		assert_eq!(before, file_system_snapshot(temp.path()));

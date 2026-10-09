@@ -65,7 +65,8 @@ pub fn prepare_merge(
 		}
 		None => {
 			let current = current.unwrap_or_else(inspect_current_eu4_input);
-			let request = current_input_excluding(current, &merge_args.exclude)?;
+			let request =
+				current_input_excluding(current, &merge_args.exclude, !merge_args.no_game_base)?;
 			(request.source.clone(), request)
 		}
 	};
@@ -154,6 +155,7 @@ fn report_and_commit(
 fn current_input_excluding(
 	input: CurrentEu4Input,
 	exclude: &[String],
+	include_game_base: bool,
 ) -> Result<InputRequest, String> {
 	let mods = input
 		.playset
@@ -179,7 +181,9 @@ fn current_input_excluding(
 		})?;
 		positions.insert(position);
 	}
-	let prepared = input.clone().prepare_excluding(&positions)?;
+	let prepared = input
+		.clone()
+		.prepare_excluding(&positions, include_game_base)?;
 	if let Some(recovery) = &prepared.recovery {
 		eprintln!(
 			"[foch] analyzing {} of {} playset mods; excluded:",
