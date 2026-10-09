@@ -1,0 +1,12 @@
+country_decisions = {
+	persian_nation = {
+		potential = {
+			NOT = { tag = MUG }
+			OR = { culture_group = iranian tag = AKK was_tag = AKK }
+			is_colonial_nation = no
+		}
+		effect = {
+			change_tag = PER
+		}
+	}
+}

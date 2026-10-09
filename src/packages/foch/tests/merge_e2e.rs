@@ -2505,3 +2505,22 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 		"a non-kernel structured run must not commit copy-through output"
 	);
 }
+
+#[test]
+fn eu4_replaced_trigger_chain_merges_branch_by_branch_through_the_dag() {
+	// One mod replaces Persia's DLC split with one condition list, another adds
+	// a culture to both branches. The merge rewrites its inputs branch by
+	// branch, and the DAG lineage must still trace every node to its mod.
+	let (result, out_dir) = run_merge_for_fixture("eu4_trigger_chain_replaced", false);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let decision = fs::read_to_string(out_dir.join("decisions").join("PersianNation.txt"))
+		.expect("merged decision");
+	for condition in ["was_tag = AKK", "primary_culture = azeri_culture"] {
+		assert_eq!(decision.matches(condition).count(), 1, "{decision}");
+	}
+	assert!(!decision.contains("has_dlc"), "{decision}");
+}
