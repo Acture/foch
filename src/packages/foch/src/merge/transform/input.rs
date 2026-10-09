@@ -30,6 +30,24 @@ impl SourceGuard {
 		Ok(())
 	}
 
+	/// Bind a file a transformation read, in any format, to the bytes analysis
+	/// saw. Commit rejects the transformation if the file changes.
+	pub(crate) fn bind(&mut self, path: PathBuf, bytes: &[u8]) -> Result<(), MergeError> {
+		let digest = sha256(bytes);
+		if self
+			.0
+			.get(&path)
+			.is_some_and(|previous| previous != &digest)
+		{
+			return Err(invalid(
+				host(&path),
+				"transformations bind incompatible versions of the same source",
+			));
+		}
+		self.0.insert(path, digest);
+		Ok(())
+	}
+
 	pub(super) fn extend(&mut self, other: &Self) -> Result<(), MergeError> {
 		for (path, digest) in &other.0 {
 			if self.0.get(path).is_some_and(|previous| previous != digest) {

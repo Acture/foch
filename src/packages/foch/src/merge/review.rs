@@ -75,7 +75,7 @@ impl MergeReview {
 		&self.summary
 	}
 
-	pub(super) fn units(&self) -> &[MergeUnitOutcome] {
+	pub(crate) fn units(&self) -> &[MergeUnitOutcome] {
 		&self.units
 	}
 

@@ -351,6 +351,50 @@ fn parse_localisation_header_bytes(line: &[u8]) -> Option<&str> {
 	Some(lang)
 }
 
+/// Every `(language, key, value)` defined by a localisation file, in file
+/// order. A value runs from its opening quote to the last quote on the line,
+/// or to the end of the line when it has no closing quote, as the game
+/// accepts both.
+pub(crate) fn parse_localisation_values(raw: &[u8]) -> Vec<(String, String, String)> {
+	let Ok(normalized) = normalize_localisation_source(raw) else {
+		return Vec::new();
+	};
+	let mut values = Vec::new();
+	let mut language: Option<String> = None;
+	for (line_no, line) in line_slices(&normalized) {
+		let mut line = line;
+		if line_no == 1 {
+			line = trim_prefix(line, &[0xEF, 0xBB, 0xBF]);
+		}
+		let trimmed = trim_ascii_start(line);
+		if trimmed.is_empty() || trimmed.first() == Some(&b'#') {
+			continue;
+		}
+		if let Some(header) = parse_localisation_header_bytes(trimmed) {
+			language = Some(header.to_owned());
+			continue;
+		}
+		let (Some(language), Some(entry)) = (&language, parse_localisation_entry_bytes(trimmed))
+		else {
+			continue;
+		};
+		let Some(open) = trimmed.iter().position(|byte| *byte == b'"') else {
+			continue;
+		};
+		let rest = &trimmed[open + 1..];
+		let value = match rest.iter().rposition(|byte| *byte == b'"') {
+			Some(close) => &rest[..close],
+			None => trim_ascii_end(rest),
+		};
+		values.push((
+			language.clone(),
+			entry.key,
+			String::from_utf8_lossy(value).into_owned(),
+		));
+	}
+	values
+}
+
 fn parse_localisation_entry_bytes(line: &[u8]) -> Option<ParsedLocalisationEntry> {
 	let trimmed = trim_ascii_start(line);
 	let colon_idx = trimmed.iter().position(|byte| *byte == b':')?;
@@ -632,6 +676,26 @@ mod tests {
 		assert_eq!(parsed.entries.len(), 1);
 		assert_eq!(parsed.entries[0].definition.key, "OPT2");
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+	}
+
+	#[test]
+	fn values_follow_their_language_section_and_tolerate_loose_quotes() {
+		let values = super::parse_localisation_values(
+			"\u{feff}l_english:\n a:0 \"Say \"hi\" [Root.GetName]\" # note\n b: \"open ended\nl_german:\n a:0 \"Hallo\"\n"
+				.as_bytes(),
+		);
+		assert_eq!(
+			values,
+			[
+				(
+					"english".into(),
+					"a".into(),
+					"Say \"hi\" [Root.GetName]".into()
+				),
+				("english".into(), "b".into(), "open ended".into()),
+				("german".into(), "a".into(), "Hallo".into()),
+			]
+		);
 	}
 
 	#[test]
