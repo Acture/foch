@@ -555,6 +555,16 @@ fn runtime_problems_are_never_absorbed_by_xfail() {
 			error_log: Some("[pdx_d3d9]: device lost"),
 			..artifacts(&log)
 		}),
+		// Ambient engine noise no longer fails the run.
+		Status::XFailed
+	);
+	let test_layer_error = format!("[events.cpp:1]: invalid effect in {}.txt", bundle.namespace);
+	assert_eq!(
+		judged(RunArtifacts {
+			error_log: Some(&test_layer_error),
+			..artifacts(&log)
+		}),
+		// An error the generated test layer caused does.
 		Status::RuntimeError
 	);
 	assert_eq!(

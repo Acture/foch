@@ -185,6 +185,80 @@ fn accepts_human_readable_case_names_without_using_them_as_paths() {
 }
 
 #[test]
+fn parametrize_expands_the_cartesian_product() {
+	let result = collected(&event(
+		"#parametrize(tag = { SWE DAN NOR })\n#test(time=1444.11.11, name=u, expect={ has_country_flag = tested })",
+	));
+	assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+	let locals: Vec<_> = result.cases.iter().map(|case| case.node.local()).collect();
+	assert_eq!(
+		locals,
+		[
+			"events/demo.txt::demo.1::u[tag=SWE]",
+			"events/demo.txt::demo.1::u[tag=DAN]",
+			"events/demo.txt::demo.1::u[tag=NOR]",
+		]
+	);
+	assert_eq!(result.cases[1].start.tag.as_str(), "DAN");
+	// Each instance has its own stable identity.
+	assert_ne!(result.cases[0].content_id, result.cases[1].content_id);
+
+	// Two dimensions take the Cartesian product; neither is given on the test.
+	let result = collected(&event(
+		"#parametrize(tag = { SWE DAN } time = { 1444.11.11 1500.1.1 })\n#test(name=u, expect={ has_country_flag = tested })",
+	));
+	assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+	let locals: Vec<_> = result.cases.iter().map(|case| case.node.local()).collect();
+	assert_eq!(
+		locals,
+		[
+			"events/demo.txt::demo.1::u[tag=SWE,time=1444.11.11]",
+			"events/demo.txt::demo.1::u[tag=DAN,time=1444.11.11]",
+			"events/demo.txt::demo.1::u[tag=SWE,time=1500.1.1]",
+			"events/demo.txt::demo.1::u[tag=DAN,time=1500.1.1]",
+		]
+	);
+}
+
+#[test]
+fn parametrize_rejects_conflicts_empty_and_duplicate_lists() {
+	for annotation in [
+		// A dimension given on both the test and parametrize.
+		"#parametrize(tag = { SWE DAN })\n#test(time=1444.11.11, tag=FRA, name=u)",
+		// A value listed twice.
+		"#parametrize(tag = { SWE SWE })\n#test(time=1444.11.11, name=u)",
+		// An empty list.
+		"#parametrize(tag = { })\n#test(time=1444.11.11, name=u)",
+		// Only a time list, so tag is given nowhere.
+		"#parametrize(time = { 1444.11.11 })\n#test(name=u)",
+	] {
+		let result = collected(&event(annotation));
+		assert!(result.cases.is_empty(), "{annotation}");
+		assert!(result.has_errors(), "{annotation}");
+	}
+}
+
+#[test]
+fn tests_dir_blocks_parametrize_too() {
+	let result = collect(&[SourceFile {
+		mod_name: "demo".into(),
+		path: RelPath::new("tests/reforms.txt").unwrap(),
+		kind: SourceKind::TestsDir,
+		text: "test = {\n name = u\n time = 1444.11.11\n parametrize = { tag = { SWE DAN } }\n effect = { set_country_flag = x }\n}"
+			.into(),
+	}]);
+	assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+	let locals: Vec<_> = result.cases.iter().map(|case| case.node.local()).collect();
+	assert_eq!(
+		locals,
+		[
+			"tests/reforms.txt::u[tag=SWE]",
+			"tests/reforms.txt::u[tag=DAN]",
+		]
+	);
+}
+
+#[test]
 fn example_fixture_collects_its_four_cases() {
 	let text = include_str!("fixtures/runtime-tests/events/annotated.txt");
 	let result = collect(&[SourceFile {

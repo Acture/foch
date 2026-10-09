@@ -5,10 +5,11 @@
 //! steps executed in source order; the remaining keys are metadata typed by
 //! the same schema as `#test(...)`.
 
-use super::{CaseFields, Collection, step, total_days};
+use super::{Axes, CaseFields, Collection, dimension, expand_cases, step, total_days};
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::model::{
-	CaseName, ContentId, Fixture, FixtureName, Marker, Marks, NodeId, Start, TestCase, XFail,
+	CaseName, ContentId, Fixture, FixtureName, GameDate, Marker, Marks, NodeId, Start, Tag,
+	TestCase, XFail,
 };
 use crate::source::{SourceFile, SourceSpan};
 use foch::game::eu4::script::parser::{AstStatement, AstValue};
@@ -36,7 +37,7 @@ pub(super) fn collect(file: &SourceFile, statements: &[AstStatement], out: &mut 
 			continue;
 		};
 		let result = match key.as_str() {
-			"test" => parse_test(file, items, origin.clone()).map(|case| out.cases.push(case)),
+			"test" => parse_test(file, items, origin.clone()).map(|cases| out.cases.extend(cases)),
 			"fixture" => {
 				parse_fixture(file, items, origin.clone()).map(|fixture| out.fixtures.push(fixture))
 			}
@@ -94,10 +95,11 @@ fn parse_test(
 	file: &SourceFile,
 	items: &[AstStatement],
 	origin: SourceSpan,
-) -> Result<TestCase, String> {
+) -> Result<Vec<TestCase>, String> {
 	let mut fields = CaseFields::default();
 	let mut marks = Marks::default();
 	let mut steps = Vec::new();
+	let mut axes = Axes::default();
 	for item in items {
 		let (key, value) = match item {
 			AstStatement::Comment { .. } => continue,
@@ -135,6 +137,12 @@ fn parse_test(
 					return Err(duplicate());
 				}
 			}
+			"parametrize" => {
+				if axes.tags.is_some() || axes.times.is_some() {
+					return Err(duplicate());
+				}
+				axes = parametrize(file, value)?;
+			}
 			other => return Err(format!("unknown test key {other}")),
 		}
 	}
@@ -147,7 +155,9 @@ fn parse_test(
 	total_days(&steps)?;
 	marks.session = fields.session;
 	marks.requires_player = fields.player.unwrap_or(false);
-	let mut case = TestCase {
+	let tag = dimension(fields.tag, axes.tags, "tag")?;
+	let time = dimension(fields.time, axes.times, "time")?;
+	let base = TestCase {
 		node: NodeId {
 			mod_name: file.mod_name.clone(),
 			path: file.path.clone(),
@@ -158,19 +168,88 @@ fn parse_test(
 		content_id: ContentId(String::new()),
 		origin,
 		start: Start {
-			date: fields.time.ok_or("a test block requires time")?,
-			tag: fields.tag.ok_or("a test block requires tag")?,
+			date: time.values[0],
+			tag: tag.values[0].clone(),
 		},
 		ai: fields.ai.unwrap_or_default(),
 		uses: fields.uses.unwrap_or_default(),
 		steps,
 		marks,
 	};
-	if case.marks.xfail.is_some() && case.is_smoke() {
+	if base.marks.xfail.is_some() && base.is_smoke() {
 		return Err("xfail requires an expect step; a smoke test has nothing to fail".into());
 	}
-	case.compute_content_id();
-	Ok(case)
+	expand_cases(base, tag, time)
+}
+
+/// `parametrize = { tag = { SWE DAN } time = { 1444.11.11 1500.1.1 } }`.
+fn parametrize(file: &SourceFile, value: &AstValue) -> Result<Axes, String> {
+	let AstValue::Block { items, .. } = value else {
+		return Err("parametrize must be a block of tag and time lists".into());
+	};
+	let mut axes = Axes::default();
+	for item in items {
+		let (key, value) = match item {
+			AstStatement::Comment { .. } => continue,
+			AstStatement::Assignment { key, value, .. } => (key.as_str(), value),
+			AstStatement::Item { .. } => {
+				return Err("parametrize contains tag and time lists".into());
+			}
+		};
+		let fresh = match key {
+			"tag" => axes
+				.tags
+				.replace(
+					parse_value(&file.path, &file.text, value, list(&ValueType::Tag))
+						.map_err(|message| format!("parametrize tag: {message}"))
+						.map(tags)?,
+				)
+				.is_none(),
+			"time" => axes
+				.times
+				.replace(
+					parse_value(&file.path, &file.text, value, list(&ValueType::Date))
+						.map_err(|message| format!("parametrize time: {message}"))
+						.map(times)?,
+				)
+				.is_none(),
+			other => return Err(format!("parametrize has no {other} dimension")),
+		};
+		if !fresh {
+			return Err(format!("duplicate parametrize dimension {key}"));
+		}
+	}
+	Ok(axes)
+}
+
+const fn list(element: &'static ValueType) -> ValueType {
+	ValueType::List { element }
+}
+
+fn tags(value: Value) -> Vec<Tag> {
+	match value {
+		Value::List(values) => values
+			.into_iter()
+			.map(|value| match value {
+				Value::Tag(tag) => tag,
+				_ => unreachable!("a tag list holds tags"),
+			})
+			.collect(),
+		_ => unreachable!("a list parses as a list"),
+	}
+}
+
+fn times(value: Value) -> Vec<GameDate> {
+	match value {
+		Value::List(values) => values
+			.into_iter()
+			.map(|value| match value {
+				Value::Date(date) => date,
+				_ => unreachable!("a date list holds dates"),
+			})
+			.collect(),
+		_ => unreachable!("a list parses as a list"),
+	}
 }
 
 fn parse_fixture(

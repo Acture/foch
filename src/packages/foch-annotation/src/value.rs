@@ -188,6 +188,12 @@ pub enum ValueType {
 	Effects,
 	/// A block of native conditions, kept clause by clause.
 	Conditions,
+	/// A block of scalar values each of one element type, such as the
+	/// `{ SWE DAN }` of a parametrized `tag`. Only scalar element types are
+	/// supported.
+	List {
+		element: &'static ValueType,
+	},
 }
 
 impl ValueType {
@@ -204,6 +210,7 @@ impl ValueType {
 			Self::Identifiers => "names".into(),
 			Self::Effects => "effect block".into(),
 			Self::Conditions => "trigger block".into(),
+			Self::List { element } => format!("{{ {} ... }}", element.describe()),
 		}
 	}
 }
@@ -221,6 +228,7 @@ pub enum Value {
 	Identifiers(Vec<String>),
 	Effects(NativeBlock),
 	Conditions(Vec<Clause>),
+	List(Vec<Value>),
 }
 
 /// Parses a script value as `value_type`. `source` must have the same byte
@@ -254,7 +262,37 @@ pub fn parse_value(
 		ValueType::Identifiers => Value::Identifiers(identifiers(value)?),
 		ValueType::Effects => Value::Effects(native_block(path, source, value)?),
 		ValueType::Conditions => Value::Conditions(clauses(path, source, value)?),
+		ValueType::List { element } => Value::List(list(path, source, value, element)?),
 	})
+}
+
+/// A block of scalar items, each parsed as `element`. Items must be bare
+/// scalars, such as the `{ SWE DAN }` of a parametrized `tag`.
+fn list(
+	path: &RelPath,
+	source: &str,
+	value: &AstValue,
+	element: &ValueType,
+) -> Result<Vec<Value>, String> {
+	let AstValue::Block { items, .. } = value else {
+		return Err("expected a block of values, such as { a b }".into());
+	};
+	let mut values = Vec::new();
+	for item in items {
+		match item {
+			AstStatement::Comment { .. } => {}
+			AstStatement::Item { value, .. } => {
+				values.push(parse_value(path, source, value, *element)?)
+			}
+			AstStatement::Assignment { .. } => {
+				return Err("expected bare values, not assignments".into());
+			}
+		}
+	}
+	if values.is_empty() {
+		return Err("list must contain at least one value".into());
+	}
+	Ok(values)
 }
 
 pub fn scalar(value: &AstValue) -> Result<String, String> {

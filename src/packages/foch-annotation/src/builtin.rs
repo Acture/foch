@@ -10,6 +10,8 @@ pub const MAX_ADVANCE_DAYS: u32 = 36_500;
 
 pub const TEST: &str = "test";
 
+pub const PARAMETRIZE: &str = "parametrize";
+
 pub const TEST_DESCRIPTION: &str = "#test(...) attaches to the next top-level country_event, which must declare hidden=yes and is_triggered_only=yes. Every annotation line must remain an EU4 comment. #skip, #ignore, #xfail and #mark apply to the next #test. AI is off unless ai=on is given. Without expect, a smoke test verifies invocation completion only, not event behavior.";
 
 /// Parameters shared by `#test(...)` and `test = { ... }` blocks below
@@ -19,15 +21,15 @@ pub const TEST_PARAMS: &[ParamSchema] = &[
 	ParamSchema {
 		name: "time",
 		value_type: ValueType::Date,
-		required: true,
-		description: "Initial game date (YYYY.M.D), not a date-change effect. Runtime support is checked separately.",
+		required: false,
+		description: "Initial game date (YYYY.M.D), not a date-change effect. Required unless #parametrize provides time. Runtime support is checked separately.",
 		example: "1444.11.11",
 	},
 	ParamSchema {
 		name: "tag",
 		value_type: ValueType::Tag,
-		required: true,
-		description: "Initial country scope; three uppercase ASCII letters/digits, starting with a letter.",
+		required: false,
+		description: "Initial country scope; three uppercase ASCII letters/digits, starting with a letter. Required unless #parametrize provides tag.",
 		example: "SWE",
 	},
 	ParamSchema {
@@ -157,6 +159,33 @@ pub const SCHEMAS: &[AnnotationSchema] = &[
 			description: "labels",
 			example: "war, slow",
 		}),
+		target: None,
+	},
+	AnnotationSchema {
+		name: PARAMETRIZE,
+		kind: AnnotationKind::Modifier { of: TEST },
+		description: "Expands the next #test into one case per combination of the listed start dimensions (their Cartesian product). A dimension listed here must not also be given in #test. Each instance is addressed and selected as name[tag=DAN,time=1500.1.1].",
+		params: &[
+			ParamSchema {
+				name: "tag",
+				value_type: ValueType::List {
+					element: &ValueType::Tag,
+				},
+				required: false,
+				description: "Start countries to expand over; one case per tag.",
+				example: "{ SWE DAN NOR }",
+			},
+			ParamSchema {
+				name: "time",
+				value_type: ValueType::List {
+					element: &ValueType::Date,
+				},
+				required: false,
+				description: "Start dates to expand over; one case per date. Each must be a runtime-supported start.",
+				example: "{ 1444.11.11 1500.1.1 }",
+			},
+		],
+		positional: None,
 		target: None,
 	},
 ];

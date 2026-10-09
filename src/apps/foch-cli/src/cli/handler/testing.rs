@@ -10,7 +10,7 @@ use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
 use foch::input::load_config_read_only;
 use foch_annotation::builtin::SCHEMAS;
 use foch_annotation::value::scalar;
-use foch_runner::{Installation, RunOptions};
+use foch_runner::{DependencyMod, Installation, RunOptions};
 use foch_test::judge::CaseResult;
 use foch_test::model::RunId;
 use foch_test::plan::{IgnoredMode, Isolation, Plan, SessionId};
@@ -26,8 +26,14 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
+
+/// Runtime layers left by a run that was killed before cleanup are swept once
+/// they are older than this, so a concurrent run's fresh layer is never hit.
+const STALE_LAYER_GRACE: Duration = Duration::from_secs(2 * 3600);
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -82,8 +88,19 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	let config = load_config_read_only()?;
 	let game_root = foch_runner::locate_game(&config, args.game_path.as_deref())?;
 	let real_user_dir = args.eu4_user_dir.clone().or_else(default_eu4_user_dir);
+	// Load the mod's declared dependencies (resolved against installed mods)
+	// so content that relies on them works; unresolved ones are reported.
+	let dependencies = resolve_dependencies(&planned.root, real_user_dir.as_deref());
+	for warning in &dependencies.unresolved {
+		eprintln!("warning: dependency {warning:?} is not installed; testing without it");
+	}
+	// Ctrl-C stops the current launch gracefully: the flag is observed by the
+	// runner's watch loop, which stops the game and lets the layer tear down.
+	let cancel = Arc::new(AtomicBool::new(false));
+	install_cancel_handler(&cancel);
 	let options = RunOptions {
 		timeout: Duration::from_secs(args.timeout),
+		cancel: cancel.clone(),
 	};
 	let requested_output = match &args.out {
 		Some(output) => output.clone(),
@@ -95,6 +112,8 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	// Keep the game's own files within MAX_PATH: a short base, not `output`.
 	let runtime_base = fs::canonicalize(std::env::temp_dir())?.join("foch-rt");
 	fs::create_dir_all(&runtime_base)?;
+	// Clear layers a previously killed run could not tear down itself.
+	foch_runner::sweep_runtime_base(&runtime_base, STALE_LAYER_GRACE);
 	let installation = Installation {
 		game_root: game_root.clone(),
 		runtime_base,
@@ -104,11 +123,15 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	let mut sessions = Vec::new();
 	let mut results = Vec::new();
 	for bundle in &bundles {
+		if cancel.load(Ordering::Relaxed) {
+			break;
+		}
 		let directory = output.join(format!("session_{:04}", bundle.session.0 + 1));
 		let (record, session_results) = run_one_session(
 			&planned.plan,
 			bundle,
 			&planned.root,
+			&dependencies.mods,
 			&directory,
 			&installation,
 			&options,
@@ -123,15 +146,19 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 		.filter(|result| result.isolation == Isolation::Shared && !result.status.is_success())
 		.map(|result| result.index)
 		.collect();
-	if !suspicious.is_empty() {
+	if !suspicious.is_empty() && !cancel.load(Ordering::Relaxed) {
 		let rerun = planned.plan.isolated_rerun(&suspicious);
 		for session in &rerun.sessions {
+			if cancel.load(Ordering::Relaxed) {
+				break;
+			}
 			let bundle = compile(&rerun, session.id, &context)?;
 			let directory = output.join(format!("rerun_{:04}", session.id.0 + 1));
 			let (record, mut isolated) = run_one_session(
 				&rerun,
 				&bundle,
 				&planned.root,
+				&dependencies.mods,
 				&directory,
 				&installation,
 				&options,
@@ -283,12 +310,18 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 			.strip_prefix(&root)?
 			.to_string_lossy()
 			.replace('\\', "/");
+		// Files under tests/ are test-only: the game loads events/ but not a
+		// top-level tests/ directory, so these carry test and fixture blocks
+		// (and tests/events/ helper events) rather than inline annotations.
+		let kind = if relative == "tests" || relative.starts_with("tests/") {
+			SourceKind::TestsDir
+		} else {
+			SourceKind::Inline
+		};
 		sources.push(SourceFile {
 			mod_name: mod_name.clone(),
 			path: RelPath::new(&relative)?,
-			// The tests/ directory is not collected until EU4 is verified to
-			// ignore it and merge treats it as test-only content.
-			kind: SourceKind::Inline,
+			kind,
 			text: fs::read_to_string(&file)?,
 		});
 	}
@@ -323,7 +356,7 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 	};
 	let plan = match expand(&collection, &options) {
 		Ok(expanded) => {
-			let linted = lint(&expanded, &ProjectFacts::default());
+			let linted = lint(&expanded, &project_facts());
 			diagnostics.extend(linted.diagnostics.iter().cloned());
 			group(
 				expanded,
@@ -355,6 +388,139 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 	})
 }
 
+/// The mod's declared dependencies, resolved to installed directories, plus
+/// the names that could not be resolved.
+struct ResolvedDependencies {
+	mods: Vec<DependencyMod>,
+	unresolved: Vec<String>,
+}
+
+/// Resolve the mod under test's declared dependencies (transitively) against
+/// the mods installed in the player's user directory. Dependencies are ordered
+/// so each appears before the mod that declares it. Resolution needs the user
+/// directory's `mod/*.mod` registry; without it, nothing is resolved.
+fn resolve_dependencies(source_root: &Path, user_dir: Option<&Path>) -> ResolvedDependencies {
+	use foch::playset::descriptor::{load_descriptor, load_launcher_descriptor};
+	let mut result = ResolvedDependencies {
+		mods: Vec::new(),
+		unresolved: Vec::new(),
+	};
+	let Ok(root_descriptor) = load_descriptor(&source_root.join("descriptor.mod")) else {
+		return result;
+	};
+	if root_descriptor.dependencies.is_empty() {
+		return result;
+	}
+	// name -> directory, from the launcher's installed-mod registry.
+	let mut index = BTreeMap::new();
+	if let Some(user_dir) = user_dir {
+		for entry in fs::read_dir(user_dir.join("mod"))
+			.into_iter()
+			.flatten()
+			.flatten()
+		{
+			if entry.path().extension().and_then(|v| v.to_str()) != Some("mod") {
+				continue;
+			}
+			if let Ok(descriptor) = load_launcher_descriptor(&entry.path())
+				&& let Some(path) = descriptor.path
+			{
+				index.entry(descriptor.name).or_insert(path);
+			}
+		}
+	}
+	let mut visited = std::collections::BTreeSet::new();
+	let mut emitted = std::collections::BTreeSet::new();
+	visit_dependencies(
+		&root_descriptor.dependencies,
+		&index,
+		&mut visited,
+		&mut emitted,
+		&mut result,
+	);
+	result
+}
+
+/// Post-order over the dependency graph: a dependency's own dependencies are
+/// emitted before it, each mod once, cycles broken by the visited set.
+fn visit_dependencies(
+	names: &[String],
+	index: &BTreeMap<String, PathBuf>,
+	visited: &mut std::collections::BTreeSet<String>,
+	emitted: &mut std::collections::BTreeSet<String>,
+	result: &mut ResolvedDependencies,
+) {
+	use foch::playset::descriptor::load_descriptor;
+	for name in names {
+		if !visited.insert(name.clone()) {
+			continue;
+		}
+		let Some(path) = index.get(name) else {
+			if !result.unresolved.contains(name) {
+				result.unresolved.push(name.clone());
+			}
+			continue;
+		};
+		if let Ok(descriptor) = load_descriptor(&path.join("descriptor.mod")) {
+			visit_dependencies(&descriptor.dependencies, index, visited, emitted, result);
+		}
+		if emitted.insert(name.clone()) {
+			result.mods.push(DependencyMod {
+				name: name.clone(),
+				path: path.clone(),
+			});
+		}
+	}
+}
+
+/// Install a Ctrl-C handler that sets `cancel`, so the run stops after the
+/// current launch is torn down. A second Ctrl-C exits immediately. If a handler
+/// is already installed (e.g. the host set one), the run simply has no handler
+/// rather than failing.
+fn install_cancel_handler(cancel: &Arc<AtomicBool>) {
+	let flag = cancel.clone();
+	let _ = ctrlc::set_handler(move || {
+		if flag.swap(true, Ordering::SeqCst) {
+			// Already asked once; the user wants out now.
+			std::process::exit(130);
+		}
+		eprintln!(
+			"interrupt received; stopping after the current game is torn down (Ctrl-C again to force)"
+		);
+	});
+}
+
+/// Static facts for the pre-launch lint, drawn from the embedded EU4 builtin
+/// catalog. Effect and trigger names let the linter catch an effect used in a
+/// condition block or a trigger used in an effect block before any game runs.
+///
+/// Scope changers, iterators and special blocks are valid in both kinds of
+/// block, so they go in both sets and are never flagged. Country tags and the
+/// full event set are left unknown: they would need the base snapshot, and a
+/// mod-only tag set would wrongly flag vanilla countries. See the static-layer
+/// follow-up for wiring those from the analyzed snapshot.
+fn project_facts() -> ProjectFacts {
+	use foch::game::eu4::base::builtin::{
+		builtin_effect_names, builtin_iterator_names, builtin_scope_changer_names,
+		builtin_special_block_names, builtin_trigger_names,
+	};
+	let shared: std::collections::BTreeSet<String> = builtin_scope_changer_names()
+		.iter()
+		.chain(builtin_iterator_names())
+		.chain(builtin_special_block_names())
+		.cloned()
+		.collect();
+	let with_shared = |names: &[String]| -> std::collections::BTreeSet<String> {
+		names.iter().chain(shared.iter()).cloned().collect()
+	};
+	ProjectFacts {
+		tags: None,
+		events: None,
+		effects: Some(with_shared(builtin_effect_names())),
+		triggers: Some(with_shared(builtin_trigger_names())),
+	}
+}
+
 fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 	for ancestor in std::path::absolute(path)?.ancestors() {
 		if fs::symlink_metadata(ancestor)?.file_type().is_symlink() {
@@ -381,6 +547,7 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 		// Collect the whole mod so fire targets and grouping see every event;
 		// the file itself is selected by node pattern.
 		let mut files = event_files(&root)?;
+		files.extend(tests_files(&root)?);
 		if !files.contains(&path) {
 			files.push(path);
 		}
@@ -396,8 +563,36 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 	} else {
 		path
 	};
-	let files = event_files(&root)?;
+	let mut files = event_files(&root)?;
+	files.extend(tests_files(&root)?);
 	Ok((root, files))
+}
+
+/// `.txt` files under the mod's `tests/` directory. The game does not load
+/// this directory, so these hold test and fixture blocks (and, under
+/// `tests/events/`, helper events for the generated test layer only).
+fn tests_files(root: &Path) -> Result<Vec<PathBuf>> {
+	let tests = root.join("tests");
+	let mut files = Vec::new();
+	match fs::symlink_metadata(&tests) {
+		Ok(metadata) if metadata.file_type().is_symlink() => {
+			return Err("tests directory must not be a symlink".into());
+		}
+		Ok(_) => {
+			for entry in WalkDir::new(tests).follow_links(false) {
+				let entry = entry?;
+				if entry.file_type().is_file()
+					&& entry.path().extension().and_then(|v| v.to_str()) == Some("txt")
+				{
+					files.push(entry.into_path());
+				}
+			}
+		}
+		Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+		Err(err) => return Err(err.into()),
+	}
+	files.sort();
+	Ok(files)
 }
 
 fn event_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -610,10 +805,12 @@ struct SessionRecord {
 
 /// Build one session's test layer, launch the game through `foch-runner`,
 /// judge the log, and record what was launched.
+#[allow(clippy::too_many_arguments)]
 fn run_one_session(
 	plan: &Plan,
 	bundle: &Bundle,
 	source_root: &Path,
+	dependencies: &[DependencyMod],
 	directory: &Path,
 	installation: &Installation,
 	options: &RunOptions,
@@ -621,7 +818,14 @@ fn run_one_session(
 	// Write the full bundle (test layer, commands, manifest) for inspection;
 	// the runner reuses the test layer it leaves in `directory`.
 	materialize(bundle, source_root, directory)?;
-	let outcome = foch_runner::run_session(bundle, source_root, directory, installation, options)?;
+	let outcome = foch_runner::run_session(
+		bundle,
+		source_root,
+		dependencies,
+		directory,
+		installation,
+		options,
+	)?;
 	let results = judge(
 		bundle,
 		plan,
@@ -775,4 +979,66 @@ fn materialize(bundle: &Bundle, source_root: &Path, directory: &Path) -> Result<
 	let path = directory.join("bundle.json");
 	write_new(&path, &serde_json::to_vec_pretty(&manifest)?)?;
 	Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn write(path: &Path, text: &str) {
+		fs::create_dir_all(path.parent().unwrap()).unwrap();
+		fs::write(path, text).unwrap();
+	}
+
+	fn forward(path: &Path) -> String {
+		path.display().to_string().replace('\\', "/")
+	}
+
+	#[test]
+	fn dependencies_resolve_transitively_and_report_missing() {
+		let temp = tempfile::tempdir().unwrap();
+		let base = temp.path();
+		// Installed mods: Dep A depends on Dep B; Dep B stands alone.
+		let dep_a = base.join("installed/a");
+		let dep_b = base.join("installed/b");
+		write(
+			&dep_a.join("descriptor.mod"),
+			"name=\"Dep A\"\ndependencies={ \"Dep B\" }\n",
+		);
+		write(&dep_b.join("descriptor.mod"), "name=\"Dep B\"\n");
+		// The launcher registry under the user directory names both.
+		let user_dir = base.join("user");
+		write(
+			&user_dir.join("mod/a.mod"),
+			&format!("name=\"Dep A\"\npath=\"{}\"\n", forward(&dep_a)),
+		);
+		write(
+			&user_dir.join("mod/b.mod"),
+			&format!("name=\"Dep B\"\npath=\"{}\"\n", forward(&dep_b)),
+		);
+		// The mod under test depends on Dep A and a mod that is not installed.
+		let source = base.join("source");
+		write(
+			&source.join("descriptor.mod"),
+			"name=\"Src\"\ndependencies={ \"Dep A\" \"Ghost\" }\n",
+		);
+
+		let resolved = resolve_dependencies(&source, Some(&user_dir));
+		let order: Vec<_> = resolved.mods.iter().map(|m| m.name.as_str()).collect();
+		assert_eq!(
+			order,
+			["Dep B", "Dep A"],
+			"a dependency precedes its dependent"
+		);
+		assert_eq!(resolved.unresolved, ["Ghost"]);
+	}
+
+	#[test]
+	fn a_mod_without_dependencies_resolves_to_nothing() {
+		let temp = tempfile::tempdir().unwrap();
+		let source = temp.path().join("source");
+		write(&source.join("descriptor.mod"), "name=\"Src\"\n");
+		let resolved = resolve_dependencies(&source, None);
+		assert!(resolved.mods.is_empty() && resolved.unresolved.is_empty());
+	}
 }
