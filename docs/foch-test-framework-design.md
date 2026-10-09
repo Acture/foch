@@ -34,7 +34,7 @@ pytest 和 libtest 的很多设计默认"单个用例便宜、状态可重置"�
 | `--junitxml`、libtest JSON | `--format json\|junit` | P1 |
 | fixture、`conftest.py`、fixture 依赖 | `tests/` 中的 `fixture = {...}`，`use = {...}`，可互相依赖 | P2 |
 | fixture setup error 与 test failure 区分 | fixture 的 `check` 不成立 → `setup_error`，不是 `fail` | P2 |
-| `@pytest.mark.parametrize` | `#parametrize(tag=[SWE, DAN])`，笛卡尔积，展开为独立用例 | P3 |
+| `@pytest.mark.parametrize` | `#parametrize(tag = { SWE DAN })`，笛卡尔积，展开为独立用例 | P3 |
 | pytest-xdist `-n` | `--jobs N` 并行游戏实例，受资源预算约束 | P3 |
 | fixture `scope="session"` | `isolation = shared`，作者显式选择，前提是证明无污染 | 研究 |
 | proptest / quickcheck、shrinking | `#fuzz(...)`，带预算，在独立起点重放后缩减 | P4 |
@@ -236,19 +236,19 @@ test = {
 
 第一个失败的检查点之后，后续步骤仍然执行（游戏不会停），但报告只把第一个失败作为主要原因，后面的结果标为"在失败之后观察到"，避免连锁失败误导作者。
 
-## 七、参数化（P3）
+## 七、参数化（已实现）
 
 ```text
-#parametrize(tag=[SWE, DAN, NOR])
-#parametrize(time=[1444.11.11, 1500.1.1])
+#parametrize(tag = { SWE DAN NOR } time = { 1444.11.11 1500.1.1 })
 #test(name=union_flag, expect={ has_country_flag = union_ready })
 ```
 
-- 多个 `#parametrize` 取笛卡尔积，展开成独立用例：`...::union_flag[tag=DAN,time=1500.1.1]`。展开在收集期完成，报告和 `--collect-only` 中每个实例都可见、可单独选择。
-- 被参数化的参数可以省略在 `#test` 中；两处同时给出同一参数是收集错误。
+- `#parametrize` 列出 `tag`、`time` 两个开局维度（Clausewitz 块，不是 `[a, b]`）；给出的维度取笛卡尔积，展开成独立用例：`...::union_flag[tag=DAN,time=1500.1.1]`。展开在收集期完成，报告和 `--collect-only` 中每个实例都可见、可单独选择。
+- 被参数化的维度必须从 `#test` 中省略；两处同时给出同一维度是收集错误；一个维度两处都没有也是错误。列表里重复的值、空列表都会报错。
+- `#parametrize` 一行写出所有维度；它作为 `#test` 的修饰符，同一个 `#test` 上不能重复出现。
 - 展开后每个日期都必须是 runner 支持的开局；不支持的组合在运行前报 `runtime_error` 的配置错误，不能静默跳过。现有本地 runner 只验证过 `1444.11.11`。
-- 展开数量受 `--max-cases` 预算约束，避免一次组合出上百个一分钟的用例。
-- `tests/` 中的测试块写作 `parametrize = { tag = { SWE DAN NOR } }`。
+- 单个 `#test` 的展开数量有上限（`MAX_PARAMETRIZE_CASES`），避免笛卡尔积在收集期耗尽内存；整轮运行再受 `--max-cases` 预算约束。
+- `tests/` 中的测试块写作 `parametrize = { tag = { SWE DAN NOR } time = { 1444.11.11 } }`。
 
 ## 八、执行、并行与共享会话
 

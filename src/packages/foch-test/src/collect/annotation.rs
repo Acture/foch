@@ -3,12 +3,14 @@
 //! `foch-annotation` finds, parses and type-checks the annotations and
 //! verifies the target event; this module turns them into cases.
 
-use super::{CaseFields, Collection, event_info, total_days};
+use super::{Axes, CaseFields, Collection, dimension, event_info, expand_cases, total_days};
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
-use crate::model::{CaseName, ContentId, Marker, Marks, NodeId, Start, Step, TestCase, XFail};
+use crate::model::{
+	CaseName, ContentId, GameDate, Marker, Marks, NodeId, Start, Step, Tag, TestCase, XFail,
+};
 use crate::source::SourceFile;
 use foch::game::eu4::script::parser::AstStatement;
-use foch_annotation::builtin::{REGISTRY, TEST};
+use foch_annotation::builtin::{PARAMETRIZE, REGISTRY, TEST};
 use foch_annotation::extract::{Annotation, Applied, Target, extract_parsed};
 use foch_annotation::value::{EventId, Value};
 
@@ -28,7 +30,7 @@ pub(super) fn collect(file: &SourceFile, statements: &[AstStatement], out: &mut 
 			.filter(|applied| applied.annotation.name() == TEST);
 		for (position, applied) in tests.enumerate() {
 			match bind(file, &attachment.target, applied, position as u32) {
-				Ok(case) => out.cases.push(case),
+				Ok(cases) => out.cases.extend(cases),
 				Err(message) => out.diagnostics.push(Diagnostic::error(
 					DiagnosticCode::Annotation,
 					Some(applied.annotation.span.clone()),
@@ -50,6 +52,8 @@ fn marks(modifiers: &[Annotation]) -> Result<Marks, String> {
 	let mut marks = Marks::default();
 	for modifier in modifiers {
 		match modifier.name() {
+			// Handled separately: it expands the test rather than marking it.
+			PARAMETRIZE => {}
 			"mark" => marks
 				.labels
 				.extend(modifier.positional.iter().map(|(label, _)| label.clone())),
@@ -78,12 +82,46 @@ fn marks(modifiers: &[Annotation]) -> Result<Marks, String> {
 	Ok(marks)
 }
 
+/// Reads the start dimensions from the `#parametrize` modifier, if present.
+/// The schema fixes the value types, so the shapes here always hold.
+fn axes(modifiers: &[Annotation]) -> Axes {
+	let mut axes = Axes::default();
+	for modifier in modifiers.iter().filter(|m| m.name() == PARAMETRIZE) {
+		for argument in &modifier.arguments {
+			match (argument.name.as_str(), &argument.value) {
+				("tag", Value::List(values)) => {
+					axes.tags = Some(values.iter().map(expect_tag).collect())
+				}
+				("time", Value::List(values)) => {
+					axes.times = Some(values.iter().map(expect_date).collect())
+				}
+				_ => unreachable!("parametrize schema fixes argument types"),
+			}
+		}
+	}
+	axes
+}
+
+fn expect_tag(value: &Value) -> Tag {
+	match value {
+		Value::Tag(tag) => tag.clone(),
+		_ => unreachable!("parametrize tag list holds tags"),
+	}
+}
+
+fn expect_date(value: &Value) -> GameDate {
+	match value {
+		Value::Date(date) => *date,
+		_ => unreachable!("parametrize time list holds dates"),
+	}
+}
+
 fn bind(
 	file: &SourceFile,
 	target: &Target,
 	applied: &Applied,
 	position: u32,
-) -> Result<TestCase, String> {
+) -> Result<Vec<TestCase>, String> {
 	let event = EventId::parse(
 		target
 			.id
@@ -122,7 +160,10 @@ fn bind(
 	let mut marks = marks(&applied.modifiers)?;
 	marks.session = fields.session;
 	marks.requires_player = fields.player.unwrap_or(false);
-	let mut case = TestCase {
+	let axes = axes(&applied.modifiers);
+	let tag = dimension(fields.tag, axes.tags, "tag")?;
+	let time = dimension(fields.time, axes.times, "time")?;
+	let base = TestCase {
 		node: NodeId {
 			mod_name: file.mod_name.clone(),
 			path: file.path.clone(),
@@ -135,17 +176,16 @@ fn bind(
 		content_id: ContentId(String::new()),
 		origin: applied.annotation.span.clone(),
 		start: Start {
-			date: fields.time.ok_or("missing required test parameter time")?,
-			tag: fields.tag.ok_or("missing required test parameter tag")?,
+			date: time.values[0],
+			tag: tag.values[0].clone(),
 		},
 		ai: fields.ai.unwrap_or_default(),
 		uses: fields.uses.unwrap_or_default(),
 		steps,
 		marks,
 	};
-	if case.marks.xfail.is_some() && case.is_smoke() {
+	if base.marks.xfail.is_some() && base.is_smoke() {
 		return Err("#xfail requires an expect block; a smoke test has nothing to fail".into());
 	}
-	case.compute_content_id();
-	Ok(case)
+	expand_cases(base, tag, time)
 }

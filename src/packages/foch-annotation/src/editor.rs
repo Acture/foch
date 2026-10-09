@@ -359,7 +359,9 @@ mod tests {
 		let (source, offset) = cursor("#test(name=\"😀\", ta|g=SWE)");
 		let info = hover(&source, offset, &REGISTRY).expect("parameter hover");
 		assert!(info.markdown.contains("country tag"));
-		assert!(info.markdown.contains("required"));
+		// tag is required unless #parametrize supplies it, so the schema marks
+		// it optional and the description states the real rule.
+		assert!(info.markdown.contains("optional"));
 		assert!(info.markdown.contains("SWE"));
 		assert!(info.markdown.contains("hidden=yes"));
 		assert_eq!(&source[info.range], "tag");
