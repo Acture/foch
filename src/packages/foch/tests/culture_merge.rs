@@ -175,6 +175,31 @@ fn culture_adaptation_preserves_conditional_split_fusion_and_character_updates()
 	assert_culture_adaptation(CultureCase::ConditionalMechanism);
 }
 
+#[test]
+fn culture_rename_withholds_unverified_script_parameter_flows() {
+	assert_culture_adaptation(CultureCase::ParameterizedReference);
+}
+
+#[test]
+fn culture_rename_withholds_forwarded_script_parameters_even_with_force() {
+	assert_culture_adaptation(CultureCase::ForwardedParameter);
+}
+
+#[test]
+fn culture_rename_does_not_bind_parameters_used_only_as_flags() {
+	assert_culture_adaptation(CultureCase::FlagParameter);
+}
+
+#[test]
+fn culture_rename_withholds_parameter_defaults_and_their_callers() {
+	assert_culture_adaptation(CultureCase::ParameterDefault);
+}
+
+#[test]
+fn culture_rename_audits_vanilla_script_parameters() {
+	assert_culture_adaptation(CultureCase::BaseParameter);
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CultureCase {
 	Compatible,
@@ -202,6 +227,11 @@ enum CultureCase {
 	ReviewedRename,
 	MissingReviewedAncestor,
 	ConditionalMechanism,
+	ParameterizedReference,
+	ForwardedParameter,
+	FlagParameter,
+	ParameterDefault,
+	BaseParameter,
 }
 
 fn assert_culture_adaptation(case: CultureCase) {
@@ -239,6 +269,18 @@ fn assert_culture_adaptation(case: CultureCase) {
 		"common/scripted_triggers/base.txt",
 		"base_culture_check = { primary_culture = old }\n",
 	);
+	if case == CultureCase::BaseParameter {
+		write(
+			&game,
+			"common/scripted_effects/parameter.txt",
+			"apply_c = { change_primary_culture = $CULTURE$ }\n",
+		);
+		write(
+			&game,
+			"events/parameter.txt",
+			"country_event = { id = parameter.1 immediate = { apply_c = { CULTURE = old } } }\n",
+		);
+	}
 	let built = build_base_snapshot(
 		&Eu4,
 		&game,
@@ -408,6 +450,39 @@ fn assert_culture_adaptation(case: CultureCase) {
 		"mods/bonus/events/unrelated.txt",
 		"country_event = { id = unrelated.1 immediate = { set_country_flag = old } }\n",
 	);
+	if matches!(
+		case,
+		CultureCase::ParameterizedReference
+			| CultureCase::ForwardedParameter
+			| CultureCase::FlagParameter
+			| CultureCase::ParameterDefault
+	) {
+		let effect = if case == CultureCase::FlagParameter {
+			"apply_c = { set_country_flag = $CULTURE$ }\nunused_c = { change_primary_culture = $CULTURE$ }\n"
+		} else if case == CultureCase::ParameterDefault {
+			"apply_c = { change_primary_culture = $CULTURE|old$ }\n"
+		} else {
+			"apply_c = { change_primary_culture = $CULTURE$ }\n"
+		};
+		write(
+			root,
+			"mods/bonus/common/scripted_effects/parameter.txt",
+			effect,
+		);
+		let caller = if case == CultureCase::ForwardedParameter {
+			write(
+				root,
+				"mods/bonus/common/scripted_effects/relay.txt",
+				"relay_c = { apply_c = { CULTURE = $VALUE$ } }\n",
+			);
+			"country_event = { id = parameter.1 immediate = { relay_c = { VALUE = old } } }\n"
+		} else if case == CultureCase::ParameterDefault {
+			"country_event = { id = parameter.1 immediate = { apply_c = yes } }\n"
+		} else {
+			"country_event = { id = parameter.1 immediate = { apply_c = { CULTURE = old } } }\n"
+		};
+		write(root, "mods/bonus/events/parameter.txt", caller);
+	}
 	let mut project = format!(
 		"[project]\ngame=\"eu4\"\ngame_path='{}'\n[[project.mods]]\nid=\"rename\"\npath=\"mods/rename\"\n[[project.mods]]\nid=\"bonus\"\npath=\"mods/bonus\"\n",
 		game.display()
@@ -481,7 +556,10 @@ fn assert_culture_adaptation(case: CultureCase) {
 	}
 	let out = root.join("output");
 	let mut analysis_options = options(out.clone());
-	analysis_options.force = case == CultureCase::ForceUnsupportedUse;
+	analysis_options.force = matches!(
+		case,
+		CultureCase::ForceUnsupportedUse | CultureCase::ForwardedParameter
+	);
 	if case == CultureCase::RetainedGroupMove {
 		analysis_options.retained_paths = Some(
 			["common/cultures/base.txt"]
@@ -576,6 +654,10 @@ fn assert_culture_adaptation(case: CultureCase) {
 			| CultureCase::IntroducedGroupMove
 			| CultureCase::IgnoredReferences
 			| CultureCase::IgnoredGroupPredicate
+			| CultureCase::ParameterizedReference
+			| CultureCase::ForwardedParameter
+			| CultureCase::ParameterDefault
+			| CultureCase::BaseParameter
 	) {
 		assert_eq!(
 			analyzed.analysis().report().status,
@@ -611,9 +693,32 @@ fn assert_culture_adaptation(case: CultureCase) {
 				"{unit:?}"
 			);
 		}
+		if matches!(
+			case,
+			CultureCase::ParameterizedReference
+				| CultureCase::ForwardedParameter
+				| CultureCase::ParameterDefault
+				| CultureCase::BaseParameter
+		) {
+			assert!(
+				analyzed.list_units().iter().any(|unit| {
+					unit.path.as_str() == "events/parameter.txt" && unit.output_paths.is_empty()
+				}),
+				"parameter caller must be withheld with the renamed definition"
+			);
+		}
 		analyzed
 			.commit(CommitAuthorization::EmptyTargetOnly)
 			.unwrap();
+		if matches!(
+			case,
+			CultureCase::ParameterizedReference
+				| CultureCase::ForwardedParameter
+				| CultureCase::ParameterDefault
+				| CultureCase::BaseParameter
+		) {
+			assert!(!out.join("events/parameter.txt").exists());
+		}
 		assert_eq!(
 			fs::read_to_string(out.join("gfx/unrelated.dds")).unwrap(),
 			"unrelated binary passthrough"
@@ -673,6 +778,14 @@ fn assert_culture_adaptation(case: CultureCase) {
 		"{emitted}"
 	);
 	assert!(emitted.contains("set_country_flag = old"), "{emitted}");
+	if case == CultureCase::FlagParameter {
+		assert!(
+			fs::read_to_string(out.join("events/parameter.txt"))
+				.unwrap()
+				.contains("CULTURE = old")
+		);
+		assert!(emitted.contains("set_country_flag = $CULTURE$"));
+	}
 	if case == CultureCase::ConditionalMechanism {
 		for text in [
 			"region = france_region",

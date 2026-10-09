@@ -3,6 +3,7 @@
 pub(crate) mod adapt;
 pub(crate) mod correspondence;
 pub(crate) mod dag;
+mod parameters;
 
 use std::collections::{BTreeMap, BTreeSet};
 

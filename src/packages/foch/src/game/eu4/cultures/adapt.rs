@@ -418,6 +418,10 @@ fn prepare_cultures(
 	let mut adapted = Vec::new();
 	let mut paths = group_review.paths;
 	let mut findings = group_review.findings;
+	let parameter_review =
+		super::parameters::review_parameter_flows(input, &affected_identities).map_err(invalid)?;
+	paths.extend(parameter_review.paths);
+	findings.extend(parameter_review.findings);
 	if !findings.is_empty() {
 		paths.extend(reference_paths.iter().map(|(_, path)| path.clone()));
 	}
