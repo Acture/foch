@@ -63,14 +63,25 @@ impl Playset {
 	/// - EU4 is the only supported game, so the parsed playset carries the
 	///   concrete [`Eu4`] identity.
 	pub fn from_dlc_load(path: &Path) -> Result<Self, ParseError> {
-		Self::from_dlc_load_impl(path, false)
+		Self::from_dlc_load_impl(path, None)
 	}
 
-	pub(crate) fn from_dlc_load_with_required_descriptors(path: &Path) -> Result<Self, ParseError> {
-		Self::from_dlc_load_impl(path, true)
+	/// Like [`Playset::from_dlc_load`], but an unreadable or invalid launcher
+	/// descriptor is an error. A descriptor that does not exist is not: the
+	/// game skips such an entry, so it is kept with its filename identity and
+	/// reported, by playset position, for the caller to omit.
+	pub(crate) fn from_dlc_load_with_required_descriptors(
+		path: &Path,
+	) -> Result<(Self, Vec<MissingLauncherDescriptor>), ParseError> {
+		let mut missing = Vec::new();
+		let playset = Self::from_dlc_load_impl(path, Some(&mut missing))?;
+		Ok((playset, missing))
 	}
 
-	fn from_dlc_load_impl(path: &Path, require_descriptors: bool) -> Result<Self, ParseError> {
+	fn from_dlc_load_impl(
+		path: &Path,
+		mut required: Option<&mut Vec<MissingLauncherDescriptor>>,
+	) -> Result<Self, ParseError> {
 		let bytes = std::fs::read(path).map_err(|err| ParseError::io(path.to_path_buf(), err))?;
 		let dlc: DlcLoad = serde_json::from_slice(&bytes)
 			.map_err(|err| ParseError::format(path.to_path_buf(), err.to_string()))?;
@@ -87,10 +98,9 @@ impl Playset {
 		let mut mods = Vec::with_capacity(dlc.enabled_mods.len());
 		for (position, rel) in dlc.enabled_mods.iter().enumerate() {
 			let rel = parse_enabled_mod_entry(path, rel)?;
-			let entry = if require_descriptors {
-				read_dlc_load_entry_required(&parent, position, rel)?
-			} else {
-				read_dlc_load_entry(&parent, position, rel)?
+			let entry = match required.as_deref_mut() {
+				Some(missing) => read_dlc_load_entry_required(&parent, position, rel, missing)?,
+				None => read_dlc_load_entry(&parent, position, rel)?,
 			};
 			mods.push(entry);
 		}
@@ -152,12 +162,32 @@ fn read_dlc_load_entry(
 	playset_entry_from_descriptor(&path, position, rel, descriptor)
 }
 
+/// An enabled playset entry whose launcher descriptor does not exist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MissingLauncherDescriptor {
+	/// Zero-based index into `enabled_mods`.
+	pub position: usize,
+	pub path: PathBuf,
+}
+
 fn read_dlc_load_entry_required(
 	paradox_data_dir: &Path,
 	position: usize,
 	rel: &RelativePath,
+	missing: &mut Vec<MissingLauncherDescriptor>,
 ) -> Result<PlaysetEntry, ParseError> {
 	let path = enabled_mod_descriptor_path(paradox_data_dir, rel);
+	// Only absence is tolerated; anything else at the path, including a
+	// symlink, goes through the strict loader and its errors.
+	if let Err(error) = std::fs::symlink_metadata(&path)
+		&& error.kind() == std::io::ErrorKind::NotFound
+	{
+		missing.push(MissingLauncherDescriptor {
+			position,
+			path: path.clone(),
+		});
+		return playset_entry_from_descriptor(&path, position, rel, None);
+	}
 	let descriptor = load_launcher_descriptor(&path)?;
 	playset_entry_from_descriptor(&path, position, rel, Some(descriptor))
 }
@@ -298,10 +328,15 @@ mod tests {
 		assert_eq!(playlist.mods.len(), 1);
 		assert_eq!(playlist.mods[0].steam_id.as_deref(), Some("999"));
 		assert_eq!(playlist.mods[0].display_name.as_deref(), Some("ugc_999"));
-		let strict_error =
+		// Current-input inspection keeps the entry and reports the absence so
+		// the caller can omit it, as the game does.
+		let (strict, missing) =
 			Playset::from_dlc_load_with_required_descriptors(&game_dir.join("dlc_load.json"))
-				.expect_err("current-input inspection must require the sibling descriptor");
-		assert!(strict_error.path.ends_with("mod/ugc_999.mod"));
+				.expect("a missing descriptor does not fail the playset");
+		assert_eq!(strict.mods[0].steam_id.as_deref(), Some("999"));
+		assert_eq!(missing.len(), 1);
+		assert_eq!(missing[0].position, 0);
+		assert!(missing[0].path.ends_with("mod/ugc_999.mod"));
 	}
 
 	/// Only a missing descriptor falls back to the filename. One that exists
@@ -341,7 +376,8 @@ mod tests {
 			.unwrap();
 			for result in [
 				Playset::from_dlc_load(&dlc_load),
-				Playset::from_dlc_load_with_required_descriptors(&dlc_load),
+				Playset::from_dlc_load_with_required_descriptors(&dlc_load)
+					.map(|(playset, _missing)| playset),
 			] {
 				let error = result.expect_err(bad);
 				assert_eq!(error.kind, ParseErrorKind::Format, "{error}");
@@ -379,7 +415,9 @@ mod tests {
 		let dlc_load = game_dir.join("dlc_load.json");
 		for playset in [
 			Playset::from_dlc_load(&dlc_load).unwrap(),
-			Playset::from_dlc_load_with_required_descriptors(&dlc_load).unwrap(),
+			Playset::from_dlc_load_with_required_descriptors(&dlc_load)
+				.unwrap()
+				.0,
 		] {
 			assert_eq!(playset.mods[0].display_name.as_deref(), Some("Named"));
 			assert_eq!(playset.mods[0].steam_id.as_deref(), Some("1001"));

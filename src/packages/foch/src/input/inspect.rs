@@ -388,18 +388,19 @@ fn inspect_playset(
 		));
 		return (None, None, None);
 	};
-	let mut playset = match Playset::from_dlc_load_with_required_descriptors(&playset_path) {
-		Ok(playset) => playset,
-		Err(error) => {
-			issues.push(issue(
-				"current_playset_unavailable",
-				"Current EU4 playset could not be read",
-				error.to_string(),
-				Some("Start the EU4 Launcher and select a playset, then retry."),
-			));
-			return (None, None, None);
-		}
-	};
+	let (mut playset, missing_descriptors) =
+		match Playset::from_dlc_load_with_required_descriptors(&playset_path) {
+			Ok(loaded) => loaded,
+			Err(error) => {
+				issues.push(issue(
+					"current_playset_unavailable",
+					"Current EU4 playset could not be read",
+					error.to_string(),
+					Some("Start the EU4 Launcher and select a playset, then retry."),
+				));
+				return (None, None, None);
+			}
+		};
 	playset.name = CURRENT_PLAYSET_NAME.to_string();
 
 	let catalog = config
@@ -441,22 +442,41 @@ fn inspect_playset(
 			descriptor_path: None,
 			source_error: None,
 		};
-		let enrichment = workshop_id
-			.as_deref()
-			.ok_or_else(|| {
-				(
-					"playset entry has no Workshop id".to_string(),
-					PlaysetModClassification::Blocking,
-				)
+		let missing_descriptor = missing_descriptors
+			.iter()
+			.find(|missing| missing.position == index);
+		let enrichment = missing_descriptor
+			.map_or(Ok(()), |missing| {
+				// The game skips an entry whose launcher descriptor is gone,
+				// so analysis omits it too instead of rejecting the playset.
+				Err((
+					format!(
+						"launcher descriptor {} does not exist; EU4 skips this entry",
+						missing.path.display()
+					),
+					PlaysetModClassification::Omittable,
+				))
+			})
+			.and_then(|()| {
+				workshop_id.as_deref().ok_or_else(|| {
+					(
+						"playset entry has no Workshop id".to_string(),
+						PlaysetModClassification::Blocking,
+					)
+				})
 			})
 			.and_then(|id| {
 				id.parse::<SteamId>()
 					.map_err(|error| (error.to_string(), PlaysetModClassification::Blocking))
 			})
 			.and_then(|id| {
-				let catalog = catalog
-					.as_ref()
-					.map_err(|error| (error.clone(), PlaysetModClassification::Blocking))?;
+				// The catalog failure is reported once for the whole playset.
+				let catalog = catalog.as_ref().map_err(|_| {
+					(
+						"Steam Workshop installation data is unavailable".to_string(),
+						PlaysetModClassification::Blocking,
+					)
+				})?;
 				let item = catalog.require_item(&id).map_err(|error| {
 					let classification = if matches!(
 						&error,
@@ -508,16 +528,18 @@ fn inspect_playset(
 			Err((error, classification)) => {
 				debug_assert_ne!(classification, PlaysetModClassification::Usable);
 				detected.source_error = Some(error.clone());
-				issues.push(issue(
-					format!("workshop_mod_unavailable_{}", index + 1),
-					format!("Workshop mod {} is not ready", detected.id),
-					error,
-					Some(if classification == PlaysetModClassification::Omittable {
-						"Analyze the remaining installed mods, or remove/reinstall this item in the EU4 Launcher."
-					} else {
-						"Repair or redownload this Workshop item in Steam."
-					}),
-				));
+				if catalog_ready || missing_descriptor.is_some() {
+					issues.push(issue(
+						format!("workshop_mod_unavailable_{}", index + 1),
+						format!("Workshop mod {} is not ready", detected.id),
+						error,
+						Some(if classification == PlaysetModClassification::Omittable {
+							"Analyze the remaining installed mods, or remove/reinstall this item in the EU4 Launcher."
+						} else {
+							"Repair or redownload this Workshop item in Steam."
+						}),
+					));
+				}
 				classification
 			}
 		};
@@ -1265,27 +1287,59 @@ remote_file_id="43"
 	}
 
 	#[test]
-	fn missing_and_invalid_launcher_descriptors_block_preparation() {
+	fn a_missing_launcher_descriptor_is_omitted_and_an_invalid_one_blocks() {
 		let _lock = BASE_DATA_ENV_LOCK
 			.lock()
 			.unwrap_or_else(std::sync::PoisonError::into_inner);
 		let temp = TempDir::new().expect("fixture root");
 		let _data_guard = EnvVarGuard::set(BASE_DATA_DIR_ENV, &temp.path().join("base-data"));
-		setup_input_fixture(temp.path());
+		let (game_root, _) = setup_input_fixture(temp.path());
+		install_matching_base_data(&game_root);
 		let descriptor = temp
 			.path()
 			.join("Paradox EU4/mod")
 			.join(format!("ugc_{SECOND_ID}.mod"));
 		fs::remove_file(&descriptor).expect("remove Launcher descriptor");
+		let before = file_system_snapshot(temp.path());
 
+		// EU4 skips an entry whose launcher descriptor is gone, even when the
+		// Workshop item is installed, so the rest of the playset stays usable.
 		let missing = inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
-		assert_eq!(missing.readiness, InputReadiness::Blocked);
-		assert!(missing.playset.is_none());
-		assert!(missing.issues.iter().any(|issue| {
-			issue.id == "current_playset_unavailable" && issue.detail.contains("ugc_43.mod")
-		}));
-		assert!(missing.into_request().is_none());
+		assert_eq!(missing.readiness, InputReadiness::ReadyWithOmissions);
+		let playset = missing.playset.as_ref().expect("playset");
+		assert_eq!(playset.mods.len(), 2);
+		assert!(playset.mods[1].source_error.is_some());
+		let recovery = missing.recovery.clone().expect("available-only recovery");
+		assert_eq!(recovery.source_mod_count, 2);
+		assert_eq!(recovery.included_mod_count, 1);
+		assert_eq!(recovery.omitted_mods.len(), 1);
+		assert_eq!(recovery.omitted_mods[0].id, SECOND_ID);
+		assert_eq!(recovery.omitted_mods[0].position, 2);
+		assert!(
+			recovery.omitted_mods[0]
+				.reason
+				.contains(&format!("ugc_{SECOND_ID}.mod")),
+			"{}",
+			recovery.omitted_mods[0].reason
+		);
+		assert!(
+			!missing
+				.issues
+				.iter()
+				.any(|issue| issue.id == "current_playset_unavailable")
+		);
+		assert_eq!(before, file_system_snapshot(temp.path()));
+		assert!(missing.clone().into_request().is_none());
+		let prepared = missing
+			.prepare(InputPreparationMode::AvailableOnly)
+			.expect("prepare available subset");
+		let manifest =
+			resolve_product_input_manifest(&prepared.request).expect("selected manifest");
+		assert_eq!(manifest.mods.len(), 1);
+		assert_eq!(manifest.mods[0].mod_id, FIRST_ID);
 
+		// A descriptor that exists but cannot be read is not something the
+		// game is known to skip, so it still blocks the whole playset.
 		fs::write(&descriptor, b"name={ invalid").expect("write invalid Launcher descriptor");
 		let invalid = inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
 		assert_eq!(invalid.readiness, InputReadiness::Blocked);
