@@ -65,6 +65,31 @@ fn collect_distinguishes_smoke_and_assertion_without_global_initialization() {
 }
 
 #[test]
+fn static_layer_flags_an_effect_used_as_a_condition() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/events")).unwrap();
+	// set_country_flag is an effect; using it inside expect is a mistake the
+	// static layer now catches offline, from the embedded builtin catalog.
+	let cases = "namespace = fixture\n#test(time=1444.11.11, tag=SWE, name=\"bad\", expect={ set_country_flag = oops })\ncountry_event = { id = fixture.1 hidden = yes is_triggered_only = yes immediate = {} }\n";
+	fs::write(dir.path().join("mod/events/cases.txt"), cases).unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	let report = json(&output);
+	let diagnostics = report["diagnostics"].as_array().unwrap();
+	assert!(
+		diagnostics.iter().any(|diagnostic| diagnostic["message"]
+			.as_str()
+			.unwrap_or_default()
+			.contains("is an effect, but this block is a condition")),
+		"{report}"
+	);
+	// The check reads the embedded catalog, so it builds no base snapshot.
+	assert!(!dir.path().join("global-data").exists());
+}
+
+#[test]
 fn discover_only_event_text_files_and_allow_explicit_files() {
 	let dir = fixture();
 	fs::create_dir_all(dir.path().join("mod/common")).unwrap();
@@ -200,7 +225,10 @@ fn api_metadata_is_available_offline_and_unknown_names_fail() {
 		.iter()
 		.map(|annotation| annotation["name"].as_str().unwrap())
 		.collect();
-	assert_eq!(names, ["test", "skip", "ignore", "xfail", "mark"]);
+	assert_eq!(
+		names,
+		["test", "skip", "ignore", "xfail", "mark", "parametrize"]
+	);
 	assert!(
 		all["annotations"][0]["params"]
 			.as_array()
