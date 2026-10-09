@@ -2324,49 +2324,58 @@ fn statement_equivalence_resolves_containers_from_its_content_family_path() {
 		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 		.expect("scripted_triggers family")
 		.merge_policies;
-	let vanilla = parse_at(
-		path,
-		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = BYZ_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
-	);
-	let merged = parse_at(
-		path,
-		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = BYZ_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
-	);
-	let [vanilla_statement] = vanilla.statements.as_slice() else {
-		panic!("one vanilla definition")
-	};
-	let [merged_statement] = merged.statements.as_slice() else {
-		panic!("one merged definition")
-	};
-
-	assert!(
+	let compare = |left: &str, right: &str| {
+		let left = parse_at(path, left);
+		let right = parse_at(path, right);
 		super::clausewitz_statements_semantically_equivalent(
 			crate::model::GamePath::new(path).expect("valid game path"),
-			vanilla_statement,
-			merged_statement,
+			&left.statements[0],
+			&right.statements[0],
 			policies,
 		)
-		.expect("compare under the content family"),
-		"the family's boolean canonicalization must recognize the rewritten trigger"
-	);
-
+		.expect("compare under the content family")
+	};
+	// A definition body is a list of conditions, so an explicit `OR`/`AND`
+	// wrapper around the same conditions is the same trigger.
+	assert!(compare(
+		"BYZ_is_not_latin_empire = {
+	tag = LAE
+	always = no
+}
+",
+		"BYZ_is_not_latin_empire = {
+	OR = {
+		AND = {
+			tag = LAE
+			always = no
+		}
+	}
+}
+",
+	));
+	// An `if` inside a trigger is a trigger conditional, so the
+	// `custom_trigger_tooltip` under it is not a fresh condition list: wrapping
+	// its `tooltip` parameter in `AND` changes the trigger.
+	assert!(!compare(
+		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = BYZ_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = BYZ_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
+	));
+	// An unclassified path is `other`: the comparison still runs and does not
+	// treat the rewritten tooltip as the same trigger either.
 	let unclassified =
 		crate::model::GamePathBuf::parse("foch_unclassified/00_scripted_triggers.txt")
 			.expect("valid game path");
-	let unclassified_verdict = super::clausewitz_files_semantically_equivalent(
-		&AstFile {
-			path: unclassified.clone(),
-			statements: vec![vanilla_statement.clone()],
-		},
-		&AstFile {
-			path: unclassified,
-			statements: vec![merged_statement.clone()],
-		},
-		policies,
-	)
-	.expect("compare under an unclassified path");
+	let file = |source: &str| AstFile {
+		path: unclassified.clone(),
+		statements: parse_at(path, source).statements,
+	};
 	assert!(
-		!unclassified_verdict,
+		!super::clausewitz_files_semantically_equivalent(
+			&file("BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = BYZ_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n"),
+			&file("BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = BYZ_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n"),
+			policies,
+		)
+		.expect("compare under an unclassified path"),
 		"an unclassified path is `other`, so this comparison must not be family-aware"
 	);
 }
@@ -2753,5 +2762,44 @@ mod game_value_equivalence {
 			!outcome.conflicts().is_empty(),
 			"no root type matches this path, so no field type is known"
 		);
+	}
+}
+
+#[test]
+fn control_flow_inside_a_trigger_stays_a_trigger_when_merging() {
+	// `if`/`else` written inside `limit` are trigger conditionals; their
+	// branches must not be canonicalized as fresh trigger roots. An unchanged
+	// merge previously split this `else` into two branches.
+	let path = "common/scripted_effects/x.txt";
+	let policies = eu4()
+		.descriptor_for_root_family("common/scripted_effects")
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let source = parse_at(
+		path,
+		"e = {\n\
+		\tif = {\n\
+		\t\tlimit = {\n\
+		\t\t\tif = {\n\
+		\t\t\t\tlimit = { has_global_flag = slow }\n\
+		\t\t\t\tnum_of_owned_provinces_with = { religion_group = christian value = 6 }\n\
+		\t\t\t}\n\
+		\t\t\telse = {\n\
+		\t\t\t\tnum_of_owned_provinces_with = { religion_group = christian value = 12 }\n\
+		\t\t\t}\n\
+		\t\t}\n\
+		\t\tclr_global_flag = spread\n\
+		\t}\n\
+		}\n",
+	);
+	let empty = parse_at(path, "");
+	for (base, revisions) in [
+		(&source, vec![&source]),
+		(&empty, vec![&source]),
+		(&empty, vec![&source, &empty]),
+	] {
+		let outcome = merge_clausewitz_files_n_way(base, &revisions, &policies).unwrap();
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
 	}
 }

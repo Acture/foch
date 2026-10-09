@@ -566,8 +566,13 @@ fn script_context(
 	) {
 		return ScriptContext::Effect;
 	}
+	// Control flow keeps the context it is written in: `if`/`else` inside a
+	// `limit` are trigger conditionals, not effect blocks.
 	if matches!(normalized.as_str(), "if" | "else_if" | "else") {
-		return ScriptContext::Effect;
+		return match parent {
+			ScriptContext::Trigger => ScriptContext::Trigger,
+			_ => ScriptContext::Effect,
+		};
 	}
 
 	match scope_kind {

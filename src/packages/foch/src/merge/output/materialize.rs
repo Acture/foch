@@ -3968,10 +3968,22 @@ mod tests {
 			.classify_content_family(path)
 			.expect("scripted_triggers family");
 		let vanilla = parse_test_statements(
-			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+			"byz_is_not_latin_empire = {
+	tag = LAE
+	always = no
+}
+",
 		);
 		let merged = parse_test_statements(
-			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = byz_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
+			"byz_is_not_latin_empire = {
+	OR = {
+		AND = {
+			tag = LAE
+			always = no
+		}
+	}
+}
+",
 		);
 
 		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(
