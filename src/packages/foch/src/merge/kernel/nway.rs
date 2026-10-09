@@ -343,11 +343,15 @@ impl NWayCorrespondence {
 					&mut plan.conflicts,
 				),
 			};
+			// A delete-modify keeps the modifying revision's whole subtree until it
+			// is resolved: its unmodified descendants were deleted only as part of
+			// the deleted ancestor, so deleting them alone would leave a partial node.
+			let subtree_selected = selected.is_some() && !facts.deleted_by.is_empty();
 			plan.classes.insert(
 				class.id,
 				NWayClassSelection {
 					selected,
-					subtree_selected: false,
+					subtree_selected,
 					scalar_synthesis: None,
 					child_revision: None,
 					sources,

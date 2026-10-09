@@ -2803,3 +2803,114 @@ fn control_flow_inside_a_trigger_stays_a_trigger_when_merging() {
 		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
 	}
 }
+
+#[test]
+fn a_moved_effect_does_not_hide_unchanged_conditionals_around_it() {
+	// EE moves `on_change_tag_effect` from the end of a decision's effect to the
+	// top. The `if` blocks it moves past are unchanged and must still be the
+	// same blocks; they were reported as ambiguous and their parent class as
+	// unreachable.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let body = |lines: &[&str]| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\teffect = {{\n{}\t\t}}\n\t}}\n}}\n",
+				lines.concat()
+			),
+		)
+	};
+	let seljuk =
+		"\t\t\tif = {\n\t\t\t\tlimit = { tag = AKK }\n\t\t\t\tset_country_flag = seljuk\n\t\t\t}\n";
+	let ideas = "\t\t\tif = {\n\t\t\t\tlimit = { has_custom_ideas = no }\n\t\t\t\tcountry_event = { id = ideagroups.1 }\n\t\t\t}\n";
+	let tag = "\t\t\tchange_tag = RUM\n";
+	let prestige = "\t\t\tset_country_flag = formed_rum_flag\n";
+	let on_change = "\t\t\ton_change_tag_effect = yes\n";
+	let base = body(&[tag, seljuk, ideas, prestige, on_change]);
+	for moved in [
+		// A one-line effect moves past the conditionals.
+		body(&[tag, on_change, seljuk, ideas, prestige]),
+		// A conditional itself moves.
+		body(&[tag, ideas, seljuk, prestige, on_change]),
+	] {
+		for revisions in [
+			vec![&moved, &base],
+			vec![&base, &moved],
+			vec![&moved, &moved],
+		] {
+			let outcome = merge_clausewitz_files_n_way(&base, &revisions, &policies).unwrap();
+			assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+			assert_eq!(emit(outcome.tentative_ast()), emit(&moved));
+		}
+	}
+}
+
+#[test]
+fn editing_the_default_branch_keeps_a_complete_chain_the_same_chain() {
+	// The `else` body is content, not identity. One mod edits it while another
+	// edits the guarded branch; both edits belong to the one chain.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let chain = |guarded: &str, default: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\teffect = {{\n\t\t\tif = {{\n\t\t\t\tlimit = {{\n\t\t\t\t\thas_dlc = \"King of Kings\"\n\t\t\t\t}}\n{guarded}\t\t\t}}\n\t\t\telse = {{\n{default}\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let a = "\t\t\t\tset_country_flag = a\n";
+	let b = "\t\t\t\tset_country_flag = b\n";
+	let c = "\t\t\t\tset_country_flag = c\n";
+	let base = chain(a, b);
+	let guarded_edit = chain(&format!("{a}{c}"), b);
+	let default_edit = chain(a, &format!("{b}{c}"));
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&guarded_edit, &default_edit], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert_eq!(
+		emit(outcome.tentative_ast()),
+		emit(&chain(&format!("{a}{c}"), &format!("{b}{c}")))
+	);
+}
+
+#[test]
+fn a_delete_modify_conflict_keeps_the_modified_node_whole() {
+	// One mod removes an `if`/`else`; another edits only the `else`. Until a
+	// person resolves the conflict, the tentative result is the edited chain
+	// in full; its unedited `limit` is not deleted on its own.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let effect = |body: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\teffect = {{\n\t\t\tadd_stability = 1\n{body}\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let chain = |default: &str| {
+		format!(
+			"\t\t\tif = {{\n\t\t\t\tlimit = {{\n\t\t\t\t\thas_dlc = \"King of Kings\"\n\t\t\t\t}}\n\t\t\t\tset_country_flag = a\n\t\t\t}}\n\t\t\telse = {{\n{default}\t\t\t}}\n"
+		)
+	};
+	let base = effect(&chain("\t\t\t\tset_country_flag = b\n"));
+	let removed = effect("");
+	let edited = effect(&chain(
+		"\t\t\t\tset_country_flag = b\n\t\t\t\tset_country_flag = c\n",
+	));
+	let outcome = merge_clausewitz_files_n_way(&base, &[&removed, &edited], &policies).unwrap();
+	assert_eq!(outcome.conflicts().len(), 1, "{:?}", outcome.conflicts());
+	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
+	assert_eq!(emit(outcome.tentative_ast()), emit(&edited));
+}
