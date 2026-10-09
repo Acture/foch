@@ -200,6 +200,11 @@ fn culture_rename_audits_vanilla_script_parameters() {
 	assert_culture_adaptation(CultureCase::BaseParameter);
 }
 
+#[test]
+fn culture_rename_audits_trigger_parameters_separately_from_effects() {
+	assert_culture_adaptation(CultureCase::TriggerParameter);
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CultureCase {
 	Compatible,
@@ -232,6 +237,7 @@ enum CultureCase {
 	FlagParameter,
 	ParameterDefault,
 	BaseParameter,
+	TriggerParameter,
 }
 
 fn assert_culture_adaptation(case: CultureCase) {
@@ -456,8 +462,12 @@ fn assert_culture_adaptation(case: CultureCase) {
 			| CultureCase::ForwardedParameter
 			| CultureCase::FlagParameter
 			| CultureCase::ParameterDefault
+			| CultureCase::TriggerParameter
 	) {
-		let effect = if case == CultureCase::FlagParameter {
+		let effect = if matches!(
+			case,
+			CultureCase::FlagParameter | CultureCase::TriggerParameter
+		) {
 			"apply_c = { set_country_flag = $CULTURE$ }\nunused_c = { change_primary_culture = $CULTURE$ }\n"
 		} else if case == CultureCase::ParameterDefault {
 			"apply_c = { change_primary_culture = $CULTURE|old$ }\n"
@@ -469,6 +479,16 @@ fn assert_culture_adaptation(case: CultureCase) {
 			"mods/bonus/common/scripted_effects/parameter.txt",
 			effect,
 		);
+		if matches!(
+			case,
+			CultureCase::FlagParameter | CultureCase::TriggerParameter
+		) {
+			write(
+				root,
+				"mods/bonus/common/scripted_triggers/parameter.txt",
+				"apply_c = { primary_culture = $CULTURE$ }\n",
+			);
+		}
 		let caller = if case == CultureCase::ForwardedParameter {
 			write(
 				root,
@@ -478,6 +498,8 @@ fn assert_culture_adaptation(case: CultureCase) {
 			"country_event = { id = parameter.1 immediate = { relay_c = { VALUE = old } } }\n"
 		} else if case == CultureCase::ParameterDefault {
 			"country_event = { id = parameter.1 immediate = { apply_c = yes } }\n"
+		} else if case == CultureCase::TriggerParameter {
+			"country_event = { id = parameter.1 trigger = { apply_c = { CULTURE = old } } immediate = { add_prestige = 1 } }\n"
 		} else {
 			"country_event = { id = parameter.1 immediate = { apply_c = { CULTURE = old } } }\n"
 		};
@@ -658,6 +680,7 @@ fn assert_culture_adaptation(case: CultureCase) {
 			| CultureCase::ForwardedParameter
 			| CultureCase::ParameterDefault
 			| CultureCase::BaseParameter
+			| CultureCase::TriggerParameter
 	) {
 		assert_eq!(
 			analyzed.analysis().report().status,
@@ -699,6 +722,7 @@ fn assert_culture_adaptation(case: CultureCase) {
 				| CultureCase::ForwardedParameter
 				| CultureCase::ParameterDefault
 				| CultureCase::BaseParameter
+				| CultureCase::TriggerParameter
 		) {
 			assert!(
 				analyzed.list_units().iter().any(|unit| {
@@ -716,6 +740,7 @@ fn assert_culture_adaptation(case: CultureCase) {
 				| CultureCase::ForwardedParameter
 				| CultureCase::ParameterDefault
 				| CultureCase::BaseParameter
+				| CultureCase::TriggerParameter
 		) {
 			assert!(!out.join("events/parameter.txt").exists());
 		}
@@ -749,6 +774,12 @@ fn assert_culture_adaptation(case: CultureCase) {
 		.find(|unit| unit.path.as_str().starts_with("common/scripted_effects/"))
 		.and_then(|unit| unit.output_path.clone())
 		.expect("effect output");
+	let base_reference_output = analyzed
+		.list_units()
+		.iter()
+		.find(|unit| unit.path.as_str().starts_with("common/scripted_triggers/"))
+		.and_then(|unit| unit.output_path.clone())
+		.expect("rewritten vanilla trigger output");
 	let review_decisions = analyzed
 		.list_units()
 		.iter()
@@ -816,7 +847,7 @@ fn assert_culture_adaptation(case: CultureCase) {
 			);
 		}
 	}
-	let base_reference = fs::read_to_string(out.join("common/scripted_triggers/base.txt"))
+	let base_reference = fs::read_to_string(base_reference_output.to_path(&out))
 		.expect("rewritten vanilla reference must be emitted even without include_base");
 	assert!(
 		base_reference.contains("primary_culture = renamed"),

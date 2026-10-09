@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{reference_kinds, script_context};
 use crate::game::eu4::script::parser::{AstStatement, AstValue};
+use crate::game::schema::query::CompiledAliasCategory;
 use crate::input::ResolvedInput;
 use crate::model::{GamePath, GamePathBuf};
 
@@ -15,11 +16,23 @@ pub(super) struct ParameterReview {
 	pub findings: Vec<String>,
 }
 
-type ParameterPaths = BTreeMap<(String, String), BTreeSet<GamePathBuf>>;
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum CallableKind {
+	Effect,
+	Trigger,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct Callable {
+	kind: CallableKind,
+	name: String,
+}
+
+type ParameterPaths = BTreeMap<(Callable, String), BTreeSet<GamePathBuf>>;
 
 struct Call {
-	owner: Option<String>,
-	callee: String,
+	owner: Option<Callable>,
+	callee: Callable,
 	bindings: Vec<(String, String)>,
 	path: GamePathBuf,
 	location: String,
@@ -34,8 +47,9 @@ pub(super) fn review_parameter_flows(
 	}
 	let mut documents = Vec::new();
 	let mut names = BTreeSet::new();
+	let mut definitions = BTreeSet::new();
 	let mut sensitive = ParameterPaths::new();
-	let mut hazardous = BTreeMap::<String, BTreeSet<GamePathBuf>>::new();
+	let mut hazardous = BTreeMap::<Callable, BTreeSet<GamePathBuf>>::new();
 	let mut review = ParameterReview::default();
 	for (path, contributors) in &input.file_inventory {
 		if !is_callable_document(path) {
@@ -51,11 +65,16 @@ pub(super) fn review_parameter_flows(
 				} = statement
 				{
 					names.insert(key.clone());
+					let owner = Callable {
+						kind: callable_kind(path).expect("callable document"),
+						name: key.clone(),
+					};
+					definitions.insert(owner.clone());
 					collect_parameters(
 						items,
 						path,
 						&mut vec![key.clone()],
-						key,
+						&owner,
 						mappings,
 						&mut sensitive,
 						&mut hazardous,
@@ -128,14 +147,27 @@ pub(super) fn review_parameter_flows(
 					value: AstValue::Block { items, .. },
 					..
 				} if is_callable_document(path) => {
-					collect_calls(items, path, mod_id, Some(key), &names, &mut calls);
+					let owner = Callable {
+						kind: callable_kind(path).expect("callable document"),
+						name: key.clone(),
+					};
+					collect_calls(
+						items,
+						path,
+						mod_id,
+						Some(&owner),
+						&mut vec![key.clone()],
+						&definitions,
+						&mut calls,
+					);
 				}
 				_ => collect_calls(
 					std::slice::from_ref(statement),
 					path,
 					mod_id,
 					None,
-					&names,
+					&mut Vec::new(),
+					&definitions,
 					&mut calls,
 				),
 			}
@@ -171,7 +203,7 @@ pub(super) fn review_parameter_flows(
 	}
 	for (name, paths) in &hazardous {
 		review.paths.extend(paths.iter().cloned());
-		review.findings.push(format!("script `{name}` has a culture parameter default referring to a changed culture; review parameter substitution before accepting the transformation"));
+		review.findings.push(format!("script `{}` has a culture parameter default referring to a changed culture; review parameter substitution before accepting the transformation", name.name));
 	}
 	for call in &calls {
 		for (parameter, value) in &call.bindings {
@@ -184,7 +216,7 @@ pub(super) fn review_parameter_flows(
 			let mut paths = paths.clone();
 			paths.insert(call.path.clone());
 			review.paths.extend(paths.iter().cloned());
-			review.findings.push(format!("{}: parameter `{parameter} = {value}` reaches a culture field through `{}`; review parameter substitution before accepting the transformation", call.location, call.callee));
+			review.findings.push(format!("{}: parameter `{parameter} = {value}` reaches a culture field through `{}`; review parameter substitution before accepting the transformation", call.location, call.callee.name));
 			if let Some(owner) = &call.owner {
 				hazardous.entry(owner.clone()).or_default().extend(paths);
 			}
@@ -215,18 +247,61 @@ pub(super) fn review_parameter_flows(
 }
 
 fn is_callable_document(path: &GamePath) -> bool {
-	path.is_inside(&["common", "scripted_effects"], str::eq)
-		|| path.is_inside(&["common", "scripted_triggers"], str::eq)
+	callable_kind(path).is_some()
+}
+
+fn callable_kind(path: &GamePath) -> Option<CallableKind> {
+	if path.is_inside(&["common", "scripted_effects"], str::eq) {
+		Some(CallableKind::Effect)
+	} else if path.is_inside(&["common", "scripted_triggers"], str::eq) {
+		Some(CallableKind::Trigger)
+	} else {
+		None
+	}
+}
+
+fn call_kinds(path: &GamePath, parents: &[String]) -> Vec<CallableKind> {
+	let schema = super::super::cwt::rule_engine();
+	let context = script_context(schema, path, parents);
+	let mut kinds = Vec::new();
+	for (kind, key, category) in [
+		(
+			CallableKind::Effect,
+			"change_culture",
+			CompiledAliasCategory::Effect,
+		),
+		(
+			CallableKind::Trigger,
+			"culture",
+			CompiledAliasCategory::Trigger,
+		),
+	] {
+		if context.is_some_and(|context| {
+			schema.bind_field_matches(context, key).iter().any(|field| {
+				field
+					.alias()
+					.is_some_and(|alias| alias.category == category)
+			})
+		}) {
+			kinds.push(kind);
+		}
+	}
+	// Unknown CWT contexts cannot establish a namespace. Audit both rather
+	// than silently omit a possibly affected reference.
+	if kinds.is_empty() {
+		kinds.extend([CallableKind::Effect, CallableKind::Trigger]);
+	}
+	kinds
 }
 
 fn collect_parameters(
 	statements: &[AstStatement],
 	path: &GamePath,
 	parents: &mut Vec<String>,
-	owner: &str,
+	owner: &Callable,
 	mappings: &BTreeMap<String, String>,
 	sensitive: &mut ParameterPaths,
-	hazardous: &mut BTreeMap<String, BTreeSet<GamePathBuf>>,
+	hazardous: &mut BTreeMap<Callable, BTreeSet<GamePathBuf>>,
 ) {
 	let schema = super::super::cwt::rule_engine();
 	let context = script_context(schema, path, parents);
@@ -255,12 +330,12 @@ fn collect_parameters(
 		for value in uses {
 			for name in parameter_names(&value) {
 				sensitive
-					.entry((owner.to_owned(), name.to_owned()))
+					.entry((owner.clone(), name.to_owned()))
 					.or_default()
 					.insert(path.to_owned());
 				if refers_to_changed(&value, mappings) {
 					hazardous
-						.entry(owner.to_owned())
+						.entry(owner.clone())
 						.or_default()
 						.insert(path.to_owned());
 				}
@@ -273,10 +348,12 @@ fn collect_calls(
 	statements: &[AstStatement],
 	path: &GamePath,
 	mod_id: &str,
-	owner: Option<&str>,
-	names: &BTreeSet<String>,
+	owner: Option<&Callable>,
+	parents: &mut Vec<String>,
+	names: &BTreeSet<Callable>,
 	calls: &mut Vec<Call>,
 ) {
+	let kinds = call_kinds(path, parents);
 	for statement in statements {
 		let AstStatement::Assignment {
 			key,
@@ -287,7 +364,14 @@ fn collect_calls(
 		else {
 			continue;
 		};
-		if names.contains(key) {
+		for &kind in &kinds {
+			let callee = Callable {
+				kind,
+				name: key.clone(),
+			};
+			if !names.contains(&callee) {
+				continue;
+			}
 			let bindings = match value {
 				AstValue::Block { items, .. } => items
 					.iter()
@@ -303,8 +387,8 @@ fn collect_calls(
 				_ => Vec::new(),
 			};
 			calls.push(Call {
-				owner: owner.map(str::to_owned),
-				callee: key.clone(),
+				owner: owner.cloned(),
+				callee,
 				bindings,
 				path: path.to_owned(),
 				location: format!(
@@ -314,7 +398,9 @@ fn collect_calls(
 			});
 		}
 		if let AstValue::Block { items, .. } = value {
-			collect_calls(items, path, mod_id, owner, names, calls);
+			parents.push(key.clone());
+			collect_calls(items, path, mod_id, owner, parents, names, calls);
+			parents.pop();
 		}
 	}
 }
