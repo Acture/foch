@@ -60,8 +60,9 @@ No channel has published a Foch release. The supported binary targets are
 `linux-x64` (glibc 2.28), `darwin-arm64` (macOS 11) and `win32-x64`. Every
 channel must install a `foch` whose `--version` prints `foch-cli <version>` and
 the `cwt-schema` id embedded at the release tag. Installation results are not
-merge-quality results; a release also needs a completed `cargo acceptance`
-(see Product acceptance).
+merge-quality results. An alpha release does not wait for an accepted cohort
+(decided 2026-10-09); its notes state that installing is not merge readiness
+and link Product acceptance.
 
 Implemented: maturin bin wheels for PyPI project `foch`, release archives made
 from them, the publishable `foch` and `foch-cli` crates, WinGet manifests for

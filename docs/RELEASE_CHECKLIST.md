@@ -97,12 +97,15 @@ carry no EU4 base data; users build it from their own game installation.
     [README](../src/tools/foch-dev/README.md).
 11. ☐ `bun run --cwd src/apps/vscode-foch test`, and confirm the VS Code/LSP
     claim still matches [`lsp-0.1-preview.md`](./lsp-0.1-preview.md).
-12. ☐ Run `cargo acceptance` on that commit and confirm the fixed 14-case
-    product acceptance completes. This Cargo alias is the only
-    product-acceptance entrypoint; do not substitute a raw `cargo test`
-    invocation. Record the result in [`project-status.md`](./project-status.md)
-    with the date and exact commit. That record is a later, docs-only commit,
-    so the tagged commit may differ from the accepted one only by it.
+12. ☐ Record the product-acceptance state of the release in
+    [`project-status.md`](./project-status.md). Acceptance does not gate an
+    alpha release (decided 2026-10-09): a release establishes installation,
+    and its notes link that page for merge quality. Where `cargo acceptance`
+    can run, run it on that commit and record the date, exact commit and
+    result; that record is a later, docs-only commit. This Cargo alias is the
+    only product-acceptance entrypoint; do not substitute a raw `cargo test`
+    invocation, and never describe a release as merge-ready without a complete
+    accepted cohort.
 13. ☐ Run the read-only preflight from the release commit and expect every
     check to pass:
     `uv run --locked --project src/tools/foch-dev python -m foch_dev release preflight --tag vX.Y.Z`

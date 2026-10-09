@@ -331,8 +331,13 @@ jobs:
             if [[ "$RELEASE_TAG" == *-* ]]; then
               extra_args+=(--prerelease)
             fi
+            # A release establishes installation only; the status page at the
+            # tag states whether merge quality passed product acceptance.
+            blob="https://github.com/$GH_REPO/blob/$RELEASE_TAG"
+            notes="Foch is an EU4-only alpha. Installing it does not make it ready to merge: the first run needs an EU4 base-data snapshot built from your own game installation (\`foch data build eu4 --from-game-path <EU4> --game-version auto --install\`). Whether merge quality has passed product acceptance at this release is recorded in [the project status]($blob/docs/project-status.md#product-acceptance); see [the current boundary]($blob/README.md#current-boundary) before merging a playset."
             gh release create "$RELEASE_TAG" dist/* \
               --title "Foch $RELEASE_VERSION" \
+              --notes "$notes" \
               --generate-notes \
               --verify-tag \
               "${extra_args[@]}"
