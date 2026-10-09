@@ -35,6 +35,60 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	if let Some(cursor) = app.options {
 		draw_options(frame, app, cursor);
 	}
+	if app.confirming_omissions {
+		draw_omission_prompt(frame, app);
+	}
+}
+
+fn draw_omission_prompt(frame: &mut Frame<'_>, app: &App) {
+	let Some(recovery) = app.input.as_ref().and_then(|input| input.recovery.as_ref()) else {
+		return;
+	};
+	let mut lines = vec![
+		Line::from(format!(
+			" {} of {} playset mods are unavailable. Analyze the other {} without them?",
+			recovery.omitted_mods.len(),
+			recovery.source_mod_count,
+			recovery.included_mod_count
+		)),
+		Line::from(""),
+	];
+	for omitted in &recovery.omitted_mods {
+		lines.push(Line::from(vec![
+			Span::styled(
+				format!(" #{} {}", omitted.position, omitted.name),
+				Style::new().fg(Color::Yellow),
+			),
+			Span::styled(
+				format!("  {}", omitted.reason),
+				Style::new().fg(Color::DarkGray),
+			),
+		]));
+	}
+	lines.push(Line::from(""));
+	lines.push(Line::from(Span::styled(
+		" The analysis will not represent your full playset.  [y] analyze without them  [Esc] cancel",
+		Style::new().add_modifier(Modifier::BOLD),
+	)));
+	let area = frame.area();
+	let width = 100.min(area.width);
+	let height = (lines.len() as u16 + 2).min(area.height);
+	let popup = Rect::new(
+		area.x + (area.width - width) / 2,
+		area.y + (area.height - height) / 2,
+		width,
+		height,
+	);
+	frame.render_widget(Clear, popup);
+	frame.render_widget(
+		Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+			Block::new()
+				.borders(Borders::ALL)
+				.border_style(Style::new().fg(Color::Yellow))
+				.title(" Unavailable mods "),
+		),
+		popup,
+	);
 }
 
 fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {

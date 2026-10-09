@@ -170,6 +170,8 @@ pub struct App {
 	pub game_base_available: bool,
 	/// Cursor row while the options panel is open.
 	pub options: Option<usize>,
+	/// Asking whether to analyze without the playset's unavailable mods.
+	pub confirming_omissions: bool,
 	analyze_after_inspection: bool,
 }
 
@@ -190,6 +192,7 @@ impl Default for App {
 			analyzed_with: None,
 			game_base_available: true,
 			options: None,
+			confirming_omissions: false,
 			analyze_after_inspection: false,
 		}
 	}
@@ -215,6 +218,14 @@ impl App {
 	pub fn settings_changed(&self) -> bool {
 		self.analyzed_with
 			.is_some_and(|analyzed| analyzed != self.effective_settings())
+	}
+
+	/// Whether analyzing this input leaves out unavailable playset mods,
+	/// which the user must accept explicitly.
+	pub fn omits_mods(&self) -> bool {
+		self.input
+			.as_ref()
+			.is_some_and(|input| input.recovery.is_some())
 	}
 
 	pub fn is_working(&self) -> bool {
@@ -248,6 +259,7 @@ impl App {
 
 	pub(super) fn inspecting(&mut self, analyze_after: bool) {
 		self.phase = Phase::Inspecting;
+		self.confirming_omissions = false;
 		self.can_analyze = false;
 		self.analyze_after_inspection = analyze_after;
 		self.focus = Focus::Units;
@@ -268,7 +280,15 @@ impl App {
 	}
 
 	pub(super) fn take_analyze_after_inspection(&mut self) -> bool {
-		std::mem::take(&mut self.analyze_after_inspection) && self.can_analyze
+		if !std::mem::take(&mut self.analyze_after_inspection) || !self.can_analyze {
+			return false;
+		}
+		if self.omits_mods() {
+			// A refresh never omits mods on its own; ask again.
+			self.confirming_omissions = true;
+			return false;
+		}
+		true
 	}
 
 	pub(super) fn analyzing(&mut self) {
@@ -313,6 +333,20 @@ impl App {
 		if let Some(cursor) = self.options {
 			return self.handle_options_key(key, cursor);
 		}
+		if self.confirming_omissions {
+			return match key.code {
+				KeyCode::Char('q') => Some(AppCommand::Quit),
+				KeyCode::Char('y') => {
+					self.confirming_omissions = false;
+					Some(AppCommand::Analyze)
+				}
+				KeyCode::Char('n') | KeyCode::Esc => {
+					self.confirming_omissions = false;
+					None
+				}
+				_ => None,
+			};
+		}
 		match key.code {
 			KeyCode::Char('q') => return Some(AppCommand::Quit),
 			KeyCode::Char('o') => {
@@ -321,6 +355,10 @@ impl App {
 			}
 			KeyCode::Char('r') if !self.is_working() => return Some(AppCommand::Refresh),
 			KeyCode::Char('a') if self.can_analyze && !self.is_working() => {
+				if self.omits_mods() {
+					self.confirming_omissions = true;
+					return None;
+				}
 				return Some(AppCommand::Analyze);
 			}
 			KeyCode::Char('i') | KeyCode::Char('p') if self.analysis().is_some() => {
@@ -461,5 +499,61 @@ fn step(current: usize, code: KeyCode, last: usize) -> usize {
 		KeyCode::Home | KeyCode::Char('g') => 0,
 		KeyCode::End | KeyCode::Char('G') => last,
 		_ => current,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+
+	fn input_omitting_one_mod() -> CurrentEu4Input {
+		serde_json::from_value(json!({
+			"readiness": "ready_with_omissions",
+			"game": { "name": "Europa Universalis IV", "version": "1.37.5", "installPath": null },
+			"baseData": { "state": "ready", "version": "1.37.5", "detail": "ready" },
+			"playset": null,
+			"issues": [],
+			"recovery": {
+				"sourceModCount": 2,
+				"omittedMods": [
+					{ "id": "43", "name": "ugc_43", "position": 2, "reason": "missing" }
+				],
+				"includedModCount": 1
+			}
+		}))
+		.expect("input view")
+	}
+
+	fn press(app: &mut App, code: KeyCode) -> Option<AppCommand> {
+		app.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+	}
+
+	#[test]
+	fn analyzing_without_unavailable_mods_needs_explicit_consent() {
+		let mut app = App::default();
+		app.inspected(input_omitting_one_mod(), true, true);
+
+		assert_eq!(press(&mut app, KeyCode::Char('a')), None);
+		assert!(app.confirming_omissions);
+		assert_eq!(press(&mut app, KeyCode::Esc), None);
+		assert!(!app.confirming_omissions);
+
+		press(&mut app, KeyCode::Char('a'));
+		assert_eq!(
+			press(&mut app, KeyCode::Char('y')),
+			Some(AppCommand::Analyze)
+		);
+		assert!(!app.confirming_omissions);
+	}
+
+	#[test]
+	fn a_refresh_asks_again_before_omitting_mods() {
+		let mut app = App::default();
+		app.inspecting(true);
+		app.inspected(input_omitting_one_mod(), true, true);
+
+		assert!(!app.take_analyze_after_inspection());
+		assert!(app.confirming_omissions);
 	}
 }
