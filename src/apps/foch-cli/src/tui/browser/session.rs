@@ -9,7 +9,7 @@ use crossterm::event::KeyEvent;
 use foch::input::{Config, CurrentEu4Input, inspect_current_eu4_input};
 use foch::merge::{CancellationToken, MergeError, MergeProgress, ProgressObserver, analyze_merge};
 
-use super::app::{AnalysisView, App, AppCommand, Phase};
+use super::app::{AnalysisView, App, AppCommand, Effect, Phase};
 use crate::cli::arg::MergeArgs;
 use crate::cli::handler::merge::{PreparedMerge, prepare_merge};
 
@@ -52,12 +52,18 @@ impl BrowserSource for CurrentEu4Source {
 		let analysis = input
 			.can_select_mods(false)
 			.then(|| AnalysisInput::Current(Box::new(input.clone())));
+		let game_base_available = input_base_ready(&input);
 		Inspection {
 			input,
 			analysis,
-			game_base_available: true,
+			game_base_available,
 		}
 	}
+}
+
+/// Whether the inspected base data is usable as the merge ancestor.
+fn input_base_ready(input: &CurrentEu4Input) -> bool {
+	input.can_select_mods(true)
 }
 
 enum WorkerMessage {
@@ -146,6 +152,35 @@ impl Session {
 			None => {}
 		}
 		true
+	}
+
+	/// Take what the last key asked the run loop to do outside the browser.
+	pub fn take_effect(&mut self) -> Option<Effect> {
+		self.app.effect.take()
+	}
+
+	/// After a drag ends, the text it covered in the frame just drawn, to
+	/// copy.
+	pub fn take_selection(&mut self, buffer: &ratatui::buffer::Buffer) -> Option<String> {
+		if !std::mem::take(&mut self.app.copy_selection) {
+			return None;
+		}
+		let text = super::render::selected_text(self.app.selection?, buffer);
+		self.app.notice = Some(format!(
+			"Copied {} selected characters.",
+			text.chars().count()
+		));
+		Some(text)
+	}
+
+	/// Report that carrying out an effect failed.
+	pub fn effect_failed(&mut self, error: String) {
+		self.app.notice = None;
+		self.app.refusal = Some(error);
+	}
+
+	pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+		self.app.handle_mouse(mouse);
 	}
 
 	/// Apply every finished worker message, waiting up to `timeout` for the

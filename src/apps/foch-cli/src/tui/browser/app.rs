@@ -1,16 +1,21 @@
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::cli::arg::MergeArgs;
+use crate::cli::handler::input::{RepairTarget, repair_targets};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+	KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use foch::input::{CurrentEu4Input, DetectedPlaysetMod};
 use foch::merge::{
 	AnalyzedMerge, MergeAnalysisStatus, MergeDisposition, MergeProgress, MergeReviewSummary,
 	MergeUnitOutcome, default_merge_workers,
 };
+use ratatui::layout::{Position, Rect};
 
 const PAGE_STEP: usize = 10;
 
@@ -132,6 +137,48 @@ pub enum Focus {
 	Search,
 }
 
+/// The panels of the playset screen, in `Tab` order.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InputPane {
+	#[default]
+	Mods,
+	Mod,
+	Issues,
+}
+
+impl InputPane {
+	fn next(self) -> Self {
+		match self {
+			Self::Mods => Self::Mod,
+			Self::Mod => Self::Issues,
+			Self::Issues => Self::Mods,
+		}
+	}
+
+	fn previous(self) -> Self {
+		match self {
+			Self::Mods => Self::Issues,
+			Self::Mod => Self::Mods,
+			Self::Issues => Self::Mod,
+		}
+	}
+}
+
+/// Where the last frame drew each panel, and the first row a scrolled list
+/// showed, so a mouse position maps back to a panel and a row.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HitAreas {
+	pub mods: Rect,
+	pub mods_offset: usize,
+	pub selected_mod: Rect,
+	pub issues: Rect,
+	pub units: Rect,
+	pub units_offset: usize,
+	pub detail: Rect,
+}
+
+const WHEEL_STEP: usize = 3;
+
 #[derive(Clone, Debug)]
 pub enum Phase {
 	Inspecting,
@@ -151,6 +198,64 @@ pub enum AppCommand {
 	Analyze,
 	Refresh,
 }
+
+/// Something outside the browser a key asked for, carried out by the run
+/// loop: none of these writes a file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Effect {
+	/// Put text on the system clipboard.
+	Copy(String),
+	/// Open these mods' Workshop pages in Steam, as
+	/// `foch input repair --open` does.
+	OpenWorkshop(Vec<RepairTarget>),
+	/// Capture the mouse, or release it to the terminal for its own text
+	/// selection.
+	MouseCapture(bool),
+}
+
+/// Every key, with the `foch` command that does the same outside the
+/// browser, as the help panel lists them.
+pub const KEY_HELP: &[(&str, &str, &str)] = &[
+	(
+		"a",
+		"analyze the playset",
+		"foch merge --out <OUT> --non-interactive",
+	),
+	(
+		"x",
+		"exclude or include the selected mod",
+		"foch merge --exclude <MOD>",
+	),
+	(
+		"X",
+		"exclude every mod that cannot be analyzed",
+		"foch merge --exclude <MOD>...",
+	),
+	(
+		"R",
+		"repair every broken mod in Steam",
+		"foch input repair --open",
+	),
+	(
+		"w",
+		"repair the selected mod in Steam",
+		"foch input repair --open --mod <MOD>",
+	),
+	("r", "inspect the input again", "foch input inspect"),
+	(
+		"o",
+		"analysis options",
+		"--no-game-base, --force, --jobs ...",
+	),
+	("0-6 /", "filter and search the review", ""),
+	("Tab", "next panel", ""),
+	("c", "copy the focused panel", ""),
+	("C", "copy the analysis command", ""),
+	("m", "release the mouse for terminal text selection", ""),
+	("i", "switch between playset and review", ""),
+	("?", "this help", ""),
+	("q", "quit", ""),
+];
 
 /// The browser's whole visible state. It only reads: no key leads to a
 /// decision, an artifact, or a write.
@@ -175,6 +280,12 @@ pub struct App {
 	/// Index into [`App::visible_units`].
 	pub selected: usize,
 	pub detail_scroll: u16,
+	/// The focused panel of the playset screen.
+	pub input_pane: InputPane,
+	pub mod_detail_scroll: u16,
+	pub issues_scroll: u16,
+	/// Filled in by each frame; read by mouse handling.
+	pub hit: Cell<HitAreas>,
 	pub settings: AnalysisSettings,
 	/// The settings and exclusions of the analysis being run or browsed.
 	pub analyzed_with: Option<(AnalysisSettings, BTreeSet<String>)>,
@@ -186,6 +297,19 @@ pub struct App {
 	pub confirming_exclusions: bool,
 	/// Why the last key could not do what it asks, until the next key.
 	pub refusal: Option<String>,
+	/// What the last key did, until the next key.
+	pub notice: Option<String>,
+	/// Waiting for the run loop to carry it out.
+	pub effect: Option<Effect>,
+	pub mouse_capture: bool,
+	pub help: bool,
+	/// Where the left button went down, while it is held.
+	pub drag_anchor: Option<Position>,
+	/// The screen cells a drag covers, from where it started to where it
+	/// is; highlighted, and copied when the button is released.
+	pub selection: Option<(Position, Position)>,
+	/// The finished selection is waiting to be copied from the next frame.
+	pub copy_selection: bool,
 	analyze_after_inspection: bool,
 }
 
@@ -204,12 +328,23 @@ impl Default for App {
 			query: String::new(),
 			selected: 0,
 			detail_scroll: 0,
+			input_pane: InputPane::Mods,
+			mod_detail_scroll: 0,
+			issues_scroll: 0,
+			hit: Cell::new(HitAreas::default()),
 			settings: AnalysisSettings::default(),
 			analyzed_with: None,
 			game_base_available: true,
 			options: None,
 			confirming_exclusions: false,
 			refusal: None,
+			notice: None,
+			effect: None,
+			mouse_capture: true,
+			help: false,
+			drag_anchor: None,
+			selection: None,
+			copy_selection: false,
 			analyze_after_inspection: false,
 		}
 	}
@@ -225,10 +360,7 @@ impl App {
 
 	/// The settings an analysis started now would use.
 	pub fn effective_settings(&self) -> AnalysisSettings {
-		AnalysisSettings {
-			game_base: self.settings.game_base && self.game_base_available,
-			..self.settings
-		}
+		self.settings
 	}
 
 	/// Whether the options or exclusions changed since the browsed analysis
@@ -288,8 +420,15 @@ impl App {
 			.count()
 	}
 
+	/// Whether the analysis would use the game base while its base data is
+	/// not ready.
+	pub fn needs_base_data(&self) -> bool {
+		self.settings.game_base && !self.game_base_available
+	}
+
 	pub fn can_analyze(&self) -> bool {
 		self.selectable
+			&& !self.needs_base_data()
 			&& !self.is_working()
 			&& self.problem_mods().is_empty()
 			&& self.included_count() > 0
@@ -389,6 +528,8 @@ impl App {
 		self.source_path = None;
 		self.game_base_available = game_base_available;
 		self.selectable = selectable;
+		self.mod_detail_scroll = 0;
+		self.issues_scroll = 0;
 		self.phase = Phase::Inspected;
 		self.screen = Screen::Input;
 		self.mod_scroll = 0;
@@ -442,6 +583,12 @@ impl App {
 			return Some(AppCommand::Quit);
 		}
 		self.refusal = None;
+		self.notice = None;
+		self.selection = None;
+		if self.help {
+			self.help = false;
+			return (key.code == KeyCode::Char('q')).then_some(AppCommand::Quit);
+		}
 		if self.focus == Focus::Search {
 			self.handle_search_key(key);
 			return None;
@@ -467,6 +614,44 @@ impl App {
 			KeyCode::Char('q') => return Some(AppCommand::Quit),
 			KeyCode::Char('o') => {
 				self.options = Some(0);
+				return None;
+			}
+			KeyCode::Char('?') => {
+				self.help = true;
+				return None;
+			}
+			KeyCode::Char('c') => {
+				let text = self.focused_text();
+				self.notice = Some(format!("Copied {} characters.", text.chars().count()));
+				self.effect = Some(Effect::Copy(text));
+				return None;
+			}
+			KeyCode::Char('C') => {
+				self.notice = Some("Copied the analysis command.".to_string());
+				self.effect = Some(Effect::Copy(self.cli_command()));
+				return None;
+			}
+			KeyCode::Char('m') => {
+				self.mouse_capture = !self.mouse_capture;
+				self.notice = Some(
+					if self.mouse_capture {
+						"Mouse captured: click panels and rows, scroll with the wheel."
+					} else {
+						"Mouse released: select text with the terminal; press m to capture it again."
+					}
+					.to_string(),
+				);
+				self.effect = Some(Effect::MouseCapture(self.mouse_capture));
+				return None;
+			}
+			KeyCode::Char('R') => {
+				self.repair(Vec::new());
+				return None;
+			}
+			KeyCode::Char('w') => {
+				if let Some(id) = self.mods().get(self.mod_scroll).map(|m| m.id.clone()) {
+					self.repair(vec![id]);
+				}
 				return None;
 			}
 			KeyCode::Char('r') if !self.is_working() => return Some(AppCommand::Refresh),
@@ -497,6 +682,99 @@ impl App {
 		None
 	}
 
+	/// Ask Steam to show the named mods, or every mod that cannot be
+	/// analyzed, through the same targets `foch input repair` lists.
+	fn repair(&mut self, named: Vec<String>) {
+		let Some(input) = &self.input else {
+			return;
+		};
+		let command = if named.is_empty() {
+			"foch input repair --open".to_string()
+		} else {
+			format!("foch input repair --open --mod {}", named.join(" --mod "))
+		};
+		match repair_targets(input, &named) {
+			Ok(targets) if targets.iter().all(|target| target.workshop_id.is_none()) => {
+				self.refusal = Some(if targets.is_empty() {
+					"Every mod can be analyzed; nothing to repair.".to_string()
+				} else {
+					"These mods are not Workshop items; repair them outside Steam.".to_string()
+				});
+			}
+			Ok(targets) => {
+				self.notice = Some(format!(
+					"Opening {} Workshop page(s) in Steam: unsubscribe and subscribe again, wait for the download, then press r.   CLI: {command}",
+					targets
+						.iter()
+						.filter(|target| target.workshop_id.is_some())
+						.count()
+				));
+				self.effect = Some(Effect::OpenWorkshop(targets));
+			}
+			Err(error) => self.refusal = Some(error),
+		}
+	}
+
+	/// The text of the focused panel, for `c`.
+	pub fn focused_text(&self) -> String {
+		if self.analysis().is_some() && self.screen == Screen::Review {
+			let Some(unit) = self.selected_unit() else {
+				return String::new();
+			};
+			return match self.focus {
+				Focus::Detail => super::render::unit_detail(unit)
+					.lines
+					.iter()
+					.map(|line| {
+						line.spans
+							.iter()
+							.map(|span| span.content.as_ref())
+							.collect::<String>()
+					})
+					.collect::<Vec<_>>()
+					.join("\n"),
+				_ => unit.path.as_str().to_owned(),
+			};
+		}
+		let selected = self.mods().get(self.mod_scroll);
+		match self.input_pane {
+			InputPane::Mods => selected
+				.map(|m| format!("#{} {} {}", m.position, m.id, m.name))
+				.unwrap_or_default(),
+			InputPane::Mod => selected
+				.map(|m| {
+					let mut lines = vec![m.name.clone(), format!("#{} {}", m.position, m.id)];
+					if let Some(version) = &m.version {
+						lines.push(format!("version {version}"));
+					}
+					if !m.declared_dependencies.is_empty() {
+						lines.push(format!(
+							"depends on: {}",
+							m.declared_dependencies.join(", ")
+						));
+					}
+					if let Some(error) = &m.source_error {
+						lines.push(error.clone());
+					}
+					lines.join("\n")
+				})
+				.unwrap_or_default(),
+			InputPane::Issues => self
+				.input
+				.iter()
+				.flat_map(|input| &input.issues)
+				.map(|issue| {
+					let mut text = format!("{}: {}", issue.title, issue.detail);
+					if let Some(action) = &issue.action {
+						text.push_str(&format!("\n  -> {action}"));
+					}
+					text
+				})
+				.collect::<Vec<_>>()
+				.join("\n"),
+		}
+	}
+
 	/// Why `a` cannot start an analysis right now.
 	fn analyze_refusal(&self) -> String {
 		let problems = self.problem_mods().len();
@@ -507,6 +785,10 @@ impl App {
 			Phase::Analyzing { .. } => "An analysis is already running.".to_string(),
 			Phase::Reviewed(_) | Phase::Failed(_) => {
 				"This input snapshot was already analyzed. Press r to re-inspect and analyze again."
+					.to_string()
+			}
+			Phase::Inspected if self.selectable && self.needs_base_data() => {
+				"The EU4 base data is not ready. Build it (see Issues), or press o and turn off the EU4 base as ancestor (--no-game-base)."
 					.to_string()
 			}
 			Phase::Inspected if !self.selectable => {
@@ -544,6 +826,17 @@ impl App {
 
 	fn handle_input_key(&mut self, key: KeyEvent) {
 		match key.code {
+			KeyCode::Tab => {
+				self.input_pane = self.input_pane.next();
+				return;
+			}
+			KeyCode::BackTab => {
+				self.input_pane = self.input_pane.previous();
+				return;
+			}
+			_ => {}
+		}
+		match key.code {
 			KeyCode::Char('x') => {
 				if let Some(id) = self.mods().get(self.mod_scroll).map(|m| m.id.clone())
 					&& !self.excluded.remove(&id)
@@ -563,10 +856,126 @@ impl App {
 			}
 			_ => {}
 		}
-		let last = self.mods().len().saturating_sub(1);
-		self.mod_scroll = step(self.mod_scroll, key.code, last);
+		match self.input_pane {
+			InputPane::Mods => {
+				let last = self.mods().len().saturating_sub(1);
+				self.select_mod(step(self.mod_scroll, key.code, last));
+			}
+			InputPane::Mod => {
+				self.mod_detail_scroll =
+					step(self.mod_detail_scroll as usize, key.code, u16::MAX as usize) as u16;
+			}
+			InputPane::Issues => {
+				self.issues_scroll =
+					step(self.issues_scroll as usize, key.code, u16::MAX as usize) as u16;
+			}
+		}
 		if key.code == KeyCode::Esc && self.analysis().is_some() {
 			self.screen = Screen::Review;
+		}
+	}
+
+	fn select_mod(&mut self, index: usize) {
+		if index != self.mod_scroll {
+			self.mod_scroll = index;
+			self.mod_detail_scroll = 0;
+		}
+	}
+
+	fn select_unit(&mut self, index: usize) {
+		if index != self.selected {
+			self.selected = index;
+			self.detail_scroll = 0;
+		}
+	}
+
+	/// A click focuses the panel under the pointer and, in a list, selects
+	/// the row; the wheel scrolls the panel under the pointer. Mouse input
+	/// is ignored while a dialog is open.
+	pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+		if self.options.is_some()
+			|| self.confirming_exclusions
+			|| self.help
+			|| self.focus == Focus::Search
+		{
+			return;
+		}
+		let at = Position::new(mouse.column, mouse.row);
+		// Dragging selects screen text to copy, as in a plain terminal; a
+		// click without a drag focuses and selects.
+		match mouse.kind {
+			MouseEventKind::Down(MouseButton::Left) => {
+				self.drag_anchor = Some(at);
+				self.selection = None;
+			}
+			MouseEventKind::Drag(MouseButton::Left) => {
+				if let Some(anchor) = self.drag_anchor {
+					self.selection = Some((anchor, at));
+				}
+				return;
+			}
+			MouseEventKind::Up(MouseButton::Left) => {
+				self.drag_anchor = None;
+				if self.selection.is_some_and(|(start, end)| start != end) {
+					self.copy_selection = true;
+				} else {
+					self.selection = None;
+				}
+				return;
+			}
+			_ => {}
+		}
+		let hit = self.hit.get();
+		let down = match mouse.kind {
+			MouseEventKind::ScrollDown => Some(true),
+			MouseEventKind::ScrollUp => Some(false),
+			MouseEventKind::Down(_) => None,
+			_ => return,
+		};
+		let scroll = |value: usize, last: usize| match down {
+			Some(true) => value.saturating_add(WHEEL_STEP).min(last),
+			Some(false) => value.saturating_sub(WHEEL_STEP),
+			None => value,
+		};
+		// The row a click landed on, below a panel's border and any header.
+		let row = |area: Rect, offset: usize, header: u16| {
+			let first = area.y + 1 + header;
+			(at.y >= first && at.y < area.bottom().saturating_sub(1))
+				.then(|| offset + usize::from(at.y - first))
+		};
+		let reviewing = self.analysis().is_some() && self.screen == Screen::Review;
+		if reviewing {
+			if hit.units.contains(at) {
+				self.focus = Focus::Units;
+				let last = self.visible_units().len().saturating_sub(1);
+				match (down, row(hit.units, hit.units_offset, 0)) {
+					(Some(_), _) => self.select_unit(scroll(self.selected, last)),
+					(None, Some(index)) if index <= last => self.select_unit(index),
+					_ => {}
+				}
+			} else if hit.detail.contains(at) && self.selected_unit().is_some() {
+				self.focus = Focus::Detail;
+				self.detail_scroll = scroll(self.detail_scroll as usize, u16::MAX as usize) as u16;
+			}
+			return;
+		}
+		if hit.mods.contains(at) {
+			self.input_pane = InputPane::Mods;
+			let last = self.mods().len().saturating_sub(1);
+			match (down, row(hit.mods, hit.mods_offset, 1)) {
+				(Some(_), _) => self.select_mod(scroll(self.mod_scroll, last)),
+				(None, Some(index)) if index <= last && !self.mods().is_empty() => {
+					self.select_mod(index);
+				}
+				_ => {}
+			}
+		} else if hit.selected_mod.contains(at) {
+			self.input_pane = InputPane::Mod;
+			self.mod_detail_scroll =
+				scroll(self.mod_detail_scroll as usize, u16::MAX as usize) as u16;
+		} else if hit.issues.contains(at) {
+			self.input_pane = InputPane::Issues;
+			self.issues_scroll = scroll(self.issues_scroll as usize, u16::MAX as usize) as u16;
 		}
 	}
 
@@ -581,12 +990,12 @@ impl App {
 		}
 		match (self.focus, key.code) {
 			(_, KeyCode::Char('/')) => self.focus = Focus::Search,
-			(Focus::Units, KeyCode::Enter | KeyCode::Right | KeyCode::Tab) => {
+			(Focus::Units, KeyCode::Enter | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab) => {
 				if self.selected_unit().is_some() {
 					self.focus = Focus::Detail;
 				}
 			}
-			(Focus::Detail, KeyCode::Esc | KeyCode::Left | KeyCode::Tab) => {
+			(Focus::Detail, KeyCode::Esc | KeyCode::Left | KeyCode::Tab | KeyCode::BackTab) => {
 				self.focus = Focus::Units;
 			}
 			(Focus::Detail, code) => {
@@ -596,11 +1005,7 @@ impl App {
 			(Focus::Units, KeyCode::Esc) if !self.query.is_empty() => self.set_query(String::new()),
 			(Focus::Units, code) => {
 				let last = self.visible_units().len().saturating_sub(1);
-				let selected = step(self.selected, code, last);
-				if selected != self.selected {
-					self.selected = selected;
-					self.detail_scroll = 0;
-				}
+				self.select_unit(step(self.selected, code, last));
 			}
 			(Focus::Search, _) => unreachable!("search keys are handled first"),
 		}
@@ -754,6 +1159,56 @@ mod tests {
 			app.cli_command()
 				.starts_with("foch merge \"dir with space/dlc_load.json\"")
 		);
+	}
+
+	fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+		MouseEvent {
+			kind,
+			column,
+			row,
+			modifiers: KeyModifiers::NONE,
+		}
+	}
+
+	#[test]
+	fn tab_moves_the_keyboard_between_playset_panels() {
+		let mut app = App::default();
+		app.inspected(input_with_a_broken_mod(), true, true);
+
+		assert_eq!(app.input_pane, InputPane::Mods);
+		press(&mut app, KeyCode::Down);
+		assert_eq!(app.mod_scroll, 1);
+		press(&mut app, KeyCode::Tab);
+		press(&mut app, KeyCode::Tab);
+		assert_eq!(app.input_pane, InputPane::Issues);
+		press(&mut app, KeyCode::Down);
+		assert_eq!(app.issues_scroll, 1);
+		assert_eq!(app.mod_scroll, 1, "only the focused panel moves");
+		press(&mut app, KeyCode::BackTab);
+		assert_eq!(app.input_pane, InputPane::Mod);
+	}
+
+	#[test]
+	fn a_click_focuses_a_panel_and_selects_its_row() {
+		use crossterm::event::MouseButton;
+
+		let mut app = App::default();
+		app.inspected(input_with_a_broken_mod(), true, true);
+		app.hit.set(HitAreas {
+			mods: Rect::new(0, 10, 40, 10),
+			selected_mod: Rect::new(40, 10, 40, 5),
+			issues: Rect::new(40, 15, 40, 5),
+			..HitAreas::default()
+		});
+
+		// Border at y=10, header at y=11, first mod at y=12.
+		app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 13));
+		assert_eq!(app.mod_scroll, 1);
+		app.handle_mouse(mouse(MouseEventKind::ScrollDown, 50, 17));
+		assert_eq!(app.input_pane, InputPane::Issues);
+		assert_eq!(app.issues_scroll, 3);
+		app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 50, 12));
+		assert_eq!(app.input_pane, InputPane::Mod);
 	}
 
 	#[test]

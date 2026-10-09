@@ -4,7 +4,7 @@ use foch::merge::{
 	MergeUnitOutcome,
 };
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -12,7 +12,10 @@ use ratatui::widgets::{
 	Table, TableState, Wrap,
 };
 
-use super::app::{App, DISPOSITIONS, Focus, OPTION_COUNT, Phase, Screen, disposition_label};
+use super::app::{
+	App, DISPOSITIONS, Focus, HitAreas, InputPane, KEY_HELP, OPTION_COUNT, Phase, Screen,
+	disposition_label,
+};
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
@@ -55,6 +58,99 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 	if app.confirming_exclusions {
 		draw_exclusion_prompt(frame, app);
 	}
+	if app.help {
+		draw_help(frame);
+	}
+	if let Some(selection) = app.selection {
+		let buffer = frame.buffer_mut();
+		for position in selected_cells(selection, buffer.area) {
+			buffer[position]
+				.modifier
+				.toggle(ratatui::style::Modifier::REVERSED);
+		}
+	}
+}
+
+/// The cells from one corner of a drag to the other, in reading order, as
+/// a terminal selects: whole rows between the first and the last.
+fn selected_cells((start, end): (Position, Position), area: Rect) -> Vec<Position> {
+	let (start, end) = if (start.y, start.x) <= (end.y, end.x) {
+		(start, end)
+	} else {
+		(end, start)
+	};
+	let mut cells = Vec::new();
+	for y in start.y..=end.y.min(area.bottom().saturating_sub(1)) {
+		let first = if y == start.y { start.x } else { area.x };
+		let last = if y == end.y {
+			end.x
+		} else {
+			area.right().saturating_sub(1)
+		};
+		for x in first..=last.min(area.right().saturating_sub(1)) {
+			cells.push(Position::new(x, y));
+		}
+	}
+	cells
+}
+
+/// The text a drag covered in a drawn frame: wide characters once, panel
+/// borders and trailing blanks dropped.
+pub fn selected_text(selection: (Position, Position), buffer: &ratatui::buffer::Buffer) -> String {
+	const BORDERS: &[char] = &['│', '┃', '─', '━', '╭', '╮', '╰', '╯', '┏', '┓', '┗', '┛'];
+	let mut lines: Vec<String> = Vec::new();
+	let mut row = None;
+	let mut skip = 0;
+	for position in selected_cells(selection, buffer.area) {
+		if row != Some(position.y) {
+			row = Some(position.y);
+			skip = 0;
+			lines.push(String::new());
+		}
+		if skip > 0 {
+			skip -= 1;
+			continue;
+		}
+		let symbol = buffer[position].symbol();
+		skip = Span::raw(symbol).width().saturating_sub(1);
+		if let Some(line) = lines.last_mut() {
+			line.push_str(symbol);
+		}
+	}
+	lines
+		.iter()
+		.map(|line| line.trim_matches(|c: char| BORDERS.contains(&c) || c == ' '))
+		.collect::<Vec<_>>()
+		.join("\n")
+		.trim_matches('\n')
+		.to_string()
+}
+
+fn draw_help(frame: &mut Frame<'_>) {
+	let mut lines = vec![
+		Line::from(Span::styled(
+			"Every browser action is also a foch command:",
+			Style::new().fg(DIM),
+		)),
+		Line::from(""),
+	];
+	for (name, action, command) in KEY_HELP {
+		lines.push(Line::from(vec![
+			Span::raw(format!("{:>6} ", "")),
+			key(name),
+			Span::raw(format!(" {action:<46}")),
+			Span::styled(command.to_string(), Style::new().fg(Color::Gray)),
+		]));
+	}
+	lines.push(Line::from(""));
+	lines.push(Line::from(Span::styled(
+		"Press any key to close.",
+		Style::new().fg(DIM),
+	)));
+	let height = lines.len() as u16 + 2;
+	let popup = centered(frame.area(), 110, height);
+	frame.render_widget(Clear, popup);
+	frame.render_widget(Paragraph::new(lines).block(panel(" Keys ", ACCENT)), popup);
 }
 
 fn draw_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -177,6 +273,14 @@ fn next_step(app: &App) -> (Line<'static>, Color) {
 			]),
 			OK,
 		),
+		_ if app.selectable && app.needs_base_data() => (
+			Line::from(vec![
+				Span::raw("⚠ The EU4 base data is not ready. Build it (see Issues), or press "),
+				key("o"),
+				Span::raw(" and turn off the EU4 base as ancestor (--no-game-base)."),
+			]),
+			WARN,
+		),
 		_ if app.selectable && !app.problem_mods().is_empty() => {
 			let problems = app.problem_mods().len();
 			(
@@ -246,9 +350,10 @@ fn next_step(app: &App) -> (Line<'static>, Color) {
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 	let [banner_area, main] =
 		Layout::vertical([Constraint::Length(5), Constraint::Min(3)]).areas(area);
-	let (step, color) = match &app.refusal {
-		Some(refusal) => (Line::from(format!("✖ {refusal}")), BAD),
-		None => next_step(app),
+	let (step, color) = match (&app.refusal, &app.notice) {
+		(Some(refusal), _) => (Line::from(format!("✖ {refusal}")), BAD),
+		(None, Some(notice)) => (Line::from(format!("✔ {notice}")), ACCENT),
+		(None, None) => next_step(app),
 	};
 	let command = Line::from(vec![
 		Span::styled("CLI  ", Style::new().fg(DIM)),
@@ -336,13 +441,18 @@ fn draw_mod_table(frame: &mut Frame<'_>, app: &App, mods: &[DetectedPlaysetMod],
 		.column_spacing(1)
 		.row_highlight_style(Style::new().bg(Color::Rgb(40, 52, 64)).bold())
 		.highlight_symbol("▶ ")
-		.block(panel(
+		.block(focus_panel(
 			format!(" Mods · {} in load order (later wins) ", mods.len()),
-			ACCENT,
+			DIM,
+			app.input_pane == InputPane::Mods,
 		));
 	let mut state =
 		TableState::default().with_selected((!mods.is_empty()).then_some(app.mod_scroll));
 	frame.render_stateful_widget(table, area, &mut state);
+	record(app, |hit| {
+		hit.mods = area;
+		hit.mods_offset = state.offset();
+	});
 }
 
 fn mod_status(app: &App, playset_mod: &DetectedPlaysetMod) -> (&'static str, Color) {
@@ -422,9 +532,15 @@ fn draw_selected_mod(
 	frame.render_widget(
 		Paragraph::new(lines)
 			.wrap(Wrap { trim: false })
-			.block(panel(" Selected mod ", DIM)),
+			.scroll((app.mod_detail_scroll, 0))
+			.block(focus_panel(
+				" Selected mod ",
+				DIM,
+				app.input_pane == InputPane::Mod,
+			)),
 		area,
 	);
+	record(app, |hit| hit.selected_mod = area);
 }
 
 fn draw_issues(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -467,9 +583,15 @@ fn draw_issues(frame: &mut Frame<'_>, app: &App, area: Rect) {
 	frame.render_widget(
 		Paragraph::new(lines)
 			.wrap(Wrap { trim: false })
-			.block(panel(format!(" Issues · {} ", issues.len()), color)),
+			.scroll((app.issues_scroll, 0))
+			.block(focus_panel(
+				format!(" Issues · {} ", issues.len()),
+				color,
+				app.input_pane == InputPane::Issues,
+			)),
 		area,
 	);
+	record(app, |hit| hit.issues = area);
 }
 
 fn draw_progress(
@@ -590,6 +712,11 @@ fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			format!("✖ {refusal}"),
 			Style::new().fg(BAD).bold(),
 		)];
+	} else if let Some(notice) = &app.notice {
+		search = vec![Span::styled(
+			format!("✔ {notice}"),
+			Style::new().fg(ACCENT).bold(),
+		)];
 	}
 	if app.settings_changed() {
 		search.push(Span::styled(
@@ -624,15 +751,21 @@ fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
 		ListState::default().with_selected((!visible.is_empty()).then_some(app.selected));
 	frame.render_stateful_widget(
 		List::new(items)
-			.block(panel(
+			.block(focus_panel(
 				format!(" Units · {}/{} ", visible.len(), view.units.len()),
-				focus_color(app.focus == Focus::Units),
+				DIM,
+				app.focus == Focus::Units,
 			))
 			.highlight_style(Style::new().bg(Color::Rgb(40, 52, 64)).bold())
 			.highlight_symbol("▶ "),
 		list_area,
 		&mut state,
 	);
+	record(app, |hit| {
+		hit.units = list_area;
+		hit.units_offset = state.offset();
+		hit.detail = detail_area;
+	});
 
 	let detail = app.selected_unit().map_or_else(
 		|| {
@@ -647,7 +780,7 @@ fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
 		Paragraph::new(detail)
 			.wrap(Wrap { trim: false })
 			.scroll((app.detail_scroll, 0))
-			.block(panel(" Detail ", focus_color(app.focus == Focus::Detail))),
+			.block(focus_panel(" Detail ", DIM, app.focus == Focus::Detail)),
 		detail_area,
 	);
 }
@@ -810,11 +943,15 @@ fn draw_exclusion_prompt(frame: &mut Frame<'_>, app: &App) {
 fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {
 	let settings = &app.settings;
 	let check = |on: bool| if on { "■" } else { "□" };
-	let game_base = if app.game_base_available {
-		format!("{} Use the EU4 base as ancestor", check(settings.game_base))
-	} else {
-		"– Use the EU4 base as ancestor (unavailable for this input)".to_string()
-	};
+	let game_base = format!(
+		"{} Use the EU4 base as ancestor{}",
+		check(settings.game_base),
+		if app.game_base_available {
+			""
+		} else {
+			" (base data not ready)"
+		}
+	);
 	let rows: [(String, &str); OPTION_COUNT] = [
 		(game_base, "off = --no-game-base"),
 		(
@@ -885,68 +1022,63 @@ fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {
 
 fn footer_keys(app: &App) -> Line<'static> {
 	let pairs: &[(&str, &str)] = match (&app.phase, app.screen, app.focus) {
+		_ if app.help => &[("any key", "close")],
 		_ if app.confirming_exclusions => &[("y", "analyze without them"), ("Esc", "cancel")],
 		_ if app.options.is_some() => &[("Space", "toggle"), ("Esc", "close")],
-		(Phase::Inspecting, _, _) => &[("o", "options"), ("q", "quit")],
-		(Phase::Analyzing { .. }, _, _) => &[("o", "options"), ("q", "cancel and quit")],
+		(Phase::Inspecting, _, _) => &[("?", "keys"), ("q", "quit")],
+		(Phase::Analyzing { .. }, _, _) => &[("?", "keys"), ("q", "cancel and quit")],
 		(_, _, Focus::Search) => &[
 			("type", "filter paths"),
 			("Enter", "keep"),
 			("Esc", "clear"),
 		],
-		(Phase::Reviewed(_), Screen::Review, Focus::Detail) => &[
-			("↑↓", "scroll"),
-			("Esc", "units"),
-			("0-6", "filter"),
-			("i", "playset"),
-			("r", "refresh"),
-			("o", "options"),
-			("q", "quit"),
-		],
 		(Phase::Reviewed(_), Screen::Review, _) => &[
-			("↑↓", "select"),
-			("Enter", "detail"),
+			("↑↓", "move"),
+			("Tab", "panel"),
 			("0-6", "filter"),
 			("/", "search"),
+			("c", "copy"),
 			("i", "playset"),
 			("r", "refresh"),
-			("o", "options"),
-			("q", "quit"),
-		],
-		(Phase::Reviewed(_), Screen::Input, _) => &[
-			("i", "review"),
-			("↑↓", "mods"),
-			("r", "refresh"),
-			("o", "options"),
+			("?", "keys"),
 			("q", "quit"),
 		],
 		_ if app.can_analyze() => &[
 			("a", "analyze"),
-			("↑↓", "mods"),
 			("x", "exclude"),
+			("R", "repair"),
+			("Tab", "panel"),
+			("c", "copy"),
 			("r", "refresh"),
-			("o", "options"),
+			("?", "keys"),
 			("q", "quit"),
 		],
 		_ if app.selectable => &[
-			("↑↓", "mods"),
-			("x", "exclude"),
 			("X", "exclude broken"),
+			("R", "repair all"),
+			("x", "exclude"),
+			("Tab", "panel"),
+			("c", "copy"),
 			("r", "refresh"),
-			("o", "options"),
+			("?", "keys"),
 			("q", "quit"),
 		],
 		_ => &[
-			("↑↓", "mods"),
+			("R", "repair"),
+			("Tab", "panel"),
+			("c", "copy"),
 			("r", "refresh"),
-			("o", "options"),
+			("?", "keys"),
 			("q", "quit"),
 		],
 	};
 	let mut spans = vec![Span::raw(" ")];
 	for (name, action) in pairs {
 		spans.push(key(name));
-		spans.push(Span::styled(format!(" {action}   "), Style::new().fg(DIM)));
+		spans.push(Span::styled(format!(" {action}  "), Style::new().fg(DIM)));
+	}
+	if !app.mouse_capture {
+		spans.push(Span::styled("mouse released (m)", Style::new().fg(WARN)));
 	}
 	Line::from(spans)
 }
@@ -960,8 +1092,22 @@ fn panel(title: impl Into<Line<'static>>, color: Color) -> Block<'static> {
 		.title_style(Style::new().fg(color).bold())
 }
 
-fn focus_color(focused: bool) -> Color {
-	if focused { ACCENT } else { DIM }
+/// A panel that takes the keyboard when focused: thick accent border, and a
+/// `▸` before the title.
+fn focus_panel(title: impl Into<String>, color: Color, focused: bool) -> Block<'static> {
+	let title = title.into();
+	if focused {
+		panel(format!(" ▸{title}"), ACCENT).border_type(BorderType::Thick)
+	} else {
+		panel(title, color)
+	}
+}
+
+/// Remember where this frame drew a panel, for mouse handling.
+fn record(app: &App, update: impl FnOnce(&mut HitAreas)) {
+	let mut hit = app.hit.get();
+	update(&mut hit);
+	app.hit.set(hit);
 }
 
 fn key(name: &str) -> Span<'static> {
@@ -1044,5 +1190,23 @@ fn disposition_color(disposition: MergeDisposition) -> Color {
 		MergeDisposition::UnsupportedInput => Color::Magenta,
 		MergeDisposition::EngineFailure => BAD,
 		MergeDisposition::Deferred => DIM,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use ratatui::buffer::Buffer;
+
+	#[test]
+	fn a_drag_copies_wide_characters_once_without_panel_borders() {
+		let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 2));
+		buffer.set_string(0, 0, "│欧陆扩展 ok      │", Style::new());
+		buffer.set_string(0, 1, "│second line      │", Style::new());
+
+		let text = selected_text((Position::new(0, 0), Position::new(19, 1)), &buffer);
+		assert_eq!(text, "欧陆扩展 ok\nsecond line");
+		let partial = selected_text((Position::new(3, 0), Position::new(5, 1)), &buffer);
+		assert_eq!(partial, "陆扩展 ok\nsecon");
 	}
 }

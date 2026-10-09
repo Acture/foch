@@ -211,6 +211,16 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	assert_shows(&session, "Fixture playset");
 	assert_shows(&session, "1 Fixture A");
 	assert_shows(&session, "2 Fixture B");
+	// This input has no EU4 base data: analyzing without the vanilla
+	// ancestor is an explicit choice, never a silent fallback.
+	assert_shows(&session, "The EU4 base data is not ready.");
+	key(&mut session, KeyCode::Char('a'));
+	assert!(matches!(session.app().phase, Phase::Inspected));
+	key(&mut session, KeyCode::Char('o'));
+	assert_shows(&session, "(base data not ready)");
+	key(&mut session, KeyCode::Char(' '));
+	key(&mut session, KeyCode::Esc);
+	assert!(!session.app().settings.game_base);
 	assert_shows(&session, "Press  a  to analyze all 2 mods.");
 	key(&mut session, KeyCode::Down);
 	assert_shows(&session, "depends on: Fixture A");
@@ -276,10 +286,9 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	key(&mut session, KeyCode::Char('i'));
 	assert_eq!(session.app().screen, Screen::Review);
 
-	// Options change only the next analysis. This input has no EU4 base.
+	// Options change only the next analysis.
 	key(&mut session, KeyCode::Char('o'));
 	assert_shows(&session, "Analysis options");
-	assert_shows(&session, "(unavailable for this input)");
 	key(&mut session, KeyCode::Down);
 	key(&mut session, KeyCode::Down);
 	key(&mut session, KeyCode::Char(' '));
