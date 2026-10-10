@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::Instant;
 
 use crate::game::eu4::content::{
 	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
@@ -12,6 +13,7 @@ use crate::merge::kernel::{
 	SourceSet, StructuralConflict, StructuralConflictDraft, n_way_merge_with_policy,
 	n_way_merge_with_policy_and_resolutions,
 };
+use crate::merge::timing::{KernelStep, charge};
 use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, ScopeKind};
 
@@ -222,6 +224,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 		|| ContentFamilyMergePolicy::new(policies),
 		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
 	);
+	let started = Instant::now();
 	let mut scope_cache = HashMap::new();
 	let base = canonicalize_for_merge(base, policies, schema, &mut scope_cache);
 	let revisions = revisions
@@ -250,6 +253,8 @@ pub(super) fn merge_clausewitz_files_with_context(
 		);
 	}
 	let merged_trivia = merge_trivia_n_way(&base_trivia, &revision_trivia);
+	charge(KernelStep::JoinCanonicalize, started);
+	let started = Instant::now();
 	let (base_tree, base_normalization_findings) = normalize_ast_with_findings(&base, &policy)?;
 	control_flow_findings.extend(
 		base_normalization_findings
@@ -276,6 +281,8 @@ pub(super) fn merge_clausewitz_files_with_context(
 		.iter()
 		.map(|(revision, tree)| MergeRevision::new(*revision, tree))
 		.collect::<Vec<_>>();
+	charge(KernelStep::JoinNormalize, started);
+	let started = Instant::now();
 	let mut kernel = if resolutions.is_empty() {
 		n_way_merge_with_policy(&base_tree, &kernel_revisions, &policy)?
 	} else {
@@ -286,7 +293,11 @@ pub(super) fn merge_clausewitz_files_with_context(
 			resolutions,
 		)?
 	};
+	charge(KernelStep::JoinMerge, started);
+	let started = Instant::now();
 	let rendered = denormalize_ast(base.path.clone(), kernel.tentative_tree());
+	charge(KernelStep::JoinRender, started);
+	let started = Instant::now();
 	let renderable = rendered.is_ok();
 	let mut tentative_ast = match rendered {
 		Ok(ast) => ast,
@@ -339,6 +350,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 	if reduce_event_fallbacks {
 		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
 	}
+	charge(KernelStep::JoinFinish, started);
 	Ok(ClausewitzMergeOutcome {
 		tentative_ast,
 		lineage_ast,

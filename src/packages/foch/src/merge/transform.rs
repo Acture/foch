@@ -3,6 +3,7 @@
 pub(crate) mod input;
 pub(crate) mod tree;
 
+use crate::merge::timing::stage;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -126,16 +127,24 @@ impl TransformPlan {
 		let adapters = eu4()
 			.content_families()
 			.iter()
-			.filter_map(|descriptor| descriptor.transform_adapter())
+			.filter_map(|descriptor| {
+				descriptor
+					.transform_adapter()
+					.map(|adapter| (&descriptor.id, adapter))
+			})
 			.collect::<Vec<_>>();
 		let policies = adapters
 			.iter()
-			.map(|adapter| adapter.reviewed_inputs(request.project))
+			.map(|(_, adapter)| adapter.reviewed_inputs(request.project))
 			.collect::<Result<Vec<_>, _>>()?;
-		let reviewed = input::ReviewedInputBatch::prepare(input, &policies)?.apply(input);
+		let reviewed = stage("apply_reviewed_inputs", || {
+			Ok::<_, MergeError>(input::ReviewedInputBatch::prepare(input, &policies)?.apply(input))
+		})?;
 		let mut plan = Self::default();
-		for (adapter, reviewed) in adapters.into_iter().zip(reviewed) {
-			let prepared = adapter.prepare(input, request, reviewed)?;
+		for ((family, adapter), reviewed) in adapters.into_iter().zip(reviewed) {
+			let prepared = stage(&format!("prepare_transform {family:?}"), || {
+				adapter.prepare(input, request, reviewed)
+			})?;
 			plan.push(input, prepared)?;
 		}
 		Ok(plan)

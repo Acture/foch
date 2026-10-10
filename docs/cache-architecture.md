@@ -20,6 +20,17 @@ artifact tree in an analysis-scoped temporary directory until review and
 commit. Increasing
 `FOCH_CACHE_MAX_BYTES` cannot restore or relax that removed product shortcut.
 
+## Merge timing history
+
+Each `foch merge` appends one JSON line to `timings/merge-timings.jsonl` below
+the cache root. The line records the foch and analysis-rules versions, the
+input, the output directory, the exit status, every logged stage with its
+start offset and wall-clock time, and the CPU time the tree kernels spent per
+step summed across workers. Stages nest: a stage's interval contains the
+stages it ran. Timing stays out of the merged mod so identical inputs keep
+producing identical output bytes. The history is not a cache layer; cache
+maintenance does not read or trim it.
+
 ## Generations and lifecycle
 
 Format generations are SemVer namespaces. Opening a layer creates its current

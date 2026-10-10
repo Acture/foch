@@ -10,6 +10,7 @@ use super::materialize::{
 };
 use super::output::artifact_tree::AnalyzedArtifactTree;
 use super::review::{MergeReview, MergeReviewSummary, MergeUnitOutcome};
+use super::timing::stage;
 use crate::game::eu4::base::snapshot::InstalledBaseSnapshotIdentity;
 use crate::game::eu4::script::emit::EmitOptions;
 static VALIDATION_PLAYSET_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -436,19 +437,24 @@ fn analyze_merge_with_backend_and_observer(
 			} else {
 				super::dag::IgnoreReplacePath::None
 			};
-			super::transform::TransformPlan::prepare(
-				input,
-				&super::transform::TransformRequest {
-					project: &transform_project,
-					dep_overrides: &overrides,
-					ignore_replace_path: &ignore,
-					emit_options: &emit_options,
-					duplicate_definitions: backend_for(backend_id)
-						.profile()
-						.duplicate_definition_override,
-					reference_inventory_complete: request.config.extra_ignore_patterns.is_empty(),
-				},
-			)?
+			stage("prepare_transforms", || {
+				super::transform::TransformPlan::prepare(
+					input,
+					&super::transform::TransformRequest {
+						project: &transform_project,
+						dep_overrides: &overrides,
+						ignore_replace_path: &ignore,
+						emit_options: &emit_options,
+						duplicate_definitions: backend_for(backend_id)
+							.profile()
+							.duplicate_definition_override,
+						reference_inventory_complete: request
+							.config
+							.extra_ignore_patterns
+							.is_empty(),
+					},
+				)
+			})?
 		} else {
 			super::transform::TransformPlan::default()
 		}
@@ -535,7 +541,7 @@ fn complete_merge_analysis(
 	// Resolved before merging, since interactive prompts may append
 	// resolutions to the manifest this reads.
 	let output_validation_config: Option<Config> = match &input_result {
-		Ok(_) => Some(validation_config(&request)?),
+		Ok(_) => Some(stage("validation_config", || validation_config(&request))?),
 		Err(_) => None,
 	};
 	let materialized = materialize_with_adaptations(
@@ -603,15 +609,17 @@ fn complete_merge_analysis(
 			subject: None,
 			message: "output validation requires a resolved input".to_string(),
 		})?;
-		report.validation = revalidate_generated_output(
-			&request,
-			config,
-			&staging_dir,
-			options.include_game_base,
-			base_snapshot_commit_guard
-				.as_ref()
-				.map(|guard| guard.identity.clone()),
-		)?;
+		report.validation = stage("validate_output", || {
+			revalidate_generated_output(
+				&request,
+				config,
+				&staging_dir,
+				options.include_game_base,
+				base_snapshot_commit_guard
+					.as_ref()
+					.map(|guard| guard.identity.clone()),
+			)
+		})?;
 		let generated = report.generated_file_count as u64;
 		notify_progress(
 			progress,
@@ -624,8 +632,12 @@ fn complete_merge_analysis(
 	}
 	cancellation.check()?;
 	let execution = merge_execution_result(report);
-	write_merge_report_artifact(&staging_dir, &execution.report)?;
-	let prior_output_guard = PriorOutputGuard::from_report(&final_out_dir, &execution.report)?;
+	stage("write_merge_report", || {
+		write_merge_report_artifact(&staging_dir, &execution.report)
+	})?;
+	let prior_output_guard = stage("guard_prior_output", || {
+		PriorOutputGuard::from_report(&final_out_dir, &execution.report)
+	})?;
 	notify_progress(
 		progress,
 		analysis_started,
@@ -634,7 +646,9 @@ fn complete_merge_analysis(
 		Some(0),
 		None,
 	);
-	let artifacts = AnalyzedArtifactTree::freeze(artifact_root)?;
+	let artifacts = stage("freeze_artifacts", || {
+		AnalyzedArtifactTree::freeze(artifact_root)
+	})?;
 	let artifact_count = artifacts.file_count() as u64;
 	notify_progress(
 		progress,
@@ -937,15 +951,19 @@ fn revalidate_generated_output(
 		validation_request =
 			validation_request.with_expected_base_snapshot_identity(expected.clone());
 	}
-	let result = run_checks_with_options(
-		validation_request,
-		CheckOptions {
-			analysis_mode: AnalysisMode::Semantic,
-			channel_mode: ChannelMode::All,
-			include_game_base,
-		},
-	);
-	if let Err(err) = fs::remove_dir_all(&validation_dir) {
+	let result = stage("check_generated_output", || {
+		run_checks_with_options(
+			validation_request,
+			CheckOptions {
+				analysis_mode: AnalysisMode::Semantic,
+				channel_mode: ChannelMode::All,
+				include_game_base,
+			},
+		)
+	});
+	if let Err(err) = stage("remove_validation_playset", || {
+		fs::remove_dir_all(&validation_dir)
+	}) {
 		cleanup_error = Some(MergeError::Io(io::Error::other(format!(
 			"failed to remove validation playset dir {}: {err}",
 			validation_dir.display()

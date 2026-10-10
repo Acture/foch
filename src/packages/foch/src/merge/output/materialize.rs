@@ -38,6 +38,7 @@ use crate::merge::backend::{GumtreePcsNwayBackend, MergeBackend};
 use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
 use crate::merge::review::{MergeDisposition, MergeReview, UnitOutcomeLedger};
+use crate::merge::timing::{KernelTimes, stage, stage_log_with};
 use crate::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath, GamePathBuf,
 	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
@@ -381,6 +382,7 @@ pub(crate) fn materialize_with_adaptations(
 	crate::merge::address_patch::cache::reset_mod_diff_cache_stats();
 	crate::merge::address_patch::cache::reset_dag_base_cache_stats();
 	let materialize_started = Instant::now();
+	let kernel_started = KernelTimes::now();
 	let total_paths = plan.paths.len();
 	let mut interactive_handler = options.interactive_conflict_handler.take();
 	// Prompts, and the resolutions they persist, must follow plan order: a
@@ -564,6 +566,11 @@ pub(crate) fn materialize_with_adaptations(
 	let mod_diff_cache_stats = crate::merge::address_patch::cache::mod_diff_cache_stats();
 	let dag_base_cache_stats = crate::merge::address_patch::cache::dag_base_cache_stats();
 	eprintln!(
+		"[merge] materialize: kernels {}",
+		KernelTimes::now().summary_since(&kernel_started)
+	);
+	crate::merge::timing::record_stage("materialize", materialize_started);
+	eprintln!(
 		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} definition_modules={} definition_modules_generated={} definition_modules_blocked={} definition_module_elapsed_ms={} base_passthrough_skipped={} noop_skipped={} cross_file_noop_skipped={} per_entry_noop_skipped={} mod_diff_cache_hits={} mod_diff_cache_misses={} dag_base_cache_hits={} dag_base_cache_misses={}",
 		materialize_started.elapsed().as_millis(),
 		report.generated_file_count,
@@ -628,11 +635,13 @@ pub(crate) fn materialize_with_adaptations(
 		&committed_module_replacements,
 		&out_dir.join(MERGED_MOD_DESCRIPTOR_PATH),
 	)?;
-	write_metadata_only(out_dir, &plan, &report)?;
-	Ok(MaterializedMerge {
-		report,
-		review: review.finish(&mod_display_names)?,
-	})
+	stage("write_merge_metadata", || {
+		write_metadata_only(out_dir, &plan, &report)
+	})?;
+	let review = stage("finish_review", || review.finish(&mod_display_names))?;
+	// The frozen input holds every parsed source document.
+	stage("release_input", || drop(input));
+	Ok(MaterializedMerge { report, review })
 }
 
 /// Output facts that units accumulate for the manifest built after the loop.
@@ -2676,24 +2685,6 @@ pub(crate) struct StructuralMergeContext<'a> {
 	vanilla_base_mode: VanillaBaseMode,
 }
 
-/// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
-/// on stderr. The closure can return `(value, Option<summary>)`; the summary, if
-/// any, is appended to the `done` line as space-separated `kv=value` pairs.
-fn stage_log_with<F, T>(name: &str, f: F) -> T
-where
-	F: FnOnce() -> (T, Option<String>),
-{
-	eprintln!("[merge] {name}: start");
-	let started = Instant::now();
-	let (value, summary) = f();
-	let elapsed_ms = started.elapsed().as_millis();
-	match summary {
-		Some(s) => eprintln!("[merge] {name}: done elapsed_ms={elapsed_ms} {s}"),
-		None => eprintln!("[merge] {name}: done elapsed_ms={elapsed_ms}"),
-	}
-	value
-}
-
 /// In-place per-file counter for the materialize loop. On a TTY, refreshes the
 /// same line via `\r`; off a TTY, prints a fresh line every `TICK_EVERY` items
 /// so piped logs stay readable.
@@ -2918,7 +2909,7 @@ mod tests {
 	#[test]
 	fn stage_log_with_invokes_closure_exactly_once_and_returns_value() {
 		let calls = Cell::new(0u32);
-		let value = super::stage_log_with("test_stage", || {
+		let value = crate::merge::timing::stage_log_with("test_stage", || {
 			calls.set(calls.get() + 1);
 			(42i32, Some("k=v".to_string()))
 		});

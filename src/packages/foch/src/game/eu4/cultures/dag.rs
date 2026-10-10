@@ -201,15 +201,17 @@ impl DagJoinProtocol<AstFile> for CultureObservation<'_> {
 		if request.plan.scope() == DagJoinScope::Final {
 			return Ok(request.base.clone());
 		}
-		let result = TransformModuleAdapter {
-			transform: &correspondence,
-		}
-		.merge_n_way(
-			request.base,
-			&revisions.iter().collect::<Vec<_>>(),
-			self.policies,
-			&[],
-		)?;
+		let result = crate::merge::timing::stage("culture: intermediate join", || {
+			TransformModuleAdapter {
+				transform: &correspondence,
+			}
+			.merge_n_way(
+				request.base,
+				&revisions.iter().collect::<Vec<_>>(),
+				self.policies,
+				&[],
+			)
+		})?;
 		if !result.conflicts.is_empty() {
 			return Err("culture dependency parent has unresolved conflicts; identity correspondence requires review".into());
 		}

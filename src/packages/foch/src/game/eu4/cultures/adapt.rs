@@ -16,6 +16,7 @@ use crate::merge::dag::{IgnoreReplacePath, build_mod_dag};
 use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::path_plan::build_merge_plan_from_input;
 use crate::merge::planning::module_view::build_cross_file_module_views;
+use crate::merge::timing::stage;
 
 use crate::merge::transform::input::{
 	ReviewedInputPolicy, ReviewedInputs, SourceBinding, SourceRepair,
@@ -271,7 +272,7 @@ fn prepare_cultures(
 	if input.installed_base_snapshot.is_none() {
 		return Ok(CultureAdaptations::default());
 	}
-	let plan = build_merge_plan_from_input(input, true);
+	let plan = stage("culture: plan", || build_merge_plan_from_input(input, true));
 	let Some((entry, namespace)) = plan.paths.iter().find_map(|entry| {
 		entry
 			.target
@@ -286,16 +287,18 @@ fn prepare_cultures(
 		.classify_content_family(namespace.output_path())
 		.expect("planned culture family");
 	let (mod_dag, _) = build_mod_dag(&input.mods);
-	let Ok(views) = build_cross_file_module_views(
-		entry,
-		namespace,
-		input,
-		descriptor,
-		&mod_dag,
-		ignore_replace_path,
-		dep_overrides,
-		duplicate_definitions,
-	) else {
+	let Ok(views) = stage("culture: module views", || {
+		build_cross_file_module_views(
+			entry,
+			namespace,
+			input,
+			descriptor,
+			&mod_dag,
+			ignore_replace_path,
+			dep_overrides,
+			duplicate_definitions,
+		)
+	}) else {
 		// Existing module analysis reports malformed contributors with their source.
 		return Ok(CultureAdaptations::default());
 	};
@@ -322,14 +325,16 @@ fn prepare_cultures(
 	}
 	let reviewed =
 		super::dag::ReviewedCultureMappings::from_verified_entries(reviewed_entries, &views);
-	let correspondence = match reviewed.and_then(|reviewed| {
-		super::dag::culture_correspondence_for_dag(
-			&views.file_dag,
-			views.vanilla.as_ref(),
-			&views.contributors,
-			&descriptor.merge_policies,
-			&reviewed,
-		)
+	let correspondence = match stage("culture: correspondence", || {
+		reviewed.and_then(|reviewed| {
+			super::dag::culture_correspondence_for_dag(
+				&views.file_dag,
+				views.vanilla.as_ref(),
+				&views.contributors,
+				&descriptor.merge_policies,
+				&reviewed,
+			)
+		})
 	}) {
 		Ok(Some(correspondence)) => correspondence,
 		Ok(None) => return Ok(CultureAdaptations::default()),
@@ -346,10 +351,12 @@ fn prepare_cultures(
 				})
 				.map(|id| (id.clone(), id.clone()))
 				.collect();
-			let mut paths = indexed_reference_paths(input, &identities)
-				.into_iter()
-				.map(|(_, path)| path)
-				.collect::<BTreeSet<_>>();
+			let mut paths = stage("culture: withheld references", || {
+				indexed_reference_paths(input, &identities)
+			})
+			.into_iter()
+			.map(|(_, path)| path)
+			.collect::<BTreeSet<_>>();
 			paths.extend(entry.target.input_paths().iter().cloned());
 			return Ok(CultureAdaptations {
 				mapping: CultureRenameMap::default(),

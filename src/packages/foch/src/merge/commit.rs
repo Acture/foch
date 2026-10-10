@@ -1,5 +1,6 @@
 //! Commit of an already analyzed and frozen merge artifact.
 
+use super::timing::stage;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -355,18 +356,24 @@ impl AnalyzedMerge {
 			}
 		};
 		if let Some(guard) = self.prior_output_guard.as_ref() {
-			guard.validate()?;
+			stage("validate_prior_output", || guard.validate())?;
 		}
-		self.artifacts.copy_into(transaction.staging_dir())?;
-		let _base_snapshot_commit_guard = validate_commit_guards(
-			self.base_snapshot_commit_guard.as_ref(),
-			self.product_input_commit_guard.as_ref(),
-		)?;
-		self.transform_source_guard.validate()?;
+		stage("copy_artifacts", || {
+			self.artifacts.copy_into(transaction.staging_dir())
+		})?;
+		let _base_snapshot_commit_guard = stage("validate_commit_guards", || {
+			validate_commit_guards(
+				self.base_snapshot_commit_guard.as_ref(),
+				self.product_input_commit_guard.as_ref(),
+			)
+		})?;
+		stage("validate_transform_sources", || {
+			self.transform_source_guard.validate()
+		})?;
 		if let Some(expected) = expected_replacement.as_ref() {
 			validate_replacement_target(&self.out_dir, expected)?;
 		}
-		transaction.commit()?;
+		stage("commit_output", || transaction.commit())?;
 		let exit_code = commit_exit_code(&self.analysis);
 		Ok(CommitResult {
 			report: self.analysis.report,

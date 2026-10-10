@@ -41,6 +41,7 @@ where
 	let started = Instant::now();
 	let value = f();
 	let elapsed_ms = started.elapsed().as_millis() as u64;
+	crate::merge::timing::record_stage(&format!("check {stage}"), started);
 	let summary = summarize(&value);
 	if summary.is_empty() {
 		tracing::info!(target: CHECK_PROGRESS_TARGET, elapsed_ms, "check {stage}: done");
@@ -135,16 +136,21 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		}
 	};
 
-	let base_semantic =
-		resolved
-			.installed_base_snapshot
-			.as_ref()
-			.map(|installed| GameBaseSemanticSnapshot {
-				index: installed.snapshot.to_semantic_index(),
-				parsed_files: installed.snapshot.parsed_files,
-				parse_error_count: installed.snapshot.parse_error_count,
-				parse_stats: installed.snapshot.parse_stats.clone(),
-			});
+	let base_semantic = run_progress_stage(
+		"base semantic index",
+		|| {
+			resolved
+				.installed_base_snapshot
+				.as_ref()
+				.map(|installed| GameBaseSemanticSnapshot {
+					index: installed.snapshot.to_semantic_index(),
+					parsed_files: installed.snapshot.parsed_files,
+					parse_error_count: installed.snapshot.parse_error_count,
+					parse_stats: installed.snapshot.parse_stats.clone(),
+				})
+		},
+		|_| String::new(),
+	);
 	let mod_parsed_files_count: usize = resolved
 		.mod_snapshots
 		.iter()
@@ -164,7 +170,11 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		.fold(ParseFamilyStats::default(), |acc, snapshot| {
 			sum_parse_family_stats(acc, snapshot.parse_stats.clone())
 		});
-	let mod_semantic_index = merge_mod_snapshots(&resolved.mod_snapshots);
+	let mod_semantic_index = run_progress_stage(
+		"mod semantic indexes",
+		|| merge_mod_snapshots(&resolved.mod_snapshots),
+		|_| String::new(),
+	);
 	let parsed_files_count = mod_parsed_files_count
 		+ base_semantic
 			.as_ref()
@@ -196,7 +206,11 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		.installed_base_snapshot
 		.as_ref()
 		.map(|installed| installed.snapshot.game_version.clone());
-	let vanilla_symbol_index = VanillaSymbolIndex::build(&resolved);
+	let vanilla_symbol_index = run_progress_stage(
+		"vanilla symbol index",
+		|| VanillaSymbolIndex::build(&resolved),
+		|_| String::new(),
+	);
 	let (mod_dag, _dag_diagnostics) = build_mod_dag(&resolved.mods);
 	let runtime_overlap_findings = if options.analysis_mode == AnalysisMode::Semantic {
 		let runtime_overlap = run_progress_stage(
@@ -284,18 +298,25 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 				.filter(|finding| finding.rule_id != "mergeable-overlap"),
 		);
 		result.findings.extend(runtime_overlap_findings);
-		result.findings.extend(check_dependency_misuse(&ctx));
-		result.findings.extend(
-			check_namespace_conflicts(&resolved.file_inventory, &mod_dag)
-				.into_iter()
-				.filter(|finding| {
-					!finding
-						.evidence
-						.as_deref()
-						.and_then(extract_namespace_key)
-						.is_some_and(|key| overlap_covered_names.contains(key))
-				}),
+		result.findings.extend(run_progress_stage(
+			"dependency misuse",
+			|| check_dependency_misuse(&ctx),
+			|findings| format!("findings={}", findings.len()),
+		));
+		let namespace_findings = run_progress_stage(
+			"namespace conflicts",
+			|| check_namespace_conflicts(&resolved.file_inventory, &mod_dag),
+			|findings| format!("findings={}", findings.len()),
 		);
+		result
+			.findings
+			.extend(namespace_findings.into_iter().filter(|finding| {
+				!finding
+					.evidence
+					.as_deref()
+					.and_then(extract_namespace_key)
+					.is_some_and(|key| overlap_covered_names.contains(key))
+			}));
 	} else {
 		// Basic mode: no overlap module runs, so the heuristic
 		// `duplicate-scripted-effect` still provides value for scripted-effect
@@ -318,9 +339,26 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		symbol_references: ctx.semantic_index.references.len(),
 		alias_usages: ctx.semantic_index.alias_usages.len(),
 	};
-	result.parse_issue_report = build_parse_issue_report(&ctx.semantic_index);
+	result.parse_issue_report = run_progress_stage(
+		"parse issue report",
+		|| build_parse_issue_report(&ctx.semantic_index),
+		|_| String::new(),
+	);
 
 	result.recompute_channels();
+	// The resolved input and semantic index hold every parsed document.
+	run_progress_stage(
+		"release input",
+		|| {
+			drop((
+				ctx,
+				resolved.mod_snapshots,
+				resolved.installed_base_snapshot,
+				resolved.file_inventory,
+			))
+		},
+		|_| String::new(),
+	);
 	result
 }
 

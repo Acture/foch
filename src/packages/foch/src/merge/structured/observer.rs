@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rayon::prelude::*;
 
+use crate::merge::timing::{KernelStep, kernel};
+
 use crate::game::eu4::content::{
 	ContentFamilyDescriptor, DivergentBlockPolicy, MergePolicies, NamedContainerPolicy,
 };
@@ -71,30 +73,39 @@ impl<'a> TreeSourceObserver<'a> {
 				{
 					return Ok((partition, None, parent.clone()));
 				}
-				// The parent's statements are a rendering of its lineage tree,
-				// and re-normalizing a rendering can reshape control flow,
-				// boolean wrappers and schema-typed numbers; the tree itself is
-				// the base.
-				let base_tree = match parent_lineage.get(&partition) {
-					Some(parent) => parent.tree.clone(),
-					None => base.normalize(&partition, policies).map_err(|error| {
-						format!("failed to normalize source-delta base: {error}")
-					})?,
-				};
-				let revision_tree = revision.normalize(&partition, policies).map_err(|error| {
-					format!("failed to normalize source-delta revision: {error}")
+				let (base_tree, revision_tree) = kernel(KernelStep::ObserveNormalize, || {
+					// The parent's statements are a rendering of its lineage
+					// tree, and re-normalizing a rendering can reshape control
+					// flow, boolean wrappers and schema-typed numbers; the tree
+					// itself is the base.
+					let base_tree = match parent_lineage.get(&partition) {
+						Some(parent) => parent.tree.clone(),
+						None => base.normalize(&partition, policies).map_err(|error| {
+							format!("failed to normalize source-delta base: {error}")
+						})?,
+					};
+					let revision_tree =
+						revision.normalize(&partition, policies).map_err(|error| {
+							format!("failed to normalize source-delta revision: {error}")
+						})?;
+					Ok::<_, String>((base_tree, revision_tree))
 				})?;
-				let matching = matcher.match_trees(&base_tree, &revision_tree);
-				let delta =
-					RevisionDelta::between(&base_tree, RevisionId::LEFT, &revision_tree, &matching);
-				let partition_lineage = apply_source_delta_lineage(
-					&source,
-					parent_lineage.get(&partition),
-					&base_tree,
-					&revision_tree,
-					&delta,
-					resets_base,
-				)?;
+				let matching = kernel(KernelStep::ObserveMatch, || {
+					matcher.match_trees(&base_tree, &revision_tree)
+				});
+				let delta = kernel(KernelStep::ObserveDelta, || {
+					RevisionDelta::between(&base_tree, RevisionId::LEFT, &revision_tree, &matching)
+				});
+				let partition_lineage = kernel(KernelStep::ObserveLineage, || {
+					apply_source_delta_lineage(
+						&source,
+						parent_lineage.get(&partition),
+						&base_tree,
+						&revision_tree,
+						&delta,
+						resets_base,
+					)
+				})?;
 				Ok((
 					partition.clone(),
 					Some(SemanticDeltaPartition {

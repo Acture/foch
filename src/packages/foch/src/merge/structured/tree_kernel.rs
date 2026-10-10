@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
@@ -7,6 +8,7 @@ use crate::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
+use crate::merge::timing::{KernelStep, charge};
 use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, HandlerResolutionRecord};
 
@@ -1471,10 +1473,12 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				request.file_dag.file_path(),
 			)
 		})?;
+		let started = Instant::now();
 		let mut record_builder =
 			ConflictRecordBuilder::new(&input, self.kernel.policies, self.partition_adapter);
 		let mut resolution =
 			resolve_tree_conflicts(&mut record_builder, &probe.conflicts, self.handler)?;
+		charge(KernelStep::JoinResolve, started);
 		let outcome = if resolution.resolutions.is_empty() {
 			probe
 		} else {
@@ -1496,8 +1500,10 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			DagJoinScope::Final => outcome.statements,
 		};
 		for facts in outcome.merge_facts {
+			let started = Instant::now();
 			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)
 				.inspect_err(|_| self.record_blocked(&state))?;
+			charge(KernelStep::JoinLineage, started);
 			state
 				.partition_lineage
 				.insert(facts.partition.clone(), lineage);
