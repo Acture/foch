@@ -1849,18 +1849,13 @@ mod tests {
 		assert!(emitted.contains("right = yes"), "{emitted}");
 	}
 
-	#[test]
-	fn a_child_of_an_intermediate_join_reads_the_join_before_output_simplification() {
-		// Output simplification rewrites a trigger `OR` that holds control flow,
-		// dropping the single-child `AND`. The child of the join must see the
-		// form the join's lineage describes, not the simplified output.
+	/// Merges contributors of one missions file the file does not have in
+	/// vanilla: `(mod id, dependency names, source)` in precedence order, each
+	/// mod named after its upper-cased id.
+	fn compute_missions_dag(
+		contributors: &[(&str, &[&str], &str)],
+	) -> Result<SemanticDagMergeComputation, String> {
 		let path = "missions/test_missions.txt";
-		let mission = |icon: &str, prestige: u32| {
-			format!(
-				"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = HAB }} 				test_mission = {{ icon = {icon} required_missions = {{ }} 				trigger = {{ OR = {{ senior_union_with = BOH AND = {{ 266 = {{ owned_by = BOH }} }} 				BOH = {{ if = {{ limit = {{ ai = no }} }} has_regency = no }} }} }} 				effect = {{ add_prestige = {prestige} }} }} }}
-"
-			)
-		};
 		let parsed = |mod_id: &str, source: &str| {
 			let game_path = crate::model::GamePathBuf::parse(path).expect("valid game path");
 			let parsed =
@@ -1879,37 +1874,39 @@ mod tests {
 				parse_cache_hit: false,
 			}
 		};
-		let mods = vec![
-			mod_with("left", "Left", vec![], vec![]),
-			mod_with("right", "Right", vec![], vec![]),
-			mod_with("child", "Child", vec!["Left", "Right"], vec![]),
-		];
-		let contributors = vec![
-			file_contributor("left", 1),
-			file_contributor("right", 2),
-			file_contributor("child", 3),
-		];
+		let names = contributors
+			.iter()
+			.map(|(mod_id, _, _)| mod_id.to_uppercase())
+			.collect::<Vec<_>>();
+		let mods = contributors
+			.iter()
+			.zip(&names)
+			.map(|((mod_id, deps, _), name)| mod_with(mod_id, name, deps.to_vec(), vec![]))
+			.collect::<Vec<_>>();
+		let file_contributors = contributors
+			.iter()
+			.enumerate()
+			.map(|(index, (mod_id, _, _))| file_contributor(mod_id, index + 1))
+			.collect::<Vec<_>>();
 		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
 		let game_path = crate::model::GamePath::new(path).expect("valid game path");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
 			game_path,
-			&contributors,
+			&file_contributors,
 			&IgnoreReplacePath::None,
 			&[],
 		);
-		let inventory = HashMap::from([
-			(mid("left"), parsed("left", &mission("a", 1))),
-			(mid("right"), parsed("right", &mission("b", 1))),
-			(mid("child"), parsed("child", &mission("b", 2))),
-		]);
+		let inventory = contributors
+			.iter()
+			.map(|(mod_id, _, source)| (mid(mod_id), parsed(mod_id, source)))
+			.collect::<HashMap<_, _>>();
 		let descriptor = crate::game::eu4::content::eu4()
 			.classify_content_family(game_path)
 			.expect("missions content family");
 		let mut handler = DeferHandler;
-
-		let result = compute_dag_merge_from_parsed(
+		compute_dag_merge_from_parsed(
 			None,
 			&file_dag,
 			None,
@@ -1918,6 +1915,28 @@ mod tests {
 			VanillaBaseMode::KnownAbsent,
 			&mut handler,
 		)
+	}
+
+	#[test]
+	fn a_child_of_an_intermediate_join_reads_the_join_before_output_simplification() {
+		// Output simplification rewrites a trigger `OR` that holds control flow,
+		// dropping the single-child `AND`. The child of the join must see the
+		// form the join's lineage describes, not the simplified output.
+		let mission = |icon: &str, prestige: u32| {
+			format!(
+				"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = HAB }} \
+				test_mission = {{ icon = {icon} required_missions = {{ }} \
+				trigger = {{ OR = {{ senior_union_with = BOH AND = {{ 266 = {{ owned_by = BOH }} }} \
+				BOH = {{ if = {{ limit = {{ ai = no }} }} has_regency = no }} }} }} \
+				effect = {{ add_prestige = {prestige} }} }} }}\n"
+			)
+		};
+
+		let result = compute_missions_dag(&[
+			("left", &[], &mission("a", 1)),
+			("right", &[], &mission("b", 1)),
+			("child", &["LEFT", "RIGHT"], &mission("b", 2)),
+		])
 		.expect("the child applies its delta to the joined parent");
 		let emitted =
 			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
@@ -1925,6 +1944,45 @@ mod tests {
 
 		assert!(emitted.contains("add_prestige = 2"), "{emitted}");
 		assert!(emitted.contains("owned_by = BOH"), "{emitted}");
+	}
+
+	/// A mission whose effect holds a control-flow chain. Joining two copies
+	/// orders the `OR` in its first limit differently from how the rendered
+	/// join re-normalizes.
+	fn chain_mission(icon: &str) -> String {
+		format!(
+			"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = HAB }} 			test_mission = {{ icon = {icon} required_missions = {{ }} effect = {{ hidden_effect = {{ 			if = {{ limit = {{ OR = {{ has_country_flag = won AND = {{ is_emperor = yes hre_religion_locked = yes }} }} }} add_adm_power = 100 }} 			else_if = {{ limit = {{ is_emperor = yes hre_religion_treaty = yes }} add_adm_power = 50 }} 			else = {{ add_prestige = 20 }} }} }} }} }}
+"
+		)
+	}
+
+	#[test]
+	fn a_child_of_a_join_accepts_a_reordered_control_flow_rendering() {
+		let result = compute_missions_dag(&[
+			("left", &[], &chain_mission("a")),
+			("right", &[], &chain_mission("a")),
+			("child", &["LEFT", "RIGHT"], &chain_mission("b")),
+		])
+		.expect("the child rebases the join lineage onto the re-normalized chain");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(emitted.contains("icon = b"), "{emitted}");
+		assert!(emitted.contains("hre_religion_locked = yes"), "{emitted}");
+	}
+
+	#[test]
+	fn a_join_on_a_join_accepts_a_reordered_control_flow_rendering() {
+		let result = compute_missions_dag(&[
+			("left", &[], &chain_mission("a")),
+			("right", &[], &chain_mission("a")),
+			("first", &["LEFT", "RIGHT"], &chain_mission("b")),
+			("second", &["LEFT", "RIGHT"], &chain_mission("c")),
+		])
+		.expect("the final join rebases its intermediate base lineage");
+
+		assert!(!result.semantic.partition_lineage.is_empty());
 	}
 
 	#[test]

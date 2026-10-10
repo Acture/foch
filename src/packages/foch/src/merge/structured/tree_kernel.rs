@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::game::eu4::content::MergePolicies;
@@ -1184,7 +1185,10 @@ fn compose_join_lineage(
 
 	let mut sources = BTreeMap::new();
 	let mut origins = BTreeMap::new();
-	let mut validated_revisions = BTreeSet::new();
+	// Each input's lineage, validated against the tree the kernel normalized
+	// for it, and rebased when that tree only reorders the same content.
+	let mut resolved_lineage: BTreeMap<RevisionId, Option<Cow<'_, SemanticPartitionLineage>>> =
+		BTreeMap::new();
 	for (output_node, input_sources) in &facts.outcome.provenance {
 		let mut original_sources = BTreeSet::new();
 		let mut original_origins = BTreeSet::new();
@@ -1215,23 +1219,32 @@ fn compose_join_lineage(
 					input_source.node.get()
 				)
 			})?;
-			if validated_revisions.insert(input_source.revision) {
+			if let std::collections::btree_map::Entry::Vacant(slot) =
+				resolved_lineage.entry(input_source.revision)
+			{
 				#[cfg(test)]
 				super::work::compare_lineage_tree();
-				if lineage.is_some_and(|lineage| lineage.tree != *expected_tree) {
-					return Err(format!(
-						"lineage tree does not match merge input for partition {:?}",
-						facts.partition
-					));
-				}
-				if lineage.is_none() && !normalized_tree_is_empty_root(expected_tree)? {
-					return Err(format!(
-						"non-empty merge input is missing lineage for partition {:?}",
-						facts.partition,
-					));
-				}
+				let resolved = match lineage {
+					Some(lineage) if lineage.tree != *expected_tree => Some(Cow::Owned(
+						lineage.rebased_onto(expected_tree).ok_or_else(|| {
+							format!(
+								"lineage tree does not match merge input for partition {:?}",
+								facts.partition
+							)
+						})?,
+					)),
+					Some(lineage) => Some(Cow::Borrowed(lineage)),
+					None if !normalized_tree_is_empty_root(expected_tree)? => {
+						return Err(format!(
+							"non-empty merge input is missing lineage for partition {:?}",
+							facts.partition,
+						));
+					}
+					None => None,
+				};
+				slot.insert(resolved);
 			}
-			if let Some(lineage) = lineage {
+			if let Some(lineage) = resolved_lineage[&input_source.revision].as_deref() {
 				if let Some(node_sources) = lineage.sources.get(&input_source.node) {
 					original_sources.extend(node_sources.iter().cloned());
 				}

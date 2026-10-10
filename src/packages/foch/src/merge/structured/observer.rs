@@ -101,10 +101,19 @@ fn apply_source_delta_lineage(
 	delta: &RevisionDelta,
 	resets_base: bool,
 ) -> Result<SemanticPartitionLineage, String> {
-	match parent {
-		Some(parent) if parent.tree != *base_tree => {
-			return Err("parent lineage tree does not match contributor delta base".to_string());
+	// The base is normalized from the parent's rendered statements, which a
+	// control-flow chain can re-normalize with its children reordered.
+	let rebased;
+	let parent = match parent {
+		Some(lineage) if lineage.tree != *base_tree => {
+			rebased = lineage.rebased_onto(base_tree).ok_or_else(|| {
+				"parent lineage tree does not match contributor delta base".to_string()
+			})?;
+			Some(&rebased)
 		}
+		other => other,
+	};
+	match parent {
 		None if !resets_base && !normalized_tree_is_empty_root(base_tree)? => {
 			return Err("non-empty contributor delta base is missing parent lineage".to_string());
 		}
