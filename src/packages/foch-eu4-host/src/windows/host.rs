@@ -202,17 +202,20 @@ fn prepare(root: &Path, module: HMODULE, exe_size: usize) -> Result<(), String> 
 	std::thread::Builder::new()
 		.name("foch-plugins".into())
 		.spawn(move || {
-			let mut pending = pending;
-			pending.extend(load_phase(runtime, Phase::Deferred));
-			while !pending.is_empty() {
-				pending.retain_mut(Pending::poll);
-				if !pending.is_empty() {
-					std::thread::sleep(Duration::from_millis(10));
-				}
-			}
+			poll_until_complete(pending);
+			poll_until_complete(load_phase(runtime, Phase::Deferred));
 		})
 		.map_err(|error| format!("cannot start deferred plugin worker: {error}"))?;
 	Ok(())
+}
+
+fn poll_until_complete(mut pending: Vec<Pending>) {
+	while !pending.is_empty() {
+		pending.retain_mut(Pending::poll);
+		if !pending.is_empty() {
+			std::thread::sleep(Duration::from_millis(10));
+		}
+	}
 }
 
 fn module_path(module: HMODULE) -> Option<PathBuf> {

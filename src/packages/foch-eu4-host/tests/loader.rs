@@ -46,6 +46,7 @@ fn fixtures() -> &'static TempDir {
 				.current_dir(root.path())
 				.args(["/nologo", "/LD", "/W4", "/utf-8"])
 				.arg(format!("/DFIXTURE_MODE={mode}"))
+				.arg(format!("/DFIXTURE_NAME=\"{name}\""))
 				.arg(format!(
 					"/I{}",
 					package.join("../foch-plugin-abi/include").display()
@@ -134,8 +135,20 @@ impl Runtime {
 }
 
 fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
+	let expected: Vec<String> = fs::read(directory.join("foch-host/plan.json"))
+		.ok()
+		.and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+		.and_then(|plan| plan["plugins"].as_array().cloned())
+		.unwrap_or_default()
+		.iter()
+		.filter_map(|plugin| plugin["id"].as_str().map(str::to_owned))
+		.collect();
 	let mut child = Command::new(directory.join("eu4.exe"))
 		.arg(mode)
+		.env(
+			"FOCH_FIXTURE_DELAY_MS",
+			if mode == "delayed" { "1200" } else { "40" },
+		)
 		.current_dir(directory)
 		.stdout(Stdio::piped())
 		.stderr(Stdio::piped())
@@ -143,6 +156,26 @@ fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
 		.unwrap();
 	let deadline = Instant::now() + Duration::from_secs(10);
 	while child.try_wait().unwrap().is_none() {
+		let events = read_events(directory);
+		let callbacks_complete = expected.iter().all(|id| {
+			!matches!(
+				id.as_str(),
+				"async_native" | "unaligned_report" | "unreadable_report" | "invalid_report_detail"
+			) || directory
+				.join(format!("foch-host/callback-finished-{id}"))
+				.exists()
+		});
+		if callbacks_complete
+			&& expected.iter().all(|id| {
+				states(&events, id).last().is_some_and(|state| {
+					matches!(
+						*state,
+						"active" | "inactive" | "refused" | "failed" | "unknown"
+					)
+				})
+			}) {
+			fs::write(directory.join("foch-host/fixture-complete"), "1").unwrap();
+		}
 		if Instant::now() > deadline {
 			let _ = child.kill();
 			panic!("loader deadlocked");
@@ -158,9 +191,14 @@ fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
 		String::from_utf8_lossy(&output.stderr),
 		fs::read_to_string(directory.join("foch-host/host-error.txt"))
 	);
+	read_events(directory)
+}
+
+fn read_events(directory: &Path) -> Vec<Value> {
 	fs::read_to_string(directory.join("foch-host/events.jsonl"))
 		.unwrap_or_default()
-		.lines()
+		.split_inclusive('\n')
+		.filter(|line| line.ends_with('\n'))
 		.map(|line| serde_json::from_str(line).unwrap())
 		.collect()
 }
@@ -212,7 +250,7 @@ fn legacy_sync_poll_refusal_and_timeout_are_actual_states() {
 			"legacy",
 			if name == "sync" { "entry" } else { "deferred" },
 		);
-		plugin["status"] = json!({"export":"ProbeState", "mode":mode, "timeout_ms":150,
+		plugin["status"] = json!({"export":"ProbeState", "mode":mode, "timeout_ms":if name == "timeout" {150} else {3000},
 			"pending":[0], "values":[{"value":1,"state":"active"}, {"value":-3,"state":"refused","reason":"foreign modification"}]});
 		plugins.push(plugin);
 	}
@@ -280,9 +318,28 @@ fn invalid_plan_leaves_proxy_operational_and_writes_a_diagnostic() {
 fn asynchronous_native_callbacks_keep_the_host_context_alive() {
 	let rt = Runtime::new();
 	rt.plan(vec![rt.plugin("async_native", "native", "deferred")]);
-	let events = rt.run("plain");
+	let events = rt.run("delayed");
 	assert!(states(&events, "async_native").contains(&"initializing"));
 	assert_eq!(states(&events, "async_native").last(), Some(&"active"));
+}
+
+#[test]
+fn deferred_loading_waits_for_pending_entry_initialization() {
+	let rt = Runtime::new();
+	let mut deferred = rt.plugin("sync", "legacy", "deferred");
+	deferred["status"] =
+		json!({"export":"ProbeState", "mode":"sync", "values":[{"value":1,"state":"active"}]});
+	rt.plan(vec![rt.plugin("async_native", "native", "entry"), deferred]);
+	let events = rt.run("delayed");
+	let entry_active = events
+		.iter()
+		.position(|event| event["plugin_id"] == "async_native" && event["state"] == "active")
+		.unwrap();
+	let deferred_loading = events
+		.iter()
+		.position(|event| event["plugin_id"] == "sync" && event["state"] == "loading")
+		.unwrap();
+	assert!(entry_active < deferred_loading);
 }
 
 #[test]
@@ -328,10 +385,29 @@ fn an_unrelated_executable_uses_only_version_forwarding() {
 	rt.plan(vec![rt.plugin("native", "native", "entry")]);
 	fs::rename(rt.path("eu4.exe"), rt.path("other.exe")).unwrap();
 	let output = Command::new(rt.path("other.exe"))
+		.arg("forward-only")
 		.current_dir(rt.0.path())
 		.output()
 		.unwrap();
 	assert!(output.status.success());
+	assert!(!rt.path("foch-host/events.jsonl").exists());
+}
+
+#[test]
+fn forwarding_only_initializes_safely_on_concurrent_first_calls() {
+	let rt = Runtime::new();
+	fs::rename(rt.path("eu4.exe"), rt.path("other.exe")).unwrap();
+	let output = Command::new(rt.path("other.exe"))
+		.arg("proxy-threads")
+		.current_dir(rt.0.path())
+		.output()
+		.unwrap();
+	assert!(
+		output.status.success(),
+		"{:?}: {}",
+		output.status.code(),
+		String::from_utf8_lossy(&output.stdout)
+	);
 	assert!(!rt.path("foch-host/events.jsonl").exists());
 }
 

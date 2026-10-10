@@ -26,7 +26,7 @@ foch plugin launch --playset default --host-dll ./target/release/foch_eu4_host.d
 foch plugin status --run-dir "<runtime directory printed by launch>"
 ```
 
-The import source may also be a ZIP. Optional Unicode fonts must be placed in
+Extract ZIP releases before importing. Optional Unicode fonts must be placed in
 the extracted package's `plugins/eu4_unicode_patch` directory before importing.
 Built-in adapter metadata alone is not an installed artifact: missing,
 ambiguous or modified selected versions are refused before launch.
@@ -93,6 +93,10 @@ status export and has no verified Foch adapter.
 
 The proxy forwards 17 VERSION exports by name and matching system ordinal to
 the absolute system-directory DLL using argument-preserving x64 tail jumps.
+System forwarding resolves once at the entry gate, outside `DllMain`. For
+forwarding-only loads it resolves lazily on the first VERSION call, preserving
+arguments and Win32 last-error state; consumers must call these APIs outside
+their own `DllMain`. Concurrent first calls share the same retained system DLL.
 During static DLL startup it installs
 a one-shot gate only when the executable is named `eu4.exe`. A dynamic load
 of the proxy, or an unrelated executable, receives forwarding only.
@@ -101,8 +105,9 @@ The gate runs before executable CRT initialization. It restores the original
 entry bytes and page protection, flushes the instruction cache, synchronously
 initializes `entry` plugins, and returns to the original entry with the volatile
 registers and flags preserved. No plugin load or plugin API call occurs in
-the proxy's `DllMain`. `deferred` loading and initialization polling run on a
-worker after the entry plugins have initialized.
+the proxy's `DllMain`. `entry` initialization calls precede the game CRT;
+a worker waits for pending entry initialization to reach a terminal state
+before loading and polling `deferred` plugins.
 
 Missing or invalid plans load no plugins and preserve forwarding. A malformed
 plan or a host preparation error is written to the existing runtime directory's
@@ -111,6 +116,10 @@ arbitrary installation. If the gate cannot be installed, Windows rejects the
 proxy at startup; if another DLL changes the gate before it executes, the
 process exits with code 126 rather than overwriting the other change. Cross-page
 gates are refused so both writes preserve the page's original protection.
+If writing a gate fails after changing bytes, it rolls back the original bytes,
+flushes the instruction cache and restores protection before rejecting startup.
+An unrecoverable rollback exits the process rather than unloading a proxy that
+the executable entry might still target.
 
 `process_attach` is a reserved legacy fallback, **currently refused**. It must
 not silently become `entry` or `deferred`; its necessity first requires E1.

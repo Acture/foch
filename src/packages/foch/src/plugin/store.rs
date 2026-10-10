@@ -2,10 +2,10 @@
 //! immutable directory under the Foch data directory.
 //!
 //! Validation works on an in-memory list of package entries so it needs no
-//! archive library and is fully testable; the CLI decodes a ZIP into that
-//! list. Nothing is written until every check passes, and an installed version
-//! directory is never overwritten, so a version a launch is using cannot change
-//! under it.
+//! archive library and is fully testable; the CLI reads an extracted directory
+//! into that list. Nothing is written until every check passes, and an installed
+//! version directory is never overwritten, so a version a launch is using
+//! cannot change under it.
 
 use super::manifest::{FILE_NAME, Manifest};
 use sha2::{Digest, Sha256};
@@ -341,24 +341,20 @@ pub fn install(store_root: &Path, package: &ValidatedPackage) -> io::Result<Inst
 	fs::create_dir_all(&parent)?;
 
 	// Stage under a unique sibling name on the same volume, then rename.
-	let staging = parent.join(format!(".staging-{}", package.version_dir_name()));
-	if staging.exists() {
-		fs::remove_dir_all(&staging)?;
-	}
-	fs::create_dir_all(&staging)?;
-	let staged = write_entries(&staging, package).and_then(|()| {
+	let staging = tempfile::Builder::new()
+		.prefix(&format!(".staging-{}-", package.version_dir_name()))
+		.tempdir_in(&parent)?;
+	// TempDir removes this importer's private staging directory on failures
+	// and AlreadyPresent, including a concurrent winner of the final rename.
+	write_entries(staging.path(), package).and_then(|()| {
 		// A pre-existing destination between the check and the rename means a
 		// concurrent writer won; keep theirs.
-		match fs::rename(&staging, &destination) {
+		match fs::rename(staging.path(), &destination) {
 			Ok(()) => Ok(Installed::New(destination.clone())),
 			Err(_) if destination.is_dir() => Ok(Installed::AlreadyPresent(destination.clone())),
 			Err(error) => Err(error),
 		}
-	});
-	if staged.is_err() {
-		let _ = fs::remove_dir_all(&staging);
-	}
-	staged
+	})
 }
 
 /// One installed version: where it lives and its manifest.
@@ -579,6 +575,50 @@ sha256 = "{dll_digest}"
 			errors
 				.iter()
 				.any(|e| matches!(e, ImportError::BadEntryDll { .. }))
+		);
+	}
+
+	#[test]
+	fn concurrent_imports_keep_one_complete_version_and_no_staging_directories() {
+		let temp = tempfile::tempdir().unwrap();
+		let mut entries = package(fake_dll());
+		entries.push(ArchiveEntry {
+			path: "resources/large.bin".into(),
+			data: vec![42; 2 * 1024 * 1024],
+		});
+		let validated = validate(entries).unwrap();
+		let barrier = std::sync::Barrier::new(12);
+		std::thread::scope(|scope| {
+			let handles: Vec<_> = (0..12)
+				.map(|_| {
+					scope.spawn(|| {
+						barrier.wait();
+						install(temp.path(), &validated)
+					})
+				})
+				.collect();
+			let results: Vec<_> = handles
+				.into_iter()
+				.map(|handle| handle.join().unwrap().unwrap())
+				.collect();
+			assert_eq!(
+				results
+					.iter()
+					.filter(|result| matches!(result, Installed::New(_)))
+					.count(),
+				1
+			);
+		});
+		let installed = version_dir(temp.path(), &validated);
+		assert_eq!(
+			fs::read(installed.join("resources/large.bin")).unwrap(),
+			vec![42; 2 * 1024 * 1024]
+		);
+		assert_eq!(
+			fs::read_dir(plugin_dir(temp.path(), &validated.manifest.plugin.id))
+				.unwrap()
+				.count(),
+			1
 		);
 	}
 

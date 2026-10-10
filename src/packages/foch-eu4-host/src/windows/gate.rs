@@ -69,19 +69,62 @@ pub(super) unsafe fn install() -> bool {
 }
 
 unsafe fn write(address: *mut u8, bytes: &[u8; GATE_BYTES]) -> bool {
+	let result = unsafe {
+		write_with(
+			address,
+			bytes,
+			&mut |address, protection, old| {
+				VirtualProtect(address, GATE_BYTES, protection, old) != 0
+			},
+			&mut |address| FlushInstructionCache(GetCurrentProcess(), address, GATE_BYTES) != 0,
+		)
+	};
+	match result {
+		Ok(()) => true,
+		Err(WriteError::OriginalIntact) => false,
+		// A failed rollback must not let DllMain return FALSE and unload code
+		// still targeted by the executable entry point.
+		Err(WriteError::Unrecoverable) => unsafe { ExitProcess(126) },
+	}
+}
+
+#[derive(Debug, PartialEq)]
+enum WriteError {
+	OriginalIntact,
+	Unrecoverable,
+}
+
+unsafe fn write_with(
+	address: *mut u8,
+	bytes: &[u8; GATE_BYTES],
+	protect: &mut impl FnMut(*mut c_void, u32, *mut u32) -> bool,
+	flush: &mut impl FnMut(*const c_void) -> bool,
+) -> Result<(), WriteError> {
+	let original = unsafe { address.cast::<[u8; GATE_BYTES]>().read_unaligned() };
 	let mut old = 0;
-	if unsafe { VirtualProtect(address.cast(), GATE_BYTES, PAGE_EXECUTE_READWRITE, &mut old) } == 0
-	{
-		return false;
+	if !protect(address.cast(), PAGE_EXECUTE_READWRITE, &mut old) {
+		return Err(WriteError::OriginalIntact);
 	}
 	unsafe {
 		core::ptr::copy_nonoverlapping(bytes.as_ptr(), address, GATE_BYTES);
 	}
-	let flushed =
-		unsafe { FlushInstructionCache(GetCurrentProcess(), address.cast(), GATE_BYTES) } != 0;
+	let flushed = flush(address.cast());
 	let mut discarded = 0;
-	let protected = unsafe { VirtualProtect(address.cast(), GATE_BYTES, old, &mut discarded) } != 0;
-	flushed && protected
+	let protected = protect(address.cast(), old, &mut discarded);
+	if flushed && protected {
+		return Ok(());
+	}
+	if !protect(address.cast(), PAGE_EXECUTE_READWRITE, &mut discarded) {
+		return Err(WriteError::Unrecoverable);
+	}
+	unsafe { core::ptr::copy_nonoverlapping(original.as_ptr(), address, GATE_BYTES) };
+	let flushed = flush(address.cast());
+	let protected = protect(address.cast(), old, &mut discarded);
+	if flushed && protected {
+		Err(WriteError::OriginalIntact)
+	} else {
+		Err(WriteError::Unrecoverable)
+	}
 }
 
 unsafe extern "system" fn enter() {
@@ -95,6 +138,7 @@ unsafe extern "system" fn enter() {
 		}
 	}
 	// Panics must not unwind through the kernel's executable-start frame.
+	super::proxy::initialize();
 	let _ = std::panic::catch_unwind(|| super::host::start(IMAGE_SIZE.load(Ordering::Acquire)));
 }
 
@@ -119,4 +163,59 @@ unsafe extern "system" fn entry_gate() {
 
 pub(super) fn image_base() -> *mut c_void {
 	unsafe { GetModuleHandleW(std::ptr::null()) }.cast()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn partial_gate_writes_restore_bytes_cache_and_original_protection() {
+		for (fail_protect, fail_flush) in [(0, 1), (2, 0), (1, 0)] {
+			let original = [0x90; GATE_BYTES];
+			let mut memory = original;
+			let mut protection_calls = Vec::new();
+			let mut flushes = 0;
+			let result = unsafe {
+				write_with(
+					memory.as_mut_ptr(),
+					&[0xcc; GATE_BYTES],
+					&mut |_, protection, old| {
+						protection_calls.push(protection);
+						old.write(0x20);
+						protection_calls.len() != fail_protect
+					},
+					&mut |_| {
+						flushes += 1;
+						flushes != fail_flush
+					},
+				)
+			};
+			assert_eq!(result, Err(WriteError::OriginalIntact));
+			assert_eq!(memory, original);
+			if fail_protect != 1 {
+				assert_eq!(flushes, 2);
+				assert_eq!(protection_calls.last(), Some(&0x20));
+			}
+		}
+	}
+
+	#[test]
+	fn an_unrecoverable_gate_write_cannot_allow_proxy_unloading() {
+		let mut memory = [0x90; GATE_BYTES];
+		let mut calls = 0;
+		let result = unsafe {
+			write_with(
+				memory.as_mut_ptr(),
+				&[0xcc; GATE_BYTES],
+				&mut |_, _, old| {
+					calls += 1;
+					old.write(0x20);
+					calls != 3
+				},
+				&mut |_| false,
+			)
+		};
+		assert_eq!(result, Err(WriteError::Unrecoverable));
+	}
 }

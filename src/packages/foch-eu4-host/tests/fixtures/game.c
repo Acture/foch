@@ -24,6 +24,11 @@ static void before_main(void) {
 #pragma section(".CRT$XCU", read)
 __declspec(allocate(".CRT$XCU")) void (__cdecl *fixture_constructor)(void) = before_main;
 
+static DWORD WINAPI first_version_call(void *sample) {
+	DWORD ignored = 0;
+	return GetFileVersionInfoSizeW((LPCWSTR)sample, &ignored) ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
 	wchar_t system[MAX_PATH];
 	wchar_t sample[MAX_PATH];
@@ -35,8 +40,23 @@ int main(int argc, char **argv) {
 	GetSystemDirectoryW(system, MAX_PATH);
 	swprintf_s(sample, MAX_PATH, L"%s\\kernel32.dll", system);
 	wcscat_s(system, MAX_PATH, L"\\version.dll");
+	if (!proxy) return 1;
+	if (argc > 1 && strcmp(argv[1], "proxy-threads") == 0) {
+		HANDLE threads[8];
+		for (i = 0; i < 8; ++i) {
+			threads[i] = CreateThread(NULL, 0, first_version_call, sample, 0, NULL);
+			if (!threads[i]) return 10;
+		}
+		if (WaitForMultipleObjects(8, threads, TRUE, 10000) != WAIT_OBJECT_0) return 11;
+		for (i = 0; i < 8; ++i) {
+			DWORD result;
+			if (!GetExitCodeThread(threads[i], &result) || result) return 12;
+			CloseHandle(threads[i]);
+		}
+	}
+	proxy_size = GetFileVersionInfoSizeW(sample, &ignored);
 	real = LoadLibraryExW(system, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-	if (!proxy || !real) return 1;
+	if (!real) return 1;
 	/* Each forwarding stub must tail-jump to the corresponding system export. */
 	for (i = 0; i < sizeof(exports) / sizeof(exports[0]); ++i) {
 		const unsigned char *stub = (const unsigned char *)GetProcAddress(proxy, exports[i]);
@@ -49,13 +69,18 @@ int main(int argc, char **argv) {
 		if (GetProcAddress(proxy, MAKEINTRESOURCEA(i + 1)) != (FARPROC)stub) return 7;
 		if (GetProcAddress(real, MAKEINTRESOURCEA(i + 1)) != target) return 8;
 	}
-	proxy_size = GetFileVersionInfoSizeW(sample, &ignored);
 	real_size = ((SizeFn)GetProcAddress(real, "GetFileVersionInfoSizeW"))(sample, &ignored);
 	if (!proxy_size || proxy_size != real_size) return 4;
 	if (GetModuleHandleW(L"unexpected.dll")) return 5;
 	if (argc > 1 && strcmp(argv[1], "native") == 0 && !native_at_constructor) return 6;
-	/* Give the bounded fixture polls time to finish, then leave normally. */
-	Sleep(500);
+	/* The Rust harness acknowledges terminal events; elapsed time is not proof. */
+	if (argc > 1 && strcmp(argv[1], "forward-only") != 0 && strcmp(argv[1], "proxy-threads") != 0) {
+		ULONGLONG deadline = GetTickCount64() + 10000;
+		while (GetFileAttributesW(L"foch-host\\fixture-complete") == INVALID_FILE_ATTRIBUTES) {
+			if (GetTickCount64() >= deadline) return 9;
+			Sleep(10);
+		}
+	}
 	puts("entry reached; all 17 VERSION targets and version API match system32");
 	return 0;
 }

@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <string.h>
+#include <stdlib.h>
 #include "foch_plugin.h"
 
 #ifndef FIXTURE_MODE
@@ -17,8 +18,12 @@ __declspec(dllexport) int FixtureInitialized(void) {
 static DWORD WINAPI complete_async(void *arg) {
 	const FochHostApi *host = (const FochHostApi *)arg;
 	FochStatus active = { sizeof(FochStatus), FOCH_STATE_ACTIVE, 0, { "async report", 12 } };
-	Sleep(40);
+	char delay[16];
+	DWORD length = GetEnvironmentVariableA("FOCH_FIXTURE_DELAY_MS", delay, sizeof(delay));
+	Sleep(length && length < sizeof(delay) ? strtoul(delay, NULL, 10) : 40);
 	InterlockedExchange(&ready, 1);
+	// Let polling observe ACTIVE before this malformed callback is submitted.
+	if (FIXTURE_MODE == 15) Sleep(200);
 	if (FIXTURE_MODE == 14) {
 		unsigned char bytes[sizeof(FochStatus) + 1];
 		memcpy(bytes + 1, &active, sizeof(active));
@@ -31,6 +36,8 @@ static DWORD WINAPI complete_async(void *arg) {
 	} else {
 		host->report(host, &active);
 	}
+	HANDLE done = CreateFileA("foch-host\\callback-finished-" FIXTURE_NAME, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (done != INVALID_HANDLE_VALUE) CloseHandle(done);
 	return 0;
 }
 

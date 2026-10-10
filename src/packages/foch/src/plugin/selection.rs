@@ -107,7 +107,8 @@ impl PlaysetSelections {
 
 /// Convert the stored TOML config scalars to the JSON the planner and host
 /// carry. Only the scalar kinds the manifest schema allows are represented;
-/// anything else becomes a string so no value is silently dropped.
+/// unsupported kinds remain invalid (null), so even a string field rejects
+/// arrays, tables, floats and datetimes instead of silently coercing them.
 fn config_to_json(config: &BTreeMap<String, toml::Value>) -> serde_json::Value {
 	let mut map = serde_json::Map::new();
 	for (key, value) in config {
@@ -115,7 +116,7 @@ fn config_to_json(config: &BTreeMap<String, toml::Value>) -> serde_json::Value {
 			toml::Value::Boolean(flag) => serde_json::Value::Bool(*flag),
 			toml::Value::Integer(number) => serde_json::Value::from(*number),
 			toml::Value::String(text) => serde_json::Value::from(text.clone()),
-			other => serde_json::Value::from(other.to_string()),
+			_ => serde_json::Value::Null,
 		};
 		map.insert(key.clone(), json);
 	}
@@ -187,6 +188,33 @@ mod tests {
 			.find(|s| s.id.ends_with("menu-patch"))
 			.unwrap();
 		assert!(!menu.enabled);
+	}
+
+	#[test]
+	fn unsupported_toml_values_cannot_pass_a_string_schema() {
+		let mut manifest = super::super::builtin::adapters().remove(0);
+		manifest.config.clear();
+		manifest.config.insert(
+			"caption".into(),
+			super::super::manifest::ConfigField::String {
+				default: "hello".into(),
+				description: None,
+				adapter: None,
+			},
+		);
+		for text in [
+			"caption=[1,2]",
+			"caption={x=1}",
+			"caption=2026-10-11",
+			"caption=1.25",
+		] {
+			let config: BTreeMap<String, toml::Value> = toml::from_str(text).unwrap();
+			assert!(
+				super::super::deployment::effective_config(&manifest, &config_to_json(&config))
+					.is_err(),
+				"{text}"
+			);
+		}
 	}
 
 	#[test]

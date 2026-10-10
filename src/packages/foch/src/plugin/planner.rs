@@ -280,9 +280,27 @@ fn check_file_collisions(resolved: &BTreeMap<String, &Manifest>, resolution: &mu
 				.push(Diagnostic::FileCollision { path, ids });
 		}
 	}
-	// Dependency DLL basename -> digest -> plugin ids declaring it.
-	let mut by_path: BTreeMap<String, BTreeMap<&str, BTreeSet<&str>>> = BTreeMap::new();
+	// Loaded DLL basename -> normalized digest -> declaring plugin ids.
+	// An undeclared entry digest is unknown: it cannot prove compatibility
+	// with another DLL sharing its basename. Deployment supplies real digests.
+	let mut by_path: BTreeMap<String, BTreeMap<Option<String>, BTreeSet<&str>>> = BTreeMap::new();
 	for (id, manifest) in resolved {
+		let entry_path = manifest.entry.path.replace('\\', "/");
+		let entry_digest = manifest
+			.files
+			.iter()
+			.find(|file| {
+				file.path
+					.replace('\\', "/")
+					.eq_ignore_ascii_case(&entry_path)
+			})
+			.map(|file| file.sha256.to_ascii_lowercase());
+		by_path
+			.entry(entry_path.rsplit('/').next().unwrap().to_ascii_lowercase())
+			.or_default()
+			.entry(entry_digest)
+			.or_default()
+			.insert(id.as_str());
 		for file in &manifest.files {
 			if !file.path.to_ascii_lowercase().ends_with(".dll") {
 				continue;
@@ -296,7 +314,7 @@ fn check_file_collisions(resolved: &BTreeMap<String, &Manifest>, resolution: &mu
 			by_path
 				.entry(name)
 				.or_default()
-				.entry(file.sha256.as_str())
+				.entry(Some(file.sha256.to_ascii_lowercase()))
 				.or_default()
 				.insert(id.as_str());
 		}
@@ -648,6 +666,45 @@ phase = "deferred"
 		assert!(plan(&game(), &store(vec![a.clone(), b.clone()]), &selections).is_launchable());
 		b.entry.path = format!("other/{}", a.entry.path.to_uppercase());
 		assert!(!plan(&game(), &store(vec![a, b]), &selections).is_launchable());
+	}
+
+	#[test]
+	fn digest_letter_case_does_not_create_a_dependency_collision() {
+		let a = manifest(
+			"a",
+			"1.0.0",
+			"[[files]]\npath=\"one/shared.dll\"\nsha256=\"aa\"",
+		);
+		let b = manifest(
+			"b",
+			"1.0.0",
+			"[[files]]\npath=\"two/SHARED.DLL\"\nsha256=\"AA\"",
+		);
+		assert!(
+			plan(
+				&game(),
+				&store(vec![a, b]),
+				&[select("a", "1.0.0"), select("b", "1.0.0")]
+			)
+			.is_launchable()
+		);
+	}
+
+	#[test]
+	fn an_unlisted_entry_cannot_alias_another_plugins_dependency() {
+		let a = manifest("a", "1.0.0", "");
+		let b = manifest(
+			"b",
+			"1.0.0",
+			"[[files]]\npath=\"dependency/A.DLL\"\nsha256=\"bb\"",
+		);
+		let resolution = plan(
+			&game(),
+			&store(vec![a, b]),
+			&[select("a", "1.0.0"), select("b", "1.0.0")],
+		);
+		assert!(!resolution.is_launchable());
+		assert!(resolution.errors.iter().any(|error| matches!(error, Diagnostic::FileCollision { path, ids } if path == "a.dll" && ids == &["a", "b"])));
 	}
 
 	#[test]
