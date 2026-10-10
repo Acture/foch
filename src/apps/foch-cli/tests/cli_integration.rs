@@ -440,6 +440,106 @@ fn run_foch_with_env(
 }
 
 #[test]
+fn plugin_plan_agrees_with_launch_resolution_for_an_undeclared_entry_digest() {
+	use foch::plugin::{deployment, planner, selection, store};
+	for identical in [true, false] {
+		let scratch = TempDir::new().unwrap();
+		let game = scratch.path().join("game");
+		write_game_version(&game, "1.37.5.0");
+		let mut dll = vec![0u8; 0x80];
+		dll[..2].copy_from_slice(b"MZ");
+		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+		dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+		dll[0x44..0x46].copy_from_slice(&store::MACHINE_AMD64.to_le_bytes());
+		let mut dependency = dll.clone();
+		if !identical {
+			dependency[0x70] = 1;
+		}
+		let manifest = format!(
+			r#"schema = 1
+[plugin]
+id = "dev.foch.sample"
+name = "Sample"
+version = "1.0.0"
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "*"
+abi_major = 1
+[entry]
+kind = "native"
+path = "sample.dll"
+phase = "deferred"
+[[files]]
+path = "dependency/sample.dll"
+sha256 = "{}"
+"#,
+			deployment::hash(&dependency)
+		);
+		let package = store::validate(vec![
+			store::ArchiveEntry {
+				path: "foch-plugin.toml".into(),
+				data: manifest.into_bytes(),
+			},
+			store::ArchiveEntry {
+				path: "sample.dll".into(),
+				data: dll,
+			},
+			store::ArchiveEntry {
+				path: "dependency/sample.dll".into(),
+				data: dependency,
+			},
+		])
+		.unwrap();
+		let store_root = scratch.path().join(".foch-data/plugins/store");
+		store::install(&store_root, &package).unwrap();
+		let choices = selection::PlaysetSelections {
+			plugins: BTreeMap::from([(
+				"dev.foch.sample".into(),
+				selection::Choice {
+					version: "1.0.0".parse().unwrap(),
+					enabled: true,
+					config: BTreeMap::new(),
+				},
+			)]),
+		};
+		let selected = choices.to_selections();
+		let mut selections = selection::Selections::default();
+		selections.set_playset("test", choices);
+		selections
+			.save(&scratch.path().join("plugins/selections.toml"))
+			.unwrap();
+		let launchable = deployment::resolve(
+			&planner::GameIdentity {
+				game: "eu4".into(),
+				version: "1.37.5".parse().unwrap(),
+				platform: planner::WINDOWS_X64.into(),
+			},
+			&store_root,
+			&selected,
+		)
+		.is_ok();
+		assert_eq!(launchable, identical);
+		let (code, stdout, stderr) = run_foch(
+			&[
+				"plugin",
+				"plan",
+				"--playset",
+				"test",
+				"--game-path",
+				game.to_str().unwrap(),
+				"--format",
+				"json",
+			],
+			scratch.path(),
+		);
+		assert_eq!(code, i32::from(!launchable), "{stdout}\n{stderr}");
+		let output: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+		assert_eq!(output["launchable"], launchable);
+	}
+}
+
+#[test]
 fn top_level_help_exposes_only_current_merge_commands() {
 	let tmp = TempDir::new().expect("temp dir");
 	let (help_code, stdout, help_stderr) = run_foch(&["--help"], tmp.path());

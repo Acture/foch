@@ -33,6 +33,16 @@ static DWORD WINAPI complete_async(void *arg) {
 	} else if (FIXTURE_MODE == 16) {
 		active.detail = (FochStr){ "\xff", 1 };
 		host->report(host, &active);
+	} else if (FIXTURE_MODE == 17) {
+		SYSTEM_INFO system;
+		GetSystemInfo(&system);
+		unsigned char *pages = VirtualAlloc(NULL, system.dwPageSize * 2, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		DWORD old;
+		if (!pages || !VirtualProtect(pages + system.dwPageSize, system.dwPageSize, PAGE_NOACCESS, &old)) ExitProcess(8);
+		uint32_t *prefix = (uint32_t *)(pages + system.dwPageSize - sizeof(uint32_t));
+		*prefix = sizeof(uint32_t);
+		host->report(host, (const FochStatus *)prefix);
+		VirtualFree(pages, 0, MEM_RELEASE);
 	} else {
 		host->report(host, &active);
 	}

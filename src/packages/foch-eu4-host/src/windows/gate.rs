@@ -144,8 +144,9 @@ unsafe extern "system" fn enter() {
 
 #[unsafe(naked)]
 unsafe extern "system" fn entry_gate() {
-	// Windows x64 entry has RSP%16 == 8. Save all volatile registers and flags;
-	// reserve shadow space plus XMM0..5 and align RSP before calling Rust.
+	// Windows x64 entry has RSP%16 == 8. Eight pushes use 64 bytes;
+	// subtract 136 = 32 shadow + 96 XMM + 8 alignment, so RSP%16 == 0
+	// before calling Rust. Preserve all volatile registers and flags.
 	naked_asm!(
 		"pushfq", "push rax", "push rcx", "push rdx", "push r8", "push r9", "push r10", "push r11",
 		"sub rsp, 136",

@@ -6,6 +6,11 @@
 //! constraints, and reports every problem it finds. It performs no I/O and
 //! never loads a DLL. The loader executes exactly what it returns; it does not
 //! re-order anything itself.
+//!
+//! Shared DLL basenames require known digests, including each entry DLL;
+//! missing digests are conservatively refused. Artifact-backed previews use
+//! [`super::deployment::resolve`] to supply verified digests and the same
+//! resolution launch uses.
 
 use super::manifest::{Kind, Manifest, Phase};
 use semver::Version;

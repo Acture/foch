@@ -578,12 +578,22 @@ unsafe extern "C" fn log(host: *const FochHostApi, level: i32, message: FochStr)
 
 unsafe extern "C" fn report(host: *const FochHostApi, status: *const FochStatus) {
 	if let Some(ctx) = unsafe { from_host(host) } {
+		if !readable(status.cast(), size_of::<u32>()) {
+			invalid_status(ctx, "reported status is null or unreadable");
+			return;
+		}
+		// Validate the versioned prefix before reading fields a short buffer
+		// has not supplied. Future extensions need only our known prefix.
+		if unsafe { status.cast::<u32>().read_unaligned() } < size_of::<FochStatus>() as u32 {
+			invalid_status(ctx, "reported status structure is too small");
+			return;
+		}
 		if !readable(status.cast(), size_of::<FochStatus>()) {
 			invalid_status(ctx, "reported status is null or unreadable");
 			return;
 		}
 		// The C ABI may supply a byte buffer rather than an aligned struct.
-		// Copy before validation, without forming an unaligned Rust reference.
+		// Copy after size validation without forming an unaligned reference.
 		publish(ctx, &unsafe { status.read_unaligned() });
 	}
 }

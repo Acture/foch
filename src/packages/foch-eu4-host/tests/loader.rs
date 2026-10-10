@@ -36,6 +36,7 @@ fn fixtures() -> &'static TempDir {
 			("unaligned_report", "native.c", 14),
 			("unreadable_report", "native.c", 15),
 			("invalid_report_detail", "native.c", 16),
+			("short_report", "native.c", 17),
 			("sync", "legacy.c", 0),
 			("poll", "legacy.c", 1),
 			("timeout", "legacy.c", 2),
@@ -160,7 +161,11 @@ fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
 		let callbacks_complete = expected.iter().all(|id| {
 			!matches!(
 				id.as_str(),
-				"async_native" | "unaligned_report" | "unreadable_report" | "invalid_report_detail"
+				"async_native"
+					| "unaligned_report"
+					| "unreadable_report"
+					| "invalid_report_detail"
+					| "short_report"
 			) || directory
 				.join(format!("foch-host/callback-finished-{id}"))
 				.exists()
@@ -463,6 +468,20 @@ fn reports_copy_unaligned_status_and_reject_unreadable_or_invalid_data() {
 	for id in ["unreadable_report", "invalid_report_detail"] {
 		assert_eq!(states(&events, id).last(), Some(&"failed"), "{id}");
 	}
+}
+
+#[test]
+fn a_short_report_reads_only_the_size_prefix_before_rejecting_it() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("short_report", "native", "entry")]);
+	let events = rt.run("plain");
+	assert_eq!(states(&events, "short_report").last(), Some(&"failed"));
+	assert!(
+		events
+			.iter()
+			.any(|event| event["plugin_id"] == "short_report"
+				&& event["reason"] == "reported status structure is too small")
+	);
 }
 
 #[test]

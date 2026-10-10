@@ -149,6 +149,7 @@ struct Package {
 pub struct Deployment {
 	game_version: String,
 	packages: Vec<Package>,
+	resolution: planner::Resolution,
 }
 
 #[derive(Debug, Serialize)]
@@ -240,12 +241,13 @@ pub fn resolve(
 	}
 	let packages = resolution
 		.order
-		.into_iter()
+		.iter()
 		.map(|item| packages.remove(&item.id).unwrap())
 		.collect();
 	Ok(Deployment {
 		game_version: game.version.to_string(),
 		packages,
+		resolution,
 	})
 }
 
@@ -329,6 +331,12 @@ pub fn effective_config(manifest: &Manifest, chosen: &Value) -> Result<Value, St
 }
 
 impl Deployment {
+	/// The plan validated against the actual bytes this deployment retains.
+	/// Management previews and launch must use this same result.
+	pub fn resolution(&self) -> &planner::Resolution {
+		&self.resolution
+	}
+
 	/// Stage into a fresh Foch layer. Artifact files are copied, never hard
 	/// linked, so legacy log/config writes cannot mutate the version store.
 	pub fn stage(

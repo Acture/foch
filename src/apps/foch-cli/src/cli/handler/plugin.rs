@@ -241,15 +241,17 @@ fn plan_launch(args: &PluginPlanArgs, config: &Config) -> HandlerResult {
 	let (_, selections) = load_selections()?;
 	let chosen = selections.for_playset(&args.playset);
 	let selections = chosen.to_selections();
-	let mut resolution = plugin::plan(&game, &catalog, &selections);
-	if resolution.is_launchable()
-		&& let Err(reason) = plugin::deployment::resolve(&game, &store_root, &selections)
-	{
-		resolution.errors.push(planner::Diagnostic::Incompatible {
-			id: "deployment".into(),
-			reason,
-		});
-	}
+	let resolution = match plugin::deployment::resolve(&game, &store_root, &selections) {
+		Ok(deployment) => deployment.resolution().clone(),
+		Err(reason) => {
+			let mut resolution = plugin::plan(&game, &catalog, &selections);
+			resolution.errors.push(planner::Diagnostic::Incompatible {
+				id: "deployment".into(),
+				reason,
+			});
+			resolution
+		}
+	};
 
 	match args.format {
 		CheckOutputFormat::Json => {

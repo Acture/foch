@@ -112,6 +112,8 @@ macro_rules! forward {
 		unsafe extern "system" fn $resolve() {
 			// Match the gate's x64 register/flags preservation; stack arguments
 			// and the caller's return address remain intact for the tail jump.
+			// Eight pushes use 64 bytes; 136 adds shadow/XMM space plus the
+			// 8-byte pad that aligns RSP to 16 before calling initialize.
 			naked_asm!(
 				"pushfq", "push rax", "push rcx", "push rdx", "push r8", "push r9", "push r10", "push r11",
 				"sub rsp, 136",
