@@ -39,6 +39,12 @@ pub(crate) trait ClausewitzTreePolicy {
 		None
 	}
 
+	/// Whether statements normalize alike inside a block assigned to `left`
+	/// and one assigned to `right`: anchors read the parent key only here.
+	fn normalizes_children_alike(&self, left: &str, right: &str) -> bool {
+		left == right
+	}
+
 	fn block_child_order(&self, _assignment_key: Option<&str>) -> ChildOrder {
 		match _assignment_key {
 			Some("OR") => ChildOrder::Commutative,
@@ -149,6 +155,12 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 					crate::merge::semantic_fingerprint::value_fingerprint(value),
 				)
 			})
+	}
+
+	fn normalizes_children_alike(&self, left: &str, right: &str) -> bool {
+		let union =
+			|key| self.policies.divergent_block_policy_for_key(key) == DivergentBlockPolicy::Union;
+		union(left) == union(right)
 	}
 
 	fn assignment_signature(&self, key: &str, value: &AstValue) -> Option<String> {

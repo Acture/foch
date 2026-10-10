@@ -2807,3 +2807,36 @@ fn an_option_edited_against_its_removal_survives_whole() {
 	assert!(output.contains("add_stability = 2"), "{output}");
 	assert!(output.contains("add_legitimacy = 5"), "{output}");
 }
+
+#[test]
+fn deeply_nested_branches_normalize_in_linear_time() {
+	// EE nests advisor-cost checks two dozen `if`s deep; normalizing each
+	// branch effect twice made that 2^24 subtree normalizations.
+	let depth = 24;
+	let mut source = String::from("e = {\n");
+	for level in 0..depth {
+		source.push_str(&format!(
+			"if = {{ limit = {{ check_variable = {{ which = X value = {level} }} }}\n"
+		));
+	}
+	source.push_str("add_prestige = 1\n");
+	for level in 0..depth {
+		source.push_str(&format!(
+			"}} else_if = {{ limit = {{ has_country_flag = f{level} }} add_prestige = 2 }} else = {{ add_prestige = 3 }}\n"
+		));
+	}
+	source.push_str("}\n");
+	let path = "common/scripted_effects/test.txt";
+	let file = parse_at(path, &source);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let tree = super::merge::normalize_clausewitz_file(&file, policies).expect("normalize");
+	assert_eq!(
+		tree.nodes()
+			.filter(|(_, node)| node.kind.starts_with("clausewitz.control_flow.chain:"))
+			.count(),
+		depth
+	);
+}

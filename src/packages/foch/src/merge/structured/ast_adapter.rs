@@ -317,6 +317,57 @@ pub(super) fn normalize_value_with_findings(
 	)
 }
 
+/// The children `normalize_value_with_findings` gives a block of `items`
+/// assigned to `assignment_key`, for a caller that assembles the block itself.
+pub(super) fn normalize_block_children(
+	items: &[AstStatement],
+	assignment_key: Option<&str>,
+	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
+) -> Result<Vec<TreeNode>, AstAdapterError> {
+	normalize_statements(
+		items,
+		assignment_key,
+		&mut Vec::new(),
+		policy,
+		control_flow_findings,
+	)
+}
+
+/// The block node `normalize_value_with_findings` builds around `children`.
+pub(super) fn block_node(
+	assignment_key: Option<&str>,
+	policy: &impl ClausewitzTreePolicy,
+	children: Vec<TreeNode>,
+) -> TreeNode {
+	branch(
+		&block_kind(assignment_key),
+		None,
+		None,
+		policy.block_child_order(assignment_key),
+		ChildCardinality::Many,
+		children,
+	)
+}
+
+/// One statement of a block assigned to `parent_assignment_key`, as
+/// `normalize_block_children` gives an assignment there.
+pub(super) fn normalize_assignment_in_block(
+	statement: &AstStatement,
+	parent_assignment_key: Option<&str>,
+	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
+) -> Result<TreeNode, AstAdapterError> {
+	normalize_statement_with_item_anchor(
+		statement,
+		parent_assignment_key,
+		&mut Vec::new(),
+		policy,
+		None,
+		control_flow_findings,
+	)
+}
+
 fn normalize_value_at(
 	value: &AstValue,
 	assignment_key: Option<&str>,

@@ -6,8 +6,9 @@ use crate::merge::kernel::{
 };
 
 use super::ast_adapter::{
-	AstAdapterError, COMMENT_KIND, assignment_key, branch, denormalize_only_value_child,
-	denormalize_statement, normalize_statement_with_findings, normalize_value_with_findings,
+	AstAdapterError, COMMENT_KIND, assignment_key, block_node, branch,
+	denormalize_only_value_child, denormalize_statement, normalize_assignment_in_block,
+	normalize_block_children, normalize_statement_with_findings, normalize_value_with_findings,
 	synthetic_span,
 };
 use super::policy::ClausewitzTreePolicy;
@@ -583,6 +584,8 @@ struct RawCase {
 struct Case {
 	effect_key: String,
 	effect_items: Vec<AstStatement>,
+	/// `effect_items` normalized under `EFFECT_CONTEXT`, which the key hashes.
+	effect_children: Vec<TreeNode>,
 	effective_guard: Formula,
 	contains_default: bool,
 	leading_comments: Vec<AstStatement>,
@@ -732,7 +735,8 @@ fn normalize_chain_semantic(
 		if let Some(guard) = &raw.guard {
 			coverage = coverage.or(guard)?;
 		}
-		let effect_key = normalized_effect_key(&raw.effect_items, policy, control_flow_findings)?;
+		let (effect_key, effect_children) =
+			normalized_effect(&raw.effect_items, policy, control_flow_findings)?;
 		match cases_by_effect.get_mut(&effect_key) {
 			Some(existing) => {
 				existing.effective_guard = existing.effective_guard.or(&effective_guard)?;
@@ -746,6 +750,7 @@ fn normalize_chain_semantic(
 					Case {
 						effect_key,
 						effect_items: raw.effect_items,
+						effect_children,
 						effective_guard,
 						contains_default,
 						leading_comments: raw.leading_comments,
@@ -850,12 +855,27 @@ fn normalize_chain_semantic(
 				kind.clone(),
 			)
 		};
-		let mut body = normalize_value_with_findings(
-			&value,
-			Some(if is_default { "else" } else { "if" }),
-			policy,
-			control_flow_findings,
-		)?;
+		let body_key = if is_default { "else" } else { "if" };
+		// The effect was normalized once already for its key; normalizing it
+		// again under every enclosing branch is exponential in nesting depth.
+		let mut body = if policy.normalizes_children_alike(EFFECT_CONTEXT, body_key) {
+			let AstValue::Block { items, .. } = &value else {
+				unreachable!("a branch body is a block")
+			};
+			let mut children = Vec::with_capacity(items.len());
+			if !is_default {
+				children.push(normalize_assignment_in_block(
+					&items[0],
+					Some(body_key),
+					policy,
+					control_flow_findings,
+				)?);
+			}
+			children.extend(case.effect_children.iter().cloned());
+			block_node(Some(body_key), policy, children)
+		} else {
+			normalize_value_with_findings(&value, Some(body_key), policy, control_flow_findings)?
+		};
 		body.anchor = Some(SemanticKey::parent_scoped(
 			BRANCH_BODY_ANCHOR_NAMESPACE,
 			"body",
@@ -1082,22 +1102,19 @@ fn extract_raw_cases(
 	Ok((cases, cursor, complete))
 }
 
-fn normalized_effect_key(
+const EFFECT_CONTEXT: &str = "control_flow_effect";
+
+/// The identity of a branch effect, and the normalized statements it hashes.
+fn normalized_effect(
 	items: &[AstStatement],
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
-) -> Result<String, AstAdapterError> {
-	let value = AstValue::Block {
-		items: items.to_vec(),
-		span: synthetic_span(),
-	};
-	let tree = NormalizedTree::from_root(normalize_value_with_findings(
-		&value,
-		Some("control_flow_effect"),
-		policy,
-		control_flow_findings,
-	)?)?;
-	Ok(tree.node(tree.root())?.subtree_hash.to_string())
+) -> Result<(String, Vec<TreeNode>), AstAdapterError> {
+	let children =
+		normalize_block_children(items, Some(EFFECT_CONTEXT), policy, control_flow_findings)?;
+	let tree =
+		NormalizedTree::from_root(block_node(Some(EFFECT_CONTEXT), policy, children.clone()))?;
+	Ok((tree.node(tree.root())?.subtree_hash.to_string(), children))
 }
 
 fn is_empty_ruler_effect(items: &[AstStatement]) -> bool {
