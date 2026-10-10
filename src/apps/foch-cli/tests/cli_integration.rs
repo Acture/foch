@@ -668,14 +668,60 @@ fn check_fix_fixes_a_mod_directory_in_place_and_unsafe_fixes_settle_isolations()
 		&fixed,
 	);
 	assert!(parsed.diagnostics.is_empty(), "{fixed}");
-	assert!(
-		!scratch
-			.path()
-			.join(".foch-data")
-			.join("repair-backups")
-			.exists(),
-		"an author's mod is fixed as a linter fixes, with no backup"
+
+	// Each fix kept the file it changed, so a mistaken one can be undone.
+	let backup = stdout
+		.lines()
+		.find_map(|line| line.strip_prefix("undo with: foch check --restore \""))
+		.and_then(|rest| rest.strip_suffix('"'))
+		.unwrap_or_else(|| panic!("{stdout}"))
+		.to_owned();
+	assert!(!stdout.contains("Steam replaces"), "{stdout}");
+	let (code, stdout, stderr) = run_foch(&["check", "--restore", &backup], scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		fs::read_to_string(&path).unwrap(),
+		"b_check = { always = yes }\n\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n"
 	);
+}
+
+#[test]
+fn check_fix_treats_a_workshop_mod_directory_as_other_peoples_work() {
+	let scratch = TempDir::new().unwrap();
+	let mod_dir = scratch
+		.path()
+		.join("steamapps")
+		.join("workshop")
+		.join("content")
+		.join("236850")
+		.join("1001");
+	write_descriptor(&mod_dir, "Workshop mod");
+	let path = mod_dir.join(STRAY_BRACE_TRIGGERS);
+	let source = "b_check = {\n\talways = yes\n}\n}\nb_later = { always = no }\n";
+	write_script_file(&mod_dir, STRAY_BRACE_TRIGGERS, source);
+	let check = |extra: &[&str]| {
+		let mut args = vec!["check", path_text(&mod_dir)];
+		args.extend_from_slice(extra);
+		run_foch(&args, scratch.path())
+	};
+
+	// Fixing it needs to say where the fixes go, as a playset does.
+	let (code, stdout, stderr) = check(&["--fix"]);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("Steam Workshop mod"), "{stderr}");
+	assert_eq!(fs::read_to_string(&path).unwrap(), source);
+
+	let patch = scratch.path().join("patch");
+	let (code, stdout, stderr) = check(&["--fix", "--patch-mod", path_text(&patch)]);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(patch.join(STRAY_BRACE_TRIGGERS).is_file());
+	assert_eq!(fs::read_to_string(&path).unwrap(), source);
+
+	let (code, stdout, stderr) = check(&["--fix", "--in-place"]);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("undo with:"), "{stdout}");
+	assert!(stdout.contains("Steam replaces"), "{stdout}");
+	assert_ne!(fs::read_to_string(&path).unwrap(), source);
 }
 
 #[test]

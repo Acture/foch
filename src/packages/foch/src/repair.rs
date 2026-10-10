@@ -2,9 +2,10 @@
 //!
 //! A merge only repairs Foch's own copy of a source file. `foch check --fix`
 //! writes the same repairs out, like a linter's fixes: into a mod directory
-//! an author works on, or, for a playset, as a patch mod that holds only the
-//! repaired files and loads after the mods it repairs, or on explicit request
-//! into the source files themselves, each backed up first.
+//! an author works on, or, for a playset or a Workshop mod, as a patch mod
+//! that holds only the repaired files and loads after the mods it repairs,
+//! or on explicit request into the source files themselves. A file fixed in
+//! place is always backed up first, so the fix can be undone.
 //!
 //! Safe fixes are the repairs a merge makes by itself, and the reviewed
 //! `[[repairs]]` of `foch.toml`. Unsafe fixes, only on request, settle what a
@@ -421,14 +422,18 @@ fn line_offset(text: &str, line: usize) -> Option<usize> {
 	text.match_indices('\n').nth(line - 2).map(|(at, _)| at + 1)
 }
 
-/// Writes the repairs into the files of an author's mod directory, as a
-/// linter's fixes are: no backup is kept.
-pub fn apply_in_place(plan: &RepairPlan) -> Result<(), RepairError> {
-	verify_unchanged(plan)?;
-	for file in &plan.files {
-		fs::write(&file.source, &file.repaired)?;
-	}
-	Ok(())
+/// Whether `dir` lies in a Steam Workshop content folder, where Steam keeps
+/// other people's mods and replaces their files on update.
+pub fn is_workshop_item(dir: &Path) -> bool {
+	// A relative path such as `.` names its folder only once resolved.
+	let resolved = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+	let names: Vec<String> = resolved
+		.components()
+		.map(|component| component.as_os_str().to_string_lossy().to_ascii_lowercase())
+		.collect();
+	names
+		.windows(2)
+		.any(|pair| pair[0] == "workshop" && pair[1] == "content")
 }
 
 /// Checks that no source changed since `plan` read it.

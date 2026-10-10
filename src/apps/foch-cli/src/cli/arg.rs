@@ -179,9 +179,9 @@ pub struct CheckArgs {
 	#[arg(long, conflicts_with = "fix")]
 	pub diff: bool,
 
-	/// With --fix on a playset: write a patch mod holding only the fixed
-	/// files into this new or empty directory, to load after the mods it
-	/// fixes.
+	/// With --fix: write a patch mod holding only the fixed files into this
+	/// new or empty directory, to load after the mods it fixes, instead of
+	/// changing them.
 	#[arg(
 		long,
 		value_name = "DIR",
@@ -190,13 +190,14 @@ pub struct CheckArgs {
 	)]
 	pub patch_mod: Option<PathBuf>,
 
-	/// With --fix on a playset: fix the mods' own files, after backing up each
-	/// original. Steam replaces a Workshop mod's files when it updates, which
+	/// With --fix on a playset or a Steam Workshop mod: fix the mods' own
+	/// files, after backing up each original, as a mod directory of one's own
+	/// is fixed. Steam replaces a Workshop mod's files when it updates, which
 	/// undoes the fix.
 	#[arg(long, requires = "fix")]
 	pub in_place: bool,
 
-	/// Put back the originals an earlier --fix --in-place backed up into this
+	/// Put back the originals an earlier in-place --fix backed up into this
 	/// directory, for each file that still holds the fixed bytes.
 	#[arg(long, value_name = "BACKUP_DIR", conflicts_with_all = ["fix", "diff"])]
 	pub restore: Option<PathBuf>,

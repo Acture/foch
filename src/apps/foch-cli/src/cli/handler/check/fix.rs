@@ -6,8 +6,8 @@ use foch::game::eu4::text::decode_paradox_bytes;
 use foch::input::{Config, InputRequest, InputSource};
 use foch::project::Project;
 use foch::repair::{
-	FixOptions, RepairPlan, apply_in_place, plan_directory_repairs, plan_repairs, repair_in_place,
-	restore_backup, write_patch_mod,
+	FixOptions, RepairPlan, is_workshop_item, plan_directory_repairs, plan_repairs,
+	repair_in_place, restore_backup, write_patch_mod,
 };
 use std::path::Path;
 
@@ -41,8 +41,27 @@ pub fn handle_check_fix(args: &CheckArgs, config: Config) -> HandlerResult {
 	};
 
 	// A mod directory is an author's own work and is fixed in place; a
-	// playset is other people's mods.
+	// playset, or a mod Steam keeps in its Workshop folder, is other
+	// people's mods, and the fixes go where the user says.
 	let directory = args.playset_path.as_deref().filter(|path| path.is_dir());
+	if args.fix && args.patch_mod.is_none() && !args.in_place {
+		match directory {
+			Some(root) if is_workshop_item(root) => {
+				return Err(format!(
+					"{} is a Steam Workshop mod, whose files Steam replaces when it updates; write a patch mod (--patch-mod <DIR>) or fix its own files with a backup (--in-place)",
+					root.display()
+				)
+				.into());
+			}
+			Some(_) => {}
+			None => {
+				return Err(
+					"fixing a playset writes either a patch mod (--patch-mod <DIR>) or the mods' own files (--in-place)"
+						.into(),
+				);
+			}
+		}
+	}
 	let plan = match directory {
 		Some(root) => {
 			let project = match &args.config {
@@ -71,35 +90,26 @@ pub fn handle_check_fix(args: &CheckArgs, config: Config) -> HandlerResult {
 	if plan.files.is_empty() {
 		return Ok(i32::from(!plan.unrepaired.is_empty()));
 	}
-	match directory {
-		Some(_) => {
-			apply_in_place(&plan)?;
-			println!("fixed {} file(s)", plan.files.len());
-		}
-		None => {
-			if let Some(out) = &args.patch_mod {
-				write_patch_mod(&plan, out, PATCH_MOD_NAME)?;
-				println!(
-					"wrote the patch mod \"{PATCH_MOD_NAME}\" to {}; enable it after the mods it fixes",
-					out.display()
-				);
-			} else if args.in_place {
-				let backup = repair_in_place(&plan)?;
-				println!(
-					"fixed {} source file(s); the originals are in {}",
-					plan.files.len(),
-					backup.display()
-				);
-				println!("undo with: foch check --restore \"{}\"", backup.display());
-				println!(
-					"Steam replaces a Workshop mod's files when the mod updates or its files are verified, which undoes these fixes"
-				);
-			} else {
-				return Err(
-					"fixing a playset writes either a patch mod (--patch-mod <DIR>) or the mods' own files (--in-place)"
-						.into(),
-				);
-			}
+	if let Some(out) = &args.patch_mod {
+		write_patch_mod(&plan, out, PATCH_MOD_NAME)?;
+		println!(
+			"wrote the patch mod \"{PATCH_MOD_NAME}\" to {}; enable it after the mods it fixes",
+			out.display()
+		);
+	} else {
+		// Every in-place fix keeps the originals, so one made by mistake can
+		// be undone.
+		let backup = repair_in_place(&plan)?;
+		println!(
+			"fixed {} file(s); the originals are in {}",
+			plan.files.len(),
+			backup.display()
+		);
+		println!("undo with: foch check --restore \"{}\"", backup.display());
+		if directory.is_none_or(is_workshop_item) {
+			println!(
+				"Steam replaces a Workshop mod's files when the mod updates or its files are verified, which undoes these fixes"
+			);
 		}
 	}
 	Ok(i32::from(!plan.unrepaired.is_empty()))
