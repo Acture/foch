@@ -189,6 +189,7 @@ changes a reader invalidates the equivalences, not just their precision.
 | `foch input repair` | List current-playset mods that cannot be analyzed and, with `--open`, open their Workshop pages in Steam to resubscribe. |
 | `foch check` | Parse and analyze an input without writing a merge. |
 | `foch merge` | Analyze and review a semantic result; commit only after confirmation. |
+| `foch fix` | List the syntax repairs a merge makes; with `--confirm`, write them as a patch mod (`--out`) or into the mods' own files (`--in-place`, each original backed up; `--restore` undoes it). |
 | `foch graph` | Write call, definition-dependency, mod-dependency, and semantic graphs. |
 | `foch simplify` | Remove target-mod definitions equivalent to effective base definitions. |
 | `foch data` | Build, install, and inspect EU4 base-data snapshots. |

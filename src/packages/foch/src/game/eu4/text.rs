@@ -98,6 +98,29 @@ pub struct TextEdit {
 /// text must encode to exactly `bytes` again, or no position in them is
 /// known. UTF-16 is never edited.
 pub fn edit_paradox_bytes(bytes: &[u8], edits: &[TextEdit]) -> Option<Vec<u8>> {
+	let mut edited = decode_paradox_bytes(bytes).into_owned();
+	let mut ordered = edits.to_vec();
+	ordered.sort_by_key(|edit| std::cmp::Reverse(edit.offset));
+	for edit in ordered {
+		let end = edit.offset.checked_add(edit.remove)?;
+		if end > edited.len()
+			|| !edited.is_char_boundary(edit.offset)
+			|| !edited.is_char_boundary(end)
+		{
+			return None;
+		}
+		edited.replace_range(edit.offset..end, edit.insert);
+	}
+	reencode_paradox_bytes(bytes, &edited)
+}
+
+/// `text`, a revision of what `decode_paradox_bytes` gives for `bytes`,
+/// encoded the way `bytes` are, BOM included.
+///
+/// `None` when the encoding cannot be carried back exactly: the decoded text
+/// must encode to exactly `bytes` again, and `text` must be representable in
+/// that encoding. UTF-16 is never encoded.
+pub fn reencode_paradox_bytes(bytes: &[u8], text: &str) -> Option<Vec<u8>> {
 	if bytes.starts_with(UTF16_LE_BOM.as_slice()) || bytes.starts_with(UTF16_BE_BOM.as_slice()) {
 		return None;
 	}
@@ -120,20 +143,7 @@ pub fn edit_paradox_bytes(bytes: &[u8], edits: &[TextEdit]) -> Option<Vec<u8>> {
 	if unmappable || round_trip.as_ref() != body {
 		return None;
 	}
-	let mut edited = decoded.into_owned();
-	let mut ordered = edits.to_vec();
-	ordered.sort_by_key(|edit| std::cmp::Reverse(edit.offset));
-	for edit in ordered {
-		let end = edit.offset.checked_add(edit.remove)?;
-		if end > edited.len()
-			|| !edited.is_char_boundary(edit.offset)
-			|| !edited.is_char_boundary(end)
-		{
-			return None;
-		}
-		edited.replace_range(edit.offset..end, edit.insert);
-	}
-	let (encoded, _, unmappable) = encoding.encode(&edited);
+	let (encoded, _, unmappable) = encoding.encode(text);
 	if unmappable {
 		return None;
 	}

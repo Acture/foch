@@ -222,6 +222,15 @@ A reviewed `[[repairs]]` entry in `foch.toml` applies one of the proposals, or
 any exact edit, to Foch's copy of the file, after which it merges as usual; see
 [the project manifest](./foch-project-manifest.md#reviewed-syntax-repairs).
 
+The same repairs, automatic and reviewed, can be written out for a player
+without a merge. `foch fix` lists them; with `--confirm` it writes them either
+as a patch mod holding only the repaired files, to load after the mods it
+repairs, or with `--in-place` into the mods' own files. In-place repair is the
+one case where Foch writes to a source mod: each original is backed up under
+Foch's data directory first, and `foch fix --restore <BACKUP_DIR>` puts back
+every file that still holds the repaired bytes. Steam replaces a Workshop
+mod's files when it updates, which undoes an in-place repair.
+
 Text that names no definition, a key the file repeats, as events repeat
 `country_event`, and any other error without a repair still make the file
 unsupported, and `--force` does not change that.

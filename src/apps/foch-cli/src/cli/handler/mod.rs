@@ -2,6 +2,7 @@ pub mod cache;
 pub mod check;
 pub mod config;
 pub mod data;
+pub mod fix;
 pub mod graph;
 pub mod input;
 pub mod merge;

@@ -244,7 +244,7 @@ impl ReviewedInputBatch {
 
 /// The line ranges of the top-level definitions that `edits`, already made,
 /// changed in the text `statements` were parsed from.
-fn reviewed_definition_lines(
+pub(crate) fn reviewed_definition_lines(
 	statements: &[crate::game::eu4::script::parser::AstStatement],
 	edits: &[SourceEdit],
 ) -> Vec<std::ops::RangeInclusive<usize>> {

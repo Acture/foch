@@ -48,6 +48,7 @@ pub enum FochCliCommands {
 	Test(TestArgs),
 	Check(CheckArgs),
 	Merge(MergeArgs),
+	Fix(FixArgs),
 	Graph(GraphArgs),
 	Simplify(SimplifyArgs),
 	Data(DataArgs),
@@ -167,6 +168,40 @@ pub struct CheckArgs {
 pub enum CheckOutputFormat {
 	Text,
 	Json,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Write the syntax repairs a merge makes into a patch mod or the mods themselves",
+	after_help = "Lists the repairs and writes nothing unless --confirm is given.\n\nExamples:\n  foch fix ./foch.toml\n  foch fix ./foch.toml --out ./repairs --confirm      # a patch mod\n  foch fix ./foch.toml --in-place --confirm           # the mods' own files\n  foch fix --restore <BACKUP_DIR>                     # undo --in-place"
+)]
+pub struct FixArgs {
+	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
+	pub playset_path: Option<PathBuf>,
+
+	/// Write a patch mod holding only the repaired files into this new or
+	/// empty directory. Load it after the mods it repairs.
+	#[arg(long, value_name = "DIR", conflicts_with_all = ["in_place", "restore"])]
+	pub out: Option<PathBuf>,
+
+	/// Write the repairs into the source mod files themselves, after backing
+	/// up each original. Steam replaces a Workshop mod's files when it
+	/// updates, which undoes the repair.
+	#[arg(long, conflicts_with = "restore")]
+	pub in_place: bool,
+
+	/// Put back the originals an earlier --in-place repair backed up into
+	/// this directory, for each file that still holds the repaired bytes.
+	#[arg(long, value_name = "BACKUP_DIR")]
+	pub restore: Option<PathBuf>,
+
+	/// Write the repairs; without it they are only listed.
+	#[arg(long)]
+	pub confirm: bool,
+
+	/// Load reviewed repairs from this foch.toml instead of the default search path.
+	#[arg(long, value_name = "PATH")]
+	pub config: Option<PathBuf>,
 }
 
 #[derive(Clone, Parser, Debug, Eq, PartialEq)]

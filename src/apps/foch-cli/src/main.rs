@@ -106,6 +106,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	match command {
 		arg::FochCliCommands::Check(check_args) => handler::check::handle_check(check_args, config),
 		arg::FochCliCommands::Merge(merge_args) => handler::merge::handle_merge(merge_args, config),
+		arg::FochCliCommands::Fix(fix_args) => handler::fix::handle_fix(fix_args, config),
 		arg::FochCliCommands::Graph(graph_args) => handler::graph::handle_graph(graph_args, config),
 		arg::FochCliCommands::Simplify(simplify_args) => {
 			handler::simplify::handle_simplify(simplify_args, config)

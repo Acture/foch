@@ -551,6 +551,72 @@ fn a_reviewed_repair_lets_an_isolated_definition_merge_until_its_source_changes(
 }
 
 #[test]
+fn fix_writes_a_patch_mod_or_the_source_with_a_backup_that_restores() {
+	let scratch = TempDir::new().unwrap();
+	let source = "b_check = {\n\talways = yes\n}\n}\nb_later = { always = no }\n";
+	let repaired = "b_check = {\n\talways = yes\n}\n\nb_later = { always = no }\n";
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+	let file = mod_b.join(STRAY_BRACE_TRIGGERS);
+	let repair = |extra: &[&str]| {
+		let mut args = vec!["fix", path_text(&manifest)];
+		args.extend_from_slice(extra);
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_eq!(code, 0, "{stdout}\n{stderr}");
+		stdout
+	};
+
+	let stdout = repair(&[]);
+	assert!(
+		stdout.contains("repair b: common/scripted_triggers/b_triggers.txt"),
+		"{stdout}"
+	);
+	assert!(stdout.contains("nothing written"), "{stdout}");
+	assert_eq!(fs::read_to_string(&file).unwrap(), source);
+
+	let patch = scratch.path().join("patch");
+	repair(&["--out", path_text(&patch), "--confirm"]);
+	assert!(patch.join("descriptor.mod").is_file());
+	assert_eq!(
+		fs::read_to_string(patch.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		repaired
+	);
+	assert_eq!(
+		fs::read_to_string(&file).unwrap(),
+		source,
+		"a patch mod leaves the source alone"
+	);
+
+	let stdout = repair(&["--in-place", "--confirm"]);
+	assert_eq!(fs::read_to_string(&file).unwrap(), repaired);
+	let backup = stdout
+		.lines()
+		.find_map(|line| line.strip_prefix("undo with: foch fix --restore \""))
+		.and_then(|rest| rest.strip_suffix('"'))
+		.unwrap_or_else(|| panic!("{stdout}"))
+		.to_owned();
+	let (code, stdout, stderr) = run_foch(&["fix", "--restore", &backup], scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(fs::read_to_string(&file).unwrap(), source);
+
+	// A file changed after the repair is not overwritten by a restore.
+	repair(&["--in-place", "--confirm"]);
+	let latest = fs::read_dir(scratch.path().join(".foch-data").join("repair-backups"))
+		.unwrap()
+		.map(|entry| entry.unwrap().path())
+		.max()
+		.unwrap();
+	fs::write(&file, "b_check = { always = no }\n").unwrap();
+	let (code, stdout, stderr) =
+		run_foch(&["fix", "--restore", path_text(&latest)], scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("left "), "{stdout}");
+	assert_eq!(
+		fs::read_to_string(&file).unwrap(),
+		"b_check = { always = no }\n"
+	);
+}
+
+#[test]
 fn a_copied_file_is_written_with_its_repair_in_its_own_encoding() {
 	let scratch = TempDir::new().unwrap();
 	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");
