@@ -15,6 +15,18 @@ pub(crate) fn resident_bytes() -> Option<u64> {
 	imp::resident_bytes()
 }
 
+/// Free `value` on a background thread. Tearing down a frozen input means
+/// millions of small deallocations, which would otherwise stall the caller
+/// for seconds after it no longer needs the data.
+pub(crate) fn release_in_background<T: Send + 'static>(value: T) {
+	let spawned = std::thread::Builder::new()
+		.name("foch-release".into())
+		.spawn(move || drop(value));
+	// Without a thread, the value was moved into the failed closure and is
+	// dropped here.
+	drop(spawned);
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
 	use std::mem::{MaybeUninit, size_of};

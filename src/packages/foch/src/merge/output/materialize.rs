@@ -640,7 +640,7 @@ pub(crate) fn materialize_with_adaptations(
 	})?;
 	let review = stage("finish_review", || review.finish(&mod_display_names))?;
 	// The frozen input holds every parsed source document.
-	stage("release_input", || drop(input));
+	crate::platform::memory::release_in_background(input);
 	Ok(MaterializedMerge { report, review })
 }
 

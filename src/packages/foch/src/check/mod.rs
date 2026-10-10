@@ -351,18 +351,13 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 
 	result.recompute_channels();
 	// The resolved input and semantic index hold every parsed document.
-	run_progress_stage(
-		"release input",
-		|| {
-			drop((
-				ctx,
-				resolved.mod_snapshots,
-				resolved.installed_base_snapshot,
-				resolved.file_inventory,
-			))
-		},
-		|_| String::new(),
-	);
+	crate::platform::memory::release_in_background((
+		ctx,
+		resolved.mod_snapshots,
+		resolved.installed_base_snapshot,
+		resolved.file_inventory,
+		resolved.script_cache,
+	));
 	result
 }
 
