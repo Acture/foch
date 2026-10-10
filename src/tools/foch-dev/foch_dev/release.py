@@ -9,23 +9,32 @@ is retried once.
 
 - tag: the tag spells the releasable workspace version, which crates.io,
   WinGet and GitHub publish verbatim and PyPI in its PEP 440 spelling.
-- crates:closure: foch and foch-cli build from registry artifacts alone, each
-  path dependency pinned exactly to its package's version, by the same rule
-  `foch_dev check` enforces.
+- crates:closure: the published crates, foch-cli and every workspace crate it
+  builds from, build from registry artifacts alone, each path dependency
+  pinned exactly to its package's version, by the same rule `foch_dev check`
+  enforces.
 - tree-sitter-paradox (each externally released workspace member): crates.io
   has the checkout's version unyanked, and the registry `.crate` carries the
   same files and bytes as `cargo package` of the checkout. Published foch
   crates build against the registry copy, so any difference would ship another
   grammar under the version the checkout was tested with.
-- crates.io: neither foch nor foch-cli has the release version, and foch 0.1.0,
+- crates.io: no published crate has the release version, and foch 0.1.0,
   which shipped another product, is yanked; until then `cargo install foch`
-  can install it.
+  can install it. A crate crates.io does not have at all passes with a note:
+  Trusted Publishing cannot create a crate, so its first publish needs an API
+  token.
 - PyPI: project foch lacks the PEP 440 version.
 - WinGet: microsoft/winget-pkgs has no Acture.Foch manifest for the version.
 - GitHub: no published release for the tag has assets yet; channels hash
   published assets, so a re-run must never replace them. A draft is invisible
   to a contents:read token. Its assets are unconsumed, and the release job
   compares them byte for byte.
+
+`release unpublished` prints the published crates whose version crates.io
+lacks, one per line; the release job publishes exactly those, so a re-run
+resumes an interrupted multi-crate publish. It fails if crates.io has no crate
+of one of them at all, which only a publish with an API token can create;
+`--allow-new` lists those too, for that publish.
 """
 
 from __future__ import annotations
@@ -55,10 +64,11 @@ from typing import Protocol, TypeVar, cast
 from .binary import COMMAND_TIMEOUT_SECONDS, timed_run
 from .contracts import (
 	EXTERNALLY_RELEASED_PACKAGES,
-	PUBLISHABLE_PACKAGES,
+	INSTALLED_CRATE,
 	CargoPackage,
 	cargo_metadata,
 	publishable_closure_problems,
+	published_crates,
 )
 from .crates import crate_files
 from .dist import DISTRIBUTION as PYPI_PROJECT
@@ -233,10 +243,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 		"--tag", required=True, help="vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N"
 	)
 	preflight_parser.add_argument("--repo", type=Path)
+	unpublished_parser: argparse.ArgumentParser = commands.add_parser(
+		"unpublished",
+		help="Print the published crates whose version crates.io lacks, one per "
+		"line; read-only",
+	)
+	unpublished_parser.add_argument("--repo", type=Path)
+	unpublished_parser.add_argument(
+		"--allow-new",
+		action="store_true",
+		help="Also list crates crates.io does not have yet, for a publish with an "
+		"API token; without it they fail, since Trusted Publishing cannot create "
+		"a crate",
+	)
 
 
 def run(args: argparse.Namespace) -> int:
-	"""Run `release preflight`, the release subcommand, against the live registries."""
+	"""Run a release subcommand against the live registries."""
 	repo: Path = find_repository(args.repo)
 	token: str = os.environ.get("GITHUB_TOKEN", "")
 	services: Services = Services(
@@ -246,6 +269,12 @@ def run(args: argparse.Namespace) -> int:
 		sleep=time.sleep,
 		github_token=token or None,
 	)
+	if args.release_command == "unpublished":
+		for name in unpublished_crates(
+			services.packages(), services, allow_new=args.allow_new
+		):
+			print(name)
+		return 0
 	started: float = time.monotonic()
 	status: int = report(args.tag, preflight(repo, args.tag, services))
 	LOGGER.info("preflight finished in %.1fs", time.monotonic() - started)
@@ -469,7 +498,14 @@ def check_unpublished(
 	name: str, version: str, entries: tuple[IndexEntry, ...] | None
 ) -> CheckResult:
 	check: str = f"{name}:unpublished"
-	taken: list[IndexEntry] = same_version(entries or (), version)
+	if entries is None:
+		return CheckResult(
+			check,
+			Status.PASS,
+			f"crates.io has no {name} crate yet; Trusted Publishing cannot create "
+			"one, so its first publish needs an API token (docs/RELEASE_CHECKLIST.md)",
+		)
+	taken: list[IndexEntry] = same_version(entries, version)
 	if not taken:
 		return CheckResult(check, Status.PASS, f"crates.io has no {name} {version}")
 	yanked: str = " (yanked)" if all(entry.yanked for entry in taken) else ""
@@ -535,11 +571,59 @@ def publishable_crate_checks(name: str, context: Context) -> list[CheckResult]:
 
 
 def crates_checks(context: Context) -> list[CheckResult]:
+	"""Per published crate; without the workspace, crates:closure fails instead."""
+	packages: list[CargoPackage] | Unavailable = context.packages
+	names: tuple[str, ...] | Unavailable = (
+		packages
+		if isinstance(packages, Unavailable)
+		else attempt(partial(published_crates, packages))
+	)
+	if isinstance(names, Unavailable):
+		return [skipped("crates:unpublished", "needs the workspace packages")]
 	return [
-		result
-		for name in sorted(PUBLISHABLE_PACKAGES)
-		for result in publishable_crate_checks(name, context)
+		result for name in names for result in publishable_crate_checks(name, context)
 	]
+
+
+def unpublished_crates(
+	packages: list[CargoPackage], services: Services, *, allow_new: bool
+) -> list[str]:
+	"""The published crates crates.io lacks at their workspace version.
+
+	Multi-package publishing is not atomic, so the release job publishes only
+	these and a re-run resumes an interrupted publish. An exact version match
+	suffices: the preflight refused any crates.io variant of the version, and
+	cargo refuses to publish a version that exists. A registry error raises.
+
+	Trusted Publishing cannot create a crate, so unless `allow_new` (a publish
+	with an API token) it raises when crates.io has no crate of one of them at
+	all, before the release job uploads any.
+	"""
+	versions: dict[str, str] = {
+		package["name"]: package["version"] for package in packages
+	}
+	published: tuple[str, ...] = published_crates(packages)
+	indexes: dict[str, tuple[IndexEntry, ...] | None] = {
+		name: crate_index(services, name) for name in published
+	}
+	absent: list[str] = [name for name in published if indexes[name] is None]
+	if absent and not allow_new:
+		raise ValueError(
+			f"crates.io has no {', '.join(absent)} crate yet, and Trusted Publishing "
+			"cannot create one; publish the missing crates with an API token and "
+			"add their trusted publishers (docs/RELEASE_CHECKLIST.md)"
+		)
+	missing: list[str] = [
+		name
+		for name in published
+		if not any(entry.version == versions[name] for entry in indexes[name] or ())
+	]
+	LOGGER.info(
+		"crates.io lacks %d of %d published crates at their version",
+		len(missing),
+		len(published),
+	)
+	return missing
 
 
 # Workspace crates: the published closure and externally released members
@@ -552,15 +636,17 @@ def check_closure(packages: list[CargoPackage]) -> CheckResult:
 		return CheckResult(
 			check,
 			Status.PASS,
-			f"{' and '.join(sorted(PUBLISHABLE_PACKAGES))} pin every path "
-			"dependency at its package's exact version",
+			f"{', '.join(published_crates(packages))} pin every path dependency at "
+			"its package's exact version",
 		)
 	return CheckResult(
 		check,
 		Status.FAIL,
 		"; ".join(problems),
-		'pin each [workspace.dependencies] path dependency as version = "=X.Y.Z" '
-		"of its package, or move the submodule to the release the pin names",
+		f"publish exactly {INSTALLED_CRATE} and the workspace crates it builds from "
+		"(publish = false on every other), pin each [workspace.dependencies] path "
+		'dependency as version = "=X.Y.Z" of its package, or move the submodule to '
+		"the release the pin names",
 	)
 
 

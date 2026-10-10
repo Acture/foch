@@ -7,8 +7,11 @@ import unittest
 from pathlib import Path
 
 from foch_dev.crates import (
+	LICENSE_FILES,
+	PACKAGE_README,
 	CrateLayout,
 	crate_files,
+	crate_layouts,
 	require_outside_checkout,
 	verify_crate,
 	verify_relock,
@@ -99,6 +102,41 @@ class CrateLayoutTests(unittest.TestCase):
 			write_crate(archive, "foch-0.0.1", {"LICENSE": b"../../../LICENSE"})
 			with self.assertRaisesRegex(ValueError, r"differing \['LICENSE'\]"):
 				verify_crate(archive, "foch-0.0.1", layout)
+
+	def test_every_published_crate_has_a_layout(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			repo_root: Path = Path(directory)
+			for name in (*LICENSE_FILES, PACKAGE_README.as_posix()):
+				(repo_root / name).parent.mkdir(parents=True, exist_ok=True)
+				(repo_root / name).write_bytes(f"{name}\n".encode())
+			published: tuple[str, ...] = ("foch", "foch-cli", "foch-lsp")
+			layouts = crate_layouts(
+				repo_root, Path("vendor/cwtools-eu4-config"), published
+			)
+			self.assertEqual(tuple(layouts), published)
+			self.assertIn("build.rs", layouts["foch"].required)
+			self.assertIn("src/main.rs", layouts["foch-cli"].required)
+			library: CrateLayout = layouts["foch-lsp"]
+			files: dict[str, bytes] = {
+				"src/lib.rs": b"",
+				**{
+					name: source.read_bytes() for name, source in library.copies.items()
+				},
+			}
+			archive: Path = repo_root / "foch-lsp-0.0.1.crate"
+			write_crate(archive, "foch-lsp-0.0.1", files)
+			verify_crate(archive, "foch-lsp-0.0.1", library)
+			# The LSP fixtures under tests/ stay in the repository.
+			write_crate(
+				archive,
+				"foch-lsp-0.0.1",
+				{**files, "tests/fixtures/lsp/events/sample.txt": b""},
+			)
+			with self.assertRaisesRegex(ValueError, r"forbidden \['tests/fixtures"):
+				verify_crate(archive, "foch-lsp-0.0.1", library)
+			write_crate(archive, "foch-lsp-0.0.1", {"src/lib.rs": b""})
+			with self.assertRaisesRegex(ValueError, r"missing \['LICENSE'"):
+				verify_crate(archive, "foch-lsp-0.0.1", library)
 
 	def test_rejects_entries_outside_the_crate_root(self) -> None:
 		with tempfile.TemporaryDirectory() as directory:

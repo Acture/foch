@@ -9,6 +9,8 @@ from foch_dev.contracts import (
 	CargoDependency,
 	CargoPackage,
 	distribution_problems,
+	publishable_closure_problems,
+	published_crates,
 	source_violations,
 	verify_desktop_frontend_dependencies,
 	verify_desktop_rust_dependencies,
@@ -68,10 +70,32 @@ def desktop_package(*extra_dependencies: CargoDependency) -> CargoPackage:
 	)
 
 
+def library_dependency(name: str, *, req: str = "=0.0.1") -> CargoDependency:
+	return cargo_dependency(name, req=req, path=f"/workspace/src/packages/{name}")
+
+
+# The internal libraries foch-cli links, with their workspace dependencies.
+LIBRARIES: dict[str, tuple[str, ...]] = {
+	"foch-annotation": ("foch",),
+	"foch-test": ("foch", "foch-annotation"),
+	"foch-lsp": ("foch", "foch-annotation"),
+	"foch-runner": ("foch", "foch-test"),
+}
+PUBLISHED: tuple[str, ...] = (
+	"foch",
+	"foch-annotation",
+	"foch-cli",
+	"foch-lsp",
+	"foch-runner",
+	"foch-test",
+)
+
+
 def workspace_packages(
 	*cli_dependencies: CargoDependency,
 	foch_req: str = "=0.0.1",
 ) -> list[CargoPackage]:
+	"""The workspace as `cargo metadata --no-deps` lists it."""
 	return [
 		cargo_package(
 			"foch",
@@ -88,10 +112,19 @@ def workspace_packages(
 				path="/workspace/src/packages/tree-sitter-paradox",
 			),
 		),
+		*(
+			cargo_package(
+				name,
+				f"src/packages/{name}",
+				*(library_dependency(dependency) for dependency in dependencies),
+			)
+			for name, dependencies in LIBRARIES.items()
+		),
 		cargo_package(
 			"foch-cli",
 			"src/apps/foch-cli",
-			cargo_dependency("foch", req=foch_req, path="/workspace/src/packages/foch"),
+			library_dependency("foch", req=foch_req),
+			*(library_dependency(name) for name in LIBRARIES),
 			*cli_dependencies,
 		),
 		cargo_package(
@@ -104,6 +137,10 @@ def workspace_packages(
 			"tree-sitter-paradox", "src/packages/tree-sitter-paradox", version="0.2.0"
 		),
 	]
+
+
+def package_named(packages: list[CargoPackage], name: str) -> CargoPackage:
+	return next(package for package in packages if package["name"] == name)
 
 
 class DesktopContractTests(unittest.TestCase):
@@ -160,6 +197,28 @@ class DesktopContractTests(unittest.TestCase):
 
 
 class PublishableClosureTests(unittest.TestCase):
+	def test_published_crates_are_what_foch_cli_builds_from(self) -> None:
+		packages = workspace_packages(
+			cargo_dependency(
+				"foch-desktop",
+				kind="dev",
+				path="/workspace/src/apps/foch-desktop/src-tauri",
+			)
+		)
+		# Neither a dev-dependency nor the externally released grammar joins it.
+		self.assertEqual(published_crates(packages), PUBLISHED)
+
+	def test_published_crates_need_foch_cli(self) -> None:
+		packages = [
+			package for package in workspace_packages() if package["name"] != "foch-cli"
+		]
+		with self.assertRaisesRegex(ValueError, "no foch-cli package"):
+			published_crates(packages)
+		self.assertEqual(
+			publishable_closure_problems(packages),
+			["the workspace has no foch-cli package"],
+		)
+
 	def test_accepts_exact_path_versions_and_unversioned_dev_dependencies(
 		self,
 	) -> None:
@@ -177,6 +236,14 @@ class PublishableClosureTests(unittest.TestCase):
 		):
 			verify_publishable_closure(workspace_packages(foch_req="^0.0.1"))
 
+	def test_rejects_a_loose_pin_between_internal_libraries(self) -> None:
+		packages = workspace_packages()
+		package_named(packages, "foch-runner")["dependencies"][1]["req"] = "^0.0.1"
+		self.assertEqual(
+			publishable_closure_problems(packages),
+			["foch-runner -> foch-test (normal): requires '^0.0.1', expected '=0.0.1'"],
+		)
+
 	def test_rejects_a_dependency_on_a_never_published_package(self) -> None:
 		with self.assertRaisesRegex(ValueError, "foch-desktop is never published"):
 			verify_publishable_closure(
@@ -189,11 +256,31 @@ class PublishableClosureTests(unittest.TestCase):
 				)
 			)
 
+	def test_rejects_a_library_foch_cli_builds_from_that_is_never_published(
+		self,
+	) -> None:
+		packages = workspace_packages()
+		package_named(packages, "foch-test")["publish"] = []
+		# One problem, however many published crates depend on it.
+		self.assertEqual(
+			publishable_closure_problems(packages),
+			["foch-test is published, but its manifest sets publish = false"],
+		)
+
+	def test_rejects_an_unpublishable_foch_cli(self) -> None:
+		# Nothing depends on the installed crate, so no edge would catch it.
+		packages = workspace_packages()
+		package_named(packages, "foch-cli")["publish"] = []
+		self.assertEqual(
+			publishable_closure_problems(packages),
+			["foch-cli is published, but its manifest sets publish = false"],
+		)
+
 	def test_rejects_an_unexpected_publishable_package(self) -> None:
 		packages = workspace_packages()
-		packages[2]["publish"] = None
+		package_named(packages, "foch-desktop")["publish"] = None
 		with self.assertRaisesRegex(
-			ValueError, r"found \['foch', 'foch-cli', 'foch-desktop'\]"
+			ValueError, "foch-desktop is publishable, but foch-cli does not build"
 		):
 			verify_publishable_closure(packages)
 

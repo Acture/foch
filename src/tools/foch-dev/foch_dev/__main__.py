@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
 	release.add_arguments(
 		commands.add_parser(
 			"release",
-			help="Check a release tag against every distribution channel (read-only)",
+			help="Check a release against every distribution channel (read-only)",
 		)
 	)
 	args: argparse.Namespace = parser.parse_args(argv)

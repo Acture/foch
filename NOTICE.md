@@ -33,8 +33,9 @@ foch binaries embed a rule pack compiled from the CWTools EU4 config:
 `AGPL-3.0-only AND GPL-3.0-only AND MIT` covers Foch's own code, the Mergiraf
 adaptation and the CWTools rule pack, which every distributed `foch` program
 combines. The PyPI wheels, the WinGet manifest and the Homebrew formula declare
-that expression, as the `foch` crate does. The `foch-cli` crate's own source is
-AGPL-3.0-only; it builds against `foch`.
+that expression, as the `foch` crate does. The own source of the `foch-cli`,
+`foch-annotation`, `foch-lsp`, `foch-runner` and `foch-test` crates is
+AGPL-3.0-only; they build against `foch`.
 
 Each program also statically links the Rust crates of its dependency graph,
 each under its own license. `THIRD-PARTY-LICENSES.txt` gives every one of

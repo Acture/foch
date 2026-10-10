@@ -14,7 +14,7 @@ build-backend = "maturin"
 name = "foch"
 dynamic = ["version"]
 description = "EU4 mod analysis and merge tool: the foch command-line program and language server"
-# The same page as the foch and foch-cli crates on crates.io.
+# The same page as every published Foch crate on crates.io.
 readme = "src/apps/foch-cli/README.md"
 # A bin wheel runs no Python code; this only bounds the interpreter that uv or
 # pip creates the tool environment with.

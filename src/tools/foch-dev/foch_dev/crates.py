@@ -1,13 +1,14 @@
 """Package the publishable crates and install `foch` from them out of tree.
 
-`cargo package` writes the `.crate` files a registry upload would carry. They
-are unpacked into a directory outside the checkout, where a `[patch.crates-io]`
-config stands the unpacked library and grammar in for their registry releases,
-so `cargo install --locked` builds `foch` from the packaged sources alone. The
-installed binary must embed the CWT schema id of the repository's vendored
-rules. The grammar crate is packaged from the checkout's pinned submodule,
-which may differ from its registry release; publishing therefore needs that
-revision released first.
+`cargo package` writes the `.crate` files a registry upload would carry for
+every published crate (`contracts.published_crates`) and the externally
+released grammar. They are unpacked into a directory outside the checkout,
+where a `[patch.crates-io]` config stands each unpacked crate other than
+foch-cli in for its registry release, so `cargo install --locked` builds
+`foch` from the packaged sources alone. The installed binary must embed the
+CWT schema id of the repository's vendored rules. The grammar crate is
+packaged from the checkout's pinned submodule, which may differ from its
+registry release; publishing therefore needs that revision released first.
 """
 
 from __future__ import annotations
@@ -29,20 +30,18 @@ from typing import IO, cast
 from .binary import FochIdentity, scratch_environment, timed_run, verify_foch
 from .contracts import (
 	EXTERNALLY_RELEASED_PACKAGES,
-	PUBLISHABLE_PACKAGES,
+	INSTALLED_CRATE,
 	SCHEMA_PACKAGE,
 	CargoPackage,
 	cargo_metadata,
+	published_crates,
+	verify_publishable_closure,
 )
 from .repository import find_repository
 from .schema import SCHEMA_DIR, cwt_snapshot_hash
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
-PACKAGED_CRATES: tuple[str, ...] = tuple(
-	sorted(PUBLISHABLE_PACKAGES | EXTERNALLY_RELEASED_PACKAGES)
-)
-INSTALLED_CRATE: str = "foch-cli"
 INSTALLED_BINARIES: frozenset[str] = frozenset({"foch"})
 # crates.io rejects larger uploads.
 MAX_CRATE_BYTES: int = 10 * 1024 * 1024
@@ -51,7 +50,7 @@ MAX_UNPACKED_CRATE_BYTES: int = 512 * 1024 * 1024
 LICENSE_FILES: frozenset[str] = frozenset(
 	{"LICENSE", "LICENSE-MERGIRAF.txt", "NOTICE.md"}
 )
-# The registry page of both crates, and the PyPI project's.
+# The registry page of every published crate, and the PyPI project's.
 PACKAGE_README: Path = Path("src/apps/foch-cli/README.md")
 
 
@@ -97,12 +96,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 	)
 
 
-def crate_layouts(repo_root: Path, schema_in_crate: Path) -> dict[str, CrateLayout]:
+def crate_layouts(
+	repo_root: Path, schema_in_crate: Path, published: tuple[str, ...]
+) -> dict[str, CrateLayout]:
+	"""The layout of each published crate; any other is an internal library."""
 	copies: dict[str, Path] = {
 		**{name: repo_root / name for name in LICENSE_FILES},
 		"README.md": repo_root / PACKAGE_README,
 	}
-	return {
+	layouts: dict[str, CrateLayout] = {
 		SCHEMA_PACKAGE: CrateLayout(
 			frozenset({"build.rs", "src/lib.rs"}),
 			("tests/", "fuzz/"),
@@ -117,6 +119,8 @@ def crate_layouts(repo_root: Path, schema_in_crate: Path) -> dict[str, CrateLayo
 			frozenset({"Cargo.lock", "src/main.rs"}), ("tests/",), copies
 		),
 	}
+	library: CrateLayout = CrateLayout(frozenset({"src/lib.rs"}), ("tests/",), copies)
+	return {name: layouts.get(name, library) for name in published}
 
 
 def cargo_command(options: CrateSmokeOptions, *arguments: str) -> list[str]:
@@ -138,16 +142,20 @@ def package_crates(
 	versions: Mapping[str, str],
 	options: CrateSmokeOptions,
 ) -> dict[str, Path]:
+	"""Package every crate in `versions` in one cargo run.
+
+	One run resolves the crates crates.io does not have yet from each other.
+	"""
 	arguments: list[str] = ["package", "--locked", "--no-verify"]
 	if options.allow_dirty:
 		arguments.append("--allow-dirty")
 	arguments += ["--target-dir", str(target_dir)]
-	for name in PACKAGED_CRATES:
+	for name in versions:
 		arguments += ["-p", name]
 	timed_run(cargo_command(options, *arguments), cwd=repo_root)
 	return {
-		name: target_dir / "package" / f"{name}-{versions[name]}.crate"
-		for name in PACKAGED_CRATES
+		name: target_dir / "package" / f"{name}-{version}.crate"
+		for name, version in versions.items()
 	}
 
 
@@ -327,12 +335,17 @@ def require_outside_checkout(repo_root: Path, work: Path) -> None:
 def smoke(repo_root: Path, work: Path, options: CrateSmokeOptions) -> None:
 	require_outside_checkout(repo_root, work)
 	started: float = time.monotonic()
+	metadata: list[CargoPackage] = cargo_metadata(repo_root)["packages"]
+	verify_publishable_closure(metadata)
+	published: tuple[str, ...] = published_crates(metadata)
 	packages: dict[str, CargoPackage] = {
-		package["name"]: package for package in cargo_metadata(repo_root)["packages"]
+		package["name"]: package for package in metadata
 	}
 	versions: dict[str, str] = {
-		name: packages[name]["version"] for name in PACKAGED_CRATES
+		name: packages[name]["version"]
+		for name in sorted({*published, *EXTERNALLY_RELEASED_PACKAGES})
 	}
+	LOGGER.info("packaging %s", ", ".join(versions))
 	schema_root: Path = repo_root / SCHEMA_DIR
 	schema_in_crate: Path = schema_root.resolve().relative_to(
 		Path(packages[SCHEMA_PACKAGE]["manifest_path"]).parent.resolve()
@@ -343,7 +356,9 @@ def smoke(repo_root: Path, work: Path, options: CrateSmokeOptions) -> None:
 	archives: dict[str, Path] = package_crates(
 		repo_root, work / "package", versions, options
 	)
-	layouts: dict[str, CrateLayout] = crate_layouts(repo_root, schema_in_crate)
+	layouts: dict[str, CrateLayout] = crate_layouts(
+		repo_root, schema_in_crate, published
+	)
 	crates: dict[str, Path] = {}
 	for name, archive in archives.items():
 		root: str = f"{name}-{versions[name]}"

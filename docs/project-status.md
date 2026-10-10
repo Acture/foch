@@ -77,32 +77,36 @@ merge-quality results. An alpha release does not wait for an accepted cohort
 and link Product acceptance.
 
 Implemented: maturin bin wheels for PyPI project `foch`, release archives made
-from them, the publishable `foch` and `foch-cli` crates, WinGet manifests for
-`Acture.Foch`, the `dist.yml`, `release.yml` and `verify-install.yml`
-workflows, and `THIRD-PARTY-LICENSES.txt`, the license texts of every crate
-linked into `foch`, which the wheels and archives carry.
+from them, the publishable crates (`foch-cli` and the workspace crates it
+builds from: `foch`, `foch-annotation`, `foch-lsp`, `foch-runner`,
+`foch-test`), WinGet manifests for `Acture.Foch`, the `dist.yml`, `release.yml`
+and `verify-install.yml` workflows, and `THIRD-PARTY-LICENSES.txt`, the license
+texts of every crate linked into `foch`, which the wheels and archives carry.
 
-Checked on darwin-arm64 on 2026-10-08, on the OSS-343 change set over
-`4ad1a98` (tree-sitter-paradox gitlink `0e8eab4`): the foch-dev gates and
-`foch_dev check`, Rust formatting, strict Clippy and the workspace test build;
-`crate-smoke` packaged `foch`, `foch-cli` and `tree-sitter-paradox` 0.3.0 and
-installed `foch` from them outside the checkout; a 0.0.1 wheel built with
-maturin 1.15.0 passed `twine check --strict`, `dist archive` wrote
-byte-identical archives twice, and `dist smoke` installed it offline through
-`uvx`, `uv tool install`, `upgrade` (no newer version, so no upgrade path) and
-`uninstall`, matching the archive's executable. Each install reported
+Checked on darwin-arm64 on 2026-10-10, on the OSS-343 change set after
+merging master `b97bb19` (tree-sitter-paradox gitlink at its `v0.3.0` tag):
+the foch-dev gates and `foch_dev check`, actionlint, Rust formatting, strict
+Clippy and the workspace test build; `crate-smoke` packaged the six crates and
+`tree-sitter-paradox` 0.3.0 and installed `foch` from them outside the
+checkout. The merge made `foch-cli` depend on `foch-annotation`, `foch-lsp`,
+`foch-runner` and `foch-test`, so a release publishes all six, and brought the
+v2 CWT schema id, which also binds file names. The install reported
 `foch-cli 0.0.1` and
-`cwt-schema 5d636ca3ec1497a27308b712b2601fef9cb8993a14d777824486c6930a7070f3 (embedded)`.
-`release preflight --tag v0.0.1` fails on one blocker, after the 2026-10-08
-yank of `foch` 0.1.0: crates.io has no `tree-sitter-paradox` 0.3.0.
+`cwt-schema db9ba69682f2b2f924eee1f13cfefde8bfe3d3e8f3552883d0b0a2aefea3b16b (embedded)`.
+`release preflight --tag v0.0.1` fails only because crates.io has no
+`tree-sitter-paradox` 0.3.0 (`foch` 0.1.0 was yanked on 2026-10-08), and notes
+that five of the six crates do not exist on crates.io yet.
 
-GitHub CI on [PR #74](https://github.com/Acture/foch/pull/74) at `f765523`
-ran `dist.yml` on hosted runners: wheels and archives for `linux-x64`
-(manylinux_2_28), `darwin-arm64` and `win32-x64`, each installed through uvx
-and uv tool; the out-of-tree crate install; the third-party license check; and
-the WinGet smoke with winget v1.29.380, which passed `winget validate` and
-installed, upgraded and uninstalled `Acture.Foch` from local manifests. Every
-install reported the identity above.
+Before the merge, under the v1 schema id `5d636ca3…`, a 0.0.1 wheel built with
+maturin 1.15.0 passed `twine check --strict` and installed offline through
+`uvx` and `uv tool` on darwin-arm64, and GitHub CI on
+[PR #74](https://github.com/Acture/foch/pull/74) at `f765523` ran `dist.yml`
+on hosted runners: wheels and archives for `linux-x64` (manylinux_2_28),
+`darwin-arm64` and `win32-x64`, each installed through uvx and uv tool; the
+out-of-tree crate install; the third-party license check; and the WinGet smoke
+with winget v1.29.380, which passed `winget validate` and installed, upgraded
+and uninstalled `Acture.Foch` from local manifests. Every install reported the
+same identity.
 
 Never run: `release.yml` and `verify-install.yml`, so no GitHub release,
 registry upload, release-mode WinGet install or post-publication install has
@@ -116,14 +120,15 @@ Pending maintainer actions, in the [release runbook](RELEASE_CHECKLIST.md):
 
 - publish `tree-sitter-paradox` 0.3.0 by merging
   [Acture/tree-sitter-paradox#12](https://github.com/Acture/tree-sitter-paradox/pull/12)
-  after configuring its publishers; until then `foch` cannot be published to
-  crates.io;
+  after configuring its publishers; until then no Foch crate can be published
+  to crates.io;
 - update the tap's HEAD formula submodule path when merging this layout
   (OSS-302), and add its token and sync path;
 - create the `crates-io` and `pypi` environments and publish variables, and
   register the PyPI pending publisher;
-- the first, token-based crates.io publish of `foch-cli`, and the WinGet
-  community pull request.
+- the first, token-based crates.io publish, which creates five crates
+  (`foch-cli`, `foch-annotation`, `foch-lsp`, `foch-runner`, `foch-test`), and
+  the WinGet community pull request.
 
 Channel results from `verify-install.yml`: none yet.
 

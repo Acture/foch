@@ -41,6 +41,7 @@ from foch_dev.release import (
 	releasable_tag,
 	report,
 	semver_key,
+	unpublished_crates,
 	winget_checks,
 	workspace_crate_checks,
 )
@@ -59,6 +60,11 @@ WINGET_VERSION: str = (
 FOCH_REPOSITORY: str = f"{GITHUB_API}/repos/Acture/foch"
 FOCH_RELEASE: str = f"{FOCH_REPOSITORY}/releases/tags/v0.0.1"
 NOT_FOUND: Response = Response(404, b'{"message": "Not Found"}')
+# The internal libraries foch-cli links; crates.io has none of them yet.
+LIBRARIES: tuple[str, ...] = ("foch-annotation", "foch-lsp", "foch-runner", "foch-test")
+NEW_LIBRARY_INDEXES: dict[str, Response] = {
+	f"{CRATES_INDEX}/fo/ch/{name}": NOT_FOUND for name in LIBRARIES
+}
 
 GRAMMAR_FILES: dict[str, bytes] = {
 	".cargo_vcs_info.json": b'{"git": {"sha1": "c0e946a28f48176a9fc9"}}',
@@ -116,7 +122,7 @@ def write_repo(root: Path, *, version: str = "0.0.1") -> Path:
 
 
 def workspace_packages(repo: Path, *, pin: str = "=0.3.0") -> list[CargoPackage]:
-	"""foch-cli -> foch -> tree-sitter-paradox, as `cargo metadata` lists them."""
+	"""foch-cli -> its libraries -> foch -> tree-sitter-paradox, as cargo lists them."""
 
 	def package(
 		name: str, directory: str, version: str, *dependencies: CargoDependency
@@ -145,13 +151,19 @@ def workspace_packages(repo: Path, *, pin: str = "=0.3.0") -> list[CargoPackage]
 			path=str(repo / directory),
 		)
 
+	foch: CargoDependency = path_dependency("foch", "src/packages/foch", "=0.0.1")
 	return [
 		package(
 			"foch-cli",
 			"src/apps/foch-cli",
 			"0.0.1",
-			path_dependency("foch", "src/packages/foch", "=0.0.1"),
+			foch,
+			*(
+				path_dependency(name, f"src/packages/{name}", "=0.0.1")
+				for name in LIBRARIES
+			),
 		),
+		*(package(name, f"src/packages/{name}", "0.0.1", foch) for name in LIBRARIES),
 		package(
 			"foch",
 			"src/packages/foch",
@@ -216,6 +228,7 @@ def passing_routes() -> dict[str, Response]:
 		**grammar_routes(crate_archive(GRAMMAR_ROOT, GRAMMAR_FILES)),
 		FOCH_INDEX: ok(index_body(("0.1.0", True, "bb"))),
 		FOCH_CLI_INDEX: NOT_FOUND,
+		**NEW_LIBRARY_INDEXES,
 		PYPI_VERSION: NOT_FOUND,
 		WINGET_VERSION: NOT_FOUND,
 		FOCH_REPOSITORY: ok("{}"),
@@ -460,7 +473,15 @@ class CratesRegistryTests(unittest.TestCase):
 	def test_unpublished_version_passes(self) -> None:
 		result = check_unpublished("foch", "0.0.1", self.entries(("0.1.0", False)))
 		self.assertIs(result.status, Status.PASS)
-		self.assertIs(check_unpublished("foch-cli", "0.0.1", None).status, Status.PASS)
+		self.assertEqual(result.detail, "crates.io has no foch 0.0.1")
+
+	def test_a_crate_crates_io_lacks_passes_with_its_first_publish_note(
+		self,
+	) -> None:
+		result = check_unpublished("foch-lsp", "0.0.1", None)
+		self.assertIs(result.status, Status.PASS)
+		self.assertIn("no foch-lsp crate yet", result.detail)
+		self.assertIn("first publish needs an API token", result.detail)
 
 	def test_a_taken_version_fails_even_yanked_or_with_build_metadata(self) -> None:
 		for entries in (
@@ -501,10 +522,117 @@ class CratesRegistryTests(unittest.TestCase):
 					{
 						FOCH_INDEX: ok(index_body(("0.1.0", False, "bb"))),
 						FOCH_CLI_INDEX: NOT_FOUND,
+						**NEW_LIBRARY_INDEXES,
 					}
 				)
 				results = crates_checks(context(repo, fetch, tag=tag))
 				self.assertIs(statuses(results)["foch:superseded"], Status.FAIL)
+
+	def test_every_published_crate_is_checked(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			repo: Path = write_repo(Path(directory))
+			fetch = FakeFetch(
+				{
+					FOCH_INDEX: ok(index_body(("0.1.0", True, "bb"))),
+					FOCH_CLI_INDEX: NOT_FOUND,
+					**NEW_LIBRARY_INDEXES,
+					f"{CRATES_INDEX}/fo/ch/foch-test": ok(
+						index_body(("0.0.1", False, "cc"))
+					),
+				}
+			)
+			results = crates_checks(context(repo, fetch))
+		self.assertEqual(
+			[(result.check, result.status) for result in results],
+			[
+				("foch:unpublished", Status.PASS),
+				("foch:superseded", Status.PASS),
+				("foch-annotation:unpublished", Status.PASS),
+				("foch-cli:unpublished", Status.PASS),
+				("foch-lsp:unpublished", Status.PASS),
+				("foch-runner:unpublished", Status.PASS),
+				("foch-test:unpublished", Status.FAIL),
+			],
+		)
+
+	def test_unreadable_workspace_metadata_skips_the_crate_checks(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			results = crates_checks(
+				context(
+					write_repo(Path(directory)),
+					FakeFetch({}),
+					packages=Unavailable("cargo metadata exited 101"),
+				)
+			)
+		self.assertEqual(
+			[(result.check, result.status) for result in results],
+			[("crates:unpublished", Status.SKIP)],
+		)
+
+
+class UnpublishedCratesTests(unittest.TestCase):
+	def test_lists_the_published_crates_lacking_their_exact_version(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			repo: Path = write_repo(Path(directory))
+			fetch = FakeFetch(
+				{
+					# The superseded product and an exact match: foch is done.
+					FOCH_INDEX: ok(
+						index_body(("0.1.0", True, "a"), ("0.0.1", False, "b"))
+					),
+					FOCH_CLI_INDEX: NOT_FOUND,
+					**NEW_LIBRARY_INDEXES,
+					# Yanked still exists; cargo would refuse to publish it again.
+					f"{CRATES_INDEX}/fo/ch/foch-annotation": ok(
+						index_body(("0.0.1", True, "c"))
+					),
+					# Only an exact match counts; cargo publish fails loudly on
+					# a build-metadata variant, which the preflight refused.
+					f"{CRATES_INDEX}/fo/ch/foch-test": ok(
+						index_body(("0.0.1+other", False, "d"))
+					),
+				}
+			)
+			missing = unpublished_crates(
+				workspace_packages(repo), services(fetch), allow_new=True
+			)
+		self.assertEqual(missing, ["foch-cli", "foch-lsp", "foch-runner", "foch-test"])
+
+	def test_a_crate_crates_io_lacks_fails_unless_allowed(self) -> None:
+		# The release job's Trusted Publishing token cannot create them, so it
+		# must stop before uploading foch, which crates.io has.
+		with tempfile.TemporaryDirectory() as directory:
+			repo: Path = write_repo(Path(directory))
+			fetch = FakeFetch(
+				{
+					FOCH_INDEX: ok(index_body(("0.1.0", True, "a"))),
+					FOCH_CLI_INDEX: NOT_FOUND,
+					**NEW_LIBRARY_INDEXES,
+				}
+			)
+			with self.assertRaisesRegex(
+				ValueError,
+				"crates.io has no foch-annotation, foch-cli, foch-lsp, foch-runner, "
+				"foch-test crate yet",
+			):
+				unpublished_crates(
+					workspace_packages(repo), services(fetch), allow_new=False
+				)
+
+	def test_a_registry_error_raises(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			repo: Path = write_repo(Path(directory))
+			fetch = FakeFetch(
+				{
+					FOCH_INDEX: Response(403, b"denied"),
+					FOCH_CLI_INDEX: NOT_FOUND,
+					**NEW_LIBRARY_INDEXES,
+				}
+			)
+			with self.assertRaisesRegex(UnexpectedResponse, "HTTP 403"):
+				unpublished_crates(
+					workspace_packages(repo), services(fetch), allow_new=True
+				)
 
 
 class PypiTests(unittest.TestCase):
@@ -601,7 +729,11 @@ class PreflightTests(unittest.TestCase):
 				(f"{GRAMMAR}:content", Status.PASS),
 				("foch:unpublished", Status.PASS),
 				("foch:superseded", Status.PASS),
+				("foch-annotation:unpublished", Status.PASS),
 				("foch-cli:unpublished", Status.PASS),
+				("foch-lsp:unpublished", Status.PASS),
+				("foch-runner:unpublished", Status.PASS),
+				("foch-test:unpublished", Status.PASS),
 				("pypi:version", Status.PASS),
 				("winget:version", Status.PASS),
 				("github:release", Status.PASS),
@@ -615,7 +747,7 @@ class PreflightTests(unittest.TestCase):
 		output = io.StringIO()
 		with contextlib.redirect_stdout(output):
 			self.assertEqual(report("v0.0.1", results), 0)
-		self.assertIn("preflight v0.0.1: all 10 checks passed", output.getvalue())
+		self.assertIn("preflight v0.0.1: all 14 checks passed", output.getvalue())
 
 	def test_an_unreleasable_tag_skips_the_registry_checks(self) -> None:
 		routes: dict[str, Response] = grammar_routes(
@@ -638,7 +770,7 @@ class PreflightTests(unittest.TestCase):
 		for check in (
 			"foch:unpublished",
 			"foch:superseded",
-			"foch-cli:unpublished",
+			*(f"{name}:unpublished" for name in ("foch-cli", *LIBRARIES)),
 			"pypi:version",
 			"winget:version",
 			"github:release",

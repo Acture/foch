@@ -45,15 +45,18 @@ class CargoMetadata(TypedDict):
 	packages: list[CargoPackage]
 
 
+# The crate `cargo install foch-cli` installs. crates.io builds it from
+# published crates alone, so a release publishes it and every workspace crate
+# it builds from (`published_crates`).
+INSTALLED_CRATE: str = "foch-cli"
 EXPECTED_BINARIES: tuple[tuple[str, str], ...] = (
-	("foch-cli", "foch"),
+	(INSTALLED_CRATE, "foch"),
 	("foch-desktop", "foch-desktop"),
 )
 EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-	("foch-cli", "parse_stats", ("dev-tools",)),
-	("foch-cli", "symbol_dump", ("dev-tools",)),
+	(INSTALLED_CRATE, "parse_stats", ("dev-tools",)),
+	(INSTALLED_CRATE, "symbol_dump", ("dev-tools",)),
 )
-PUBLISHABLE_PACKAGES: frozenset[str] = frozenset({"foch", "foch-cli"})
 # Workspace members released from their own repository, resolved from the
 # registry by published crates like any third-party dependency.
 EXTERNALLY_RELEASED_PACKAGES: frozenset[str] = frozenset({"tree-sitter-paradox"})
@@ -534,30 +537,72 @@ def is_publishable(package: CargoPackage) -> bool:
 	return package["publish"] != []
 
 
+def packages_by_directory(packages: list[CargoPackage]) -> dict[Path, CargoPackage]:
+	return {
+		Path(package["manifest_path"]).parent.resolve(): package for package in packages
+	}
+
+
+def published_crates(packages: list[CargoPackage]) -> tuple[str, ...]:
+	"""The workspace crates a release publishes to crates.io, sorted by name.
+
+	They are INSTALLED_CRATE and every workspace package its normal and build
+	dependencies reach, except the externally released ones, which published
+	crates resolve from the registry like any third-party crate.
+	"""
+	by_name: dict[str, CargoPackage] = {
+		package["name"]: package for package in packages
+	}
+	if INSTALLED_CRATE not in by_name:
+		raise ValueError(f"the workspace has no {INSTALLED_CRATE} package")
+	by_directory: dict[Path, CargoPackage] = packages_by_directory(packages)
+	reached: set[str] = set()
+	pending: list[str] = [INSTALLED_CRATE]
+	while pending:
+		name: str = pending.pop()
+		if name in reached or name in EXTERNALLY_RELEASED_PACKAGES:
+			continue
+		reached.add(name)
+		for dependency in by_name[name]["dependencies"]:
+			path: str | None = dependency.get("path")
+			if path is None or dependency["kind"] not in CLOSURE_DEPENDENCY_KINDS:
+				continue
+			target: CargoPackage | None = by_directory.get(Path(path).resolve())
+			if target is not None:
+				pending.append(target["name"])
+	return tuple(sorted(reached))
+
+
 def publishable_closure_problems(packages: list[CargoPackage]) -> list[str]:
 	"""Why the published crates would not build from registry artifacts alone.
 
-	Each path dependency a registry build resolves must pin exactly the version
-	of its path package, so the published closure is the one built here, and no
-	published crate may depend on a package that is never published.
+	Exactly the `published_crates` are publishable. Each path dependency a
+	registry build resolves must pin exactly the version of its path package,
+	so the published closure is the one built here, and no published crate may
+	depend on a package that is never published.
 	"""
-	publishable = sorted(
-		package["name"]
-		for package in packages
-		if is_publishable(package)
-		and package["name"] not in EXTERNALLY_RELEASED_PACKAGES
-	)
-	if frozenset(publishable) != PUBLISHABLE_PACKAGES:
-		return [
-			"publishable workspace packages must be exactly "
-			f"{sorted(PUBLISHABLE_PACKAGES)}; found {publishable}"
-		]
-	by_directory: dict[Path, CargoPackage] = {
-		Path(package["manifest_path"]).parent.resolve(): package for package in packages
-	}
-	violations: list[str] = []
+	if not any(package["name"] == INSTALLED_CRATE for package in packages):
+		return [f"the workspace has no {INSTALLED_CRATE} package"]
+	published: tuple[str, ...] = published_crates(packages)
+	ordered: list[CargoPackage] = sorted(packages, key=lambda package: package["name"])
+	violations: list[str] = [
+		*(
+			f"{package['name']} is published, but its manifest sets publish = false"
+			for package in ordered
+			if package["name"] in published and not is_publishable(package)
+		),
+		*(
+			f"{package['name']} is publishable, but {INSTALLED_CRATE} does not build "
+			"from it"
+			for package in ordered
+			if is_publishable(package)
+			and package["name"] not in published
+			and package["name"] not in EXTERNALLY_RELEASED_PACKAGES
+		),
+	]
+	by_directory: dict[Path, CargoPackage] = packages_by_directory(packages)
 	for package in packages:
-		if package["name"] not in PUBLISHABLE_PACKAGES:
+		if package["name"] not in published:
 			continue
 		for dependency in package["dependencies"]:
 			path = dependency.get("path")
@@ -567,7 +612,8 @@ def publishable_closure_problems(packages: list[CargoPackage]) -> list[str]:
 			target = by_directory.get(Path(path).resolve())
 			if target is None:
 				violations.append(f"{edge}: {path} is not a workspace package")
-			elif not is_publishable(target):
+			# A published target that sets publish = false is reported above.
+			elif target["name"] not in published and not is_publishable(target):
 				violations.append(f"{edge}: {target['name']} is never published")
 			elif (
 				dependency["kind"] in CLOSURE_DEPENDENCY_KINDS

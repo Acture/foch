@@ -26,10 +26,10 @@ categories = ["command-line-utilities", "development-tools"]
 # Published crates resolve these from the registry, so each path dependency
 # pins exactly the version its path package declares.
 foch = { path = "src/packages/foch", version = "=0.0.1" }
-foch-annotation = { path = "src/packages/foch-annotation" }
-foch-lsp = { path = "src/packages/foch-lsp" }
-foch-runner = { path = "src/packages/foch-runner" }
-foch-test = { path = "src/packages/foch-test" }
+foch-annotation = { path = "src/packages/foch-annotation", version = "=0.0.1" }
+foch-lsp = { path = "src/packages/foch-lsp", version = "=0.0.1" }
+foch-runner = { path = "src/packages/foch-runner", version = "=0.0.1" }
+foch-test = { path = "src/packages/foch-test", version = "=0.0.1" }
 tree-sitter-paradox = { path = "src/packages/tree-sitter-paradox", version = "=0.3.0" }
 bincode = "1.3.3"
 chardetng = "1.0.0"

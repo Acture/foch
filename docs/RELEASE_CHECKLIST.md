@@ -14,7 +14,9 @@ One tag and its source release to every channel:
   `win32-x64`) for `linux-x64`, `darwin-arm64` and `win32-x64`, the PyPI wheels,
   the VSIX packages, `foch-<version>-source.tar.gz`,
   `foch-<version>-winget-manifests.zip` and `SHA256SUMS.txt`;
-- crates.io: `foch` and `foch-cli`;
+- crates.io: `foch-cli` and every workspace crate it builds from, `foch`,
+  `foch-annotation`, `foch-lsp`, `foch-runner` and `foch-test`
+  (`python -m foch_dev check` derives and enforces the set);
 - PyPI: the `foch` wheels;
 - WinGet: `Acture.Foch`, by pull request to `microsoft/winget-pkgs`;
 - Homebrew: the tap that `sync-homebrew-tap.yml` updates from the source archive.
@@ -82,9 +84,10 @@ carry no EU4 base data; users build it from their own game installation.
 
 6. ☐ Set the version before any gate, so every gate runs on the commit you tag:
    - in `Cargo.toml`, `[workspace.package] version` and the `version = "=X.Y.Z"`
-     pin on `[workspace.dependencies] foch`;
-   - `cargo update --workspace`, so `Cargo.lock` lists `foch`, `foch-cli` and
-     `foch-desktop` at X.Y.Z;
+     pins on the five published path dependencies in `[workspace.dependencies]`
+     (`foch_dev check` refuses a stale one);
+   - `cargo update --workspace`, so `Cargo.lock` lists every workspace crate
+     except `tree-sitter-paradox` at X.Y.Z;
    - `THIRD-PARTY-LICENSES.txt`, which names the crate versions: regenerate it
      with cargo-about 0.9.2 as `src/apps/foch-cli/about.toml` describes;
    - both version mentions in the README (the banner and "The Rust product is
@@ -113,7 +116,8 @@ carry no EU4 base data; users build it from their own game installation.
     check to pass:
     `uv run --locked --project src/tools/foch-dev python -m foch_dev release preflight --tag vX.Y.Z`
     (with `GITHUB_TOKEN` exported). Then, from a clean checkout of that commit
-    with both build submodules, run `cargo publish --dry-run --locked -p foch -p foch-cli`.
+    with both build submodules, run
+    `cargo publish --dry-run --locked -p foch -p foch-annotation -p foch-test -p foch-lsp -p foch-runner -p foch-cli`.
     It needs no token and builds the crates against the crates.io grammar, as
     the real publish does; `crate-smoke` packages the grammar locally instead.
 14. ☐ Tag and push: `git tag -a vX.Y.Z -m "Foch X.Y.Z"`, then
@@ -129,16 +133,40 @@ carry no EU4 base data; users build it from their own game installation.
     then keeps its identical assets, adds the missing ones, fails if one
     differs, and publishes it. Base-data assets added later with
     `scripts/upload_release_data_assets.sh` are not part of this comparison.
-16. ☐ First release only, crates.io: Trusted Publishing cannot create
-    `foch-cli`, so leave `CRATES_IO_PUBLISH` unset for this tag and publish by
-    hand after the GitHub release job succeeds. Publishing earlier makes the
-    preflight refuse the tag. From a clean checkout of the tag with both build
-    submodules, create a crates.io API token limited to `foch` and `foch-cli`
-    with the publish-new and publish-update scopes and a short expiry, run
-    `cargo publish --locked -p foch -p foch-cli` with it in
-    `CARGO_REGISTRY_TOKEN`, and revoke it. Then add a trusted publisher to both
-    crates (owner `Acture`, repository `foch`, workflow `release.yml`,
-    environment `crates-io`) and set `CRATES_IO_PUBLISH` for later releases.
+16. ☐ crates.io, whenever the preflight notes that crates.io has no crate of
+    a published one yet: Trusted Publishing cannot create a crate, so that
+    release publishes its crates by hand. On the first release five of the six
+    do not exist yet: `foch-cli`, `foch-annotation`, `foch-lsp`, `foch-runner`
+    and `foch-test` (`foch` exists through the yanked 0.1.0). The same holds
+    for a later release after `foch-cli` gains a workspace dependency; with
+    `CRATES_IO_PUBLISH` set, its crate selection in `release.yml` fails before
+    anything is uploaded. Leave the variable unset for such a tag, or let that
+    job fail, and publish by hand after the GitHub release job succeeds.
+    Publishing earlier makes the preflight refuse the tag.
+    - crates.io lets an account create a burst of 5 new crates, then 1 more
+      every 10 minutes. The first release's five fit in one burst only if the
+      account has not created other crates shortly before; otherwise expect
+      the limit to stop the publish part-way.
+    - From a clean checkout of the tag with both build submodules, create a
+      crates.io API token limited to the published crates (on the first
+      release `foch`, `foch-annotation`, `foch-cli`, `foch-lsp`, `foch-runner`
+      and `foch-test`), with the publish-new and publish-update scopes and a
+      short expiry. With it in `CARGO_REGISTRY_TOKEN`, run
+      `cargo publish --locked` with `-p` for each crate that
+      `uv run --locked --project src/tools/foch-dev python -m foch_dev release unpublished --allow-new`
+      prints; on the first release that is
+      `cargo publish --locked -p foch -p foch-annotation -p foch-test -p foch-lsp -p foch-runner -p foch-cli`.
+      cargo publishes them in dependency order and waits for each to reach
+      the index.
+    - Publishing several crates is not atomic. If the rate limit or anything
+      else stops it, wait as crates.io says and re-run the command with only
+      the crates still missing, which `release unpublished --allow-new`
+      prints. Then revoke the token.
+    - Add a trusted publisher to each new crate (owner `Acture`, repository
+      `foch`, workflow `release.yml`, environment `crates-io`) and set
+      `CRATES_IO_PUBLISH` for later releases, whose `release.yml` publishes
+      exactly the crates `release unpublished` lists. If that job failed for
+      this tag, "Re-run failed jobs" now finds nothing left to publish.
 17. ☐ WinGet: after `winget-release-verify` installed from them, submit the
     three files of the release asset `foch-<version>-winget-manifests.zip`
     (`manifests/a/Acture/Foch/<version>/`) unchanged as one pull request to
@@ -165,7 +193,7 @@ carry no EU4 base data; users build it from their own game installation.
 21. ☐ For each channel whose verify-install run passed, update the README
     Install section: mark that channel available, and rewrite the "Not
     available yet" banner and "Building from source is the current way to run
-    Foch" to match. Once the crates are published, also update "neither is
+    Foch" to match. Once the crates are published, also update "none is
     published yet" under Repository layout, and the opening line of the
     project-status Distribution section. A channel without a passing run,
     including WinGet before its pull request merges, stays marked not

@@ -207,6 +207,9 @@ Run `foch <command> --help` for authoritative options.
   pinned as a build submodule)
 - `src/apps/foch-cli` — the `foch` executable, LSP, integration tests, and test-only
   merge-quality harness
+- `src/packages/foch-annotation`, `foch-test`, `foch-runner` and `foch-lsp` —
+  libraries the `foch` executable links: Foch annotations, in-game test
+  planning and judging, the game runner, and the language server
 - `src/apps/foch-desktop` — the Tauri desktop product, linked directly to `foch`
 - `src/packages/tree-sitter-paradox` — independently versioned grammar package
 - `src/apps/vscode-foch` — independently versioned VS Code extension
@@ -218,13 +221,14 @@ Run `foch <command> --help` for authoritative options.
   in the [unified notes repository](https://github.com/Acture/obsidian-vault/tree/project/foch)
 
 The root Cargo manifest is a virtual workspace. The `foch` library package
-carries its CWT build input, so the packaged `foch` and `foch-cli` crates build
-without the rest of the checkout; `python -m foch_dev crate-smoke` packages them
-with the pinned grammar and installs `foch` from those crates outside the
-repository. `foch` and `foch-cli` are the crates.io packages a release
-publishes, against `tree-sitter-paradox` released from its own repository;
-neither is published yet. Release source archives carry both public submodules
-and exclude private notes.
+carries its CWT build input, so the packaged crates build without the rest of
+the checkout; `python -m foch_dev crate-smoke` packages them with the pinned
+grammar and installs `foch` from those crates outside the repository. A
+release publishes `foch-cli` to crates.io with every workspace crate it builds
+from (`foch`, `foch-annotation`, `foch-lsp`, `foch-runner` and `foch-test`),
+against `tree-sitter-paradox` released from its own repository; none is
+published yet. Release source archives carry both public submodules and
+exclude private notes.
 
 The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
 `tree-sitter-paradox` at `0.3.0`. Cache and report schema generations are
@@ -431,7 +435,9 @@ Foch's own code is AGPL-3.0-only ([LICENSE](./LICENSE)). The `foch` library,
 and every distributed `foch` program, also contains an adaptation of Mergiraf
 (GPL-3.0-only, [LICENSE-MERGIRAF.txt](./LICENSE-MERGIRAF.txt)) and embeds a rule
 pack compiled from the CWTools EU4 config (MIT), so both are distributed as
-`AGPL-3.0-only AND GPL-3.0-only AND MIT`; the `foch-cli` crate's own source is
-AGPL-3.0-only. Each program also statically links Rust crates under their own
-licenses, given in [THIRD-PARTY-LICENSES.txt](./THIRD-PARTY-LICENSES.txt). See
+`AGPL-3.0-only AND GPL-3.0-only AND MIT`; the own source of `foch-cli` and of
+its internal libraries `foch-annotation`, `foch-lsp`, `foch-runner` and
+`foch-test` is AGPL-3.0-only. Each program also statically links Rust crates
+under their own licenses, given in
+[THIRD-PARTY-LICENSES.txt](./THIRD-PARTY-LICENSES.txt). See
 [NOTICE.md](./NOTICE.md).

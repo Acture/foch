@@ -15,6 +15,7 @@ uv run --locked --project src/tools/foch-dev python -m foch_dev schema-hash
 uv run --locked --project src/tools/foch-dev python -m foch_dev crate-smoke
 uv run --locked --project src/tools/foch-dev python -m foch_dev version --tag v0.0.1
 uv run --locked --project src/tools/foch-dev python -m foch_dev release preflight --tag v0.0.1
+uv run --locked --project src/tools/foch-dev python -m foch_dev release unpublished
 ```
 
 `--project` preserves the caller's working directory. Commands needing a
@@ -42,13 +43,21 @@ invalid check output returns failure, even if the process returned zero.
 fails. Failure summaries cannot pass through exit/fatal-error overrides.
 Fewer diagnostic findings alone do not establish merge correctness.
 
-`crate-smoke` runs `cargo package --locked --no-verify` for `foch`, `foch-cli`
-and `tree-sitter-paradox`, checks each `.crate` against the 10 MiB crates.io
-limit and the files it must and must not carry (its license texts and README
-byte-identical to the repository's), and unpacks them into a
-directory outside the checkout. There a `[patch.crates-io]` config stands the
-unpacked library and grammar in for their registry releases; the re-lock may
-only change those two entries. `cargo install --locked` then builds the
+The published crates are `foch-cli` and every workspace crate its normal and
+build dependencies reach, short of the externally released
+`tree-sitter-paradox`: today `foch`, `foch-annotation`, `foch-lsp`,
+`foch-runner` and `foch-test`. `check`, `crate-smoke` and `release` derive that
+set from `cargo metadata`; `check` requires exactly those crates to be
+publishable and every path dependency they build from pinned at its exact
+version.
+
+`crate-smoke` runs `cargo package --locked --no-verify` for the published
+crates and `tree-sitter-paradox`, checks each `.crate` against the 10 MiB
+crates.io limit and the files it must and must not carry (its license texts
+and README byte-identical to the repository's, no `tests/`), and unpacks them
+into a directory outside the checkout. There a `[patch.crates-io]` config
+stands every unpacked crate but `foch-cli` in for its registry release; the
+re-lock may only change those entries. `cargo install --locked` then builds the
 release `foch` with the checkout's toolchain, and the installed binary must
 embed the `schema-hash` of the vendored rules, print `--help` and inspect a
 minimal `foch.toml`. It compiles a release build, so it is a maintainer or
@@ -106,15 +115,25 @@ manifests on Windows.
 `release preflight --tag vX.Y.Z` only reads the registries. It fails unless
 the tag spells the releasable workspace version, the published crates pin
 every path dependency exactly, crates.io has the pinned `tree-sitter-paradox`
-with the checkout's bytes, neither `foch` nor `foch-cli` has the version,
-`foch` 0.1.0 (another product) is yanked, PyPI and winget-pkgs lack the
-version, and no published GitHub release for the tag has assets yet. A draft
-release is invisible to it; the release job compares a draft's assets byte for
-byte. Set `GITHUB_TOKEN` to lift the anonymous GitHub API limit.
+with the checkout's bytes, no published crate has the version, `foch` 0.1.0
+(another product) is yanked, PyPI and winget-pkgs lack the version, and no
+published GitHub release for the tag has assets yet. A crate crates.io does not
+have at all passes with a note that its first publish needs an API token,
+because Trusted Publishing cannot create a crate. A draft release is invisible
+to it; the release job compares a draft's assets byte for byte. Set
+`GITHUB_TOKEN` to lift the anonymous GitHub API limit.
+
+`release unpublished` prints the published crates whose version crates.io
+lacks, one per line, and fails on any registry error. `release.yml` publishes
+exactly those, so a re-run resumes an interrupted multi-crate publish. It also
+fails when crates.io has no crate of one of them at all, which the workflow's
+Trusted Publishing token cannot create, so the job stops before uploading
+anything; `--allow-new` lists those crates too, for a publish with an API token
+(`docs/RELEASE_CHECKLIST.md`).
 
 Module boundaries:
 
-- `contracts`: Cargo binary/example, publishable-crate closure, CWT location,
+- `contracts`: Cargo binary/example, the published crates and their closure, CWT location,
   desktop dependency/source checks, and the name, repository and license that
   the PyPI, WinGet and crate metadata share.
 - `schema`: the `cwt_schema_id` digest, in the build script's file order.
@@ -123,7 +142,8 @@ Module boundaries:
 - `binary`: the installed-binary identity checks every channel shares.
 - `dist`: release wheels and archives, and their uv install smoke.
 - `winget`: WinGet manifest rendering and schema checks.
-- `release`: the read-only release preflight across every registry.
+- `release`: the read-only release preflight across every registry, and the
+  crates the release job publishes.
 - `models` / `summary`: typed JSON boundaries and pure finding aggregation.
 - `smoke` / `compare`: execution and comparison, with typed options and reusable functions.
 - `repository`: checkout discovery independent of the package installation path.

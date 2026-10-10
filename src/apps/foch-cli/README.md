@@ -5,7 +5,10 @@ deterministic merged mod. It keeps the compatible contributions of each mod
 and reports genuine conflicts for review instead of silently picking a winner.
 Source mods and the game installation are only read. The `foch-cli` crate
 builds the `foch` program, including the `foch lsp` language server; the `foch`
-crate is the library behind it.
+crate is the library behind it. `foch-annotation`, `foch-lsp`, `foch-runner`
+and `foch-test` are internal libraries of the program, published because
+crates.io builds `foch-cli` from published crates only; their Rust APIs carry
+no semver promise.
 
 Foch supports Europa Universalis IV only and is alpha software: merging is not
 yet reliable across arbitrary modlists, and Foch does not launch the game, so
@@ -45,8 +48,9 @@ and the [documentation](https://github.com/Acture/foch/blob/master/docs/README.m
 Foch's own code is AGPL-3.0-only. The program also contains an adaptation of
 Mergiraf (GPL-3.0-only) and embeds a rule pack compiled from the CWTools EU4
 config (MIT), so the `foch` library and every `foch` program are distributed
-as `AGPL-3.0-only AND GPL-3.0-only AND MIT`. Each program also statically links
-Rust crates under their own licenses. See
+as `AGPL-3.0-only AND GPL-3.0-only AND MIT`; the source of the other five
+crates is AGPL-3.0-only. Each program also statically links Rust crates under
+their own licenses. See
 [NOTICE.md](https://github.com/Acture/foch/blob/master/NOTICE.md) and
 [THIRD-PARTY-LICENSES.txt](https://github.com/Acture/foch/blob/master/THIRD-PARTY-LICENSES.txt).
 

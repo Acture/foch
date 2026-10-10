@@ -168,6 +168,9 @@ symlinks to `CLAUDE.md`.
   concrete EU4 semantics
 - `src/apps/foch-cli` — the `foch` binary, `foch lsp`, CLI integration tests,
   fixed-corpus merge-quality harness, and feature-gated maintainer examples
+- `src/packages/foch-annotation`, `foch-test`, `foch-runner`, `foch-lsp` —
+  libraries linked into `foch`: annotations in EU4 comments, in-game test
+  meaning and judging, the real-game runner, and the language server
 - `src/apps/foch-desktop` — the player-facing Tauri application, linked directly to
   the main library without a CLI sidecar
 
@@ -176,6 +179,18 @@ symlinks to `CLAUDE.md`.
 - `src/tools/eu4-analysis` — PyGhidra analysis and builtin catalog generation
 - `src/tools/foch-dev` — internal Python package for repository contracts and diagnostics
 - `src/packages/foch/vendor/cwtools-eu4-config` — external build input, compiled into the binary
+
+A release publishes `foch-cli` to crates.io with every workspace crate it
+builds from. `foch_dev check` derives that set from `cargo metadata`, requires
+each member to be publishable and pinned by an exact `version = "=X.Y.Z"`
+workspace dependency, and every other member except `tree-sitter-paradox` to
+stay `publish = false`. A new crate `foch-cli` depends on therefore joins the
+crates.io release: give it the shared metadata, an explicit `include` list and
+the license symlinks the others carry, which `foch_dev crate-smoke` checks in
+the packaged crate. Trusted Publishing cannot create a crate, so the release
+job refuses to publish while one is missing from crates.io; the maintainer
+publishes it by hand with a scoped API token and then adds its trusted
+publisher (`docs/RELEASE_CHECKLIST.md`).
 
 The root Cargo manifest only configures the workspace. The main library's
 `tests/`, `fuzz/` and `build.rs` live in `src/packages/foch/`. Keep fuzz as an
