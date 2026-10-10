@@ -82,6 +82,48 @@ Engine failures and invalid generated syntax fail the job. Unsupported inputs
 and genuine user-choice conflicts remain inspectable results. A completed probe
 is a discovery result, not a semantic correctness score or in-game test.
 
+## Combinatorial exploration of installed mods
+
+```text
+cargo combination-probe
+```
+
+This separate bug-finding entrypoint composes merges from already installed
+Workshop mods instead of the fixed cohort. Its universe is the enabled Workshop
+mods of the current launcher playset in playset order, or the ordered ids in
+`FOCH_COMBO_PROBE_MODS=id1,id2,...`. Nothing is downloaded. Missing and local
+mods are listed as unavailable in the run's `universe.json`; they do not affect
+the acceptance denominator.
+
+It runs analysis-only `foch merge --non-interactive --review-all` on, in order,
+every singleton, the pairs that share a top-level content directory (most shared
+paths first), and growing precedence prefixes of the universe. Every
+combination keeps playset order and includes the declared dependencies its mods
+resolve to inside the universe. Panics, CLI errors, timeouts, fatal plan errors
+and `engine_failure` units are failures; `FOCH_COMBO_PROBE_FAIL_ON` adds review
+dispositions such as `unsupported_input` or `needs_user_choice`. A new failure
+signature is delta-debugged (ddmin) to a 1-minimal culprit set and attributed to
+a mod, a pair, or a group, with the content family of the failing unit. A
+signature already explained by a culprit set inside a later combination is
+counted, not minimized again.
+
+The default working directory is `target/combination-probe`
+(`FOCH_COMBO_PROBE_DIR`). `outcomes.jsonl` and `minimized.jsonl` are
+append-only and keyed by the executable hash, game version and ordered Workshop
+`id@manifest` identities, so rerunning the same command resumes: recorded
+combinations are not merged again, and a new executable starts a fresh history
+beside the old one. `summary.md` and `summary.json` are regenerated after every
+merge from the records for the current executable. Each attempt keeps per-case
+`foch.toml` and logs under `runs/run-*`.
+
+Budgets keep it bounded: `FOCH_COMBO_PROBE_MAX_RUNS` (new merges per
+invocation, minimization included; default 100), `FOCH_COMBO_PROBE_MAX_SIZE`
+(largest prefix; default the whole universe), `FOCH_COMBO_PROBE_PHASES`
+(`singleton,pair,prefix`), and `FOCH_COMBO_PROBE_TIMEOUT_SECS` per merge
+(default 1800). Results are measurement history for investigation, never a
+product-quality claim. Turn each reproduced failure into a focused regression
+fixture before fixing it at its content-family or kernel boundary.
+
 Ordinary tests cover the pipeline using synthetic installed Workshop inputs and
 an injected downloader, while base preparation and merging use the real CLI:
 
