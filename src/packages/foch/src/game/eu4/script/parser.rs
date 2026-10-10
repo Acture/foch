@@ -119,6 +119,24 @@ pub enum ParseDiagnosticCode {
 	InvalidValue,
 }
 
+impl ParseDiagnosticCode {
+	/// The code's stable public name, as reports and editors show it.
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::ReadFailure => "read_failure",
+			Self::UnterminatedLuaBlockComment => "unterminated_lua_block_comment",
+			Self::MissingClosingBrace => "missing_closing_brace",
+			Self::UnmatchedClosingBrace => "unmatched_closing_brace",
+			Self::UnmatchedOpeningBrace => "unmatched_opening_brace",
+			Self::MissingOpeningBrace => "missing_opening_brace",
+			Self::UnterminatedString => "unterminated_string",
+			Self::MissingValue => "missing_value",
+			Self::InvalidStatementStart => "invalid_statement_start",
+			Self::InvalidValue => "invalid_value",
+		}
+	}
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParseDiagnostic {
 	pub code: ParseDiagnosticCode,
@@ -1880,6 +1898,27 @@ next_effect = { add_prestige = 1 }
 		);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(keys(&parsed.statements), ["a{OR{x=1} name=value}"]);
+	}
+
+	#[test]
+	fn each_code_name_is_how_it_serializes() {
+		for code in [
+			ParseDiagnosticCode::ReadFailure,
+			ParseDiagnosticCode::UnterminatedLuaBlockComment,
+			ParseDiagnosticCode::MissingClosingBrace,
+			ParseDiagnosticCode::UnmatchedClosingBrace,
+			ParseDiagnosticCode::UnmatchedOpeningBrace,
+			ParseDiagnosticCode::MissingOpeningBrace,
+			ParseDiagnosticCode::UnterminatedString,
+			ParseDiagnosticCode::MissingValue,
+			ParseDiagnosticCode::InvalidStatementStart,
+			ParseDiagnosticCode::InvalidValue,
+		] {
+			assert_eq!(
+				serde_json::to_string(&code).unwrap(),
+				format!("\"{}\"", code.name())
+			);
+		}
 	}
 
 	#[test]

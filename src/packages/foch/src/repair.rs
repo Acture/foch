@@ -26,6 +26,55 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// One fix of a parse diagnostic, as an edit to the text it was parsed
+/// from.
+#[derive(Clone, Debug)]
+pub struct TextFix {
+	pub code: crate::game::eu4::script::parser::ParseDiagnosticCode,
+	/// Where the diagnostic is, as byte offsets in the text.
+	pub start: usize,
+	pub end: usize,
+	pub title: String,
+	/// A safe fix is a repair the merge makes by itself; an unsafe one
+	/// settles what the merge holds for review.
+	pub safe: bool,
+	pub edit: TextEdit,
+}
+
+/// The fixes of `diagnostics`, parsed from `text`: a repair for each
+/// repaired diagnostic, and the unsafe fix of each isolated definition.
+pub fn text_fixes(
+	text: &str,
+	diagnostics: &[crate::game::eu4::script::parser::ParseDiagnostic],
+) -> Vec<TextFix> {
+	let mut fixes = Vec::new();
+	for diagnostic in diagnostics {
+		let fix = if let Some(repair) = diagnostic.repair {
+			crate::game::eu4::script::parser::repair_text_edit(
+				text,
+				repair.edit,
+				diagnostic.span.start.offset,
+			)
+			.map(|edit| (edit, repair.description(), true))
+		} else if let Some(isolation) = &diagnostic.isolation {
+			unsafe_fix(text, isolation).map(|(edit, title)| (edit, title, false))
+		} else {
+			None
+		};
+		if let Some((edit, title, safe)) = fix {
+			fixes.push(TextFix {
+				code: diagnostic.code,
+				start: diagnostic.span.start.offset,
+				end: diagnostic.span.end.offset,
+				title,
+				safe,
+				edit,
+			});
+		}
+	}
+	fixes
+}
+
 /// Which fixes a plan makes.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FixOptions {
@@ -234,8 +283,11 @@ fn plan_file(
 			{
 				unsafe_edits.push(edit);
 				changes.push(format!(
-					"{}:{}: {change} (unsafe: definition `{}` could not be read with confidence)",
-					diagnostic.span.start.line, diagnostic.span.start.column, isolation.definition
+					"{}:{} [{}] {change} (unsafe: definition `{}` could not be read with confidence)",
+					diagnostic.span.start.line,
+					diagnostic.span.start.column,
+					diagnostic.code.name(),
+					isolation.definition
 				));
 				continue;
 			}
@@ -264,8 +316,11 @@ fn plan_file(
 			));
 		} else if diagnostic.repair.is_none() {
 			reasons.push(format!(
-				"{}:{}: {}",
-				diagnostic.span.start.line, diagnostic.span.start.column, diagnostic.message
+				"{}:{} [{}] {}",
+				diagnostic.span.start.line,
+				diagnostic.span.start.column,
+				diagnostic.code.name(),
+				diagnostic.message
 			));
 		}
 	}
@@ -275,9 +330,10 @@ fn plan_file(
 	for diagnostic in &parsed.diagnostics {
 		if let Some(repair) = diagnostic.repair {
 			changes.push(format!(
-				"{}:{}: {}",
+				"{}:{} [{}] {}",
 				diagnostic.span.start.line,
 				diagnostic.span.start.column,
+				diagnostic.code.name(),
 				repair.description()
 			));
 		}

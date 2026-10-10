@@ -245,6 +245,13 @@ forced merge reads it, or applying the likeliest proposal of a definition left
 out whole. Like a linter, `--fix` writes the fixes it can, reports the errors
 that remain, and exits with 1 while any do.
 
+Each fix is reported under its diagnostic's stable code, such as
+`unmatched_closing_brace` or `missing_value`, as `line:column [code]`. The
+language server publishes the same diagnostics under the same codes, a repaired
+one as a warning and one Foch cannot repair as an error, and offers the same
+fixes as quick fixes: each safe fix, preferred, each unsafe one, and one that
+makes every safe fix in the file.
+
 Where the fixes go depends on the input. A mod directory is an author's own
 work and is fixed in place. For a playset, `--patch-mod <DIR>` writes a patch
 mod holding only the fixed files, to load after the mods it fixes, and
