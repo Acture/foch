@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rayon::prelude::*;
+
 use crate::game::eu4::content::{
 	ContentFamilyDescriptor, DivergentBlockPolicy, MergePolicies, NamedContainerPolicy,
 };
@@ -52,44 +54,66 @@ impl<'a> TreeSourceObserver<'a> {
 		let base = self.partition_adapter.prepare(base);
 		let revision = self.partition_adapter.prepare(revision);
 		let partition_ids = base.partitions_with(&revision);
-		let mut partitions = Vec::with_capacity(partition_ids.len());
+		let policies = self.policies;
+		let matcher = &self.matcher;
+		// Partitions are independent, and one large module unit otherwise
+		// matches hundreds of definition trees in sequence.
+		let observed = partition_ids
+			.into_par_iter()
+			.map(|partition| {
+				// A partition the source left as its parent has it changes
+				// nothing: it carries the parent's lineage and needs no delta.
+				// Most of a folded module view is such vanilla content. A reset
+				// layer starts afresh, so what it rewrites identically is its own.
+				if !resets_base
+					&& let Some(parent) = parent_lineage.get(&partition)
+					&& base.same_partition(&revision, &partition)
+				{
+					return Ok((partition, None, parent.clone()));
+				}
+				// The parent's statements are a rendering of its lineage tree,
+				// and re-normalizing a rendering can reshape control flow,
+				// boolean wrappers and schema-typed numbers; the tree itself is
+				// the base.
+				let base_tree = match parent_lineage.get(&partition) {
+					Some(parent) => parent.tree.clone(),
+					None => base.normalize(&partition, policies).map_err(|error| {
+						format!("failed to normalize source-delta base: {error}")
+					})?,
+				};
+				let revision_tree = revision.normalize(&partition, policies).map_err(|error| {
+					format!("failed to normalize source-delta revision: {error}")
+				})?;
+				let matching = matcher.match_trees(&base_tree, &revision_tree);
+				let delta =
+					RevisionDelta::between(&base_tree, RevisionId::LEFT, &revision_tree, &matching);
+				let partition_lineage = apply_source_delta_lineage(
+					&source,
+					parent_lineage.get(&partition),
+					&base_tree,
+					&revision_tree,
+					&delta,
+					resets_base,
+				)?;
+				Ok((
+					partition.clone(),
+					Some(SemanticDeltaPartition {
+						partition,
+						base_tree,
+						revision_tree,
+						delta,
+					}),
+					partition_lineage,
+				))
+			})
+			.collect::<Result<Vec<_>, String>>()?;
+		let mut partitions = Vec::with_capacity(observed.len());
 		let mut lineage = BTreeMap::new();
-		for partition in partition_ids {
-			// The parent's statements are a rendering of its lineage tree, and
-			// re-normalizing a rendering can reshape control flow, boolean
-			// wrappers and schema-typed numbers; the tree itself is the base.
-			let base_tree = match parent_lineage.get(&partition) {
-				Some(parent) => parent.tree.clone(),
-				None => base
-					.normalize(&partition, self.policies)
-					.map_err(|error| format!("failed to normalize source-delta base: {error}"))?,
-			};
-			let revision_tree = revision
-				.normalize(&partition, self.policies)
-				.map_err(|error| format!("failed to normalize source-delta revision: {error}"))?;
-			let matching = self.matcher.match_trees(&base_tree, &revision_tree);
-			let delta =
-				RevisionDelta::between(&base_tree, RevisionId::LEFT, &revision_tree, &matching);
-			let partition_lineage = apply_source_delta_lineage(
-				&source,
-				parent_lineage.get(&partition),
-				&base_tree,
-				&revision_tree,
-				&delta,
-				resets_base,
-			)?;
-			if lineage
-				.insert(partition.clone(), partition_lineage)
-				.is_some()
-			{
+		for (partition, delta_partition, partition_lineage) in observed {
+			if lineage.insert(partition, partition_lineage).is_some() {
 				return Err("source observation repeated a semantic partition".to_string());
 			}
-			partitions.push(SemanticDeltaPartition {
-				partition,
-				base_tree,
-				revision_tree,
-				delta,
-			});
+			partitions.extend(delta_partition);
 		}
 		partitions.sort_by(|left, right| left.partition.cmp(&right.partition));
 		Ok(TreeSourceObservation {

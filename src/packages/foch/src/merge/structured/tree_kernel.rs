@@ -102,6 +102,26 @@ impl TreePartitionIndex<'_> {
 			.collect()
 	}
 
+	/// Whether `other` holds the same content as this input in `partition`,
+	/// ignoring source positions and comments.
+	pub(crate) fn same_partition(&self, other: &Self, partition: &SemanticPartitionId) -> bool {
+		match (partition, &self.definitions, &other.definitions) {
+			(SemanticPartitionId::Definition(key), Some(left), Some(right)) => {
+				super::definition_module::statements_content_equal(
+					&left.select(key).statements,
+					&right.select(key).statements,
+				)
+			}
+			(SemanticPartitionId::Definition(_), _, _) => false,
+			(SemanticPartitionId::File, _, _) => {
+				super::definition_module::statements_content_equal(
+					&self.file.statements,
+					&other.file.statements,
+				)
+			}
+		}
+	}
+
 	pub(crate) fn normalize(
 		&self,
 		partition: &SemanticPartitionId,

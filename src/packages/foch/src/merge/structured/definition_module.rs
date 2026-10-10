@@ -470,7 +470,7 @@ fn has_top_level_items(ast: &AstFile) -> bool {
 		.any(|statement| matches!(statement, AstStatement::Item { .. }))
 }
 
-fn statements_content_equal(left: &[AstStatement], right: &[AstStatement]) -> bool {
+pub(super) fn statements_content_equal(left: &[AstStatement], right: &[AstStatement]) -> bool {
 	left.len() == right.len()
 		&& left
 			.iter()
