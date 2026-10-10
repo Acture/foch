@@ -247,6 +247,9 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.95.0
+          # The components rust-toolchain.toml names; rustup otherwise adds them
+          # on the first cargo call and can conflict with the runner's cargo-fmt.
+          components: rustfmt, clippy
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -335,6 +338,9 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.95.0
+          # The components rust-toolchain.toml names; rustup otherwise adds them
+          # on the first cargo call and can conflict with the runner's cargo-fmt.
+          components: rustfmt, clippy
 
       - name: Install cargo-about
         run: |
