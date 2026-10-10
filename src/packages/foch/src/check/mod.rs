@@ -190,7 +190,11 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 	let semantic_index = run_progress_stage(
 		"merge semantic indexes",
 		|| match base_semantic {
-			Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
+			Some(snapshot) => {
+				let mut index = snapshot.index;
+				index.append(mod_semantic_index);
+				index
+			}
 			None => mod_semantic_index,
 		},
 		|index| {
@@ -365,7 +369,7 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 fn merge_mod_snapshots(snapshots: &[Option<LoadedModSnapshot>]) -> SemanticIndex {
 	let mut merged = SemanticIndex::default();
 	for snapshot in snapshots.iter().flatten() {
-		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
+		merged.append(snapshot.semantic_index.clone());
 	}
 	merged
 }
@@ -388,49 +392,6 @@ fn sum_family_parse_stats(lhs: FamilyParseStats, rhs: FamilyParseStats) -> Famil
 		parse_failed_documents: lhs.parse_failed_documents + rhs.parse_failed_documents,
 		parse_issue_count: lhs.parse_issue_count + rhs.parse_issue_count,
 	}
-}
-
-fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
-	let offset = base.scopes.len();
-	for scope in &mut overlay.scopes {
-		scope.id += offset;
-		if let Some(parent) = scope.parent {
-			scope.parent = Some(parent + offset);
-		}
-	}
-	for definition in &mut overlay.definitions {
-		definition.scope_id += offset;
-	}
-	for reference in &mut overlay.references {
-		reference.scope_id += offset;
-	}
-	for alias in &mut overlay.alias_usages {
-		alias.scope_id += offset;
-	}
-	for usage in &mut overlay.key_usages {
-		usage.scope_id += offset;
-	}
-	for assignment in &mut overlay.scalar_assignments {
-		assignment.scope_id += offset;
-	}
-
-	base.scopes.extend(overlay.scopes);
-	base.definitions.extend(overlay.definitions);
-	base.references.extend(overlay.references);
-	base.alias_usages.extend(overlay.alias_usages);
-	base.key_usages.extend(overlay.key_usages);
-	base.scalar_assignments.extend(overlay.scalar_assignments);
-	base.documents.extend(overlay.documents);
-	base.localisation_definitions
-		.extend(overlay.localisation_definitions);
-	base.localisation_duplicates
-		.extend(overlay.localisation_duplicates);
-	base.ui_definitions.extend(overlay.ui_definitions);
-	base.resource_references.extend(overlay.resource_references);
-	base.csv_rows.extend(overlay.csv_rows);
-	base.json_properties.extend(overlay.json_properties);
-	base.parse_issues.extend(overlay.parse_issues);
-	base
 }
 
 fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> {
