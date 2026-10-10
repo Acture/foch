@@ -13,6 +13,7 @@ from pathlib import Path
 
 from foch_dev.contracts import CargoDependency, CargoPackage
 from foch_dev.release import (
+	CRATES_API,
 	CRATES_DOWNLOADS,
 	CRATES_INDEX,
 	GITHUB_API,
@@ -64,6 +65,21 @@ NOT_FOUND: Response = Response(404, b'{"message": "Not Found"}')
 LIBRARIES: tuple[str, ...] = ("foch-annotation", "foch-lsp", "foch-runner", "foch-test")
 NEW_LIBRARY_INDEXES: dict[str, Response] = {
 	f"{CRATES_INDEX}/fo/ch/{name}": NOT_FOUND for name in LIBRARIES
+}
+
+
+def owners_url(name: str) -> str:
+	return f"{CRATES_API}/crates/{name}/owners"
+
+
+def owned_by(*logins: str) -> Response:
+	body: str = json.dumps({"users": [{"login": login} for login in logins]})
+	return Response(200, body.encode())
+
+
+# Every published crate crates.io lists is ours unless a test says otherwise.
+OWNERS: dict[str, Response] = {
+	owners_url(name): owned_by("Acture") for name in ("foch", "foch-cli", *LIBRARIES)
 }
 
 GRAMMAR_FILES: dict[str, bytes] = {
@@ -229,6 +245,7 @@ def passing_routes() -> dict[str, Response]:
 		FOCH_INDEX: ok(index_body(("0.1.0", True, "bb"))),
 		FOCH_CLI_INDEX: NOT_FOUND,
 		**NEW_LIBRARY_INDEXES,
+		**OWNERS,
 		PYPI_VERSION: NOT_FOUND,
 		WINGET_VERSION: NOT_FOUND,
 		FOCH_REPOSITORY: ok("{}"),
@@ -523,6 +540,7 @@ class CratesRegistryTests(unittest.TestCase):
 						FOCH_INDEX: ok(index_body(("0.1.0", False, "bb"))),
 						FOCH_CLI_INDEX: NOT_FOUND,
 						**NEW_LIBRARY_INDEXES,
+						**OWNERS,
 					}
 				)
 				results = crates_checks(context(repo, fetch, tag=tag))
@@ -536,6 +554,7 @@ class CratesRegistryTests(unittest.TestCase):
 					FOCH_INDEX: ok(index_body(("0.1.0", True, "bb"))),
 					FOCH_CLI_INDEX: NOT_FOUND,
 					**NEW_LIBRARY_INDEXES,
+					**OWNERS,
 					f"{CRATES_INDEX}/fo/ch/foch-test": ok(
 						index_body(("0.0.1", False, "cc"))
 					),
@@ -546,14 +565,37 @@ class CratesRegistryTests(unittest.TestCase):
 			[(result.check, result.status) for result in results],
 			[
 				("foch:unpublished", Status.PASS),
+				("foch:owner", Status.PASS),
 				("foch:superseded", Status.PASS),
 				("foch-annotation:unpublished", Status.PASS),
 				("foch-cli:unpublished", Status.PASS),
 				("foch-lsp:unpublished", Status.PASS),
 				("foch-runner:unpublished", Status.PASS),
 				("foch-test:unpublished", Status.FAIL),
+				("foch-test:owner", Status.PASS),
 			],
 		)
+
+	def test_a_crate_owned_by_someone_else_fails(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			repo: Path = write_repo(Path(directory))
+			fetch = FakeFetch(
+				{
+					FOCH_INDEX: ok(index_body(("0.1.0", True, "bb"))),
+					FOCH_CLI_INDEX: NOT_FOUND,
+					**NEW_LIBRARY_INDEXES,
+					**OWNERS,
+					f"{CRATES_INDEX}/fo/ch/foch-runner": ok(
+						index_body(("9.9.9", False, "f"))
+					),
+					owners_url("foch-runner"): owned_by(
+						"squatter", "github:other:team"
+					),
+				}
+			)
+			results = statuses(crates_checks(context(repo, fetch)))
+		self.assertIs(results["foch-runner:owner"], Status.FAIL)
+		self.assertIs(results["foch:owner"], Status.PASS)
 
 	def test_unreadable_workspace_metadata_skips_the_crate_checks(self) -> None:
 		with tempfile.TemporaryDirectory() as directory:
@@ -582,6 +624,7 @@ class UnpublishedCratesTests(unittest.TestCase):
 					),
 					FOCH_CLI_INDEX: NOT_FOUND,
 					**NEW_LIBRARY_INDEXES,
+					**OWNERS,
 					# Yanked still exists; cargo would refuse to publish it again.
 					f"{CRATES_INDEX}/fo/ch/foch-annotation": ok(
 						index_body(("0.0.1", True, "c"))
@@ -608,6 +651,7 @@ class UnpublishedCratesTests(unittest.TestCase):
 					FOCH_INDEX: ok(index_body(("0.1.0", True, "a"))),
 					FOCH_CLI_INDEX: NOT_FOUND,
 					**NEW_LIBRARY_INDEXES,
+					**OWNERS,
 				}
 			)
 			with self.assertRaisesRegex(
@@ -619,6 +663,29 @@ class UnpublishedCratesTests(unittest.TestCase):
 					workspace_packages(repo), services(fetch), allow_new=False
 				)
 
+	def test_a_squatted_crate_is_refused_not_skipped(self) -> None:
+		# Someone else's foch-lsp 0.0.1 must not count as our published crate.
+		with tempfile.TemporaryDirectory() as directory:
+			repo: Path = write_repo(Path(directory))
+			fetch = FakeFetch(
+				{
+					FOCH_INDEX: ok(index_body(("0.0.1", False, "a"))),
+					FOCH_CLI_INDEX: NOT_FOUND,
+					**NEW_LIBRARY_INDEXES,
+					**OWNERS,
+					f"{CRATES_INDEX}/fo/ch/foch-lsp": ok(
+						index_body(("0.0.1", False, "e"))
+					),
+					owners_url("foch-lsp"): owned_by("squatter"),
+				}
+			)
+			with self.assertRaisesRegex(
+				ValueError, r"foch-lsp \(squatter\) owned by others"
+			):
+				unpublished_crates(
+					workspace_packages(repo), services(fetch), allow_new=True
+				)
+
 	def test_a_registry_error_raises(self) -> None:
 		with tempfile.TemporaryDirectory() as directory:
 			repo: Path = write_repo(Path(directory))
@@ -627,6 +694,7 @@ class UnpublishedCratesTests(unittest.TestCase):
 					FOCH_INDEX: Response(403, b"denied"),
 					FOCH_CLI_INDEX: NOT_FOUND,
 					**NEW_LIBRARY_INDEXES,
+					**OWNERS,
 				}
 			)
 			with self.assertRaisesRegex(UnexpectedResponse, "HTTP 403"):
@@ -728,6 +796,7 @@ class PreflightTests(unittest.TestCase):
 				(f"{GRAMMAR}:crates.io", Status.PASS),
 				(f"{GRAMMAR}:content", Status.PASS),
 				("foch:unpublished", Status.PASS),
+				("foch:owner", Status.PASS),
 				("foch:superseded", Status.PASS),
 				("foch-annotation:unpublished", Status.PASS),
 				("foch-cli:unpublished", Status.PASS),
@@ -747,7 +816,7 @@ class PreflightTests(unittest.TestCase):
 		output = io.StringIO()
 		with contextlib.redirect_stdout(output):
 			self.assertEqual(report("v0.0.1", results), 0)
-		self.assertIn("preflight v0.0.1: all 14 checks passed", output.getvalue())
+		self.assertIn("preflight v0.0.1: all 15 checks passed", output.getvalue())
 
 	def test_an_unreleasable_tag_skips_the_registry_checks(self) -> None:
 		routes: dict[str, Response] = grammar_routes(

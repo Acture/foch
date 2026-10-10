@@ -91,6 +91,9 @@ CRATES_DOWNLOADS: str = "https://static.crates.io/crates"
 PYPI_API: str = "https://pypi.org/pypi"
 GITHUB_API: str = "https://api.github.com"
 GITHUB_REPOSITORY: str = urllib.parse.urlsplit(REPOSITORY_URL).path.strip("/")
+CRATES_API: str = "https://crates.io/api/v1"
+# crates.io logins are GitHub logins; every crate Foch publishes is owned here.
+CRATE_OWNER: str = GITHUB_REPOSITORY.split("/")[0]
 WINGET_REPOSITORY: str = "microsoft/winget-pkgs"
 # Versions that shipped another product under a crate name this release reuses.
 # While one is unyanked, `cargo install <crate>` without a version can resolve
@@ -488,6 +491,41 @@ def crate_index(services: Services, name: str) -> tuple[IndexEntry, ...] | None:
 	return None if body is None else parse_index(body, name)
 
 
+def crate_owners(services: Services, name: str) -> frozenset[str]:
+	"""The crates.io logins (users and `github:org:team` teams) owning `name`."""
+	where: str = f"{CRATES_API}/crates/{name}/owners"
+	body: bytes | None = get(services, where)
+	if body is None:
+		raise ValueError(f"crates.io lists {name} but has no owners for it")
+	users: object = json_object(body, where).get("users")
+	if not isinstance(users, list):
+		raise ValueError(f"{where}: 'users' must be a list")
+	return frozenset(
+		typed_field(as_object(user, where), "login", str, where)
+		for user in cast(list[object], users)
+	)
+
+
+def foreign_owners(owners: frozenset[str]) -> bool:
+	return CRATE_OWNER not in owners
+
+
+def check_owner(name: str, owners: frozenset[str]) -> CheckResult:
+	"""A crate crates.io already has must be ours: a squatted name would make the
+	release skip it as published and foch-cli depend on someone else's code."""
+	check: str = f"{name}:owner"
+	if not foreign_owners(owners):
+		return CheckResult(
+			check, Status.PASS, f"crates.io {name} is owned by {CRATE_OWNER}"
+		)
+	return CheckResult(
+		check,
+		Status.FAIL,
+		f"crates.io {name} is owned by {', '.join(sorted(owners))}, not {CRATE_OWNER}",
+		"never publish foch-cli against it; recover the name or rename the crate",
+	)
+
+
 def same_version(entries: tuple[IndexEntry, ...], version: str) -> list[IndexEntry]:
 	"""Entries crates.io treats as `version`; it ignores build metadata."""
 	key: SemverKey = semver_key(version)
@@ -563,6 +601,13 @@ def publishable_crate_checks(name: str, context: Context) -> list[CheckResult]:
 			partial(check_unpublished, name, release.version, loaded),
 		)
 	]
+	if loaded is not None:
+		owners = attempt(partial(crate_owners, context.services, name))
+		results.append(
+			failed_lookup(f"{name}:owner", owners, CRATES_REMEDY)
+			if isinstance(owners, Unavailable)
+			else check_owner(name, owners)
+		)
 	if name in SUPERSEDED_VERSIONS:
 		results.append(
 			guarded(checks[1], CRATES_REMEDY, partial(check_superseded, name, loaded))
@@ -597,7 +642,8 @@ def unpublished_crates(
 
 	Trusted Publishing cannot create a crate, so unless `allow_new` (a publish
 	with an API token) it raises when crates.io has no crate of one of them at
-	all, before the release job uploads any.
+	all, before the release job uploads any. A crate crates.io has must be
+	owned by `CRATE_OWNER`; a squatted name raises instead of being skipped.
 	"""
 	versions: dict[str, str] = {
 		package["name"]: package["version"] for package in packages
@@ -606,6 +652,19 @@ def unpublished_crates(
 	indexes: dict[str, tuple[IndexEntry, ...] | None] = {
 		name: crate_index(services, name) for name in published
 	}
+	# Checked before anything else: skipping a squatted name as "published"
+	# would release foch-cli against someone else's crate.
+	foreign: list[str] = [
+		f"{name} ({', '.join(sorted(owners))})"
+		for name in published
+		if indexes[name] is not None
+		and foreign_owners(owners := crate_owners(services, name))
+	]
+	if foreign:
+		raise ValueError(
+			f"crates.io has {'; '.join(foreign)} owned by others, not {CRATE_OWNER}; "
+			"publishing would make foch-cli depend on them"
+		)
 	absent: list[str] = [name for name in published if indexes[name] is None]
 	if absent and not allow_new:
 		raise ValueError(

@@ -115,8 +115,9 @@ manifests on Windows.
 `release preflight --tag vX.Y.Z` only reads the registries. It fails unless
 the tag spells the releasable workspace version, the published crates pin
 every path dependency exactly, crates.io has the pinned `tree-sitter-paradox`
-with the checkout's bytes, no published crate has the version, `foch` 0.1.0
-(another product) is yanked, PyPI and winget-pkgs lack the version, and no
+with the checkout's bytes, no published crate has the version, every published
+crate crates.io already lists is owned by `Acture`, `foch` 0.1.0 (another
+product) is yanked, PyPI and winget-pkgs lack the version, and no
 published GitHub release for the tag has assets yet. A crate crates.io does not
 have at all passes with a note that its first publish needs an API token,
 because Trusted Publishing cannot create a crate. A draft release is invisible
@@ -124,7 +125,9 @@ to it; the release job compares a draft's assets byte for byte. Set
 `GITHUB_TOKEN` to lift the anonymous GitHub API limit.
 
 `release unpublished` prints the published crates whose version crates.io
-lacks, one per line, and fails on any registry error. `release.yml` publishes
+lacks, one per line, and fails on any registry error or when a crate crates.io
+lists is not owned by `Acture`: a squatted name must stop the release instead of
+being skipped as already published. `release.yml` publishes
 exactly those, so a re-run resumes an interrupted multi-crate publish. It also
 fails when crates.io has no crate of one of them at all, which the workflow's
 Trusted Publishing token cannot create, so the job stops before uploading
