@@ -260,6 +260,14 @@ fn proxy_forwards_without_a_plan_and_ignores_unlisted_dlls() {
 #[test]
 fn native_initializes_before_main_and_reports_configuration_and_state() {
 	let rt = Runtime::new();
+	// A packaged auxiliary DLL is not necessarily an entry DLL import and
+	// must not prevent loading the selected entry or be discovered implicitly.
+	fs::create_dir(rt.path("plugins/resources")).unwrap();
+	fs::copy(
+		fixtures().path().join("native.dll"),
+		rt.path("plugins/resources/auxiliary.dll"),
+	)
+	.unwrap();
 	rt.plan(vec![rt.plugin("native", "native", "entry")]);
 	let events = rt.run("native");
 	assert_eq!(

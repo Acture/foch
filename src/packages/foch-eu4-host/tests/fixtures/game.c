@@ -80,7 +80,7 @@ int main(int argc, char **argv) {
 	}
 	real_size = ((SizeFn)GetProcAddress(real, "GetFileVersionInfoSizeW"))(sample, &ignored);
 	if (!proxy_size || proxy_size != real_size) return 4;
-	if (GetModuleHandleW(L"unexpected.dll")) return 5;
+	if (GetModuleHandleW(L"unexpected.dll") || GetModuleHandleW(L"auxiliary.dll")) return 5;
 	if (argc > 1 && strcmp(argv[1], "native") == 0 && !native_at_constructor) return 6;
 	/* The Rust harness acknowledges terminal events; elapsed time is not proof. */
 	if (argc > 1 && strcmp(argv[1], "forward-only") != 0 && strcmp(argv[1], "proxy-threads") != 0) {

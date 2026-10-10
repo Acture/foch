@@ -219,9 +219,16 @@ are supplied by management; absent data/cache/log directories return an empty
 ABI string, while the plugin directory defaults to the entry DLL's parent.
 
 Dependencies are resolved from the entry DLL directory and System32, without
-changing the process's search directories. Existing process modules still
-follow Windows module reuse rules. Management must reject conflicting
-dependency DLL names/versions before launch.
+changing the process's search directories. Package subdirectories are not
+searched recursively: place private dependencies that Windows must resolve
+automatically beside the entry DLL. Other directories may contain resource
+DLLs or DLLs the plugin loads explicitly by path; merely packaging them does
+not make them entry DLL imports. Existing process modules still follow Windows
+module reuse rules. Management rejects conflicting DLL names/versions before
+launch, but does not inspect PE import tables or prove that every dependency
+can be resolved. A launchable plan means the declared compatibility and
+artifact checks passed; dependency or initialization failures remain visible
+in runtime status.
 
 ## Native ABI and legacy status
 
