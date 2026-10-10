@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "15.0.0";
+pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "16.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const MOD_SNAPSHOT_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
 const MOD_SNAPSHOT_CACHE_HEADER_BYTES: usize = MOD_SNAPSHOT_CACHE_MAGIC.len() + size_of::<u64>();
