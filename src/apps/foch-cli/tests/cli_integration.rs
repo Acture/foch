@@ -967,6 +967,48 @@ struct StaticServer {
 	handle: Option<JoinHandle<()>>,
 }
 
+#[test]
+fn static_server_waits_for_complete_request_headers() {
+	use std::io::Read;
+	use std::net::TcpStream;
+	use std::time::Instant;
+	let root = TempDir::new().unwrap();
+	fs::write(root.path().join("asset.bin"), b"fixture asset").unwrap();
+	let server = serve_directory(root.path());
+	let mut stream = TcpStream::connect(server.base_url.trim_start_matches("http://")).unwrap();
+	stream.write_all(b"GET /asset.bin HTTP/1.1\r\n").unwrap();
+	stream.set_nonblocking(true).unwrap();
+	let mut buffer = [0; 512];
+	// A timed-out blocking receive can invalidate a Windows socket. Peek
+	// without consuming data while leaving this connection usable.
+	let deadline = Instant::now() + Duration::from_millis(200);
+	loop {
+		let early_response = stream.peek(&mut buffer);
+		assert!(
+			matches!(early_response, Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock),
+			"server replied before the request headers were complete: {early_response:?}"
+		);
+		if Instant::now() >= deadline {
+			break;
+		}
+		thread::sleep(Duration::from_millis(5));
+	}
+	stream.set_nonblocking(false).unwrap();
+	stream
+		.set_read_timeout(Some(Duration::from_secs(5)))
+		.unwrap();
+	stream
+		.write_all(b"Host: localhost\r\nConnection: close\r\n\r\n")
+		.unwrap();
+	// Content-Length frames this response; a graceful socket EOF is not
+	// required to finish the HTTP transfer.
+	let expected =
+		b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nfixture asset";
+	let mut response = vec![0; expected.len()];
+	stream.read_exact(&mut response).unwrap();
+	assert_eq!(response, expected);
+}
+
 impl Drop for StaticServer {
 	fn drop(&mut self) {
 		let _ = self.stop_tx.send(());
@@ -991,11 +1033,33 @@ fn serve_directory(root: &Path) -> StaticServer {
 			}
 			match listener.accept() {
 				Ok((mut stream, _addr)) => {
+					// Windows accepts inherit the listener's nonblocking mode.
+					stream.set_nonblocking(false).expect("set blocking request");
+					stream
+						.set_read_timeout(Some(Duration::from_secs(5)))
+						.expect("set request timeout");
+					stream
+						.set_write_timeout(Some(Duration::from_secs(5)))
+						.expect("set response timeout");
 					let mut request_line = String::new();
 					let mut reader = BufReader::new(
 						stream.try_clone().expect("clone stream for request reader"),
 					);
 					if reader.read_line(&mut request_line).is_err() {
+						continue;
+					}
+					// Consume the complete request before replying and closing.
+					// Unread socket data can reset the connection on Windows.
+					let mut header = String::new();
+					let complete = loop {
+						header.clear();
+						match reader.read_line(&mut header) {
+							Ok(0) | Err(_) => break false,
+							Ok(_) if header == "\r\n" || header == "\n" => break true,
+							Ok(_) => {}
+						}
+					};
+					if !complete {
 						continue;
 					}
 					let path = request_line
@@ -1009,7 +1073,9 @@ fn serve_directory(root: &Path) -> StaticServer {
 							"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
 							bytes.len()
 						);
-						let _ = stream.write_all(header.as_bytes());
+						if stream.write_all(header.as_bytes()).is_err() {
+							continue;
+						}
 						let _ = stream.write_all(&bytes);
 					} else {
 						let body = b"not found";
@@ -1017,7 +1083,9 @@ fn serve_directory(root: &Path) -> StaticServer {
 							"HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
 							body.len()
 						);
-						let _ = stream.write_all(header.as_bytes());
+						if stream.write_all(header.as_bytes()).is_err() {
+							continue;
+						}
 						let _ = stream.write_all(body);
 					}
 				}
