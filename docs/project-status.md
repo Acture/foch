@@ -35,7 +35,7 @@ arbitrary modlists.
 - `[gui] mode = "decisions"` migrates each mod's scripted custom GUI actions
   into one player-only main decision per mod (panel options, province searches
   with 32 multiplayer player numbers, rebound text and manifest overrides) and
-  hides the migrated buttons; `foch_gui` and `best_effort` are not implemented.
+  hides the migrated buttons; `window` and `mixed` are not implemented.
   The output has not been validated in game.
 - `common/on_actions` (additive since patch 1.36) and `common/estates` (mods
   extend estates from their own files) stay per path instead of one definition
