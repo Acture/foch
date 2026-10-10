@@ -2,7 +2,8 @@
 
 use super::ConfigError;
 use super::transform::{SourceEdit, validate_edits};
-use crate::model::GamePath;
+use crate::game::eu4::script::documents::classify_document_family;
+use crate::model::{DocumentFamily, GamePath};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -27,13 +28,16 @@ pub(super) fn validate_repairs(entries: &[SourceRepairEntry]) -> Result<(), Conf
 		}
 		let path = GamePath::new(&entry.file)
 			.map_err(|error| invalid(format!("file `{}`: {error}", entry.file)))?;
-		if path
-			.as_str()
-			.rsplit_once('.')
-			.is_none_or(|(_, extension)| extension.eq_ignore_ascii_case("lua"))
+		// Only a Clausewitz script is read through the script cache the
+		// repair is laid over; localisation, CSV and JSON are not, and a
+		// Lua defines file is read by a Lua interpreter, never repaired.
+		if classify_document_family(path) != Some(DocumentFamily::Clausewitz)
+			|| path
+				.extension()
+				.is_some_and(|extension| extension.eq_ignore_ascii_case("lua"))
 		{
 			return Err(invalid(format!(
-				"file `{}` must be a Clausewitz script, not Lua",
+				"file `{}` must be a Clausewitz script: not Lua, localisation, CSV or JSON",
 				entry.file
 			)));
 		}
@@ -127,13 +131,17 @@ mod tests {
 	}
 
 	#[test]
-	fn a_reviewed_repair_binds_any_script_file_but_lua() {
+	fn a_reviewed_repair_binds_only_a_clausewitz_script() {
 		let sha = "a".repeat(64);
 		let project: Project = toml::from_str(&config("events/b.txt", &sha)).unwrap();
 		assert_eq!(project.repairs.len(), 1);
 		assert!(validate_repairs(&project.repairs).is_ok());
 		for (file, sha256) in [
 			("common/defines/b.lua", sha.as_str()),
+			("localisation/b_l_english.yml", sha.as_str()),
+			("map/b.csv", sha.as_str()),
+			("b.json", sha.as_str()),
+			("events/b", sha.as_str()),
 			(r"events\b.txt", sha.as_str()),
 			("events/b.txt", "ABC"),
 		] {

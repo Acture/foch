@@ -112,9 +112,9 @@ sha256 = "<SHA256 of the file's raw bytes>"
 edits = [{ start = 59, end = 59, expected = "", replacement = "}\n" }]
 ```
 
-An entry may name any script file of an enabled mod except a `.lua` file, and
-uses the same SHA256 binding and edit coordinates as culture repairs. After
-its edits, the definitions they touch must parse with no repair of their own;
+An entry may name any Clausewitz script of an enabled mod, but not a `.lua`,
+localisation, CSV or JSON file. It uses the same SHA256 binding and edit
+coordinates as culture repairs. After its edits, the definitions they touch must parse with no repair of their own;
 elsewhere in the file the usual automatic repairs still apply. A reviewed
 repair is frozen with the analysis, adds its evidence to the units that read
 the file, and is checked for source drift again before commit: a file whose
