@@ -255,8 +255,9 @@ pub struct MergeArgs {
 	/// Write the complete review as JSON to this file before confirmation:
 	/// the mods and their dependency edges, every unit with its ordered
 	/// contributors, each deferred unit's conflict tree with the competing
-	/// candidates, and every decision point with the foch.toml resolutions
-	/// that would persist it.
+	/// candidates, and every decision point: a choice for one conflict as a
+	/// decision record, and one for its file or directory as the foch.toml
+	/// rule that would persist it.
 	#[arg(long, value_name = "PATH")]
 	pub review_json: Option<PathBuf>,
 }

@@ -9,8 +9,8 @@ use crate::model::{
 	MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 };
 pub use conflicts::{
-	AddressNode, ConflictCandidate, ConflictContributor, ConflictLeaf, DecisionAction,
-	DecisionOption, DecisionPoint, DecisionScope, DecisionScopeKind, UnitConflicts,
+	AddressNode, ConflictCandidate, ConflictChoice, ConflictContributor, ConflictLeaf,
+	DecisionAction, DecisionOption, DecisionPoint, DecisionScope, UnitConflicts,
 };
 pub(crate) use provenance::PlaysetProvenance;
 pub use provenance::{DependencyStatus, MergeReviewDependency, MergeReviewMod};

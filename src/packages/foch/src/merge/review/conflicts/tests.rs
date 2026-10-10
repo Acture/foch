@@ -8,7 +8,7 @@ use crate::model::{
 };
 use crate::playset::PlaysetEntry;
 use crate::playset::descriptor::ModDescriptor;
-use crate::project::{ResolutionDecision, ResolutionMap, compute_conflict_id};
+use crate::project::{ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id};
 use std::collections::{BTreeSet, HashMap};
 
 fn game_path(text: &str) -> GamePathBuf {
@@ -277,8 +277,9 @@ fn conflicts_are_an_address_tree_sharing_parents_with_candidates_at_leaves() {
 	assert_eq!(ai_chance.reason, None);
 }
 
-/// Every persisted option is a valid `[[resolutions]]` entry, and the
-/// resolution map it builds yields that option's decision for its conflict.
+/// A conflict-scoped choice is a decision record for exactly that conflict.
+/// Every file or directory scope is a valid `[[resolutions]]` entry whose
+/// resolution map yields that option's decision for the conflict.
 #[test]
 fn every_decision_scope_persists_as_a_resolution_that_selects_its_conflict() {
 	let review = conflicted_review();
@@ -316,7 +317,19 @@ fn every_decision_scope_persists_as_a_resolution_that_selects_its_conflict() {
 				DecisionAction::Handler { name } => ResolutionDecision::Handler(name.clone()),
 			};
 			for scope in &option.scopes {
-				let map = ResolutionMap::from_entries(std::slice::from_ref(&scope.resolution))
+				let resolution = match scope {
+					DecisionScope::Conflict { decision } => {
+						assert_eq!(decision.conflict_id, point.conflict_id);
+						assert_eq!(
+							ResolutionDecision::PreferMod(decision.prefer_mod.clone()),
+							expected
+						);
+						continue;
+					}
+					DecisionScope::File { resolution }
+					| DecisionScope::Directory { resolution } => resolution,
+				};
+				let map = ResolutionMap::from_entries(std::slice::from_ref(resolution))
 					.unwrap_or_else(|error| panic!("{scope:?}: {error}"));
 				assert_eq!(
 					map.lookup(&point.file_path, &point.conflict_id, &point.address),
@@ -324,36 +337,45 @@ fn every_decision_scope_persists_as_a_resolution_that_selects_its_conflict() {
 					"{scope:?}"
 				);
 			}
+			let conflict_scopes = option
+				.scopes
+				.iter()
+				.filter(|scope| matches!(scope, DecisionScope::Conflict { .. }))
+				.count();
+			assert_eq!(
+				conflict_scopes,
+				usize::from(matches!(option.action, DecisionAction::PreferMod { .. }))
+			);
 		}
 	}
 }
 
 #[test]
-fn scopes_reach_only_their_conflict_file_or_directory() {
+fn rule_scopes_reach_only_their_file_or_directory() {
 	let review = conflicted_review();
 	let [name, ai_chance] = review.decisions() else {
 		panic!("two decision points");
 	};
-	let lookup = |scope: &DecisionScope, file: &str, conflict_id: &str, address: &str| {
-		ResolutionMap::from_entries(std::slice::from_ref(&scope.resolution))
+	let lookup = |resolution: &ResolutionEntry, file: &str, conflict_id: &str, address: &str| {
+		ResolutionMap::from_entries(std::slice::from_ref(resolution))
 			.unwrap()
 			.lookup(&game_path(file), conflict_id, address)
 			.is_some()
 	};
-	let [conflict, file, directory] = name.options[0].scopes.as_slice() else {
-		panic!("three prefer-mod scopes");
+	let [
+		DecisionScope::Conflict { decision },
+		DecisionScope::File { resolution: file },
+		DecisionScope::Directory {
+			resolution: directory,
+		},
+	] = name.options[0].scopes.as_slice()
+	else {
+		panic!("conflict, file and directory prefer-mod scopes");
 	};
-	assert_eq!(conflict.scope, DecisionScopeKind::Conflict);
-	assert!(!lookup(
-		conflict,
-		"events/a.txt",
-		&ai_chance.conflict_id,
-		&ai_chance.address
-	));
-	assert_eq!(file.scope, DecisionScopeKind::File);
+	assert_eq!(decision.conflict_id, name.conflict_id);
+	assert_ne!(decision.conflict_id, ai_chance.conflict_id);
 	assert!(lookup(file, "events/a.txt", &ai_chance.conflict_id, "x"));
 	assert!(!lookup(file, "events/b.txt", "other", "x"));
-	assert_eq!(directory.scope, DecisionScopeKind::Directory);
 	assert!(lookup(directory, "events/b.txt", "other", "x"));
 	assert!(!lookup(directory, "events/nested/c.txt", "other", "x"));
 	assert!(!lookup(directory, "common/events/a.txt", "other", "x"));

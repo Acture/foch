@@ -2,9 +2,11 @@
 //!
 //! Each unit with genuine leaf conflicts gets its address tree down to every
 //! conflict, with the competing candidates rendered for review. Every leaf is
-//! a decision point whose options carry the exact `foch.toml` resolution entry
-//! that would persist them. Nothing here chooses a winner: every option is
-//! explicit and maps onto a resolution the handler contract already audits.
+//! a decision point. A choice for just that conflict is a decision record kept
+//! apart from `foch.toml`; a choice for its file or directory is the exact
+//! `foch.toml` rule, the mod author's path-level merge policy, that would
+//! persist it. Nothing here chooses a winner: every option is explicit and
+//! maps onto a resolution the handler contract already audits.
 
 use super::MergeUnitOutcome;
 use crate::merge::conflict_view::ConflictView;
@@ -93,22 +95,24 @@ pub enum DecisionAction {
 	Handler { name: String },
 }
 
+/// Where a choice applies and how it persists.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct DecisionScope {
-	pub scope: DecisionScopeKind,
-	/// The `[[resolutions]]` entry that persists the choice at this scope.
-	pub resolution: ResolutionEntry,
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum DecisionScope {
+	/// Only this conflict: a decision record, never a `foch.toml` rule.
+	Conflict { decision: ConflictChoice },
+	/// Every conflict in this file, as a `foch.toml` rule.
+	File { resolution: ResolutionEntry },
+	/// Every conflict in files of this file's directory, as a `foch.toml`
+	/// match rule.
+	Directory { resolution: ResolutionEntry },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DecisionScopeKind {
-	/// Only this conflict, by its id.
-	Conflict,
-	/// Every conflict in this file.
-	File,
-	/// Every conflict in files of this file's directory, as a match rule.
-	Directory,
+/// The choice for one conflict, keyed by its id.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConflictChoice {
+	pub conflict_id: String,
+	pub prefer_mod: String,
 }
 
 pub(super) fn unit_conflicts(
@@ -207,24 +211,20 @@ pub(super) fn decision_point(
 				mod_id: mod_id.to_string(),
 			},
 			scopes: vec![
-				DecisionScope {
-					scope: DecisionScopeKind::Conflict,
-					resolution: ResolutionEntry {
-						conflict_id: Some(leaf.conflict_id.clone()),
-						prefer_mod: Some(mod_id.to_string()),
-						..empty_resolution()
+				DecisionScope::Conflict {
+					decision: ConflictChoice {
+						conflict_id: leaf.conflict_id.clone(),
+						prefer_mod: mod_id.to_string(),
 					},
 				},
-				DecisionScope {
-					scope: DecisionScopeKind::File,
+				DecisionScope::File {
 					resolution: ResolutionEntry {
 						file: Some(file.clone()),
 						prefer_mod: Some(mod_id.to_string()),
 						..empty_resolution()
 					},
 				},
-				DecisionScope {
-					scope: DecisionScopeKind::Directory,
+				DecisionScope::Directory {
 					resolution: ResolutionEntry {
 						r#match: Some(directory_rule(file)),
 						prefer_mod: Some(mod_id.to_string()),
@@ -240,20 +240,14 @@ pub(super) fn decision_point(
 			action: DecisionAction::Handler {
 				name: handler.to_string(),
 			},
-			scopes: [
-				(DecisionScopeKind::File, file_rule(file)),
-				(DecisionScopeKind::Directory, directory_rule(file)),
-			]
-			.into_iter()
-			.map(|(scope, rule)| DecisionScope {
-				scope,
-				resolution: ResolutionEntry {
-					r#match: Some(rule),
-					handler: Some(handler.to_string()),
-					..empty_resolution()
+			scopes: vec![
+				DecisionScope::File {
+					resolution: handler_rule(file_rule(file), handler),
 				},
-			})
-			.collect(),
+				DecisionScope::Directory {
+					resolution: handler_rule(directory_rule(file), handler),
+				},
+			],
 		});
 	}
 	DecisionPoint {
@@ -264,6 +258,14 @@ pub(super) fn decision_point(
 		file_path: file.clone(),
 		address: node.address.clone(),
 		options,
+	}
+}
+
+fn handler_rule(rule: String, handler: &str) -> ResolutionEntry {
+	ResolutionEntry {
+		r#match: Some(rule),
+		handler: Some(handler.to_string()),
+		..empty_resolution()
 	}
 }
 

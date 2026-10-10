@@ -2188,10 +2188,17 @@ fn merge_review_json_is_written_without_committing() {
 	);
 	let point = &review["decisions"][0];
 	assert_eq!(point["conflict_id"], leaf["conflict_id"]);
+	let conflict_scope = &point["options"][0]["scopes"][0];
+	assert_eq!(conflict_scope["scope"], "conflict");
 	assert_eq!(
-		point["options"][0]["scopes"][0]["resolution"]["conflict_id"],
+		conflict_scope["decision"]["conflict_id"],
 		leaf["conflict_id"]
 	);
+	assert!(
+		conflict_scope.get("resolution").is_none(),
+		"{conflict_scope:#}"
+	);
+	assert_eq!(point["options"][0]["scopes"][1]["scope"], "file");
 }
 
 #[test]

@@ -48,8 +48,8 @@ pub use resolution::conflict_handler::{
 pub use resolution::conflict_view::{CandidateView, ConflictView};
 pub(crate) use resolution::{conflict_handler, conflict_view, handler_registry};
 pub use review::{
-	AddressNode, ConflictCandidate, ConflictContributor, ConflictLeaf, DecisionAction,
-	DecisionOption, DecisionPoint, DecisionScope, DecisionScopeKind, DependencyStatus,
+	AddressNode, ConflictCandidate, ConflictChoice, ConflictContributor, ConflictLeaf,
+	DecisionAction, DecisionOption, DecisionPoint, DecisionScope, DependencyStatus,
 	MERGE_REVIEW_SCHEMA, MergeDisposition, MergeReview, MergeReviewContributor,
 	MergeReviewDependency, MergeReviewMod, MergeReviewSummary, MergeUnitKind, MergeUnitOutcome,
 	UnitConflicts,

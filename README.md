@@ -118,8 +118,10 @@ every unit before committing; this changes presentation only.
 `--review-json PATH` also writes the complete review as JSON before
 confirmation: the mods, their dependency edges and each unit's ordered
 contributors; each deferred unit's conflict address tree with the competing
-candidates' text; and every decision point with the `[[resolutions]]` entries
-that would persist it for one conflict, its file or its directory.
+candidates' text; and every decision point. A choice for just one conflict is
+a decision record keyed by its conflict id, kept apart from `foch.toml`; a
+choice for its file or directory is the `[[resolutions]]` rule that would
+persist it.
 
 Unresolved files or complete definition modules are withheld while unrelated
 safe units are written. This `partial_success` result is valid. `--force`
