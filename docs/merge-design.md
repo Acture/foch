@@ -237,14 +237,22 @@ A reviewed `[[repairs]]` entry in `foch.toml` applies one of the proposals, or
 any exact edit, to Foch's copy of the file, after which it merges as usual; see
 [the project manifest](./foch-project-manifest.md#reviewed-syntax-repairs).
 
-The same repairs, automatic and reviewed, can be written out for a player
-without a merge. `foch fix` lists them; with `--confirm` it writes them either
-as a patch mod holding only the repaired files, to load after the mods it
-repairs, or with `--in-place` into the mods' own files. In-place repair is the
-one case where Foch writes to a source mod: each original is backed up under
-Foch's data directory first, and `foch fix --restore <BACKUP_DIR>` puts back
-every file that still holds the repaired bytes. Steam replaces a Workshop
-mod's files when it updates, which undoes an in-place repair.
+The same repairs can be written out without a merge, as a linter's fixes:
+`foch check --fix`, or `--diff` to show them and write nothing. Safe fixes are
+the automatic repairs and the reviewed `[[repairs]]`; `--unsafe-fixes` also
+settles what a merge holds for review, leaving out an isolated statement as a
+forced merge reads it, or applying the likeliest proposal of a definition left
+out whole. Like a linter, `--fix` writes the fixes it can, reports the errors
+that remain, and exits with 1 while any do.
+
+Where the fixes go depends on the input. A mod directory is an author's own
+work and is fixed in place. For a playset, `--patch-mod <DIR>` writes a patch
+mod holding only the fixed files, to load after the mods it fixes, and
+`--in-place` writes into the mods' own files after backing up each original
+under Foch's data directory; `foch check --restore <BACKUP_DIR>` puts back
+every file that still holds the fixed bytes. Steam replaces a Workshop mod's
+files when it updates, which undoes an in-place fix. These are the only cases
+where Foch writes to a source mod.
 
 Text that names no definition, a key the file repeats, as events repeat
 `country_event`, and any other error without a repair still make the file

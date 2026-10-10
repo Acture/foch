@@ -558,30 +558,37 @@ fn a_reviewed_repair_lets_an_isolated_definition_merge_until_its_source_changes(
 }
 
 #[test]
-fn fix_writes_a_patch_mod_or_the_source_with_a_backup_that_restores() {
+fn check_fix_writes_a_patch_mod_or_the_source_with_a_backup_that_restores() {
 	let scratch = TempDir::new().unwrap();
 	let source = "b_check = {\n\talways = yes\n}\n}\nb_later = { always = no }\n";
 	let repaired = "b_check = {\n\talways = yes\n}\n\nb_later = { always = no }\n";
 	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
 	let file = mod_b.join(STRAY_BRACE_TRIGGERS);
-	let repair = |extra: &[&str]| {
-		let mut args = vec!["fix", path_text(&manifest)];
+	let check = |extra: &[&str], expected: i32| {
+		let mut args = vec!["check", path_text(&manifest)];
 		args.extend_from_slice(extra);
 		let (code, stdout, stderr) = run_foch(&args, scratch.path());
-		assert_eq!(code, 0, "{stdout}\n{stderr}");
+		assert_eq!(code, expected, "{stdout}\n{stderr}");
 		stdout
 	};
 
-	let stdout = repair(&[]);
+	// A diff shows the fix, writes nothing, and exits with 1 like a linter.
+	let stdout = check(&["--diff"], 1);
 	assert!(
-		stdout.contains("repair b: common/scripted_triggers/b_triggers.txt"),
+		stdout.contains("a/b/common/scripted_triggers/b_triggers.txt") && stdout.contains("-}"),
 		"{stdout}"
 	);
-	assert!(stdout.contains("nothing written"), "{stdout}");
+	assert_eq!(fs::read_to_string(&file).unwrap(), source);
+
+	// A playset needs to say where the fixes go.
+	let (code, stdout, stderr) =
+		run_foch(&["check", path_text(&manifest), "--fix"], scratch.path());
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("--patch-mod"), "{stderr}");
 	assert_eq!(fs::read_to_string(&file).unwrap(), source);
 
 	let patch = scratch.path().join("patch");
-	repair(&["--out", path_text(&patch), "--confirm"]);
+	check(&["--fix", "--patch-mod", path_text(&patch)], 0);
 	assert!(patch.join("descriptor.mod").is_file());
 	assert_eq!(
 		fs::read_to_string(patch.join(STRAY_BRACE_TRIGGERS)).unwrap(),
@@ -593,20 +600,20 @@ fn fix_writes_a_patch_mod_or_the_source_with_a_backup_that_restores() {
 		"a patch mod leaves the source alone"
 	);
 
-	let stdout = repair(&["--in-place", "--confirm"]);
+	let stdout = check(&["--fix", "--in-place"], 0);
 	assert_eq!(fs::read_to_string(&file).unwrap(), repaired);
 	let backup = stdout
 		.lines()
-		.find_map(|line| line.strip_prefix("undo with: foch fix --restore \""))
+		.find_map(|line| line.strip_prefix("undo with: foch check --restore \""))
 		.and_then(|rest| rest.strip_suffix('"'))
 		.unwrap_or_else(|| panic!("{stdout}"))
 		.to_owned();
-	let (code, stdout, stderr) = run_foch(&["fix", "--restore", &backup], scratch.path());
+	let (code, stdout, stderr) = run_foch(&["check", "--restore", &backup], scratch.path());
 	assert_eq!(code, 0, "{stdout}\n{stderr}");
 	assert_eq!(fs::read_to_string(&file).unwrap(), source);
 
-	// A file changed after the repair is not overwritten by a restore.
-	repair(&["--in-place", "--confirm"]);
+	// A file changed after the fix is not overwritten by a restore.
+	check(&["--fix", "--in-place"], 0);
 	let latest = fs::read_dir(scratch.path().join(".foch-data").join("repair-backups"))
 		.unwrap()
 		.map(|entry| entry.unwrap().path())
@@ -614,12 +621,60 @@ fn fix_writes_a_patch_mod_or_the_source_with_a_backup_that_restores() {
 		.unwrap();
 	fs::write(&file, "b_check = { always = no }\n").unwrap();
 	let (code, stdout, stderr) =
-		run_foch(&["fix", "--restore", path_text(&latest)], scratch.path());
+		run_foch(&["check", "--restore", path_text(&latest)], scratch.path());
 	assert_eq!(code, 0, "{stdout}\n{stderr}");
 	assert!(stdout.contains("left "), "{stdout}");
 	assert_eq!(
 		fs::read_to_string(&file).unwrap(),
 		"b_check = { always = no }\n"
+	);
+}
+
+#[test]
+fn check_fix_fixes_a_mod_directory_in_place_and_unsafe_fixes_settle_isolations() {
+	let scratch = TempDir::new().unwrap();
+	let mod_dir = scratch.path().join("my-mod");
+	write_descriptor(&mod_dir, "My mod");
+	let path = mod_dir.join(STRAY_BRACE_TRIGGERS);
+	write_script_file(&mod_dir, STRAY_BRACE_TRIGGERS, ISOLATED_TRIGGERS);
+	let check = |extra: &[&str]| {
+		let mut args = vec!["check", path_text(&mod_dir)];
+		args.extend_from_slice(extra);
+		run_foch(&args, scratch.path())
+	};
+
+	// The safe fix is made, as a linter's is, and `b_open` is reported for
+	// review, so the exit is 1.
+	let (code, stdout, stderr) = check(&["--fix"]);
+	assert_eq!(code, 1, "{stdout}\n{stderr}");
+	assert!(stdout.contains("cannot fix"), "{stdout}");
+	assert_eq!(
+		fs::read_to_string(&path).unwrap(),
+		"b_check = { always = yes }\n\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n"
+	);
+
+	// The unsafe fix leaves out `b_open`'s unreadable `OR`, as a forced
+	// merge reads it, and the file then reads cleanly.
+	let (code, stdout, stderr) = check(&["--fix", "--unsafe-fixes"]);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("unsafe"), "{stdout}");
+	let fixed = fs::read_to_string(&path).unwrap();
+	assert_eq!(
+		fixed,
+		"b_check = { always = yes }\n\nb_open = {\n\talways = yes\n}\n"
+	);
+	let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+		foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+		&fixed,
+	);
+	assert!(parsed.diagnostics.is_empty(), "{fixed}");
+	assert!(
+		!scratch
+			.path()
+			.join(".foch-data")
+			.join("repair-backups")
+			.exists(),
+		"an author's mod is fixed as a linter fixes, with no backup"
 	);
 }
 

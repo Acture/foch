@@ -1,12 +1,15 @@
-//! Repairs of mod script files outside a merge.
+//! Syntax fixes of mod script files outside a merge.
 //!
-//! A merge only repairs Foch's own copy of a source file. `foch repair`
-//! writes the same repairs out for a player: as a patch mod that holds only
-//! the repaired files and loads after the mods it repairs, or, on explicit
-//! request, into the source files themselves, each backed up first so the
-//! change can be undone. The repairs are those a merge would make: automatic
-//! one-token repairs with one trustworthy reading, and the reviewed
-//! `[[repairs]]` of `foch.toml`.
+//! A merge only repairs Foch's own copy of a source file. `foch check --fix`
+//! writes the same repairs out, like a linter's fixes: into a mod directory
+//! an author works on, or, for a playset, as a patch mod that holds only the
+//! repaired files and loads after the mods it repairs, or on explicit request
+//! into the source files themselves, each backed up first.
+//!
+//! Safe fixes are the repairs a merge makes by itself, and the reviewed
+//! `[[repairs]]` of `foch.toml`. Unsafe fixes, only on request, settle what a
+//! merge holds for review: an isolated statement is left out, as `--force`
+//! reads it, and a definition left out whole takes its likeliest proposal.
 
 use crate::game::eu4::base::snapshot::data_root;
 use crate::game::eu4::script::parse_cache::parse_clausewitz_for_path;
@@ -22,6 +25,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Which fixes a plan makes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FixOptions {
+	/// Also settle what a merge holds for review.
+	pub unsafe_fixes: bool,
+}
 
 /// Every file of the input's mods that has something to repair.
 #[derive(Clone, Debug, Default)]
@@ -42,6 +52,7 @@ pub struct FileRepair {
 	pub changes: Vec<String>,
 	pub sha256_before: String,
 	pub sha256_after: String,
+	pub original: Vec<u8>,
 	pub repaired: Vec<u8>,
 }
 
@@ -75,7 +86,11 @@ fn sha256(bytes: &[u8]) -> String {
 
 /// Finds what can be repaired in the mods `request` resolves to, with the
 /// reviewed repairs of `project`. Nothing is written.
-pub fn plan_repairs(request: &InputRequest, project: &Project) -> Result<RepairPlan, RepairError> {
+pub fn plan_repairs(
+	request: &InputRequest,
+	project: &Project,
+	options: FixOptions,
+) -> Result<RepairPlan, RepairError> {
 	let input = crate::input::resolve_input(request, false)
 		.map_err(|error| RepairError(error.to_string()))?;
 	let mut targets = BTreeMap::<(String, GamePathBuf), PathBuf>::new();
@@ -100,23 +115,70 @@ pub fn plan_repairs(request: &InputRequest, project: &Project) -> Result<RepairP
 			}
 		}
 	}
+	plan_targets(project, targets, options)
+}
+
+/// Finds what can be repaired in the script files of the mod directory
+/// `root`, an author's own mod. Nothing is written.
+pub fn plan_directory_repairs(
+	root: &Path,
+	project: &Project,
+	options: FixOptions,
+) -> Result<RepairPlan, RepairError> {
+	let mod_id = root
+		.file_name()
+		.and_then(|name| name.to_str())
+		.unwrap_or("mod")
+		.to_owned();
+	let mut targets = BTreeMap::new();
+	for entry in walkdir::WalkDir::new(root).sort_by_file_name() {
+		let entry = entry.map_err(|error| RepairError(error.to_string()))?;
+		if !entry.file_type().is_file() {
+			continue;
+		}
+		let Ok(path) = GamePathBuf::from_physical(root, entry.path()) else {
+			continue;
+		};
+		let script = crate::game::eu4::script::documents::classify_document_family(&path)
+			== Some(crate::model::DocumentFamily::Clausewitz)
+			&& path
+				.extension()
+				.is_some_and(|extension| !extension.eq_ignore_ascii_case("lua"));
+		if script {
+			targets.insert((mod_id.clone(), path), entry.path().to_owned());
+		}
+	}
+	plan_targets(project, targets, options)
+}
+
+fn plan_targets(
+	project: &Project,
+	targets: BTreeMap<(String, GamePathBuf), PathBuf>,
+	options: FixOptions,
+) -> Result<RepairPlan, RepairError> {
 	let mut plan = RepairPlan::default();
 	for ((mod_id, path), source) in targets {
-		match plan_file(project, &mod_id, &path, &source)? {
-			Planned::Repair(repair) => plan.files.push(repair),
-			Planned::Unrepaired(reasons) => plan.unrepaired.push(UnrepairedFile {
+		let (repair, reasons) = match plan_file(project, &mod_id, &path, &source, options)? {
+			Planned::Repair(repair, reasons) => (Some(repair), reasons),
+			Planned::Unrepaired(reasons) => (None, reasons),
+			Planned::Nothing => (None, Vec::new()),
+		};
+		plan.files.extend(repair);
+		if !reasons.is_empty() {
+			plan.unrepaired.push(UnrepairedFile {
 				mod_id,
 				path,
 				reasons,
-			}),
-			Planned::Nothing => {}
+			});
 		}
 	}
 	Ok(plan)
 }
 
 enum Planned {
-	Repair(FileRepair),
+	/// Fixes to write, and the errors they leave, as a linter fixes what it
+	/// can and reports the rest.
+	Repair(FileRepair, Vec<String>),
 	Unrepaired(Vec<String>),
 	Nothing,
 }
@@ -126,6 +188,7 @@ fn plan_file(
 	mod_id: &str,
 	path: &GamePath,
 	source: &Path,
+	options: FixOptions,
 ) -> Result<Planned, RepairError> {
 	let bytes = fs::read(source)?;
 	let sha256_before = sha256(&bytes);
@@ -163,8 +226,19 @@ fn plan_file(
 		}
 	}
 	let mut reasons = Vec::new();
+	let mut unsafe_edits = Vec::new();
 	for diagnostic in &parsed.diagnostics {
 		if let Some(isolation) = &diagnostic.isolation {
+			if options.unsafe_fixes
+				&& let Some((edit, change)) = unsafe_fix(&text, isolation)
+			{
+				unsafe_edits.push(edit);
+				changes.push(format!(
+					"{}:{}: {change} (unsafe: definition `{}` could not be read with confidence)",
+					diagnostic.span.start.line, diagnostic.span.start.column, isolation.definition
+				));
+				continue;
+			}
 			let proposals = isolation
 				.proposals
 				.iter()
@@ -195,11 +269,9 @@ fn plan_file(
 			));
 		}
 	}
-	if !reasons.is_empty() {
-		return Ok(Planned::Unrepaired(reasons));
-	}
-	let edits: Vec<TextEdit> = repair_text_edits(&text, &parsed.diagnostics)
+	let mut edits: Vec<TextEdit> = repair_text_edits(&text, &parsed.diagnostics)
 		.ok_or_else(|| RepairError(format!("{path}: a repair is not where the text has it")))?;
+	edits.extend(unsafe_edits);
 	for diagnostic in &parsed.diagnostics {
 		if let Some(repair) = diagnostic.repair {
 			changes.push(format!(
@@ -211,27 +283,96 @@ fn plan_file(
 		}
 	}
 	if changes.is_empty() {
-		return Ok(Planned::Nothing);
+		return Ok(if reasons.is_empty() {
+			Planned::Nothing
+		} else {
+			Planned::Unrepaired(reasons)
+		});
 	}
 	let mut ordered = edits;
 	ordered.sort_by_key(|edit| std::cmp::Reverse(edit.offset));
 	for edit in ordered {
 		text.replace_range(edit.offset..edit.offset + edit.remove, edit.insert);
 	}
+	// What is written may keep the errors no fix covers, but no other.
+	let remaining = parse_clausewitz_for_path(path, &text).diagnostics;
+	if remaining.len() > reasons.len()
+		|| remaining
+			.iter()
+			.any(|diagnostic| diagnostic.repair.is_some())
+	{
+		return Ok(Planned::Unrepaired(
+			remaining
+				.iter()
+				.map(|diagnostic| {
+					format!(
+						"after the fixes, {}:{}: {}",
+						diagnostic.span.start.line,
+						diagnostic.span.start.column,
+						diagnostic.message
+					)
+				})
+				.collect(),
+		));
+	}
 	let Some(repaired) = reencode_paradox_bytes(&bytes, &text) else {
 		return Ok(Planned::Unrepaired(vec![
 			"its repairs cannot be written back in its encoding".into(),
 		]));
 	};
-	Ok(Planned::Repair(FileRepair {
-		mod_id: mod_id.to_owned(),
-		path: path.to_owned(),
-		source: source.to_owned(),
-		changes,
-		sha256_before,
-		sha256_after: sha256(&repaired),
-		repaired,
-	}))
+	Ok(Planned::Repair(
+		FileRepair {
+			mod_id: mod_id.to_owned(),
+			path: path.to_owned(),
+			source: source.to_owned(),
+			changes,
+			sha256_before,
+			sha256_after: sha256(&repaired),
+			original: bytes,
+			repaired,
+		},
+		reasons,
+	))
+}
+
+/// The unsafe fix of an isolated definition in `text`: its unreadable
+/// statement's lines are left out, as a forced merge reads it, or, left out
+/// whole, it takes its likeliest proposal. `None` when there is neither.
+fn unsafe_fix(text: &str, isolation: &crate::model::Isolation) -> Option<(TextEdit, String)> {
+	if let Some(lines) = isolation.dropped {
+		let start = line_offset(text, lines.first)?;
+		let end = line_offset(text, lines.last + 1).unwrap_or(text.len());
+		return Some((
+			TextEdit {
+				offset: start,
+				remove: end - start,
+				insert: "",
+			},
+			format!("left out lines {}-{}", lines.first, lines.last),
+		));
+	}
+	let proposal = isolation.proposals.first()?;
+	let edit =
+		crate::game::eu4::script::parser::repair_text_edit(text, proposal.edit, proposal.offset)?;
+	Some((edit, proposal.description()))
+}
+
+/// Where line `line`, counted from 1, starts in `text`.
+fn line_offset(text: &str, line: usize) -> Option<usize> {
+	if line <= 1 {
+		return Some(0);
+	}
+	text.match_indices('\n').nth(line - 2).map(|(at, _)| at + 1)
+}
+
+/// Writes the repairs into the files of an author's mod directory, as a
+/// linter's fixes are: no backup is kept.
+pub fn apply_in_place(plan: &RepairPlan) -> Result<(), RepairError> {
+	verify_unchanged(plan)?;
+	for file in &plan.files {
+		fs::write(&file.source, &file.repaired)?;
+	}
+	Ok(())
 }
 
 /// Checks that no source changed since `plan` read it.
