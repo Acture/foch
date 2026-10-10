@@ -154,6 +154,22 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 	let mut entries = Vec::new();
 	for entry in walkdir::WalkDir::new(root).follow_links(false) {
 		let entry = entry?;
+		let metadata = std::fs::symlink_metadata(entry.path())?;
+		let linked = metadata.file_type().is_symlink();
+		#[cfg(windows)]
+		let linked = {
+			use std::os::windows::fs::MetadataExt;
+			linked || metadata.file_attributes() & 0x400 != 0
+		};
+		if linked {
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidInput,
+				format!(
+					"linked package entry is unsupported: {}",
+					entry.path().display()
+				),
+			));
+		}
 		if !entry.file_type().is_file() {
 			continue;
 		}
@@ -446,4 +462,35 @@ fn show_status(args: &PluginStatusArgs) -> HandlerResult {
 		}
 	}
 	Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn package_links_are_rejected_instead_of_losing_optional_resources() {
+		let scratch = tempfile::tempdir().unwrap();
+		let package = scratch.path().join("package");
+		std::fs::create_dir_all(package.join("fonts")).unwrap();
+		std::fs::write(package.join("fonts/optional.ttf"), "font bytes").unwrap();
+		assert_eq!(
+			read_package_dir(&package).unwrap()[0].path,
+			"fonts/optional.ttf"
+		);
+		// Preparing this empty fixture creates an ordinary directory link
+		// (a native junction on Windows) without launching any executable.
+		let layer = foch_runner::runtime::RuntimeLayer::prepare(
+			&package,
+			&scratch.path().join("runtimes"),
+			"linked-package",
+		)
+		.unwrap();
+		let error = read_package_dir(&layer.directory).unwrap_err();
+		assert!(error.to_string().contains("linked package entry"));
+		assert_eq!(
+			std::fs::read(package.join("fonts/optional.ttf")).unwrap(),
+			b"font bytes"
+		);
+	}
 }

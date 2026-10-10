@@ -20,7 +20,7 @@ cargo build -p foch-cli -p foch-eu4-host --release --locked
 foch plugin import ./EU4UnicodePatch --adapter io.github.yozoratempest.eu4-unicode-patch
 foch plugin import ./EU4MenuPatch --adapter io.github.yozoratempest.eu4-menu-patch
 foch plugin enable io.github.yozoratempest.eu4-unicode-patch --playset default --version 0.1.14
-foch plugin enable io.github.yozoratempest.eu4-menu-patch --playset default --version 0.1.4
+foch plugin enable io.github.yozoratempest.eu4-menu-patch --playset default --version 0.1.4-experimental
 foch plugin plan --playset default --game-path "G:/SteamLibrary/steamapps/common/Europa Universalis IV"
 foch plugin launch --playset default --host-dll ./target/release/foch_eu4_host.dll
 foch plugin status --run-dir "<runtime directory printed by launch>"
@@ -28,8 +28,15 @@ foch plugin status --run-dir "<runtime directory printed by launch>"
 
 Extract ZIP releases before importing. Optional Unicode fonts must be placed in
 the extracted package's `plugins/eu4_unicode_patch` directory before importing.
+Copy linked files or directories into the extracted package; import rejects
+links and reparse points rather than silently omitting their resources.
 Built-in adapter metadata alone is not an installed artifact: missing,
 ambiguous or modified selected versions are refused before launch.
+
+Nonempty `plugins/selections.toml` files must declare `format = 1`; unsupported
+or omitted format markers are rejected before choices can be overwritten.
+An absent or blank file starts with no choices. Saves publish complete snapshots
+through independent temporary files; the last successful concurrent save wins.
 
 `launch --prepare-only` writes the same reviewable layer without starting EU4.
 `--runtime-base` chooses a short local directory; `--user-dir` chooses a game

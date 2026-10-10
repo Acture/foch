@@ -12,7 +12,7 @@ load_after = ["io.github.yozoratempest.eu4-unicode-patch"]
 [plugin]
 id = "io.github.yozoratempest.eu4-menu-patch"
 name = "EU4 Menu Patch"
-version = "0.1.4"
+version = "0.1.4-experimental"
 authors = ["YozoraTempest"]
 license = "MIT"
 description = "Return to the main menu and reload the same save (experimental)."

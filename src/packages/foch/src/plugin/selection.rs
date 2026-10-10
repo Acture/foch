@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// All playsets' plugin choices, as stored on disk.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -53,28 +55,67 @@ fn default_true() -> bool {
 pub const FORMAT: u32 = 1;
 
 impl Selections {
-	/// Load selections from `path`; an absent file is an empty set.
+	/// Load version-one selections. An absent or blank file is an empty set;
+	/// nonempty files must declare the supported format, including hand edits.
 	pub fn load(path: &Path) -> io::Result<Self> {
 		match fs::read_to_string(path) {
 			Ok(text) if text.trim().is_empty() => Ok(Self::default()),
-			Ok(text) => toml::from_str(&text).map_err(io::Error::other),
+			Ok(text) => {
+				let value: Self = toml::from_str(&text).map_err(io::Error::other)?;
+				if value.format != FORMAT {
+					return Err(io::Error::new(
+						io::ErrorKind::InvalidData,
+						format!(
+							"unsupported selections format {} (expected {FORMAT})",
+							value.format
+						),
+					));
+				}
+				Ok(value)
+			}
 			Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
 			Err(error) => Err(error),
 		}
 	}
 
-	/// Write selections to `path` atomically (temp file + rename on the same
-	/// directory), creating parent directories as needed.
+	/// Publish one complete snapshot atomically through a unique sibling file.
+	/// Concurrent saves never share staging bytes; the last successful save wins.
 	pub fn save(&self, path: &Path) -> io::Result<()> {
 		let mut value = self.clone();
 		value.format = FORMAT;
 		let text = toml::to_string_pretty(&value).map_err(io::Error::other)?;
-		if let Some(parent) = path.parent() {
-			fs::create_dir_all(parent)?;
+		let parent = path
+			.parent()
+			.filter(|parent| !parent.as_os_str().is_empty())
+			.unwrap_or_else(|| Path::new("."));
+		fs::create_dir_all(parent)?;
+		let mut temporary = tempfile::Builder::new()
+			.prefix(".selections-")
+			.suffix(".tmp")
+			.tempfile_in(parent)?;
+		temporary.write_all(text.as_bytes())?;
+		// Close the written handle before replacement. Windows can still deny
+		// a rename briefly while a concurrent writer replaces the destination.
+		let mut temporary = temporary.into_temp_path();
+		let deadline = Instant::now() + Duration::from_secs(2);
+		let mut backoff = Duration::from_millis(1);
+		loop {
+			match temporary.persist(path) {
+				Ok(()) => return Ok(()),
+				Err(error)
+					if cfg!(windows)
+						&& error.error.kind() == io::ErrorKind::PermissionDenied
+						&& Instant::now() < deadline =>
+				{
+					temporary = error.path;
+					std::thread::sleep(backoff);
+					backoff = (backoff * 2).min(Duration::from_millis(50));
+				}
+				// TempPath cleans up this writer's file on every failed save.
+				// A different published snapshot never counts as our success.
+				Err(error) => return Err(error.error),
+			}
 		}
-		let temp = path.with_extension("toml.tmp");
-		fs::write(&temp, text.as_bytes())?;
-		fs::rename(&temp, path)
 	}
 
 	/// The choices for one playset, or an empty set.
@@ -231,5 +272,73 @@ mod tests {
 			.filter_map(Result::ok)
 			.any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"));
 		assert!(!leftover);
+	}
+
+	#[test]
+	fn unsupported_file_formats_are_rejected_without_changing_choices() {
+		let temp = tempfile::tempdir().unwrap();
+		let path = temp.path().join("selections.toml");
+		for header in ["format = 0\n", "format = 2\n", ""] {
+			let text = format!("{header}[playsets.example.plugins.example]\nversion = '1.0.0'\n");
+			fs::write(&path, &text).unwrap();
+			let error = Selections::load(&path).unwrap_err();
+			assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+			assert!(error.to_string().contains("unsupported selections format"));
+			assert_eq!(fs::read_to_string(&path).unwrap(), text);
+		}
+		fs::write(&path, " \n").unwrap();
+		assert!(Selections::load(&path).unwrap().playsets.is_empty());
+	}
+
+	#[test]
+	fn concurrent_saves_publish_complete_independent_files() {
+		let temp = tempfile::tempdir().unwrap();
+		let path = temp.path().join("selections.toml");
+		let barrier = std::sync::Barrier::new(12);
+		std::thread::scope(|scope| {
+			let writers: Vec<_> = (0..12)
+				.map(|writer| {
+					let path = &path;
+					let barrier = &barrier;
+					scope.spawn(move || {
+						let mut selections = sample();
+						let choices = selections.playsets.get_mut("My Playset").unwrap();
+						choices.plugins.values_mut().for_each(|choice| {
+							choice.config.insert(
+								"writer".into(),
+								toml::Value::String(format!("{writer}:{}", "x".repeat(256 * 1024))),
+							);
+						});
+						barrier.wait();
+						selections.save(path)
+					})
+				})
+				.collect();
+			for writer in writers {
+				writer.join().unwrap().unwrap();
+			}
+		});
+		let loaded = Selections::load(&path).unwrap();
+		let choices = loaded.for_playset("My Playset");
+		let mut values = choices
+			.plugins
+			.values()
+			.map(|choice| &choice.config["writer"]);
+		let first = values.next().unwrap();
+		assert!(values.all(|value| value == first));
+		assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+	}
+
+	#[test]
+	fn a_failed_save_cleans_up_only_its_own_temporary_file() {
+		let temp = tempfile::tempdir().unwrap();
+		let path = temp.path().join("selections.toml");
+		fs::create_dir(&path).unwrap();
+		let unrelated = temp.path().join("selections.toml.tmp");
+		fs::write(&unrelated, "another writer").unwrap();
+		assert!(sample().save(&path).is_err());
+		assert!(path.is_dir());
+		assert_eq!(fs::read_to_string(unrelated).unwrap(), "another writer");
+		assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
 	}
 }

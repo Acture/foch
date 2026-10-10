@@ -51,6 +51,7 @@ mod tests {
 	#[test]
 	fn menu_adapter_loads_after_unicode_and_polls() {
 		let menu = adapter("io.github.yozoratempest.eu4-menu-patch").unwrap();
+		assert_eq!(menu.plugin.version.to_string(), "0.1.4-experimental");
 		assert_eq!(menu.entry.phase, Phase::Deferred);
 		assert_eq!(
 			menu.load_after,
