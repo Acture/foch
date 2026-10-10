@@ -20,21 +20,28 @@ if (!fs.existsSync(bundledServer)) {
 }
 
 const target = vsceTarget();
-const localVsce = path.join(
-	extensionRoot,
-	'node_modules',
-	'.bin',
-	process.platform === 'win32' ? 'vsce.cmd' : 'vsce'
+// Run the locked vsce's own entry script with this node. The package manager's
+// .bin shims differ per platform (bun writes no vsce.cmd on Windows), and npx is
+// npx.cmd there, which spawnSync cannot start without a shell.
+const vscePackageJson = require.resolve('@vscode/vsce/package.json', {
+	paths: [extensionRoot]
+});
+const vsceScript = path.join(
+	path.dirname(vscePackageJson),
+	require(vscePackageJson).bin.vsce
 );
-const hasLocalVsce = fs.existsSync(localVsce);
-const command = hasLocalVsce ? localVsce : 'npx';
-const commonArgs = [mode, '--pre-release', '--target', target, '--no-dependencies', ...extraArgs];
-const args = hasLocalVsce
-	? commonArgs
-	: ['@vscode/vsce', ...commonArgs];
+const args = [
+	vsceScript,
+	mode,
+	'--pre-release',
+	'--target',
+	target,
+	'--no-dependencies',
+	...extraArgs
+];
 
 console.log(`running ${mode} for target ${target}`);
-const result = spawnSync(command, args, {
+const result = spawnSync(process.execPath, args, {
 	cwd: extensionRoot,
 	stdio: 'inherit',
 	env: process.env
