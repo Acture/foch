@@ -1,7 +1,10 @@
 use crate::cli::arg::MergeArgs;
 use crate::cli::handler::{HandlerResult, resolve_input_source};
 use foch::game::eu4::analysis::report::{merge_plan_exit_code, render_merge_report_text};
-use foch::input::{Config, InputRequest, InputSource, resolve_product_input_manifest};
+use foch::input::{
+	Config, CurrentEu4Input, InputRequest, InputSource, inspect_current_eu4_input,
+	resolve_product_input_manifest,
+};
 use foch::merge::{
 	AnalyzedMerge, CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
 	MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition, MergeUnitKind,
@@ -10,29 +13,77 @@ use foch::merge::{
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
 use foch::playset::descriptor::{
-	descriptor_path_text, escape_descriptor_value, load_launcher_descriptor,
+	descriptor_comment_text, descriptor_path_text, escape_descriptor_value,
+	load_launcher_descriptor,
 };
 use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
-	let source = resolve_input_source(merge_args.playset_path.as_deref(), &config)?;
 	let paradox_data_path = config.paradox_data_path.clone();
-	let request = InputRequest::new(source.clone(), config);
+	let PreparedMerge { request, options } = prepare_merge(merge_args, config, None)?;
+	let analyzed = analyze_merge(
+		request,
+		options,
+		&NoopProgressObserver,
+		&CancellationToken::new(),
+	)?;
+	report_and_commit(merge_args, analyzed, paradox_data_path)
+}
+
+/// The frozen input and analysis options of one `foch merge`.
+pub struct PreparedMerge {
+	pub request: InputRequest,
+	pub options: MergeAnalysisOptions,
+}
+
+/// Turn `foch merge` arguments into the input and options analysis takes.
+/// Without INPUT_SOURCE the input is the current EU4 playset, inspected as
+/// bare `foch` and the desktop app inspect it; `current` supplies an
+/// inspection already made. Bare `foch` analyzes through this function with
+/// the arguments it shows as a command, so the two cannot diverge.
+pub fn prepare_merge(
+	merge_args: &MergeArgs,
+	config: Config,
+	current: Option<CurrentEu4Input>,
+) -> Result<PreparedMerge, Box<dyn std::error::Error>> {
+	let (source, request) = match &merge_args.playset_path {
+		Some(path) => {
+			if !merge_args.exclude.is_empty() {
+				return Err(
+					"`--exclude` selects mods of the current EU4 playset; omit INPUT_SOURCE".into(),
+				);
+			}
+			let source = resolve_input_source(Some(path), &config)?;
+			(source.clone(), InputRequest::new(source, config))
+		}
+		None => {
+			let current = current.unwrap_or_else(inspect_current_eu4_input);
+			let request =
+				current_input_excluding(current, &merge_args.exclude, !merge_args.no_game_base)?;
+			(request.source.clone(), request)
+		}
+	};
 	let local_config = load_local_foch_config(merge_args, &source)?;
-	let fingerprint = compute_fingerprint_for_source(&request, &local_config);
+	// The fingerprint hashes the whole playset file, which an exclusion no
+	// longer matches; the report then carries no fingerprint.
+	let fingerprint = if merge_args.exclude.is_empty() {
+		compute_fingerprint_for_source(&request, &local_config)
+	} else {
+		None
+	};
 	let dep_overrides = applied_dep_overrides(merge_args, &local_config);
 	let (interactive_conflict_handler, interactive_resolution_config_path) =
 		build_interactive_conflict_handler(merge_args, &source);
-	let analyzed = analyze_merge(
+	Ok(PreparedMerge {
 		request,
-		MergeAnalysisOptions {
+		options: MergeAnalysisOptions {
 			out_dir: merge_args.out.clone(),
 			include_game_base: !merge_args.no_game_base,
 			include_base: merge_args.include_base,
@@ -53,9 +104,14 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 				.unwrap_or_else(foch::merge::default_merge_workers),
 			retained_paths: None,
 		},
-		&NoopProgressObserver,
-		&CancellationToken::new(),
-	)?;
+	})
+}
+
+fn report_and_commit(
+	merge_args: &MergeArgs,
+	analyzed: AnalyzedMerge,
+	paradox_data_path: Option<PathBuf>,
+) -> HandlerResult {
 	let analysis = analyzed.analysis();
 	println!(
 		"{}",
@@ -92,6 +148,55 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
+}
+
+/// The current EU4 input without the named mods. A mod is named by its
+/// Workshop id or `#POSITION`, as `foch input inspect` lists them.
+fn current_input_excluding(
+	input: CurrentEu4Input,
+	exclude: &[String],
+	include_game_base: bool,
+) -> Result<InputRequest, String> {
+	let mods = input
+		.playset
+		.as_ref()
+		.map(|playset| playset.mods.as_slice())
+		.unwrap_or_default();
+	let mut positions = BTreeSet::new();
+	for name in exclude {
+		let position = match name.strip_prefix('#') {
+			Some(position) => position
+				.parse::<usize>()
+				.ok()
+				.filter(|position| mods.iter().any(|m| m.position == *position)),
+			None => mods
+				.iter()
+				.find(|playset_mod| playset_mod.id == *name)
+				.map(|playset_mod| playset_mod.position),
+		};
+		let position = position.ok_or_else(|| {
+			format!(
+				"`--exclude {name}` names no mod of the current EU4 playset; see `foch input inspect`"
+			)
+		})?;
+		positions.insert(position);
+	}
+	let prepared = input
+		.clone()
+		.prepare_excluding(&positions, include_game_base)?;
+	if let Some(recovery) = &prepared.recovery {
+		eprintln!(
+			"[foch] analyzing {} of {} playset mods; excluded:",
+			recovery.included_mod_count, recovery.source_mod_count
+		);
+		for omitted in &recovery.omitted_mods {
+			eprintln!(
+				"  #{} {} {} ({})",
+				omitted.position, omitted.id, omitted.name, omitted.reason
+			);
+		}
+	}
+	Ok(prepared.request)
 }
 
 fn render_merge_review_text(analyzed: &AnalyzedMerge, review_all: bool) -> String {
@@ -472,17 +577,17 @@ fn install_launcher_stub(
 	fs::create_dir_all(&mod_dir)?;
 	let absolute_out = fs::canonicalize(out_dir).unwrap_or_else(|_| out_dir.to_path_buf());
 	let slug = launcher_stub_slug(out_dir)?;
-	let stub_path = mod_dir.join(format!("foch_{slug}.mod"));
-	let display_name = format!("foch merge ({slug})");
 	let descriptor_value = descriptor_path_text(&absolute_out).map_err(|reason| {
 		format!(
 			"merged output {} cannot be named in a launcher descriptor: {reason}",
 			absolute_out.display()
 		)
 	})?;
+	let (stub_path, stem) = launcher_stub_path(&mod_dir, &slug, &descriptor_value)?;
+	let display_name = format!("foch merge ({stem})");
 	let body = format!(
 		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
-		out_dir.display(),
+		descriptor_comment_text(&out_dir.display().to_string()),
 		escape_descriptor_value(&display_name),
 		descriptor_value
 	);
@@ -492,6 +597,63 @@ fn install_launcher_stub(
 		stub_path.display()
 	);
 	Ok(())
+}
+
+/// Where the stub for the output named by `descriptor_value` goes, with the
+/// stem shown in its name. Different output directories can share a slug
+/// (`/a/merged` and `/b/merged`, `my merge` and `my_merge`), so a stub is
+/// only replaced when it already names this output; otherwise the first free
+/// `foch_<slug>.mod`, `foch_<slug>_2.mod`, ... is used. A stub that cannot be
+/// read is treated as another output's and left alone.
+fn launcher_stub_path(
+	mod_dir: &Path,
+	slug: &str,
+	descriptor_value: &str,
+) -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
+	let stem_for = |index: usize| {
+		if index == 1 {
+			slug.to_string()
+		} else {
+			format!("{slug}_{index}")
+		}
+	};
+	let is_slug_stem = |stem: &str| {
+		stem == slug
+			|| stem
+				.strip_prefix(slug)
+				.and_then(|rest| rest.strip_prefix('_'))
+				.is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+	};
+	for entry in fs::read_dir(mod_dir)? {
+		let entry = entry?;
+		let Some(stem) = entry
+			.file_name()
+			.to_str()
+			.and_then(|name| name.strip_prefix("foch_"))
+			.and_then(|name| name.strip_suffix(".mod"))
+			.filter(|stem| is_slug_stem(stem))
+			.map(str::to_string)
+		else {
+			continue;
+		};
+		let names_this_output = load_launcher_descriptor(&entry.path())
+			.ok()
+			.and_then(|descriptor| descriptor.path)
+			.is_some_and(|path| path.as_os_str() == descriptor_value);
+		if names_this_output {
+			return Ok((entry.path(), stem));
+		}
+	}
+	for index in 1usize.. {
+		let stem = stem_for(index);
+		let path = mod_dir.join(format!("foch_{stem}.mod"));
+		match fs::symlink_metadata(&path) {
+			Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok((path, stem)),
+			Err(err) => return Err(Box::new(err)),
+			Ok(_) => {}
+		}
+	}
+	unreachable!("an unbounded index always reaches a free stub name")
 }
 
 /// The launcher stub's file name part, taken from the output directory's
@@ -558,6 +720,70 @@ mod tests {
 		assert_eq!(
 			fs::canonicalize(descriptor.path.expect("stub path")).expect("canonical stub path"),
 			fs::canonicalize(&out_dir).expect("canonical output")
+		);
+	}
+
+	/// Outputs whose names share a slug get separate stubs instead of the
+	/// later merge silently taking over the earlier one's launcher entry. A
+	/// repeated merge into the same output reuses its own stub.
+	#[test]
+	fn launcher_stubs_for_outputs_sharing_a_slug_do_not_replace_each_other() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let paradox_dir = temp.path().join("paradox");
+		let outputs = [
+			temp.path().join("a").join("merged"),
+			temp.path().join("b").join("merged"),
+			temp.path().join("my merge"),
+			temp.path().join("my_merge"),
+		];
+		for out_dir in &outputs {
+			fs::create_dir_all(out_dir).expect("create output");
+			install_launcher_stub(out_dir, &paradox_dir).expect("install stub");
+		}
+		install_launcher_stub(&outputs[0], &paradox_dir).expect("reinstall first stub");
+
+		let mut stubs = fs::read_dir(paradox_dir.join("mod"))
+			.expect("mod dir")
+			.map(|entry| {
+				let path = entry.expect("stub entry").path();
+				let descriptor = load_launcher_descriptor(&path).expect("read stub");
+				(
+					path.file_name().unwrap().to_str().unwrap().to_string(),
+					fs::canonicalize(descriptor.path.expect("stub path")).expect("stub target"),
+				)
+			})
+			.collect::<Vec<_>>();
+		stubs.sort();
+		let canonical = |path: &Path| fs::canonicalize(path).expect("canonical output");
+		assert_eq!(
+			stubs,
+			vec![
+				("foch_merged.mod".to_string(), canonical(&outputs[0])),
+				("foch_merged_2.mod".to_string(), canonical(&outputs[1])),
+				("foch_my_merge.mod".to_string(), canonical(&outputs[2])),
+				("foch_my_merge_2.mod".to_string(), canonical(&outputs[3])),
+			]
+		);
+	}
+
+	/// An output whose name holds a line break has no descriptor `path`, so
+	/// no stub is written: neither its `path` value nor its comment line could
+	/// keep the break from starting another descriptor field.
+	#[test]
+	fn a_line_break_in_the_output_name_gets_no_stub() {
+		let temp = tempfile::tempdir().expect("temp dir");
+		let out_dir = temp.path().join("x\nreplace_path=common\n#");
+		let paradox_dir = temp.path().join("paradox");
+
+		let error = install_launcher_stub(&out_dir, &paradox_dir)
+			.expect_err("a line break has no descriptor spelling")
+			.to_string();
+		assert!(error.contains("line break"), "{error}");
+		assert_eq!(
+			fs::read_dir(paradox_dir.join("mod"))
+				.expect("mod dir")
+				.count(),
+			0
 		);
 	}
 

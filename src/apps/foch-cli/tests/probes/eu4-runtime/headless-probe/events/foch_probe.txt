@@ -1,0 +1,73 @@
+namespace = foch_probe
+
+country_event = {
+	id = foch_probe.1
+	title = none
+	desc = none
+	picture = none
+	is_triggered_only = yes
+	hidden = yes
+	immediate = {
+		set_country_flag = foch_probe_fired
+		set_variable = { which = foch_probe_counter value = 7 }
+		add_country_modifier = { name = foch_probe_short_modifier duration = 5 }
+		if = {
+			limit = { has_country_modifier = foch_probe_short_modifier }
+			log = "FOCH_CI_PASS modifier_applied"
+			else = { log = "FOCH_CI_FAIL modifier_applied" }
+		}
+		country_event = { id = foch_probe.2 days = 2 }
+		country_event = { id = foch_probe.3 days = 10 }
+	}
+	option = { name = OK }
+}
+
+country_event = {
+	id = foch_probe.2
+	title = none
+	desc = none
+	picture = none
+	is_triggered_only = yes
+	hidden = yes
+	immediate = {
+		if = {
+			limit = {
+				has_country_flag = foch_probe_fired
+				check_variable = { which = foch_probe_counter value = 7 }
+				NOT = { check_variable = { which = foch_probe_counter value = 8 } }
+			}
+			log = "FOCH_CI_PASS delayed_event_state"
+			else = { log = "FOCH_CI_FAIL delayed_event_state" }
+		}
+		if = {
+			limit = { has_country_modifier = foch_probe_short_modifier }
+			log = "FOCH_CI_PASS modifier_present_day_2"
+			else = { log = "FOCH_CI_FAIL modifier_present_day_2" }
+		}
+		set_country_flag = foch_probe_delayed
+	}
+	option = { name = OK }
+}
+
+country_event = {
+	id = foch_probe.3
+	title = none
+	desc = none
+	picture = none
+	is_triggered_only = yes
+	hidden = yes
+	immediate = {
+		if = {
+			limit = { has_country_flag = foch_probe_delayed }
+			log = "FOCH_CI_PASS delayed_event_completed"
+			else = { log = "FOCH_CI_FAIL delayed_event_completed" }
+		}
+		if = {
+			limit = { NOT = { has_country_modifier = foch_probe_short_modifier } }
+			log = "FOCH_CI_PASS modifier_expired"
+			else = { log = "FOCH_CI_FAIL modifier_expired" }
+		}
+		log = "FOCH_CI_END"
+	}
+	option = { name = OK }
+}

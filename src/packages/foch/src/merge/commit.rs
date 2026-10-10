@@ -362,6 +362,7 @@ impl AnalyzedMerge {
 			self.base_snapshot_commit_guard.as_ref(),
 			self.product_input_commit_guard.as_ref(),
 		)?;
+		self.transform_source_guard.validate()?;
 		if let Some(expected) = expected_replacement.as_ref() {
 			validate_replacement_target(&self.out_dir, expected)?;
 		}

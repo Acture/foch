@@ -6,6 +6,7 @@ use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::AstStatement;
 use crate::merge::kernel::{DeltaOperation, RevisionNode};
+use crate::merge::transform::tree::EntityTransform;
 use crate::model::MergeTraceContributor;
 
 use super::super::conflict_handler::{ConflictHandler, DeferHandler};
@@ -21,8 +22,8 @@ use crate::merge::model::{
 };
 use crate::merge::structured::{
 	ClausewitzFileAdapter, ClausewitzFileJoin, DefinitionModuleAdapter, DefinitionModuleJoin,
-	EventFileAdapter, EventFileJoin, TreeDagProtocol, TreeDagState, TreeJoinProtocol,
-	TreeMergeUnit, TreePartitionAdapter, top_level_assignment_key,
+	EventFileAdapter, EventFileJoin, TransformModuleAdapter, TreeDagProtocol, TreeDagState,
+	TreeJoinProtocol, TreeMergeUnit, TreePartitionAdapter, top_level_assignment_key,
 };
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,7 @@ pub(crate) struct SemanticDagMergeRequest<'a> {
 	pub input: DagMergeInputRequest<'a>,
 	pub policies: &'a MergePolicies,
 	pub vanilla_base_mode: VanillaBaseMode,
+	pub entity_transform: Option<&'a dyn EntityTransform>,
 }
 
 struct SemanticDagMergeArgs<'a> {
@@ -54,6 +56,7 @@ struct SemanticDagMergeArgs<'a> {
 	policies: &'a MergePolicies,
 	handler: &'a mut dyn ConflictHandler,
 	tree_unit: TreeMergeUnit,
+	entity_transform: Option<&'a dyn EntityTransform>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,10 +126,12 @@ pub(crate) fn compute_dag_merge_with_handler(
 		policies: request.policies,
 		handler,
 		tree_unit: TreeMergeUnit::File,
+		entity_transform: request.entity_transform,
 	})
 }
 
 pub(crate) fn compute_dag_merge_from_parsed(
+	entity_transform: Option<&dyn EntityTransform>,
 	file_dag: &FileDag,
 	vanilla: Option<&ParsedScriptFile>,
 	contributors: &HashMap<ModId, ParsedScriptFile>,
@@ -142,6 +147,7 @@ pub(crate) fn compute_dag_merge_from_parsed(
 		policies,
 		handler,
 		tree_unit: inferred_tree_merge_unit(vanilla, contributors),
+		entity_transform,
 	})
 }
 
@@ -170,6 +176,7 @@ fn compute_semantic_dag_merge_from_parsed(
 		policies,
 		handler,
 		tree_unit,
+		entity_transform,
 	} = args;
 	let vanilla = base_observation.vanilla();
 	let base_statements = merge_ancestor_statements(vanilla);
@@ -180,15 +187,34 @@ fn compute_semantic_dag_merge_from_parsed(
 	let event_join = EventFileJoin;
 	let module_adapter = DefinitionModuleAdapter;
 	let module_join = DefinitionModuleJoin;
+	let path = file_dag.file_path();
+	let supplied_transform = entity_transform.filter(|transform| transform.applies_to(path));
+	let inferred_transform = if supplied_transform.is_none() {
+		crate::game::eu4::content::eu4()
+			.classify_content_family(path)
+			.map(|descriptor| {
+				descriptor.infer_dag_transform(file_dag, vanilla, contributors, policies)
+			})
+			.transpose()?
+			.flatten()
+	} else {
+		None
+	};
+	let entity_transform = supplied_transform.or(inferred_transform.as_deref());
+	let transform_adapter = entity_transform.map(|transform| TransformModuleAdapter { transform });
 	let (partition_adapter, join): (&dyn TreePartitionAdapter, &dyn TreeJoinProtocol) =
-		match tree_unit {
-			TreeMergeUnit::File
-				if template.is_some_and(|file| file.file_kind.as_str() == "events") =>
-			{
-				(&event_adapter, &event_join)
+		if let Some(adapter) = &transform_adapter {
+			(adapter, adapter)
+		} else {
+			match tree_unit {
+				TreeMergeUnit::File
+					if template.is_some_and(|file| file.file_kind.as_str() == "events") =>
+				{
+					(&event_adapter, &event_join)
+				}
+				TreeMergeUnit::File => (&file_adapter, &file_join),
+				TreeMergeUnit::DefinitionModule => (&module_adapter, &module_join),
 			}
-			TreeMergeUnit::File => (&file_adapter, &file_join),
-			TreeMergeUnit::DefinitionModule => (&module_adapter, &module_join),
 		};
 	let partition_lineage = seed_vanilla_partition_lineage(vanilla, partition_adapter, policies)?;
 	let root = TreeDagState {
@@ -396,6 +422,7 @@ fn compute_semantic_definition_provenance(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::game::eu4::cultures::correspondence::CultureCorrespondence;
 	use std::path::PathBuf;
 
 	use crate::game::eu4::content::{ListMergePolicy, MergeKeySource, ScriptFileKind};
@@ -586,6 +613,7 @@ mod tests {
 			.expect("events content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			vanilla.as_ref(),
 			&inventory,
@@ -620,6 +648,7 @@ mod tests {
 			.expect("events content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			vanilla.as_ref(),
 			&inventory,
@@ -665,6 +694,7 @@ mod tests {
 			.expect("institutions content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			Some(&vanilla),
 			&inventory,
@@ -712,6 +742,7 @@ mod tests {
 			.expect("diplomatic actions content family");
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			vanilla.as_ref(),
 			&inventory,
@@ -765,6 +796,497 @@ mod tests {
 			);
 		}
 		origins
+	}
+
+	#[test]
+	fn culture_module_dag_preserves_rename_move_edit_and_source_lineage() {
+		let path =
+			&crate::model::GamePathBuf::parse("common/cultures/test.txt").expect("valid game path");
+		let sources = [
+			(
+				"rename",
+				"g = {} h = { new_culture = { male_names = { Johann } } }",
+			),
+			(
+				"edit",
+				"g = { old_culture = { male_names = { Johann Otto } } } h = {}",
+			),
+			(
+				"unchanged",
+				"g = { old_culture = { male_names = { Johann } } } h = {}",
+			),
+		];
+		let parsed = |id, source| {
+			let mut file = parsed_definition_module_file(id, source);
+			file.relative_path = path.clone();
+			file.ast.path = path.clone();
+			file.file_kind = ScriptFileKind::new("cultures");
+			file
+		};
+		let mods = sources
+			.iter()
+			.map(|(id, _)| mod_with(id, id, vec![], vec![]))
+			.collect::<Vec<_>>();
+		let contributors = sources
+			.iter()
+			.enumerate()
+			.map(|(position, (id, _))| file_contributor(id, position))
+			.collect::<Vec<_>>();
+		let (dag, _) = super::super::dag::build_mod_dag(&mods);
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			path,
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let vanilla = parsed("__game__", sources[2].1);
+		let inventory = sources
+			.iter()
+			.map(|(id, source)| (mid(id), parsed(id, source)))
+			.collect::<HashMap<_, _>>();
+		let descriptor = crate::game::eu4::content::eu4()
+			.classify_content_family(path)
+			.unwrap();
+		let result = compute_dag_merge_from_parsed(
+			None,
+			&file_dag,
+			Some(&vanilla),
+			&inventory,
+			&descriptor.merge_policies,
+			VanillaBaseMode::Required,
+			&mut DeferHandler,
+		)
+		.expect("merge culture DAG");
+		assert!(
+			result.semantic.unresolved_conflicts.is_empty(),
+			"{:?}",
+			result.semantic.unresolved_conflicts
+		);
+		let rename = result
+			.semantic
+			.source_deltas
+			.iter()
+			.find(|delta| delta.source.source_id == "rename")
+			.unwrap();
+		assert_eq!(
+			rename.partitions.len(),
+			1,
+			"moves require the whole culture module"
+		);
+		assert!(rename.partitions[0].delta.operations.iter().any(|operation| matches!(operation, DeltaOperation::Rename { from, to, .. } if from.value.as_deref() == Some("old_culture") && to.value.as_deref() == Some("new_culture"))));
+		assert!(
+			rename.partitions[0]
+				.delta
+				.operations
+				.iter()
+				.any(|operation| matches!(operation, DeltaOperation::Move { .. }))
+		);
+		let unchanged = result
+			.semantic
+			.source_deltas
+			.iter()
+			.find(|delta| delta.source.source_id == "unchanged")
+			.unwrap();
+		assert!(
+			unchanged
+				.partitions
+				.iter()
+				.all(|partition| partition.delta.operations.is_empty())
+		);
+		let lineage = &result.semantic.partition_lineage[&SemanticPartitionId::File];
+		let (culture, _) = lineage
+			.tree
+			.nodes()
+			.find(|(_, node)| node.value.as_deref() == Some("new_culture"))
+			.unwrap();
+		assert!(lineage.origins[&culture].iter().any(
+			|origin| matches!(origin, SemanticOrigin::Mod(source) if source.source_id == "rename")
+		));
+		assert!(!lineage.origins.values().flatten().any(
+			|origin| matches!(origin, SemanticOrigin::Mod(source) if source.source_id == "unchanged")
+		));
+		let output =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.unwrap();
+		assert!(
+			output.contains("new_culture")
+				&& output.contains("Otto")
+				&& !output.contains("old_culture"),
+			"{output}"
+		);
+	}
+
+	fn culture_case(
+		mods: Vec<ModCandidate>,
+		vanilla_source: &str,
+		sources: &[(&str, &str)],
+	) -> Result<SemanticDagMergeComputation, String> {
+		let path =
+			&crate::model::GamePathBuf::parse("common/cultures/test.txt").expect("valid game path");
+		let parsed = |id, source| {
+			let mut file = parsed_definition_module_file(id, source);
+			file.relative_path = path.clone();
+			file.ast.path = path.clone();
+			file.file_kind = ScriptFileKind::new("cultures");
+			file
+		};
+		let contributors = sources
+			.iter()
+			.enumerate()
+			.map(|(position, (id, _))| file_contributor(id, position))
+			.collect::<Vec<_>>();
+		let (dag, _) = super::super::dag::build_mod_dag(&mods);
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			path,
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let vanilla = parsed("__game__", vanilla_source);
+		let inventory = sources
+			.iter()
+			.map(|(id, source)| (mid(id), parsed(id, source)))
+			.collect::<HashMap<_, _>>();
+		let descriptor = crate::game::eu4::content::eu4()
+			.classify_content_family(path)
+			.unwrap();
+		compute_dag_merge_from_parsed(
+			None,
+			&file_dag,
+			Some(&vanilla),
+			&inventory,
+			&descriptor.merge_policies,
+			VanillaBaseMode::Required,
+			&mut DeferHandler,
+		)
+	}
+
+	#[test]
+	fn reviewed_culture_context_preserves_rename_delta_only_in_culture_files() {
+		use crate::game::eu4::cultures::CultureIndex;
+		use crate::game::eu4::cultures::correspondence::CultureRevision;
+
+		let original = "g = { old_culture = { male_names = { Johann } } }";
+		let changed = "g = { new_culture = { male_names = { Otto } } }";
+		let culture_path =
+			&crate::model::GamePathBuf::parse("common/cultures/test.txt").expect("valid game path");
+		let catalog = |source| {
+			let parsed =
+				crate::game::eu4::script::parser::parse_clausewitz_content(culture_path, source);
+			CultureIndex::from_documents(&[(culture_path.clone(), parsed.ast)]).unwrap()
+		};
+		let before = catalog(original);
+		let after = catalog(changed);
+		let reviewed = BTreeMap::from([("old_culture".into(), "new_culture".into())]);
+		let correspondence = CultureCorrespondence::infer_observations(
+			&before,
+			&[CultureRevision {
+				parent: &before,
+				revision: &after,
+				reviewed: &reviewed,
+			}],
+		)
+		.unwrap();
+		let mods = vec![mod_with("rename", "Rename", vec![], vec![])];
+		let contributors = vec![file_contributor("rename", 0)];
+		let dag = super::super::dag::build_mod_dag(&mods).0;
+		for path in [
+			"common/cultures/test.txt",
+			"common/scripted_effects/test.txt",
+		] {
+			let path = &crate::model::GamePathBuf::parse(path).expect("valid game path");
+			let parsed = |id, source| {
+				let mut file = parsed_file(id, source);
+				file.relative_path = path.clone();
+				file.ast.path = path.clone();
+				file
+			};
+			let base = parsed("__game__", original);
+			let revisions = HashMap::from([(mid("rename"), parsed("rename", changed))]);
+			let file_dag = induced_file_dag_with_overrides(
+				&dag,
+				path,
+				&contributors,
+				&IgnoreReplacePath::None,
+				&[],
+			);
+			let result = compute_dag_merge_from_parsed(
+				Some(&correspondence),
+				&file_dag,
+				Some(&base),
+				&revisions,
+				&MergePolicies::default(),
+				VanillaBaseMode::Required,
+				&mut DeferHandler,
+			)
+			.unwrap();
+			let operations = result
+				.semantic
+				.source_deltas
+				.iter()
+				.flat_map(|source| &source.partitions)
+				.flat_map(|partition| &partition.delta.operations)
+				.collect::<Vec<_>>();
+			let is_culture = path.as_str() == "common/cultures/test.txt";
+			assert_eq!(
+				operations.iter().any(
+					|operation| matches!(operation, DeltaOperation::Rename { from, to, .. }
+				if from.value.as_deref() == Some("old_culture") && to.value.as_deref() == Some("new_culture"))
+				),
+				is_culture,
+				"{path}: {operations:?}"
+			);
+			if is_culture {
+				for partition in result
+					.semantic
+					.source_deltas
+					.iter()
+					.flat_map(|source| &source.partitions)
+				{
+					for operation in &partition.delta.operations {
+						let node = match operation {
+							DeltaOperation::Delete { tombstone } => {
+								partition.base_tree.node(tombstone.deleted.node).unwrap()
+							}
+							DeltaOperation::Insert { node, .. } => {
+								partition.revision_tree.node(node.node).unwrap()
+							}
+							_ => continue,
+						};
+						assert!(!matches!(
+							node.value.as_deref(),
+							Some("old_culture" | "new_culture")
+						));
+					}
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn culture_parent_edit_then_dependent_rename_uses_parent_evidence() {
+		let result = culture_case(
+			vec![
+				mod_with("parent", "Parent", vec![], vec![]),
+				mod_with("child", "Child", vec!["Parent"], vec![]),
+			],
+			"g = { old_culture = { male_names = { Johann } } }",
+			&[
+				(
+					"parent",
+					"g = { old_culture = { male_names = { Johann Otto } } }",
+				),
+				(
+					"child",
+					"g = { new_culture = { male_names = { Johann Otto } } }",
+				),
+			],
+		)
+		.unwrap();
+		let child = result
+			.semantic
+			.source_deltas
+			.iter()
+			.find(|delta| delta.source.source_id == "child")
+			.unwrap();
+		assert!(child.partitions.iter().flat_map(|partition| &partition.delta.operations).any(|operation| matches!(operation, DeltaOperation::Rename { from, to, .. } if from.value.as_deref() == Some("old_culture") && to.value.as_deref() == Some("new_culture"))));
+	}
+
+	#[test]
+	fn culture_rename_uses_the_resolved_multi_parent_view() {
+		let result = culture_case(
+			vec![
+				mod_with("left", "Left", vec![], vec![]),
+				mod_with("right", "Right", vec![], vec![]),
+				mod_with("child", "Child", vec!["Left", "Right"], vec![]),
+			],
+			"g = { old_culture = { male_names = { Johann } } }",
+			&[
+				(
+					"left",
+					"g = { old_culture = { male_names = { Johann Otto } } }",
+				),
+				(
+					"right",
+					"g = { old_culture = { male_names = { Johann } female_names = { Anna } } }",
+				),
+				(
+					"child",
+					"g = { new_culture = { male_names = { Johann Otto } female_names = { Anna } } }",
+				),
+			],
+		)
+		.unwrap();
+		let child = result
+			.semantic
+			.source_deltas
+			.iter()
+			.find(|delta| delta.source.source_id == "child")
+			.unwrap();
+		assert!(
+			child
+				.partitions
+				.iter()
+				.flat_map(|partition| &partition.delta.operations)
+				.any(|operation| matches!(operation, DeltaOperation::Rename { .. }))
+		);
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+	}
+
+	#[test]
+	fn culture_rename_does_not_borrow_body_evidence_from_an_unrelated_sibling() {
+		let result = culture_case(
+			vec![
+				mod_with("left", "Left", vec![], vec![]),
+				mod_with("right", "Right", vec![], vec![]),
+			],
+			"g = { old_culture = { male_names = { Johann } } }",
+			&[
+				(
+					"left",
+					"g = { old_culture = { male_names = { Johann Otto } } }",
+				),
+				(
+					"right",
+					"g = { new_culture = { male_names = { Johann Otto } } }",
+				),
+			],
+		)
+		.unwrap();
+		assert!(
+			!result
+				.semantic
+				.source_deltas
+				.iter()
+				.flat_map(|delta| &delta.partitions)
+				.flat_map(|partition| &partition.delta.operations)
+				.any(|operation| matches!(operation, DeltaOperation::Rename { .. }))
+		);
+	}
+
+	#[test]
+	fn culture_sequential_aliases_are_reported_as_an_unsupported_chain() {
+		let error = culture_case(
+			vec![
+				mod_with("parent", "Parent", vec![], vec![]),
+				mod_with("child", "Child", vec!["Parent"], vec![]),
+			],
+			"g = { old_culture = { male_names = { Johann } } }",
+			&[
+				(
+					"parent",
+					"g = { middle_culture = { male_names = { Johann } } }",
+				),
+				(
+					"child",
+					"g = { final_culture = { male_names = { Johann } } }",
+				),
+			],
+		)
+		.unwrap_err();
+		assert!(
+			error.contains("unsupported_culture_rename_chain"),
+			"{error}"
+		);
+		assert!(!error.contains("competing rename targets"), "{error}");
+	}
+
+	#[test]
+	fn culture_sparse_reset_keeps_retained_groups_and_does_not_infer_a_rename() {
+		let result = culture_case(
+			vec![
+				mod_with("left", "Left", vec![], vec!["common"]),
+				mod_with("right", "Right", vec![], vec!["common"]),
+			],
+			"g = { old_culture = { male_names = { Johann } } } removed = { gone = { primary = AAA } }",
+			&[
+				("left", "h = { new_culture = { male_names = { Johann } } }"),
+				(
+					"right",
+					"g = { old_culture = { male_names = { Johann Otto } } }",
+				),
+			],
+		)
+		.unwrap();
+		assert!(
+			result.semantic.unresolved_conflicts.is_empty(),
+			"{:?}",
+			result.semantic.unresolved_conflicts
+		);
+		let output = rendered(&result.merged_statements);
+		assert!(
+			output.contains("old_culture")
+				&& output.contains("new_culture")
+				&& output.contains("Otto")
+				&& !output.contains("gone"),
+			"{output}"
+		);
+		assert_eq!(prov(&result, "g"), vec!["right".to_string()]);
+		assert_eq!(
+			result.definition_participants["g"]
+				.iter()
+				.map(|source| source.mod_id.as_str())
+				.collect::<Vec<_>>(),
+			vec!["right"]
+		);
+		assert!(
+			!result
+				.semantic
+				.source_deltas
+				.iter()
+				.flat_map(|delta| &delta.partitions)
+				.flat_map(|partition| &partition.delta.operations)
+				.any(|operation| matches!(operation, DeltaOperation::Rename { .. }))
+		);
+	}
+
+	#[test]
+	fn culture_sparse_reset_duplicate_memberships_require_review() {
+		let result = culture_case(
+			vec![
+				mod_with("left", "Left", vec![], vec!["common"]),
+				mod_with("right", "Right", vec![], vec!["common"]),
+			],
+			"g = { same_culture = { male_names = { Johann } } }",
+			&[
+				("left", "h = { same_culture = { male_names = { Johann } } }"),
+				(
+					"right",
+					"g = { same_culture = { male_names = { Johann Otto } } }",
+				),
+			],
+		);
+		assert!(
+			result.is_err_and(|message| message.contains("duplicate_culture")),
+			"padding must reject conflicting culture memberships"
+		);
+	}
+
+	#[test]
+	fn culture_sparse_reset_canonical_alias_collision_requires_review() {
+		let result = culture_case(
+			vec![
+				mod_with("left", "Left", vec![], vec!["common"]),
+				mod_with("right", "Right", vec![], vec!["common"]),
+			],
+			"g = { old_culture = { male_names = { Johann } } }",
+			&[
+				("left", "h = { new_culture = { male_names = { Johann } } }"),
+				("right", "g = { new_culture = { male_names = { Johann } } }"),
+			],
+		);
+		let message = result.expect_err("padding old/new aliases must require review");
+		assert!(
+			message.starts_with("culture correspondence needs review:"),
+			"{message}"
+		);
+		assert!(
+			message.contains("canonical identity eu4.culture:old_culture")
+				&& message.contains("new_culture"),
+			"{message}"
+		);
 	}
 
 	#[test]
@@ -999,6 +1521,7 @@ mod tests {
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			vanilla.as_ref(),
 			&inventory,
@@ -1088,6 +1611,7 @@ mod tests {
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
 		compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			vanilla.as_ref(),
 			&inventory,
@@ -1307,6 +1831,7 @@ mod tests {
 		let mut handler = DeferHandler;
 
 		let result = compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			Some(&base),
 			&inventory,
@@ -1355,6 +1880,7 @@ mod tests {
 		for (winner, expected) in [("a", "1"), ("b", "2"), ("c", "3")] {
 			let mut handler = PickWinnerHandler { winner, calls: 0 };
 			let result = compute_dag_merge_from_parsed(
+				None,
 				&file_dag,
 				Some(&base),
 				&inventory,
@@ -1403,6 +1929,7 @@ mod tests {
 		let mut handler = DeferHandler;
 
 		let result = compute_dag_merge_from_parsed(
+			None,
 			&file_dag,
 			Some(&base),
 			&inventory,

@@ -1,6 +1,6 @@
 # Project Status
 
-Last verified: 2026-10-04, source layout `f73eab9` and documentation follow-up
+Last verified: 2026-10-07, source layout `f73eab9` and documentation follow-up
 `2fc9387`; the Distribution section states its own checks. This page records
 the current product state; it is not a development log. Active work,
 dependencies and blockers live in the Linear Foch project.
@@ -28,6 +28,18 @@ arbitrary modlists.
 - The P-736 branch carries validated `GamePath` / `GamePathBuf` identities
   through input, semantic, provenance and cache boundaries; native paths remain
   at physical I/O. Its rebased sources follow the current workspace layout.
+- The test-framework worktree, rebased on `95f8554`, implements inline
+  `#test(...)` annotations with `#skip`/`#ignore`/`#xfail`/`#mark`, a built-in
+  runner that launches the real game, and CLI/LSP annotation help, split into
+  `foch-annotation`, `foch-test`, `foch-lsp` and `foch-runner`. Unreleased. The
+  built-in runner, AI-off and per-clause checks are verified end-to-end against
+  real EU4 1.37.5 on native Windows; the real user directory is kept
+  content-identical by backup and restore. Shared sessions, arbitrary start
+  dates and hosted CI (Linux + Wine) are unverified; `tests/` blocks are not
+  collected by the CLI yet. See [runtime tests](foch-runtime-tests.md) and the
+  [framework design](foch-test-framework-design.md); verification detail and
+  the dropped isolation investigation are in the private notes. MTTH/natural-
+  trigger testing remains recorded product design only.
 
 See [merge design](merge-design.md), [architecture](architecture.md),
 [cache behavior](cache-architecture.md) and [known issues](known-issues.md)
@@ -127,6 +139,13 @@ A complete source copy without `.git` or private notes successfully installed
 the CLI with the same embedded CWT identity. A fresh clone retrieved both public
 build submodules at their recorded revisions and resolved all Cargo packages.
 These are development checks, not a Workshop acceptance result.
+
+The 2026-10-07 built-in-runner work passed the full `cargo test --workspace`
+suite, strict Clippy and rustfmt, and the repository contracts; the built-in
+runner was verified against real EU4 1.37.5 on native Windows (`check`
+isolation). These are development checks, not a hosted CI or Workshop
+acceptance result. Verification detail and the 2026-10-02 protocol-v1
+checkpoint are recorded in the private notes.
 
 ## Evidence and maintenance
 

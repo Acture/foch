@@ -33,6 +33,7 @@ use crate::project::{DepOverride, ResolutionMap};
 /// Frozen inputs that every unit's analysis borrows. Nothing here changes
 /// while units are analyzed.
 pub(super) struct UnitAnalysisContext<'a> {
+	pub(super) transforms: &'a crate::merge::transform::TransformPlan,
 	pub(super) input: &'a ResolvedInput,
 	pub(super) profile: &'a Eu4,
 	pub(super) backend: &'a dyn MergeBackend,
@@ -262,6 +263,7 @@ fn analyze_file(
 		return FileAnalysis::NoMergeNeeded;
 	};
 	let merge_context: StructuralMergeContext<'_> = StructuralMergeContext {
+		entity_transform: context.transforms.entity_transform(path),
 		descriptor,
 		merge_key_source,
 		gui_scroll_merge: context.gui_scroll_merge,
@@ -356,6 +358,7 @@ fn analyze_module_namespace(
 		}
 	};
 	let merge_context: StructuralMergeContext<'_> = StructuralMergeContext {
+		entity_transform: context.transforms.entity_transform(output_path),
 		descriptor,
 		merge_key_source,
 		gui_scroll_merge: context.gui_scroll_merge,

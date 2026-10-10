@@ -63,6 +63,53 @@ const SEMANTIC_PIPELINE_SOURCES: &[(&str, &str)] = &[
 	),
 ];
 
+#[test]
+fn shared_transform_pipeline_does_not_depend_on_culture_semantics() {
+	let sources = [
+		("transform.rs", include_str!("transform.rs")),
+		("transform/input.rs", include_str!("transform/input.rs")),
+		("transform/tree.rs", include_str!("transform/tree.rs")),
+		("analyze.rs", include_str!("analyze.rs")),
+		("commit.rs", include_str!("commit.rs")),
+		(
+			"planning/dag_merge.rs",
+			include_str!("planning/dag_merge.rs"),
+		),
+		(
+			"output/materialize.rs",
+			include_str!("output/materialize.rs"),
+		),
+		(
+			"output/materialize/analysis.rs",
+			include_str!("output/materialize/analysis.rs"),
+		),
+		(
+			"output/materialize/stale_detect.rs",
+			include_str!("output/materialize/stale_detect.rs"),
+		),
+		("structured/merge.rs", include_str!("structured/merge.rs")),
+		("structured/policy.rs", include_str!("structured/policy.rs")),
+		(
+			"structured/tree_kernel.rs",
+			include_str!("structured/tree_kernel.rs"),
+		),
+	];
+	for (path, source) in sources {
+		let production = source.split("mod tests {").next().unwrap();
+		assert_source_excludes(
+			path,
+			production,
+			&[
+				"CultureCorrespondence",
+				"CultureIndex",
+				"CultureAdaptations",
+				"::cultures::",
+				"common/cultures",
+			],
+		);
+	}
+}
+
 const ADDRESS_PATCH_DEPENDENCIES: &[&str] = &[
 	"ClausewitzPatch",
 	"PatchAddress",

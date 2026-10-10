@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 mod families;
 pub(crate) mod load_rules;
+mod transform;
 
 #[cfg(test)]
 pub(crate) use families::eu4_content_families;
@@ -491,8 +492,10 @@ impl Default for ContentFamilyScopePolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModuleNameRule {
 	Static(&'static str),
+	/// `fallback`, followed by each directory between the family's prefix
+	/// and the file: `common/scripted_effects/a/b/c.txt` is
+	/// `scripted_effects.a.b`.
 	Tail {
-		prefix_len: usize,
 		fallback: &'static str,
 	},
 	FallbackParent,
@@ -982,23 +985,31 @@ pub fn module_name_for_descriptor(
 	relative: &GamePath,
 	descriptor: &ContentFamilyDescriptor,
 ) -> String {
-	let parts: Vec<&str> = relative.iter().collect();
 	match descriptor.module_name_rule {
 		ModuleNameRule::Static(value) => value.to_string(),
-		ModuleNameRule::Tail {
-			prefix_len,
-			fallback,
-		} => module_with_tail(&parts, prefix_len, fallback),
-		ModuleNameRule::FallbackParent => fallback_module_name(&parts),
+		ModuleNameRule::Tail { fallback } => module_with_tail(relative, descriptor, fallback),
+		ModuleNameRule::FallbackParent => {
+			fallback_module_name(&relative.iter().collect::<Vec<_>>())
+		}
 	}
 }
 
-fn module_with_tail(parts: &[&str], prefix_len: usize, fallback: &str) -> String {
-	if parts.len() <= prefix_len + 1 {
-		return fallback.to_string();
-	}
+/// The tail is read below the family's own prefix, so it never depends on a
+/// hand-counted prefix length.
+fn module_with_tail(
+	relative: &GamePath,
+	descriptor: &ContentFamilyDescriptor,
+	fallback: &str,
+) -> String {
 	let mut name = fallback.to_string();
-	for part in &parts[prefix_len + 1..parts.len() - 1] {
+	let ContentFamilyPathMatcher::Prefix(directory) = descriptor.matcher else {
+		return name;
+	};
+	let Some(below) = relative.strip_prefix(directory) else {
+		return name;
+	};
+	let parts = below.iter().collect::<Vec<_>>();
+	for part in &parts[..parts.len().saturating_sub(1)] {
 		name.push('.');
 		name.push_str(part);
 	}

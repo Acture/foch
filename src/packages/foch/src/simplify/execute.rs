@@ -28,16 +28,17 @@ pub fn run_simplify_with_options(
 		.root_path
 		.as_ref()
 		.ok_or_else(|| format!("target mod {} has no root path", options.target_mod_id))?;
-	let destination_root = if options.in_place {
-		source_root.clone()
-	} else {
-		let out_dir = options
-			.out_dir
-			.as_ref()
-			.ok_or_else(|| "--out is required unless --in-place is set".to_string())?;
-		copy_directory(source_root, out_dir)?;
-		out_dir.clone()
-	};
+	let destination_root = options.out_dir.clone();
+	ensure_output_is_separate(&options.target_mod_id, source_root, &destination_root)?;
+	for item in &input.mods {
+		if item.mod_id == options.target_mod_id {
+			continue;
+		}
+		if let Some(root) = item.root_path.as_ref() {
+			ensure_output_is_separate(&item.mod_id, root, &destination_root)?;
+		}
+	}
+	copy_directory(source_root, &destination_root)?;
 
 	let mut removals_by_path = BTreeMap::<GamePathBuf, Vec<(usize, usize)>>::new();
 	let mut report = SimplifyReport {
@@ -137,6 +138,63 @@ fn apply_removals(
 		fs::write(&absolute, rendered)?;
 	}
 	Ok(removed_file_count)
+}
+
+/// Refuses an output directory that is, contains, or lies inside an input
+/// mod root. Copying replaces the output directory, so any overlap would
+/// rewrite or delete a read-only source mod, whether it is the target or
+/// another mod of the playset.
+fn ensure_output_is_separate(
+	mod_id: &str,
+	source: &Path,
+	destination: &Path,
+) -> Result<(), String> {
+	let source = fs::canonicalize(source).map_err(|err| {
+		format!(
+			"failed to resolve input mod {mod_id} root {}: {err}",
+			source.display()
+		)
+	})?;
+	let destination = canonicalize_existing_prefix(destination).map_err(|err| {
+		format!(
+			"failed to resolve simplify output {}: {err}",
+			destination.display()
+		)
+	})?;
+	if destination.starts_with(&source) || source.starts_with(&destination) {
+		return Err(format!(
+			"simplify output {} overlaps the root of input mod {mod_id} at {}; source mods are read-only, choose a separate --out directory",
+			destination.display(),
+			source.display()
+		));
+	}
+	Ok(())
+}
+
+/// Canonicalizes the longest existing ancestor of `path` and re-appends the
+/// components that do not exist yet.
+fn canonicalize_existing_prefix(path: &Path) -> std::io::Result<std::path::PathBuf> {
+	let absolute = std::path::absolute(path)?;
+	let mut existing = absolute.as_path();
+	let mut missing = Vec::new();
+	loop {
+		match fs::canonicalize(existing) {
+			Ok(mut resolved) => {
+				for component in missing.into_iter().rev() {
+					resolved.push(component);
+				}
+				return Ok(resolved);
+			}
+			Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+				let Some(name) = existing.file_name() else {
+					return Err(err);
+				};
+				missing.push(name.to_os_string());
+				existing = existing.parent().ok_or(err)?;
+			}
+			Err(err) => return Err(err),
+		}
+	}
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), Box<dyn std::error::Error>> {

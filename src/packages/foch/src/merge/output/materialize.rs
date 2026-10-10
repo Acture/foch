@@ -273,10 +273,30 @@ pub(crate) fn materialize_with_resolved_input(
 pub(crate) fn materialize_analyzed_input(
 	request: InputRequest,
 	output: MaterializeOutput<'_>,
+	options: MergeMaterializeOptions,
+	input_result: Result<ResolvedInput, InputResolveError>,
+	plan: MergePlanResult,
+	progress: Option<(&dyn ProgressObserver, Instant)>,
+) -> Result<MaterializedMerge, MergeError> {
+	materialize_with_adaptations(
+		request,
+		output,
+		options,
+		input_result,
+		plan,
+		progress,
+		&crate::merge::transform::TransformPlan::default(),
+	)
+}
+
+pub(crate) fn materialize_with_adaptations(
+	request: InputRequest,
+	output: MaterializeOutput<'_>,
 	mut options: MergeMaterializeOptions,
 	input_result: Result<ResolvedInput, InputResolveError>,
 	plan: MergePlanResult,
 	progress: Option<(&dyn ProgressObserver, Instant)>,
+	adaptations: &crate::merge::transform::TransformPlan,
 ) -> Result<MaterializedMerge, MergeError> {
 	let MaterializeOutput {
 		artifacts_dir: out_dir,
@@ -322,6 +342,7 @@ pub(crate) fn materialize_analyzed_input(
 	record_plan_unsupported_inputs(&mut report, &plan);
 
 	let input = input_result?;
+	record_case_only_path_collisions(&mut report, &input);
 	let (mod_dag, dag_diagnostics) = stage_log_with("build_mod_dag", || {
 		let (dag, diags) = build_mod_dag(&input.mods);
 		let summary = format!("nodes={} diagnostics={}", dag.topo().len(), diags.len());
@@ -357,6 +378,7 @@ pub(crate) fn materialize_analyzed_input(
 	let cache_game_version = input_cache_game_version(&input);
 	let cache_game_version =
 		cache_game_version_with_resolution_salt(&cache_game_version, &options.resolution_map);
+	let cache_game_version = adaptations.cache_identity(&cache_game_version);
 	let emit_options = options.emit_options.clone();
 
 	crate::merge::address_patch::cache::reset_mod_diff_cache_stats();
@@ -396,6 +418,7 @@ pub(crate) fn materialize_analyzed_input(
 		include_game_base: options.include_game_base,
 		gui_scroll_merge: options.gui_scroll_merge,
 		provenance: options.provenance,
+		transforms: adaptations,
 	};
 	let apply_env = ApplyEnv {
 		input: &input,
@@ -405,10 +428,17 @@ pub(crate) fn materialize_analyzed_input(
 		profile,
 	};
 	let entries: &[MergePlanEntry] = &plan.paths;
-	let runs_here = |index: usize| -> bool { !unit_needs_analysis(&entries[index]) };
+	let needs_adaptation_review =
+		|index: usize| -> bool { !adaptations.findings(&entries[index]).is_empty() };
+	let runs_here = |index: usize| -> bool {
+		needs_adaptation_review(index) || !unit_needs_analysis(&entries[index])
+	};
 	let label = |index: usize| -> String { entries[index].output_path().to_string() };
 	let estimate = |index: usize| -> u64 { working_set_estimate(&input, &entries[index]) };
 	let analyze = |index: usize| -> UnitAnalysis {
+		if needs_adaptation_review(index) {
+			return UnitAnalysis::Nothing;
+		}
 		analyze_unit(
 			&analysis_context,
 			&entries[index],
@@ -416,6 +446,9 @@ pub(crate) fn materialize_analyzed_input(
 		)
 	};
 	let mut analyze_here = |index: usize| -> UnitAnalysis {
+		if needs_adaptation_review(index) {
+			return UnitAnalysis::Nothing;
+		}
 		analyze_unit(
 			&analysis_context,
 			&entries[index],
@@ -426,6 +459,25 @@ pub(crate) fn materialize_analyzed_input(
 		)
 	};
 	let mut apply = |index: usize, analysis: UnitAnalysis| -> Result<(), MergeError> {
+		if needs_adaptation_review(index) {
+			let entry = &entries[index];
+			let reason = adaptations.findings(entry).join("; ");
+			record_deferred_unit(&mut report, DeferredUnitReason::NeedsUserChoice);
+			if matches!(entry.target, MergePlanTarget::Module { .. }) {
+				report.definition_module_blocked_count += 1;
+			}
+			report
+				.conflict_resolutions
+				.push(input_conflict_skipped_resolution(
+					entry,
+					&reason,
+					DeferredUnitReason::NeedsUserChoice,
+					Vec::new(),
+				));
+			review.resolve(entry, MergeDisposition::NeedsUserChoice, reason, None, [])?;
+			materialize_progress.tick();
+			return Ok(());
+		}
 		apply_unit(
 			&apply_env,
 			&mut report,
@@ -454,6 +506,15 @@ pub(crate) fn materialize_analyzed_input(
 		&mut apply,
 	)?;
 	materialize_progress.finish();
+	withhold_incomplete_transformations(
+		adaptations,
+		&plan,
+		out_dir,
+		&input,
+		&mut outputs,
+		&mut review,
+		&mut report,
+	)?;
 	let UnitOutputs {
 		generated_paths,
 		mut counted_generated_paths,
@@ -586,6 +647,150 @@ struct UnitOutputs {
 	pending_copy_through: Vec<MergePlanEntry>,
 }
 
+fn withhold_incomplete_transformations(
+	adaptations: &crate::merge::transform::TransformPlan,
+	plan: &MergePlanResult,
+	out_dir: &Path,
+	input: &ResolvedInput,
+	outputs: &mut UnitOutputs,
+	review: &mut UnitOutcomeLedger,
+	report: &mut MergeReport,
+) -> Result<(), MergeError> {
+	for group in adaptations.output_groups(plan) {
+		withhold_incomplete_transform_group(&group, plan, out_dir, input, outputs, review, report)?;
+	}
+	Ok(())
+}
+
+fn withhold_incomplete_transform_group(
+	group: &crate::merge::transform::TransformOutputGroup<'_>,
+	plan: &MergePlanResult,
+	out_dir: &Path,
+	input: &ResolvedInput,
+	outputs: &mut UnitOutputs,
+	review: &mut UnitOutcomeLedger,
+	report: &mut MergeReport,
+) -> Result<(), MergeError> {
+	let related = group
+		.entries
+		.iter()
+		.map(|index| &plan.paths[*index])
+		.collect::<Vec<_>>();
+	let mut blocked = related
+		.iter()
+		.map(|entry| review.outcome(entry))
+		.collect::<Result<Vec<_>, _>>()?
+		.into_iter()
+		.filter(|unit| {
+			!matches!(
+				unit.disposition,
+				MergeDisposition::Safe | MergeDisposition::Copy
+			)
+		})
+		.map(|unit| unit.path.to_string())
+		.collect::<Vec<_>>();
+	if blocked.is_empty() && !related.is_empty() {
+		let mut documents = Vec::new();
+		for entry in &related {
+			let unit = review.outcome(entry)?;
+			if unit.output_paths.is_empty() {
+				// An omitted output leaves the original loader winners active.
+				for path in entry.target.input_paths() {
+					if let Some(winner) = input
+						.file_inventory
+						.get(path)
+						.and_then(|items| items.last())
+					{
+						let parsed = crate::game::eu4::script::parse_script_file(
+							&winner.mod_id,
+							&winner.root_path,
+							path,
+						);
+						documents.push((path.clone(), parsed.ast));
+					}
+				}
+				continue;
+			}
+			for path in &unit.output_paths {
+				if outputs
+					.pending_copy_through
+					.iter()
+					.any(|pending| pending.output_path() == path)
+				{
+					if let Some(winner) = input
+						.file_inventory
+						.get(path)
+						.and_then(|items| items.last())
+					{
+						let parsed = input.script_cache.load(winner).map_err(|message| {
+							MergeError::Validation {
+								subject: Some(MergeErrorSubject::Game(path.clone())),
+								message,
+							}
+						})?;
+						documents.push((path.clone(), parsed.ast.clone()));
+					}
+				} else {
+					let bytes = fs::read(path.to_path(out_dir))?;
+					let source = crate::game::eu4::text::decode_paradox_bytes(&bytes);
+					let parsed =
+						crate::game::eu4::script::parser::parse_clausewitz_content(path, &source);
+					if !parsed.diagnostics.is_empty() {
+						blocked.push(format!("{path}: emitted transformation has parse errors"));
+					}
+					documents.push((path.clone(), parsed.ast));
+				}
+			}
+		}
+		blocked.extend(group.validate_emitted(&documents));
+	}
+	if blocked.is_empty() {
+		return Ok(());
+	}
+	let reason = format!(
+		"transformation withheld because related units require review: {}",
+		blocked.join(", ")
+	);
+	for entry in related {
+		let unit = review.outcome(entry)?;
+		let was_safe = matches!(
+			unit.disposition,
+			MergeDisposition::Safe | MergeDisposition::Copy
+		);
+		let written = !unit.output_paths.is_empty();
+		discard_module_output(entry, out_dir, &mut outputs.generated_paths)?;
+		for path in entry.target.output_paths() {
+			outputs.counted_generated_paths.remove(path);
+			outputs.provenance_localisation_by_script.remove(path);
+		}
+		let queued = outputs.pending_copy_through.len();
+		outputs
+			.pending_copy_through
+			.retain(|pending| pending.output_path() != entry.output_path());
+		report.copied_file_count -= queued - outputs.pending_copy_through.len();
+		if written && entry.strategy == MergePlanStrategy::LastWriterOverlay {
+			report.overlay_file_count = report.overlay_file_count.saturating_sub(1);
+		}
+		if was_safe {
+			record_deferred_unit(report, DeferredUnitReason::NeedsUserChoice);
+			if matches!(entry.target, MergePlanTarget::Module { .. }) {
+				report.definition_module_blocked_count += 1;
+			}
+			report
+				.conflict_resolutions
+				.push(input_conflict_skipped_resolution(
+					entry,
+					&reason,
+					DeferredUnitReason::NeedsUserChoice,
+					Vec::new(),
+				));
+		}
+		review.withhold_dependency(entry, &reason)?;
+	}
+	report.warnings.push(reason);
+	Ok(())
+}
+
 /// What applying a unit's analysis reads. Applying writes the output tree and
 /// the report, so it runs on one thread, in plan order.
 #[derive(Clone, Copy)]
@@ -613,13 +818,15 @@ fn apply_unit(
 	} = *env;
 	match entry.strategy {
 		MergePlanStrategy::CopyThrough => {
-			let omitted = should_skip_base_passthrough(
-				input
-					.file_inventory
-					.get(entry.output_path())
-					.map(Vec::as_slice),
-				options.include_base,
-			) || options
+			let adapted = input.script_cache.has_overlay_for_path(entry.output_path());
+			let omitted = (!adapted
+				&& should_skip_base_passthrough(
+					input
+						.file_inventory
+						.get(entry.output_path())
+						.map(Vec::as_slice),
+					options.include_base,
+				)) || options
 				.retained_paths
 				.as_ref()
 				.is_some_and(|paths| !paths.contains(entry.output_path()));
@@ -1734,7 +1941,9 @@ fn materialize_copy_through(
 	pending_copy_through: &mut Vec<MergePlanEntry>,
 ) -> Result<(), MergeError> {
 	let contributors = input.file_inventory.get(entry.output_path());
-	if should_skip_base_passthrough(contributors.map(Vec::as_slice), include_base) {
+	if !input.script_cache.has_overlay_for_path(entry.output_path())
+		&& should_skip_base_passthrough(contributors.map(Vec::as_slice), include_base)
+	{
 		report.base_passthrough_skipped_file_count += 1;
 	} else if retained_paths.is_some_and(|paths| !paths.contains(entry.output_path())) {
 		return Ok(());
@@ -2229,6 +2438,32 @@ fn structured_merge_unsupported(entry: &MergePlanEntry, reason: &str) -> MergeEr
 	}
 }
 
+/// Warns once per group of input game paths that differ only in case. The
+/// merge keeps them as separate units, but committing them to a
+/// case-insensitive filesystem leaves one file for the whole group, and a
+/// spelling that misses its family or vanilla ancestor merges without them.
+fn record_case_only_path_collisions(report: &mut MergeReport, input: &ResolvedInput) {
+	for group in
+		crate::model::case_only_path_groups(input.file_inventory.keys().map(|path| &**path))
+	{
+		let spellings = group
+			.iter()
+			.map(|path| {
+				let mods = input.file_inventory[*path]
+					.iter()
+					.map(|contributor| contributor.mod_id.as_str())
+					.collect::<Vec<_>>()
+					.join(", ");
+				format!("{path} [{mods}]")
+			})
+			.collect::<Vec<_>>()
+			.join("; ");
+		report.warnings.push(format!(
+			"case_only_path_collision: {spellings}; these paths differ only in letter case, so a case-insensitive filesystem keeps one file for all of them"
+		));
+	}
+}
+
 fn record_plan_unsupported_inputs(report: &mut MergeReport, plan: &MergePlanResult) {
 	for entry in &plan.paths {
 		if entry.strategy != MergePlanStrategy::ManualConflict {
@@ -2419,6 +2654,7 @@ struct DepMisuseRemoveCount {
 
 #[derive(Clone)]
 pub(crate) struct StructuralMergeContext<'a> {
+	entity_transform: Option<&'a dyn crate::merge::transform::tree::EntityTransform>,
 	descriptor: &'a ContentFamilyDescriptor,
 	merge_key_source: MergeKeySource,
 	gui_scroll_merge: bool,
@@ -3147,6 +3383,224 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn generic_transforms_withhold_connected_outputs_and_keep_independent_output_even_with_force() {
+		use crate::merge::transform::{OutputValidation, PreparedTransform, TransformPlan};
+		use std::sync::Arc;
+
+		#[derive(Debug)]
+		struct UnresolvedReference;
+		impl OutputValidation for UnresolvedReference {
+			fn validate_emitted(
+				&self,
+				documents: &[(GamePathBuf, crate::game::eu4::script::parser::AstFile)],
+			) -> Vec<String> {
+				assert_eq!(
+					documents.len(),
+					3,
+					"audit sees the complete connected output component"
+				);
+				vec!["test entity reference has no destination".into()]
+			}
+		}
+
+		for force in [false, true] {
+			let temp = TempDir::new().unwrap();
+			let paths = [
+				"history/provinces/1.txt",
+				"history/provinces/2.txt",
+				"history/provinces/3.txt",
+				"history/provinces/4.txt",
+			];
+			let contributors = paths
+				.iter()
+				.map(|path| ("mod", *path, "base_tax = 1\n", 1, false))
+				.collect::<Vec<_>>();
+			let mut input = cross_file_input(temp.path(), &contributors);
+			for contributors in input.file_inventory.values() {
+				let source = &contributors[0];
+				let bytes = fs::read(source.absolute_path()).unwrap();
+				let document = crate::game::eu4::script::parse_script_bytes_cached(
+					&source.mod_id,
+					&source.root_path,
+					&source.relative_path,
+					&bytes,
+				);
+				input.script_cache.insert_overlay(document, bytes);
+			}
+			let mut transforms = TransformPlan::default();
+			for (id, related, invalid) in [
+				("ab", vec![paths[0], paths[1]], true),
+				("bc", vec![paths[1], paths[2]], false),
+				("independent", vec![paths[3]], false),
+			] {
+				let overlays = related
+					.iter()
+					.map(|path| {
+						let contributor = &input.file_inventory[&game_path(path)][0];
+						let bytes = b"base_tax = 2\n".to_vec();
+						let document = crate::game::eu4::script::parse_script_bytes_cached(
+							&contributor.mod_id,
+							&contributor.root_path,
+							&contributor.relative_path,
+							&bytes,
+						);
+						crate::merge::transform::ScriptTransform::new(
+							input.script_cache.load(contributor).unwrap(),
+							document.ast,
+							bytes,
+						)
+					})
+					.collect();
+				transforms
+					.push(
+						&mut input,
+						PreparedTransform {
+							id: id.into(),
+							identity: id.into(),
+							overlays,
+							paths: related.into_iter().map(game_path).collect(),
+							validator: invalid.then(|| {
+								Arc::new(UnresolvedReference) as Arc<dyn OutputValidation>
+							}),
+							..Default::default()
+						},
+					)
+					.unwrap();
+			}
+			let plan = MergePlanResult {
+				paths: paths
+					.iter()
+					.map(|path| {
+						copy_through_entry(path, &input.file_inventory[&game_path(path)][0])
+					})
+					.collect(),
+				..Default::default()
+			};
+			let out = temp.path().join("out");
+			let result = super::materialize_with_adaptations(
+				InputRequest::from_playset_path(
+					temp.path().join("playlist.json"),
+					Config::default(),
+				),
+				MaterializeOutput {
+					artifacts_dir: &out,
+					prior_dir: None,
+					target_dir: &out,
+				},
+				MergeMaterializeOptions {
+					force,
+					..Default::default()
+				},
+				Ok(input),
+				plan,
+				None,
+				&transforms,
+			)
+			.unwrap();
+			for path in &paths[..3] {
+				assert!(
+					!out.join(path).exists(),
+					"connected output must be withheld, force={force}: {path}"
+				);
+				assert_eq!(
+					result
+						.review
+						.units()
+						.iter()
+						.find(|unit| unit.path.as_str() == *path)
+						.unwrap()
+						.disposition,
+					MergeDisposition::NeedsUserChoice
+				);
+			}
+			assert_eq!(
+				fs::read_to_string(out.join(paths[3])).unwrap(),
+				"base_tax = 2\n"
+			);
+			for path in paths {
+				assert_eq!(
+					fs::read_to_string(temp.path().join("mod").join(path)).unwrap(),
+					"base_tax = 1\n"
+				);
+			}
+			assert_eq!(result.report.copied_file_count, 1);
+			assert_eq!(
+				result
+					.review
+					.units()
+					.iter()
+					.find(|unit| unit.path.as_str() == paths[3])
+					.unwrap()
+					.disposition,
+				MergeDisposition::Copy
+			);
+		}
+	}
+
+	#[test]
+	fn generic_transform_rejects_stale_overlays_and_composes_edits_from_current_input() {
+		use crate::merge::transform::{PreparedTransform, ScriptTransform, TransformPlan};
+		let temp = TempDir::new().unwrap();
+		let path = "history/provinces/1.txt";
+		let mut input = cross_file_input(temp.path(), &[("mod", path, "base_tax = 1\n", 1, false)]);
+		let source = input.file_inventory[&game_path(path)][0].clone();
+		let document = crate::game::eu4::script::parse_script_bytes_cached(
+			&source.mod_id,
+			&source.root_path,
+			&source.relative_path,
+			b"base_tax = 1\n",
+		);
+		input
+			.script_cache
+			.insert_overlay(document, b"base_tax = 1\n".to_vec());
+		let original = input.script_cache.load(&source).unwrap();
+		let edit = |before, text: &str| PreparedTransform {
+			overlays: vec![ScriptTransform::new(
+				before,
+				parse_clausewitz_content(&game_path(path), text).ast,
+				text.as_bytes().to_vec(),
+			)],
+			..Default::default()
+		};
+		let mut transforms = TransformPlan::default();
+		transforms
+			.push(&mut input, edit(original.clone(), "base_tax = 2\n"))
+			.unwrap();
+		let error = transforms
+			.push(
+				&mut input,
+				edit(original, "base_tax = 1\nbase_production = 3\n"),
+			)
+			.unwrap_err();
+		assert!(error.to_string().contains("current frozen document"));
+		let current = input.script_cache.load(&source).unwrap();
+		assert_eq!(
+			input
+				.script_cache
+				.overlay_bytes("mod", &game_path(path))
+				.unwrap(),
+			b"base_tax = 2\n"
+		);
+		transforms
+			.push(
+				&mut input,
+				edit(current, "base_tax = 2\nbase_production = 3\n"),
+			)
+			.unwrap();
+		assert_eq!(
+			input
+				.script_cache
+				.overlay_bytes("mod", &game_path(path))
+				.unwrap(),
+			b"base_tax = 2\nbase_production = 3\n"
+		);
+		assert_eq!(
+			fs::read_to_string(source.absolute_path()).unwrap(),
+			"base_tax = 1\n"
+		);
+	}
+
 	fn per_entry_noop_descriptor(opted_in: bool) -> ContentFamilyDescriptor {
 		let builder = ContentFamilyDescriptor::prefix("test", "test")
 			.merge_key(MergeKeySource::AssignmentKey);
@@ -3510,6 +3964,40 @@ mod tests {
 				!with_scripts
 			);
 		}
+	}
+
+	/// Spellings that differ only in case stay separate inputs, but the report
+	/// names them: committed to a case-insensitive filesystem they are one
+	/// file, and one spelling's output would replace the other's.
+	#[test]
+	fn the_report_warns_about_paths_that_differ_only_in_case() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let out_dir = temp.path().join("out");
+		write_dlc_load(&playlist_path, &[("111", "A"), ("222", "B")]);
+		for (id, relative) in [("111", "Gfx/test.dds"), ("222", "gfx/test.dds")] {
+			write_descriptor(&temp.path().join(id), id);
+			write_file(&temp.path().join(id), relative, b"texture");
+		}
+
+		let materialized = run_materialization_with_review(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		);
+
+		let warnings = materialized
+			.report
+			.warnings
+			.iter()
+			.filter(|warning| warning.starts_with("case_only_path_collision:"))
+			.collect::<Vec<_>>();
+		assert_eq!(warnings.len(), 1, "{:?}", materialized.report.warnings);
+		assert!(
+			warnings[0].contains("Gfx/test.dds [111]; gfx/test.dds [222]"),
+			"{}",
+			warnings[0]
+		);
 	}
 
 	fn plan_entry_for<'a>(plan: &'a MergePlanResult, path: &str) -> &'a MergePlanEntry {

@@ -90,6 +90,47 @@ pub(super) struct UnitOutcomeLedger {
 }
 
 impl UnitOutcomeLedger {
+	pub(super) fn outcome(&self, entry: &MergePlanEntry) -> Result<&MergeUnitOutcome, MergeError> {
+		let id = stable_unit_id(entry)?;
+		self.by_id
+			.get(&id)
+			.and_then(|index| self.units[*index].as_ref())
+			.ok_or_else(|| {
+				invariant(
+					entry.output_path(),
+					"adaptation requires a resolved review unit",
+				)
+			})
+	}
+
+	/// Withdraw a locally resolved unit when its cross-unit prerequisites fail.
+	/// Preserve original failures, while safe dependent units become reviewable.
+	pub(super) fn withhold_dependency(
+		&mut self,
+		entry: &MergePlanEntry,
+		reason: &str,
+	) -> Result<(), MergeError> {
+		let id = stable_unit_id(entry)?;
+		let index = *self
+			.by_id
+			.get(&id)
+			.ok_or_else(|| invariant(entry.output_path(), "unknown adaptation review unit"))?;
+		let unit = self.units[index]
+			.as_mut()
+			.ok_or_else(|| invariant(entry.output_path(), "unresolved adaptation review unit"))?;
+		if matches!(
+			unit.disposition,
+			MergeDisposition::Safe | MergeDisposition::Copy
+		) {
+			unit.disposition = MergeDisposition::NeedsUserChoice;
+			unit.summary = reason.to_owned();
+		}
+		unit.output_path = None;
+		unit.output_paths.clear();
+		unit.notes.push(reason.to_owned());
+		Ok(())
+	}
+
 	pub(super) fn from_plan(plan: &MergePlanResult) -> Result<Self, MergeError> {
 		let mut by_id = BTreeMap::new();
 		let mut output_paths = BTreeSet::new();

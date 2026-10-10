@@ -6,7 +6,9 @@ use crate::game::eu4::content::{
 	DuplicateDefinitionPolicy, MergeKeySource,
 };
 use crate::game::eu4::script::ParsedScriptFile;
-use crate::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
+use crate::game::eu4::script::definition_module::{
+	DefinitionModuleInput, DefinitionSource, load_definition_module,
+};
 use crate::game::eu4::script::parser::AstStatement;
 use crate::model::{GamePath, GamePathBuf, MergeModuleOutput, MergePlanEntry, MergePlanTarget};
 use crate::project::DepOverride;
@@ -20,6 +22,18 @@ pub(crate) struct CrossFileModuleViews {
 	pub file_dag: FileDag,
 	pub vanilla: Option<ParsedScriptFile>,
 	pub contributors: HashMap<ModId, ParsedScriptFile>,
+	pub definition_sources: HashMap<ModId, BTreeMap<String, ModuleDefinitionSource>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModuleDefinitionSource {
+	pub mod_id: String,
+	pub source: DefinitionSource,
+}
+
+struct FoldedModule {
+	parsed: ParsedScriptFile,
+	sources: BTreeMap<String, ModuleDefinitionSource>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,15 +156,19 @@ pub(crate) fn build_cross_file_module_views(
 	let vanilla = if base_files.is_empty() {
 		None
 	} else {
-		Some(fold_visible_module_files(
-			"__base_game__",
-			&merge_unit.module_name,
-			module_policy,
-			&base_files,
-		)?)
+		Some(
+			fold_visible_module_files(
+				"__base_game__",
+				&merge_unit.module_name,
+				module_policy,
+				&base_files,
+			)?
+			.parsed,
+		)
 	};
 
 	let mut effective_views = HashMap::new();
+	let mut definition_sources = HashMap::new();
 	for mod_id in file_dag.contributors() {
 		let ancestors = effective_ancestors(mod_dag, mod_id, dep_overrides);
 		let mut visible = base_files.clone();
@@ -180,15 +198,14 @@ pub(crate) fn build_cross_file_module_views(
 				}
 			}
 		}
-		effective_views.insert(
-			mod_id.clone(),
-			fold_visible_module_files(
-				mod_id.as_str(),
-				&merge_unit.module_name,
-				module_policy,
-				&visible,
-			)?,
-		);
+		let folded = fold_visible_module_files(
+			mod_id.as_str(),
+			&merge_unit.module_name,
+			module_policy,
+			&visible,
+		)?;
+		definition_sources.insert(mod_id.clone(), folded.sources);
+		effective_views.insert(mod_id.clone(), folded.parsed);
 	}
 
 	Ok(CrossFileModuleViews {
@@ -196,6 +213,7 @@ pub(crate) fn build_cross_file_module_views(
 		file_dag,
 		vanilla,
 		contributors: effective_views,
+		definition_sources,
 	})
 }
 
@@ -519,7 +537,7 @@ fn fold_visible_module_files(
 	module_name: &str,
 	policy: DefinitionModulePolicy,
 	visible_files: &BTreeMap<GamePathBuf, VisibleModuleFile>,
-) -> Result<ParsedScriptFile, CrossFileModuleViewError> {
+) -> Result<FoldedModule, CrossFileModuleViewError> {
 	let inputs = visible_files
 		.iter()
 		.map(|(path, file)| {
@@ -557,7 +575,15 @@ fn fold_visible_module_files(
 	parsed.source.clear();
 	parsed.parse_issues.clear();
 	parsed.parse_cache_hit = false;
-	Ok(parsed)
+	let sources = canonical
+		.definition_sources
+		.into_iter()
+		.map(|(key, source)| {
+			let mod_id = visible_files[&source.path].parsed.mod_id.clone();
+			(key, ModuleDefinitionSource { mod_id, source })
+		})
+		.collect();
+	Ok(FoldedModule { parsed, sources })
 }
 
 #[cfg(test)]
@@ -929,6 +955,82 @@ mod tests {
 	}
 
 	#[test]
+	fn reviewed_culture_mapping_requires_the_named_winning_file_and_owner() {
+		use crate::game::eu4::cultures::dag::ReviewedCultureMappings;
+		use crate::merge::planning::dag::{
+			IgnoreReplacePath, ModId, build_mod_dag, induced_file_dag_with_overrides,
+		};
+		use crate::project::CultureRenameEntry;
+
+		let temp = TempDir::new().unwrap();
+		let early = temp.path().join("common/cultures/00_source.txt");
+		let late = temp.path().join("common/cultures/zz_patch.txt");
+		fs::create_dir_all(early.parent().unwrap()).unwrap();
+		let mut files = BTreeMap::new();
+		for (ordinal, path) in [&early, &late].into_iter().enumerate() {
+			fs::write(path, "g = { new_culture = { male_names = { Otto } } }").unwrap();
+			let relative =
+				crate::model::GamePathBuf::from_physical(temp.path(), path).expect("game path");
+			let parsed = parse_script_file("patch", temp.path(), &relative);
+			files.insert(
+				parsed.relative_path.clone(),
+				VisibleModuleFile {
+					layer_ordinal: ordinal,
+					parsed,
+				},
+			);
+		}
+		let descriptor = eu4()
+			.classify_content_family(&game_path("common/cultures/test.txt"))
+			.unwrap();
+		let ContentLoadPolicy::DefinitionModule(mut policy) = descriptor.load_policy else {
+			panic!("culture module")
+		};
+		policy.duplicate_definitions = DuplicateDefinitionPolicy::LaterDefinitionWins;
+		let folded = fold_visible_module_files("patch", "cultures", policy, &files).unwrap();
+		let dag = build_mod_dag(&[]).0;
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			policy.output_path,
+			&[],
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let mod_id = ModId("patch".into());
+		let mut views = super::CrossFileModuleViews {
+			aggregate_contributors: vec![],
+			file_dag,
+			vanilla: None,
+			contributors: std::collections::HashMap::from([(mod_id.clone(), folded.parsed)]),
+			definition_sources: std::collections::HashMap::from([(mod_id.clone(), folded.sources)]),
+		};
+		let mut entry = CultureRenameEntry {
+			from: "old_culture".into(),
+			to: "new_culture".into(),
+			mod_id: "patch".into(),
+			file: "common/cultures/00_source.txt".into(),
+			sha256: "a".repeat(64),
+		};
+		assert!(
+			ReviewedCultureMappings::from_verified_entries(&[entry.clone()], &views).is_err(),
+			"overridden source must not authorize the winning target"
+		);
+		entry.file = "common/cultures/zz_patch.txt".into();
+		assert!(ReviewedCultureMappings::from_verified_entries(&[entry.clone()], &views).is_ok());
+		views
+			.definition_sources
+			.get_mut(&mod_id)
+			.unwrap()
+			.get_mut("g")
+			.unwrap()
+			.mod_id = "parent".into();
+		assert!(
+			ReviewedCultureMappings::from_verified_entries(&[entry], &views).is_err(),
+			"inherited file must not count as this contributor's reviewed edit"
+		);
+	}
+
+	#[test]
 	fn later_filename_wins_same_top_level_key() {
 		let temp = TempDir::new().expect("temp dir");
 		let early = temp.path().join("common/governments/00_governments.txt");
@@ -970,6 +1072,7 @@ mod tests {
 		)
 		.expect("fold module files");
 		let shared = folded
+			.parsed
 			.ast
 			.statements
 			.iter()
@@ -985,6 +1088,7 @@ mod tests {
 		));
 		assert_eq!(
 			folded
+				.parsed
 				.ast
 				.statements
 				.iter()
@@ -1045,7 +1149,7 @@ mod tests {
 		.expect("fold module files");
 
 		assert!(matches!(
-			folded.ast.statements.as_slice(),
+			folded.parsed.ast.statements.as_slice(),
 			[AstStatement::Assignment {
 				key,
 				value: AstValue::Scalar { value, .. },

@@ -86,6 +86,134 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 	);
 }
 
+#[test]
+fn culture_cli_repairs_and_adapts_reviewed_sources_without_mutating_them() {
+	use foch::project::{CultureRenameEntry, CultureRepairEntry, Project, SourceEdit};
+	use sha2::{Digest, Sha256};
+	let scratch = TempDir::new().unwrap();
+	let game = scratch.path().join("game");
+	let rename = scratch.path().join("rename");
+	let bonus = scratch.path().join("bonus");
+	let culture_path = "common/cultures/base.txt";
+	let base = "g = { old = { primary = AAA } }";
+	let broken = "g renamed = { primary = AAA male_names = { NewName } } }";
+	write_game_version(&game, "culture-cli-1.0");
+	write_script_file(&game, culture_path, base);
+	write_script_file(
+		&game,
+		"common/scripted_effects/base.txt",
+		"base_effect = { add_prestige = 1 }",
+	);
+	write_script_file(
+		&game,
+		"common/scripted_triggers/base.txt",
+		"base_check = { primary_culture = old }",
+	);
+	write_descriptor(&rename, "Rename");
+	write_script_file(&rename, culture_path, broken);
+	write_descriptor(&bonus, "Bonus");
+	write_script_file(
+		&bonus,
+		culture_path,
+		"g = { old = { primary = AAA country = { discipline = 0.1 } } }",
+	);
+	write_script_file(
+		&bonus,
+		"common/scripted_effects/mechanic.txt",
+		"mechanic = { change_culture = old set_country_flag = old }",
+	);
+	write_game_path_config(scratch.path(), &game);
+	build_base_data_install(scratch.path(), &game);
+	let mut project: Project = toml::from_str("[project]\ngame='eu4'\n[[project.mods]]\nid='rename'\npath='rename'\n[[project.mods]]\nid='bonus'\npath='bonus'\n").unwrap();
+	let hash = format!("{:x}", Sha256::digest(broken.as_bytes()));
+	project.cultures.renames.push(CultureRenameEntry {
+		from: "old".into(),
+		to: "renamed".into(),
+		mod_id: "rename".into(),
+		file: culture_path.into(),
+		sha256: hash.clone(),
+	});
+	project.cultures.repairs.push(CultureRepairEntry {
+		mod_id: "rename".into(),
+		file: culture_path.into(),
+		sha256: hash,
+		edits: vec![SourceEdit {
+			start: 1,
+			end: 1,
+			expected: "".into(),
+			replacement: " = {".into(),
+		}],
+	});
+	let manifest = scratch.path().join("foch.toml");
+	fs::write(&manifest, toml::to_string(&project).unwrap()).unwrap();
+	let out = scratch.path().join("out");
+	let args = [
+		"merge",
+		manifest.to_str().unwrap(),
+		"--out",
+		out.to_str().unwrap(),
+		"--non-interactive",
+	];
+	let (code, stdout, stderr) = run_foch(&args, scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(!out.exists());
+	let mut commit = args.to_vec();
+	commit.push("--confirm");
+	let (code, stdout, stderr) = run_foch(&commit, scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert!(
+		report.stale_vanilla_targets.is_empty(),
+		"{:#?}",
+		report.stale_vanilla_targets
+	);
+	let cultures = fs::read_to_string(out.join("common/cultures/zzz_foch_cultures.txt")).unwrap();
+	assert!(
+		cultures.contains("renamed =")
+			&& cultures.contains("discipline = 0.1")
+			&& cultures.contains("NewName"),
+		"{cultures}"
+	);
+	let effect =
+		fs::read_to_string(out.join("common/scripted_effects/zzz_foch_scripted_effects.txt"))
+			.unwrap();
+	assert!(
+		effect.contains("change_culture = renamed") && effect.contains("set_country_flag = old")
+	);
+	assert!(
+		fs::read_to_string(out.join("common/scripted_triggers/base.txt"))
+			.unwrap()
+			.contains("primary_culture = renamed")
+	);
+	assert_eq!(
+		fs::read_to_string(rename.join(culture_path)).unwrap(),
+		broken
+	);
+	assert_eq!(fs::read_to_string(game.join(culture_path)).unwrap(), base);
+	write_script_file(&rename, culture_path, &format!("{broken}\n# Author update"));
+	let stale_out = scratch.path().join("stale-out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			manifest.to_str().unwrap(),
+			"--out",
+			stale_out.to_str().unwrap(),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("stale culture decision"), "{stderr}");
+	assert!(!stale_out.exists());
+}
+
 /// A test path as an argument, environment or configuration value. Test
 /// directories are UTF-8; one that is not fails the test instead of being
 /// rendered as some other path.
@@ -295,6 +423,7 @@ fn run_foch_with_env(
 	let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));
 	command
 		.env("FOCH_CONFIG_DIR", config_dir)
+		.env("FOCH_DATA_DIR", config_dir.join(".foch-data"))
 		.env("FOCH_CACHE_ROOT", &cache_root)
 		.env("HOME", &home_dir)
 		.env("XDG_DATA_HOME", &xdg_data_home);
@@ -336,6 +465,89 @@ fn top_level_help_exposes_only_current_merge_commands() {
 		rejected_stderr.contains("unrecognized subcommand 'merge-plan'"),
 		"stderr: {rejected_stderr}"
 	);
+}
+
+#[test]
+fn bare_foch_needs_a_terminal_and_initializes_nothing() {
+	let tmp = TempDir::new().expect("temp dir");
+	let config_dir = tmp.path().join("absent-config");
+	let output = Command::new(env!("CARGO_BIN_EXE_foch"))
+		.env("FOCH_CONFIG_DIR", &config_dir)
+		.env("HOME", tmp.path().join("home"))
+		.env("FOCH_CACHE_ROOT", tmp.path().join("cache"))
+		.output()
+		.expect("run bare foch");
+
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+	assert!(stderr.contains("needs a TTY"), "stderr: {stderr}");
+	assert!(output.stdout.is_empty());
+	assert!(
+		!config_dir.exists(),
+		"bare foch must not initialize configuration"
+	);
+}
+
+/// Without INPUT_SOURCE, `foch input inspect` reports the current EU4 input
+/// bare `foch` shows. What it finds depends on the machine, so only the
+/// shape is checked.
+#[test]
+fn input_inspect_without_a_source_describes_the_current_input_as_json() {
+	let tmp = TempDir::new().expect("temp dir");
+	let config_dir = tmp.path().join("absent-config");
+	let output = Command::new(env!("CARGO_BIN_EXE_foch"))
+		.env("FOCH_CONFIG_DIR", &config_dir)
+		.env("HOME", tmp.path().join("home"))
+		.env("FOCH_CACHE_ROOT", tmp.path().join("cache"))
+		.args(["input", "inspect", "--format", "json"])
+		.output()
+		.expect("run input inspect");
+
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	assert!(
+		matches!(output.status.code(), Some(0 | 2)),
+		"stderr: {}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let input: serde_json::Value = serde_json::from_str(&stdout).expect("JSON input");
+	assert!(input.get("readiness").is_some(), "{stdout}");
+	assert!(input.get("issues").is_some(), "{stdout}");
+	assert!(
+		!config_dir.exists(),
+		"inspection must not create configuration"
+	);
+}
+
+#[test]
+fn exclusions_and_json_apply_only_to_the_current_input() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist = tmp.path().join("playlist.json");
+	write_dlc_load(&playlist, &[("7251", "A")]);
+	write_descriptor(&tmp.path().join("7251"), "mod-a");
+	let playlist = path_text(&playlist).to_owned();
+	let out = path_text(&tmp.path().join("out")).to_owned();
+
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"merge",
+			playlist.as_str(),
+			"--out",
+			out.as_str(),
+			"--non-interactive",
+			"--exclude",
+			"7251",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 1, "stderr: {stderr}");
+	assert!(stderr.contains("omit INPUT_SOURCE"), "stderr: {stderr}");
+
+	let (code, _stdout, stderr) = run_foch(
+		&["input", "inspect", playlist.as_str(), "--format", "json"],
+		tmp.path(),
+	);
+	assert_eq!(code, 1, "stderr: {stderr}");
+	assert!(stderr.contains("omit INPUT_SOURCE"), "stderr: {stderr}");
 }
 
 #[test]
@@ -777,7 +989,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v12.0.0")
+			.join("v14.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),
@@ -1289,7 +1501,7 @@ fn semantic_graph_real_minimized_playlist_emits_progress_and_real_nodes() {
 		.expect("repo root");
 	let playlist_path = repo_root
 		.join("tests")
-		.join("corpus")
+		.join("fixtures")
 		.join("eu4_real_minimized")
 		.join("playlist.json");
 
@@ -1450,7 +1662,7 @@ fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_ca
 }
 
 #[test]
-fn simplify_command_in_place_removes_empty_files() {
+fn simplify_command_refuses_to_write_into_the_source_mod() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let game_root = tmp.path().join("eu4-game");
@@ -1480,7 +1692,7 @@ fn simplify_command_in_place_removes_empty_files() {
 	build_base_data_install(tmp.path(), &game_root);
 
 	let playlist_str = path_text(&playlist_path).to_owned();
-	let (code, stdout, stderr) = run_foch(
+	let (code, _stdout, stderr) = run_foch(
 		&[
 			"simplify",
 			playlist_str.as_str(),
@@ -1490,10 +1702,106 @@ fn simplify_command_in_place_removes_empty_files() {
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 0, "stderr: {stderr}");
-	assert!(stdout.contains("removed_definitions=1"));
-	assert!(!target_file.exists());
-	assert!(mod_a.join("simplify-report.json").exists());
+	assert_ne!(code, 0, "--in-place must no longer be accepted");
+	assert!(stderr.contains("--in-place"), "stderr: {stderr}");
+
+	let nested_out = mod_a.join("clean");
+	for out in [mod_a.as_path(), nested_out.as_path(), tmp.path()] {
+		let out_str = path_text(out).to_owned();
+		let (code, _stdout, stderr) = run_foch(
+			&[
+				"simplify",
+				playlist_str.as_str(),
+				"--target",
+				"9031",
+				"--out",
+				out_str.as_str(),
+			],
+			tmp.path(),
+		);
+		assert_ne!(code, 0, "output {out_str} overlaps the source mod");
+		assert!(
+			stderr.contains("overlaps the root of input mod 9031"),
+			"stderr: {stderr}"
+		);
+	}
+	assert_eq!(
+		fs::read_to_string(&target_file).expect("source effect is untouched"),
+		"shared_effect = { log = base }
+"
+	);
+	assert!(!mod_a.join("simplify-report.json").exists());
+	assert!(!nested_out.exists());
+}
+
+#[test]
+fn simplify_command_refuses_an_output_inside_another_input_mod() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let game_root = tmp.path().join("eu4-game");
+	let mod_a = tmp.path().join("9031");
+	let mod_b = tmp.path().join("9032");
+	let other_file = mod_b
+		.join("common")
+		.join("scripted_effects")
+		.join("other.txt");
+
+	write_dlc_load(&playlist_path, &[("9031", "A"), ("9032", "B")]);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	write_game_version(&game_root, "12.2.0-test");
+	fs::create_dir_all(game_root.join("common").join("scripted_effects"))
+		.expect("create base effects dir");
+	fs::create_dir_all(mod_a.join("common").join("scripted_effects"))
+		.expect("create mod a effects dir");
+	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
+		.expect("create mod b effects dir");
+	fs::write(
+		mod_a
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"shared_effect = { log = a }
+",
+	)
+	.expect("write mod a effect");
+	fs::write(
+		&other_file,
+		"other_effect = { log = b }
+",
+	)
+	.expect("write mod b effect");
+	write_game_path_config(tmp.path(), &game_root);
+	build_base_data_install(tmp.path(), &game_root);
+
+	let playlist_str = path_text(&playlist_path).to_owned();
+	let nested_out = mod_b.join("clean");
+	for out in [mod_b.as_path(), nested_out.as_path()] {
+		let out_str = path_text(out).to_owned();
+		let (code, _stdout, stderr) = run_foch(
+			&[
+				"simplify",
+				playlist_str.as_str(),
+				"--target",
+				"9031",
+				"--out",
+				out_str.as_str(),
+			],
+			tmp.path(),
+		);
+		assert_ne!(code, 0, "output {out_str} overlaps another input mod");
+		assert!(
+			stderr.contains("overlaps the root of input mod 9032"),
+			"stderr: {stderr}"
+		);
+	}
+	assert_eq!(
+		fs::read_to_string(&other_file).expect("other input mod is untouched"),
+		"other_effect = { log = b }
+"
+	);
+	assert!(!mod_b.join("simplify-report.json").exists());
+	assert!(!nested_out.exists());
 }
 
 #[test]

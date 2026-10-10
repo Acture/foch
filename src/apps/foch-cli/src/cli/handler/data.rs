@@ -41,6 +41,22 @@ fn handle_data_install(args: &DataInstallArgs, config: Config) -> HandlerResult 
 }
 
 fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
+	let observer = BaseBuildObserver::stderr(&args.game_name);
+	for line in run_data_build(args, config, observer)? {
+		println!("{line}");
+	}
+	Ok(0)
+}
+
+/// Build EU4 base data as `foch data build` does and return its report
+/// lines. Bare `foch` builds through this too, with the arguments it shows
+/// as the command.
+pub fn run_data_build(
+	args: &DataBuildArgs,
+	config: &Config,
+	mut observer: BaseBuildObserver,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+	let mut report = Vec::new();
 	if !args.install && args.output_dir.is_none() && !args.release_asset {
 		return Err(
 			"please specify at least one of --install, --output-dir, or --release-asset".into(),
@@ -55,7 +71,6 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 	};
 	let filter = FileFilter::new(game, &config.extra_ignore_patterns)
 		.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
-	let mut observer = BaseBuildObserver::stderr(game.key());
 	let build = build_base_snapshot_with_observer(
 		&game,
 		&args.from_game_path,
@@ -85,12 +100,12 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 							.map(|item| item.len())
 							.unwrap_or_default();
 					counts.insert("install_coverage_bytes".to_string(), coverage_bytes);
-					println!(
+					report.push(format!(
 						"built and installed base data: game={} version={} path={}",
 						installed.metadata.game,
 						installed.metadata.game_version,
 						installed.install_dir.display()
-					);
+					));
 				}
 
 				if args.release_asset {
@@ -114,12 +129,12 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 					);
 					counts.insert("release_manifest_bytes".to_string(), manifest_bytes);
 					counts.insert("release_coverage_bytes".to_string(), coverage_bytes);
-					println!(
+					report.push(format!(
 						"wrote release data asset: snapshot={} manifest={} coverage={}",
 						release_output.snapshot_path.display(),
 						release_output.manifest_path.display(),
 						release_output.coverage_path.display()
-					);
+					));
 				} else if let Some(output_dir) = args.output_dir.as_ref() {
 					let bundle = write_snapshot_bundle(
 						&build.encoded_snapshot,
@@ -140,12 +155,12 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 					);
 					counts.insert("bundle_metadata_bytes".to_string(), metadata_bytes);
 					counts.insert("bundle_coverage_bytes".to_string(), coverage_bytes);
-					println!(
+					report.push(format!(
 						"wrote snapshot bundle: snapshot={} metadata={} coverage={}",
 						bundle.snapshot_path.display(),
 						bundle.metadata_path.display(),
 						bundle.coverage_path.display()
-					);
+					));
 				}
 				Ok(())
 			},
@@ -160,10 +175,10 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 			std::fs::create_dir_all(parent)?;
 		}
 		std::fs::write(path, serde_json::to_vec_pretty(&profile)?)?;
-		println!("wrote profiling result: {}", path.display());
+		report.push(format!("wrote profiling result: {}", path.display()));
 	}
 
-	Ok(0)
+	Ok(report)
 }
 
 fn handle_data_list(args: &DataListArgs) -> HandlerResult {

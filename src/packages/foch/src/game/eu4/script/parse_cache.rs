@@ -12,7 +12,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PARSE_CACHE_VERSION: &str = "12.0.0";
+// v13 was allocated to path-free entries; v14 also invalidates entries whose
+// diagnostics predate unmatched-brace and unclosed-block detection.
+const PARSE_CACHE_VERSION: &str = "14.0.0";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const OBSOLETE_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 

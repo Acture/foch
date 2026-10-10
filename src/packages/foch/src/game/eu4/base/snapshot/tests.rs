@@ -3916,3 +3916,58 @@ fn base_symbol_definition_defaults_missing_param_contract() {
 	assert!(decoded.param_contract.is_none());
 	assert_eq!(decoded.inferred_this_mask, country_mask());
 }
+
+#[test]
+fn base_snapshot_retains_typed_culture_uses_and_locations() {
+	test_support::install_defaults();
+	let temp = TempDir::new().unwrap();
+	let relative = game_path("common/scripted_triggers/cultures.txt");
+	let absolute = relative.to_path(temp.path());
+	std::fs::create_dir_all(absolute.parent().unwrap()).unwrap();
+	std::fs::write(
+		&absolute,
+		"base_check = { primary_culture = english culture_group = british }\n",
+	)
+	.unwrap();
+	let parsed = crate::game::eu4::script::parse_script_file("__game__eu4", temp.path(), &relative);
+	let index = crate::game::eu4::script::build_semantic_index(&[parsed]);
+	let snapshot = BaseAnalysisSnapshot::from_semantic_index(
+		&Eu4,
+		"culture-reference-test",
+		vec![relative.clone()],
+		&index,
+		Default::default(),
+	);
+	let encoded = encode_snapshot_to_bytes(&snapshot).unwrap();
+	let decoded = decode_snapshot_from_bytes(&encoded.bytes).unwrap();
+	let restored = decoded.to_semantic_index();
+	for (key, value) in [
+		("culture_reference", "english"),
+		("culture_group_reference", "british"),
+	] {
+		let original = index
+			.resource_references
+			.iter()
+			.find(|reference| reference.key == key)
+			.unwrap();
+		let persisted = restored
+			.resource_references
+			.iter()
+			.find(|reference| reference.key == key)
+			.unwrap();
+		assert_eq!(persisted.value, value);
+		assert_eq!(persisted.mod_id, "__game__eu4");
+		assert_eq!(persisted.path, relative);
+		assert_eq!(
+			(persisted.line, persisted.column),
+			(original.line, original.column)
+		);
+	}
+	let coverage = build_coverage_report(&decoded);
+	let root = coverage
+		.roots
+		.iter()
+		.find(|root| root.root_family == "common/scripted_triggers")
+		.unwrap();
+	assert_eq!(root.coverage_class, CoverageClass::SemanticComplete);
+}

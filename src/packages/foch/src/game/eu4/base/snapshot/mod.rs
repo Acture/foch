@@ -385,12 +385,25 @@ pub struct BaseEncodedSectionProfile {
 	pub sha256: String,
 }
 
-#[derive(Debug)]
+/// A stage of a base data build starting (`false`) or finishing (`true`).
+pub type BaseBuildStageListener = Box<dyn FnMut(&str, bool) + Send>;
+
 pub struct BaseBuildObserver {
 	emit_progress: bool,
 	started_at: u64,
 	started_instant: Instant,
 	profile: BaseBuildProfile,
+	stage_listener: Option<BaseBuildStageListener>,
+}
+
+impl std::fmt::Debug for BaseBuildObserver {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("BaseBuildObserver")
+			.field("emit_progress", &self.emit_progress)
+			.field("profile", &self.profile)
+			.field("stage_listener", &self.stage_listener.is_some())
+			.finish()
+	}
 }
 
 impl BaseBuildObserver {
@@ -414,7 +427,15 @@ impl BaseBuildObserver {
 				started_at,
 				..BaseBuildProfile::default()
 			},
+			stage_listener: None,
 		}
+	}
+
+	/// Also report each stage as it starts and finishes, for a progress
+	/// display.
+	pub fn with_stage_listener(mut self, listener: BaseBuildStageListener) -> Self {
+		self.stage_listener = Some(listener);
+		self
 	}
 
 	pub fn set_game_version(&mut self, game_version: &str) {
@@ -457,6 +478,9 @@ impl BaseBuildObserver {
 		if self.emit_progress {
 			eprintln!("[data build] {name}: start");
 		}
+		if let Some(listener) = self.stage_listener.as_mut() {
+			listener(name, false);
+		}
 		let stage_started_at = unix_timestamp_millis();
 		let stage_started = Instant::now();
 		let mut counts = BTreeMap::new();
@@ -470,6 +494,9 @@ impl BaseBuildObserver {
 			elapsed_ms,
 			counts: counts.clone(),
 		});
+		if let Some(listener) = self.stage_listener.as_mut() {
+			listener(name, true);
+		}
 		if self.emit_progress {
 			match &result {
 				Ok(_) => {

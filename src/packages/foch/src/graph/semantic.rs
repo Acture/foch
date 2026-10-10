@@ -1453,7 +1453,11 @@ fn is_false(value: &bool) -> bool {
 fn render_semantic_graph_html(
 	artifact: &SemanticGraphArtifact,
 ) -> Result<String, Box<dyn std::error::Error>> {
-	let embedded_json = serde_json::to_string(artifact)?.replace("</script", "<\\/script");
+	// `<` appears only inside JSON strings, where `<` is the same
+	// character, so no data text can close the script element or open a
+	// comment whatever its case.
+	let embedded_json = serde_json::to_string(artifact)?.replace('<', "\\u003c");
+	let family = html_text(&artifact.family_id);
 	let template = r#"<!doctype html>
 <html lang="en">
 <head>
@@ -1640,17 +1644,28 @@ fn render_semantic_graph_html(
 			}});
 		}}
 	}}
+	// Every value from the graph data is text: script names, values and
+	// file names can hold `<`, `&` or quotes, which must show as written.
+	function esc(value) {{
+		return String(value ?? "").replace(/[&<>"']/g, (ch) => ({{
+			"&": "&amp;",
+			"<": "&lt;",
+			">": "&gt;",
+			'"': "&quot;",
+			"'": "&#39;",
+		}})[ch]);
+	}}
 	function renderBadges(node) {{
 		const badges = [];
-		badges.push(`<span class="badge">${{node.kind}}</span>`);
-		if (node.mod_id) badges.push(`<span class="badge">${{node.mod_id}}</span>`);
-		if (node.precedence !== null && node.precedence !== undefined) badges.push(`<span class="badge">precedence ${{node.precedence}}</span>`);
-		if (node.scope_kind) badges.push(`<span class="badge">${{node.scope_kind}}</span>`);
+		badges.push(`<span class="badge">${{esc(node.kind)}}</span>`);
+		if (node.mod_id) badges.push(`<span class="badge">${{esc(node.mod_id)}}</span>`);
+		if (node.precedence !== null && node.precedence !== undefined) badges.push(`<span class="badge">precedence ${{esc(node.precedence)}}</span>`);
+		if (node.scope_kind) badges.push(`<span class="badge">${{esc(node.scope_kind)}}</span>`);
 		if (node.referenced) badges.push(`<span class="badge">referenced</span>`);
-		if (node.resource_reference_count) badges.push(`<span class="badge">${{node.resource_reference_count}} refs</span>`);
-		if (node.scalar_assignment_count) badges.push(`<span class="badge">${{node.scalar_assignment_count}} scalars</span>`);
-		if (node.symbol_reference_count) badges.push(`<span class="badge">${{node.symbol_reference_count}} symbol refs</span>`);
-		if (node.key_usage_count) badges.push(`<span class="badge">${{node.key_usage_count}} keys</span>`);
+		if (node.resource_reference_count) badges.push(`<span class="badge">${{esc(node.resource_reference_count)}} refs</span>`);
+		if (node.scalar_assignment_count) badges.push(`<span class="badge">${{esc(node.scalar_assignment_count)}} scalars</span>`);
+		if (node.symbol_reference_count) badges.push(`<span class="badge">${{esc(node.symbol_reference_count)}} symbol refs</span>`);
+		if (node.key_usage_count) badges.push(`<span class="badge">${{esc(node.key_usage_count)}} keys</span>`);
 		return badges.length ? `<div class="badges">${{badges.join("")}}</div>` : "";
 	}}
 	function renderEdgeList(nodeId) {{
@@ -1658,19 +1673,19 @@ fn render_semantic_graph_html(
 		if (!edges.length) return "";
 		return `<div class="edge-list">${{edges.map((edge) => {{
 			const target = nodesById.get(edge.to);
-			const label = edge.label ? ` <code>${{edge.label}}</code>` : "";
-			const count = edge.count ? ` ×${{edge.count}}` : "";
-			return `<div class="edge-item">${{edge.kind}} → <button data-node="${{edge.to}}" class="link-button">${{target ? target.label : edge.to}}</button>${{count}}${{label}}</div>`;
+			const label = edge.label ? ` <code>${{esc(edge.label)}}</code>` : "";
+			const count = edge.count ? ` ×${{esc(edge.count)}}` : "";
+			return `<div class="edge-item">${{esc(edge.kind)}} → <button data-node="${{esc(edge.to)}}" class="link-button">${{esc(target ? target.label : edge.to)}}</button>${{count}}${{label}}</div>`;
 		}}).join("")}}</div>`;
 	}}
 	function renderEvidencePreview(node) {{
 		if (!state.showEvidenceLeaves) return "";
 		const samples = [];
 		for (const item of (node.evidence?.resource_references || []).slice(0, 3)) {{
-			samples.push(`<span class="badge">${{item.label}}=${{item.value || ""}}</span>`);
+			samples.push(`<span class="badge">${{esc(item.label)}}=${{esc(item.value)}}</span>`);
 		}}
 		for (const item of (node.evidence?.scalar_assignments || []).slice(0, 3)) {{
-			samples.push(`<span class="badge">${{item.label}}=${{item.value || ""}}</span>`);
+			samples.push(`<span class="badge">${{esc(item.label)}}=${{esc(item.value)}}</span>`);
 		}}
 		return samples.length ? `<div class="badges">${{samples.join("")}}</div>` : "";
 	}}
@@ -1683,8 +1698,8 @@ fn render_semantic_graph_html(
 		const children = childIds.map(renderTreeNode).filter(Boolean).join("");
 		return `
 			<li>
-				<button class="node ${{state.selectedNodeId === nodeId ? "active" : ""}}" data-node="${{nodeId}}">
-					<div><strong>${{node.label}}</strong></div>
+				<button class="node ${{state.selectedNodeId === nodeId ? "active" : ""}}" data-node="${{esc(nodeId)}}">
+					<div><strong>${{esc(node.label)}}</strong></div>
 					${{renderBadges(node)}}
 					${{state.showOverrides ? renderEdgeList(nodeId).replaceAll("references_", "").replaceAll("overrides", "overrides") : renderEdgeList(nodeId)}}
 					${{renderEvidencePreview(node)}}
@@ -1708,7 +1723,7 @@ fn render_semantic_graph_html(
 	}
 	function renderEvidenceSection(title, items) {{
 		if (!items || !items.length) return "";
-		return `<div class="section"><h3>${{title}}</h3><ul>${{items.map((item) => `<li><code>${{item.label}}</code>${{item.value ? ` = <code>${{item.value}}</code>` : ""}} <span>(${{item.line}}:${{item.column}})</span></li>`).join("")}}</ul></div>`;
+		return `<div class="section"><h3>${{esc(title)}}</h3><ul>${{items.map((item) => `<li><code>${{esc(item.label)}}</code>${{item.value ? ` = <code>${{esc(item.value)}}</code>` : ""}} <span>(${{esc(item.line)}}:${{esc(item.column)}})</span></li>`).join("")}}</ul></div>`;
 	}}
 	function renderDetails(nodeId) {{
 		const node = nodesById.get(nodeId);
@@ -1720,12 +1735,12 @@ fn render_semantic_graph_html(
 		const outgoing = (outgoingById.get(nodeId) || []).filter((edge) => allowedRefKind(edge.kind));
 		const incoming = (incomingById.get(nodeId) || []).filter((edge) => allowedRefKind(edge.kind));
 		details.innerHTML = `
-			<div class="section"><strong>${{node.label}}</strong></div>
-			<div class="section"><code>${{node.kind}}</code></div>
-			${{node.mod_id ? `<div class="section">mod: <code>${{node.mod_id}}</code></div>` : ""}}
-			${{node.path ? `<div class="section">path: <code>${{node.path}}</code></div>` : ""}}
-			${{node.definition_key ? `<div class="section">definition: <code>${{node.definition_key}}</code> = <code>${{node.definition_value}}</code></div>` : ""}}
-			${{node.scope_id !== null && node.scope_id !== undefined ? `<div class="section">scope: <code>${{node.scope_id}}</code></div>` : ""}}
+			<div class="section"><strong>${{esc(node.label)}}</strong></div>
+			<div class="section"><code>${{esc(node.kind)}}</code></div>
+			${{node.mod_id ? `<div class="section">mod: <code>${{esc(node.mod_id)}}</code></div>` : ""}}
+			${{node.path ? `<div class="section">path: <code>${{esc(node.path)}}</code></div>` : ""}}
+			${{node.definition_key ? `<div class="section">definition: <code>${{esc(node.definition_key)}}</code> = <code>${{esc(node.definition_value)}}</code></div>` : ""}}
+			${{node.scope_id !== null && node.scope_id !== undefined ? `<div class="section">scope: <code>${{esc(node.scope_id)}}</code></div>` : ""}}
 			${{renderEvidenceSection("Resource references", node.evidence?.resource_references)}}
 			${{renderEvidenceSection("Scalar assignments", node.evidence?.scalar_assignments)}}
 			${{renderEvidenceSection("Symbol references", node.evidence?.symbol_references)}}
@@ -1733,11 +1748,11 @@ fn render_semantic_graph_html(
 			${{renderEvidenceSection("Alias usages", node.evidence?.alias_usages)}}
 			${{outgoing.length ? `<div class="section"><h3>Outgoing edges</h3><ul>${{outgoing.map((edge) => {{
 				const target = nodesById.get(edge.to);
-				return `<li><code>${{edge.kind}}</code> → ${{target ? target.label : edge.to}}</li>`;
+				return `<li><code>${{esc(edge.kind)}}</code> → ${{esc(target ? target.label : edge.to)}}</li>`;
 			}}).join("")}}</ul></div>` : ""}}
 			${{incoming.length ? `<div class="section"><h3>Incoming edges</h3><ul>${{incoming.map((edge) => {{
 				const source = nodesById.get(edge.from);
-				return `<li><code>${{edge.kind}}</code> ← ${{source ? source.label : edge.from}}</li>`;
+				return `<li><code>${{esc(edge.kind)}}</code> ← ${{esc(source ? source.label : edge.from)}}</li>`;
 			}}).join("")}}</ul></div>` : ""}}
 		`;
 		for (const button of details.querySelectorAll("button[data-node]")) {{
@@ -1763,9 +1778,25 @@ fn render_semantic_graph_html(
 	let html = template
 		.replace("{{", "{")
 		.replace("}}", "}")
-		.replace("__FAMILY__", &artifact.family_id)
+		.replace("__FAMILY__", &family)
 		.replace("__JSON__", &embedded_json);
 	Ok(html)
+}
+
+/// `text` escaped for HTML element content.
+fn html_text(text: &str) -> String {
+	let mut escaped = String::with_capacity(text.len());
+	for character in text.chars() {
+		match character {
+			'&' => escaped.push_str("&amp;"),
+			'<' => escaped.push_str("&lt;"),
+			'>' => escaped.push_str("&gt;"),
+			'"' => escaped.push_str("&quot;"),
+			'\'' => escaped.push_str("&#39;"),
+			other => escaped.push(other),
+		}
+	}
+	escaped
 }
 
 #[cfg(test)]
@@ -2117,6 +2148,50 @@ mod tests {
 		assert!(html.contains("data-key=\"${key}\""));
 		assert!(!html.contains("const state = {{"));
 		assert!(!html.contains("${{"));
+	}
+
+	/// Script values and file names are data: a node label that looks like
+	/// markup cannot close the data script or reach `innerHTML` unescaped.
+	#[test]
+	fn html_renderer_treats_graph_text_as_text() {
+		let input = test_input();
+		let state = test_runtime_state();
+		let mut artifact =
+			build_semantic_graph_artifact(&input, &state, holy_orders()).expect("artifact");
+		let payload = "</SCRIPT><img src=x onerror=alert(1)>";
+		artifact.nodes[0].label = payload.to_string();
+		artifact.family_id = "<b>family</b>".to_string();
+		let html = render_semantic_graph_html(&artifact).expect("html");
+
+		assert!(!html.contains("<img"), "a data `<` reached the markup");
+		assert!(!html.to_ascii_lowercase().contains("</script><"));
+		assert!(html.contains("&lt;b&gt;family&lt;/b&gt;"));
+		let data = html
+			.split(r#"<script id="semantic-graph-data" type="application/json">"#)
+			.nth(1)
+			.and_then(|rest| rest.split("</script>").next())
+			.expect("embedded data");
+		let parsed: serde_json::Value = serde_json::from_str(data).expect("embedded JSON");
+		assert_eq!(parsed["nodes"][0]["label"], payload);
+		// Every interpolation of graph data goes through `esc`.
+		for raw in [
+			"${node.label}",
+			"${node.kind}",
+			"${node.mod_id}",
+			"${node.path}",
+			"${node.definition_value}",
+			"${item.label}",
+			"${item.value}",
+			"${edge.label}",
+			"${edge.kind}",
+			"${edge.to}",
+			"${target ? ",
+			"${source ? ",
+			"${title}",
+			"${nodeId}",
+		] {
+			assert!(!html.contains(raw), "unescaped interpolation {raw}");
+		}
 	}
 
 	#[test]

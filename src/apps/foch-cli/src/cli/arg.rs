@@ -16,8 +16,9 @@ use std::sync::OnceLock;
 	long_about = None
 )]
 pub struct FochCli {
+	/// Without a subcommand, `foch` opens the read-only analysis browser.
 	#[command(subcommand)]
-	pub command: FochCliCommands,
+	pub command: Option<FochCliCommands>,
 
 	#[command(flatten)]
 	pub verbose: Verbosity<WarnLevel>,
@@ -44,6 +45,7 @@ fn long_version() -> &'static str {
 
 #[derive(Subcommand, Debug)]
 pub enum FochCliCommands {
+	Test(TestArgs),
 	Check(CheckArgs),
 	Merge(MergeArgs),
 	Graph(GraphArgs),
@@ -53,6 +55,62 @@ pub enum FochCliCommands {
 	Config(ConfigArgs),
 	Input(InputArgs),
 	Lsp(LspArgs),
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Collect or run EU4 event tests from #test annotations",
+	after_help = foch_annotation::builtin::TEST_DESCRIPTION
+)]
+pub struct TestArgs {
+	/// Mod directory, its events directory, an event .txt file, or
+	/// FILE::EVENT[::NAME] to select inside a file.
+	#[arg(default_value = ".", value_name = "PATH")]
+	pub path: PathBuf,
+	#[arg(long, conflicts_with_all = ["out", "no_run"])]
+	pub collect_only: bool,
+	/// Generate the test layer and session bundles into --out without
+	/// launching the game, like `cargo test --no-run`.
+	#[arg(long)]
+	pub no_run: bool,
+	/// Keyword expression over node IDs, such as "reform and not slow".
+	#[arg(short = 'k', value_name = "EXPRESSION")]
+	pub filter: Option<String>,
+	/// Mark expression over #mark labels, such as "war and not slow".
+	#[arg(short = 'm', value_name = "EXPRESSION")]
+	pub marks: Option<String>,
+	/// Also run #ignore cases.
+	#[arg(long, conflicts_with = "ignored")]
+	pub include_ignored: bool,
+	/// Run only #ignore cases.
+	#[arg(long)]
+	pub ignored: bool,
+	/// Run every case in its own game session.
+	#[arg(long)]
+	pub isolate: bool,
+	/// Launch the game despite findings from Foch's own script model.
+	/// Malformed tests still block.
+	#[arg(long)]
+	pub run_anyway: bool,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
+	/// Describe annotations and parameters without a game installation.
+	#[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "NAME", conflicts_with_all = ["collect_only", "out", "filter"])]
+	pub api: Option<String>,
+	/// EU4 install to launch; defaults to the configured or Steam install.
+	#[arg(long, value_name = "PATH")]
+	pub game_path: Option<PathBuf>,
+	/// Real EU4 user directory to guard; defaults to
+	/// Documents/Paradox Interactive/Europa Universalis IV.
+	#[arg(long, value_name = "PATH")]
+	pub eu4_user_dir: Option<PathBuf>,
+	/// Maximum seconds per game launch.
+	#[arg(long, default_value = "300", value_parser = clap::value_parser!(u64).range(1..))]
+	pub timeout: u64,
+	/// Write bundles, logs, result.json and junit.xml here; must be new or
+	/// empty and outside the mod. Defaults to a new temporary directory.
+	#[arg(long, value_name = "PATH")]
+	pub out: Option<PathBuf>,
 }
 
 /// Run the foch language server on stdio. The subcommand intentionally
@@ -111,7 +169,7 @@ pub enum CheckOutputFormat {
 	Json,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug, Eq, PartialEq)]
 #[command(
 	about = "Analyze a merge, review its frozen plan, then optionally commit it",
 	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod                 # analyze, review, then confirm in a TTY\n  foch merge ./foch.toml --out ./merged-mod --confirm          # analyze and explicitly commit\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # analysis only\n  foch merge ./playlist.json --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path\n  foch merge ./playlist.json --out ./merged-mod --force --confirm\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
@@ -136,6 +194,13 @@ pub struct MergeArgs {
 	/// Also write unchanged vanilla base-game files into the merged output (off by default; the game already ships them).
 	#[arg(long)]
 	pub include_base: bool,
+
+	/// Leave a mod of the current EU4 playset out of the analysis, by
+	/// Workshop id or `#POSITION` as `foch input inspect` lists them.
+	/// Repeatable; only without INPUT_SOURCE. The result does not represent
+	/// the full playset.
+	#[arg(long = "exclude", value_name = "MOD")]
+	pub exclude: Vec<String>,
 
 	/// Merge divergent same-name GUI containers into scroll-stack parents instead of manual conflicts.
 	#[arg(long)]
@@ -186,6 +251,55 @@ pub struct MergeArgs {
 	/// prompts still come in plan order, with the other units paused.
 	#[arg(long, value_name = "N")]
 	pub jobs: Option<NonZeroUsize>,
+}
+
+impl MergeArgs {
+	/// The arguments after `foch` that parse back to exactly these. Bare
+	/// `foch` shows this for the analysis it runs, so a script or agent can
+	/// run the same one.
+	pub fn command_line(&self) -> Vec<String> {
+		let mut args = vec!["merge".to_string()];
+		if let Some(path) = &self.playset_path {
+			args.push(path.display().to_string());
+		}
+		args.push("--out".to_string());
+		args.push(self.out.display().to_string());
+		let flags = [
+			(self.force, "--force"),
+			(self.no_game_base, "--no-game-base"),
+			(self.include_base, "--include-base"),
+			(self.gui_scroll_merge, "--gui-scroll-merge"),
+			(self.ignore_replace_path, "--ignore-replace-path"),
+			(self.provenance, "--provenance"),
+			(self.confirm, "--confirm"),
+			(self.non_interactive, "--non-interactive"),
+			(self.review_all, "--review-all"),
+			(self.cli_prompt, "--cli-prompt"),
+		];
+		args.extend(
+			flags
+				.into_iter()
+				.filter(|(set, _)| *set)
+				.map(|(_, flag)| flag.to_string()),
+		);
+		for dep in &self.ignore_dep {
+			args.push("--ignore-dep".to_string());
+			args.push(format!("{}:{}", dep.mod_id, dep.dep_id));
+		}
+		if let Some(config) = &self.config {
+			args.push("--config".to_string());
+			args.push(config.display().to_string());
+		}
+		if let Some(jobs) = self.jobs {
+			args.push("--jobs".to_string());
+			args.push(jobs.to_string());
+		}
+		for name in &self.exclude {
+			args.push("--exclude".to_string());
+			args.push(name.clone());
+		}
+		args
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -315,11 +429,10 @@ pub struct SimplifyArgs {
 	#[arg(long)]
 	pub target: String,
 
+	/// Separate directory for the simplified copy; the source mod is never
+	/// modified.
 	#[arg(long)]
-	pub out: Option<PathBuf>,
-
-	#[arg(long)]
-	pub in_place: bool,
+	pub out: PathBuf,
 
 	/// Skip loading vanilla game files; the lowest-precedence enabled mod
 	/// is treated as a synthetic base for diff-and-merge.
@@ -355,7 +468,7 @@ pub struct DataInstallArgs {
 	pub release_tag: Option<String>,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug, Eq, PartialEq)]
 pub struct DataBuildArgs {
 	pub game_name: String,
 
@@ -376,6 +489,36 @@ pub struct DataBuildArgs {
 
 	#[arg(long)]
 	pub profile_out: Option<PathBuf>,
+}
+
+impl DataBuildArgs {
+	/// The arguments after `foch` that parse back to exactly these.
+	pub fn command_line(&self) -> Vec<String> {
+		let mut args = vec![
+			"data".to_string(),
+			"build".to_string(),
+			self.game_name.clone(),
+			"--from-game-path".to_string(),
+			self.from_game_path.display().to_string(),
+			"--game-version".to_string(),
+			self.game_version.clone(),
+		];
+		if self.install {
+			args.push("--install".to_string());
+		}
+		if let Some(dir) = &self.output_dir {
+			args.push("--output-dir".to_string());
+			args.push(dir.display().to_string());
+		}
+		if self.release_asset {
+			args.push("--release-asset".to_string());
+		}
+		if let Some(path) = &self.profile_out {
+			args.push("--profile-out".to_string());
+			args.push(path.display().to_string());
+		}
+		args
+	}
 }
 
 #[derive(Parser, Debug)]
@@ -459,12 +602,42 @@ pub struct InputArgs {
 #[derive(Subcommand, Debug)]
 pub enum FochCliInputCommands {
 	Inspect(InputInspectArgs),
+	Repair(InputRepairArgs),
+}
+
+/// Guide the repair of current-playset mods that cannot be analyzed. Foch
+/// changes nothing itself: it names each broken Workshop item and can open
+/// its page in Steam, where unsubscribing and subscribing again makes Steam
+/// download it afresh.
+#[derive(Parser, Debug)]
+#[command(
+	about = "Guide the repair of current-playset mods that cannot be analyzed",
+	after_help = "Bare `foch` runs the same repair: R opens every broken mod, w the selected one.\n\nExamples:\n  foch input repair\n  foch input repair --open\n  foch input repair --open --mod 1804289844"
+)]
+pub struct InputRepairArgs {
+	/// Open each Workshop page in Steam (`steam://url/CommunityFilePage/<id>`).
+	#[arg(long)]
+	pub open: bool,
+
+	/// Only this mod, by Workshop id or `#POSITION`; repeatable. Any mod can
+	/// be named, broken or not.
+	#[arg(long = "mod", value_name = "MOD")]
+	pub mods: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
+#[command(
+	about = "Show the game and ordered mod inputs Foch will use",
+	after_help = "Without INPUT_SOURCE, inspects the installed EU4 game and its current launcher playset exactly as bare `foch` does, reporting each mod's position, Workshop id and whether it can be analyzed.\n\nExamples:\n  foch input inspect\n  foch input inspect --format json\n  foch input inspect ./foch.toml"
+)]
 pub struct InputInspectArgs {
 	#[arg(value_name = "INPUT_SOURCE")]
-	pub source_path: PathBuf,
+	pub source_path: Option<PathBuf>,
+
+	/// `json` describes the current EU4 input for scripts and agents; it is
+	/// available only without INPUT_SOURCE.
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -558,7 +731,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert_eq!(
@@ -588,7 +761,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.non_interactive);
@@ -607,7 +780,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.confirm);
@@ -626,7 +799,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.non_interactive);
@@ -644,7 +817,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Merge(args) = cli.command else {
+		let FochCliCommands::Merge(args) = cli.command.expect("subcommand") else {
 			panic!("expected merge command");
 		};
 		assert!(args.cli_prompt);
@@ -664,7 +837,7 @@ mod tests {
 		])
 		.expect("parse cli");
 
-		let FochCliCommands::Graph(args) = cli.command else {
+		let FochCliCommands::Graph(args) = cli.command.expect("subcommand") else {
 			panic!("expected graph command");
 		};
 		assert_eq!(

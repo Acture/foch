@@ -1,0 +1,18 @@
+[package]
+name = "foch-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Collection, planning, compilation and judging of in-game EU4 mod tests"
+# Internal workspace library; its Rust API carries no semver promise.
+publish = false
+
+[dependencies]
+foch.workspace = true
+foch-annotation.workspace = true
+jomini.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

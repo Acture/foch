@@ -38,10 +38,33 @@ as proof of compatibility.
 
 ### Applications and packages
 
-- `src/apps/foch-cli` owns the `foch` binary, `foch lsp`, CLI adapters, terminal
-  conflict UI, integration tests, and the test-only merge-quality harness.
+- `src/apps/foch-cli` owns the `foch` binary, CLI adapters, terminal conflict
+  UI, the read-only analysis browser opened by bare `foch`, integration tests,
+  and the test-only merge-quality harness. `foch lsp` starts the server from
+  `foch-lsp`; `foch test` plans with `foch-test`, launches the game through
+  `foch-runner`, and owns only file discovery, output protection, the isolation
+  choice and reporting.
 - `src/apps/foch-desktop` owns the Tauri/React player interface and IPC adapters.
   Its Rust backend links `foch` directly; it does not spawn or bundle the CLI.
+- `src/packages/foch-lsp` is the language server library linked into `foch`.
+  It knows Foch annotations only through `foch-annotation`, never the test
+  runner.
+- `src/packages/foch-annotation` reads Foch annotations carried in EU4
+  comments (`#test(...)`, `#skip`, ...): extraction, schemas, typed values,
+  validation and byte-offset completion/hover. An annotated mod stays a valid
+  mod that EU4 loads without Foch; this crate never changes loaded script.
+  Extensions that must be compiled into native script are not annotations and
+  will get their own crate when the first one exists.
+- `src/packages/foch-test` gives `#test` annotations and `tests/` blocks their
+  meaning: collection, selection, session planning, test-layer compilation,
+  judging and reports. It performs no I/O.
+- `src/packages/foch-runner` launches a real EU4 install to execute a test
+  bundle: it reuses the main library's game detection, builds a short-path
+  runtime layer (executable and loose files copied, data directories linked)
+  so the install stays read-only, assembles a throwaway user directory, runs
+  the game with AI disabled, watches its log, and returns a result for
+  `foch-test` to judge. It keeps the player's real profile intact by backing up
+  and verifying the few files the game rewrites.
 - `src/packages/tree-sitter-paradox` is the independently versioned grammar and a
   Cargo/Bun workspace member.
 - `src/apps/vscode-foch` is the independently versioned VS Code extension. It
@@ -54,10 +77,12 @@ reintroduce package seams merely to recreate those names.
 ## Dependency direction
 
 ```text
-foch-cli --------> foch <-------- foch-desktop
-                       |
-                       +-- game/schema (reusable CWT machinery)
-                       +-- game/eu4    (the only concrete game)
+foch-cli ----> foch <-------- foch-desktop
+  |              ^  +-- game/schema (reusable CWT machinery)
+  |              |  +-- game/eu4    (the only concrete game)
+  |--> foch-lsp ----> foch-annotation --> foch
+  |--> foch-test ---> foch-annotation
+  |--> foch-runner --> foch-test, foch
 
 vscode-foch -----> foch lsp
 foch -----------> tree-sitter-paradox

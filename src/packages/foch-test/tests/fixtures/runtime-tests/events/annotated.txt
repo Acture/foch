@@ -1,0 +1,18 @@
+namespace = foch_framework_example
+
+#test(time=1444.11.11, tag=SWE, name=smoke)
+#test(time=1444.11.11, tag=SWE, name=flag_is_set, expect={ has_country_flag = foch_framework_called })
+#test(time=1444.11.11, tag=SWE, name=delayed_flag, advance_days=2, expect={ has_country_flag = foch_framework_called })
+#test(time=1444.11.11, tag=SWE, name=intentional_failure, expect={ always = no })
+country_event = {
+	id = foch_framework_example.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		set_country_flag = foch_framework_called
+	}
+	option = { name = OK }
+}

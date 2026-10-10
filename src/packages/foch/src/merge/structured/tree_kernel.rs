@@ -6,6 +6,7 @@ use crate::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
+use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, HandlerResolutionRecord};
 
 use crate::game::eu4::script::emit::emit_clausewitz_statements;
@@ -58,10 +59,11 @@ pub(crate) fn semantic_conflict_id(
 }
 
 pub(crate) trait TreePartitionAdapter {
-	fn prepare<'a>(&self, file: &'a AstFile) -> TreePartitionIndex<'a> {
+	fn prepare<'a>(&'a self, file: &'a AstFile) -> TreePartitionIndex<'a> {
 		TreePartitionIndex {
 			file,
 			definitions: None,
+			entity_transform: None,
 		}
 	}
 }
@@ -70,6 +72,7 @@ pub(crate) trait TreePartitionAdapter {
 pub(crate) struct TreePartitionIndex<'a> {
 	file: &'a AstFile,
 	definitions: Option<DefinitionModuleIndex<'a>>,
+	entity_transform: Option<&'a dyn EntityTransform>,
 }
 
 impl TreePartitionIndex<'_> {
@@ -104,7 +107,11 @@ impl TreePartitionIndex<'_> {
 		policies: &MergePolicies,
 	) -> Result<crate::merge::kernel::NormalizedTree, super::AstAdapterError> {
 		let SemanticPartitionId::Definition(key) = partition else {
-			return super::normalize_clausewitz_file(self.file, policies);
+			return super::merge::normalize_clausewitz_file_with_context(
+				self.file,
+				policies,
+				self.entity_transform,
+			);
 		};
 		let index = self.definitions.as_ref().ok_or_else(|| {
 			super::AstAdapterError::InvalidTree(
@@ -160,6 +167,51 @@ pub(crate) struct ClausewitzFileAdapter;
 
 impl TreePartitionAdapter for ClausewitzFileAdapter {}
 
+/// Identity transformations span the whole module, including moves between definitions.
+pub(crate) struct TransformModuleAdapter<'a> {
+	pub transform: &'a dyn EntityTransform,
+}
+
+impl TreePartitionAdapter for TransformModuleAdapter<'_> {
+	fn prepare<'a>(&'a self, file: &'a AstFile) -> TreePartitionIndex<'a> {
+		TreePartitionIndex {
+			file,
+			definitions: None,
+			entity_transform: Some(self.transform),
+		}
+	}
+}
+
+impl TreeJoinProtocol for TransformModuleAdapter<'_> {
+	fn name(&self) -> &'static str {
+		"transform-module"
+	}
+
+	fn supports_sparse_reset_layers(&self) -> bool {
+		true
+	}
+
+	fn merge_n_way(
+		&self,
+		base: &AstFile,
+		revisions: &[&AstFile],
+		policies: &MergePolicies,
+		resolutions: &[ConflictResolution],
+	) -> Result<TreeMergeStep, String> {
+		let outcome = super::merge::merge_clausewitz_files_with_context(
+			base,
+			revisions,
+			policies,
+			Some(crate::game::eu4::cwt::rule_engine()),
+			false,
+			resolutions,
+			Some(self.transform),
+		)
+		.map_err(|error| format!("transform-module join failed: {error}"))?;
+		Ok(clausewitz_step(outcome))
+	}
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ClausewitzFileJoin;
 
@@ -213,10 +265,11 @@ impl TreeJoinProtocol for EventFileJoin {
 pub(crate) struct DefinitionModuleAdapter;
 
 impl TreePartitionAdapter for DefinitionModuleAdapter {
-	fn prepare<'a>(&self, file: &'a AstFile) -> TreePartitionIndex<'a> {
+	fn prepare<'a>(&'a self, file: &'a AstFile) -> TreePartitionIndex<'a> {
 		TreePartitionIndex {
 			file,
 			definitions: Some(DefinitionModuleIndex::new(file)),
+			entity_transform: None,
 		}
 	}
 }
@@ -431,7 +484,8 @@ impl SemanticCandidateIndex {
 				Ok(node) => node,
 				Err(_) => return Ok(None),
 			};
-			if node.kind.starts_with("clausewitz.assignment:")
+			if (node.kind.starts_with("clausewitz.assignment:")
+				|| node.kind == "clausewitz.assignment.entity")
 				&& node.policy_path.starts_with(semantic_path)
 			{
 				return denormalize_statement(&self.tree, node_id)
@@ -929,6 +983,8 @@ fn neutralize_sparse_reset_definition_absence(
 	file_dag: &FileDag,
 	base: &TreeDagState,
 	revisions: &[DagJoinRevision<'_, TreeDagState>],
+	partition_adapter: &dyn TreePartitionAdapter,
+	policies: &MergePolicies,
 ) -> Result<Option<Vec<TreeDagState>>, String> {
 	if std::iter::once(base)
 		.chain(revisions.iter().map(|revision| revision.state))
@@ -979,11 +1035,19 @@ fn neutralize_sparse_reset_definition_absence(
 			})
 			.collect::<BTreeSet<_>>();
 		let mut neutral_partitions = BTreeSet::new();
+		let mut neutral_keys = BTreeSet::new();
+		let whole_file = base
+			.partition_lineage
+			.contains_key(&SemanticPartitionId::File);
 		for (key, base_group) in &retained_base_groups {
 			if present_keys.contains(key) {
 				continue;
 			}
 			state.statements.extend(base_group.iter().cloned());
+			neutral_keys.insert(key.clone());
+			if whole_file {
+				continue;
+			}
 			let partition = SemanticPartitionId::Definition(key.clone());
 			let lineage = base.partition_lineage.get(&partition).ok_or_else(|| {
 				format!(
@@ -995,10 +1059,32 @@ fn neutralize_sparse_reset_definition_absence(
 				.insert(partition.clone(), lineage.clone());
 			neutral_partitions.insert(partition);
 		}
+		if whole_file && !neutral_keys.is_empty() {
+			pad_whole_file_lineage(file_dag, base, state, partition_adapter, policies)?;
+		}
 		for delta in &mut state.source_deltas {
 			if delta.source.source_id == revision.mod_id.0
 				&& delta.source.precedence == revision.precedence
 			{
+				for partition in &mut delta.partitions {
+					if partition.partition == SemanticPartitionId::File {
+						partition
+							.delta
+							.operations
+							.retain(|operation| match operation {
+								crate::merge::kernel::DeltaOperation::Delete { tombstone } => {
+									!super::top_level_assignment_key(
+										&partition.base_tree,
+										tombstone.deleted.node,
+									)
+									.ok()
+									.flatten()
+									.is_some_and(|key| neutral_keys.contains(key))
+								}
+								_ => true,
+							});
+					}
+				}
 				delta
 					.partitions
 					.retain(|partition| !neutral_partitions.contains(&partition.partition));
@@ -1006,6 +1092,67 @@ fn neutralize_sparse_reset_definition_absence(
 		}
 	}
 	Ok(Some(states))
+}
+
+fn pad_whole_file_lineage(
+	file_dag: &FileDag,
+	base: &TreeDagState,
+	state: &mut TreeDagState,
+	adapter: &dyn TreePartitionAdapter,
+	policies: &MergePolicies,
+) -> Result<(), String> {
+	let file = AstFile {
+		path: file_dag.file_path().to_owned(),
+		statements: state.statements.clone(),
+	};
+	let tree = adapter
+		.prepare(&file)
+		.normalize(&SemanticPartitionId::File, policies)
+		.map_err(|error| error.to_string())?;
+	let base = base
+		.partition_lineage
+		.get(&SemanticPartitionId::File)
+		.ok_or("missing whole-module ancestor lineage")?;
+	let original = state
+		.partition_lineage
+		.get(&SemanticPartitionId::File)
+		.ok_or("missing whole-module reset lineage")?;
+	let matcher = crate::merge::kernel::TreeMatcher::default();
+	let original_matches = matcher.match_trees(&original.tree, &tree);
+	let base_matches = matcher.match_trees(&base.tree, &tree);
+	let mut sources = BTreeMap::new();
+	let mut origins = BTreeMap::new();
+	for (node, _) in tree.nodes() {
+		let (lineage, source) = original_matches
+			.get_from_right(node)
+			.map(|source| (original, source))
+			.or_else(|| {
+				base_matches
+					.get_from_right(node)
+					.map(|source| (base, source))
+			})
+			.ok_or_else(|| format!("padded entity node {} has no source lineage", node.get()))?;
+		if let Some(existing) = lineage.sources.get(&source) {
+			sources.insert(node, existing.clone());
+		}
+		origins.insert(
+			node,
+			lineage
+				.origins
+				.get(&source)
+				.cloned()
+				.ok_or("padded entity node has no origin")?,
+		);
+	}
+	state.partition_lineage.insert(
+		SemanticPartitionId::File,
+		SemanticPartitionLineage {
+			tree,
+			sources,
+			origins,
+		},
+	);
+	Ok(())
 }
 
 fn compose_join_lineage(
@@ -1222,6 +1369,8 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				request.file_dag,
 				request.base,
 				&request.revisions,
+				self.partition_adapter,
+				self.kernel.policies,
 			)?
 		} else {
 			None
@@ -1386,6 +1535,122 @@ mod tests {
 		DagJoinProtocol, DagJoinRequest, DagJoinRevision, EffectiveNodeProtocol,
 		EffectiveNodeRequest,
 	};
+	use crate::merge::transform::tree::EntityTransform;
+
+	#[derive(Debug)]
+	struct SyntheticEntityTransform;
+
+	impl EntityTransform for SyntheticEntityTransform {
+		fn applies_to(&self, path: &crate::model::GamePath) -> bool {
+			path.as_str() == "synthetic/entities.txt"
+		}
+
+		fn entity_identity(
+			&self,
+			ancestors: &[String],
+			key: &str,
+			value: &AstValue,
+		) -> Option<crate::merge::kernel::SemanticKey> {
+			(ancestors.len() == 1
+				&& matches!(key, "original" | "renamed")
+				&& matches!(value, AstValue::Block { .. }))
+			.then(|| crate::merge::kernel::SemanticKey::new("synthetic.entity", "original"))
+		}
+
+		fn validate(&self, file: &AstFile) -> Result<(), String> {
+			if file.statements.iter().any(
+				|statement| matches!(statement, AstStatement::Assignment { key, .. } if key == "invalid"),
+			) {
+				Err("invalid synthetic hierarchy".into())
+			} else {
+				Ok(())
+			}
+		}
+	}
+
+	#[test]
+	fn generic_entity_transform_composes_rename_move_and_independent_edit() {
+		let parse = |source| {
+			let parsed = parse_clausewitz_content(
+				&crate::model::GamePathBuf::parse("synthetic/entities.txt")
+					.expect("valid game path"),
+				source,
+			);
+			assert!(parsed.diagnostics.is_empty());
+			parsed.ast
+		};
+		let base = parse("first = { original = { value = one } } second = {}");
+		let moved = parse("first = {} second = { renamed = { value = one } }");
+		let edited = parse("first = { original = { value = two } } second = {}");
+		let policies = MergePolicies::default();
+		let adapter = super::TransformModuleAdapter {
+			transform: &SyntheticEntityTransform,
+		};
+		let merged = adapter
+			.merge_n_way(&base, &[&moved, &edited], &policies, &[])
+			.expect("generic entity merge");
+		assert!(merged.conflicts.is_empty(), "{:?}", merged.conflicts);
+		let output = emit_clausewitz_statements(&merged.statements).unwrap();
+		let expected = parse("first = {} second = { renamed = { value = two } }");
+		assert_eq!(
+			output,
+			emit_clausewitz_statements(&expected.statements).unwrap()
+		);
+
+		let normalize = |file: &AstFile| {
+			adapter
+				.prepare(file)
+				.normalize(&SemanticPartitionId::File, &policies)
+				.unwrap()
+		};
+		let base_tree = normalize(&base);
+		let moved_tree = normalize(&moved);
+		let matching =
+			crate::merge::kernel::TreeMatcher::default().match_trees(&base_tree, &moved_tree);
+		let delta = crate::merge::kernel::RevisionDelta::between(
+			&base_tree,
+			RevisionId::LEFT,
+			&moved_tree,
+			&matching,
+		);
+		assert!(delta.operations.iter().any(|operation| {
+			matches!(operation, DeltaOperation::Rename { from, to, .. }
+				if from.value.as_deref() == Some("original")
+					&& to.value.as_deref() == Some("renamed"))
+		}));
+		assert!(
+			delta
+				.operations
+				.iter()
+				.any(|operation| { matches!(operation, DeltaOperation::Move { .. }) })
+		);
+	}
+
+	#[test]
+	fn generic_entity_transform_validates_normalization_and_merge_inputs() {
+		let invalid = parse_clausewitz_content(
+			&crate::model::GamePathBuf::parse("synthetic/entities.txt").expect("valid game path"),
+			"invalid = {}",
+		)
+		.ast;
+		let valid = AstFile {
+			path: invalid.path.clone(),
+			statements: Vec::new(),
+		};
+		let policies = MergePolicies::default();
+		let adapter = super::TransformModuleAdapter {
+			transform: &SyntheticEntityTransform,
+		};
+		let error = adapter
+			.prepare(&invalid)
+			.normalize(&SemanticPartitionId::File, &policies)
+			.unwrap_err();
+		assert!(error.to_string().contains("invalid synthetic hierarchy"));
+		let error = adapter
+			.merge_n_way(&valid, &[&invalid], &policies, &[])
+			.unwrap_err();
+		assert!(error.contains("invalid synthetic hierarchy"));
+	}
 
 	struct RecordingJoin {
 		calls: RefCell<Vec<Vec<String>>>,

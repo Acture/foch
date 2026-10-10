@@ -40,3 +40,59 @@ foch input inspect ./foch.toml
 Conflict rules (`[[resolutions]]`), dependency overrides (`[[overrides]]`), and
 emission settings share the same file. See
 [the resolution reference](./foch-toml-resolutions.md) for their contracts.
+
+## Reviewed culture transformations
+
+Culture merging can identify a unique one-to-one rename with an unchanged
+definition body relative to the effective dependency parent. A reviewed mapping
+can also identify a rename whose fields changed. It must name the enabled
+contributor, its winning culture file, and the SHA256 of that file's original
+bytes. Analysis checks the endpoints against the analyzed vanilla and dependency
+views, then adapts supported culture references in mods and vanilla together.
+
+`[[cultures.repairs]]` supplies exact edits for a malformed culture source. For
+example, suppose the source file contains exactly these bytes, without a newline:
+
+```text
+g renamed = { primary = AAA } }
+```
+
+With `old` present in the analyzed ancestor, this configuration inserts the
+missing group opener and records the reviewed identity change:
+
+```toml
+[[cultures.repairs]]
+mod = "rename"
+file = "common/cultures/base.txt"
+sha256 = "5ad75a8ee06a574661832188eee5da85d8d1dcdfd0a84b8b521ec4b728e23965"
+edits = [{ start = 1, end = 1, expected = "", replacement = " = {" }]
+
+[[cultures.renames]]
+from = "old"
+to = "renamed"
+mod = "rename"
+file = "common/cultures/base.txt"
+sha256 = "5ad75a8ee06a574661832188eee5da85d8d1dcdfd0a84b8b521ec4b728e23965"
+```
+
+The `mod` value is the resolved input ID shown by `foch input inspect`.
+`file` must be a literal `common/cultures/<filename>.txt` path. Hashes cover raw
+source bytes, including encoding and line endings. Edit ranges are zero-based,
+half-open UTF-8 byte offsets in the decoded original text; all edits use that
+same original coordinate space. `expected` must match exactly, and ranges must
+not overlap. Repairs are applied before mappings, then parsed and checked for
+valid culture hierarchy. Neither operation writes to the source mod.
+
+Mappings and repairs are frozen during merge analysis, included in cache and
+review evidence, and checked for source drift again before commit. A changed
+source requires reviewing and updating the decision. A conflicting, stale or
+unverifiable mapping is not applied. Reviewed identity mappings do not override
+field conflicts or prove that a group move preserves group-dependent behavior.
+
+Reference adaptation currently requires the full input inventory: retained-path
+analysis and configurations with `extra_ignore_patterns` defer transformations
+because omitted scripts may still reference the old identity. Related culture
+and script outputs are withheld together when adaptation needs review; unrelated
+safe output remains committable. Conditional split/fusion scripts retain their
+branches and distinct destinations; the merger does not infer arbitrary
+one-to-many or many-to-one identity mappings.

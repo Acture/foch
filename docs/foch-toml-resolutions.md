@@ -7,6 +7,10 @@ The authoritative schema, validation, lookup map, and match parser live in
 Use narrow rules for conflicts you understand. A broad rule can deliberately
 turn large parts of a playset into load-order behavior.
 
+Source-bound culture mappings and syntax repairs use the separate
+[`cultures` configuration](./foch-project-manifest.md#reviewed-culture-transformations).
+They are validated analysis inputs, rather than conflict winner policies.
+
 ## Resolution chain
 
 For each structural conflict, analysis tries:
@@ -58,7 +62,7 @@ Every entry also sets exactly one action.
 | --- | --- |
 | `prefer_mod = "id"` | Select that mod only when it is one unique current candidate. |
 | `prefer_candidate = N` | Select the one-based candidate bound to an exact full `conflict_id`; stale/out-of-range choices defer. |
-| `use_file = "path"` | Read the external file during analysis and freeze its bytes into the reviewed artifact tree. |
+| `use_file = "path"` | Read the external file during analysis and freeze its bytes into the reviewed artifact tree. A relative path is resolved from the directory of the `foch.toml` that declares it, not the working directory. |
 | `keep_existing = true` | For an exact file selector, retain bytes from the current output target and guard them against drift before commit. |
 | `priority_boost = N` | Adjust one contributor's priority; valid only with `mod`. |
 | `handler = "name"` | Dispatch a named built-in handler; valid only with `match`. |
@@ -88,7 +92,8 @@ policy = "cwt_suggested"
 ```
 
 An external file selected interactively is read during that analysis. If the
-choice is persisted, the next run treats it as configured `use_file`. Commit
+choice is persisted, it is written as an absolute path and the next run treats
+it as configured `use_file`. Commit
 never rereads the external path; it installs the bytes already reviewed.
 
 > `cwt_suggested` is parsed and validated, but its merge-time application is

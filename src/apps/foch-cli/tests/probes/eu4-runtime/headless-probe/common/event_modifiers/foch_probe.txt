@@ -1,0 +1,3 @@
+foch_probe_short_modifier = {
+	global_tax_modifier = 0.10
+}
