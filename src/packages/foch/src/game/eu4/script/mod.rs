@@ -9,9 +9,7 @@ pub mod parser;
 pub use self::emit::emit_native_statements;
 
 use self::localisation::collect_localisation_definitions_from_root;
-use self::parser::{
-	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content, read_failure,
-};
+use self::parser::{AstFile, AstStatement, AstValue, ParseResult, SpanRange, read_failure};
 use super::analysis::param_contracts::{
 	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
 };
@@ -71,7 +69,7 @@ pub(super) struct ParsedScriptWithInputIdentity {
 	pub input_identity: Option<ParsedScriptInputIdentity>,
 }
 
-use parse_cache::parse_clausewitz_bytes_cached;
+use parse_cache::{parse_clausewitz_bytes_cached, parse_clausewitz_for_path};
 
 pub fn classify_script_file(relative: &GamePath) -> ScriptFileKind {
 	eu4()
@@ -191,7 +189,7 @@ fn parse_script_file_with_cache_and_input_identity(
 			let (parsed, parse_cache_hit) = if use_cache {
 				parse_clausewitz_bytes_cached(relative, &bytes)
 			} else {
-				(parse_clausewitz_content(relative, &source), false)
+				(parse_clausewitz_for_path(relative, &source), false)
 			};
 			(
 				parsed,

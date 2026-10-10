@@ -1,4 +1,6 @@
-use foch::game::eu4::script::parser::parse_clausewitz_file;
+use foch::game::eu4::script::parse_cache::parse_clausewitz_for_path;
+use foch::game::eu4::script::parser::{ParsedStatements, parse_clausewitz_file};
+use foch::game::eu4::text::decode_paradox_bytes;
 use foch::model::GamePathBuf;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -8,12 +10,15 @@ fn main() {
 	let mut args = std::env::args().skip(1);
 	let Some(root_arg) = args.next() else {
 		eprintln!(
-			"usage: cargo run -p foch-cli --example parse_stats --features dev-tools -- <root> [--exts txt,gui,gfx]"
+			"usage: cargo run -p foch-cli --example parse_stats --features dev-tools -- <root> [--exts txt,gui,gfx] [--mod-roots]"
 		);
 		std::process::exit(1);
 	};
 	let mut exts = vec!["txt".to_string()];
 	let mut exclude_prefixes: Vec<GamePathBuf> = Vec::new();
+	// Each directory directly under the root is a mod, and a file is read as
+	// the game path it has in its mod, under that path's schema.
+	let mut mod_roots = false;
 
 	while let Some(arg) = args.next() {
 		if arg == "--exts"
@@ -24,6 +29,9 @@ fn main() {
 				.map(|item| item.trim().to_ascii_lowercase())
 				.filter(|item| !item.is_empty())
 				.collect();
+		}
+		if arg == "--mod-roots" {
+			mod_roots = true;
 		}
 		// Prefixes are game paths in `/` syntax, compared by whole components.
 		if arg == "--exclude-prefixes"
@@ -111,7 +119,11 @@ fn main() {
 	let mut diag_buckets: BTreeMap<String, usize> = BTreeMap::new();
 
 	for file in &files {
-		let parsed = parse_clausewitz_file(file);
+		let parsed = if mod_roots {
+			parse_in_mod(&root, file)
+		} else {
+			parse_clausewitz_file(file)
+		};
 		if parsed.diagnostics.is_empty() {
 			ok += 1;
 			continue;
@@ -204,5 +216,29 @@ fn main() {
 
 	if failed > 0 {
 		std::process::exit(2);
+	}
+}
+
+/// Parses `file` as the game path it has under the mod directory that holds
+/// it, directly under `root`.
+fn parse_in_mod(root: &std::path::Path, file: &std::path::Path) -> ParsedStatements {
+	let relative = file.strip_prefix(root).expect("file under the root");
+	let mod_dir = relative
+		.components()
+		.next()
+		.expect("file inside a mod directory");
+	let mod_root = root.join(mod_dir);
+	let game_path = GamePathBuf::from_physical(&mod_root, file).unwrap_or_else(|error| {
+		eprintln!("{} has no game path: {error}", file.display());
+		std::process::exit(1);
+	});
+	let bytes = std::fs::read(file).unwrap_or_else(|error| {
+		eprintln!("failed to read {}: {error}", file.display());
+		std::process::exit(1);
+	});
+	let parsed = parse_clausewitz_for_path(&game_path, &decode_paradox_bytes(&bytes));
+	ParsedStatements {
+		statements: parsed.ast.statements,
+		diagnostics: parsed.diagnostics,
 	}
 }

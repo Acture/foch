@@ -1001,7 +1001,9 @@ pub(crate) fn read_failure(err: &std::io::Error) -> ParsedStatements {
 }
 
 /// Parses the script loaded at `path`; the syntax follows its extension and
-/// the AST carries the path.
+/// the AST carries the path. Errors are repaired without the schema; a mod's
+/// files are read through `parse_cache`, which repairs them under the schema
+/// for their path.
 pub fn parse_clausewitz_content(path: &GamePath, content: &str) -> ParseResult {
 	parse_clausewitz_statements(ScriptSyntax::for_game_path(path), content)
 		.into_parse_result(path.to_owned())
@@ -1012,14 +1014,43 @@ pub fn parse_clausewitz_content(path: &GamePath, content: &str) -> ParseResult {
 /// A Clausewitz script with errors is repaired where one small edit has a
 /// single trustworthy reading; see [`recovery`]. A `.lua` file is read by a
 /// Lua interpreter, which rejects the whole file instead, so it is not.
+///
+/// No schema is known here; a caller that knows which file the text is passes
+/// one to [`recover_clausewitz_statements`] instead.
 pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> ParsedStatements {
+	recover_clausewitz_statements(
+		syntax,
+		content,
+		parse_unrecovered_statements(syntax, content),
+		None,
+	)
+}
+
+/// Parses script text exactly as written, with no repair.
+pub fn parse_unrecovered_statements(syntax: ScriptSyntax, content: &str) -> ParsedStatements {
 	let (tokens, lexer_diagnostics) = lex(content, syntax == ScriptSyntax::Lua, None);
 	let mut result = ParserState::new(tokens).parse_file();
 	result.diagnostics.extend(lexer_diagnostics);
-	if syntax == ScriptSyntax::Clausewitz && !result.diagnostics.is_empty() {
-		return recovery::recover(content, result);
-	}
 	result
+}
+
+/// How many of one definition's values have a shape the schema for the file
+/// being read rejects.
+pub type SchemaCheck<'a> = dyn Fn(&[AstStatement]) -> usize + 'a;
+
+/// Repairs `parsed`, the unrecovered parse of `content`, where it can. A
+/// schema check, when given, rules out repairs whose definition has more
+/// values of a rejected shape than another repair's.
+pub fn recover_clausewitz_statements(
+	syntax: ScriptSyntax,
+	content: &str,
+	parsed: ParsedStatements,
+	schema: Option<&SchemaCheck<'_>>,
+) -> ParsedStatements {
+	if syntax == ScriptSyntax::Clausewitz && !parsed.diagnostics.is_empty() {
+		return recovery::recover(content, parsed, schema);
+	}
+	parsed
 }
 
 fn lex(

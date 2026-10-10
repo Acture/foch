@@ -181,6 +181,9 @@ pub enum SourceRepairEdit {
 pub enum SourceRepairEvidence {
 	/// Every one-token edit that makes the text parse gives the same tree.
 	OnlyReading,
+	/// Of the trees one-token edits give, one alone has the fewest values
+	/// whose block-or-scalar shape the schema for the file rejects.
+	OnlySchemaValid,
 	/// Of the trees one-token edits give, one moves fewer statements to
 	/// another parent than any other, measured from the tree the text gives
 	/// unedited, and the indentation does not clearly favour another.
@@ -200,6 +203,7 @@ impl SourceRepair {
 		};
 		let evidence = match self.evidence {
 			SourceRepairEvidence::OnlyReading => "every one-token repair reads the same",
+			SourceRepairEvidence::OnlySchemaValid => "the only one-token repair the schema accepts",
 			SourceRepairEvidence::SmallestChange => {
 				"the one-token repair that moves the fewest statements"
 			}

@@ -160,13 +160,22 @@ cleanly together. For a broken segment Foch tries every one-token edit:
 - end a string that has no closing quote at the end of its line.
 
 An edit counts only if the segment then parses as exactly one definition. It
-is applied when one of two kinds of evidence holds:
+is applied when one of three kinds of evidence holds:
 
-- every such edit gives the same tree; or
+- every such edit gives the same tree;
+- the schema for the file rejects the block-or-value shape of some value in
+  every tree but one, the one with the fewest such values; or
 - one tree changes the tree the text gives unedited least: it alone moves
   the fewest statements to another parent, or adds or drops the fewest.
 
-Indentation only checks the second choice. When the indentation clearly
+The schema is consulted only where the file's game path is known, which is
+how a merge reads every mod file. Only shape is used: the schema's other
+diagnostics are not reliable enough yet to choose between readings, and where
+its binding cannot tell the trees apart they all keep the same count. Only the
+trees that move the fewest statements, and the one the indentation agrees
+with most, are checked against it.
+
+Indentation only checks the last choice. When the indentation clearly
 favours another tree, with fewer than half as many lines indented other than
 their depth, the evidence conflicts and the segment is not repaired.
 Indentation is read in the file's own style, tabs or spaces, and lines

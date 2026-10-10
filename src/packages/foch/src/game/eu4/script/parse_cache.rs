@@ -1,4 +1,8 @@
-use super::parser::{ParseResult, ParsedStatements, ScriptSyntax, parse_clausewitz_statements};
+use super::parser::{
+	AstStatement, ParseResult, ParsedStatements, ScriptSyntax, parse_unrecovered_statements,
+	recover_clausewitz_statements,
+};
+use crate::game::eu4::editor::schema::schema_shape_violations;
 use crate::model::GamePath;
 use crate::platform::cache_store::{
 	cache_version_namespace, default_foch_cache_dir, write_atomically,
@@ -13,8 +17,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // v13 was allocated to path-free entries; v14 also invalidates entries whose
-// diagnostics predate unmatched-brace and unclosed-block detection.
-const PARSE_CACHE_VERSION: &str = "16.0.0";
+// diagnostics predate unmatched-brace and unclosed-block detection. v17
+// entries hold the parse as written; repair runs after the cache.
+const PARSE_CACHE_VERSION: &str = "17.0.0";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const OBSOLETE_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 
@@ -72,10 +77,35 @@ struct CacheFile {
 ///
 /// The persistent cache is addressed only by the syntax and the actual bytes;
 /// neither the game path nor any installation or snapshot identity creates a
-/// second parser identity for identical input.
+/// second parser identity for identical input. It holds the parse as written:
+/// a file with errors is repaired afterwards, under the schema for `path`.
 pub fn parse_clausewitz_bytes_cached(path: &GamePath, bytes: &[u8]) -> (ParseResult, bool) {
-	let (statements, hit) = parse_statements_cached(ScriptSyntax::for_game_path(path), bytes);
+	let syntax = ScriptSyntax::for_game_path(path);
+	let (statements, hit) = parse_statements_cached(syntax, bytes);
+	let statements = if statements.diagnostics.is_empty() {
+		statements
+	} else {
+		let content = crate::game::eu4::text::decode_paradox_bytes(bytes);
+		recover_for_path(path, &content, statements)
+	};
 	(statements.into_parse_result(path.to_owned()), hit)
+}
+
+/// Parses the script text loaded at `path`, repairing it under the schema for
+/// that path where it can.
+pub fn parse_clausewitz_for_path(path: &GamePath, content: &str) -> ParseResult {
+	let statements = parse_unrecovered_statements(ScriptSyntax::for_game_path(path), content);
+	recover_for_path(path, content, statements).into_parse_result(path.to_owned())
+}
+
+fn recover_for_path(path: &GamePath, content: &str, parsed: ParsedStatements) -> ParsedStatements {
+	let schema = |definition: &[AstStatement]| schema_shape_violations(path, definition);
+	recover_clausewitz_statements(
+		ScriptSyntax::for_game_path(path),
+		content,
+		parsed,
+		Some(&schema),
+	)
 }
 
 fn parse_statements_cached(syntax: ScriptSyntax, bytes: &[u8]) -> (ParsedStatements, bool) {
@@ -88,7 +118,7 @@ fn parse_statements_cached(syntax: ScriptSyntax, bytes: &[u8]) -> (ParsedStateme
 	}
 
 	let content = crate::game::eu4::text::decode_paradox_bytes(bytes);
-	let parsed = parse_clausewitz_statements(syntax, &content);
+	let parsed = parse_unrecovered_statements(syntax, &content);
 	let entry = ParseCacheEntry {
 		version: PARSE_CACHE_VERSION.to_string(),
 		content_key,

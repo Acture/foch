@@ -19,7 +19,7 @@
 
 use super::{
 	AstStatement, AstValue, ParseDiagnostic, ParseDiagnosticCode, ParsedStatements, ParserState,
-	Span, SpanRange, Token, TokenKind, lex,
+	SchemaCheck, Span, SpanRange, Token, TokenKind, lex,
 };
 use crate::model::{SourceRepair, SourceRepairEdit, SourceRepairEvidence};
 use std::collections::HashMap;
@@ -30,12 +30,23 @@ use std::collections::HashMap;
 /// make a large one cost more than a bounded multiple of its own parse.
 const WORK_BUDGET: usize = 30_000_000;
 
+/// Most readings of one segment the schema is asked about.
+const SCHEMA_CONTENDERS: usize = 6;
+
+/// What checking one definition against the schema costs, in parsed tokens
+/// per token of the definition.
+const SCHEMA_COST_PER_TOKEN: usize = 64;
+
 /// Most following segments a broken one is read together with, when the
 /// column-1 lines that cut them may be inside its block.
 const MAX_ABSORBED_HEADS: usize = 64;
 
-pub(super) fn recover(source: &str, parsed: ParsedStatements) -> ParsedStatements {
-	repair(source, &parsed).unwrap_or(parsed)
+pub(super) fn recover(
+	source: &str,
+	parsed: ParsedStatements,
+	schema: Option<&SchemaCheck<'_>>,
+) -> ParsedStatements {
+	repair(source, &parsed, schema).unwrap_or(parsed)
 }
 
 /// A one-token edit, by index into the token stream it applies to.
@@ -67,7 +78,11 @@ struct Candidate {
 	violations: usize,
 }
 
-fn repair(source: &str, parsed: &ParsedStatements) -> Option<ParsedStatements> {
+fn repair(
+	source: &str,
+	parsed: &ParsedStatements,
+	schema: Option<&SchemaCheck<'_>>,
+) -> Option<ParsedStatements> {
 	let mut diagnostics = Vec::new();
 	let unterminated = parsed
 		.diagnostics
@@ -133,7 +148,7 @@ fn repair(source: &str, parsed: &ParsedStatements) -> Option<ParsedStatements> {
 		if settled.is_none() {
 			let (segment, following) = range(next);
 			if let Some((candidate, evidence)) =
-				repair_segment(segment, &following, &layout, &reported, &mut budget)?
+				repair_segment(segment, &following, &layout, &reported, schema, &mut budget)?
 			{
 				let edit = candidate.edit.shifted(start);
 				settled = Some((next, candidate.statements, Some((edit, evidence))));
@@ -206,11 +221,14 @@ fn repair_segment(
 	following: &Span,
 	layout: &Layout,
 	reported: &[usize],
+	schema: Option<&SchemaCheck<'_>>,
 	budget: &mut usize,
 ) -> Option<Option<(Candidate, SourceRepairEvidence)>> {
 	let edits = candidate_edits(segment);
 	*budget = budget.checked_sub(edits.len().saturating_mul(segment.len() + 1))?;
-	Some(choose_reading(segment, following, layout, reported, edits))
+	Some(choose_reading(
+		segment, following, layout, reported, schema, edits, budget,
+	))
 }
 
 fn choose_reading(
@@ -218,7 +236,9 @@ fn choose_reading(
 	following: &Span,
 	layout: &Layout,
 	reported: &[usize],
+	schema: Option<&SchemaCheck<'_>>,
 	edits: Vec<Edit>,
+	budget: &mut usize,
 ) -> Option<(Candidate, SourceRepairEvidence)> {
 	let unedited = parents(&parse_segment(segment, None, following).statements);
 	let mut candidates = Vec::new();
@@ -246,6 +266,51 @@ fn choose_reading(
 		{
 			Some(reading) => reading.push(candidate),
 			None => readings.push(vec![candidate]),
+		}
+	}
+	if readings.len() == 1 {
+		let chosen = choose_edit(readings.pop()?, segment, following, reported)?;
+		return Some((chosen, SourceRepairEvidence::OnlyReading));
+	}
+	// The schema rules out the readings that break more of its rules than
+	// another; a reading it alone leaves is the repair. Checking a definition
+	// costs far more than parsing it, so only the readings that could win are
+	// checked: those that move the fewest statements, and the one the
+	// indentation agrees with most.
+	if let Some(schema) = schema
+		&& readings.len() > 1
+	{
+		readings.sort_by_key(|reading| reading[0].moved);
+		if readings.len() > SCHEMA_CONTENDERS {
+			let indented = (0..readings.len()).min_by_key(|index| {
+				readings[*index]
+					.iter()
+					.map(|candidate| candidate.violations)
+					.min()
+					.unwrap_or(usize::MAX)
+			})?;
+			if indented >= SCHEMA_CONTENDERS {
+				readings.swap(indented, SCHEMA_CONTENDERS - 1);
+			}
+			readings.truncate(SCHEMA_CONTENDERS);
+		}
+		let segment_cost = segment.len().saturating_mul(SCHEMA_COST_PER_TOKEN);
+		*budget = budget.checked_sub(segment_cost.saturating_mul(readings.len()))?;
+		let broken: Vec<usize> = readings
+			.iter()
+			.map(|reading| schema(&reading[0].statements))
+			.collect();
+		let fewest = broken.iter().copied().min().unwrap_or(0);
+		let mut kept = Vec::new();
+		for (reading, broken) in readings.into_iter().zip(broken) {
+			if broken == fewest {
+				kept.push(reading);
+			}
+		}
+		readings = kept;
+		if readings.len() == 1 {
+			let chosen = choose_edit(readings.pop()?, segment, following, reported)?;
+			return Some((chosen, SourceRepairEvidence::OnlySchemaValid));
 		}
 	}
 	let (reading, evidence) = match readings.len() {
@@ -280,13 +345,22 @@ fn choose_reading(
 			)
 		}
 	};
-	// Within one reading, prefer the edit the indentation agrees with most,
-	// then the one where the parser first reported the error.
-	let chosen = reading.into_iter().min_by_key(|candidate| {
+	let chosen = choose_edit(reading, segment, following, reported)?;
+	Some((chosen, evidence))
+}
+
+/// Of the edits that give one reading, the one the indentation agrees with
+/// most, then the one where the parser first reported the error.
+fn choose_edit(
+	reading: Vec<Candidate>,
+	segment: &[Token],
+	following: &Span,
+	reported: &[usize],
+) -> Option<Candidate> {
+	reading.into_iter().min_by_key(|candidate| {
 		let offset = anchor_span(segment, candidate.edit, following).offset;
 		(candidate.violations, !reported.contains(&offset))
-	})?;
-	Some((chosen, evidence))
+	})
 }
 
 /// Whether a repaired segment reads as what it was cut as: one definition,
