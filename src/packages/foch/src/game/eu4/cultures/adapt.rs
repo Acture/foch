@@ -334,9 +334,17 @@ fn prepare_cultures(
 		Ok(Some(correspondence)) => correspondence,
 		Ok(None) => return Ok(CultureAdaptations::default()),
 		Err(findings) => {
-			let identities = std::iter::once(&before)
-				.chain(&revisions)
-				.flat_map(|index| index.definitions.keys().map(|id| (id.clone(), id.clone())))
+			// Only a vanilla culture some view no longer defines can have been
+			// renamed or removed; references to every other culture are safe.
+			let identities = before
+				.definitions
+				.keys()
+				.filter(|id| {
+					revisions
+						.iter()
+						.any(|index| !index.definitions.contains_key(*id))
+				})
+				.map(|id| (id.clone(), id.clone()))
 				.collect();
 			let mut paths = indexed_reference_paths(input, &identities)
 				.into_iter()
