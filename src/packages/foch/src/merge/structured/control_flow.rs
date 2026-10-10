@@ -897,9 +897,13 @@ fn normalize_chain_semantic(
 			effect_signature.clone(),
 		))
 	} else if complete {
-		identity.as_ref().map(|identity| {
-			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
-		})
+		// Not by its default effect: a mod that only translates the `else`
+		// text would otherwise give the chain a new identity, so another mod's
+		// edit to the same chain merged against a deletion plus an insertion.
+		Some(SemanticKey::parent_scoped_ordered_similarity_with_position(
+			"clausewitz.control_flow.chain.sequence",
+			"complete",
+		))
 	} else {
 		Some(SemanticKey::parent_scoped_ordered_similarity_with_position(
 			"clausewitz.control_flow.chain.sequence",

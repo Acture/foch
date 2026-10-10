@@ -2084,6 +2084,35 @@ mod tests {
 	}
 
 	#[test]
+	fn a_translated_else_and_a_changed_limit_merge_into_one_chain() {
+		// One mod translates both advisors, another changes the condition.
+		let chain = |limit: &str, name: &str| {
+			format!(
+				"country_event = {{ id = demo.1 option = {{ name = demo.a add_prestige = 1 \
+				if = {{ limit = {{ {limit} }} define_advisor = {{ type = philosopher culture = new name = \"{name}\" }} }} \
+				else = {{ define_advisor = {{ type = philosopher culture = old name = \"{name}\" }} }} }} }}\n"
+			)
+		};
+		let vanilla = chain("has_updated_culture = { culture = old }", "Ho");
+		let translated = chain("has_updated_culture = { culture = old }", "Hu");
+		let relimited = chain("has_global_flag = sinicized", "Ho");
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(&vanilla),
+			&[("left", &[], &translated), ("right", &[], &relimited)],
+		)
+		.expect("merge");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit");
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+		assert_eq!(emitted.matches("if =").count(), 1, "{emitted}");
+		assert!(emitted.contains("has_global_flag = sinicized"), "{emitted}");
+		assert!(!emitted.contains("has_updated_culture"), "{emitted}");
+		assert_eq!(emitted.matches("name = \"Hu\"").count(), 2, "{emitted}");
+	}
+
+	#[test]
 	fn tree_handler_can_select_any_of_three_original_sources() {
 		let mods = vec![
 			mod_with("a", "A", vec![], vec![]),
