@@ -424,7 +424,7 @@ fn analyze_merge_with_backend_and_observer(
 			err.message
 		),
 	}
-	let transforms = if backend_id == MergeBackendId::GumtreePcsNway {
+	let mut transforms = if backend_id == MergeBackendId::GumtreePcsNway {
 		if let Ok(input) = input_result.as_mut() {
 			let overrides = options
 				.dep_overrides
@@ -460,6 +460,10 @@ fn analyze_merge_with_backend_and_observer(
 		options.include_game_base,
 		&resolution_map,
 	);
+	// Generated files join the plan before the outcome ledger reads it.
+	if let Ok(input) = input_result.as_ref() {
+		transforms.register_generated(&input.file_inventory, &mut plan);
+	}
 	transforms.annotate(&mut plan);
 	let plan_units = plan.paths.len() as u64;
 	notify_progress(

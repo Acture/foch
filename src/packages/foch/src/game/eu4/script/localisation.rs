@@ -26,28 +26,33 @@ pub(crate) fn parse_localisation_file(
 	absolute_path: &Path,
 	relative_path: &GamePath,
 ) -> ParsedLocalisationFile {
-	let mut entries = Vec::new();
-	let mut duplicates = Vec::new();
-	let mut parse_issues = Vec::new();
-	let raw = match fs::read(absolute_path) {
-		Ok(raw) => raw,
-		Err(err) => {
-			parse_issues.push(ParseIssue {
+	match fs::read(absolute_path) {
+		Ok(raw) => parse_localisation_bytes(mod_id, relative_path, &raw),
+		Err(err) => ParsedLocalisationFile {
+			entries: Vec::new(),
+			duplicates: Vec::new(),
+			parse_issues: vec![ParseIssue {
 				mod_id: mod_id.to_string(),
 				path: relative_path.to_owned(),
 				line: 1,
 				column: 1,
 				message: format!("unable to read localisation file: {err}"),
-			});
-			return ParsedLocalisationFile {
-				entries,
-				duplicates,
-				parse_issues,
-			};
-		}
-	};
+			}],
+		},
+	}
+}
 
-	let normalized = match normalize_localisation_source(&raw) {
+/// Parse localisation bytes that may not exist on disk, such as a generated
+/// merge output.
+pub(crate) fn parse_localisation_bytes(
+	mod_id: &str,
+	relative_path: &GamePath,
+	raw: &[u8],
+) -> ParsedLocalisationFile {
+	let mut entries = Vec::new();
+	let mut duplicates = Vec::new();
+	let mut parse_issues = Vec::new();
+	let normalized = match normalize_localisation_source(raw) {
 		Ok(bytes) => bytes,
 		Err(message) => {
 			parse_issues.push(ParseIssue {
@@ -346,6 +351,50 @@ fn parse_localisation_header_bytes(line: &[u8]) -> Option<&str> {
 	Some(lang)
 }
 
+/// Every `(language, key, value)` defined by a localisation file, in file
+/// order. A value runs from its opening quote to the last quote on the line,
+/// or to the end of the line when it has no closing quote, as the game
+/// accepts both.
+pub(crate) fn parse_localisation_values(raw: &[u8]) -> Vec<(String, String, String)> {
+	let Ok(normalized) = normalize_localisation_source(raw) else {
+		return Vec::new();
+	};
+	let mut values = Vec::new();
+	let mut language: Option<String> = None;
+	for (line_no, line) in line_slices(&normalized) {
+		let mut line = line;
+		if line_no == 1 {
+			line = trim_prefix(line, &[0xEF, 0xBB, 0xBF]);
+		}
+		let trimmed = trim_ascii_start(line);
+		if trimmed.is_empty() || trimmed.first() == Some(&b'#') {
+			continue;
+		}
+		if let Some(header) = parse_localisation_header_bytes(trimmed) {
+			language = Some(header.to_owned());
+			continue;
+		}
+		let (Some(language), Some(entry)) = (&language, parse_localisation_entry_bytes(trimmed))
+		else {
+			continue;
+		};
+		let Some(open) = trimmed.iter().position(|byte| *byte == b'"') else {
+			continue;
+		};
+		let rest = &trimmed[open + 1..];
+		let value = match rest.iter().rposition(|byte| *byte == b'"') {
+			Some(close) => &rest[..close],
+			None => trim_ascii_end(rest),
+		};
+		values.push((
+			language.clone(),
+			entry.key,
+			String::from_utf8_lossy(value).into_owned(),
+		));
+	}
+	values
+}
+
 fn parse_localisation_entry_bytes(line: &[u8]) -> Option<ParsedLocalisationEntry> {
 	let trimmed = trim_ascii_start(line);
 	let colon_idx = trimmed.iter().position(|byte| *byte == b':')?;
@@ -390,7 +439,10 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-	use super::{collect_localisation_definitions_from_root, parse_localisation_file};
+	use super::{
+		collect_localisation_definitions_from_root, parse_localisation_bytes,
+		parse_localisation_file,
+	};
 	use crate::model::GamePath;
 	use std::fs;
 	use std::path::Path;
@@ -624,5 +676,37 @@ mod tests {
 		assert_eq!(parsed.entries.len(), 1);
 		assert_eq!(parsed.entries[0].definition.key, "OPT2");
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+	}
+
+	#[test]
+	fn values_follow_their_language_section_and_tolerate_loose_quotes() {
+		let values = super::parse_localisation_values(
+			"\u{feff}l_english:\n a:0 \"Say \"hi\" [Root.GetName]\" # note\n b: \"open ended\nl_german:\n a:0 \"Hallo\"\n"
+				.as_bytes(),
+		);
+		assert_eq!(
+			values,
+			[
+				(
+					"english".into(),
+					"a".into(),
+					"Say \"hi\" [Root.GetName]".into()
+				),
+				("english".into(), "b".into(), "open ended".into()),
+				("german".into(), "a".into(), "Hallo".into()),
+			]
+		);
+	}
+
+	#[test]
+	fn bytes_and_file_parsing_agree() {
+		let parsed = parse_localisation_bytes(
+			"mod",
+			GamePath::new("localisation/a_l_english.yml").expect("game path"),
+			"\u{feff}l_english:\n a_key:0 \"A\"\n".as_bytes(),
+		);
+		assert!(parsed.parse_issues.is_empty());
+		assert_eq!(parsed.entries[0].definition.key, "a_key");
+		assert_eq!(parsed.entries[0].definition.line, 2);
 	}
 }

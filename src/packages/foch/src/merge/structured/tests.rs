@@ -2324,49 +2324,58 @@ fn statement_equivalence_resolves_containers_from_its_content_family_path() {
 		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
 		.expect("scripted_triggers family")
 		.merge_policies;
-	let vanilla = parse_at(
-		path,
-		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = BYZ_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
-	);
-	let merged = parse_at(
-		path,
-		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = BYZ_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
-	);
-	let [vanilla_statement] = vanilla.statements.as_slice() else {
-		panic!("one vanilla definition")
-	};
-	let [merged_statement] = merged.statements.as_slice() else {
-		panic!("one merged definition")
-	};
-
-	assert!(
+	let compare = |left: &str, right: &str| {
+		let left = parse_at(path, left);
+		let right = parse_at(path, right);
 		super::clausewitz_statements_semantically_equivalent(
 			crate::model::GamePath::new(path).expect("valid game path"),
-			vanilla_statement,
-			merged_statement,
+			&left.statements[0],
+			&right.statements[0],
 			policies,
 		)
-		.expect("compare under the content family"),
-		"the family's boolean canonicalization must recognize the rewritten trigger"
-	);
-
+		.expect("compare under the content family")
+	};
+	// A definition body is a list of conditions, so an explicit `OR`/`AND`
+	// wrapper around the same conditions is the same trigger.
+	assert!(compare(
+		"BYZ_is_not_latin_empire = {
+	tag = LAE
+	always = no
+}
+",
+		"BYZ_is_not_latin_empire = {
+	OR = {
+		AND = {
+			tag = LAE
+			always = no
+		}
+	}
+}
+",
+	));
+	// An `if` inside a trigger is a trigger conditional, so the
+	// `custom_trigger_tooltip` under it is not a fresh condition list: wrapping
+	// its `tooltip` parameter in `AND` changes the trigger.
+	assert!(!compare(
+		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = BYZ_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = BYZ_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
+	));
+	// An unclassified path is `other`: the comparison still runs and does not
+	// treat the rewritten tooltip as the same trigger either.
 	let unclassified =
 		crate::model::GamePathBuf::parse("foch_unclassified/00_scripted_triggers.txt")
 			.expect("valid game path");
-	let unclassified_verdict = super::clausewitz_files_semantically_equivalent(
-		&AstFile {
-			path: unclassified.clone(),
-			statements: vec![vanilla_statement.clone()],
-		},
-		&AstFile {
-			path: unclassified,
-			statements: vec![merged_statement.clone()],
-		},
-		policies,
-	)
-	.expect("compare under an unclassified path");
+	let file = |source: &str| AstFile {
+		path: unclassified.clone(),
+		statements: parse_at(path, source).statements,
+	};
 	assert!(
-		!unclassified_verdict,
+		!super::clausewitz_files_semantically_equivalent(
+			&file("BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = BYZ_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n"),
+			&file("BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = BYZ_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n"),
+			policies,
+		)
+		.expect("compare under an unclassified path"),
 		"an unclassified path is `other`, so this comparison must not be family-aware"
 	);
 }
@@ -2754,4 +2763,349 @@ mod game_value_equivalence {
 			"no root type matches this path, so no field type is known"
 		);
 	}
+}
+
+#[test]
+fn control_flow_inside_a_trigger_stays_a_trigger_when_merging() {
+	// `if`/`else` written inside `limit` are trigger conditionals; their
+	// branches must not be canonicalized as fresh trigger roots. An unchanged
+	// merge previously split this `else` into two branches.
+	let path = "common/scripted_effects/x.txt";
+	let policies = eu4()
+		.descriptor_for_root_family("common/scripted_effects")
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let source = parse_at(
+		path,
+		"e = {\n\
+		\tif = {\n\
+		\t\tlimit = {\n\
+		\t\t\tif = {\n\
+		\t\t\t\tlimit = { has_global_flag = slow }\n\
+		\t\t\t\tnum_of_owned_provinces_with = { religion_group = christian value = 6 }\n\
+		\t\t\t}\n\
+		\t\t\telse = {\n\
+		\t\t\t\tnum_of_owned_provinces_with = { religion_group = christian value = 12 }\n\
+		\t\t\t}\n\
+		\t\t}\n\
+		\t\tclr_global_flag = spread\n\
+		\t}\n\
+		}\n",
+	);
+	let empty = parse_at(path, "");
+	for (base, revisions) in [
+		(&source, vec![&source]),
+		(&empty, vec![&source]),
+		(&empty, vec![&source, &empty]),
+	] {
+		let outcome = merge_clausewitz_files_n_way(base, &revisions, &policies).unwrap();
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
+	}
+}
+
+#[test]
+fn a_moved_effect_does_not_hide_unchanged_conditionals_around_it() {
+	// EE moves `on_change_tag_effect` from the end of a decision's effect to the
+	// top. The `if` blocks it moves past are unchanged and must still be the
+	// same blocks; they were reported as ambiguous and their parent class as
+	// unreachable.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let body = |lines: &[&str]| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\teffect = {{\n{}\t\t}}\n\t}}\n}}\n",
+				lines.concat()
+			),
+		)
+	};
+	let seljuk =
+		"\t\t\tif = {\n\t\t\t\tlimit = { tag = AKK }\n\t\t\t\tset_country_flag = seljuk\n\t\t\t}\n";
+	let ideas = "\t\t\tif = {\n\t\t\t\tlimit = { has_custom_ideas = no }\n\t\t\t\tcountry_event = { id = ideagroups.1 }\n\t\t\t}\n";
+	let tag = "\t\t\tchange_tag = RUM\n";
+	let prestige = "\t\t\tset_country_flag = formed_rum_flag\n";
+	let on_change = "\t\t\ton_change_tag_effect = yes\n";
+	let base = body(&[tag, seljuk, ideas, prestige, on_change]);
+	for moved in [
+		// A one-line effect moves past the conditionals.
+		body(&[tag, on_change, seljuk, ideas, prestige]),
+		// A conditional itself moves.
+		body(&[tag, ideas, seljuk, prestige, on_change]),
+	] {
+		for revisions in [
+			vec![&moved, &base],
+			vec![&base, &moved],
+			vec![&moved, &moved],
+		] {
+			let outcome = merge_clausewitz_files_n_way(&base, &revisions, &policies).unwrap();
+			assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+			assert_eq!(emit(outcome.tentative_ast()), emit(&moved));
+		}
+	}
+}
+
+#[test]
+fn editing_the_default_branch_keeps_a_complete_chain_the_same_chain() {
+	// The `else` body is content, not identity. One mod edits it while another
+	// edits the guarded branch; both edits belong to the one chain.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let chain = |guarded: &str, default: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\teffect = {{\n\t\t\tif = {{\n\t\t\t\tlimit = {{\n\t\t\t\t\thas_dlc = \"King of Kings\"\n\t\t\t\t}}\n{guarded}\t\t\t}}\n\t\t\telse = {{\n{default}\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let a = "\t\t\t\tset_country_flag = a\n";
+	let b = "\t\t\t\tset_country_flag = b\n";
+	let c = "\t\t\t\tset_country_flag = c\n";
+	let base = chain(a, b);
+	let guarded_edit = chain(&format!("{a}{c}"), b);
+	let default_edit = chain(a, &format!("{b}{c}"));
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&guarded_edit, &default_edit], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert_eq!(
+		emit(outcome.tentative_ast()),
+		emit(&chain(&format!("{a}{c}"), &format!("{b}{c}")))
+	);
+}
+
+#[test]
+fn a_delete_modify_conflict_keeps_the_modified_node_whole() {
+	// One mod removes an `if`/`else`; another edits only the `else`. Until a
+	// person resolves the conflict, the tentative result is the edited chain
+	// in full; its unedited `limit` is not deleted on its own.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let effect = |body: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\teffect = {{\n\t\t\tadd_stability = 1\n{body}\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let chain = |default: &str| {
+		format!(
+			"\t\t\tif = {{\n\t\t\t\tlimit = {{\n\t\t\t\t\thas_dlc = \"King of Kings\"\n\t\t\t\t}}\n\t\t\t\tset_country_flag = a\n\t\t\t}}\n\t\t\telse = {{\n{default}\t\t\t}}\n"
+		)
+	};
+	let base = effect(&chain("\t\t\t\tset_country_flag = b\n"));
+	let removed = effect("");
+	let edited = effect(&chain(
+		"\t\t\t\tset_country_flag = b\n\t\t\t\tset_country_flag = c\n",
+	));
+	let outcome = merge_clausewitz_files_n_way(&base, &[&removed, &edited], &policies).unwrap();
+	assert_eq!(outcome.conflicts().len(), 1, "{:?}", outcome.conflicts());
+	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
+	assert_eq!(emit(outcome.tentative_ast()), emit(&edited));
+}
+
+#[test]
+fn an_ambiguity_only_one_revision_touches_is_not_a_conflict() {
+	// EE replaces two of a privilege's conditional modifiers with three
+	// similar-looking ones. However its new modifiers pair with the removed
+	// ones, the result is EE's list, because no other mod touched them.
+	let path = "common/estate_privileges/02_noble_privileges.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let modifier = |trigger: &str, modifier: &str| {
+		format!(
+			"\tconditional_modifier = {{\n\t\ttrigger = {{ {trigger} }}\n\t\tmodifier = {{ {modifier} }}\n\t}}\n"
+		)
+	};
+	let privilege = |modifiers: &[String]| {
+		parse_at(
+			path,
+			&format!(
+				"estate_nobles_nobility_primacy = {{\n\testate = estate_nobles\n{}}}\n",
+				modifiers.concat()
+			),
+		)
+	};
+	let russian = modifier(
+		"has_government_mechanic = russian_modernization_mechanic",
+		"monthly_russian_modernization = -0.05",
+	);
+	let german = modifier(
+		"has_country_flag = GER_upgrade_primacy_of_the_nobility_flag",
+		"mil_tech_cost_modifier = -0.1",
+	);
+	let aztec = modifier(
+		"has_country_flag = azt_imperial_tributes_flag",
+		"monarch_power_tribute = 1",
+	);
+	let base = privilege(&[russian.clone(), german.clone(), aztec]);
+	let replaced = privilege(&[
+		modifier(
+			"has_country_modifier = ME_reign_of_terror",
+			"core_creation = -0.1",
+		),
+		modifier(
+			"has_country_flag = EE_CLT_reduce_absolutism_nobles",
+			"max_absolutism = 5",
+		),
+		modifier(
+			"has_country_modifier = ME_golden_age_maintained_privileges",
+			"mil_tech_cost_modifier = -0.05",
+		),
+		russian.clone(),
+	]);
+	let outcome = merge_clausewitz_files_n_way(&base, &[&replaced, &base], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert!(
+		super::clausewitz_files_semantically_equivalent(
+			outcome.tentative_ast(),
+			&replaced,
+			&policies
+		)
+		.unwrap()
+	);
+
+	// Once a second mod edits a modifier the first one replaced, the pairing
+	// decides where that edit lands, so the ambiguity stays a conflict.
+	let edited = privilege(&[
+		russian,
+		german.replace("-0.1", "-0.2"),
+		modifier(
+			"has_country_flag = azt_imperial_tributes_flag",
+			"monarch_power_tribute = 2",
+		),
+	]);
+	let outcome = merge_clausewitz_files_n_way(&base, &[&replaced, &edited], &policies).unwrap();
+	assert!(!outcome.conflicts().is_empty());
+}
+
+#[test]
+fn an_effect_lifted_out_of_a_removed_conditional_leaves_no_orphan() {
+	// EE drops the `if` around the Stadthalter reform's event and keeps the
+	// event. The `if` it removed must stay removed rather than be revived as
+	// an ancestor of the event that no longer lives under it.
+	let path = "common/government_reforms/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let base = parse_at(
+		path,
+		"reform = {\n\tremoved_effect = {\n\t\tif = {\n\t\t\tlimit = { is_lesser_in_union = no }\n\t\t\tcountry_event = { id = dutch.33 }\n\t\t}\n\t}\n}\n",
+	);
+	let lifted = parse_at(
+		path,
+		"reform = {\n\tremoved_effect = {\n\t\tcountry_event = { id = dutch.33 }\n\t}\n}\n",
+	);
+	for revisions in [vec![&lifted, &base], vec![&base, &lifted]] {
+		let outcome = merge_clausewitz_files_n_way(&base, &revisions, &policies).unwrap();
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		assert_eq!(emit(outcome.tentative_ast()), emit(&lifted));
+	}
+}
+
+#[test]
+fn a_multiline_string_differing_only_in_line_endings_is_unchanged() {
+	// Vanilla's Crimean Khaganate mission quotes script in an `effect_tooltip`
+	// with a trailing blank; EE resaves the file with CRLF and RCE trims the
+	// blank. Neither changes the script, so neither is an edit.
+	let path = "missions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let mission = |tooltip: &str| {
+		parse_at(
+			path,
+			&format!(
+				"tree = {{\n\tm = {{\n\t\teffect = {{\n\t\t\tif = {{\n\t\t\t\tlimit = {{ has_country_flag = cri }}\n\t\t\t\tcountry_event_with_insight = {{\n\t\t\t\t\tid = flavor_tur.251\n\t\t\t\t\teffect_tooltip = \"{tooltip}\"\n\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let base = mission("\n\t\t\t\tadd_country_modifier = { \n\t\t\t\t\tduration = 7300\n\t\t\t\t}");
+	let crlf =
+		mission("\r\n\t\t\t\tadd_country_modifier = { \r\n\t\t\t\t\tduration = 7300\r\n\t\t\t\t}");
+	let trimmed =
+		mission("\n\t\t\t\tadd_country_modifier = {\n\t\t\t\t\tduration = 7300\n\t\t\t\t}");
+	let outcome = merge_clausewitz_files_n_way(&base, &[&crlf, &trimmed], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+}
+
+#[test]
+fn a_replaced_trigger_chain_merges_branch_by_branch() {
+	// EE replaces Persia's DLC split with one condition list; RCE adds a culture
+	// to each branch. Branch by branch both are ordinary edits of the same list,
+	// and the branches agree once merged, so the split goes away.
+	let path = "decisions/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let potential = |body: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_decisions = {{\n\td = {{\n\t\tpotential = {{\n\t\t\tNOT = {{ tag = MUG }}\n{body}\t\t\tis_colonial_nation = no\n\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let split = |with_dlc: &str, without_dlc: &str| {
+		format!(
+			"\t\t\tif = {{\n\t\t\t\tlimit = {{ has_dlc = \"King of Kings\" }}\n\t\t\t\tOR = {{ {with_dlc} }}\n\t\t\t}}\n\t\t\telse = {{\n\t\t\t\tOR = {{ {without_dlc} }}\n\t\t\t}}\n"
+		)
+	};
+	let base = potential(&split(
+		"culture_group = iranian",
+		"culture_group = iranian tag = AKK",
+	));
+	let replaced = potential("\t\t\tOR = { culture_group = iranian tag = AKK was_tag = AKK }\n");
+	let both_branches = potential(&split(
+		"culture_group = iranian primary_culture = azeri_culture",
+		"culture_group = iranian primary_culture = azeri_culture tag = AKK",
+	));
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&replaced, &both_branches], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert_eq!(
+		emit(outcome.tentative_ast()),
+		emit(&potential(
+			"\t\t\tOR = {\n\t\t\t\tculture_group = iranian\n\t\t\t\tprimary_culture = azeri_culture\n\t\t\t\ttag = AKK\n\t\t\t\twas_tag = AKK\n\t\t\t}\n"
+		))
+	);
+
+	// An edit to one branch only keeps the branches apart.
+	let default_only = potential(&split(
+		"culture_group = iranian",
+		"culture_group = iranian primary_culture = azeri_culture tag = AKK",
+	));
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&replaced, &default_only], &policies).unwrap();
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert_eq!(
+		emit(outcome.tentative_ast()),
+		emit(&potential(&split(
+			"culture_group = iranian tag = AKK was_tag = AKK",
+			"culture_group = iranian primary_culture = azeri_culture tag = AKK was_tag = AKK",
+		)))
+	);
+
+	// Removing the chain outright is still a delete against a modify.
+	let removed = potential("");
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&removed, &both_branches], &policies).unwrap();
+	assert_eq!(outcome.conflicts().len(), 1, "{:?}", outcome.conflicts());
+	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
 }

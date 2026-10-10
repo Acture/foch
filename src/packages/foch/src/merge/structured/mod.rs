@@ -5,6 +5,7 @@ mod merge;
 mod observer;
 mod policy;
 mod tree_kernel;
+mod trigger_cases;
 mod trivia;
 #[cfg(test)]
 mod work;

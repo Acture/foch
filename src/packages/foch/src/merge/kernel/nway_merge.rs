@@ -873,6 +873,9 @@ fn record_match_ambiguities(
 						.map(|node| RevisionNode::new(right_revision, node)),
 				)
 				.collect::<Vec<_>>();
+			if touching_revisions(base, revisions, correspondence, &sources).len() <= 1 {
+				continue;
+			}
 			let mut conflict = StructuralConflictDraft::new(
 				ConflictKind::AmbiguousMatch,
 				common_parent_class(base, revisions, correspondence, &sources),
@@ -948,6 +951,35 @@ fn record_rejected_links(
 		}));
 		conflicts.push(conflict);
 	}
+}
+
+/// The revisions that delete, change or insert any node an ambiguity involves.
+/// When there is at most one, every pairing of the candidates yields that
+/// revision's nodes, so the ambiguity cannot change the merge.
+fn touching_revisions(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	correspondence: &NWayCorrespondence,
+	sources: &[RevisionNode],
+) -> BTreeSet<RevisionId> {
+	let mut touching = BTreeSet::new();
+	for source in sources {
+		let class = correspondence
+			.classes
+			.class(correspondence.classes.class_of(*source));
+		let base_hash = class
+			.get(RevisionId::BASE)
+			.map(|node| base.node(node).unwrap().subtree_hash);
+		for revision in revisions {
+			let hash = class
+				.get(revision.id)
+				.map(|node| revision.tree.node(node).unwrap().subtree_hash);
+			if hash != base_hash {
+				touching.insert(revision.id);
+			}
+		}
+	}
+	touching
 }
 
 fn common_parent_class(

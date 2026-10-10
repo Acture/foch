@@ -75,7 +75,7 @@ impl MergeReview {
 		&self.summary
 	}
 
-	pub(super) fn units(&self) -> &[MergeUnitOutcome] {
+	pub(crate) fn units(&self) -> &[MergeUnitOutcome] {
 		&self.units
 	}
 
@@ -400,6 +400,7 @@ fn strategy_name(strategy: MergePlanStrategy) -> &'static str {
 		MergePlanStrategy::StructuralMerge => "structural_merge",
 		MergePlanStrategy::LocalisationMerge => "localisation_merge",
 		MergePlanStrategy::ManualConflict => "manual_conflict",
+		MergePlanStrategy::Generated => "generated",
 	}
 }
 

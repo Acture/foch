@@ -1,0 +1,5 @@
+custom_button = {
+	name = gui_b_button
+	trigger = { adm_power = 50 }
+	effect = { add_dip_power = 10 }
+}

@@ -1139,6 +1139,81 @@ fn eu4_gfx_sprite_types_union_different_names_without_conflict() {
 }
 
 #[test]
+fn eu4_custom_gui_definitions_are_distinct_by_name() {
+	// Each `custom_button`/`custom_window` is identified by its `name`, as the
+	// GUI binds it; different names from different mods must not conflict.
+	let (result, out_dir) = run_merge_for_fixture("eu4_custom_gui_union_named_buttons", false);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"distinct custom GUI names should merge; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let mut merged = String::new();
+	for entry in fs::read_dir(out_dir.join("common").join("custom_gui")).expect("custom_gui output")
+	{
+		merged.push_str(&fs::read_to_string(entry.expect("entry").path()).expect("read"));
+	}
+	for name in [
+		"baseline_button",
+		"gui_a_window",
+		"gui_a_button",
+		"gui_b_button",
+	] {
+		assert_eq!(
+			merged.matches(name).count(),
+			1,
+			"{name} kept once; got:
+{merged}"
+		);
+	}
+	assert!(merged.contains("adm_power = 50") && merged.contains("add_dip_power = 10"));
+}
+
+#[test]
+fn eu4_bookmarks_and_customizable_localization_are_distinct_by_name() {
+	// `bookmark = { name = ... }` and `defined_text = { name = ... }` blocks
+	// share their key; each mod's differently named definition must survive.
+	let (result, out_dir) = run_merge_for_fixture("eu4_named_definitions_union", false);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"distinct names should merge; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let read_all = |dir: PathBuf| {
+		let mut merged = String::new();
+		for entry in fs::read_dir(&dir).unwrap_or_else(|err| panic!("{}: {err}", dir.display())) {
+			merged.push_str(&fs::read_to_string(entry.expect("entry").path()).expect("read"));
+		}
+		merged
+	};
+	let bookmarks = read_all(out_dir.join("common").join("bookmarks"));
+	let commands = read_all(out_dir.join("customizable_localization"));
+	for mod_dir in ["baseline", "named_a", "named_b"] {
+		assert_eq!(
+			bookmarks.matches(&format!("\"BM_{mod_dir}\"")).count(),
+			1,
+			"{bookmarks}"
+		);
+	}
+	// Both mods override the same file, each adding a different command.
+	for command in ["GetBaselineText", "Getnamed_aText", "Getnamed_bText"] {
+		assert_eq!(commands.matches(command).count(), 1, "{commands}");
+	}
+}
+
+#[test]
 fn eu4_gfx_sprite_types_same_name_divergence_conflicts() {
 	let (result, _out_dir) =
 		run_merge_for_fixture("eu4_gfx_sprite_types_same_name_conflict", false);
@@ -2429,4 +2504,52 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 		!out_dir.exists(),
 		"a non-kernel structured run must not commit copy-through output"
 	);
+}
+
+#[test]
+fn eu4_on_actions_from_other_files_add_to_each_other() {
+	// Patch 1.36 made on_actions additive: each mod's own file that defines
+	// `on_startup` runs alongside the base file's, so none of them is an edit
+	// of another and every file keeps its own definition.
+	let (result, out_dir) = run_merge_for_fixture("eu4_on_actions_additive", false);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let on_actions = out_dir.join("common").join("on_actions");
+	assert!(
+		!on_actions.join("zzz_foch_on_actions.txt").exists(),
+		"additive on_actions must not be folded into one module"
+	);
+	for (file, event) in [
+		("00_on_actions.txt", "base.1"),
+		("a_on_actions.txt", "a.1"),
+		("b_on_actions.txt", "b.1"),
+	] {
+		let path = on_actions.join(file);
+		if path.exists() {
+			let text = fs::read_to_string(&path).expect("read");
+			assert!(text.contains(event), "{file}: {text}");
+		}
+	}
+}
+
+#[test]
+fn eu4_replaced_trigger_chain_merges_branch_by_branch_through_the_dag() {
+	// One mod replaces Persia's DLC split with one condition list, another adds
+	// a culture to both branches. The merge rewrites its inputs branch by
+	// branch, and the DAG lineage must still trace every node to its mod.
+	let (result, out_dir) = run_merge_for_fixture("eu4_trigger_chain_replaced", false);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"{:#?}",
+		result.report
+	);
+	let decision = fs::read_to_string(out_dir.join("decisions").join("PersianNation.txt"))
+		.expect("merged decision");
+	for condition in ["was_tag = AKK", "primary_culture = azeri_culture"] {
+		assert_eq!(decision.matches(condition).count(), 1, "{decision}");
+	}
+	assert!(!decision.contains("has_dlc"), "{decision}");
 }

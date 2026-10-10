@@ -41,6 +41,9 @@ pub enum MergePlanStrategy {
 	/// collision the highest-precedence contributor wins.
 	LocalisationMerge,
 	ManualConflict,
+	/// A file a reviewed transformation creates. It has no source contributor;
+	/// its frozen bytes live in the transformation plan.
+	Generated,
 }
 
 /// One contributor to a planned unit. `mod_id`, `precedence` and
@@ -400,7 +403,7 @@ mod tests {
 		};
 		let expected = concat!(
 			r#"{"game":"eu4","playset_name":"playset","generated_at":"1","include_game_base":true,"#,
-			r#""strategies":{"total_paths":2,"copy_through":0,"last_writer_overlay":1,"structural_merge":1,"localisation_merge":0,"manual_conflict":0},"#,
+			r#""strategies":{"total_paths":2,"copy_through":0,"last_writer_overlay":1,"structural_merge":1,"localisation_merge":0,"manual_conflict":0,"generated":0},"#,
 			r#""paths":[{"target":{"kind":"module","id":{"family_id":"CStaticModifierDataBase","module_name":"CStaticModifierDataBase"},"#,
 			r#""input_paths":["common/event_modifiers/a.txt","common/static_modifiers/b.txt"],"#,
 			r#""outputs":[{"output_path":"common/event_modifiers/zzz_foch_event_modifiers.txt","namespace_prefix":"common/event_modifiers"},"#,
@@ -637,6 +640,8 @@ pub struct MergePlanStrategies {
 	#[serde(default)]
 	pub localisation_merge: usize,
 	pub manual_conflict: usize,
+	#[serde(default)]
+	pub generated: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

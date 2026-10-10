@@ -702,9 +702,16 @@ fn close_policy_ancestors(
 		.collect::<Vec<_>>();
 	for root in roots {
 		let tree = tree_for_revision(base, revisions, root.revision);
+		let mut child = root;
 		let mut parent = tree.node(root.node).unwrap().parent;
 		while let Some(parent_node) = parent {
+			// A revision that moved the child elsewhere took it out of these
+			// ancestors; reviving them would only orphan the revived ancestor.
+			if parent_classes(base, revisions, correspondence, child).len() > 1 {
+				break;
+			}
 			let source = RevisionNode::new(root.revision, parent_node);
+			child = source;
 			let class = correspondence.classes.class_of(source);
 			if plan.classes[&class].selected.is_none() {
 				let node = tree.node(parent_node).unwrap();
@@ -731,6 +738,34 @@ fn close_policy_ancestors(
 			parent = tree.node(parent_node).unwrap().parent;
 		}
 	}
+}
+
+/// The classes of the parents a node's class has across the base and the
+/// revisions that contain it.
+fn parent_classes(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	correspondence: &NWayCorrespondence,
+	source: RevisionNode,
+) -> std::collections::BTreeSet<Option<ClassId>> {
+	let class = correspondence
+		.classes
+		.class(correspondence.classes.class_of(source));
+	std::iter::once(RevisionId::BASE)
+		.chain(revisions.iter().map(|revision| revision.id))
+		.filter_map(|revision| {
+			let node = class.get(revision)?;
+			let parent = tree_for_revision(base, revisions, revision)
+				.node(node)
+				.unwrap()
+				.parent;
+			Some(parent.map(|parent| {
+				correspondence
+					.classes
+					.class_of(RevisionNode::new(revision, parent))
+			}))
+		})
+		.collect()
 }
 
 fn class_conflict(
