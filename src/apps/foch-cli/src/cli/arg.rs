@@ -54,7 +54,70 @@ pub enum FochCliCommands {
 	Cache(FochCliCacheArgs),
 	Config(ConfigArgs),
 	Input(InputArgs),
+	Plugin(PluginArgs),
 	Lsp(LspArgs),
+}
+
+#[derive(Parser, Debug)]
+#[command(about = "Manage native DLL plugins (install, select per playset, plan a launch)")]
+pub struct PluginArgs {
+	#[command(subcommand)]
+	pub command: PluginCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PluginCommand {
+	/// List installed plugin versions and a playset's selection.
+	List(PluginListArgs),
+	/// Import a plugin package from an extracted directory into the store.
+	Import(PluginImportArgs),
+	/// Enable a plugin for a playset, pinned to an installed version.
+	Enable(PluginToggleArgs),
+	/// Disable a plugin for a playset.
+	Disable(PluginToggleArgs),
+	/// Resolve a playset's selection into a launch plan and report problems.
+	Plan(PluginPlanArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginListArgs {
+	/// Playset name whose selection to show.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginImportArgs {
+	/// A directory holding an extracted plugin package (with foch-plugin.toml).
+	#[arg(value_name = "DIR")]
+	pub path: PathBuf,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginToggleArgs {
+	/// Stable plugin id.
+	#[arg(value_name = "PLUGIN_ID")]
+	pub id: String,
+	/// Playset name to change.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	/// Exact installed version to pin; defaults to the highest installed.
+	#[arg(long, value_name = "VERSION")]
+	pub version: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginPlanArgs {
+	/// Playset name to plan.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	/// EU4 install to target; defaults to the configured or Steam install.
+	#[arg(long, value_name = "PATH")]
+	pub game_path: Option<PathBuf>,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
 }
 
 #[derive(Parser, Debug)]

@@ -1,0 +1,48 @@
+# Foch adapter manifest for the EU4 Menu Patch (an existing third-party DLL
+# Foch drives through its legacy adapter; the upstream package is unchanged).
+#
+# Structural facts read from EU4-Menu-Patch v0.1.4-experimental. File digests
+# are filled from the release asset at import time, not hard-coded here.
+schema = 1
+
+# It ships no loader of its own; Unicode (or Foch's host) provides the proxy.
+# Ordering only: Unicode must load first when both are enabled.
+load_after = ["io.github.yozoratempest.eu4-unicode-patch"]
+
+[plugin]
+id = "io.github.yozoratempest.eu4-menu-patch"
+name = "EU4 Menu Patch"
+version = "0.1.4"
+authors = ["YozoraTempest"]
+license = "MIT"
+description = "Return to the main menu and reload the same save (experimental)."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "=1.37.5"
+
+[entry]
+kind = "legacy"
+path = "plugins/eu4_menu_patch.dll"
+# Installs itself on a background thread; its hooks only matter at menu
+# transitions, so it is loaded after the early-init plugins.
+phase = "deferred"
+
+[lifecycle]
+restart_required = true
+
+# Asynchronous: poll until it leaves the pending value or the timeout elapses.
+# 0 pending; 1 installed; negatives are refusals/failures (see the design note).
+[status]
+export = "EU4MenuPatchStatus"
+mode = "poll"
+timeout_ms = 30000
+pending = [0]
+values = [
+	{ value = 1, state = "active" },
+	{ value = -1, state = "refused", reason = "host identity check failed" },
+	{ value = -2, state = "refused", reason = "incompatible game image or exception" },
+	{ value = -3, state = "refused", reason = "target memory already modified by another patch" },
+	{ value = -4, state = "failed", reason = "hook preparation or VirtualProtect failed" },
+]

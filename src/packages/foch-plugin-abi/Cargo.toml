@@ -1,0 +1,13 @@
+[package]
+name = "foch-plugin-abi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Rust definitions of the Foch native EU4 plugin interface (C ABI)"
+# The plugin SDK ships with the in-game host, not with the `foch` crate.
+publish = false
+
+[dependencies]

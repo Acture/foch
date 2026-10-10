@@ -1406,6 +1406,7 @@ dependencies = [
  "ratatui",
  "regex",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -1446,6 +1447,10 @@ dependencies = [
  "tower-lsp",
  "walkdir",
 ]
+
+[[package]]
+name = "foch-plugin-abi"
+version = "0.0.1"
 
 [[package]]
 name = "foch-runner"

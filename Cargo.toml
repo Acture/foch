@@ -5,6 +5,7 @@ members = [
 	"src/packages/foch-annotation",
 	"src/packages/foch-lsp",
 	"src/packages/foch-runner",
+	"src/packages/foch-plugin-abi",
 	"src/packages/foch-test",
 	"src/apps/foch-cli",
 	"src/apps/foch-desktop/src-tauri",
