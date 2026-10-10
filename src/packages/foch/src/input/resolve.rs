@@ -141,6 +141,25 @@ pub(crate) struct ResolvedInput {
 	pub effective_retained_paths: Option<BTreeSet<GamePathBuf>>,
 }
 
+impl ResolvedInput {
+	/// The parse issues the analyzed snapshot of `mod_id` recorded for its
+	/// file at `path`; empty when that mod has no snapshot.
+	pub(crate) fn snapshot_parse_issues(
+		&self,
+		mod_id: &str,
+		path: &GamePath,
+	) -> Vec<&crate::model::ParseIssue> {
+		self.mods
+			.iter()
+			.zip(&self.mod_snapshots)
+			.filter(|(candidate, _)| candidate.mod_id == mod_id)
+			.filter_map(|(_, snapshot)| snapshot.as_ref())
+			.flat_map(|snapshot| &snapshot.semantic_index.parse_issues)
+			.filter(|issue| issue.path.as_game_path() == path)
+			.collect()
+	}
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct InputInventory {
 	pub playlist_path: PathBuf,

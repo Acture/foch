@@ -1,6 +1,6 @@
 use crate::game::eu4::base::snapshot::InstalledBaseSnapshot;
 use crate::game::eu4::script::{ParsedScriptFile, parse_script_bytes_cached};
-use crate::model::{GamePath, GamePathBuf, ModCandidate};
+use crate::model::{GamePath, GamePathBuf, ModCandidate, has_fatal_parse_issue};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -172,7 +172,7 @@ impl InputScriptCache {
 	pub(crate) fn overlay_parse_ok(&self, mod_id: &str, relative_path: &GamePath) -> Option<bool> {
 		self.overlays
 			.get(&(mod_id.to_owned(), relative_path.to_owned()))
-			.map(|overlay| overlay.parsed.parse_issues.is_empty())
+			.map(|overlay| !has_fatal_parse_issue(&overlay.parsed.parse_issues))
 	}
 
 	pub(crate) fn has_overlay_for_path(&self, relative_path: &GamePath) -> bool {
@@ -310,7 +310,7 @@ impl LazyScriptFile {
 		}
 		let parsed =
 			parse_script_bytes_cached(&self.mod_id, &self.root_path, &self.relative_path, &bytes);
-		let observed_parse_ok = parsed.parse_issues.is_empty();
+		let observed_parse_ok = !has_fatal_parse_issue(&parsed.parse_issues);
 		if Some(observed_parse_ok) != self.expected_parse_ok {
 			return Err(format!(
 				"snapshot-bound script parse status changed for {}:{}: expected {:?}, observed {observed_parse_ok}",

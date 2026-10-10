@@ -5,7 +5,12 @@ use foch::game::eu4::analysis::report::render_text;
 use foch::input::{CheckOptions, Config, InputRequest};
 use foch::model::{AnalysisMode, ChannelMode, CheckResult};
 
+mod fix;
+
 pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
+	if fix::requested(check_args) {
+		return fix::handle_check_fix(check_args, config);
+	}
 	let request = InputRequest::new(
 		resolve_input_source(check_args.playset_path.as_deref(), &config)?,
 		config,

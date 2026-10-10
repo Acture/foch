@@ -9,9 +9,7 @@ pub mod parser;
 pub use self::emit::emit_native_statements;
 
 use self::localisation::collect_localisation_definitions_from_root;
-use self::parser::{
-	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content, read_failure,
-};
+use self::parser::{AstFile, AstStatement, AstValue, ParseResult, SpanRange, read_failure};
 use super::analysis::param_contracts::{
 	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
 };
@@ -35,7 +33,7 @@ use crate::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, GamePath, GamePathBuf, KeyUsage,
 	LocalisationDefinition, MaybeScope, ParamBinding, ParseIssue, ResourceReference,
 	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, ScopeType, SemanticIndex, SourceSpan,
-	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition, base_scope,
+	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition, base_scope, has_fatal_parse_issue,
 };
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -71,7 +69,7 @@ pub(super) struct ParsedScriptWithInputIdentity {
 	pub input_identity: Option<ParsedScriptInputIdentity>,
 }
 
-use parse_cache::parse_clausewitz_bytes_cached;
+use parse_cache::{parse_clausewitz_bytes_cached, parse_clausewitz_for_path};
 
 pub fn classify_script_file(relative: &GamePath) -> ScriptFileKind {
 	eu4()
@@ -191,7 +189,7 @@ fn parse_script_file_with_cache_and_input_identity(
 			let (parsed, parse_cache_hit) = if use_cache {
 				parse_clausewitz_bytes_cached(relative, &bytes)
 			} else {
-				(parse_clausewitz_content(relative, &source), false)
+				(parse_clausewitz_for_path(relative, &source), false)
 			};
 			(
 				parsed,
@@ -244,6 +242,8 @@ fn parsed_script_file_from_result(
 			line: item.span.start.line,
 			column: item.span.start.column,
 			message: item.message,
+			repair: item.repair,
+			isolation: item.isolation,
 		})
 		.collect();
 
@@ -277,7 +277,7 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 			mod_id: file.mod_id.clone(),
 			path: file.relative_path.clone(),
 			family: DocumentFamily::Clausewitz,
-			parse_ok: file.parse_issues.is_empty(),
+			parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 		});
 		index.parse_issues.extend(file.parse_issues.clone());
 		build_file_index(file, &map_groups, cwt_rule_engine, &mut index);

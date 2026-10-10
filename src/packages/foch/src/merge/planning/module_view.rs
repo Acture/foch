@@ -573,7 +573,14 @@ fn fold_visible_module_files(
 	parsed.module_name = module_name.to_string();
 	parsed.ast = canonical.ast;
 	parsed.source.clear();
-	parsed.parse_issues.clear();
+	// A definition isolated in any folded file is unknown in the folded view
+	// too, so the view keeps those issues and no others.
+	parsed.parse_issues = visible_files
+		.values()
+		.flat_map(|file| &file.parsed.parse_issues)
+		.filter(|issue| issue.isolation.is_some())
+		.cloned()
+		.collect();
 	parsed.parse_cache_hit = false;
 	let sources = canonical
 		.definition_sources

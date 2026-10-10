@@ -57,6 +57,12 @@ none substitutes for product merge evidence.
 - Source mods and the game installation are read-only inputs. Foch reads
   installed Workshop mods in place and writes a separate output mod; never
   mutate, normalize, or copy source mod trees as an implementation shortcut.
+  The exceptions are explicit requests to write syntax fixes: `foch check
+  --fix` on a mod directory, an author's own work, fixes it in place as a
+  linter does, and `foch check --fix --in-place` does so for a playset or a
+  Steam Workshop mod. Either backs up every original under Foch's data
+  directory first, and `foch check --restore` puts them back. Nothing else
+  writes to a source mod.
 - Workshop version identity comes from the paired Steam
   `appworkshop_236850.acf` records. Normal acceptance does not recursively hash
   or copy entire Workshop trees into an input CAS. A whole-tree integrity scan

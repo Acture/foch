@@ -275,7 +275,46 @@ pub(super) fn copy_winner_file(
 		fs::write(target, bytes)?;
 		return Ok(false);
 	}
+	if let Some(winner) = &entry.winner
+		&& let Some(bytes) = repaired_copy(input, &winner.mod_id, entry.output_path(), &source)?
+	{
+		fs::write(target, bytes)?;
+		return Ok(false);
+	}
 	copy_file(&source, &target).map_err(MergeError::from)
+}
+
+/// The bytes of a copied script with its recorded repairs written in, when
+/// every issue its snapshot recorded is a repair. `None` keeps the file as
+/// it is: it has nothing to repair, an error the repairs do not cover, or an
+/// encoding the edits cannot be written back into exactly.
+fn repaired_copy(
+	input: &ResolvedInput,
+	mod_id: &str,
+	path: &GamePath,
+	source: &Path,
+) -> Result<Option<Vec<u8>>, MergeError> {
+	let issues = input.snapshot_parse_issues(mod_id, path);
+	if issues.is_empty() || issues.iter().any(|issue| issue.repair.is_none()) {
+		return Ok(None);
+	}
+	let bytes = fs::read(source)?;
+	let content = crate::game::eu4::text::decode_paradox_bytes(&bytes);
+	let parsed = crate::game::eu4::script::parse_cache::parse_clausewitz_for_path(path, &content);
+	if parsed.diagnostics.is_empty()
+		|| parsed
+			.diagnostics
+			.iter()
+			.any(|diagnostic| diagnostic.repair.is_none())
+	{
+		return Ok(None);
+	}
+	let Some(edits) =
+		crate::game::eu4::script::parser::repair_text_edits(&content, &parsed.diagnostics)
+	else {
+		return Ok(None);
+	};
+	Ok(crate::game::eu4::text::edit_paradox_bytes(&bytes, &edits))
 }
 
 fn copy_file(source: &Path, target: &Path) -> io::Result<bool> {
@@ -379,7 +418,7 @@ pub(super) fn write_generated_descriptor(
 	Ok(())
 }
 
-fn winner_source_path(
+pub(super) fn winner_source_path(
 	input: &ResolvedInput,
 	entry: &MergePlanEntry,
 ) -> Result<PathBuf, MergeError> {

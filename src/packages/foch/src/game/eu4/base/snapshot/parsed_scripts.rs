@@ -4,7 +4,7 @@ use crate::game::eu4::content::ScriptFileKind;
 use crate::game::eu4::content::eu4;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
-use crate::model::{GamePathBuf, ParseIssue};
+use crate::model::{GamePathBuf, Isolation, ParseIssue, SourceRepair};
 use std::path::Path;
 
 /// The game paths a document is identified by are written as their canonical
@@ -46,6 +46,8 @@ struct StoredParseIssue {
 	line: usize,
 	column: usize,
 	message: String,
+	repair: Option<SourceRepair>,
+	isolation: Option<Isolation>,
 }
 
 pub(crate) fn encode_parsed_documents(documents: &[ParsedScriptFile]) -> Result<Vec<u8>, String> {
@@ -134,6 +136,8 @@ impl StoredParseIssue {
 			line: item.line,
 			column: item.column,
 			message: item.message.clone(),
+			repair: item.repair,
+			isolation: item.isolation.clone(),
 		}
 	}
 
@@ -144,6 +148,8 @@ impl StoredParseIssue {
 			line: self.line,
 			column: self.column,
 			message: self.message,
+			repair: self.repair,
+			isolation: self.isolation,
 		}
 	}
 }
@@ -156,6 +162,7 @@ pub(super) mod text_layout {
 	use crate::game::eu4::content::ScriptFileKind;
 	use crate::game::eu4::script::ParsedScriptFile;
 	use crate::game::eu4::script::parser::AstStatement;
+	use crate::model::{Isolation, SourceRepair};
 
 	#[derive(Clone, Debug, serde::Serialize)]
 	pub struct File {
@@ -183,6 +190,8 @@ pub(super) mod text_layout {
 		pub line: usize,
 		pub column: usize,
 		pub message: String,
+		pub repair: Option<SourceRepair>,
+		pub isolation: Option<Isolation>,
 	}
 
 	impl File {
@@ -208,6 +217,8 @@ pub(super) mod text_layout {
 						line: issue.line,
 						column: issue.column,
 						message: issue.message.clone(),
+						repair: issue.repair,
+						isolation: issue.isolation.clone(),
 					})
 					.collect(),
 				parse_cache_hit: true,

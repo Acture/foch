@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::game::eu4::script::parser::AstFile;
+use crate::game::eu4::script::parse_cache::parse_clausewitz_for_path;
+use crate::game::eu4::script::parser::{AstFile, repair_text_edits};
 use crate::game::eu4::script::{ParsedScriptFile, parse_script_bytes_cached};
-use crate::game::eu4::text::decode_paradox_bytes;
+use crate::game::eu4::text::{decode_paradox_bytes, reencode_paradox_bytes};
 use crate::input::ResolvedInput;
 use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::model::{GamePath, GamePathBuf};
@@ -202,9 +203,20 @@ impl ReviewedInputBatch {
 				file,
 				repaired.as_bytes(),
 			);
+			let reviewed_lines = reviewed_definition_lines(&document.ast.statements, &edits);
 			for index in &owners[&key] {
 				let policy = &policies[*index];
-				if !document.parse_issues.is_empty() {
+				// A reviewed repair is the exact text that was approved, so the
+				// definitions it touches must parse on their own: an automatic
+				// repair there would change what was reviewed. Elsewhere in the
+				// file the usual automatic repairs still apply.
+				let unreviewed = document.parse_issues.iter().any(|issue| {
+					issue.repair.is_none()
+						|| reviewed_lines
+							.iter()
+							.any(|lines| lines.contains(&issue.line))
+				});
+				if unreviewed {
 					return Err(invalid(
 						game(file),
 						format!(
@@ -218,7 +230,9 @@ impl ReviewedInputBatch {
 						.map_err(|message| invalid(game(file), message))?;
 				}
 			}
-			result.overlays.push((document, repaired.into_bytes()));
+			let written = written_bytes(file, bytes, &repaired)
+				.map_err(|message| invalid(game(file), message))?;
+			result.overlays.push((document, written));
 		}
 		Ok(result)
 	}
@@ -229,6 +243,35 @@ impl ReviewedInputBatch {
 		}
 		self.inputs
 	}
+}
+
+/// The line ranges of the top-level definitions that `edits`, already made,
+/// changed in the text `statements` were parsed from.
+pub(crate) fn reviewed_definition_lines(
+	statements: &[crate::game::eu4::script::parser::AstStatement],
+	edits: &[SourceEdit],
+) -> Vec<std::ops::RangeInclusive<usize>> {
+	use crate::game::eu4::script::parser::AstStatement;
+
+	let mut sorted = edits.iter().collect::<Vec<_>>();
+	sorted.sort_by_key(|edit| edit.start);
+	let mut shift = 0isize;
+	let mut ranges = Vec::new();
+	for edit in sorted {
+		let start = edit.start.saturating_add_signed(shift);
+		let end = start + edit.replacement.len();
+		shift += edit.replacement.len() as isize - (edit.end - edit.start) as isize;
+		for statement in statements {
+			let span = match statement {
+				AstStatement::Assignment { span, .. } | AstStatement::Item { span, .. } => span,
+				AstStatement::Comment { .. } => continue,
+			};
+			if span.start.offset <= end && start <= span.end.offset {
+				ranges.push(span.start.line..=span.end.line);
+			}
+		}
+	}
+	ranges
 }
 
 pub(crate) fn repair_text(source: &str, edits: &[SourceEdit]) -> Result<String, String> {
@@ -257,6 +300,23 @@ pub(crate) fn repair_text(source: &str, edits: &[SourceEdit]) -> Result<String, 
 pub(crate) fn sha256(bytes: &[u8]) -> String {
 	format!("{:x}", Sha256::digest(bytes))
 }
+
+/// The bytes a reviewed file is copied out as: the reviewed text with the
+/// automatic repairs the merge read it with elsewhere, in the encoding of
+/// the `source` bytes, so the file written reads as the analysis did.
+fn written_bytes(file: &GamePath, source: &[u8], reviewed: &str) -> Result<Vec<u8>, String> {
+	let parsed = parse_clausewitz_for_path(file, reviewed);
+	let mut edits = repair_text_edits(reviewed, &parsed.diagnostics)
+		.ok_or("its automatic repairs cannot be placed in the reviewed text")?;
+	edits.sort_by_key(|edit| std::cmp::Reverse(edit.offset));
+	let mut text = reviewed.to_owned();
+	for edit in edits {
+		text.replace_range(edit.offset..edit.offset + edit.remove, edit.insert);
+	}
+	reencode_paradox_bytes(source, &text)
+		.ok_or_else(|| "the repaired file cannot be written back in its own encoding".to_owned())
+}
+
 fn invalid(subject: MergeErrorSubject, message: impl Into<String>) -> MergeError {
 	MergeError::Validation {
 		subject: Some(subject),
@@ -275,6 +335,21 @@ fn game(path: &GamePath) -> MergeErrorSubject {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_reviewed_file_is_written_with_its_automatic_repairs_in_its_encoding() {
+		// Windows-1252, as EU4 scripts usually are: `é` is one byte.
+		let source = b"a = { name = \"Caf\xe9\" }\n}\nb = { always = yes }\nc = 1\n";
+		let reviewed = decode_paradox_bytes(source).replace("c = 1", "c = 2");
+		let path = GamePath::new("common/scripted_triggers/x.txt").unwrap();
+		let written = written_bytes(path, source, &reviewed).unwrap();
+		assert_eq!(
+			written,
+			b"a = { name = \"Caf\xe9\" }\n\nb = { always = yes }\nc = 2\n",
+			"{}",
+			String::from_utf8_lossy(&written)
+		);
+	}
 
 	#[test]
 	fn adapters_compose_disjoint_source_repairs_and_reject_conflicting_edits() {
