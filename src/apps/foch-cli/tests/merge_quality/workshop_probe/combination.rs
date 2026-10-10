@@ -1,8 +1,8 @@
 //! Bounded combinatorial merge probe over installed Workshop mods.
 //!
-//! It composes singletons, then the most-overlapping pairs, then growing
-//! precedence prefixes of an ordered mod universe, runs the exact Cargo-built
-//! `foch merge` in analysis-only mode on each, and delta-debugs every new
+//! It composes singletons, then the most-overlapping pairs, then doubling
+//! precedence prefixes up to the whole ordered mod universe, runs the exact
+//! Cargo-built `foch merge` in analysis-only mode on each, and delta-debugs every new
 //! failure signature down to the smallest sub-combination that still
 //! reproduces it. Outcomes are append-only and keyed by executable, game and
 //! ordered Workshop identities, so a later invocation resumes where an
@@ -30,7 +30,7 @@ use crate::merge_quality::config::{
 use crate::merge_quality::lifecycle::executable_hash;
 
 const OUTCOME_SCHEMA: &str = "foch-combination-probe-outcome-v1";
-const MINIMIZED_SCHEMA: &str = "foch-combination-probe-minimized-v1";
+const MINIMIZED_SCHEMA: &str = "foch-combination-probe-minimized-v2";
 const OUTCOMES_FILE: &str = "outcomes.jsonl";
 const MINIMIZED_FILE: &str = "minimized.jsonl";
 /// Signature kinds that always count as a failure to minimize.
@@ -168,9 +168,9 @@ pub(super) struct MinimizedRecord {
 	pub game_version: String,
 	pub signature: Signature,
 	pub from: Vec<ModRef>,
-	/// The 1-minimal culprits, in precedence order.
+	/// The smallest reproducing dependency-closed set, in precedence order.
 	pub culprits: Vec<ModRef>,
-	/// The culprits with their declared dependencies, as merged.
+	/// The same set as merged; kept for readers of the record.
 	pub reproduced_with: Vec<ModRef>,
 }
 
@@ -729,18 +729,31 @@ impl<R: CombinationRunner> Probe<'_, R> {
 		Ok(Ok(record))
 	}
 
+	/// The dependency closure of `subset` when it reproduces `key` and is
+	/// strictly smaller than the closed set it is cut from. A subset whose
+	/// closure brings every removed mod back would "reproduce" trivially.
 	fn reproduces(
 		&mut self,
 		subset: &[usize],
+		current_len: usize,
 		key: &str,
-	) -> ProbeResult<Result<bool, OutOfBudget>> {
+	) -> ProbeResult<Result<Option<Vec<usize>>, OutOfBudget>> {
 		let closed = closure(&self.config.universe, subset);
-		Ok(self
-			.evaluate(&closed, Phase::Minimize)?
-			.map(|record| record.signatures.iter().any(|s| s.key == key)))
+		if closed.len() >= current_len {
+			return Ok(Ok(None));
+		}
+		Ok(self.evaluate(&closed, Phase::Minimize)?.map(|record| {
+			record
+				.signatures
+				.iter()
+				.any(|s| s.key == key)
+				.then_some(closed)
+		}))
 	}
 
-	/// Zeller's ddmin over the culprit candidates, in precedence order.
+	/// Zeller's ddmin over dependency-closed sets, in precedence order. The
+	/// result is a smallest closed set found; no closed proper subset of a
+	/// tested chunk or complement reproduces.
 	fn ddmin(
 		&mut self,
 		mut current: Vec<usize>,
@@ -752,15 +765,15 @@ impl<R: CombinationRunner> Probe<'_, R> {
 			let chunks: Vec<Vec<usize>> = current.chunks(size).map(<[usize]>::to_vec).collect();
 			let mut reduced = false;
 			for chunk in &chunks {
-				match self.reproduces(chunk, key)? {
+				match self.reproduces(chunk, current.len(), key)? {
 					Err(out) => return Ok(Err(out)),
-					Ok(true) => {
-						current = chunk.clone();
+					Ok(Some(closed)) => {
+						current = closed;
 						granularity = 2;
 						reduced = true;
 						break;
 					}
-					Ok(false) => {}
+					Ok(None) => {}
 				}
 			}
 			if !reduced && chunks.len() > 2 {
@@ -771,15 +784,15 @@ impl<R: CombinationRunner> Probe<'_, R> {
 						.filter(|(index, _)| *index != skip)
 						.flat_map(|(_, chunk)| chunk.iter().copied())
 						.collect();
-					match self.reproduces(&complement, key)? {
+					match self.reproduces(&complement, current.len(), key)? {
 						Err(out) => return Ok(Err(out)),
-						Ok(true) => {
-							current = complement;
+						Ok(Some(closed)) => {
+							current = closed;
 							granularity = (granularity - 1).max(2);
 							reduced = true;
 							break;
 						}
-						Ok(false) => {}
+						Ok(None) => {}
 					}
 				}
 			}
@@ -857,8 +870,17 @@ impl<R: CombinationRunner> Probe<'_, R> {
 						.for_each(|(i, j)| push(*phase, vec![i, j]));
 				}
 				Phase::Prefix => {
+					// Doubling toward the whole universe: each step adds as many
+					// mods as it holds, and ddmin attributes what the step broke.
 					let largest = universe.len().min(config.budget.max_size);
-					(3..=largest).for_each(|size| push(*phase, (0..size).collect()));
+					let mut size = 4;
+					while size < largest {
+						push(*phase, (0..size).collect());
+						size *= 2;
+					}
+					if largest >= 3 {
+						push(*phase, (0..largest).collect());
+					}
 				}
 				Phase::Minimize => {}
 			}
@@ -927,7 +949,10 @@ pub(super) fn execute(
 	let minimized: Vec<MinimizedRecord> = read_records(&config.root.join(MINIMIZED_FILE))?
 		.into_iter()
 		.filter(|record: &MinimizedRecord| {
-			record.executable_blake3 == executable && &record.game_version == game_version
+			// v1 stopped at any mod whose dependencies covered the whole set.
+			record.schema == MINIMIZED_SCHEMA
+				&& record.executable_blake3 == executable
+				&& &record.game_version == game_version
 		})
 		.collect();
 	let mut probe = Probe {
@@ -1328,6 +1353,26 @@ mod tests {
 		let buckets = summary(&root)["buckets"].as_array().unwrap().clone();
 		assert_eq!(buckets.len(), 1);
 		assert_eq!(buckets[0]["attribution"], "pair");
+	}
+
+	#[test]
+	fn a_dependent_mod_is_not_blamed_for_a_failure_between_its_dependencies() {
+		let temp = tempfile::tempdir().unwrap();
+		let root = temp.path().canonicalize().unwrap();
+		let mut universe: Vec<UniverseMod> = ["top", "b", "d"]
+			.into_iter()
+			.map(|id| universe_mod(&root.join("mods"), id, &["common/ideas/x.txt"]))
+			.collect();
+		universe[0].dependencies = vec![1, 2];
+		let mut budget = budget(1000);
+		budget.phases = vec![Phase::Singleton];
+		let config = config(&root, universe, budget);
+		execute(&config, &mut Fake { merges: Vec::new() }).unwrap();
+		let buckets = summary(&root)["buckets"].as_array().unwrap().clone();
+		assert_eq!(buckets.len(), 1, "{buckets:#?}");
+		assert_eq!(buckets[0]["attribution"], "pair");
+		assert_eq!(buckets[0]["culprits"][0], "fixture b (b)");
+		assert_eq!(buckets[0]["culprits"][1], "fixture d (d)");
 	}
 
 	#[test]

@@ -97,7 +97,8 @@ the acceptance denominator.
 
 It runs analysis-only `foch merge --non-interactive --review-all` on, in order,
 every singleton, the pairs that share a top-level content directory (most shared
-paths first), and growing precedence prefixes of the universe. Every
+paths first), and precedence prefixes doubling from 4 mods up to the whole
+universe, the actual goal. Every
 combination keeps playset order and includes the declared dependencies its mods
 resolve to inside the universe. Panics, CLI errors, timeouts, fatal plan errors
 and `engine_failure` units are failures; `FOCH_COMBO_PROBE_FAIL_ON` adds review
