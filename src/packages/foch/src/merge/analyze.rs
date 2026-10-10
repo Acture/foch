@@ -522,7 +522,7 @@ fn complete_merge_analysis(
 
 	let final_out_dir = options.out_dir.clone();
 	let prior_out_dir = final_out_dir.is_dir().then_some(final_out_dir.as_path());
-	let artifact_root = AnalyzedArtifactTree::create()?;
+	let artifact_root = AnalyzedArtifactTree::create_beside(&final_out_dir)?;
 	let staging_dir = artifact_root.path().to_path_buf();
 	cancellation.check()?;
 	let semantic_total = plan.paths.len() as u64;

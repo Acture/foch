@@ -358,8 +358,8 @@ impl AnalyzedMerge {
 		if let Some(guard) = self.prior_output_guard.as_ref() {
 			stage("validate_prior_output", || guard.validate())?;
 		}
-		stage("copy_artifacts", || {
-			self.artifacts.copy_into(transaction.staging_dir())
+		stage("move_artifacts", || {
+			self.artifacts.move_into(transaction.staging_dir())
 		})?;
 		let _base_snapshot_commit_guard = stage("validate_commit_guards", || {
 			validate_commit_guards(
