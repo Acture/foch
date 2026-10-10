@@ -145,6 +145,54 @@ fn merge_keeps_an_event_file_namespace_before_its_events() {
 }
 
 #[test]
+fn merge_keeps_windows_1252_script_bytes() {
+	// A translation mod's 0x10-escaped name and a windows-1252 accent: the
+	// game reads these bytes, so a merged file must write them back as is.
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let playlist: PathBuf = scratch.path().join("playset").join("dlc_load.json");
+	write_dlc_load(&playlist, &[("9311", "Base"), ("9312", "Patch")]);
+	let mods: &Path = playlist.parent().unwrap();
+	write_descriptor(&mods.join("9311"), "Base");
+	write_descriptor_with_dependencies(&mods.join("9312"), "Patch", &["Base"]);
+	let events: &[u8] = b"namespace = zz_bytes\n\
+		country_event = { id = zz_bytes.1 title = a is_triggered_only = yes \
+		option = { name = a add_prestige = 1 define_ruler = { \
+		dynasty = \"\x10\xafQ \x10\xc8T\" name = \"Bragan\xe7a\" } } }\n";
+	let needle: &[u8] = b"add_prestige = 1";
+	let at = events
+		.windows(needle.len())
+		.position(|window| window == needle)
+		.expect("prestige");
+	let mut patched: Vec<u8> = events.to_vec();
+	patched[at + needle.len() - 1] = b'2';
+	fs::create_dir_all(mods.join("9311/events")).unwrap();
+	fs::create_dir_all(mods.join("9312/events")).unwrap();
+	fs::write(mods.join("9311/events/zz_bytes.txt"), events).unwrap();
+	fs::write(mods.join("9312/events/zz_bytes.txt"), &patched).unwrap();
+	let out: PathBuf = scratch.path().join("out");
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let merged = fs::read(out.join("events/zz_bytes.txt")).expect("merged events");
+	let contains = |needle: &[u8]| merged.windows(needle.len()).any(|window| window == needle);
+	assert!(contains(b"add_prestige = 2"));
+	assert!(contains(b"\"\x10\xafQ \x10\xc8T\""), "{merged:?}");
+	assert!(contains(b"\"Bragan\xe7a\""), "{merged:?}");
+}
+
+#[test]
 fn culture_cli_repairs_and_adapts_reviewed_sources_without_mutating_them() {
 	use foch::project::{CultureRenameEntry, CultureRepairEntry, Project, SourceEdit};
 	use sha2::{Digest, Sha256};
@@ -1047,7 +1095,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v14.0.0")
+			.join("v15.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),

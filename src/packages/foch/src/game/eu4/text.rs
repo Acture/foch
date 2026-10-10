@@ -1,21 +1,21 @@
-//! Paradox script text decoding helpers.
+//! Paradox script text decoding and encoding.
 //!
-//! Paradox engines historically write `.txt` (and `.csv` / `.yml`) files
-//! in **windows-1252** for the bundled vanilla content, while modern mods
-//! often save files as **UTF-8** (with or without BOM). Chinese
-//! translation mods commonly emit **GBK** / **GB18030**; we delegate
-//! charset detection to Mozilla's `chardetng` so the rendered output
-//! matches the original characters in-game instead of producing mojibake.
+//! EU4 reads script `.txt` (and `.csv`) bytes as **windows-1252**. Vanilla
+//! files are written in it, and translation mods encode CJK text as escape
+//! byte sequences inside that stream for their font patch to render, so the
+//! bytes themselves carry the text. Modern mods may also save UTF-8.
 //!
-//! `decode_paradox_bytes` is the single funnel for all
-//! Paradox-script-flavoured byte → string conversion for the crate.
-//! Use it instead of ad-hoc `String::from_utf8_lossy` /
-//! `WINDOWS_1252.decode` calls so the encoding rules stay uniform.
+//! Decoding is therefore byte-faithful: valid UTF-8 (with or without a BOM)
+//! reads as UTF-8, and anything else reads as windows-1252, which maps every
+//! byte to one character and back. Guessing a legacy CJK codepage instead
+//! rewrote those escape bytes into different ones on output.
+//!
+//! `decode_paradox_bytes` and `encode_paradox_text` are the single funnel for
+//! Paradox-script-flavoured text. Localisation keeps its own UTF-8 reader.
 
 use std::borrow::Cow;
 
-use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
-use encoding_rs::{Encoding, WINDOWS_1252};
+use encoding_rs::WINDOWS_1252;
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 const UTF16_LE_BOM: [u8; 2] = [0xFF, 0xFE];
@@ -23,15 +23,10 @@ const UTF16_BE_BOM: [u8; 2] = [0xFE, 0xFF];
 
 /// Decode `bytes` as a Paradox script-flavoured text blob.
 ///
-/// Algorithm:
-/// 1. Strip a leading UTF-8 BOM and decode as strict UTF-8.
+/// 1. Strip a leading UTF-8 BOM and decode as UTF-8.
 /// 2. Strip a leading UTF-16 BOM and decode via `encoding_rs`.
-/// 3. Try strict UTF-8 (the modern mod default) — borrowed if successful.
-/// 4. Run `chardetng` over the byte stream. If the detector picks a
-///    legacy CJK encoding (GB18030 / GBK / Big5) and that decoder
-///    succeeds without errors, use the result. The detector itself can
-///    return windows-1252 for Latin-1 content; we accept that too.
-/// 5. Fall back to **windows-1252**.
+/// 3. Strict UTF-8 (the modern mod default), borrowed if successful.
+/// 4. Otherwise **windows-1252**, the encoding the game reads.
 pub fn decode_paradox_bytes(bytes: &[u8]) -> Cow<'_, str> {
 	if let Some(rest) = bytes.strip_prefix(UTF8_BOM.as_slice()) {
 		return Cow::Owned(String::from_utf8_lossy(rest).into_owned());
@@ -47,39 +42,23 @@ pub fn decode_paradox_bytes(bytes: &[u8]) -> Cow<'_, str> {
 	if let Ok(text) = std::str::from_utf8(bytes) {
 		return Cow::Borrowed(text);
 	}
-	if let Some(decoded) = decode_via_chardet(bytes) {
-		return Cow::Owned(decoded);
-	}
 	let (decoded, _, _) = WINDOWS_1252.decode(bytes);
 	Cow::Owned(decoded.into_owned())
 }
 
-/// Run `chardetng` and accept the chosen encoding only when it's
-/// a legacy CJK / Cyrillic / Greek codepage that wouldn't decode
-/// losslessly through the windows-1252 fallback. windows-1252 itself,
-/// macintosh, and any picky single-byte encoding fall through to the
-/// caller's fallback path so we never lose round-trip stability.
-fn decode_via_chardet(bytes: &[u8]) -> Option<String> {
-	let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
-	detector.feed(bytes, true);
-	let encoding = detector.guess(None, Utf8Detection::Deny);
-	if !is_legacy_double_byte(encoding) {
-		return None;
+/// Encode generated script text the way the game reads it: windows-1252 when
+/// every character has a windows-1252 byte, which restores the source bytes
+/// of anything decoded from it, and UTF-8 only for text it cannot spell.
+pub fn encode_paradox_text(text: &str) -> Cow<'_, [u8]> {
+	if text.is_ascii() {
+		return Cow::Borrowed(text.as_bytes());
 	}
-	let (decoded, _, had_errors) = encoding.decode(bytes);
-	if had_errors {
-		return None;
+	let (encoded, _, unmappable) = WINDOWS_1252.encode(text);
+	if unmappable {
+		Cow::Borrowed(text.as_bytes())
+	} else {
+		Cow::Owned(encoded.into_owned())
 	}
-	Some(decoded.into_owned())
-}
-
-fn is_legacy_double_byte(encoding: &'static Encoding) -> bool {
-	encoding == encoding_rs::GB18030
-		|| encoding == encoding_rs::GBK
-		|| encoding == encoding_rs::BIG5
-		|| encoding == encoding_rs::EUC_JP
-		|| encoding == encoding_rs::SHIFT_JIS
-		|| encoding == encoding_rs::EUC_KR
 }
 
 #[cfg(test)]
@@ -140,16 +119,29 @@ mod tests {
 	}
 
 	#[test]
-	fn gbk_bytes_decode_to_chinese_characters() {
-		// GBK encoding for "凯瑟琳". Strict UTF-8 fails; we now detect the
-		// double-byte CJK shape and decode via GB18030 instead of letting
-		// the windows-1252 fallback emit mojibake.
-		let bytes = b"\xbf\xad\xc9\xaa\xc1\xd5";
+	fn translation_escape_bytes_round_trip_unchanged() {
+		// A Chinese translation mod's dynasty name: 0x10-escaped code units
+		// inside a windows-1252 stream, which a CJK guess would rewrite.
+		let bytes = b"dynasty = \"\x10\xafQ \x10\xc8T\x10\x03^\x10\xafe\x10!X\"";
 		let decoded = decode_paradox_bytes(bytes);
-		assert_eq!(decoded, "凯瑟琳");
-		// Idempotence: re-decoding the same bytes always yields the same
-		// string (downstream AST-equality checks rely on this).
-		assert_eq!(decode_paradox_bytes(bytes), decoded);
+		assert_eq!(encode_paradox_text(&decoded).as_ref(), bytes);
+	}
+
+	#[test]
+	fn legacy_cjk_bytes_round_trip_unchanged() {
+		let bytes = b"name = \"\xbf\xad\xc9\xaa\xc1\xd5\"";
+		let decoded = decode_paradox_bytes(bytes);
+		assert_eq!(encode_paradox_text(&decoded).as_ref(), bytes);
+	}
+
+	#[test]
+	fn text_without_a_windows_1252_spelling_is_written_as_utf8() {
+		let text = "name = \"凯瑟琳\"";
+		assert_eq!(encode_paradox_text(text).as_ref(), text.as_bytes());
+		assert_eq!(
+			encode_paradox_text("dynasty = \"de Bragança\"").as_ref(),
+			b"dynasty = \"de Bragan\xe7a\""
+		);
 	}
 
 	#[test]

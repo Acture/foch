@@ -200,7 +200,8 @@ impl ReviewedInputBatch {
 						.map_err(|message| invalid(game(file), message))?;
 				}
 			}
-			result.overlays.push((document, repaired.into_bytes()));
+			let bytes = crate::game::eu4::text::encode_paradox_text(&repaired).into_owned();
+			result.overlays.push((document, bytes));
 		}
 		Ok(result)
 	}

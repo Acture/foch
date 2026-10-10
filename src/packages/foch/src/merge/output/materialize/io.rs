@@ -185,7 +185,10 @@ fn write_rendered_output(
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
-	fs::write(target, rendered)?;
+	fs::write(
+		target,
+		crate::game::eu4::text::encode_paradox_text(rendered),
+	)?;
 	Ok(())
 }
 

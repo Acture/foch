@@ -499,7 +499,7 @@ fn prepare_cultures(
 			adapted.push(ScriptTransform::new(
 				parsed.clone(),
 				result.ast,
-				rendered.into_bytes(),
+				crate::game::eu4::text::encode_paradox_text(&rendered).into_owned(),
 			));
 			paths.insert(path.clone());
 		}
