@@ -53,6 +53,19 @@ arbitrary modlists.
   the dropped isolation investigation are in the private notes. MTTH/natural-
   trigger testing remains recorded product design only.
 
+- The OSS-400 worktree connects `foch plugin` package/selection management to
+  runtime staging, launch and actual JSONL status through the unpublished
+  Windows x64 `foch-eu4-host` DLL. Verified 2026-10-11: 35 host/ABI tests cover
+  management-to-host execution, pre-CRT initialization, and all 17 VERSION
+  exports by name/ordinal. On real EU4 1.37.5, official Unicode 0.1.14 reports
+  `active` and reaches the main menu/country selection; Menu 0.1.4-experimental
+  reports `active` alone and together with Unicode. These are local startup
+  compatibility results. Menu/combined ran on an inactive desktop that could
+  not create a Direct3D device. Chinese input/rendering, menu return/save reload
+  and the desktop plugin page remain unverified or unimplemented. Original
+  executable/proxy/plugin64/font and guarded user-profile files are unchanged.
+  See the [deployment commands and wire format](../src/packages/foch-eu4-host/README.md).
+
 See [merge design](merge-design.md), [architecture](architecture.md),
 [cache behavior](cache-architecture.md) and [known issues](known-issues.md)
 for the current contracts and limits.

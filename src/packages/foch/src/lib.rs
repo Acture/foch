@@ -8,5 +8,6 @@ pub mod merge;
 pub mod model;
 pub mod platform;
 pub mod playset;
+pub mod plugin;
 pub mod project;
 pub mod simplify;

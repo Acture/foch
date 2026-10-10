@@ -54,7 +54,107 @@ pub enum FochCliCommands {
 	Cache(FochCliCacheArgs),
 	Config(ConfigArgs),
 	Input(InputArgs),
+	Plugin(PluginArgs),
 	Lsp(LspArgs),
+}
+
+#[derive(Parser, Debug)]
+#[command(about = "Manage native DLL plugins (install, select per playset, plan a launch)")]
+pub struct PluginArgs {
+	#[command(subcommand)]
+	pub command: PluginCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PluginCommand {
+	/// List installed plugin versions and a playset's selection.
+	List(PluginListArgs),
+	/// Import a plugin package from an extracted directory into the store.
+	Import(PluginImportArgs),
+	/// Enable a plugin for a playset, pinned to an installed version.
+	Enable(PluginToggleArgs),
+	/// Disable a plugin for a playset.
+	Disable(PluginToggleArgs),
+	/// Resolve a playset's selection into a launch plan and report problems.
+	Plan(PluginPlanArgs),
+	/// Prepare an isolated runtime and start the selected plugins with EU4.
+	Launch(PluginLaunchArgs),
+	/// Read the actual plugin states from a prepared or running runtime.
+	Status(PluginStatusArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginListArgs {
+	/// Playset name whose selection to show.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginImportArgs {
+	/// A directory holding an extracted plugin package (with foch-plugin.toml).
+	#[arg(value_name = "DIR")]
+	pub path: PathBuf,
+	/// Bind an upstream release directory to a built-in legacy adapter.
+	#[arg(long, value_name = "PLUGIN_ID")]
+	pub adapter: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginToggleArgs {
+	/// Stable plugin id.
+	#[arg(value_name = "PLUGIN_ID")]
+	pub id: String,
+	/// Playset name to change.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	/// Exact installed version to pin; defaults to the highest installed.
+	#[arg(long, value_name = "VERSION")]
+	pub version: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginPlanArgs {
+	/// Playset name to plan.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	/// EU4 install to target; defaults to the configured or Steam install.
+	#[arg(long, value_name = "PATH")]
+	pub game_path: Option<PathBuf>,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginLaunchArgs {
+	#[command(flatten)]
+	pub plan: PluginPlanArgs,
+	/// Built foch_eu4_host.dll; defaults to the directory containing foch.
+	#[arg(long, value_name = "DLL")]
+	pub host_dll: Option<PathBuf>,
+	/// Short directory for new runtime layers; defaults to the temp foch-rt.
+	#[arg(long, value_name = "PATH")]
+	pub runtime_base: Option<PathBuf>,
+	/// Profile to use; defaults to the player's normal EU4 user directory.
+	#[arg(long, value_name = "PATH")]
+	pub user_dir: Option<PathBuf>,
+	/// Stage the frozen plan and files without starting EU4.
+	#[arg(long)]
+	pub prepare_only: bool,
+	/// Additional game arguments, following --.
+	#[arg(last = true)]
+	pub game_args: Vec<std::ffi::OsString>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginStatusArgs {
+	/// Runtime directory printed by plugin launch.
+	#[arg(long, value_name = "PATH")]
+	pub run_dir: PathBuf,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
 }
 
 #[derive(Parser, Debug)]

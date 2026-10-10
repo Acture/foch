@@ -24,6 +24,12 @@ include = [
 [dependencies]
 foch.workspace = true
 foch-test.workspace = true
+serde.workspace = true
+sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_IO", "Win32_System_Ioctl"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+serde_json.workspace = true

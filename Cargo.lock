@@ -1406,6 +1406,7 @@ dependencies = [
  "ratatui",
  "regex",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -1433,6 +1434,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-eu4-host"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "foch",
+ "foch-plugin-abi",
+ "foch-runner",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "foch-lsp"
 version = "0.0.1"
 dependencies = [
@@ -1448,12 +1464,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-plugin-abi"
+version = "0.0.1"
+
+[[package]]
 name = "foch-runner"
 version = "0.0.1"
 dependencies = [
  "foch",
  "foch-test",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

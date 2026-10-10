@@ -440,6 +440,227 @@ fn run_foch_with_env(
 }
 
 #[test]
+fn plugin_plan_recognizes_an_enabled_builtin_without_an_imported_release() {
+	let scratch = TempDir::new().unwrap();
+	let game = scratch.path().join("game");
+	write_game_version(&game, "1.37.5.0");
+	let id = "io.github.yozoratempest.eu4-unicode-patch";
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"plugin",
+			"enable",
+			id,
+			"--version",
+			"0.1.14",
+			"--playset",
+			"builtin",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"plugin",
+			"plan",
+			"--playset",
+			"builtin",
+			"--game-path",
+			game.to_str().unwrap(),
+			"--format",
+			"json",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 1, "{stdout}\n{stderr}");
+	let output: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+	assert!(
+		output["errors"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|error| error
+				.as_str()
+				.unwrap()
+				.contains("expected one installed artifact")),
+		"{stdout}"
+	);
+	assert_eq!(output["errors"].as_array().unwrap().len(), 1, "{stdout}");
+	assert_eq!(output["order"][0]["id"], id);
+}
+
+#[test]
+fn plugin_status_rejects_external_event_files_and_invalid_plans() {
+	let scratch = TempDir::new().unwrap();
+	let runtime = scratch.path().join("runtime");
+	let host = runtime.join("foch-host");
+	fs::create_dir_all(&host).unwrap();
+	fs::write(runtime.join("foch-runtime"), "1\n").unwrap();
+	let record = json!({"run_id":"status-fixture", "plugin_id":"sample",
+		"event":"state", "state":"active", "reason":"private outside marker"})
+	.to_string()
+		+ "\n";
+	let outside = scratch.path().join("outside.jsonl");
+	fs::write(&outside, &record).unwrap();
+	let own_events = host.join("events.jsonl");
+	let original = json!({"format":1, "run_id":"status-fixture", "game_version":"1.37.5",
+		"events":foch::plugin::deployment::path_text(&own_events).unwrap(),
+		"plugins":[{"id":"sample", "version":"1.0.0", "kind":"native", "phase":"entry",
+			"path":r"C:\runtime\sample.dll", "sha256":"a".repeat(64),
+			"config_json":"{}", "dirs":{}, "status":null, "abi_major":1}]});
+	let args = [
+		"plugin",
+		"status",
+		"--run-dir",
+		runtime.to_str().unwrap(),
+		"--format",
+		"json",
+	];
+	#[cfg(windows)]
+	{
+		fs::write(
+			host.join("plan.json"),
+			serde_json::to_vec(&original).unwrap(),
+		)
+		.unwrap();
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_eq!(code, 0, "{stdout}\n{stderr}");
+		assert!(stdout.contains("not_loaded"), "{stdout}");
+		fs::write(
+			&own_events,
+			record.replace("private outside marker", "owned record"),
+		)
+		.unwrap();
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_eq!(code, 0, "{stdout}\n{stderr}");
+		assert!(stdout.contains("owned record"), "{stdout}");
+		fs::remove_file(&own_events).unwrap();
+	}
+	for mode in ["external", "hardlink", "invalid"] {
+		let mut plan = original.clone();
+		match mode {
+			"external" => {
+				plan["events"] = foch::plugin::deployment::path_text(&outside)
+					.unwrap()
+					.into()
+			}
+			"hardlink" => fs::hard_link(&outside, &own_events).unwrap(),
+			_ => {
+				fs::remove_file(&own_events).unwrap();
+				fs::write(&own_events, &record).unwrap();
+				plan["format"] = 99.into();
+			}
+		}
+		fs::write(host.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_ne!(code, 0, "{mode}: {stdout}\n{stderr}");
+		assert!(
+			!stdout.contains("private outside marker"),
+			"{mode}: {stdout}"
+		);
+	}
+}
+
+#[test]
+fn plugin_plan_agrees_with_launch_resolution_for_an_undeclared_entry_digest() {
+	use foch::plugin::{deployment, planner, selection, store};
+	for identical in [true, false] {
+		let scratch = TempDir::new().unwrap();
+		let game = scratch.path().join("game");
+		write_game_version(&game, "1.37.5.0");
+		let mut dll = vec![0u8; 0x80];
+		dll[..2].copy_from_slice(b"MZ");
+		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+		dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+		dll[0x44..0x46].copy_from_slice(&store::MACHINE_AMD64.to_le_bytes());
+		let mut dependency = dll.clone();
+		if !identical {
+			dependency[0x70] = 1;
+		}
+		let manifest = format!(
+			r#"schema = 1
+[plugin]
+id = "dev.foch.sample"
+name = "Sample"
+version = "1.0.0"
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "*"
+abi_major = 1
+[entry]
+kind = "native"
+path = "sample.dll"
+phase = "deferred"
+[[files]]
+path = "dependency/sample.dll"
+sha256 = "{}"
+"#,
+			deployment::hash(&dependency)
+		);
+		let package = store::validate(vec![
+			store::ArchiveEntry {
+				path: "foch-plugin.toml".into(),
+				data: manifest.into_bytes(),
+			},
+			store::ArchiveEntry {
+				path: "sample.dll".into(),
+				data: dll,
+			},
+			store::ArchiveEntry {
+				path: "dependency/sample.dll".into(),
+				data: dependency,
+			},
+		])
+		.unwrap();
+		let store_root = scratch.path().join(".foch-data/plugins/store");
+		store::install(&store_root, &package).unwrap();
+		let choices = selection::PlaysetSelections {
+			plugins: BTreeMap::from([(
+				"dev.foch.sample".into(),
+				selection::Choice {
+					version: "1.0.0".parse().unwrap(),
+					enabled: true,
+					config: BTreeMap::new(),
+				},
+			)]),
+		};
+		let selected = choices.to_selections();
+		let mut selections = selection::Selections::default();
+		selections.set_playset("test", choices);
+		selections
+			.save(&scratch.path().join("plugins/selections.toml"))
+			.unwrap();
+		let launchable = deployment::resolve(
+			&planner::GameIdentity {
+				game: "eu4".into(),
+				version: "1.37.5".parse().unwrap(),
+				platform: planner::WINDOWS_X64.into(),
+			},
+			&store_root,
+			&selected,
+		)
+		.is_ok();
+		assert_eq!(launchable, identical);
+		let (code, stdout, stderr) = run_foch(
+			&[
+				"plugin",
+				"plan",
+				"--playset",
+				"test",
+				"--game-path",
+				game.to_str().unwrap(),
+				"--format",
+				"json",
+			],
+			scratch.path(),
+		);
+		assert_eq!(code, i32::from(!launchable), "{stdout}\n{stderr}");
+		let output: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+		assert_eq!(output["launchable"], launchable);
+	}
+}
+
+#[test]
 fn top_level_help_exposes_only_current_merge_commands() {
 	let tmp = TempDir::new().expect("temp dir");
 	let (help_code, stdout, help_stderr) = run_foch(&["--help"], tmp.path());
@@ -867,6 +1088,48 @@ struct StaticServer {
 	handle: Option<JoinHandle<()>>,
 }
 
+#[test]
+fn static_server_waits_for_complete_request_headers() {
+	use std::io::Read;
+	use std::net::TcpStream;
+	use std::time::Instant;
+	let root = TempDir::new().unwrap();
+	fs::write(root.path().join("asset.bin"), b"fixture asset").unwrap();
+	let server = serve_directory(root.path());
+	let mut stream = TcpStream::connect(server.base_url.trim_start_matches("http://")).unwrap();
+	stream.write_all(b"GET /asset.bin HTTP/1.1\r\n").unwrap();
+	stream.set_nonblocking(true).unwrap();
+	let mut buffer = [0; 512];
+	// A timed-out blocking receive can invalidate a Windows socket. Peek
+	// without consuming data while leaving this connection usable.
+	let deadline = Instant::now() + Duration::from_millis(200);
+	loop {
+		let early_response = stream.peek(&mut buffer);
+		assert!(
+			matches!(early_response, Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock),
+			"server replied before the request headers were complete: {early_response:?}"
+		);
+		if Instant::now() >= deadline {
+			break;
+		}
+		thread::sleep(Duration::from_millis(5));
+	}
+	stream.set_nonblocking(false).unwrap();
+	stream
+		.set_read_timeout(Some(Duration::from_secs(5)))
+		.unwrap();
+	stream
+		.write_all(b"Host: localhost\r\nConnection: close\r\n\r\n")
+		.unwrap();
+	// Content-Length frames this response; a graceful socket EOF is not
+	// required to finish the HTTP transfer.
+	let expected =
+		b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nfixture asset";
+	let mut response = vec![0; expected.len()];
+	stream.read_exact(&mut response).unwrap();
+	assert_eq!(response, expected);
+}
+
 impl Drop for StaticServer {
 	fn drop(&mut self) {
 		let _ = self.stop_tx.send(());
@@ -891,11 +1154,33 @@ fn serve_directory(root: &Path) -> StaticServer {
 			}
 			match listener.accept() {
 				Ok((mut stream, _addr)) => {
+					// Windows accepts inherit the listener's nonblocking mode.
+					stream.set_nonblocking(false).expect("set blocking request");
+					stream
+						.set_read_timeout(Some(Duration::from_secs(5)))
+						.expect("set request timeout");
+					stream
+						.set_write_timeout(Some(Duration::from_secs(5)))
+						.expect("set response timeout");
 					let mut request_line = String::new();
 					let mut reader = BufReader::new(
 						stream.try_clone().expect("clone stream for request reader"),
 					);
 					if reader.read_line(&mut request_line).is_err() {
+						continue;
+					}
+					// Consume the complete request before replying and closing.
+					// Unread socket data can reset the connection on Windows.
+					let mut header = String::new();
+					let complete = loop {
+						header.clear();
+						match reader.read_line(&mut header) {
+							Ok(0) | Err(_) => break false,
+							Ok(_) if header == "\r\n" || header == "\n" => break true,
+							Ok(_) => {}
+						}
+					};
+					if !complete {
 						continue;
 					}
 					let path = request_line
@@ -909,7 +1194,9 @@ fn serve_directory(root: &Path) -> StaticServer {
 							"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
 							bytes.len()
 						);
-						let _ = stream.write_all(header.as_bytes());
+						if stream.write_all(header.as_bytes()).is_err() {
+							continue;
+						}
 						let _ = stream.write_all(&bytes);
 					} else {
 						let body = b"not found";
@@ -917,7 +1204,9 @@ fn serve_directory(root: &Path) -> StaticServer {
 							"HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
 							body.len()
 						);
-						let _ = stream.write_all(header.as_bytes());
+						if stream.write_all(header.as_bytes()).is_err() {
+							continue;
+						}
 						let _ = stream.write_all(body);
 					}
 				}

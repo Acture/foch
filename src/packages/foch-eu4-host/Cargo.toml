@@ -1,0 +1,32 @@
+[package]
+name = "foch-eu4-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Plan-driven Windows x64 DLL host for EU4 native plugins"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+foch-plugin-abi = { path = "../foch-plugin-abi", version = "=0.0.1" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+	"Win32_System_LibraryLoader",
+	"Win32_System_Memory",
+	"Win32_System_Diagnostics_Debug",
+] }
+
+[dev-dependencies]
+foch.workspace = true
+foch-runner.workspace = true
+tempfile.workspace = true
+cc = "1.2"
