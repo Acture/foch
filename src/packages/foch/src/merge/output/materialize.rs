@@ -1160,6 +1160,8 @@ fn apply_file_unit(
 		}
 		Ok(Err(StructuralMergeFailure::Unresolved(conflict))) => {
 			let explicitly_deferred = conflict.explicitly_deferred;
+			// The review shows which conflicts, as it does for definition modules.
+			let reason = conflict.reason.clone();
 			(
 				conflict,
 				DeferredUnitReason::NeedsUserChoice,
@@ -1168,7 +1170,7 @@ fn apply_file_unit(
 				} else {
 					MergeDisposition::NeedsUserChoice
 				},
-				"structural conflict deferred".to_string(),
+				reason,
 				!explicitly_deferred,
 			)
 		}
@@ -4676,7 +4678,7 @@ mod tests {
 			target,
 			MergeDisposition::NeedsUserChoice,
 			None,
-			"structural conflict deferred",
+			"controlled unresolved structural conflict",
 		);
 		assert!(!out_dir.join(target).exists());
 		assert_eq!(materialized.report.generated_file_count, 0);
