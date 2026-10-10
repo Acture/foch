@@ -31,8 +31,10 @@ carry no EU4 base data; users build it from their own game installation.
 1. ☐ Release `tree-sitter-paradox` 0.3.0 from its own repository through
    [Acture/tree-sitter-paradox#12](https://github.com/Acture/tree-sitter-paradox/pull/12)
    (`release/0.3.0`: the CWT grammar, the 0.3.0 version bump, anchored crate
-   include patterns, and dispatch of its publishing workflows). The crate
-   contents equal those of `0e8eab4`, the commit Foch's gitlink records.
+   include patterns, dispatch of its publishing workflows, and the review fix
+   that ends inline `--[[ ]]` comments before following code). Foch's gitlink
+   records its head, `d7999af`; with it the embedded CWT rule pack is
+   byte-identical to the one built from the previous grammar.
    - Configure the publishers its `package.yml` uses first: the crates.io
      trusted publisher for `tree-sitter-paradox` (workflow `package.yml`,
      environment `release`), the PyPI trusted publisher for project
