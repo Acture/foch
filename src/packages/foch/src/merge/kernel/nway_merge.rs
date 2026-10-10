@@ -144,6 +144,7 @@ pub fn n_way_merge_with_policy_and_resolutions(
 	});
 	suppress_required_slot_subconflicts(&mut plan.conflicts, &correspondence);
 	suppress_descendant_delete_modify_conflicts(&mut plan.conflicts, base);
+	suppress_inconsequential_match_ambiguities(&mut plan.conflicts, base, revisions, &tree);
 	let decisions = plan.decisions;
 	let mut conflicts = plan
 		.conflicts
@@ -853,6 +854,26 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 		tree_for_revision(self.base, self.revisions, source.revision)
 			.node(source.node)
 			.unwrap()
+	}
+}
+
+/// A match ambiguity cannot change a merge that comes out as the only
+/// revision that changed: every pairing yields that revision.
+fn suppress_inconsequential_match_ambiguities(
+	conflicts: &mut Vec<StructuralConflictDraft>,
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	merged: &NormalizedTree,
+) {
+	let root_hash = |tree: &NormalizedTree| tree.node(tree.root()).unwrap().subtree_hash;
+	let changed = revisions
+		.iter()
+		.filter(|revision| root_hash(revision.tree) != root_hash(base))
+		.collect::<Vec<_>>();
+	if let [only] = changed.as_slice()
+		&& root_hash(only.tree) == root_hash(merged)
+	{
+		conflicts.retain(|conflict| conflict.kind != ConflictKind::AmbiguousMatch);
 	}
 }
 
