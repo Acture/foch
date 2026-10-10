@@ -162,7 +162,18 @@ pub fn plan(
 		.collect();
 
 	match order(&usable) {
-		Ok(order) => resolution.order = order,
+		Ok(order) => {
+			for pair in order.windows(2) {
+				if pair[0].phase > pair[1].phase {
+					resolution.errors.push(Diagnostic::Incompatible {
+						id: pair[1].id.clone(),
+						reason: "ordering requires a later startup phase before an earlier one"
+							.into(),
+					});
+				}
+			}
+			resolution.order = order;
+		}
 		Err(cycle) => resolution.errors.push(Diagnostic::Cycle { ids: cycle }),
 	}
 	resolution
@@ -221,13 +232,18 @@ fn check_dependencies(resolved: &BTreeMap<String, &Manifest>, resolution: &mut R
 }
 
 fn check_conflicts(resolved: &BTreeMap<String, &Manifest>, resolution: &mut Resolution) {
+	let mut reported = BTreeSet::new();
 	for (id, manifest) in resolved {
 		for conflict in &manifest.conflicts {
 			if let Some(other) = resolved.get(&conflict.id)
 				&& conflict.version.matches(&other.plugin.version)
 			{
-				// Report each unordered pair once.
-				if id < &conflict.id {
+				let pair = if id < &conflict.id {
+					(id, &conflict.id)
+				} else {
+					(&conflict.id, id)
+				};
+				if reported.insert(pair) {
 					resolution.errors.push(Diagnostic::Conflict {
 						id: id.clone(),
 						with: conflict.id.clone(),
@@ -240,12 +256,45 @@ fn check_conflicts(resolved: &BTreeMap<String, &Manifest>, resolution: &mut Reso
 }
 
 fn check_file_collisions(resolved: &BTreeMap<String, &Manifest>, resolution: &mut Resolution) {
-	// install-relative path -> digest -> plugin ids declaring it.
-	let mut by_path: BTreeMap<&str, BTreeMap<&str, BTreeSet<&str>>> = BTreeMap::new();
+	// Windows reuses already loaded modules by basename. Entry DLLs must be
+	// distinct even with identical bytes: their init/configuration is per id.
+	let mut entry_names: BTreeMap<String, Vec<String>> = BTreeMap::new();
+	for (id, manifest) in resolved {
+		entry_names
+			.entry(
+				manifest
+					.entry
+					.path
+					.rsplit(['/', '\\'])
+					.next()
+					.unwrap_or_default()
+					.to_lowercase(),
+			)
+			.or_default()
+			.push(id.clone());
+	}
+	for (path, ids) in entry_names {
+		if ids.len() > 1 {
+			resolution
+				.errors
+				.push(Diagnostic::FileCollision { path, ids });
+		}
+	}
+	// Dependency DLL basename -> digest -> plugin ids declaring it.
+	let mut by_path: BTreeMap<String, BTreeMap<&str, BTreeSet<&str>>> = BTreeMap::new();
 	for (id, manifest) in resolved {
 		for file in &manifest.files {
+			if !file.path.to_ascii_lowercase().ends_with(".dll") {
+				continue;
+			}
+			let name = file
+				.path
+				.rsplit(['/', '\\'])
+				.next()
+				.unwrap()
+				.to_ascii_lowercase();
 			by_path
-				.entry(file.path.as_str())
+				.entry(name)
 				.or_default()
 				.entry(file.sha256.as_str())
 				.or_default()
@@ -313,7 +362,7 @@ fn order(usable: &BTreeMap<String, &Manifest>) -> Result<Vec<Resolved>, Vec<Stri
 			.iter()
 			.filter(|&(_, &count)| count == 0)
 			.map(|(id, _)| *id)
-			.next()
+			.min_by_key(|id| (usable[*id].entry.phase, *id))
 		else {
 			let mut cycle: Vec<String> = remaining.keys().map(|id| id.to_string()).collect();
 			cycle.sort();
@@ -541,6 +590,83 @@ phase = "deferred"
 				.errors
 				.iter()
 				.any(|d| matches!(d, Diagnostic::FileCollision { .. }))
+		);
+	}
+
+	#[test]
+	fn startup_phases_take_precedence_and_impossible_constraints_are_refused() {
+		let deferred = manifest("a-deferred", "1.0.0", "");
+		let mut entry = manifest("z-entry", "1.0.0", "");
+		entry.entry.phase = Phase::Entry;
+		let selections = [select("a-deferred", "1.0.0"), select("z-entry", "1.0.0")];
+		let ordered = plan(
+			&game(),
+			&store(vec![deferred.clone(), entry.clone()]),
+			&selections,
+		);
+		assert!(ordered.is_launchable());
+		assert_eq!(ordered.order[0].id, "z-entry");
+		entry.load_after.push("a-deferred".into());
+		assert!(!plan(&game(), &store(vec![deferred, entry]), &selections).is_launchable());
+	}
+
+	#[test]
+	fn dll_basename_collisions_apply_across_different_package_directories() {
+		let a = manifest(
+			"a",
+			"1.0.0",
+			"[[files]]\npath=\"one/util.dll\"\nsha256=\"aa\"",
+		);
+		let b = manifest(
+			"b",
+			"1.0.0",
+			"[[files]]\npath=\"two/UTIL.DLL\"\nsha256=\"bb\"",
+		);
+		assert!(
+			!plan(
+				&game(),
+				&store(vec![a, b]),
+				&[select("a", "1.0.0"), select("b", "1.0.0")]
+			)
+			.is_launchable()
+		);
+	}
+
+	#[test]
+	fn identical_entry_names_are_refused_but_identical_dependencies_are_allowed() {
+		let a = manifest(
+			"a",
+			"1.0.0",
+			"[[files]]\npath=\"shared.dll\"\nsha256=\"aa\"",
+		);
+		let mut b = manifest(
+			"b",
+			"1.0.0",
+			"[[files]]\npath=\"shared.dll\"\nsha256=\"aa\"",
+		);
+		let selections = [select("a", "1.0.0"), select("b", "1.0.0")];
+		assert!(plan(&game(), &store(vec![a.clone(), b.clone()]), &selections).is_launchable());
+		b.entry.path = format!("other/{}", a.entry.path.to_uppercase());
+		assert!(!plan(&game(), &store(vec![a, b]), &selections).is_launchable());
+	}
+
+	#[test]
+	fn one_way_conflicts_are_enforced_in_both_lexical_directions() {
+		let a = manifest("a", "1.0.0", "");
+		let z = manifest("z", "1.0.0", "[[conflicts]]\nid=\"a\"\nversion=\"*\"");
+		let resolution = plan(
+			&game(),
+			&store(vec![a, z]),
+			&[select("a", "1.0.0"), select("z", "1.0.0")],
+		);
+		assert!(!resolution.is_launchable());
+		assert_eq!(
+			resolution
+				.errors
+				.iter()
+				.filter(|d| matches!(d, Diagnostic::Conflict { .. }))
+				.count(),
+			1
 		);
 	}
 }

@@ -271,8 +271,22 @@ impl Manifest {
 			return Err(ManifestError::UnsupportedSchema(self.schema));
 		}
 		let id = &self.plugin.id;
-		if id.trim().is_empty() {
-			return Err(ManifestError::Invalid("plugin id is empty".into()));
+		if id.is_empty()
+			|| id.len() > 256
+			|| id.starts_with('.')
+			|| id.ends_with('.')
+			|| !id
+				.bytes()
+				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+		{
+			return Err(ManifestError::Invalid(
+				"plugin id must be a safe identifier of 1..256 ASCII bytes".into(),
+			));
+		}
+		if !self.entry.path.to_ascii_lowercase().ends_with(".dll") {
+			return Err(ManifestError::Invalid(format!(
+				"{id}: entry must be a DLL path"
+			)));
 		}
 		if self.depends.iter().any(|dependency| dependency.id == *id) {
 			return Err(ManifestError::Invalid(format!("{id} depends on itself")));
@@ -294,6 +308,50 @@ impl Manifest {
 				)));
 			}
 			_ => {}
+		}
+		if let Some(status) = &self.status {
+			if self.entry.kind != Kind::Legacy
+				|| status.export.is_empty()
+				|| !status.export.is_ascii()
+				|| status.export.contains('\0')
+			{
+				return Err(ManifestError::Invalid(format!(
+					"{id}: invalid legacy status export"
+				)));
+			}
+			if status.mode == StatusMode::Poll
+				&& (status.timeout_ms == 0
+					|| status.timeout_ms > 120_000
+					|| status.pending.is_empty())
+			{
+				return Err(ManifestError::Invalid(format!(
+					"{id}: polling requires a bounded timeout and pending values"
+				)));
+			}
+			let mut values = std::collections::BTreeSet::new();
+			for value in &status.values {
+				if !values.insert(value.value)
+					|| !matches!(
+						value.state.as_str(),
+						"active" | "inactive" | "refused" | "failed" | "unknown"
+					) {
+					return Err(ManifestError::Invalid(format!(
+						"{id}: invalid legacy status mapping"
+					)));
+				}
+			}
+		}
+		for (name, field) in &self.config {
+			if let ConfigField::Int {
+				default, min, max, ..
+			} = field && (min.is_some_and(|min| *default < min)
+				|| max.is_some_and(|max| *default > max)
+				|| min.zip(*max).is_some_and(|(min, max)| min > max))
+			{
+				return Err(ManifestError::Invalid(format!(
+					"{id}: invalid default or bounds for {name}"
+				)));
+			}
 		}
 		Ok(())
 	}
@@ -426,5 +484,25 @@ phase = "deferred"
 		let manifest = Manifest::parse(UNICODE).unwrap();
 		let text = toml::to_string(&manifest).unwrap();
 		assert_eq!(Manifest::parse(&text).unwrap(), manifest);
+	}
+
+	#[test]
+	fn refuses_status_rules_and_identities_the_host_cannot_execute() {
+		for text in [
+			UNICODE.replace("mode = \"sync\"", "mode = \"poll\""),
+			UNICODE.replace("state = \"active\"", "state = \"healthy\""),
+			UNICODE.replace("{ value = 0,", "{ value = 1,"),
+			UNICODE.replace("eu4_unicode_patch.dll", "eu4_unicode_patch.bin"),
+			UNICODE.replace("io.github.yozoratempest.eu4-unicode-patch", "../escape"),
+			UNICODE.replace(
+				"io.github.yozoratempest.eu4-unicode-patch",
+				&"a".repeat(257),
+			),
+			UNICODE
+				.replace("kind = \"legacy\"", "kind = \"native\"")
+				.replace("game = \"eu4\"", "game = \"eu4\"\nabi_major = 1"),
+		] {
+			assert!(Manifest::parse(&text).is_err(), "accepted {text}");
+		}
 	}
 }

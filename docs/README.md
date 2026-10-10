@@ -11,6 +11,7 @@ separate notes repository. Linear owns active work and dependencies.
 - [Resolution reference](foch-toml-resolutions.md) — review and resolve conflicts.
 - [VS Code/LSP preview](lsp-0.1-preview.md) — editor setup and supported behavior.
 - [Inline EU4 runtime tests](foch-runtime-tests.md) — annotations, commands and the runner contract.
+- [DLL plugin launch](../src/packages/foch-eu4-host/README.md) — Windows x64 packages, isolated deployment and actual status.
 - [Known issues](known-issues.md) — public limitations.
 
 ## Contributors

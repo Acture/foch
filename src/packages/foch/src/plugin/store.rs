@@ -17,6 +17,37 @@ use std::path::{Path, PathBuf};
 /// `IMAGE_FILE_MACHINE_AMD64`: the only machine type supported now.
 pub const MACHINE_AMD64: u16 = 0x8664;
 
+/// Known installation proxies are excluded, not copied into a Foch layer.
+pub fn is_proxy_name(name: &str) -> bool {
+	matches!(
+		name.to_ascii_lowercase().as_str(),
+		"version.dll" | "d3d9.dll" | "dinput8.dll" | "winmm.dll" | "dxgi.dll"
+	)
+}
+
+/// Bind an adapter to these exact extracted release bytes. Its upstream
+/// VERSION proxy is omitted; the runtime deploys the Foch host instead.
+pub fn adapt(
+	mut manifest: Manifest,
+	mut entries: Vec<ArchiveEntry>,
+) -> Result<ValidatedPackage, Vec<ImportError>> {
+	entries.retain(|entry| !is_proxy_name(&entry.path) && entry.path != FILE_NAME);
+	manifest.files = entries
+		.iter()
+		.map(|entry| super::manifest::FileEntry {
+			path: entry.path.clone(),
+			sha256: sha256_hex(&entry.data),
+		})
+		.collect();
+	let text = toml::to_string_pretty(&manifest)
+		.map_err(|error| vec![ImportError::Manifest(error.to_string())])?;
+	entries.push(ArchiveEntry {
+		path: FILE_NAME.into(),
+		data: text.into_bytes(),
+	});
+	validate(entries)
+}
+
 /// One file in a candidate package, its path relative to the package root.
 #[derive(Clone, Debug)]
 pub struct ArchiveEntry {
@@ -78,6 +109,10 @@ pub struct ValidatedPackage {
 }
 
 impl ValidatedPackage {
+	pub fn entries(&self) -> &[ArchiveEntry] {
+		&self.entries
+	}
+
 	/// The directory name a version is stored under: `<version>+<digest12>`.
 	pub fn version_dir_name(&self) -> String {
 		format!("{}+{}", self.manifest.plugin.version, &self.digest[..12])
@@ -113,6 +148,32 @@ fn safe_relative(path: &str) -> Result<String, ImportError> {
 	}
 	let mut parts = Vec::new();
 	for part in normalized.split('/') {
+		// Win32 strips trailing dots/spaces and interprets ':' as an alternate
+		// stream. Reject aliases before writing either the store or a runtime.
+		if part.ends_with(['.', ' '])
+			|| part
+				.chars()
+				.any(|c| c.is_control() || "<>:\"|?*".contains(c))
+		{
+			return Err(unsafe_path());
+		}
+		let base = part
+			.split('.')
+			.next()
+			.unwrap_or_default()
+			.to_ascii_uppercase();
+		if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+			|| base
+				.strip_prefix("COM")
+				.or_else(|| base.strip_prefix("LPT"))
+				.is_some_and(|suffix| {
+					matches!(
+						suffix,
+						"1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+					)
+				}) {
+			return Err(unsafe_path());
+		}
 		match part {
 			"" | "." => return Err(unsafe_path()), // empty component or `.`
 			".." => return Err(unsafe_path()),
@@ -317,9 +378,23 @@ pub fn catalog(
 	Vec<String>,
 ) {
 	let mut catalog: BTreeMap<String, BTreeMap<semver::Version, Manifest>> = BTreeMap::new();
+	let (versions, problems) = installed_versions(store_root);
+	for version in versions {
+		let manifest = version.manifest;
+		catalog
+			.entry(manifest.plugin.id.clone())
+			.or_default()
+			.insert(manifest.plugin.version.clone(), manifest);
+	}
+	(catalog, problems)
+}
+
+/// Preserve installed directory identities for frozen runtime deployment.
+pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<String>) {
+	let mut versions = Vec::new();
 	let mut problems = Vec::new();
 	let Ok(plugin_dirs) = fs::read_dir(store_root) else {
-		return (catalog, problems);
+		return (versions, problems);
 	};
 	for plugin_entry in plugin_dirs.flatten() {
 		if !plugin_entry.path().is_dir() {
@@ -342,16 +417,14 @@ pub fn catalog(
 				.and_then(|text| Manifest::parse(&text).map_err(|error| error.to_string()))
 			{
 				Ok(manifest) => {
-					catalog
-						.entry(manifest.plugin.id.clone())
-						.or_default()
-						.insert(manifest.plugin.version.clone(), manifest);
+					versions.push(InstalledVersion { dir, manifest });
 				}
 				Err(message) => problems.push(format!("{}: {message}", dir.display())),
 			}
 		}
 	}
-	(catalog, problems)
+	versions.sort_by(|a, b| a.dir.cmp(&b.dir));
+	(versions, problems)
 }
 
 fn write_entries(root: &Path, package: &ValidatedPackage) -> io::Result<()> {
@@ -445,6 +518,28 @@ sha256 = "{dll_digest}"
 		assert!(safe_relative("C:/windows/system32").is_err());
 		assert!(safe_relative("a/../b").is_err());
 		assert_eq!(safe_relative("plugins\\a.dll").unwrap(), "plugins/a.dll");
+		for path in [
+			"plugins/.. /outside.dll",
+			"plugins/file.dll:stream",
+			"plugins/file.dll.",
+			"CON.txt",
+			"plugins/NUL",
+			"LPT1.log",
+			"COM¹.txt",
+		] {
+			let mut entries = package(fake_dll());
+			entries.push(ArchiveEntry {
+				path: path.into(),
+				data: vec![0],
+			});
+			assert!(
+				validate(entries)
+					.unwrap_err()
+					.iter()
+					.any(|error| matches!(error, ImportError::UnsafePath(_))),
+				"accepted {path}"
+			);
+		}
 	}
 
 	#[test]

@@ -1,13 +1,13 @@
 //! `foch plugin`: install plugins, choose them per playset, and plan a launch.
 //!
 //! The CLI drives the shared management module in `foch::plugin`; the desktop
-//! application uses the same module. Nothing here loads a DLL or launches the
-//! game: it manages identity, versions, selection and the resolved load order.
+//! application uses the same module. Launch stages a frozen plan into an
+//! isolated game layer; only the in-game host loads DLLs.
 
 use super::HandlerResult;
 use crate::cli::arg::{
-	CheckOutputFormat, PluginArgs, PluginCommand, PluginImportArgs, PluginListArgs, PluginPlanArgs,
-	PluginToggleArgs,
+	CheckOutputFormat, PluginArgs, PluginCommand, PluginImportArgs, PluginLaunchArgs,
+	PluginListArgs, PluginPlanArgs, PluginStatusArgs, PluginToggleArgs,
 };
 use foch::game::eu4::Eu4;
 use foch::game::eu4::base::snapshot::{detect_game_version, resolve_game_root};
@@ -26,6 +26,8 @@ pub fn handle_plugin(args: &PluginArgs, config: Config) -> HandlerResult {
 		PluginCommand::Enable(toggle) => set_enabled(toggle, true),
 		PluginCommand::Disable(toggle) => set_enabled(toggle, false),
 		PluginCommand::Plan(plan) => plan_launch(plan, &config),
+		PluginCommand::Launch(launch) => launch_plugins(launch, &config),
+		PluginCommand::Status(status) => show_status(status),
 	}
 }
 
@@ -107,7 +109,14 @@ fn import_plugin(args: &PluginImportArgs) -> HandlerResult {
 		.into());
 	}
 	let entries = read_package_dir(&args.path)?;
-	let validated = match plugin::validate(entries) {
+	let candidate = match &args.adapter {
+		Some(id) => store::adapt(
+			plugin::builtin::adapter(id).ok_or_else(|| format!("unknown built-in adapter {id}"))?,
+			entries,
+		),
+		None => plugin::validate(entries),
+	};
+	let validated = match candidate {
 		Ok(package) => package,
 		Err(problems) => {
 			let mut message = String::from("package failed validation:");
@@ -228,10 +237,19 @@ fn plan_launch(args: &PluginPlanArgs, config: &Config) -> HandlerResult {
 	};
 
 	let store_root = plugin::paths::store_root();
-	let (catalog, _) = catalog_with_builtins(&store_root);
+	let (catalog, _) = store::catalog(&store_root);
 	let (_, selections) = load_selections()?;
 	let chosen = selections.for_playset(&args.playset);
-	let resolution = plugin::plan(&game, &catalog, &chosen.to_selections());
+	let selections = chosen.to_selections();
+	let mut resolution = plugin::plan(&game, &catalog, &selections);
+	if resolution.is_launchable()
+		&& let Err(reason) = plugin::deployment::resolve(&game, &store_root, &selections)
+	{
+		resolution.errors.push(planner::Diagnostic::Incompatible {
+			id: "deployment".into(),
+			reason,
+		});
+	}
 
 	match args.format {
 		CheckOutputFormat::Json => {
@@ -285,4 +303,145 @@ fn plan_launch(args: &PluginPlanArgs, config: &Config) -> HandlerResult {
 fn print_json(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
 	println!("{}", serde_json::to_string_pretty(value)?);
 	Ok(())
+}
+
+fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
+	if !cfg!(all(windows, target_arch = "x86_64")) {
+		return Err("plugin launch requires Windows x64".into());
+	}
+	let game_root = foch_runner::locate_game(config, args.plan.game_path.as_deref())?;
+	let raw_version = detect_game_version(&game_root).ok_or("could not detect the EU4 version")?;
+	let game = GameIdentity {
+		game: "eu4".into(),
+		version: planner::parse_game_version(&raw_version).ok_or("invalid EU4 version")?,
+		platform: planner::WINDOWS_X64.into(),
+	};
+	let (_, selections) = load_selections()?;
+	let selected = selections.for_playset(&args.plan.playset).to_selections();
+	let deployment = plugin::deployment::resolve(&game, &plugin::paths::store_root(), &selected)?;
+	let host = args.host_dll.clone().unwrap_or(
+		std::env::current_exe()?
+			.parent()
+			.unwrap()
+			.join("foch_eu4_host.dll"),
+	);
+	let host_bytes = std::fs::read(&host).map_err(|error| {
+		format!(
+			"cannot read host {}: {error}; build foch-eu4-host and pass --host-dll",
+			host.display()
+		)
+	})?;
+	if store::pe_machine(&host_bytes) != Some(store::MACHINE_AMD64) {
+		return Err("host DLL is not an AMD64 PE image".into());
+	}
+	let runtime_base = args
+		.runtime_base
+		.clone()
+		.unwrap_or(std::env::temp_dir().join("foch-rt"));
+	let run_id = format!(
+		"p{:x}",
+		std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)?
+			.as_nanos()
+	);
+	let mut layer =
+		foch_runner::runtime::RuntimeLayer::prepare(&game_root, &runtime_base, &run_id)?;
+	let directory = layer.directory.clone();
+	std::fs::write(directory.join("VERSION.dll"), &host_bytes)?;
+	let data_root = foch::game::eu4::base::snapshot::data_root();
+	foch_runner::runtime::ensure_outside_game(&game_root, &data_root)?;
+	let prepared = deployment.stage(&directory, &data_root, &run_id, &game_root)?;
+	if let Some(cache) = deployment.font_cache(&data_root, &layer.fonts_sha256) {
+		layer.redirect_unicode_cache(&cache)?;
+	}
+	let user_dir = args
+		.user_dir
+		.clone()
+		.or_else(|| {
+			dirs::document_dir().map(|path| path.join("Paradox Interactive/Europa Universalis IV"))
+		})
+		.ok_or("could not locate the EU4 user directory; pass --user-dir")?;
+	foch_runner::runtime::ensure_outside_game(&game_root, &user_dir)?;
+	std::fs::create_dir_all(&user_dir)?;
+	let user_dir = PathBuf::from(plugin::deployment::path_text(&user_dir.canonicalize()?)?);
+	std::fs::write(
+		directory.join("userdir.txt"),
+		user_dir.to_string_lossy().as_bytes(),
+	)?;
+	let mut record = json!({
+		"format":1, "run_id":run_id, "playset":args.plan.playset, "runtime":directory,
+		"user_dir":user_dir, "game_version":raw_version,
+		"game_exe_sha256":plugin::deployment::hash(&std::fs::read(directory.join("eu4.exe"))?),
+		"host_sha256":plugin::deployment::hash(&host_bytes), "plan_sha256":prepared.plan_sha256,
+		"artifacts":prepared.artifacts, "excluded":layer.excluded,
+		"events":prepared.plan.events, "pid":null, "prepared_only":args.prepare_only,
+	});
+	let mut child = if args.prepare_only {
+		None
+	} else {
+		Some(foch_runner::runtime::spawn_player(
+			&directory,
+			&user_dir,
+			&args.game_args,
+		)?)
+	};
+	if let Some(child) = &child {
+		record["pid"] = child.id().into();
+	}
+	let retain = std::fs::write(
+		directory.join("foch-host/run.json"),
+		serde_json::to_vec_pretty(&record)?,
+	)
+	.and_then(|()| layer.retain().map(|_| ()));
+	if let Err(error) = retain {
+		if let Some(child) = &mut child {
+			let _ = child.kill();
+			let _ = child.wait();
+		}
+		return Err(error.into());
+	}
+	match args.plan.format {
+		CheckOutputFormat::Json => print_json(&record)?,
+		CheckOutputFormat::Text => {
+			println!(
+				"{}: {}",
+				if args.prepare_only {
+					"Prepared runtime"
+				} else {
+					"Started EU4"
+				},
+				directory.display()
+			);
+			if let Some(child) = &child {
+				println!("PID: {}", child.id());
+			}
+			println!(
+				"Read states: foch plugin status --run-dir \"{}\"",
+				directory.display()
+			);
+		}
+	}
+	Ok(0)
+}
+
+fn show_status(args: &PluginStatusArgs) -> HandlerResult {
+	let plan: plugin::deployment::HostPlan =
+		serde_json::from_slice(&std::fs::read(args.run_dir.join("foch-host/plan.json"))?)?;
+	let states = plugin::deployment::states(&plan)?;
+	match args.format {
+		CheckOutputFormat::Json => print_json(&json!({"run_id":plan.run_id,"plugins":states}))?,
+		CheckOutputFormat::Text => {
+			for (id, state) in states {
+				println!(
+					"{id}: {}{}",
+					state["state"].as_str().unwrap_or("unknown"),
+					state["reason"]
+						.as_str()
+						.map(|reason| format!(" ({reason})"))
+						.unwrap_or_default()
+				);
+			}
+		}
+	}
+	Ok(0)
 }

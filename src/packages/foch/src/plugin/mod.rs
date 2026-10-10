@@ -7,6 +7,7 @@
 //! produces (see [`planner`]).
 
 pub mod builtin;
+pub mod deployment;
 pub mod manifest;
 pub mod paths;
 pub mod planner;

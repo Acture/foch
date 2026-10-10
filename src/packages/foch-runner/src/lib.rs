@@ -16,6 +16,9 @@
 
 pub mod layout;
 mod platform;
+pub mod runtime;
+
+use runtime::RuntimeLayer;
 
 use foch::game::eu4::Eu4;
 use foch::game::eu4::base::snapshot::resolve_game_root;
@@ -86,6 +89,8 @@ pub fn sweep_runtime_base(runtime_base: &Path, max_age: Duration) {
 			continue;
 		};
 		if metadata.is_dir()
+			&& entry.path().join("foch-runtime").is_file()
+			&& !entry.path().join("foch-player-runtime").exists()
 			&& metadata
 				.modified()
 				.is_ok_and(|modified| is_stale(modified, now, max_age))
@@ -216,7 +221,7 @@ pub fn run_session(
 	installation: &Installation,
 	options: &RunOptions,
 ) -> io::Result<SessionOutcome> {
-	let runtime = RuntimeLayer::build(bundle, &installation.game_root, &installation.runtime_base)?;
+	let runtime = assemble_runtime(bundle, &installation.game_root, &installation.runtime_base)?;
 	if let Some(message) = runtime.budget_error() {
 		return Err(io::Error::other(message));
 	}
@@ -381,97 +386,22 @@ fn write_descriptor(path: &Path, name: &str, mod_path: &Path) -> io::Result<()> 
 	fs::write(path, format!("name=\"{name}\"\npath=\"{normalized}\"\n"))
 }
 
-/// A per-session copy of the install: loose files copied, data directories
-/// linked, laid out on a short path.
-struct RuntimeLayer {
-	directory: PathBuf,
-	longest_relative: usize,
-}
-
-impl RuntimeLayer {
-	fn build(bundle: &Bundle, game_root: &Path, runtime_base: &Path) -> io::Result<Self> {
-		let directory = runtime_base.join(&bundle.namespace);
-		fs::create_dir_all(&directory)?;
-		let mut longest_relative = 0;
-		for entry in fs::read_dir(game_root)? {
-			let entry = entry?;
-			let name = entry.file_name();
-			let name = name.to_string_lossy();
-			let is_dir = entry.file_type()?.is_dir();
-			match layout::classify_entry(&name, is_dir) {
-				layout::LayerAction::Copy => {
-					fs::copy(entry.path(), directory.join(&*name))?;
-				}
-				layout::LayerAction::Link => {
-					longest_relative =
-						longest_relative.max(deepest_relative(&entry.path(), name.len()));
-					platform::link_dir(&entry.path(), &directory.join(&*name))?;
-				}
-				layout::LayerAction::Skip => {}
-			}
-		}
-		fs::write(directory.join("userdir.txt"), "")?;
-		fs::write(
-			directory.join("steam_appid.txt"),
-			Eu4::STEAM_APP_ID.to_string(),
-		)?;
-		fs::write(
-			directory.join("commands.txt"),
-			layout::command_file(bundle, bundle.requires.ai_off),
-		)?;
-		// The start file is referenced by `run <name>`, resolved against the
-		// game's working directory, so it lives beside the executable.
-		for (relative, content) in &bundle.files {
-			if relative.ends_with("_start.txt") && !relative.contains('/') {
-				fs::write(directory.join(relative), content)?;
-			}
-		}
-		Ok(Self {
-			directory,
-			longest_relative,
-		})
-	}
-
-	fn budget_error(&self) -> Option<String> {
-		if layout::fits_path_budget(self.directory.as_os_str().len(), self.longest_relative) {
-			None
-		} else {
-			Some(format!(
-				"runtime layer path {} is too long for the game's files (deepest relative {} chars); choose a shorter runtime base",
-				self.directory.display(),
-				self.longest_relative
-			))
+fn assemble_runtime(
+	bundle: &Bundle,
+	game_root: &Path,
+	runtime_base: &Path,
+) -> io::Result<RuntimeLayer> {
+	let runtime = RuntimeLayer::prepare(game_root, runtime_base, &bundle.namespace)?;
+	fs::write(
+		runtime.directory.join("commands.txt"),
+		layout::command_file(bundle, bundle.requires.ai_off),
+	)?;
+	for (relative, content) in &bundle.files {
+		if relative.ends_with("_start.txt") && !relative.contains('/') {
+			fs::write(runtime.directory.join(relative), content)?;
 		}
 	}
-}
-
-impl Drop for RuntimeLayer {
-	/// Tear the layer down on any exit from `run_session`, including early
-	/// returns, so a failed launch never leaves junctions or copies behind.
-	fn drop(&mut self) {
-		platform::remove_layer(&self.directory);
-	}
-}
-
-/// Deepest `<dir>/<file>` length under `root`, relative to the install root
-/// (so it already counts `dir_name` as its first component).
-fn deepest_relative(root: &Path, dir_name_len: usize) -> usize {
-	fn walk(path: &Path, prefix: usize) -> usize {
-		let mut deepest = prefix;
-		if let Ok(entries) = fs::read_dir(path) {
-			for entry in entries.flatten() {
-				let name_len = entry.file_name().to_string_lossy().chars().count();
-				let child = prefix + 1 + name_len;
-				deepest = deepest.max(if entry.path().is_dir() {
-					walk(&entry.path(), child)
-				} else {
-					child
-				});
-			}
-		}
-		deepest
-	}
-	walk(root, dir_name_len)
+	Ok(runtime)
 }
 
 #[cfg(test)]

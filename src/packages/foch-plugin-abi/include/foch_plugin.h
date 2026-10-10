@@ -111,6 +111,8 @@ struct FochHostApi {
 	 * Shared code services. Every plugin that changes eu4.exe through these
 	 * is visible to the host, so overlapping changes are reported instead of
 	 * silently corrupting each other.
+	 * These slots are reserved in the first-version loading host, which
+	 * returns FOCH_E_UNSUPPORTED. Plugins must check service return codes.
 	 */
 
 	/* Find the unique match of a pattern such as "48 8B ?? 05 ?" in the

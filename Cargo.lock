@@ -1434,6 +1434,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-eu4-host"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "foch",
+ "foch-plugin-abi",
+ "foch-runner",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "foch-lsp"
 version = "0.0.1"
 dependencies = [
@@ -1458,7 +1473,11 @@ version = "0.0.1"
 dependencies = [
  "foch",
  "foch-test",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
