@@ -1045,6 +1045,84 @@ pub fn parse_unrecovered_statements(syntax: ScriptSyntax, content: &str) -> Pars
 	result
 }
 
+/// The edits that write the repairs `diagnostics` record into `content`,
+/// the text they were parsed from: a brace left out is removed, a missing
+/// `}` goes on its own line before the line it was added before, a missing
+/// `{` follows the `=`, and an unterminated string is ended at its line's
+/// end. `None` when a repair is not where the text says it is.
+pub fn repair_text_edits(
+	content: &str,
+	diagnostics: &[ParseDiagnostic],
+) -> Option<Vec<crate::game::eu4::text::TextEdit>> {
+	use crate::game::eu4::text::TextEdit;
+	use crate::model::SourceRepairEdit;
+
+	let mut edits = Vec::new();
+	for diagnostic in diagnostics {
+		let Some(repair) = diagnostic.repair else {
+			continue;
+		};
+		let offset = diagnostic.span.start.offset;
+		let edit = match repair.edit {
+			SourceRepairEdit::RemovedClosingBrace | SourceRepairEdit::RemovedOpeningBrace => {
+				let brace = if repair.edit == SourceRepairEdit::RemovedClosingBrace {
+					"}"
+				} else {
+					"{"
+				};
+				if content.get(offset..offset + 1)? != brace {
+					return None;
+				}
+				TextEdit {
+					offset,
+					remove: 1,
+					insert: "",
+				}
+			}
+			SourceRepairEdit::InsertedClosingBrace => {
+				let line_start = content.get(..offset)?.rfind('\n').map_or(0, |at| at + 1);
+				if content[line_start..offset].trim().is_empty() {
+					TextEdit {
+						offset: line_start,
+						remove: 0,
+						insert: "}\n",
+					}
+				} else if offset == content.len() {
+					TextEdit {
+						offset,
+						remove: 0,
+						insert: "\n}\n",
+					}
+				} else {
+					return None;
+				}
+			}
+			SourceRepairEdit::InsertedOpeningBrace => {
+				if !content.get(..offset)?.ends_with('=') {
+					return None;
+				}
+				TextEdit {
+					offset,
+					remove: 0,
+					insert: " {",
+				}
+			}
+			SourceRepairEdit::ClosedStringAtLineEnd => {
+				let rest = content.get(offset..)?;
+				let line = rest.find('\n').map_or(rest.len(), |at| at);
+				let end = offset + line - usize::from(rest[..line].ends_with('\r'));
+				TextEdit {
+					offset: end,
+					remove: 0,
+					insert: "\"",
+				}
+			}
+		};
+		edits.push(edit);
+	}
+	Some(edits)
+}
+
 /// How many of one definition's values have a shape the schema for the file
 /// being read rejects.
 pub type SchemaCheck<'a> = dyn Fn(&[AstStatement]) -> usize + 'a;

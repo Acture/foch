@@ -195,8 +195,14 @@ block.
 
 Each unit that read a repaired file carries a note naming the mod, file, line,
 column, edit and evidence. The merge report lists the same facts in
-`source_repairs`. Copied units install source bytes unchanged, so they record
-no repair.
+`source_repairs`.
+
+A file only one mod ships is copied, and the copy is written with its
+repairs: each one-token edit is made in the file's own bytes and encoding, so
+nothing else in it changes. That requires the decoded text to encode back to
+exactly the original bytes; a file where it does not, or a UTF-16 file, is
+copied unchanged with a warning. A copied file with an isolated definition is
+copied unchanged, with a note.
 
 A broken segment with no trustworthy repair is isolated when it starts with a
 definition head whose key the file does not repeat. Its text is left out up to

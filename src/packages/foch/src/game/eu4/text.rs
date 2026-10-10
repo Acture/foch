@@ -82,6 +82,78 @@ fn is_legacy_double_byte(encoding: &'static Encoding) -> bool {
 		|| encoding == encoding_rs::EUC_KR
 }
 
+/// An edit to decoded script text: at the byte `offset` of the decoded
+/// text, `remove` bytes are taken out and `insert` is put in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextEdit {
+	pub offset: usize,
+	pub remove: usize,
+	pub insert: &'static str,
+}
+
+/// Applies edits made to the text `decode_paradox_bytes` gives for `bytes`
+/// to the bytes themselves, in the encoding they are in, BOM included.
+///
+/// `None` when the encoding cannot carry the edit back exactly: the decoded
+/// text must encode to exactly `bytes` again, or no position in them is
+/// known. UTF-16 is never edited.
+pub fn edit_paradox_bytes(bytes: &[u8], edits: &[TextEdit]) -> Option<Vec<u8>> {
+	if bytes.starts_with(UTF16_LE_BOM.as_slice()) || bytes.starts_with(UTF16_BE_BOM.as_slice()) {
+		return None;
+	}
+	let (prefix, body) = match bytes.strip_prefix(UTF8_BOM.as_slice()) {
+		Some(rest) => (UTF8_BOM.as_slice(), rest),
+		None => (&[][..], bytes),
+	};
+	let encoding = if std::str::from_utf8(body).is_ok() {
+		encoding_rs::UTF_8
+	} else if !prefix.is_empty() {
+		return None;
+	} else {
+		legacy_encoding(body)
+	};
+	let (decoded, had_errors) = encoding.decode_without_bom_handling(body);
+	if had_errors || decoded != decode_paradox_bytes(bytes) {
+		return None;
+	}
+	let (round_trip, _, unmappable) = encoding.encode(&decoded);
+	if unmappable || round_trip.as_ref() != body {
+		return None;
+	}
+	let mut edited = decoded.into_owned();
+	let mut ordered = edits.to_vec();
+	ordered.sort_by_key(|edit| std::cmp::Reverse(edit.offset));
+	for edit in ordered {
+		let end = edit.offset.checked_add(edit.remove)?;
+		if end > edited.len()
+			|| !edited.is_char_boundary(edit.offset)
+			|| !edited.is_char_boundary(end)
+		{
+			return None;
+		}
+		edited.replace_range(edit.offset..end, edit.insert);
+	}
+	let (encoded, _, unmappable) = encoding.encode(&edited);
+	if unmappable {
+		return None;
+	}
+	let mut out = prefix.to_vec();
+	out.extend_from_slice(&encoded);
+	Some(out)
+}
+
+/// The encoding `decode_paradox_bytes` reads non-UTF-8 `bytes` in.
+fn legacy_encoding(bytes: &[u8]) -> &'static Encoding {
+	let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+	detector.feed(bytes, true);
+	let encoding = detector.guess(None, Utf8Detection::Deny);
+	if is_legacy_double_byte(encoding) && !encoding.decode(bytes).2 {
+		encoding
+	} else {
+		WINDOWS_1252
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -159,5 +231,45 @@ mod tests {
 		// windows-1252.
 		let bytes = b"\xe7";
 		assert_eq!(decode_paradox_bytes(bytes), "ç");
+	}
+
+	#[test]
+	fn edits_keep_a_windows_1252_file_in_its_encoding() {
+		let bytes = b"a = { name = \"Bragan\xe7a\" }\n}\n";
+		let edited = edit_paradox_bytes(
+			bytes,
+			&[TextEdit {
+				offset: decode_paradox_bytes(bytes).rfind('}').unwrap(),
+				remove: 1,
+				insert: "",
+			}],
+		)
+		.unwrap();
+		assert_eq!(edited, b"a = { name = \"Bragan\xe7a\" }\n\n");
+	}
+
+	#[test]
+	fn edits_keep_a_utf8_bom() {
+		let mut bytes = vec![0xEF, 0xBB, 0xBF];
+		bytes.extend_from_slice("a = {\n\tx = \"ç\"\n".as_bytes());
+		let decoded = decode_paradox_bytes(&bytes).into_owned();
+		let edited = edit_paradox_bytes(
+			&bytes,
+			&[TextEdit {
+				offset: decoded.len(),
+				remove: 0,
+				insert: "}\n",
+			}],
+		)
+		.unwrap();
+		let mut expected = vec![0xEF, 0xBB, 0xBF];
+		expected.extend_from_slice("a = {\n\tx = \"ç\"\n}\n".as_bytes());
+		assert_eq!(edited, expected);
+	}
+
+	#[test]
+	fn utf16_is_never_edited() {
+		let bytes = [0xFF, 0xFE, b'a', 0];
+		assert!(edit_paradox_bytes(&bytes, &[]).is_none());
 	}
 }

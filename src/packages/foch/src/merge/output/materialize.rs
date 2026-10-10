@@ -553,7 +553,7 @@ pub(crate) fn materialize_with_adaptations(
 		&mut report,
 	)?;
 	review.mark_output_pruned(&prune_result.pruned_paths)?;
-	record_source_repairs(&input, &plan, &mut review, &mut report)?;
+	record_source_repairs(&input, &plan, out_dir, &mut review, &mut report)?;
 	let committed_module_replacements = reconcile_surviving_output_facts(
 		&plan,
 		&prune_result,
@@ -673,17 +673,34 @@ struct UnitOutputs {
 fn record_source_repairs(
 	input: &ResolvedInput,
 	plan: &MergePlanResult,
+	out_dir: &Path,
 	review: &mut UnitOutcomeLedger,
 	report: &mut MergeReport,
 ) -> Result<(), MergeError> {
 	for entry in &plan.paths {
 		let unit = review.outcome(entry)?;
-		if unit.disposition == MergeDisposition::Copy {
+		let unit_id = unit.id.clone();
+		let disposition = unit.disposition;
+		let issues = unit_parse_issues(input, entry, disposition)
+			.into_iter()
+			.filter(|(_, issue)| issue.repair.is_some())
+			.collect::<Vec<_>>();
+		if issues.is_empty() {
 			continue;
 		}
-		let unit_id = unit.id.clone();
+		// A copied file is written with its repairs when its encoding can
+		// carry them back exactly; otherwise its bytes are copied unchanged.
+		if disposition == MergeDisposition::Copy && !copy_was_repaired(input, entry, out_dir)? {
+			let warning = format!(
+				"{} is copied unchanged: its repairs cannot be written back in its encoding",
+				entry.output_path()
+			);
+			report.warnings.push(warning.clone());
+			review.add_notes(entry, [warning])?;
+			continue;
+		}
 		let mut notes = Vec::new();
-		for (_, issue) in unit_parse_issues(input, entry, unit.disposition) {
+		for (_, issue) in issues {
 			let Some(repair) = issue.repair else {
 				continue;
 			};
@@ -941,9 +958,23 @@ fn withhold_isolated_definitions(
 	Ok(())
 }
 
+/// Whether a copied unit's output differs from its winner's file, which
+/// it does only when the copy was written with its repairs.
+fn copy_was_repaired(
+	input: &ResolvedInput,
+	entry: &MergePlanEntry,
+	out_dir: &Path,
+) -> Result<bool, MergeError> {
+	let output = entry.output_path().to_path(out_dir);
+	let Ok(written) = fs::read(&output) else {
+		return Ok(false);
+	};
+	Ok(fs::read(io::winner_source_path(input, entry)?)? != written)
+}
+
 /// The parse issues of the files a unit read, with the mod that each file
-/// belongs to. A copied unit reads nothing, so it only reports issues a file
-/// was already parsed with.
+/// belongs to. A copied unit reads nothing; its issues are those the mod's
+/// analyzed snapshot recorded.
 fn unit_parse_issues<'a>(
 	input: &'a ResolvedInput,
 	entry: &'a MergePlanEntry,
@@ -961,17 +992,15 @@ fn unit_parse_issues<'a>(
 			if contributor.is_synthetic_base {
 				continue;
 			}
-			let parsed = if disposition == MergeDisposition::Copy {
-				input
-					.script_cache
-					.get(&contributor.mod_id, &contributor.relative_path)
-					.ok()
-					.flatten()
-			} else {
-				// Only a parsed script has issues; anything else fails to
-				// load here and is reported by the unit itself.
-				input.script_cache.load(contributor).ok()
-			};
+			if disposition == MergeDisposition::Copy {
+				for issue in input.snapshot_parse_issues(&contributor.mod_id, path) {
+					issues.push((contributor.mod_id.as_str(), issue.clone()));
+				}
+				continue;
+			}
+			// Only a parsed script has issues; anything else fails to load
+			// here and is reported by the unit itself.
+			let parsed = input.script_cache.load(contributor).ok();
 			for issue in parsed.iter().flat_map(|parsed| &parsed.parse_issues) {
 				issues.push((contributor.mod_id.as_str(), issue.clone()));
 			}

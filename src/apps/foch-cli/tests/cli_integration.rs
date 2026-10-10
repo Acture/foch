@@ -482,6 +482,49 @@ fn force_merges_the_rest_of_a_module_with_an_isolated_definition() {
 }
 
 #[test]
+fn a_copied_file_is_written_with_its_repair_in_its_own_encoding() {
+	let scratch = TempDir::new().unwrap();
+	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");
+	let mod_b = scratch.path().join("b");
+	let path = "events/b_only.txt";
+	// Windows-1252 text that only B ships; the stray `}` would close the event
+	// early and leave its option outside it.
+	let source: &[u8] =
+		b"namespace = b\ncountry_event = {\n\tid = b.1\n\ttitle = \"Bragan\xe7a\"\n}\n\toption = { name = b.1.a }\n}\n";
+	fs::create_dir_all(mod_b.join("events")).unwrap();
+	fs::write(mod_b.join(path), source).unwrap();
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		fs::read(out.join(path)).unwrap(),
+		b"namespace = b\ncountry_event = {\n\tid = b.1\n\ttitle = \"Bragan\xe7a\"\n\n\toption = { name = b.1.a }\n}\n",
+		"the brace that closed the event early is left out, and nothing else changes"
+	);
+	assert_eq!(fs::read(mod_b.join(path)).unwrap(), source);
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert!(
+		report
+			.source_repairs
+			.iter()
+			.any(|repair| repair.unit == format!("file:{path}") && repair.line == 5),
+		"{:#?}",
+		report.source_repairs
+	);
+}
+
+#[test]
 fn an_isolated_override_of_a_vanilla_definition_keeps_the_vanilla_one() {
 	let scratch = TempDir::new().unwrap();
 	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");
