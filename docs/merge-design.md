@@ -218,6 +218,10 @@ never as deleted, so that mod's version of it is missing from the result:
   default backend only. Any other backend would read the absence as a
   deletion, so it always holds the unit.
 
+A reviewed `[[repairs]]` entry in `foch.toml` applies one of the proposals, or
+any exact edit, to Foch's copy of the file, after which it merges as usual; see
+[the project manifest](./foch-project-manifest.md#reviewed-syntax-repairs).
+
 Text that names no definition, a key the file repeats, as events repeat
 `country_event`, and any other error without a repair still make the file
 unsupported, and `--force` does not change that.

@@ -482,6 +482,75 @@ fn force_merges_the_rest_of_a_module_with_an_isolated_definition() {
 }
 
 #[test]
+fn a_reviewed_repair_lets_an_isolated_definition_merge_until_its_source_changes() {
+	let scratch = TempDir::new().unwrap();
+	let (out, stdout, _) = merge_triggers(scratch.path(), ISOLATED_TRIGGERS, false);
+	assert!(stdout.contains("[[repairs]]"), "{stdout}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	let isolated = &report.isolated_definitions[0];
+	let source_path = scratch.path().join("b").join(STRAY_BRACE_TRIGGERS);
+	let entry = foch::project::proposed_repair_entry(
+		"b",
+		&isolated.path,
+		&fs::read(&source_path).unwrap(),
+		isolated.isolation.proposals[0],
+	)
+	.expect("the first proposal applies");
+	let manifest = scratch.path().join("foch.toml");
+	let mut config = fs::read_to_string(&manifest).unwrap();
+	config.push('\n');
+	config.push_str(&foch::project::render_repairs_toml(&[entry]));
+	fs::write(&manifest, config).unwrap();
+
+	let reviewed_out = scratch.path().join("reviewed-out");
+	let args = |out: &Path| {
+		vec![
+			"merge".to_owned(),
+			path_text(&manifest).to_owned(),
+			"--out".to_owned(),
+			path_text(out).to_owned(),
+			"--non-interactive".to_owned(),
+			"--confirm".to_owned(),
+		]
+	};
+	let reviewed_args = args(&reviewed_out);
+	let (code, stdout, stderr) = run_foch(
+		&reviewed_args.iter().map(String::as_str).collect::<Vec<_>>(),
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("accepted syntax repair"), "{stdout}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(reviewed_out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap())
+			.unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert!(report.isolated_definitions.is_empty(), "{report:#?}");
+	let merged = merged_triggers(&reviewed_out);
+	assert!(merged.contains("b_open"), "{merged}");
+	assert_eq!(
+		fs::read_to_string(&source_path).unwrap(),
+		ISOLATED_TRIGGERS,
+		"the source file is read-only"
+	);
+
+	// The review was of those exact bytes.
+	fs::write(&source_path, format!("{ISOLATED_TRIGGERS}# edited\n")).unwrap();
+	let stale_out = scratch.path().join("stale-out");
+	let stale_args = args(&stale_out);
+	let (code, stdout, stderr) = run_foch(
+		&stale_args.iter().map(String::as_str).collect::<Vec<_>>(),
+		scratch.path(),
+	);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("stale"), "{stderr}");
+}
+
+#[test]
 fn a_copied_file_is_written_with_its_repair_in_its_own_encoding() {
 	let scratch = TempDir::new().unwrap();
 	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");

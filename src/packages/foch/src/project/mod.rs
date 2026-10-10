@@ -1,11 +1,14 @@
 mod cultures;
 mod fingerprint;
 mod gui;
+mod repairs;
 mod transform;
 
 pub use cultures::{CultureConfig, CultureRenameEntry, CultureRepairEntry};
 pub use fingerprint::compute_playset_fingerprint;
 pub use gui::{GuiConfig, GuiMode, GuiTextOverride, GuiVisibilityOverride};
+pub(crate) use repairs::repairs_identity;
+pub use repairs::{SourceRepairEntry, proposed_repair_entry, render_repairs_toml};
 pub use transform::SourceEdit;
 
 use crate::game::eu4::Eu4;
@@ -36,6 +39,9 @@ pub struct Project {
 	pub cultures: CultureConfig,
 	#[serde(default, skip_serializing_if = "GuiConfig::is_empty")]
 	pub gui: GuiConfig,
+	/// Reviewed syntax repairs of mod script files.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub repairs: Vec<SourceRepairEntry>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -60,6 +66,8 @@ struct RawProject {
 	cultures: CultureConfig,
 	#[serde(default)]
 	gui: GuiConfig,
+	#[serde(default)]
+	repairs: Vec<SourceRepairEntry>,
 }
 
 impl<'de> Deserialize<'de> for Project {
@@ -71,6 +79,7 @@ impl<'de> Deserialize<'de> for Project {
 		ResolutionMap::from_entries(&raw.resolutions).map_err(serde::de::Error::custom)?;
 		raw.cultures.validate().map_err(serde::de::Error::custom)?;
 		raw.gui.validate().map_err(serde::de::Error::custom)?;
+		repairs::validate_repairs(&raw.repairs).map_err(serde::de::Error::custom)?;
 		Ok(Self {
 			project: raw.project,
 			overrides: raw.overrides,
@@ -78,6 +87,7 @@ impl<'de> Deserialize<'de> for Project {
 			emit: raw.emit,
 			cultures: raw.cultures,
 			gui: raw.gui,
+			repairs: raw.repairs,
 		})
 	}
 }
@@ -725,6 +735,13 @@ impl Project {
 						path: path.clone(),
 						source: serde::de::Error::custom(error),
 					})?;
+				merged.repairs.extend(config.repairs);
+				repairs::validate_repairs(&merged.repairs).map_err(|error| {
+					FochConfigLoadError::Parse {
+						path: path.clone(),
+						source: serde::de::Error::custom(error),
+					}
+				})?;
 				if config.project.is_some() {
 					merged.project = config.project;
 				}

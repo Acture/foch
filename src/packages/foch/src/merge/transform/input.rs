@@ -202,12 +202,20 @@ impl ReviewedInputBatch {
 				file,
 				repaired.as_bytes(),
 			);
+			let reviewed_lines = reviewed_definition_lines(&document.ast.statements, &edits);
 			for index in &owners[&key] {
 				let policy = &policies[*index];
-				// A reviewed repair is the exact text that was approved, so it
-				// must parse on its own: an automatic repair on top of it would
-				// change what was reviewed.
-				if !document.parse_issues.is_empty() {
+				// A reviewed repair is the exact text that was approved, so the
+				// definitions it touches must parse on their own: an automatic
+				// repair there would change what was reviewed. Elsewhere in the
+				// file the usual automatic repairs still apply.
+				let unreviewed = document.parse_issues.iter().any(|issue| {
+					issue.repair.is_none()
+						|| reviewed_lines
+							.iter()
+							.any(|lines| lines.contains(&issue.line))
+				});
+				if unreviewed {
 					return Err(invalid(
 						game(file),
 						format!(
@@ -232,6 +240,35 @@ impl ReviewedInputBatch {
 		}
 		self.inputs
 	}
+}
+
+/// The line ranges of the top-level definitions that `edits`, already made,
+/// changed in the text `statements` were parsed from.
+fn reviewed_definition_lines(
+	statements: &[crate::game::eu4::script::parser::AstStatement],
+	edits: &[SourceEdit],
+) -> Vec<std::ops::RangeInclusive<usize>> {
+	use crate::game::eu4::script::parser::AstStatement;
+
+	let mut sorted = edits.iter().collect::<Vec<_>>();
+	sorted.sort_by_key(|edit| edit.start);
+	let mut shift = 0isize;
+	let mut ranges = Vec::new();
+	for edit in sorted {
+		let start = edit.start.saturating_add_signed(shift);
+		let end = start + edit.replacement.len();
+		shift += edit.replacement.len() as isize - (edit.end - edit.start) as isize;
+		for statement in statements {
+			let span = match statement {
+				AstStatement::Assignment { span, .. } | AstStatement::Item { span, .. } => span,
+				AstStatement::Comment { .. } => continue,
+			};
+			if span.start.offset <= end && start <= span.end.offset {
+				ranges.push(span.start.line..=span.end.line);
+			}
+		}
+	}
+	ranges
 }
 
 pub(crate) fn repair_text(source: &str, edits: &[SourceEdit]) -> Result<String, String> {

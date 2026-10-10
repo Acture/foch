@@ -904,30 +904,41 @@ fn withhold_isolated_definitions(
 			let Some(isolation) = &issue.isolation else {
 				continue;
 			};
+			let mod_id = contributor.mod_id.as_str();
 			let proposals = isolation
 				.proposals
 				.iter()
 				.map(|proposal| proposal.description())
 				.collect::<Vec<_>>();
+			// The likeliest repair, ready to review into foch.toml.
+			let entry = isolation.proposals.first().and_then(|proposal| {
+				let bytes =
+					fs::read(contributor.relative_path.to_path(&contributor.root_path)).ok()?;
+				crate::project::proposed_repair_entry(mod_id, &issue.path, &bytes, *proposal)
+			});
 			notes.push(format!(
-				"definition `{}` in {}: {}:{}-{} has a syntax error with no trustworthy repair, so {}'s version of it is not in the result{}",
+				"definition `{}` in {}: {}:{}-{} has a syntax error with no trustworthy repair, so {}'s version of it is not in the result{}{}",
 				isolation.definition,
-				contributor,
+				mod_id,
 				issue.path,
 				issue.line,
 				isolation.end_line,
-				contributor,
+				mod_id,
 				if proposals.is_empty() {
 					String::new()
 				} else {
 					format!("; repairs that could be meant: {}", proposals.join(", "))
-				}
+				},
+				entry.map_or_else(String::new, |entry| format!(
+					"; to apply the first after review, add to foch.toml:\n{}",
+					crate::project::render_repairs_toml(&[entry])
+				))
 			));
 			report
 				.isolated_definitions
 				.push(MergeReportIsolatedDefinition {
 					unit: unit_id.clone(),
-					mod_id: contributor.to_owned(),
+					mod_id: mod_id.to_owned(),
 					path: issue.path.clone(),
 					line: issue.line,
 					column: issue.column,
@@ -979,7 +990,7 @@ fn unit_parse_issues<'a>(
 	input: &'a ResolvedInput,
 	entry: &'a MergePlanEntry,
 	disposition: MergeDisposition,
-) -> Vec<(&'a str, crate::model::ParseIssue)> {
+) -> Vec<(&'a ResolvedInputContributor, crate::model::ParseIssue)> {
 	let input_paths: Vec<&GamePath> = match &entry.target {
 		MergePlanTarget::File { path } => vec![path],
 		MergePlanTarget::Module { input_paths, .. } => {
@@ -994,7 +1005,7 @@ fn unit_parse_issues<'a>(
 			}
 			if disposition == MergeDisposition::Copy {
 				for issue in input.snapshot_parse_issues(&contributor.mod_id, path) {
-					issues.push((contributor.mod_id.as_str(), issue.clone()));
+					issues.push((contributor, issue.clone()));
 				}
 				continue;
 			}
@@ -1002,7 +1013,7 @@ fn unit_parse_issues<'a>(
 			// here and is reported by the unit itself.
 			let parsed = input.script_cache.load(contributor).ok();
 			for issue in parsed.iter().flat_map(|parsed| &parsed.parse_issues) {
-				issues.push((contributor.mod_id.as_str(), issue.clone()));
+				issues.push((contributor, issue.clone()));
 			}
 		}
 	}
