@@ -97,16 +97,13 @@ v2 CWT schema id, which also binds file names. The install reported
 `tree-sitter-paradox` 0.3.0 (`foch` 0.1.0 was yanked on 2026-10-08), and notes
 that five of the six crates do not exist on crates.io yet.
 
-Before the merge, under the v1 schema id `5d636ca3…`, a 0.0.1 wheel built with
-maturin 1.15.0 passed `twine check --strict` and installed offline through
-`uvx` and `uv tool` on darwin-arm64, and GitHub CI on
-[PR #74](https://github.com/Acture/foch/pull/74) at `f765523` ran `dist.yml`
-on hosted runners: wheels and archives for `linux-x64` (manylinux_2_28),
-`darwin-arm64` and `win32-x64`, each installed through uvx and uv tool; the
-out-of-tree crate install; the third-party license check; and the WinGet smoke
-with winget v1.29.380, which passed `winget validate` and installed, upgraded
-and uninstalled `Acture.Foch` from local manifests. Every install reported the
-same identity.
+GitHub CI on [PR #74](https://github.com/Acture/foch/pull/74) at `7256b0e`
+ran `dist.yml` on hosted runners: wheels and archives for `linux-x64`
+(manylinux_2_28), `darwin-arm64` and `win32-x64`, each installed through uvx
+and uv tool; the out-of-tree install from the six packaged crates; the
+third-party license check; and the WinGet smoke with winget v1.29.380, which
+passed `winget validate` and installed, upgraded and uninstalled `Acture.Foch`
+from local manifests. Every install reported the identity above.
 
 Never run: `release.yml` and `verify-install.yml`, so no GitHub release,
 registry upload, release-mode WinGet install or post-publication install has
