@@ -255,7 +255,9 @@ makes every safe fix in the file.
 Where the fixes go depends on the input. A mod directory is an author's own
 work and is fixed in place. A playset, or a mod in Steam's Workshop folder, is
 other people's work: `--patch-mod <DIR>` writes a patch mod holding only the
-fixed files, to load after the mods it fixes, and `--in-place` writes into
+fixed files, to load after the mods it fixes, and lists it in the launcher
+through a `.mod` file in `paradox_data_path`'s mod folder, as a merge does
+(without that setting, it says what file to add); `--in-place` writes into
 the mods' own files. Every in-place fix first backs up each original under
 Foch's data directory; `foch check --restore <BACKUP_DIR>` puts back every
 file that still holds the fixed bytes. Steam replaces a Workshop mod's

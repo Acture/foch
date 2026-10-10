@@ -587,9 +587,24 @@ fn check_fix_writes_a_patch_mod_or_the_source_with_a_backup_that_restores() {
 	assert!(stderr.contains("--patch-mod"), "{stderr}");
 	assert_eq!(fs::read_to_string(&file).unwrap(), source);
 
+	let paradox = scratch.path().join("paradox");
+	let config = fs::read_to_string(scratch.path().join("config.toml")).unwrap();
+	fs::write(
+		scratch.path().join("config.toml"),
+		format!("paradox_data_path = '{}'\n{config}", path_text(&paradox)),
+	)
+	.unwrap();
 	let patch = scratch.path().join("patch");
-	check(&["--fix", "--patch-mod", path_text(&patch)], 0);
+	let stdout = check(&["--fix", "--patch-mod", path_text(&patch)], 0);
 	assert!(patch.join("descriptor.mod").is_file());
+	// The launcher lists the patch mod through a `.mod` file in its folder.
+	let stub = paradox.join("mod").join("foch_patch.mod");
+	assert!(stdout.contains("the launcher lists it"), "{stdout}");
+	let descriptor = foch::playset::descriptor::load_launcher_descriptor(&stub).unwrap();
+	assert_eq!(
+		descriptor.path.map(fs::canonicalize).transpose().unwrap(),
+		Some(fs::canonicalize(&patch).unwrap())
+	);
 	assert_eq!(
 		fs::read_to_string(patch.join(STRAY_BRACE_TRIGGERS)).unwrap(),
 		repaired
@@ -715,6 +730,8 @@ fn check_fix_treats_a_workshop_mod_directory_as_other_peoples_work() {
 	let (code, stdout, stderr) = check(&["--fix", "--patch-mod", path_text(&patch)]);
 	assert_eq!(code, 0, "{stdout}\n{stderr}");
 	assert!(patch.join(STRAY_BRACE_TRIGGERS).is_file());
+	// With no Paradox data folder configured, the user is told what to add.
+	assert!(stdout.contains("to enable it, add a .mod file"), "{stdout}");
 	assert_eq!(fs::read_to_string(&path).unwrap(), source);
 
 	let (code, stdout, stderr) = check(&["--fix", "--in-place"]);

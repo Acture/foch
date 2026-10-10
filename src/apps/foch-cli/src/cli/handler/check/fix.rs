@@ -1,6 +1,7 @@
 //! `foch check --fix`: syntax fixes, as a linter's are.
 
 use crate::cli::arg::CheckArgs;
+use crate::cli::handler::merge::install_launcher_stub;
 use crate::cli::handler::{HandlerResult, resolve_input_source};
 use foch::game::eu4::text::decode_paradox_bytes;
 use foch::input::{Config, InputRequest, InputSource};
@@ -36,6 +37,7 @@ pub fn handle_check_fix(args: &CheckArgs, config: Config) -> HandlerResult {
 	if args.unsafe_fixes && !args.fix && !args.diff {
 		return Err("--unsafe-fixes applies with --fix or --diff".into());
 	}
+	let paradox_data_path = config.paradox_data_path.clone();
 	let options = FixOptions {
 		unsafe_fixes: args.unsafe_fixes,
 	};
@@ -93,9 +95,30 @@ pub fn handle_check_fix(args: &CheckArgs, config: Config) -> HandlerResult {
 	if let Some(out) = &args.patch_mod {
 		write_patch_mod(&plan, out, PATCH_MOD_NAME)?;
 		println!(
-			"wrote the patch mod \"{PATCH_MOD_NAME}\" to {}; enable it after the mods it fixes",
+			"wrote the patch mod \"{PATCH_MOD_NAME}\" to {}",
 			out.display()
 		);
+		// The launcher lists only the `.mod` files of its own mod directory.
+		match paradox_data_path
+			.as_deref()
+			.map(|dir| install_launcher_stub(out, dir, PATCH_MOD_NAME))
+		{
+			Some(Ok(stub)) => println!(
+				"the launcher lists it through {}; enable it after the mods it fixes",
+				stub.display()
+			),
+			Some(Err(error)) => {
+				return Err(
+					format!("the patch mod cannot be listed in the launcher: {error}").into(),
+				);
+			}
+			None => println!(
+				"to enable it, add a .mod file holding name=\"{PATCH_MOD_NAME}\" and path=\"{}\" to the game's mod folder (set paradox_data_path to have Foch add it), then load it after the mods it fixes",
+				std::path::absolute(out)
+					.unwrap_or_else(|_| out.clone())
+					.display()
+			),
+		}
 	} else {
 		// Every in-place fix keeps the originals, so one made by mistake can
 		// be undone.
