@@ -264,7 +264,6 @@ fn document_diagnostics(
 	let mut diagnostics = snapshot
 		.and_then(|snapshot| snapshot.diagnostics_by_path.get(path).cloned())
 		.unwrap_or_default();
-	diagnostics.extend(parse_diagnostics_for_text(path, text));
 	// Schema features need the document's game path. A document under a
 	// scan root whose name has none is told so instead of silently
 	// losing them.
@@ -276,6 +275,11 @@ fn document_diagnostics(
 		}
 		None => None,
 	};
+	diagnostics.extend(parse_diagnostics_for_text(
+		path,
+		relative_path.as_deref(),
+		text,
+	));
 	if let (Some(schema), Some(relative_path)) = (schema, relative_path.as_ref()) {
 		diagnostics.extend(schema_diagnostics_for_text_with_index(
 			schema,
@@ -629,7 +633,7 @@ impl LanguageServer for Backend {
 			.get(&params.text_document.uri)
 			.and_then(|document| document.text.as_deref())
 		{
-			actions.extend(syntax_fix_code_actions(text, &params));
+			actions.extend(syntax_fix_code_actions(&state.targets, text, &params));
 		}
 		if actions.is_empty() {
 			Ok(None)
@@ -1312,10 +1316,32 @@ fn is_workspace_scalar_candidate(value: &str) -> bool {
 	has_separator || has_upper
 }
 
-fn parse_diagnostics_for_text(path: &Path, text: &str) -> Vec<Diagnostic> {
-	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(path), text);
-	parsed
-		.diagnostics
+/// The parse diagnostics of an open document. Under a scan root it has a
+/// game path, and is read as `check` and a merge read it, the schema
+/// settling a repair the syntax alone leaves open; elsewhere only by its
+/// syntax.
+fn document_parse_diagnostics(
+	path: &Path,
+	relative_path: Option<&GamePath>,
+	text: &str,
+) -> Vec<foch::game::eu4::script::parser::ParseDiagnostic> {
+	match relative_path {
+		Some(relative_path) => {
+			foch::game::eu4::script::parse_cache::parse_clausewitz_for_path(relative_path, text)
+				.diagnostics
+		}
+		None => {
+			parse_clausewitz_statements(ScriptSyntax::for_physical_path(path), text).diagnostics
+		}
+	}
+}
+
+fn parse_diagnostics_for_text(
+	path: &Path,
+	relative_path: Option<&GamePath>,
+	text: &str,
+) -> Vec<Diagnostic> {
+	document_parse_diagnostics(path, relative_path, text)
 		.iter()
 		.map(|item| parse_diagnostic(text, item))
 		.chain(annotation_diagnostics_for_text(text))
@@ -1360,12 +1386,20 @@ fn parse_diagnostic(
 /// Quick fixes of the parse diagnostics in the requested range: each safe fix,
 /// preferred, each unsafe one, and, when there are several safe fixes, one
 /// that makes them all.
-fn syntax_fix_code_actions(text: &str, params: &CodeActionParams) -> CodeActionResponse {
+fn syntax_fix_code_actions(
+	targets: &[ScanTarget],
+	text: &str,
+	params: &CodeActionParams,
+) -> CodeActionResponse {
 	let Ok(path) = params.text_document.uri.to_file_path() else {
 		return Vec::new();
 	};
-	let parsed = parse_clausewitz_statements(ScriptSyntax::for_physical_path(&path), text);
-	let fixes = foch::repair::text_fixes(text, &parsed.diagnostics);
+	let relative_path = match match_scan_target(targets, &path) {
+		Some((_, Ok(relative_path))) => Some(relative_path),
+		_ => None,
+	};
+	let diagnostics = document_parse_diagnostics(&path, relative_path.as_deref(), text);
+	let fixes = foch::repair::text_fixes(text, &diagnostics);
 	let edit_of = |fix: &foch::repair::TextFix| {
 		Some(LspTextEdit {
 			range: editor_range(text, fix.edit.offset, fix.edit.offset + fix.edit.remove)?,
@@ -2652,13 +2686,13 @@ mod tests {
 	use super::{
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
-		dedup_scan_targets, detect_completion_context, document_hover, document_symbols,
-		extract_completion_prefix, localisation_stub_code_actions, match_scan_target,
-		parse_diagnostics_for_text, parse_scan_targets_json, resolve_definition_locations,
-		resolve_reference_locations, scan_targets_from_project_manifest_path,
-		schema_completion_candidate, schema_completion_candidates_with_index, schema_diagnostic,
-		schema_hover_view, select_completion_candidates, syntax_fix_code_actions,
-		workspace_symbols,
+		dedup_scan_targets, detect_completion_context, document_diagnostics, document_hover,
+		document_symbols, extract_completion_prefix, localisation_stub_code_actions,
+		match_scan_target, parse_diagnostics_for_text, parse_scan_targets_json,
+		resolve_definition_locations, resolve_reference_locations,
+		scan_targets_from_project_manifest_path, schema_completion_candidate,
+		schema_completion_candidates_with_index, schema_diagnostic, schema_hover_view,
+		select_completion_candidates, syntax_fix_code_actions, workspace_symbols,
 	};
 	use foch::game::eu4::editor::schema::{
 		EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
@@ -2741,7 +2775,7 @@ mod tests {
 	fn test_annotation_diagnostics_share_collection_and_do_not_duplicate_native_parse_errors() {
 		let path = Path::new("events/test.txt");
 		let source = "#test(time=1444.11.11, tag=sweden)\ncountry_event = { id = test.1 hidden = yes is_triggered_only = yes }\n";
-		let diagnostics = parse_diagnostics_for_text(path, source);
+		let diagnostics = parse_diagnostics_for_text(path, None, source);
 		assert_eq!(diagnostics.len(), 1);
 		assert_eq!(diagnostics[0].source.as_deref(), Some("foch-annotation"));
 		assert!(diagnostics[0].message.contains("tag"));
@@ -2752,7 +2786,7 @@ mod tests {
 			foch::model::GamePath::new("events/test.txt").unwrap(),
 			broken,
 		);
-		let diagnostics = parse_diagnostics_for_text(path, broken);
+		let diagnostics = parse_diagnostics_for_text(path, None, broken);
 		assert!(!diagnostics.is_empty());
 		assert_eq!(diagnostics.len(), native.diagnostics.len());
 		assert!(
@@ -3474,7 +3508,7 @@ path = "local-mod"
 		let uri = Url::from_file_path(&path).expect("uri");
 		let text = "a = {\n\tx = 1\n}\n}\nb = { y = 2 }\n";
 
-		let diagnostics = parse_diagnostics_for_text(&path, text);
+		let diagnostics = parse_diagnostics_for_text(&path, None, text);
 		let [diagnostic] = diagnostics.as_slice() else {
 			panic!("expected one diagnostic: {diagnostics:?}");
 		};
@@ -3484,7 +3518,7 @@ path = "local-mod"
 			Some(NumberOrString::String("unmatched_closing_brace".into()))
 		);
 
-		let actions = syntax_fix_code_actions(text, &syntax_fix_params(&uri, 3));
+		let actions = syntax_fix_code_actions(&[], text, &syntax_fix_params(&uri, 3));
 		let fixes = fix_actions(&actions);
 		let [(title, edits, preferred)] = fixes.as_slice() else {
 			panic!("expected one fix: {actions:?}");
@@ -3513,6 +3547,45 @@ path = "local-mod"
 	}
 
 	#[test]
+	fn a_repair_only_the_schema_settles_is_offered_under_a_scan_root() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("events").join("a.txt");
+		let uri = Url::from_file_path(&path).expect("uri");
+		// An event's trigger is a block, so only `{` after `trigger =` reads
+		// it as the indentation shows; the syntax alone cannot tell.
+		let text = "country_event = {\n\tid = a.1\n\ttrigger =\n\t\thas_country_flag = x\n\t\tis_year = 1500\n\t}\n\toption = { name = a.1.a }\n}\n";
+		let targets = [ScanTarget {
+			path: tmp.path().to_path_buf(),
+			role: TargetRole::Mod,
+		}];
+
+		let outside = document_diagnostics(&path, text, None, &[], None);
+		assert!(
+			outside
+				.iter()
+				.any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR)),
+			"{outside:?}"
+		);
+
+		let diagnostics = document_diagnostics(&path, text, None, &targets, None);
+		let [diagnostic] = diagnostics.as_slice() else {
+			panic!("expected one diagnostic: {diagnostics:?}");
+		};
+		assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::WARNING));
+		assert_eq!(
+			diagnostic.code,
+			Some(NumberOrString::String("missing_opening_brace".into()))
+		);
+		let actions = syntax_fix_code_actions(&targets, text, &syntax_fix_params(&uri, 2));
+		let fixes = fix_actions(&actions);
+		let [(_, edits, preferred)] = fixes.as_slice() else {
+			panic!("expected one fix: {actions:?}");
+		};
+		assert!(preferred);
+		assert_eq!(edits[0].new_text.trim(), "{");
+	}
+
+	#[test]
 	fn a_statement_held_for_review_has_an_unsafe_quick_fix() {
 		let tmp = TempDir::new().expect("temp dir");
 		let path = tmp
@@ -3523,14 +3596,14 @@ path = "local-mod"
 		let uri = Url::from_file_path(&path).expect("uri");
 		let text = "a = {\n\tOR = {\n\t\tx = 1\n\ty = 2\n}\nb = { z = 3 }\n";
 
-		let diagnostics = parse_diagnostics_for_text(&path, text);
+		let diagnostics = parse_diagnostics_for_text(&path, None, text);
 		assert!(
 			diagnostics
 				.iter()
 				.all(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR)),
 			"{diagnostics:?}"
 		);
-		let actions = syntax_fix_code_actions(text, &syntax_fix_params(&uri, 1));
+		let actions = syntax_fix_code_actions(&[], text, &syntax_fix_params(&uri, 1));
 		let fixes = fix_actions(&actions);
 		let [(title, edits, preferred)] = fixes.as_slice() else {
 			panic!("expected one fix: {actions:?}");
