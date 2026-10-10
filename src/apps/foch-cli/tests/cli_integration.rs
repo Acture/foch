@@ -285,7 +285,10 @@ fn an_unmatched_top_level_brace_is_ignored_with_a_located_repair_warning() {
 	assert_eq!((repair.line, repair.column), (4, 1));
 	assert_eq!(
 		repair.repair,
-		foch::model::SourceRepair::IgnoredUnmatchedClosingBrace
+		foch::model::SourceRepair {
+			edit: foch::model::SourceRepairEdit::RemovedClosingBrace,
+			evidence: foch::model::SourceRepairEvidence::OnlyReading,
+		}
 	);
 	assert!(repair.unit.starts_with("module:"), "{repair:?}");
 
@@ -316,9 +319,77 @@ fn an_unmatched_top_level_brace_is_ignored_with_a_located_repair_warning() {
 }
 
 #[test]
-fn a_stray_brace_does_not_excuse_other_parse_errors_even_with_force() {
+fn a_definition_left_open_is_closed_where_the_indentation_says() {
 	let scratch = TempDir::new().unwrap();
-	let source = "b_check = { always = yes }\n}\nb_open = {\n\talways = no\n";
+	let source = "b_check = {\n\talways = yes\nb_later = {\n\talways = no\n}\n";
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	let [repair] = report.source_repairs.as_slice() else {
+		panic!("expected one source repair: {report:#?}");
+	};
+	assert_eq!((repair.line, repair.column), (3, 1));
+	assert_eq!(
+		repair.repair,
+		foch::model::SourceRepair {
+			edit: foch::model::SourceRepairEdit::InsertedClosingBrace,
+			evidence: foch::model::SourceRepairEvidence::SmallestChange,
+		}
+	);
+	let merged = fs::read_dir(out.join("common/scripted_triggers"))
+		.unwrap()
+		.map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+		.collect::<String>();
+	let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+		foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+		&merged,
+	);
+	assert!(parsed.diagnostics.is_empty(), "{merged}");
+	let keys = parsed
+		.statements
+		.iter()
+		.filter_map(|statement| match statement {
+			foch::game::eu4::script::parser::AstStatement::Assignment { key, .. } => {
+				Some(key.as_str())
+			}
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	for key in ["b_check", "b_later"] {
+		assert!(keys.contains(&key), "{key} is not top-level in {merged}");
+	}
+	assert_eq!(
+		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		source
+	);
+}
+
+#[test]
+fn an_error_without_a_single_reading_defers_the_module_even_with_force() {
+	let scratch = TempDir::new().unwrap();
+	// The stray brace has one reading. Closing `OR` at the end of `b_open`
+	// moves the fewest statements, but the tabs put `always = yes` beside
+	// `OR`: the evidence conflicts.
+	let source =
+		"b_check = { always = yes }\n}\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n";
 	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
 	let out = scratch.path().join("out");
 	let (code, stdout, stderr) = run_foch(
@@ -1127,7 +1198,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v15.0.0")
+			.join("v16.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),

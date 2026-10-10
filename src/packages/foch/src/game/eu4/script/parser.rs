@@ -1,6 +1,8 @@
-use crate::model::{GamePath, GamePathBuf};
+use crate::model::{GamePath, GamePathBuf, SourceRepair};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+mod recovery;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Span {
@@ -95,11 +97,18 @@ pub enum ParseDiagnosticCode {
 	ReadFailure,
 	/// A Lua block comment runs to the end of the file.
 	UnterminatedLuaBlockComment,
-	/// A block is still open at the end of the file.
+	/// A block is still open where it should have closed.
 	MissingClosingBrace,
-	/// A `}` at the outermost level of the file, which no block opened. The
-	/// parser skips it and keeps every statement around it.
+	/// A `}` that no block opened. Read alone, the parser skips one at the
+	/// outermost level and keeps every statement around it.
 	UnmatchedClosingBrace,
+	/// A `{` that no `}` closes.
+	UnmatchedOpeningBrace,
+	/// A block value whose `{` is missing.
+	MissingOpeningBrace,
+	/// A string whose closing quote is missing, so it runs to the end of the
+	/// file.
+	UnterminatedString,
 	/// A token that cannot start a statement; it is skipped.
 	InvalidStatementStart,
 	/// A token that cannot be a value; it is read as an empty identifier.
@@ -111,6 +120,10 @@ pub struct ParseDiagnostic {
 	pub code: ParseDiagnosticCode,
 	pub message: String,
 	pub span: SpanRange,
+	/// The edit the parsed statements already include to get past this error,
+	/// or `None` when they cannot be trusted. The text is never changed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub repair: Option<SourceRepair>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -200,6 +213,9 @@ struct Lexer<'a> {
 	line: usize,
 	column: usize,
 	lua_mode: bool,
+	/// The opening quote of a string to end at its line's end instead of
+	/// running to the end of the file.
+	close_string_at_line_end: Option<usize>,
 	diagnostics: Vec<ParseDiagnostic>,
 }
 
@@ -212,6 +228,7 @@ impl<'a> Lexer<'a> {
 			line: 1,
 			column: 1,
 			lua_mode,
+			close_string_at_line_end: None,
 			diagnostics: Vec::new(),
 		}
 	}
@@ -317,10 +334,12 @@ impl<'a> Lexer<'a> {
 				}
 			}
 			b'"' => {
+				let quote = self.index;
+				let close_at_line_end = self.close_string_at_line_end == Some(quote);
 				self.advance_byte();
 				let text_start = self.index;
 				while let Some(next) = self.peek_byte() {
-					if next == b'"' {
+					if next == b'"' || (close_at_line_end && matches!(next, b'\r' | b'\n')) {
 						break;
 					}
 					if next == b'\\' {
@@ -335,6 +354,16 @@ impl<'a> Lexer<'a> {
 				let text = self.source[text_start..self.index].to_string();
 				if self.peek_byte() == Some(b'"') {
 					self.advance_byte();
+				} else if self.peek_byte().is_none() {
+					self.diagnostics.push(ParseDiagnostic {
+						code: ParseDiagnosticCode::UnterminatedString,
+						message: "string has no closing quote before end of file".to_string(),
+						span: SpanRange {
+							start: start.clone(),
+							end: self.current_span(),
+						},
+						repair: None,
+					});
 				}
 				Token {
 					kind: TokenKind::String(text),
@@ -466,6 +495,7 @@ impl<'a> Lexer<'a> {
 								start: start.clone(),
 								end: self.current_span(),
 							},
+							repair: None,
 						});
 						return;
 					};
@@ -601,6 +631,7 @@ impl ParserState {
 							code: ParseDiagnosticCode::MissingClosingBrace,
 							message: "missing closing brace before end of file".into(),
 							span,
+							repair: None,
 						});
 					}
 					break;
@@ -616,6 +647,7 @@ impl ParserState {
 						code: ParseDiagnosticCode::UnmatchedClosingBrace,
 						message: "unexpected closing brace without an opening block".into(),
 						span,
+						repair: None,
 					});
 				}
 				TokenKind::Newline | TokenKind::Comma => {
@@ -818,6 +850,7 @@ impl ParserState {
 					code: ParseDiagnosticCode::InvalidStatementStart,
 					message: "could not parse statement start token".to_string(),
 					span: first.span,
+					repair: None,
 				});
 				None
 			}
@@ -895,6 +928,7 @@ impl ParserState {
 					code: ParseDiagnosticCode::InvalidValue,
 					message: "value parse failed; downgraded to empty identifier".to_string(),
 					span: token.span.clone(),
+					repair: None,
 				});
 				AstValue::Scalar {
 					value: ScalarValue::Identifier("<parse-error>".to_string()),
@@ -961,6 +995,7 @@ pub(crate) fn read_failure(err: &std::io::Error) -> ParsedStatements {
 				start: start.clone(),
 				end: start,
 			},
+			repair: None,
 		}],
 	}
 }
@@ -973,8 +1008,27 @@ pub fn parse_clausewitz_content(path: &GamePath, content: &str) -> ParseResult {
 }
 
 /// Parses script text in `syntax` without identifying which file it is.
+///
+/// A Clausewitz script with errors is repaired where one small edit has a
+/// single trustworthy reading; see [`recovery`]. A `.lua` file is read by a
+/// Lua interpreter, which rejects the whole file instead, so it is not.
 pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> ParsedStatements {
-	let mut lexer = Lexer::new(content, syntax == ScriptSyntax::Lua);
+	let (tokens, lexer_diagnostics) = lex(content, syntax == ScriptSyntax::Lua, None);
+	let mut result = ParserState::new(tokens).parse_file();
+	result.diagnostics.extend(lexer_diagnostics);
+	if syntax == ScriptSyntax::Clausewitz && !result.diagnostics.is_empty() {
+		return recovery::recover(content, result);
+	}
+	result
+}
+
+fn lex(
+	content: &str,
+	lua_mode: bool,
+	close_string_at_line_end: Option<usize>,
+) -> (Vec<Token>, Vec<ParseDiagnostic>) {
+	let mut lexer = Lexer::new(content, lua_mode);
+	lexer.close_string_at_line_end = close_string_at_line_end;
 	let mut tokens = Vec::new();
 	loop {
 		let token = lexer.next_token();
@@ -984,11 +1038,7 @@ pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> Parse
 			break;
 		}
 	}
-	let lexer_diagnostics = lexer.take_diagnostics();
-
-	let mut result = ParserState::new(tokens).parse_file();
-	result.diagnostics.extend(lexer_diagnostics);
-	result
+	(tokens, lexer.take_diagnostics())
 }
 
 #[cfg(test)]

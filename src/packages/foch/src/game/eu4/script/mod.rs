@@ -10,8 +10,7 @@ pub use self::emit::emit_native_statements;
 
 use self::localisation::collect_localisation_definitions_from_root;
 use self::parser::{
-	AstFile, AstStatement, AstValue, ParseDiagnosticCode, ParseResult, ScriptSyntax, SpanRange,
-	parse_clausewitz_content, read_failure,
+	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content, read_failure,
 };
 use super::analysis::param_contracts::{
 	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
@@ -35,9 +34,8 @@ use crate::game::schema::query::CwtQuery;
 use crate::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, GamePath, GamePathBuf, KeyUsage,
 	LocalisationDefinition, MaybeScope, ParamBinding, ParseIssue, ResourceReference,
-	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, ScopeType, SemanticIndex, SourceRepair,
-	SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition, base_scope,
-	has_fatal_parse_issue,
+	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, ScopeType, SemanticIndex, SourceSpan,
+	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition, base_scope, has_fatal_parse_issue,
 };
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -237,7 +235,6 @@ fn parsed_script_file_from_result(
 		|| fallback_module_name_from_relative(&relative),
 		|descriptor| module_name_for_descriptor(&relative, descriptor).replace('-', "_"),
 	);
-	let syntax = ScriptSyntax::for_game_path(&relative);
 	let parse_issues = parsed
 		.diagnostics
 		.into_iter()
@@ -247,7 +244,7 @@ fn parsed_script_file_from_result(
 			line: item.span.start.line,
 			column: item.span.start.column,
 			message: item.message,
-			repair: loader_repair(syntax, item.code),
+			repair: item.repair,
 		})
 		.collect();
 
@@ -262,22 +259,6 @@ fn parsed_script_file_from_result(
 		source,
 		parse_issues,
 		parse_cache_hit,
-	}
-}
-
-/// The repair a parse diagnostic already stands for, when the parsed
-/// statements are what EU4's loader reads from the same text.
-///
-/// Only an unmatched `}` at the outermost level of a Clausewitz script
-/// qualifies: the parser skips it and keeps every statement around it. A
-/// `.lua` file is read by a Lua interpreter, which rejects the whole file, and
-/// no other error has a single reading the game is known to take.
-fn loader_repair(syntax: ScriptSyntax, code: ParseDiagnosticCode) -> Option<SourceRepair> {
-	match (syntax, code) {
-		(ScriptSyntax::Clausewitz, ParseDiagnosticCode::UnmatchedClosingBrace) => {
-			Some(SourceRepair::IgnoredUnmatchedClosingBrace)
-		}
-		_ => None,
 	}
 }
 

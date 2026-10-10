@@ -145,23 +145,56 @@ explicitly deferred unit.
 
 A source file that fails to parse makes every unit that reads it
 `unsupported_input`, and for a definition module that is the whole folder-wide
-database. One error class is the exception, because the parsed result already
-matches a single reading. An unmatched `}` at the outermost level of a
-Clausewitz script is ignored and every statement around it is kept. Foch
-applies this only to its own parsed copy. The source file is never changed.
-The repair is chosen by the parser's stable diagnostic code, not by its
-message.
+database. Foch repairs the errors that have one trustworthy reading, in its own
+parsed copy only. The source file is never changed.
 
-Each unit that read a repaired file carries a note naming the mod, file, line
-and column. The merge report lists the same facts in `source_repairs`. Copied
-units install source bytes unchanged, so they record no repair.
+The file is split at its definition heads, the lines that start at column 1
+with `key =` or `key {`. Each segment is parsed on its own, so an error stays
+in its definition instead of swallowing the rest of the file. A column-1 line
+inside a sound block is recognised because the segments around it parse
+cleanly together. For a broken segment Foch tries every one-token edit:
 
-The repair does not apply to `.lua` files, which a Lua interpreter loads.
-Every other parse error, including a missing `}` in a file that also has an
-unmatched one, still defers the unit. `--force` does not change that. The
-repair is part of the analysis rules identity, so cached snapshots and frozen
-analyses made before it are not reused. That EU4 skips the unmatched brace and
-logs an error has not yet been confirmed in a game log.
+- leave out a `{` or `}`;
+- add a `}` before a line;
+- add a `{` after an `=` that ends its line; or
+- end a string that has no closing quote at the end of its line.
+
+An edit counts only if the segment then parses as exactly one definition. It
+is applied when one of two kinds of evidence holds:
+
+- every such edit gives the same tree; or
+- one tree changes the tree the text gives unedited least: it alone moves
+  the fewest statements to another parent, or adds or drops the fewest.
+
+Indentation only checks the second choice. When the indentation clearly
+favours another tree, with fewer than half as many lines indented other than
+their depth, the evidence conflicts and the segment is not repaired.
+Indentation is read in the file's own style, tabs or spaces, and lines
+indented in the other style count for neither.
+
+A segment that needs two edits, or whose readings tie, is not repaired. Only
+a segment on its own is repaired, never one read together with the next. The
+repaired file must then parse cleanly as a whole into exactly the repaired
+segments; otherwise nothing is repaired. The search is bounded per file and
+gives up on a file that would need more. A reviewed repair from `foch.toml`
+must parse cleanly by itself; no automatic repair is added to it.
+
+A repair can read the file differently from the game. A stray `}` that closes
+a block early makes the game read the rest of that block as top-level
+statements, which a definition file does not allow; Foch keeps them in the
+block.
+
+Each unit that read a repaired file carries a note naming the mod, file, line,
+column, edit and evidence. The merge report lists the same facts in
+`source_repairs`. Copied units install source bytes unchanged, so they record
+no repair.
+
+Repairs are chosen by the parser's stable diagnostic codes, never by message
+text. They do not apply to `.lua` files, which a Lua interpreter loads. An
+unrepaired error still defers the unit, and `--force` does not change that.
+Repairs are part of the analysis rules identity, so cached snapshots and frozen
+analyses made before them are not reused. How EU4 itself handles each error has
+not been confirmed in a game log.
 
 ## Resolution policy
 

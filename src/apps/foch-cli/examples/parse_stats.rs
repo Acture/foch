@@ -50,11 +50,18 @@ fn main() {
 		println!("diagnostics={}", parsed.diagnostics.len());
 		for diag in parsed.diagnostics.iter().take(40) {
 			println!(
-				"\tline={} col={} msg={}",
-				diag.span.start.line, diag.span.start.column, diag.message
+				"\tline={} col={} code={:?} msg={}{}",
+				diag.span.start.line,
+				diag.span.start.column,
+				diag.code,
+				diag.message,
+				diag.repair
+					.map(|repair| format!(" repair={}", repair.description()))
+					.unwrap_or_default()
 			);
 		}
-		std::process::exit(if parsed.diagnostics.is_empty() { 0 } else { 2 });
+		let fatal = parsed.diagnostics.iter().any(|diag| diag.repair.is_none());
+		std::process::exit(if fatal { 2 } else { 0 });
 	}
 	if !root.is_dir() {
 		eprintln!("root is not a directory or file: {}", root.display());
@@ -96,9 +103,11 @@ fn main() {
 	files.sort();
 
 	let mut ok = 0usize;
+	let mut repaired = 0usize;
 	let mut failed = 0usize;
 	let mut total_diag = 0usize;
 	let mut failed_examples: Vec<(PathBuf, usize)> = Vec::new();
+	let mut repairs: Vec<String> = Vec::new();
 	let mut diag_buckets: BTreeMap<String, usize> = BTreeMap::new();
 
 	for file in &files {
@@ -108,15 +117,37 @@ fn main() {
 			continue;
 		}
 
-		failed += 1;
 		total_diag += parsed.diagnostics.len();
-		if failed_examples.len() < 20 {
-			failed_examples.push((file.clone(), parsed.diagnostics.len()));
+		for diag in &parsed.diagnostics {
+			let state = if diag.repair.is_some() {
+				"repaired"
+			} else {
+				"fatal"
+			};
+			*diag_buckets
+				.entry(format!("{:?} ({state})", diag.code))
+				.or_insert(0) += 1;
+		}
+		if parsed.diagnostics.iter().all(|diag| diag.repair.is_some()) {
+			repaired += 1;
+			let rel = file.strip_prefix(&root).unwrap_or(file.as_path());
+			for diag in &parsed.diagnostics {
+				if let Some(repair) = diag.repair {
+					repairs.push(format!(
+						"{}:{}:{} {}",
+						rel.display(),
+						diag.span.start.line,
+						diag.span.start.column,
+						repair.description()
+					));
+				}
+			}
+			continue;
 		}
 
-		for diag in &parsed.diagnostics {
-			let key = normalize_diag_message(&diag.message);
-			*diag_buckets.entry(key).or_insert(0) += 1;
+		failed += 1;
+		if failed_examples.len() < 20 {
+			failed_examples.push((file.clone(), parsed.diagnostics.len()));
 		}
 	}
 
@@ -138,6 +169,7 @@ fn main() {
 	}
 	println!("total_files={total}");
 	println!("ok_files={ok}");
+	println!("repaired_files={repaired}");
 	println!("failed_files={failed}");
 	println!("success_rate_percent={rate:.4}");
 	println!("total_diagnostics={total_diag}");
@@ -155,6 +187,13 @@ fn main() {
 		}
 	}
 
+	if !repairs.is_empty() {
+		println!("repairs:");
+		for repair in &repairs {
+			println!("\t{repair}");
+		}
+	}
+
 	if !failed_examples.is_empty() {
 		println!("failed_examples:");
 		for (path, count) in failed_examples {
@@ -166,23 +205,4 @@ fn main() {
 	if failed > 0 {
 		std::process::exit(2);
 	}
-}
-
-fn normalize_diag_message(message: &str) -> String {
-	if message.contains("expected '=' after identifier") {
-		return "expected '=' after identifier".to_string();
-	}
-	if message.contains("expected value") {
-		return "expected value".to_string();
-	}
-	if message.contains("expected statement") {
-		return "expected statement".to_string();
-	}
-	if message.contains("unterminated block") {
-		return "unterminated block".to_string();
-	}
-	if message.contains("missing closing brace") {
-		return "missing closing brace".to_string();
-	}
-	"other".to_string()
 }

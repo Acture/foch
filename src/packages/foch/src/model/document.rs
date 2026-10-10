@@ -91,8 +91,8 @@ pub struct ParseIssue {
 	pub line: usize,
 	pub column: usize,
 	pub message: String,
-	/// How the parsed document already accounts for this issue the way the
-	/// game's loader does, or `None` when the document cannot be trusted.
+	/// The edit the parsed document already includes to get past this
+	/// issue, at `line`:`column`, or `None` when it cannot be trusted.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub repair: Option<SourceRepair>,
 }
@@ -110,8 +110,28 @@ pub fn has_fatal_parse_issue(issues: &[ParseIssue]) -> bool {
 	issues.iter().any(ParseIssue::is_fatal)
 }
 
-/// A minimal compatibility repair of a source file's syntax, applied only to
-/// Foch's parsed copy. The source file itself is never changed.
+/// A one-token repair of a source file's syntax, applied only to Foch's
+/// parsed copy. The source file itself is never changed.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Eq,
+	Hash,
+	Ord,
+	PartialEq,
+	PartialOrd,
+	Serialize,
+	Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+pub struct SourceRepair {
+	pub edit: SourceRepairEdit,
+	pub evidence: SourceRepairEvidence,
+}
+
 #[derive(
 	Clone,
 	Copy,
@@ -128,16 +148,62 @@ pub fn has_fatal_parse_issue(issues: &[ParseIssue]) -> bool {
 	rkyv::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum SourceRepair {
-	/// A `}` at the outermost level of a Clausewitz script that no block
-	/// opened was ignored, keeping every statement around it.
-	IgnoredUnmatchedClosingBrace,
+pub enum SourceRepairEdit {
+	/// A `}` that no block opened was left out.
+	RemovedClosingBrace,
+	/// A `{` that nothing closed was left out.
+	RemovedOpeningBrace,
+	/// A missing `}` was added.
+	InsertedClosingBrace,
+	/// A missing `{` was added.
+	InsertedOpeningBrace,
+	/// A string missing its closing quote was ended at its line's end.
+	ClosedStringAtLineEnd,
+}
+
+/// Why a one-token repair is the reading of the text.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Eq,
+	Hash,
+	Ord,
+	PartialEq,
+	PartialOrd,
+	Serialize,
+	Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceRepairEvidence {
+	/// Every one-token edit that makes the text parse gives the same tree.
+	OnlyReading,
+	/// Of the trees one-token edits give, one moves fewer statements to
+	/// another parent than any other, measured from the tree the text gives
+	/// unedited, and the indentation does not clearly favour another.
+	SmallestChange,
 }
 
 impl SourceRepair {
-	pub fn description(self) -> &'static str {
-		match self {
-			Self::IgnoredUnmatchedClosingBrace => "ignored an unmatched top-level `}`",
-		}
+	pub fn description(self) -> String {
+		let edit = match self.edit {
+			SourceRepairEdit::RemovedClosingBrace => "left out an unmatched `}`",
+			SourceRepairEdit::RemovedOpeningBrace => "left out an unclosed `{`",
+			SourceRepairEdit::InsertedClosingBrace => "added a missing `}`",
+			SourceRepairEdit::InsertedOpeningBrace => "added a missing `{`",
+			SourceRepairEdit::ClosedStringAtLineEnd => {
+				"ended an unterminated string at the end of its line"
+			}
+		};
+		let evidence = match self.evidence {
+			SourceRepairEvidence::OnlyReading => "every one-token repair reads the same",
+			SourceRepairEvidence::SmallestChange => {
+				"the one-token repair that moves the fewest statements"
+			}
+		};
+		format!("{edit} ({evidence})")
 	}
 }

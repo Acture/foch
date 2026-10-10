@@ -246,7 +246,10 @@ mod tests {
 	use crate::game::eu4::script::parser::{
 		AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_content,
 	};
-	use crate::model::{GamePath, GamePathBuf, GamePathErrorKind, ParseIssue, SourceRepair};
+	use crate::model::{
+		GamePath, GamePathBuf, GamePathErrorKind, ParseIssue, SourceRepair, SourceRepairEdit,
+		SourceRepairEvidence,
+	};
 
 	fn policy() -> DefinitionModulePolicy {
 		DefinitionModulePolicy {
@@ -775,7 +778,10 @@ mod tests {
 			line: 2,
 			column: 1,
 			message: "unexpected closing brace without an opening block".to_string(),
-			repair: Some(SourceRepair::IgnoredUnmatchedClosingBrace),
+			repair: Some(SourceRepair {
+				edit: SourceRepairEdit::RemovedClosingBrace,
+				evidence: SourceRepairEvidence::OnlyReading,
+			}),
 		});
 
 		let module = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
