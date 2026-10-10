@@ -100,6 +100,8 @@ impl Selections {
 		let deadline = Instant::now() + Duration::from_secs(2);
 		let mut backoff = Duration::from_millis(1);
 		loop {
+			// persist replaces existing files on Windows with
+			// MoveFileExW(MOVEFILE_REPLACE_EXISTING), not a no-clobber rename.
 			match temporary.persist(path) {
 				Ok(()) => return Ok(()),
 				Err(error)

@@ -160,11 +160,21 @@ pub fn plan(
 
 	// Drop plugins whose dependencies failed before ordering, so a dependent
 	// of a missing dependency is never placed in the order.
-	let usable: BTreeMap<String, &Manifest> = resolved
+	let mut usable: BTreeMap<String, &Manifest> = resolved
 		.iter()
 		.filter(|(id, _)| !has_blocking_error(&resolution, id))
 		.map(|(id, manifest)| (id.clone(), *manifest))
 		.collect();
+	// Removing one unusable plugin can invalidate its dependents in turn.
+	// Reach the dependency closure before ordering; independent plugins stay.
+	loop {
+		let before = usable.len();
+		check_dependencies(&usable, &mut resolution);
+		usable.retain(|id, _| !has_blocking_error(&resolution, id));
+		if usable.len() == before {
+			break;
+		}
+	}
 
 	match order(&usable) {
 		Ok(order) => {
@@ -501,6 +511,67 @@ phase = "deferred"
 			resolution.errors[0],
 			Diagnostic::Dependency { .. }
 		));
+	}
+
+	#[test]
+	fn unusable_dependencies_drop_every_transitive_dependent() {
+		for problem in ["missing", "version", "abi", "conflict"] {
+			let base_requirement = if problem == "version" { "^2" } else { "*" };
+			let mut manifests = vec![
+				manifest("a", "1.0.0", "[[depends]]\nid='b'\nversion='*'"),
+				manifest(
+					"b",
+					"1.0.0",
+					&format!("[[depends]]\nid='c'\nversion='{base_requirement}'"),
+				),
+				manifest("independent", "1.0.0", ""),
+			];
+			if problem != "missing" {
+				let mut base = manifest(
+					"c",
+					"1.0.0",
+					if problem == "conflict" {
+						"[[conflicts]]\nid='other'\nversion='*'"
+					} else {
+						""
+					},
+				);
+				if problem == "abi" {
+					base.target.abi_major = Some(2);
+				}
+				manifests.push(base);
+			}
+			if problem == "conflict" {
+				manifests.push(manifest("other", "1.0.0", ""));
+			}
+			let selected: Vec<_> = manifests
+				.iter()
+				.map(|manifest| select(&manifest.plugin.id, "1.0.0"))
+				.collect();
+			let resolution = plan(&game(), &store(manifests), &selected);
+			assert!(!resolution.is_launchable(), "{problem}");
+			assert!(
+				!resolution
+					.order
+					.iter()
+					.any(|plugin| plugin.id == "a" || plugin.id == "b"),
+				"{problem}: {resolution:?}"
+			);
+			assert!(
+				resolution
+					.order
+					.iter()
+					.any(|plugin| plugin.id == "independent"),
+				"{problem}"
+			);
+			assert!(
+				resolution
+					.errors
+					.iter()
+					.any(|error| matches!(error, Diagnostic::Dependency {id, ..} if id == "a")),
+				"{problem}: {resolution:?}"
+			);
+		}
 	}
 
 	#[test]

@@ -63,7 +63,7 @@ impl RuntimeLayer {
 			if name.eq_ignore_ascii_case("gfx") && is_dir {
 				layer.longest_relative = layer
 					.longest_relative
-					.max(deepest_relative(&entry.path(), name.len()));
+					.max(deepest_relative(&entry.path(), name.encode_utf16().count()));
 				layer.prepare_gfx(&entry.path())?;
 				continue;
 			}
@@ -74,7 +74,7 @@ impl RuntimeLayer {
 				layout::LayerAction::Link => {
 					layer.longest_relative = layer
 						.longest_relative
-						.max(deepest_relative(&entry.path(), name.len()));
+						.max(deepest_relative(&entry.path(), name.encode_utf16().count()));
 					platform::link_dir(&entry.path(), &layer.directory.join(&*name))?;
 				}
 				layout::LayerAction::Skip => layer.excluded.push(Excluded {
@@ -203,6 +203,21 @@ fn deepest_relative(root: &Path, prefix: usize) -> usize {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn non_ascii_game_directories_use_windows_path_units() {
+		let source = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		fs::create_dir_all(source.path().join("目录😀/nested")).unwrap();
+		fs::write(source.path().join("目录😀/nested/file"), "resource").unwrap();
+		let layer = RuntimeLayer::prepare(source.path(), output.path(), "utf16").unwrap();
+		// Two BMP characters and one surrogate pair, plus /nested/file.
+		assert_eq!(layer.longest_relative, 4 + 12);
+		assert_eq!(
+			fs::read(layer.directory.join("目录😀/nested/file")).unwrap(),
+			b"resource"
+		);
+	}
 
 	#[test]
 	fn layer_excludes_old_loaders_owns_font_writes_and_cleans_nested_links() {
