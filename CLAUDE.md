@@ -111,10 +111,9 @@ the legacy object store part of the current product path.
   can age.
 - Check Linear for active work. `docs/` owns current public usage, contributor
   guidance, architecture and measured status. Raw evidence stays with its
-  producing code or test harness. `notes/首页.md` is
-  the entry to private research and design history in `notes/research/`.
-  Notion-only narrative that has not been
-  migrated remains at its original page; do not write to Notion unless asked.
+  producing code or test harness.
+- Keep one canonical instruction file: `AGENTS.md` and
+  `.github/copilot-instructions.md` remain symlinks to `CLAUDE.md`.
 - Distinguish committed implementation, a local worktree observation, a
   recorded test result, and an accepted product cohort. Never promote one into
   another.
@@ -126,38 +125,6 @@ the legacy object store part of the current product path.
   present in the source and reports.
 - Treat historical roadmaps, reviews, and probes as evidence only. Linear is
   the active backlog.
-
-## Research Notes
-
-`notes/` references the existing `https://github.com/Acture/obsidian-vault.git`
-repository on `project/foch`. Use the latest published branch contents by
-default. At session start, before reading project notes, preserve any local
-edits or unpublished commits, then refresh a clean checkout with
-`git submodule update --init --remote --checkout -- notes`. Private repository
-access is required; if refresh fails, report the stale/unavailable notes rather
-than silently using them as current. Read `notes/首页.md` alongside the
-code status and Linear.
-
-Before editing, preserve any dirty notes, then run `git -C notes fetch origin`,
-`git -C notes switch project/foch`, and
-`git -C notes pull --ff-only origin project/foch`. Initialization may leave a
-detached HEAD; `.gitmodules` branch configuration and ordinary clone/pull do
-not automatically fetch the latest notes. A plain submodule update restores
-the recorded commit and is only for explicit historical reproduction.
-The project branch root is the notes root; edit its `research/` and project
-entry directly. Master integration belongs to the notes repository. Preserve
-both sides of any conflict; do not overwrite or reset unpublished work.
-
-Install or refresh the master-owned notes hook using the README commands.
-Submit notes through the installed `hooks/notes-boundary/submit_project.py`:
-the vault requires a remote boundary check before a new project commit can be
-pushed. Do not bypass hooks or branch protection.
-Commit and successfully push the notes branch first. Only then stage `notes`
-and commit/push the Foch gitlink. Never point the parent at an unpublished notes
-commit. See the README's research-notes section for initialization, latest-branch
-refresh, historical reproduction, and editing commands. Keep one canonical
-instruction file here: `AGENTS.md` and `.github/copilot-instructions.md` remain
-symlinks to `CLAUDE.md`.
 
 ## Project Structure & Module Organization
 
@@ -195,14 +162,14 @@ publisher (`docs/RELEASE_CHECKLIST.md`).
 The root Cargo manifest only configures the workspace. The main library's
 `tests/`, `fuzz/` and `build.rs` live in `src/packages/foch/`. Keep fuzz as an
 independent cargo-fuzz workspace. Use package-local test fixtures, `docs/` for
-current public documentation, `notes/research/` for private research and
-design history, and `scripts/` for operator workflows. Release source archives
-must include both public build submodules and work without `.git` or `notes/`.
+current usage, contributor guidance and architecture, and `scripts/` for
+operator workflows. Release source archives must include both build submodules
+and work without `.git`.
 
-Public known issues and release guidance belong in `docs/`. Superseded reports,
-release drafts and development history belong in `notes/research/`, not a public
-documentation archive. Keep `docs/project-status.md` concise and current; move
-past checkpoints into notes. Raw measurements remain in the code repository.
+Public known issues and release guidance belong in `docs/`. Keep
+`docs/project-status.md` concise and current; Git history and linked Linear
+issues preserve past decisions and checkpoints. Raw measurements remain with
+their producing code or test harness.
 Local manual merge outputs belong under `target/manual-merges/`, not the root.
 Keep the README, canonical agent instructions and license/notice files at the
 repository root.
@@ -257,7 +224,9 @@ add a regression for the observed semantic cause, then run the owning package an
 CLI integration tests. Do not update expected corpus output merely to make a
 failure green; adjudicate why the product and the human compatch differ.
 
-Keep changing coverage status in `docs/project-status.md`; research interpretation belongs in `notes/`. `AGENTS.md` should hold stable execution guidance, not rolling project baselines.
+Keep changing coverage status in `docs/project-status.md`. Record design
+decisions in the relevant public documentation or Linear issue. `AGENTS.md`
+should hold stable execution guidance, not rolling project baselines.
 
 ## Environment & Configuration
 
@@ -271,8 +240,7 @@ git submodule update --init src/packages/tree-sitter-paradox src/packages/foch/v
 
 A missing `src/packages/tree-sitter-paradox` fails at manifest load. A missing or empty `src/packages/foch/vendor/cwtools-eu4-config` fails the main library's build script, which compiles it into the embedded CWT rule pack; there is no schema-less build.
 
-The private `notes/` submodule is separate and optional for builds. CI and public
-source packages initialize only the two build submodules listed above.
+CI and source packages initialize the two build submodules listed above.
 
 Three tests need privileges a restricted sandbox may withhold: `output_transaction_rejects_an_existing_unix_socket` binds a Unix socket, and `data_install_downloads_release_asset_from_manifest` and `page_fetch_is_frozen_and_reused_without_another_network_request` each open a local HTTP server. A sandbox denial there is an environment result, not a defect. Committing an analyzed merge also takes the installed base-snapshot lock under the user data directory; point `FOCH_DATA_DIR` at a cloned data directory when that path is not writable.
 
@@ -282,20 +250,4 @@ Run `bash scripts/install-hooks.sh` once after cloning to install the local git 
 
 ## Commit & Pull Request Guidelines
 
-Follow the existing commit style: short, imperative subjects such as `Promote low-risk common mechanics roots` or `Split and promote random map content families`. Keep one logical change per commit. PRs should include a concise summary, linked Notion task or decision when applicable, validation commands run, and any probe delta (`parse_only` / `semantic_complete`) when analyzer coverage changes. Add screenshots only for `src/apps/vscode-foch` UI changes. Do not add AI co-author trailers.
-
-
-## Project notes submission
-
-`docs/` is reserved for public documentation. Private research notes live in `notes/`, which tracks `project/foch` in `Acture/obsidian-vault`; start at `notes/首页.md`. This checkout's root contains only this project's notes. Master places these notes under `foch/`. Keep automation and vault configuration on master. Preserve existing local edits when updating a checkout.
-
-Install or refresh the trusted submission tools in Git metadata, including in new clones:
-
-```fish
-git -C notes fetch origin refs/heads/master:refs/remotes/origin/master
-set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
-git -C notes show origin/master:.github/scripts/install_push_hook.py > "$notes_common_gitdir/install_push_hook.py"
-python3 "$notes_common_gitdir/install_push_hook.py" --repo notes --source-ref origin/master
-```
-
-After committing specific note files, submit through `python3 "$notes_common_gitdir/hooks/notes-boundary/submit_project.py" --repo notes`. The remote requires `notes-boundary/root/foch` from GitHub Actions. Only after successful submission should this repository commit and push the `notes` gitlink. See the central repository's `项目接入.md` for initialization, updates and conflict handling.
+Follow the existing commit style: short, imperative subjects such as `Promote low-risk common mechanics roots` or `Split and promote random map content families`. Keep one logical change per commit. PRs should include a concise summary, linked Linear issue or design decision when applicable, validation commands run, and any probe delta (`parse_only` / `semantic_complete`) when analyzer coverage changes. Add screenshots only for `src/apps/vscode-foch` UI changes. Do not add AI co-author trailers.

@@ -224,8 +224,6 @@ Run `foch <command> --help` for authoritative options.
 - `src/tools/foch-dev` — reusable repository checks and diagnostic workflows
 - `scripts/` — build, release, and repository maintenance workflows
 - `docs/` — current public usage, contributor guides, architecture, and status
-- `notes/research/` — private research, experimental interpretation, and design history
-  in the [unified notes repository](https://github.com/Acture/obsidian-vault/tree/project/foch)
 
 The root Cargo manifest is a virtual workspace. The `foch` library package
 carries its CWT build input, so the packaged crates build without the rest of
@@ -234,8 +232,7 @@ grammar and installs `foch` from those crates outside the repository. A
 release publishes `foch-cli` to crates.io with every workspace crate it builds
 from (`foch`, `foch-annotation`, `foch-lsp`, `foch-runner` and `foch-test`),
 against `tree-sitter-paradox` released from its own repository; none is
-published yet. Release source archives carry both public submodules and
-exclude private notes.
+published yet. Release source archives include both build submodules.
 
 The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
 `tree-sitter-paradox` at `0.3.0`. Cache and report schema generations are
@@ -361,80 +358,6 @@ Windows installer smoke script. Ordinary Foch users do not need these Python too
 - [VS Code/LSP preview](./docs/lsp-0.1-preview.md)
 - [Known issues](./docs/known-issues.md)
 - [Release checklist](./docs/RELEASE_CHECKLIST.md)
-
-### Private research notes
-
-`notes/` is a submodule of `https://github.com/Acture/obsidian-vault.git`,
-configured for `project/foch`. Its Foch entry is
-[`notes/首页.md`](./notes/首页.md). The project branch root is the notes root;
-research lives under `notes/research/`. Public usage, contributor and architecture
-documents and current measured status remain in Foch. Numeric records and raw
-evidence stay with their producing code or test harness. Superseded reports,
-release drafts and development history belong in notes, outside public docs.
-Reading public documentation, building and testing do not require private access.
-
-Use the latest published `project/foch` notes by default. After cloning,
-creating a worktree, or pulling Foch, refresh a clean notes worktree with:
-
-```fish
-git submodule update --init --remote --checkout -- notes
-```
-
-Preserve local edits and unpublished commits before refreshing; do not force
-the checkout. If refresh fails, report that notes are stale instead of treating
-the cached checkout as current.
-
-Git still records a fixed commit in the parent. Plain `git clone`, `git pull`,
-and `git submodule update --init` do not fetch the latest notes automatically;
-even `git clone --recurse-submodules` needs the refresh above. The branch setting
-selects what `--remote` follows. Restoring the recorded commit is an explicit
-historical-reproduction operation: `git submodule update --init --checkout -- notes`.
-
-The refresh may leave a detached HEAD. Before editing, switch to the project
-branch and fast-forward it to the published notes:
-
-```fish
-git -C notes fetch origin
-git -C notes switch project/foch
-git -C notes pull --ff-only origin project/foch
-```
-
-The first `switch` creates a local tracking branch when only
-`origin/project/foch` exists. Preserve local changes and resolve divergence
-before continuing. Edit only this project's branch; integration with the vault's
-`master` is managed in that repository.
-
-Install or refresh the notes repository's existing push checker once per clone
-using Git, Python 3.10+ and authenticated `gh`:
-
-```fish
-git -C notes fetch origin refs/heads/master:refs/remotes/origin/master
-and set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
-and git -C notes show origin/master:.github/scripts/install_push_hook.py > "$notes_common_gitdir/install_push_hook.py"
-and python3 "$notes_common_gitdir/install_push_hook.py" --repo notes --source-ref origin/master
-```
-
-After editing `notes/`, publish notes before updating Foch's reference:
-
-```fish
-git -C notes add -- research 首页.md
-git -C notes commit -m "Update Foch research notes"
-set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
-python3 "$notes_common_gitdir/hooks/notes-boundary/submit_project.py" --repo notes --branch project/foch
-# Continue only after the notes push succeeds.
-git add notes
-git commit -m "Update Foch notes reference"
-git push
-```
-
-The submission tool runs the vault's required remote boundary check before
-updating `project/foch`. A direct push of a new commit lacks that check. Follow
-the vault's [project integration guide](https://github.com/Acture/obsidian-vault/blob/master/项目接入.md)
-if the checker changes; do not disable hooks or branch protection.
-
-A refresh can change the gitlink shown by `git status`; review and commit that
-reference separately when adopting the update in Foch. Earlier document paths
-and content remain available in each repository's Git history.
 
 ## License
 
