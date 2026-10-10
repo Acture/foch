@@ -426,7 +426,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument(
 		"--cwtools-dir",
 		type=Path,
-		default=Path(__file__).resolve().parents[4] / "vendor/cwtools-eu4-config",
+		default=Path(__file__).resolve().parents[4]
+		/ "src/packages/foch/vendor/cwtools-eu4-config",
 	)
 	parser.add_argument("--wiki-effects", type=Path, required=True)
 	parser.add_argument("--wiki-conditions", type=Path, required=True)

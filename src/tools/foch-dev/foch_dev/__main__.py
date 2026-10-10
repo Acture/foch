@@ -7,10 +7,10 @@ import logging
 import subprocess
 from pathlib import Path
 
-from . import compare, smoke
+from . import compare, crates, dist, release, smoke, versions, winget
 from .contracts import verify_repository
 from .repository import find_repository
-from .schema import cwt_snapshot_hash
+from .schema import SCHEMA_DIR, cwt_snapshot_hash
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,6 +27,31 @@ def main(argv: list[str] | None = None) -> int:
 	compare.add_arguments(
 		commands.add_parser("compare", help="Compare diagnostic summaries")
 	)
+	crates.add_arguments(
+		commands.add_parser(
+			"crate-smoke",
+			help="Package the publishable crates and install foch from them out of tree",
+		)
+	)
+	versions.add_arguments(
+		commands.add_parser(
+			"version", help="Print the release tag and per-channel version spellings"
+		)
+	)
+	dist.add_arguments(
+		commands.add_parser("dist", help="Build and verify release wheels and archives")
+	)
+	winget.add_arguments(
+		commands.add_parser(
+			"winget", help="Render and check the WinGet manifests for Acture.Foch"
+		)
+	)
+	release.add_arguments(
+		commands.add_parser(
+			"release",
+			help="Check a release against every distribution channel (read-only)",
+		)
+	)
 	args: argparse.Namespace = parser.parse_args(argv)
 	logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 	try:
@@ -34,12 +59,23 @@ def main(argv: list[str] | None = None) -> int:
 			verify_repository(find_repository(args.repo))
 			return 0
 		if args.command == "schema-hash":
-			root: Path = (
-				args.schema_root
-				or find_repository(args.repo) / "vendor/cwtools-eu4-config"
-			)
+			root: Path = args.schema_root or find_repository(args.repo) / SCHEMA_DIR
 			print(cwt_snapshot_hash(root))
 			return 0
+		if args.command == "crate-smoke":
+			return crates.run(
+				crates.CrateSmokeOptions(
+					args.repo, args.work_dir, args.offline, args.allow_dirty
+				)
+			)
+		if args.command == "version":
+			return versions.run(args)
+		if args.command == "dist":
+			return dist.run(args)
+		if args.command == "winget":
+			return winget.run(args)
+		if args.command == "release":
+			return release.run(args)
 		if args.command == "smoke":
 			return smoke.run(
 				smoke.SmokeOptions(args.playset, args.mods, args.out_dir, args.repo)
@@ -59,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
 				output=args.output,
 			)
 		)
-	except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+	except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
 		parser.exit(1, f"foch-dev: {error}\n")
 
 

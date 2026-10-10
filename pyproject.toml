@@ -1,0 +1,68 @@
+# PyPI distribution of the `foch` binary (`uvx foch`, `uv tool install foch`).
+# maturin builds the foch-cli crate into a `py3-none-<platform>` wheel that
+# carries only the native executable; there is no Python module and no
+# start-up download. Releases publish wheels only: the release builds every
+# wheel from the tagged checkout, and an sdist would need an unlocked build
+# with its own Rust and C toolchain.
+
+[build-system]
+# The same maturin version the release workflow passes to maturin-action.
+requires = ["maturin==1.15.0"]
+build-backend = "maturin"
+
+[project]
+name = "foch"
+dynamic = ["version"]
+description = "EU4 mod analysis and merge tool: the foch command-line program and language server"
+# The same page as every published Foch crate on crates.io.
+readme = "src/apps/foch-cli/README.md"
+# A bin wheel runs no Python code; this only bounds the interpreter that uv or
+# pip creates the tool environment with.
+requires-python = ">=3.8"
+license = "AGPL-3.0-only AND GPL-3.0-only AND MIT"
+# An explicit list replaces maturin's license discovery, so it names them all.
+license-files = [
+	"LICENSE",
+	"LICENSE-MERGIRAF.txt",
+	"NOTICE.md",
+	"src/packages/foch/vendor/cwtools-eu4-config/LICENSE",
+	"THIRD-PARTY-LICENSES.txt",
+]
+keywords = ["eu4", "europa-universalis-iv", "paradox", "modding", "merge"]
+classifiers = [
+	"Development Status :: 2 - Pre-Alpha",
+	"Environment :: Console",
+	"Intended Audience :: End Users/Desktop",
+	"Operating System :: MacOS",
+	"Operating System :: Microsoft :: Windows",
+	"Operating System :: POSIX :: Linux",
+	"Programming Language :: Rust",
+	"Topic :: Games/Entertainment",
+	"Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/Acture/foch"
+Repository = "https://github.com/Acture/foch"
+Changelog = "https://github.com/Acture/foch/releases"
+
+[tool.maturin]
+manifest-path = "src/apps/foch-cli/Cargo.toml"
+bindings = "bin"
+profile = "release"
+locked = true
+strip = true
+# Fail a Linux build that would need shared libraries grafted in.
+auditwheel = "check"
+
+[tool.uv]
+# This file only builds wheels; the Python tools are separate uv projects. A
+# managed root would make `uv run` here create a .venv and uv.lock and run
+# maturin's metadata hook.
+managed = false
+
+[tool.ty.environment]
+# The foch-dev gates run ty from the repository root, where it adopts this
+# file as its project and would otherwise check the maintenance tools against
+# `requires-python` above (3.8). Check them at foch-dev's own floor instead.
+python-version = "3.11"

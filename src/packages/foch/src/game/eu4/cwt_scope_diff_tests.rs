@@ -369,11 +369,7 @@ fn ensure_base_scopes_initialized() {
 }
 
 fn vendor_schema_dir() -> PathBuf {
-	workspace_root().join("vendor").join("cwtools-eu4-config")
-}
-
-fn workspace_root() -> PathBuf {
-	PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+	PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")
 }
 
 fn eu4_root() -> PathBuf {

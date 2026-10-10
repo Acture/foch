@@ -2,13 +2,28 @@
 name = "foch"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license = "AGPL-3.0-only AND GPL-3.0-only AND MIT"
-readme.workspace = true
+# The same page as foch-cli; cargo packages it as this crate's README.md.
+readme = "../../apps/foch-cli/README.md"
 homepage.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "game-development"]
 description = "EU4 mod analysis and merge toolkit"
-# Released as a complete workspace source archive with top-level vendor data.
-publish = false
+# What building the library reads: build.rs, `src/` (modules, `include_str!`
+# data and in-source unit-test fixtures) and the vendored CWT rules build.rs
+# compiles into the embedded rule pack. Integration tests, fuzz targets and the
+# rest of the CWT checkout stay in the repository.
+include = [
+	"/build.rs",
+	"/src/**",
+	"/vendor/cwtools-eu4-config/**/*.cwt",
+	"/vendor/cwtools-eu4-config/LICENSE",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
 
 [dependencies]
 bincode.workspace = true

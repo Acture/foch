@@ -1,32 +1,50 @@
+# Release one tag to every channel from one source.
+#
+# The preflight refuses a tag any channel would reject or misplace before
+# anything is built. dist.yml builds and verifies the wheels and archives; the
+# GitHub release carries them with the VSIX, the source archive, the WinGet
+# manifests rendered from the Windows archive and SHA256SUMS.txt. Pushing the
+# tag publishes the GitHub release and, once the tap token exists, updates the
+# Homebrew tap. crates.io and PyPI publish only where the maintainer enabled
+# them (CRATES_IO_PUBLISH and PYPI_PUBLISH repository variables) and approves
+# their environment. WinGet is verified against the published manifests here,
+# but submitted to winget-pkgs by the maintainer. Trusted Publishing requires
+# the publish jobs to stay in this top-level workflow.
+#
+# Re-running a partially published release: use "Re-run failed jobs". The
+# preflight refuses a published release that already has assets, so "Re-run
+# all jobs" fails by design once the release is out. A draft left by an
+# interrupted upload passes the preflight; github-release then keeps its
+# identical assets, adds the missing ones, fails if an existing asset differs,
+# and publishes it.
 name: release
 
 on:
   push:
     tags:
       - "v*"
+  # Re-release an existing tag by dispatching on that tag:
+  # gh workflow run release.yml --ref vX.Y.Z
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to package and release"
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   release-metadata:
     name: Validate release tag
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
-      sha: ${{ steps.meta.outputs.sha }}
+      pep440: ${{ steps.meta.outputs.pep440 }}
+      release-date: ${{ steps.meta.outputs.release-date }}
+      source-date-epoch: ${{ steps.meta.outputs.source-date-epoch }}
     steps:
       - name: Require Homebrew tap credential
         if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
@@ -44,109 +62,98 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
 
       - name: Validate release metadata
         id: meta
         shell: bash
         env:
-          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # Every job builds github.sha, so the run must be on the tag itself.
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "run release.yml on a tag ref (gh workflow run release.yml --ref vX.Y.Z), not $REF_TYPE $REQUESTED_TAG" >&2
+            exit 1
+          fi
           tag="$REQUESTED_TAG"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "release tag must be v-prefixed SemVer, got: $tag" >&2
-            exit 1
-          fi
-          if ! git show-ref --verify --quiet "refs/tags/$tag"; then
-            echo "release tag does not exist: $tag" >&2
-            exit 1
-          fi
-
           sha="$(git rev-list -n 1 "refs/tags/$tag")"
-          version="${tag#v}"
-          workspace_version="$(git show "$sha:Cargo.toml" | python3 -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)["workspace"]["package"]["version"])')"
-          if [ "$version" != "$workspace_version" ]; then
-            echo "tag version $version does not match workspace version $workspace_version" >&2
+          if [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "tag $tag resolves to $sha, but this run checked out $GITHUB_SHA" >&2
             exit 1
           fi
 
-          if [ "${{ github.event_name }}" = "push" ] && [ "$sha" != "$GITHUB_SHA" ]; then
-            echo "tag $tag resolves to $sha, expected pushed SHA $GITHUB_SHA" >&2
-            exit 1
-          fi
-
+          # The tag's own rules: vX.Y.Z or vX.Y.Z-(alpha|beta|rc).N naming the
+          # workspace version, never build metadata; also its PyPI spelling.
+          metadata="$(uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev version --tag "$tag")"
+          # The commit time dates the release reproducibly on every re-run.
+          epoch="$(git log -1 --format=%ct "$sha")"
+          release_date="$(date -u -d "@$epoch" +%F)"
           {
-            echo "tag=$tag"
-            echo "version=$version"
-            echo "sha=$sha"
-          } >> "$GITHUB_OUTPUT"
+            echo "$metadata"
+            echo "release-date=$release_date"
+            echo "source-date-epoch=$epoch"
+          } | tee -a "$GITHUB_OUTPUT"
 
-  build-cli-assets:
-    name: Build CLI assets (${{ matrix.target }})
+  preflight:
+    name: Release preflight
     needs: release-metadata
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            target: linux-x64
-            archive_ext: tar.gz
-          - runner: windows-latest
-            target: win32-x64
-            archive_ext: zip
-          - runner: macos-14
-            target: darwin-arm64
-            archive_ext: tar.gz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
+          persist-credentials: false
 
       - name: Initialize public build submodules
-        working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.95.0
+          # The components rust-toolchain.toml names; rustup otherwise adds them
+          # on the first cargo call and can conflict with the runner's cargo-fmt.
+          components: rustfmt, clippy
 
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-
-      - name: Build release binaries
-        run: cargo build --release --locked --bin foch
-
-      - name: Package Unix archive
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p dist/bin
-          cp target/release/foch dist/bin/
-          tar -C dist/bin -czf "dist/foch-${{ needs.release-metadata.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}" foch
-
-      - name: Package Windows archive
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          New-Item -ItemType Directory -Force dist/bin | Out-Null
-          Copy-Item target/release/foch.exe dist/bin/
-          Compress-Archive -Path dist/bin/* -DestinationPath "dist/foch-${{ needs.release-metadata.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}" -Force
-
-      - name: Upload CLI artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          name: cli-${{ matrix.target }}
-          path: dist/*
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      # Read-only: crates.io, PyPI, winget-pkgs and this repository's release.
+      - name: Check every channel
+        env:
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev release preflight --tag "$RELEASE_TAG"
+
+  dist:
+    name: Build binaries
+    needs: [release-metadata, preflight]
+    uses: ./.github/workflows/dist.yml
+    with:
+      version: ${{ needs.release-metadata.outputs.version }}
 
   package-vsix:
     name: Package VSIX (${{ matrix.target }})
-    needs: release-metadata
+    needs: [release-metadata, preflight]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -155,7 +162,7 @@ jobs:
             target: linux-x64
           - runner: windows-latest
             target: win32-x64
-          - runner: macos-14
+          - runner: macos-15
             target: darwin-arm64
     defaults:
       run:
@@ -164,20 +171,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
+          persist-credentials: false
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.95.0
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+          # The components rust-toolchain.toml names; rustup otherwise adds them
+          # on the first cargo call and can conflict with the runner's cargo-fmt.
+          components: rustfmt, clippy
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -189,15 +196,6 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-
-      - name: Cache Bun
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
@@ -211,21 +209,23 @@ jobs:
         with:
           name: vsix-${{ matrix.target }}
           path: src/apps/vscode-foch/*.vsix
+          if-no-files-found: error
 
   build-source-archive:
     name: Build source archive
-    needs: release-metadata
+    needs: [release-metadata, preflight]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-metadata.outputs.sha }}
           submodules: false
+          persist-credentials: false
 
       - name: Initialize public build submodules
         working-directory: ${{ github.workspace }}
-        run: git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
 
       - name: Create source tarball
         shell: bash
@@ -238,53 +238,303 @@ jobs:
         with:
           name: source-archive
           path: dist/*
+          if-no-files-found: error
 
   github-release:
     name: Publish GitHub release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     needs:
       - release-metadata
-      - build-cli-assets
+      - dist
       - package-vsix
       - build-source-archive
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+      RELEASE_DATE: ${{ needs.release-metadata.outputs.release-date }}
+      SOURCE_DATE_EPOCH: ${{ needs.release-metadata.outputs.source-date-epoch }}
     steps:
-      - name: Download build artifacts
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Download CLI archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: cli-*
           path: dist
           merge-multiple: true
+
+      - name: Download wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download VSIX packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: vsix-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download the source archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-archive
+          path: dist
+
+      - name: Render the WinGet manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          foch_dev=(uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev)
+          out="$RUNNER_TEMP/winget"
+          manifests="$("${foch_dev[@]}" winget render \
+            --asset "dist/foch-$RELEASE_VERSION-win32-x64.zip" \
+            --version "$RELEASE_VERSION" --release-date "$RELEASE_DATE" --out "$out")"
+          "${foch_dev[@]}" winget check --release "$manifests"
+          # Byte-stable across re-runs: fixed mtimes, sorted entries, no extra fields.
+          archive="$GITHUB_WORKSPACE/dist/foch-$RELEASE_VERSION-winget-manifests.zip"
+          cd "$out"
+          find manifests -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
+          find manifests -type f | LC_ALL=C sort | TZ=UTC zip -X -D -q "$archive" -@
+          unzip -l "$archive"
 
       - name: Generate checksums
         shell: bash
         run: |
+          set -euo pipefail
           cd dist
           sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
-      - name: Create or update GitHub release
+      # Channels hash these assets, so an existing one is never replaced. Only
+      # this step holds the write token.
+      - name: Create or complete the GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
-          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
-        shell: bash
+          GH_REPO: ${{ github.repository }}
         run: |
-          tag="$RELEASE_TAG"
-          version="$RELEASE_VERSION"
-          extra_args=()
-          if [[ "${tag}" == *-* ]]; then
-            extra_args+=(--prerelease)
-          fi
-
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release upload "${tag}" dist/* --clobber
-          else
-            gh release create "${tag}" dist/* \
-              --title "Foch ${version}" \
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            extra_args=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              extra_args+=(--prerelease)
+            fi
+            # A release establishes installation only; the status page at the
+            # tag states whether merge quality passed product acceptance.
+            blob="https://github.com/$GH_REPO/blob/$RELEASE_TAG"
+            notes="Foch is an EU4-only alpha. Installing it does not make it ready to merge: the first run needs an EU4 base-data snapshot built from your own game installation (\`foch data build eu4 --from-game-path <EU4> --game-version auto --install\`). Whether merge quality has passed product acceptance at this release is recorded in [the project status]($blob/docs/project-status.md#product-acceptance); see [the current boundary]($blob/README.md#current-boundary) before merging a playset."
+            gh release create "$RELEASE_TAG" dist/* \
+              --title "Foch $RELEASE_VERSION" \
+              --notes "$notes" \
               --generate-notes \
               --verify-tag \
               "${extra_args[@]}"
+            exit 0
           fi
+
+          mapfile -t published < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+          for name in "${published[@]}"; do
+            # Base data the maintainer may add with scripts/upload_release_data_assets.sh;
+            # no channel hashes it.
+            case "$name" in
+              foch-data-manifest.json | foch-*-base-snapshot-*.bin) continue ;;
+            esac
+            if [ ! -f "dist/$name" ]; then
+              echo "release $RELEASE_TAG has an asset this run did not build: $name" >&2
+              exit 1
+            fi
+          done
+          mkdir -p "$RUNNER_TEMP/published"
+          for file in dist/*; do
+            name="$(basename "$file")"
+            if printf '%s\n' "${published[@]}" | grep -Fxq -- "$name"; then
+              gh release download "$RELEASE_TAG" --pattern "$name" --dir "$RUNNER_TEMP/published"
+              if ! cmp "$file" "$RUNNER_TEMP/published/$name"; then
+                echo "published $name differs from this run's; refusing to replace it" >&2
+                exit 1
+              fi
+              echo "kept identical $name"
+            else
+              gh release upload "$RELEASE_TAG" "$file"
+            fi
+          done
+          if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [release-metadata, github-release]
+    if: vars.CRATES_IO_PUBLISH == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/foch-cli
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialize public build submodules
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.95.0
+          # The components rust-toolchain.toml names; rustup otherwise adds them
+          # on the first cargo call and can conflict with the runner's cargo-fmt.
+          components: rustfmt, clippy
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      # The published crates are foch-cli and every workspace crate it builds
+      # from, as foch-dev derives them from `cargo metadata`. Multi-package
+      # publishing is not atomic, so a re-run selects only the crates crates.io
+      # lacks at their version. The OIDC token cannot create a crate, so the
+      # selection fails before any upload when crates.io has no crate of one
+      # of them yet; docs/RELEASE_CHECKLIST.md publishes those with an API
+      # token. The grammar resolves from crates.io, where the preflight found
+      # its pinned release.
+      - name: Select the crates crates.io lacks
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          crates="$(uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev release unpublished)"
+          printf '%s\n' "$crates" > "$RUNNER_TEMP/unpublished-crates.txt"
+          if [ -z "$crates" ]; then
+            echo "crates.io already has every published crate at this version"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "crates.io lacks:"
+            sed 's/^/  /' "$RUNNER_TEMP/unpublished-crates.txt"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Exchange the OIDC token for a crates.io token
+        if: steps.select.outputs.publish == 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      # cargo publishes the selected crates in dependency order.
+      - name: Publish the selected crates
+        if: steps.select.outputs.publish == 'true'
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          selected=()
+          while read -r crate; do
+            selected+=(-p "$crate")
+          done < "$RUNNER_TEMP/unpublished-crates.txt"
+          cargo publish --locked "${selected[@]}"
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [release-metadata, github-release]
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/foch/${{ needs.release-metadata.outputs.pep440 }}/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      # dist.yml verified each target's one wheel against its platform tags and
+      # the release's PEP 440 version.
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  winget-release-verify:
+    name: Verify the WinGet release manifests
+    needs: [release-metadata, dist, github-release]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+      CWT_SCHEMA_ID: ${{ needs.dist.outputs.cwt-schema-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Download the published manifests
+        shell: pwsh
+        run: |
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir release-asset `
+            --pattern "foch-$env:RELEASE_VERSION-winget-manifests.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'gh release download failed' }
+
+      # The attached set is the one to submit to microsoft/winget-pkgs; this job
+      # never submits. WinGet downloads the published archive from its https
+      # URL and checks those bytes against the hash the manifests name.
+      - name: Install and uninstall from the release manifests
+        shell: pwsh
+        run: |
+          $fochDev = 'uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev'
+          ./src/apps/foch-cli/scripts/smoke_winget.ps1 -Mode release `
+            -ManifestArchive "release-asset/foch-$env:RELEASE_VERSION-winget-manifests.zip" `
+            -Version $env:RELEASE_VERSION -ExpectedCwtSchemaId $env:CWT_SCHEMA_ID -FochDev $fochDev
+
+      - name: Upload WinGet logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: winget-release-logs
+          path: ${{ runner.temp }}/foch-winget-smoke/logs
+          if-no-files-found: ignore
 
   homebrew-tap:
     name: Update Homebrew tap
