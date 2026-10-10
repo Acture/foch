@@ -86,8 +86,29 @@ pub struct AstFile {
 	pub statements: Vec<AstStatement>,
 }
 
+/// What a parse diagnostic found. Consumers decide on the code, never on the
+/// message text, which is for people only.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParseDiagnosticCode {
+	/// The file could not be read; nothing was parsed.
+	ReadFailure,
+	/// A Lua block comment runs to the end of the file.
+	UnterminatedLuaBlockComment,
+	/// A block is still open at the end of the file.
+	MissingClosingBrace,
+	/// A `}` at the outermost level of the file, which no block opened. The
+	/// parser skips it and keeps every statement around it.
+	UnmatchedClosingBrace,
+	/// A token that cannot start a statement; it is skipped.
+	InvalidStatementStart,
+	/// A token that cannot be a value; it is read as an empty identifier.
+	InvalidValue,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParseDiagnostic {
+	pub code: ParseDiagnosticCode,
 	pub message: String,
 	pub span: SpanRange,
 }
@@ -436,6 +457,7 @@ impl<'a> Lexer<'a> {
 				loop {
 					let Some(byte) = self.peek_byte() else {
 						self.diagnostics.push(ParseDiagnostic {
+							code: ParseDiagnosticCode::UnterminatedLuaBlockComment,
 							message: format!(
 								"unterminated Lua block comment --[{}[",
 								"=".repeat(level)
@@ -576,6 +598,7 @@ impl ParserState {
 					if stop_at_rbrace {
 						let span = token.span.clone();
 						self.diagnostics.push(ParseDiagnostic {
+							code: ParseDiagnosticCode::MissingClosingBrace,
 							message: "missing closing brace before end of file".into(),
 							span,
 						});
@@ -590,6 +613,7 @@ impl ParserState {
 					let span = token.span.clone();
 					self.bump();
 					self.diagnostics.push(ParseDiagnostic {
+						code: ParseDiagnosticCode::UnmatchedClosingBrace,
 						message: "unexpected closing brace without an opening block".into(),
 						span,
 					});
@@ -791,6 +815,7 @@ impl ParserState {
 			TokenKind::RBrace | TokenKind::Eof => None,
 			_ => {
 				self.diagnostics.push(ParseDiagnostic {
+					code: ParseDiagnosticCode::InvalidStatementStart,
 					message: "could not parse statement start token".to_string(),
 					span: first.span,
 				});
@@ -867,6 +892,7 @@ impl ParserState {
 			},
 			_ => {
 				self.diagnostics.push(ParseDiagnostic {
+					code: ParseDiagnosticCode::InvalidValue,
 					message: "value parse failed; downgraded to empty identifier".to_string(),
 					span: token.span.clone(),
 				});
@@ -929,6 +955,7 @@ pub(crate) fn read_failure(err: &std::io::Error) -> ParsedStatements {
 	ParsedStatements {
 		statements: Vec::new(),
 		diagnostics: vec![ParseDiagnostic {
+			code: ParseDiagnosticCode::ReadFailure,
 			message: format!("failed to read file: {err}"),
 			span: SpanRange {
 				start: start.clone(),
@@ -967,8 +994,8 @@ pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> Parse
 #[cfg(test)]
 mod tests {
 	use super::{
-		AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_content,
-		parse_clausewitz_file, parse_clausewitz_statements,
+		AstStatement, AstValue, ParseDiagnosticCode, ScalarValue, ScriptSyntax,
+		parse_clausewitz_content, parse_clausewitz_file, parse_clausewitz_statements,
 	};
 	use crate::model::GamePath;
 	use std::fs;
@@ -1074,7 +1101,10 @@ mod tests {
 		let source = "g = { old = { primary = AAA }";
 		let parsed = parse_clausewitz_content(game_path("common/cultures/test.txt"), source);
 		assert_eq!(parsed.diagnostics.len(), 1);
-		assert!(parsed.diagnostics[0].message.contains("closing brace"));
+		assert_eq!(
+			parsed.diagnostics[0].code,
+			ParseDiagnosticCode::MissingClosingBrace
+		);
 		assert_eq!(parsed.diagnostics[0].span.start.offset, source.len());
 		assert_eq!(parsed.ast.statements.len(), 1);
 	}
@@ -1085,7 +1115,10 @@ mod tests {
 			include_str!("../../../../tests/fixtures/cultures/malformed/extra_closing_brace.txt");
 		let parsed = parse_clausewitz_content(game_path("common/cultures/test.txt"), source);
 		assert_eq!(parsed.diagnostics.len(), 1);
-		assert!(parsed.diagnostics[0].message.contains("closing brace"));
+		assert_eq!(
+			parsed.diagnostics[0].code,
+			ParseDiagnosticCode::UnmatchedClosingBrace
+		);
 		assert_eq!(parsed.diagnostics[0].span.start.line, 5);
 		assert_eq!(
 			parsed

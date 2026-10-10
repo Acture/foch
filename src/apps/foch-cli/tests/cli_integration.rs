@@ -214,6 +214,144 @@ fn culture_cli_repairs_and_adapts_reviewed_sources_without_mutating_them() {
 	assert!(!stale_out.exists());
 }
 
+const STRAY_BRACE_TRIGGERS: &str = "common/scripted_triggers/b_triggers.txt";
+
+/// Stages a scripted-trigger database whose second mod's file ends with an
+/// unmatched top-level `}`, and returns the manifest to merge and that mod.
+fn stage_stray_brace_triggers(scratch: &Path, mod_b_triggers: &str) -> (PathBuf, PathBuf) {
+	let game = scratch.join("game");
+	let mod_a = scratch.join("a");
+	let mod_b = scratch.join("b");
+	write_game_version(&game, "stray-brace-1.0");
+	write_script_file(
+		&game,
+		"common/scripted_triggers/00_triggers.txt",
+		"base_check = { always = yes }\n",
+	);
+	write_descriptor(&mod_a, "A");
+	write_script_file(
+		&mod_a,
+		"common/scripted_triggers/a_triggers.txt",
+		"a_check = { always = yes }\n",
+	);
+	write_descriptor(&mod_b, "B");
+	write_script_file(&mod_b, STRAY_BRACE_TRIGGERS, mod_b_triggers);
+	write_game_path_config(scratch, &game);
+	build_base_data_install(scratch, &game);
+	let manifest = scratch.join("foch.toml");
+	fs::write(
+		&manifest,
+		"[project]\ngame='eu4'\n[[project.mods]]\nid='a'\npath='a'\n[[project.mods]]\nid='b'\npath='b'\n",
+	)
+	.unwrap();
+	(manifest, mod_b)
+}
+
+#[test]
+fn an_unmatched_top_level_brace_is_ignored_with_a_located_repair_warning() {
+	let scratch = TempDir::new().unwrap();
+	let source = "b_check = {\n\talways = yes\n}\n}\nb_later = { always = no }\n";
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(
+		stdout.contains("source repair in b: common/scripted_triggers/b_triggers.txt:4:1"),
+		"{stdout}"
+	);
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert_eq!(report.unsupported_input_count, 0, "{report:#?}");
+	let [repair] = report.source_repairs.as_slice() else {
+		panic!("expected one source repair: {report:#?}");
+	};
+	assert_eq!(repair.mod_id, "b");
+	assert_eq!(repair.path.as_str(), STRAY_BRACE_TRIGGERS);
+	assert_eq!((repair.line, repair.column), (4, 1));
+	assert_eq!(
+		repair.repair,
+		foch::model::SourceRepair::IgnoredUnmatchedClosingBrace
+	);
+	assert!(repair.unit.starts_with("module:"), "{repair:?}");
+
+	let mut merged = String::new();
+	for entry in fs::read_dir(out.join("common/scripted_triggers")).unwrap() {
+		let path = entry.unwrap().path();
+		let text = fs::read_to_string(&path).unwrap();
+		let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+			foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+			&text,
+		);
+		assert!(
+			parsed.diagnostics.is_empty(),
+			"{}: {:?}",
+			path.display(),
+			parsed.diagnostics
+		);
+		merged.push_str(&text);
+	}
+	for key in ["a_check", "b_check", "b_later"] {
+		assert!(merged.contains(key), "{key} missing from {merged}");
+	}
+	assert_eq!(
+		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		source,
+		"the source file is read-only"
+	);
+}
+
+#[test]
+fn a_stray_brace_does_not_excuse_other_parse_errors_even_with_force() {
+	let scratch = TempDir::new().unwrap();
+	let source = "b_check = { always = yes }\n}\nb_open = {\n\talways = no\n";
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--force",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::PartialSuccess,
+		"{report:#?}"
+	);
+	assert_eq!(report.unsupported_input_count, 1, "{report:#?}");
+	assert!(
+		fs::read_dir(out.join("common/scripted_triggers")).is_err(),
+		"a deferred module writes no output"
+	);
+	assert_eq!(
+		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		source
+	);
+}
+
 /// A test path as an argument, environment or configuration value. Test
 /// directories are UTF-8; one that is not fails the test instead of being
 /// rendered as some other path.
@@ -989,7 +1127,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v14.0.0")
+			.join("v15.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),

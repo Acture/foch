@@ -141,6 +141,28 @@ An implicit interactive/TUI defer remains `needs_user_choice`. `deferred` is
 reserved for an explicit configured defer decision. `--force` must not emit an
 explicitly deferred unit.
 
+## Source syntax repairs
+
+A source file that fails to parse makes every unit that reads it
+`unsupported_input`, and for a definition module that is the whole folder-wide
+database. One error class is the exception, because the parsed result already
+matches a single reading. An unmatched `}` at the outermost level of a
+Clausewitz script is ignored and every statement around it is kept. Foch
+applies this only to its own parsed copy. The source file is never changed.
+The repair is chosen by the parser's stable diagnostic code, not by its
+message.
+
+Each unit that read a repaired file carries a note naming the mod, file, line
+and column. The merge report lists the same facts in `source_repairs`. Copied
+units install source bytes unchanged, so they record no repair.
+
+The repair does not apply to `.lua` files, which a Lua interpreter loads.
+Every other parse error, including a missing `}` in a file that also has an
+unmatched one, still defers the unit. `--force` does not change that. The
+repair is part of the analysis rules identity, so cached snapshots and frozen
+analyses made before it are not reused. That EU4 skips the unmatched brace and
+logs an error has not yet been confirmed in a game log.
+
 ## Resolution policy
 
 Reviewed static decisions live in `foch.toml` `[[resolutions]]`. Exact conflict

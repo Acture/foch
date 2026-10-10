@@ -45,8 +45,8 @@ use crate::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath, GamePathBuf,
 	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
 	MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
-	MergeReportConflictResolution, MergeReportStatus, MergeTraceEntry, SemanticIndex,
-	StaleVanillaTargetDescriptor,
+	MergeReportConflictResolution, MergeReportSourceRepair, MergeReportStatus, MergeTraceEntry,
+	SemanticIndex, StaleVanillaTargetDescriptor,
 };
 use crate::project::{AppliedDepOverride, DepOverride, ResolutionDecision, ResolutionMap};
 use analysis::{
@@ -539,6 +539,7 @@ pub(crate) fn materialize_with_adaptations(
 		&mut report,
 	)?;
 	review.mark_output_pruned(&prune_result.pruned_paths)?;
+	record_source_repairs(&input, &plan, &mut review, &mut report)?;
 	let committed_module_replacements = reconcile_surviving_output_facts(
 		&plan,
 		&prune_result,
@@ -650,6 +651,68 @@ struct UnitOutputs {
 	counted_generated_paths: BTreeSet<GamePathBuf>,
 	provenance_localisation_by_script: BTreeMap<GamePathBuf, BTreeMap<String, String>>,
 	pending_copy_through: Vec<MergePlanEntry>,
+}
+
+/// Records, on each unit and in the report, the source repairs behind the
+/// parsed files the unit's analysis read. A copied unit installs its source
+/// bytes unchanged, so no repair stands behind its output.
+fn record_source_repairs(
+	input: &ResolvedInput,
+	plan: &MergePlanResult,
+	review: &mut UnitOutcomeLedger,
+	report: &mut MergeReport,
+) -> Result<(), MergeError> {
+	for entry in &plan.paths {
+		let unit = review.outcome(entry)?;
+		if unit.disposition == MergeDisposition::Copy {
+			continue;
+		}
+		let unit_id = unit.id.clone();
+		let input_paths: Vec<&GamePath> = match &entry.target {
+			MergePlanTarget::File { path } => vec![path],
+			MergePlanTarget::Module { input_paths, .. } => {
+				input_paths.iter().map(GamePathBuf::as_game_path).collect()
+			}
+		};
+		let mut notes = Vec::new();
+		for path in input_paths {
+			for contributor in input.file_inventory.get(path).into_iter().flatten() {
+				if contributor.is_synthetic_base {
+					continue;
+				}
+				// Only a parsed script can carry a repair; anything else fails
+				// to load here and is reported by the unit itself.
+				let Ok(parsed) = input.script_cache.load(contributor) else {
+					continue;
+				};
+				for issue in &parsed.parse_issues {
+					let Some(repair) = issue.repair else {
+						continue;
+					};
+					notes.push(format!(
+						"source repair in {}: {}:{}:{}: {}; the source file is unchanged",
+						issue.mod_id,
+						issue.path,
+						issue.line,
+						issue.column,
+						repair.description()
+					));
+					report.source_repairs.push(MergeReportSourceRepair {
+						unit: unit_id.clone(),
+						mod_id: issue.mod_id.clone(),
+						path: issue.path.clone(),
+						line: issue.line,
+						column: issue.column,
+						repair,
+					});
+				}
+			}
+		}
+		if !notes.is_empty() {
+			review.add_notes(entry, notes)?;
+		}
+	}
+	Ok(())
 }
 
 fn withhold_incomplete_transformations(

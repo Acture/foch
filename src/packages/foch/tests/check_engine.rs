@@ -1093,6 +1093,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		version_mismatch: Vec::new(),
 		stale_vanilla_targets: Vec::new(),
 		warnings: Vec::new(),
+		source_repairs: Vec::new(),
 		dep_overrides_applied: Vec::new(),
 		playset_fingerprint: None,
 		definition_provenance: std::collections::BTreeMap::new(),

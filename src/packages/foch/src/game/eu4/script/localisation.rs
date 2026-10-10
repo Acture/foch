@@ -37,6 +37,7 @@ pub(crate) fn parse_localisation_file(
 				line: 1,
 				column: 1,
 				message: format!("unable to read localisation file: {err}"),
+				repair: None,
 			}],
 		},
 	}
@@ -61,6 +62,7 @@ pub(crate) fn parse_localisation_bytes(
 				line: 1,
 				column: 1,
 				message,
+				repair: None,
 			});
 			return ParsedLocalisationFile {
 				entries,
@@ -104,6 +106,7 @@ pub(crate) fn parse_localisation_bytes(
 					line: line_no,
 					column: 1,
 					message: "missing or invalid localisation header".to_string(),
+					repair: None,
 				});
 				header_issue_emitted = true;
 			}
@@ -117,6 +120,7 @@ pub(crate) fn parse_localisation_bytes(
 				line: line_no,
 				column: 1,
 				message: "invalid localisation entry".to_string(),
+				repair: None,
 			});
 			continue;
 		};
@@ -150,6 +154,7 @@ pub(crate) fn parse_localisation_bytes(
 			line: 1,
 			column: 1,
 			message: "missing localisation header".to_string(),
+			repair: None,
 		});
 	}
 

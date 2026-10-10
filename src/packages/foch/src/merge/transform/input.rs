@@ -10,7 +10,7 @@ use crate::game::eu4::script::{ParsedScriptFile, parse_script_bytes_cached};
 use crate::game::eu4::text::decode_paradox_bytes;
 use crate::input::ResolvedInput;
 use crate::merge::error::{MergeError, MergeErrorSubject};
-use crate::model::{GamePath, GamePathBuf};
+use crate::model::{GamePath, GamePathBuf, has_fatal_parse_issue};
 use crate::project::SourceEdit;
 
 #[derive(Clone, Debug, Default)]
@@ -204,7 +204,7 @@ impl ReviewedInputBatch {
 			);
 			for index in &owners[&key] {
 				let policy = &policies[*index];
-				if !document.parse_issues.is_empty() {
+				if has_fatal_parse_issue(&document.parse_issues) {
 					return Err(invalid(
 						game(file),
 						format!(

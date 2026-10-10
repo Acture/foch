@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::analysis::Severity;
-use super::{GamePath, GamePathBuf};
+use super::{GamePath, GamePathBuf, SourceRepair};
 use crate::playset::steam::WorkshopInstallIdentity;
 use crate::project::AppliedDepOverride;
 
@@ -919,6 +919,19 @@ impl DeferredUnitReason {
 	}
 }
 
+/// A repair Foch applied to its parsed copy of a source file that a merge unit
+/// read. The source file itself is unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeReportSourceRepair {
+	/// The stable id of the unit that read the repaired file.
+	pub unit: String,
+	pub mod_id: String,
+	pub path: GamePathBuf,
+	pub line: usize,
+	pub column: usize,
+	pub repair: SourceRepair,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergeReportConflictResolution {
 	/// The deferred unit's primary output.
@@ -1107,6 +1120,9 @@ pub struct MergeReport {
 	pub stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
+	/// Source syntax repairs behind the units' analysis, in plan order.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_repairs: Vec<MergeReportSourceRepair>,
 	// D2 local dependency overrides applied during DAG-based merge.
 	#[serde(default)]
 	pub dep_overrides_applied: Vec<AppliedDepOverride>,

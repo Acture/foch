@@ -8004,3 +8004,42 @@ province_event = {
 				&& reference.value == "germanic")
 	);
 }
+
+#[test]
+fn only_an_unmatched_top_level_brace_in_clausewitz_script_is_a_repair() {
+	use super::parse_script_bytes_cached;
+	use crate::model::{SourceRepair, has_fatal_parse_issue};
+
+	let root = Path::new("/mod");
+	let stray = b"a = { b = 1 }\n}\nc = { d = 2 }\n";
+	let parsed = parse_script_bytes_cached(
+		"m",
+		root,
+		game_path("common/scripted_triggers/a.txt"),
+		stray,
+	);
+	let [issue] = parsed.parse_issues.as_slice() else {
+		panic!("expected one issue: {:?}", parsed.parse_issues);
+	};
+	assert_eq!((issue.line, issue.column), (2, 1));
+	assert_eq!(
+		issue.repair,
+		Some(SourceRepair::IgnoredUnmatchedClosingBrace)
+	);
+	assert!(!has_fatal_parse_issue(&parsed.parse_issues));
+	assert_eq!(parsed.ast.statements.len(), 2);
+
+	// A Lua interpreter rejects the whole file instead.
+	let lua = parse_script_bytes_cached("m", root, game_path("common/defines/a.lua"), stray);
+	assert!(has_fatal_parse_issue(&lua.parse_issues), "{lua:?}");
+
+	// A missing brace has no single reading, so the stray one is no excuse.
+	let mixed = parse_script_bytes_cached(
+		"m",
+		root,
+		game_path("common/scripted_triggers/b.txt"),
+		b"a = { b = 1 }\n}\nc = {\n",
+	);
+	assert_eq!(mixed.parse_issues.len(), 2, "{:?}", mixed.parse_issues);
+	assert!(has_fatal_parse_issue(&mixed.parse_issues));
+}

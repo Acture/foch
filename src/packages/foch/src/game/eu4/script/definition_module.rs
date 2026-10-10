@@ -3,7 +3,7 @@ use super::super::content::{
 };
 use super::ParsedScriptFile;
 use super::parser::{AstFile, AstStatement, SpanRange};
-use crate::model::{GamePath, GamePathBuf};
+use crate::model::{GamePath, GamePathBuf, has_fatal_parse_issue};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug)]
@@ -150,10 +150,15 @@ pub fn load_definition_module(
 	let mut duplicate_diagnostics = Vec::new();
 
 	for input in ordered_inputs {
-		if !input.file.parse_issues.is_empty() {
+		if has_fatal_parse_issue(&input.file.parse_issues) {
 			return Err(DefinitionModuleLoadError::ParseIssues {
 				path: input.path.to_owned(),
-				issue_count: input.file.parse_issues.len(),
+				issue_count: input
+					.file
+					.parse_issues
+					.iter()
+					.filter(|issue| issue.is_fatal())
+					.count(),
 			});
 		}
 
@@ -241,7 +246,7 @@ mod tests {
 	use crate::game::eu4::script::parser::{
 		AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_content,
 	};
-	use crate::model::{GamePath, GamePathBuf, GamePathErrorKind, ParseIssue};
+	use crate::model::{GamePath, GamePathBuf, GamePathErrorKind, ParseIssue, SourceRepair};
 
 	fn policy() -> DefinitionModulePolicy {
 		DefinitionModulePolicy {
@@ -761,6 +766,25 @@ mod tests {
 	}
 
 	#[test]
+	fn a_repaired_parse_issue_does_not_stop_module_loading() {
+		let path = game_path("common/governments/repaired.txt");
+		let mut file = parsed_file(&path, "valid = { marker = value }");
+		file.parse_issues.push(ParseIssue {
+			mod_id: "test".to_string(),
+			path: path.clone(),
+			line: 2,
+			column: 1,
+			message: "unexpected closing brace without an opening block".to_string(),
+			repair: Some(SourceRepair::IgnoredUnmatchedClosingBrace),
+		});
+
+		let module = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
+			.expect("a repaired file loads");
+
+		assert_eq!(module.definition_sources.len(), 1);
+	}
+
+	#[test]
 	fn parse_issues_are_loader_errors() {
 		let path = game_path("common/governments/invalid.txt");
 		let mut file = parsed_file(&path, "valid = { marker = value }");
@@ -770,6 +794,7 @@ mod tests {
 			line: 1,
 			column: 1,
 			message: "synthetic parse issue".to_string(),
+			repair: None,
 		});
 
 		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())

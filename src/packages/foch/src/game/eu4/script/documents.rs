@@ -6,6 +6,7 @@ use super::{
 use crate::model::{
 	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, GamePath, GamePathBuf, JsonProperty,
 	LocalisationDefinition, LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
+	has_fatal_parse_issue,
 };
 use rayon::prelude::*;
 use serde_json::Value as JsonValue;
@@ -218,7 +219,7 @@ pub fn build_semantic_index_from_documents(documents: &[ParsedTextDocument]) -> 
 					mod_id: file.mod_id.clone(),
 					path: file.relative_path.clone(),
 					family: DocumentFamily::Clausewitz,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 			}
 			ParsedTextDocument::Localisation(file) => {
@@ -226,7 +227,7 @@ pub fn build_semantic_index_from_documents(documents: &[ParsedTextDocument]) -> 
 					mod_id: file.mod_id.clone(),
 					path: file.path.clone(),
 					family: DocumentFamily::Localisation,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				index.localisation_definitions.extend(file.entries.clone());
 				index
@@ -239,7 +240,7 @@ pub fn build_semantic_index_from_documents(documents: &[ParsedTextDocument]) -> 
 					mod_id: file.mod_id.clone(),
 					path: file.path.clone(),
 					family: DocumentFamily::Csv,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				index.csv_rows.extend(file.rows.clone());
 				index.parse_issues.extend(file.parse_issues.clone());
@@ -249,7 +250,7 @@ pub fn build_semantic_index_from_documents(documents: &[ParsedTextDocument]) -> 
 					mod_id: file.mod_id.clone(),
 					path: file.path.clone(),
 					family: DocumentFamily::Json,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				index.json_properties.extend(file.properties.clone());
 				index.parse_issues.extend(file.parse_issues.clone());
@@ -283,7 +284,7 @@ pub fn build_semantic_index_from_owned_documents(
 					mod_id: file.mod_id.clone(),
 					path: file.relative_path.clone(),
 					family: DocumentFamily::Clausewitz,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				clausewitz_docs.push(file);
 			}
@@ -292,7 +293,7 @@ pub fn build_semantic_index_from_owned_documents(
 					mod_id: file.mod_id,
 					path: file.path,
 					family: DocumentFamily::Localisation,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				localisation_definitions.extend(file.entries);
 				localisation_duplicates.extend(file.duplicates);
@@ -303,7 +304,7 @@ pub fn build_semantic_index_from_owned_documents(
 					mod_id: file.mod_id,
 					path: file.path,
 					family: DocumentFamily::Csv,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				csv_rows.extend(file.rows);
 				parse_issues.extend(file.parse_issues);
@@ -313,7 +314,7 @@ pub fn build_semantic_index_from_owned_documents(
 					mod_id: file.mod_id,
 					path: file.path,
 					family: DocumentFamily::Json,
-					parse_ok: file.parse_issues.is_empty(),
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				json_properties.extend(file.properties);
 				parse_issues.extend(file.parse_issues);
@@ -457,6 +458,7 @@ fn parse_csv_document(
 				line: 1,
 				column: 1,
 				message: format!("unable to read csv file: {err}"),
+				repair: None,
 			});
 			return ParsedCsvDocument {
 				mod_id: mod_id.to_string(),
@@ -501,6 +503,7 @@ fn parse_csv_document(
 				message: format!(
 					"inconsistent csv column count: expected {expected}, got {actual}"
 				),
+				repair: None,
 			});
 		}
 
@@ -592,6 +595,7 @@ fn parse_json_document(
 				line: 1,
 				column: 1,
 				message: format!("unable to read json file: {err}"),
+				repair: None,
 			});
 			return ParsedJsonDocument {
 				mod_id: mod_id.to_string(),
@@ -610,6 +614,7 @@ fn parse_json_document(
 			line: err.line(),
 			column: err.column(),
 			message: err.to_string(),
+			repair: None,
 		}),
 	}
 
@@ -746,20 +751,20 @@ fn document_parse_details(doc: &ParsedTextDocument) -> DocumentParseDetails {
 	match doc {
 		ParsedTextDocument::Clausewitz(file) => DocumentParseDetails::Clausewitz {
 			parse_issue_count: file.parse_issues.len(),
-			parse_ok: file.parse_issues.is_empty(),
+			parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 			cache_hit: file.parse_cache_hit,
 		},
 		ParsedTextDocument::Localisation(file) => DocumentParseDetails::Localisation {
 			parse_issue_count: file.parse_issues.len(),
-			parse_ok: file.parse_issues.is_empty(),
+			parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 		},
 		ParsedTextDocument::Csv(file) => DocumentParseDetails::Csv {
 			parse_issue_count: file.parse_issues.len(),
-			parse_ok: file.parse_issues.is_empty(),
+			parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 		},
 		ParsedTextDocument::Json(file) => DocumentParseDetails::Json {
 			parse_issue_count: file.parse_issues.len(),
-			parse_ok: file.parse_issues.is_empty(),
+			parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 		},
 	}
 }
