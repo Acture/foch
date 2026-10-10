@@ -1168,22 +1168,26 @@ fn apply_file_unit(
 				} else {
 					MergeDisposition::NeedsUserChoice
 				},
-				"structural conflict deferred",
+				"structural conflict deferred".to_string(),
 				!explicitly_deferred,
 			)
 		}
-		Ok(Err(StructuralMergeFailure::Merge(err))) => (
-			StructuralConflictReport::without_details(format!("structural merge failed: {err}")),
-			DeferredUnitReason::EngineFailure,
-			MergeDisposition::EngineFailure,
-			"structural backend failed",
-			true,
-		),
+		Ok(Err(StructuralMergeFailure::Merge(err))) => {
+			// The review shows the cause before commit, as definition modules do.
+			let reason = format!("structural merge failed: {err}");
+			(
+				StructuralConflictReport::without_details(reason.clone()),
+				DeferredUnitReason::EngineFailure,
+				MergeDisposition::EngineFailure,
+				reason,
+				true,
+			)
+		}
 		Err(_) => (
 			StructuralConflictReport::without_details("structural merge panicked".to_string()),
 			DeferredUnitReason::EngineFailure,
 			MergeDisposition::EngineFailure,
-			"structural backend panicked",
+			"structural backend panicked".to_string(),
 			true,
 		),
 	};
@@ -1205,7 +1209,7 @@ fn apply_file_unit(
 	review.resolve(
 		entry,
 		disposition,
-		summary,
+		&summary,
 		placeholder_written.then(|| entry.output_path().to_owned()),
 		[],
 	)
@@ -4627,7 +4631,11 @@ mod tests {
 	#[test]
 	fn structural_backend_failure_and_panic_are_reviewed_as_engine_failures() {
 		for (name, panic, expected_summary) in [
-			("failure", false, "structural backend failed"),
+			(
+				"failure",
+				false,
+				"structural merge failed: validation error in common/diplomatic_actions/ordinary.txt: controlled structural backend failure",
+			),
 			("panic", true, "structural backend panicked"),
 		] {
 			let temp = TempDir::new().expect("temp dir");
