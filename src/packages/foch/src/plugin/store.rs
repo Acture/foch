@@ -333,12 +333,23 @@ pub enum Installed {
 /// never disturbed); the write is staged in a sibling temp directory and moved
 /// into place only once complete.
 pub fn install(store_root: &Path, package: &ValidatedPackage) -> io::Result<Installed> {
-	let destination = version_dir(store_root, package);
-	if destination.is_dir() {
-		return Ok(Installed::AlreadyPresent(destination));
+	fs::create_dir_all(store_root)?;
+	let root = store_root.canonicalize()?;
+	let parent = plugin_dir(&root, &package.manifest.plugin.id);
+	match fs::create_dir(&parent) {
+		Ok(()) => {}
+		Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+		Err(error) => return Err(error),
 	}
-	let parent = plugin_dir(store_root, &package.manifest.plugin.id);
-	fs::create_dir_all(&parent)?;
+	let parent = checked_directory(&parent, &root)?;
+	let destination = parent.join(package.version_dir_name());
+	match fs::symlink_metadata(&destination) {
+		Ok(_) => {
+			return checked_directory(&destination, &root).map(Installed::AlreadyPresent);
+		}
+		Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+		Err(error) => return Err(error),
+	}
 
 	// Stage under a unique sibling name on the same volume, then rename.
 	let staging = tempfile::Builder::new()
@@ -351,8 +362,10 @@ pub fn install(store_root: &Path, package: &ValidatedPackage) -> io::Result<Inst
 		// concurrent writer won; keep theirs.
 		match fs::rename(staging.path(), &destination) {
 			Ok(()) => Ok(Installed::New(destination.clone())),
-			Err(_) if destination.is_dir() => Ok(Installed::AlreadyPresent(destination.clone())),
-			Err(error) => Err(error),
+			Err(error) => match checked_directory(&destination, &root) {
+				Ok(directory) => Ok(Installed::AlreadyPresent(directory)),
+				Err(_) => Err(error),
+			},
 		}
 	})
 }
@@ -389,26 +402,60 @@ pub fn catalog(
 pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<String>) {
 	let mut versions = Vec::new();
 	let mut problems = Vec::new();
-	let Ok(plugin_dirs) = fs::read_dir(store_root) else {
+	let Ok(root) = store_root.canonicalize() else {
+		return (versions, problems);
+	};
+	let Ok(plugin_dirs) = fs::read_dir(&root) else {
 		return (versions, problems);
 	};
 	for plugin_entry in plugin_dirs.flatten() {
-		if !plugin_entry.path().is_dir() {
+		if !plugin_entry
+			.file_type()
+			.is_ok_and(|kind| kind.is_dir() || kind.is_symlink())
+		{
 			continue;
 		}
-		let Ok(version_dirs) = fs::read_dir(plugin_entry.path()) else {
-			continue;
+		let plugin_dir = match checked_directory(&plugin_entry.path(), &root) {
+			Ok(path) => path,
+			Err(error) => {
+				problems.push(format!("{}: {error}", plugin_entry.path().display()));
+				continue;
+			}
+		};
+		let version_dirs = match fs::read_dir(&plugin_dir) {
+			Ok(entries) => entries,
+			Err(error) => {
+				problems.push(format!("{}: {error}", plugin_dir.display()));
+				continue;
+			}
 		};
 		for version_entry in version_dirs.flatten() {
 			let dir = version_entry.path();
 			let name = version_entry.file_name();
 			let name = name.to_string_lossy();
 			// A staging directory from an interrupted install is not a version.
-			if name.starts_with('.') || !dir.is_dir() {
+			if name.starts_with('.')
+				|| !version_entry
+					.file_type()
+					.is_ok_and(|kind| kind.is_dir() || kind.is_symlink())
+			{
 				continue;
 			}
+			let dir = match checked_directory(&dir, &root) {
+				Ok(path) => path,
+				Err(error) => {
+					problems.push(format!("{}: {error}", dir.display()));
+					continue;
+				}
+			};
 			let manifest_path = dir.join(FILE_NAME);
-			match fs::read_to_string(&manifest_path)
+			match ordinary_metadata(&manifest_path)
+				.and_then(|metadata| {
+					if !metadata.is_file() {
+						return Err(io::Error::other("manifest is not a regular file"));
+					}
+					fs::read_to_string(&manifest_path)
+				})
 				.map_err(|error| error.to_string())
 				.and_then(|text| Manifest::parse(&text).map_err(|error| error.to_string()))
 			{
@@ -421,6 +468,36 @@ pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<Stri
 	}
 	versions.sort_by(|a, b| a.dir.cmp(&b.dir));
 	(versions, problems)
+}
+
+fn ordinary_metadata(path: &Path) -> io::Result<fs::Metadata> {
+	let metadata = fs::symlink_metadata(path)?;
+	if metadata.file_type().is_symlink() {
+		return Err(io::Error::other(
+			"installed artifact links are not supported",
+		));
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::MetadataExt;
+		if metadata.file_attributes() & 0x400 != 0 {
+			return Err(io::Error::other(
+				"installed artifact reparse points are not supported",
+			));
+		}
+	}
+	Ok(metadata)
+}
+
+pub(super) fn checked_directory(path: &Path, canonical_store: &Path) -> io::Result<PathBuf> {
+	if !ordinary_metadata(path)?.is_dir() {
+		return Err(io::Error::other("installed artifact is not a directory"));
+	}
+	let directory = path.canonicalize()?;
+	if !directory.starts_with(canonical_store) {
+		return Err(io::Error::other("installed artifact escapes the store"));
+	}
+	Ok(directory)
 }
 
 fn write_entries(root: &Path, package: &ValidatedPackage) -> io::Result<()> {

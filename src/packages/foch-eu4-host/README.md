@@ -42,8 +42,16 @@ and the installation's `plugins` directory, recording exclusions in
 `foch-host/run.json`. Plugin resources and INI configuration are copied into
 separate package directories. The layer owns `gfx/fonts`; Unicode's generated
 font cache is linked to Foch data and keyed by package/base-font identity.
-Every writable destination is checked against the source installation before
-creation, including nested data junctions; parent traversal is refused.
+Every Foch-managed writable destination is checked against the source
+installation before creation, including nested data junctions; parent traversal
+is refused.
+
+Other game asset directories are shared through directory links. The layer
+isolates Foch's deployment, plugin configuration and known font/cache writes;
+it is not a filesystem sandbox. Game and native DLL code runs with the player's
+permissions and can write through shared links or access original paths.
+Installed plugin/version directories and manifests must be ordinary entries
+inside the configured store; symbolic links and reparse points are refused.
 
 Player layers are retained when management exits, and test-session sweeping
 skips them. Close the game before removing a retained layer; unlink its data

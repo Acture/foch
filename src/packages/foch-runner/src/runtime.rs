@@ -1,4 +1,8 @@
 //! Bundle-independent runtime layers shared by player and test launches.
+//!
+//! Game asset directories are shared through links; Foch writes into owned
+//! runtime/state paths. Game and native plugin code retains the user's file
+//! permissions, including writes through those shared links.
 
 use crate::{layout, platform};
 use sha2::{Digest, Sha256};
@@ -337,6 +341,92 @@ mod tests {
 		);
 		assert!(!source.path().join("generated").exists());
 		platform::remove_layer(&cache_link);
+	}
+
+	#[test]
+	fn installed_store_directory_links_cannot_import_external_artifacts() {
+		use foch::plugin::{self, store::ArchiveEntry};
+		let outside = tempfile::tempdir().unwrap();
+		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let mut dll = vec![0; 0x80];
+		dll[..2].copy_from_slice(b"MZ");
+		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+		dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+		dll[0x44..0x46].copy_from_slice(&plugin::store::MACHINE_AMD64.to_le_bytes());
+		let package = plugin::store::adapt(
+			manifest,
+			vec![ArchiveEntry {
+				path: "fixture.dll".into(),
+				data: dll.clone(),
+			}],
+		)
+		.unwrap();
+		let installed = match plugin::install(outside.path(), &package).unwrap() {
+			plugin::store::Installed::New(path) => path,
+			_ => unreachable!(),
+		};
+		let mut changed_dll = dll.clone();
+		changed_dll[0x7f] = 1;
+		let changed_package = plugin::store::adapt(
+			package.manifest.clone(),
+			vec![ArchiveEntry {
+				path: "fixture.dll".into(),
+				data: changed_dll,
+			}],
+		)
+		.unwrap();
+		for link_plugin_directory in [true, false] {
+			let store = tempfile::tempdir().unwrap();
+			let plugin_dir = store
+				.path()
+				.join(installed.parent().unwrap().file_name().unwrap());
+			let link = if link_plugin_directory {
+				platform::link_dir(installed.parent().unwrap(), &plugin_dir).unwrap();
+				plugin_dir
+			} else {
+				fs::create_dir(&plugin_dir).unwrap();
+				let link = plugin_dir.join(installed.file_name().unwrap());
+				platform::link_dir(&installed, &link).unwrap();
+				link
+			};
+			let changed_import =
+				link_plugin_directory.then(|| plugin::install(store.path(), &changed_package));
+			let repeated_import = plugin::install(store.path(), &package);
+			let (versions, problems) = plugin::store::installed_versions(store.path());
+			let deployment = plugin::deployment::resolve(
+				&plugin::GameIdentity {
+					game: "eu4".into(),
+					version: "1.37.5".parse().unwrap(),
+					platform: plugin::WINDOWS_X64.into(),
+				},
+				store.path(),
+				&[plugin::Selection {
+					id: "fixture".into(),
+					version: "1.0.0".parse().unwrap(),
+					enabled: true,
+					config: serde_json::json!({}),
+				}],
+			);
+			platform::remove_layer(&link);
+			if let Some(import) = changed_import {
+				assert!(
+					import.is_err(),
+					"import wrote through a plugin directory link"
+				);
+			}
+			assert!(
+				repeated_import.is_err(),
+				"linked version accepted as installed"
+			);
+			assert!(versions.is_empty(), "external artifact accepted");
+			assert!(!problems.is_empty());
+			assert!(deployment.is_err());
+			assert_eq!(fs::read(installed.join("fixture.dll")).unwrap(), dll);
+			assert_eq!(
+				fs::read_dir(installed.parent().unwrap()).unwrap().count(),
+				1
+			);
+		}
 	}
 
 	#[test]

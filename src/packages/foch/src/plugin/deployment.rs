@@ -195,8 +195,17 @@ pub fn resolve(
 				matching.len()
 			));
 		}
+		let canonical_store = store_root
+			.canonicalize()
+			.map_err(|error| error.to_string())?;
 		let directory = &matching[0].dir;
-		let entries = read_package(directory).map_err(|error| format!("{}: {error}", choice.id))?;
+		// Recheck the plugin/version boundary immediately before freezing bytes.
+		store::checked_directory(directory.parent().unwrap(), &canonical_store)
+			.map_err(|error| format!("{}: {error}", choice.id))?;
+		let directory = store::checked_directory(directory, &canonical_store)
+			.map_err(|error| format!("{}: {error}", choice.id))?;
+		let entries =
+			read_package(&directory).map_err(|error| format!("{}: {error}", choice.id))?;
 		let validated =
 			store::validate(entries).map_err(|errors| format!("{}: {errors:?}", choice.id))?;
 		if directory.file_name().and_then(|name| name.to_str())

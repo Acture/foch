@@ -221,7 +221,11 @@ mod tests {
 	fn save_is_atomic_leaving_no_temp_file() {
 		let temp = tempfile::tempdir().unwrap();
 		let path = temp.path().join("selections.toml");
-		sample().save(&path).unwrap();
+		let mut selections = sample();
+		selections.save(&path).unwrap();
+		selections.playsets.clear();
+		selections.save(&path).unwrap();
+		assert!(Selections::load(&path).unwrap().playsets.is_empty());
 		let leftover = fs::read_dir(temp.path())
 			.unwrap()
 			.filter_map(Result::ok)
