@@ -16,10 +16,13 @@ use crate::game::eu4::script::parser::parse_clausewitz_content;
 pub enum GuiMode {
 	/// Every supported action through decisions and events.
 	Decisions,
-	/// Every supported action through Foch's own GUI. Not implemented yet.
-	FochGui,
-	/// Whichever verified representation preserves most. Not implemented yet.
-	BestEffort,
+	/// Every supported action through Foch's in-game window. Not implemented
+	/// yet.
+	Window,
+	/// Each action keeps the original layout where it merges, otherwise goes
+	/// to a window or a decision by fixed rules, and each destination is
+	/// reported. Not implemented yet.
+	Mixed,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -67,12 +70,12 @@ impl GuiConfig {
 	}
 
 	pub fn validate(&self) -> Result<(), ConfigError> {
-		if let Some(mode @ (GuiMode::FochGui | GuiMode::BestEffort)) = self.mode {
+		if let Some(mode @ (GuiMode::Window | GuiMode::Mixed)) = self.mode {
 			return Err(ConfigError::new(format!(
 				"gui mode `{}` is not implemented yet; use `decisions`",
 				match mode {
-					GuiMode::FochGui => "foch_gui",
-					_ => "best_effort",
+					GuiMode::Window => "window",
+					_ => "mixed",
 				}
 			)));
 		}
@@ -183,7 +186,13 @@ trigger = "controller = { alliance_with = FROM }"
 				.contains("not trigger script")
 		);
 		assert!(error("[gui]\ncolour = \"blue\"\n").contains("unknown field"));
-		assert!(error("[gui]\nmode = \"foch_gui\"\n").contains("not implemented yet"));
+		for mode in ["window", "mixed"] {
+			assert!(
+				error(&format!("[gui]\nmode = \"{mode}\"\n")).contains("not implemented yet"),
+				"{mode}"
+			);
+		}
+		assert!(error("[gui]\nmode = \"foch_gui\"\n").contains("unknown variant"));
 		let project: Project = toml::from_str("[gui]\nmode = \"decisions\"\n").unwrap();
 		assert_eq!(project.gui.mode, Some(super::GuiMode::Decisions));
 	}
