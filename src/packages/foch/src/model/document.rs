@@ -177,6 +177,7 @@ impl RepairProposal {
 			SourceRepairEdit::InsertedClosingBrace => "add a `}`",
 			SourceRepairEdit::InsertedOpeningBrace => "add a `{`",
 			SourceRepairEdit::ClosedStringAtLineEnd => "end the string",
+			SourceRepairEdit::RemovedEmptyAssignment => "leave out the empty assignment",
 		};
 		format!("{edit} at {}:{}", self.line, self.column)
 	}
@@ -231,6 +232,8 @@ pub enum SourceRepairEdit {
 	InsertedOpeningBrace,
 	/// A string missing its closing quote was ended at its line's end.
 	ClosedStringAtLineEnd,
+	/// An assignment whose `=` has no value was left out.
+	RemovedEmptyAssignment,
 }
 
 /// Why a one-token repair is the reading of the text.
@@ -253,6 +256,8 @@ pub enum SourceRepairEdit {
 pub enum SourceRepairEvidence {
 	/// Every one-token edit that makes the text parse gives the same tree.
 	OnlyReading,
+	/// What is left out held nothing: an assignment with no value.
+	NothingLost,
 	/// Of the trees one-token edits give, one alone has the fewest values
 	/// whose block-or-scalar shape the schema for the file rejects.
 	OnlySchemaValid,
@@ -272,9 +277,11 @@ impl SourceRepair {
 			SourceRepairEdit::ClosedStringAtLineEnd => {
 				"ended an unterminated string at the end of its line"
 			}
+			SourceRepairEdit::RemovedEmptyAssignment => "left out an assignment with no value",
 		};
 		let evidence = match self.evidence {
 			SourceRepairEvidence::OnlyReading => "every one-token repair reads the same",
+			SourceRepairEvidence::NothingLost => "it held nothing",
 			SourceRepairEvidence::OnlySchemaValid => "the only one-token repair the schema accepts",
 			SourceRepairEvidence::SmallestChange => {
 				"the one-token repair that moves the fewest statements"

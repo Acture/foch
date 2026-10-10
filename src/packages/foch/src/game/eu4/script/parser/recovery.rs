@@ -25,7 +25,7 @@
 
 use super::{
 	AstStatement, AstValue, ParseDiagnostic, ParseDiagnosticCode, ParsedStatements, ParserState,
-	SchemaCheck, Span, SpanRange, Token, TokenKind, lex,
+	SchemaCheck, Span, SpanRange, Token, TokenKind, lex, unrepaired,
 };
 use crate::model::{
 	Isolation, RepairProposal, SourceRepair, SourceRepairEdit, SourceRepairEvidence,
@@ -156,7 +156,7 @@ fn repair(
 			let (segment, following) = range(last);
 			budget = budget.checked_sub(segment.len())?;
 			let parsed = parse_segment(segment, None, &following);
-			if parsed.diagnostics.is_empty() {
+			if !unrepaired(&parsed.diagnostics) {
 				settled = Some((last, parsed.statements, None));
 				break;
 			}
@@ -209,9 +209,11 @@ fn repair(
 		}
 	}
 	let whole = ParserState::new(repaired_tokens).parse_file();
-	if !whole.diagnostics.is_empty() || whole.statements != statements {
+	if unrepaired(&whole.diagnostics) || whole.statements != statements {
 		return None;
 	}
+	// What the parser repaired by itself, such as an assignment with no value.
+	diagnostics.extend(whole.diagnostics);
 	for (edit, evidence) in edits {
 		diagnostics.push(edit_diagnostic(&tokens, edit, evidence));
 	}
@@ -283,7 +285,7 @@ fn choose_reading(
 	let mut candidates = Vec::new();
 	for edit in edits {
 		let parsed = parse_segment(segment, Some(edit), following);
-		if !parsed.diagnostics.is_empty() || !is_one_definition(&parsed.statements) {
+		if unrepaired(&parsed.diagnostics) || !is_one_definition(&parsed.statements) {
 			continue;
 		}
 		let mut tokens = segment.to_vec();

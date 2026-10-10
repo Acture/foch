@@ -109,6 +109,10 @@ pub enum ParseDiagnosticCode {
 	/// A string whose closing quote is missing, so it runs to the end of the
 	/// file.
 	UnterminatedString,
+	/// An `=` with no value: the block closes, or a later line no deeper than
+	/// the key starts another assignment. Read as written, the next key would
+	/// silently become the value.
+	MissingValue,
 	/// A token that cannot start a statement; it is skipped.
 	InvalidStatementStart,
 	/// A token that cannot be a value; it is read as an empty identifier.
@@ -605,6 +609,9 @@ struct ParserState {
 	tokens: Vec<Token>,
 	index: usize,
 	diagnostics: Vec<ParseDiagnostic>,
+	/// Whether the text is Lua, whose interpreter rejects what Clausewitz
+	/// reading can repair.
+	lua: bool,
 }
 
 impl ParserState {
@@ -613,7 +620,13 @@ impl ParserState {
 			tokens,
 			index: 0,
 			diagnostics: Vec::new(),
+			lua: false,
 		}
+	}
+
+	fn reading_lua(mut self, lua: bool) -> Self {
+		self.lua = lua;
+		self
 	}
 
 	fn parse_file(mut self) -> ParsedStatements {
@@ -683,6 +696,9 @@ impl ParserState {
 		match first.kind {
 			TokenKind::Identifier(key) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
+					if self.leave_out_empty_assignment(&first.span) {
+						return None;
+					}
 					self.bump();
 					let value = self.parse_value();
 					let end = value.span().end.clone();
@@ -723,6 +739,9 @@ impl ParserState {
 			}
 			TokenKind::String(value) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
+					if self.leave_out_empty_assignment(&first.span) {
+						return None;
+					}
 					let _ = self.bump();
 					let value_node = self.parse_value();
 					let end = value_node.span().end.clone();
@@ -759,6 +778,9 @@ impl ParserState {
 			}
 			TokenKind::Number(value) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
+					if self.leave_out_empty_assignment(&first.span) {
+						return None;
+					}
 					let _ = self.bump();
 					let value_node = self.parse_value();
 					let end = value_node.span().end.clone();
@@ -864,6 +886,60 @@ impl ParserState {
 				None
 			}
 		}
+	}
+
+	/// Leaves out the assignment `key =` when its `=`, the next token, has no
+	/// value: past line breaks and comments the block closes or the file
+	/// ends, or a later line no deeper than the key starts another
+	/// assignment. Nothing the author wrote is lost, so in Clausewitz the
+	/// diagnostic records the repair; a Lua interpreter rejects the text.
+	fn leave_out_empty_assignment(&mut self, key: &SpanRange) -> bool {
+		let mut index = self.index + 1;
+		let mut crossed_line = false;
+		while let Some(token) = self.tokens.get(index) {
+			match token.kind {
+				TokenKind::Newline => crossed_line = true,
+				TokenKind::Comment(_) => {}
+				_ => break,
+			}
+			index += 1;
+		}
+		let Some(next) = self.tokens.get(index) else {
+			return false;
+		};
+		let empty = match next.kind {
+			TokenKind::RBrace | TokenKind::Eof => true,
+			TokenKind::Identifier(_)
+			| TokenKind::String(_)
+			| TokenKind::Number(_)
+			| TokenKind::Bool(_) => {
+				crossed_line
+					&& next.span.start.column <= key.start.column
+					&& matches!(
+						self.tokens.get(index + 1).map(|token| &token.kind),
+						Some(TokenKind::Eq)
+					)
+			}
+			_ => false,
+		};
+		if !empty {
+			return false;
+		}
+		let eq = self.bump();
+		self.diagnostics.push(ParseDiagnostic {
+			code: ParseDiagnosticCode::MissingValue,
+			message: "assignment has no value".to_string(),
+			span: SpanRange {
+				start: key.start.clone(),
+				end: eq.span.end,
+			},
+			repair: (!self.lua).then_some(SourceRepair {
+				edit: crate::model::SourceRepairEdit::RemovedEmptyAssignment,
+				evidence: crate::model::SourceRepairEvidence::NothingLost,
+			}),
+			isolation: None,
+		});
+		true
 	}
 
 	fn parse_value(&mut self) -> AstValue {
@@ -1040,7 +1116,9 @@ pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> Parse
 /// Parses script text exactly as written, with no repair.
 pub fn parse_unrecovered_statements(syntax: ScriptSyntax, content: &str) -> ParsedStatements {
 	let (tokens, lexer_diagnostics) = lex(content, syntax == ScriptSyntax::Lua, None);
-	let mut result = ParserState::new(tokens).parse_file();
+	let mut result = ParserState::new(tokens)
+		.reading_lua(syntax == ScriptSyntax::Lua)
+		.parse_file();
 	result.diagnostics.extend(lexer_diagnostics);
 	result
 }
@@ -1112,6 +1190,29 @@ pub fn repair_text_edit(
 				return None;
 			}
 		}
+		SourceRepairEdit::RemovedEmptyAssignment => {
+			// The key at `offset` through its `=`; with nothing else on its
+			// line, the whole line goes.
+			let eq = offset + content.get(offset..)?.find('=')? + 1;
+			let line_start = content[..offset].rfind('\n').map_or(0, |at| at + 1);
+			let rest = &content[eq..];
+			let line_end = rest.find('\n').map_or(content.len(), |at| eq + at + 1);
+			if content[line_start..offset].trim().is_empty()
+				&& content[eq..line_end].trim().is_empty()
+			{
+				TextEdit {
+					offset: line_start,
+					remove: line_end - line_start,
+					insert: "",
+				}
+			} else {
+				TextEdit {
+					offset,
+					remove: eq - offset,
+					insert: "",
+				}
+			}
+		}
 		SourceRepairEdit::InsertedOpeningBrace => {
 			if !content.get(..offset)?.ends_with('=') {
 				return None;
@@ -1148,10 +1249,17 @@ pub fn recover_clausewitz_statements(
 	parsed: ParsedStatements,
 	schema: Option<&SchemaCheck<'_>>,
 ) -> ParsedStatements {
-	if syntax == ScriptSyntax::Clausewitz && !parsed.diagnostics.is_empty() {
+	if syntax == ScriptSyntax::Clausewitz && unrepaired(&parsed.diagnostics) {
 		return recovery::recover(content, parsed, schema);
 	}
 	parsed
+}
+
+/// Whether any of `diagnostics` is an error the parse did not repair.
+fn unrepaired(diagnostics: &[ParseDiagnostic]) -> bool {
+	diagnostics
+		.iter()
+		.any(|diagnostic| diagnostic.repair.is_none())
 }
 
 fn lex(
@@ -1723,6 +1831,66 @@ next_effect = { add_prestige = 1 }
 			panic!("expected scalar value");
 		};
 		assert_eq!(value, &ScalarValue::Number("1".to_string()));
+	}
+
+	fn keys(statements: &[AstStatement]) -> Vec<String> {
+		statements
+			.iter()
+			.filter_map(|statement| match statement {
+				AstStatement::Assignment { key, value, .. } => Some(match value {
+					AstValue::Block { items, .. } => format!("{key}{{{}}}", keys(items).join(" ")),
+					AstValue::Scalar { value, .. } => format!("{key}={}", value.as_text()),
+				}),
+				_ => None,
+			})
+			.collect()
+	}
+
+	#[test]
+	fn an_assignment_with_no_value_is_left_out_instead_of_taking_the_next_key() {
+		// Read as written, `x` would take `y` as its value and `y`'s own value
+		// would be lost without a word.
+		let parsed = parse_clausewitz_statements(
+			ScriptSyntax::Clausewitz,
+			"a = {\n\tx =\n\ty = 1\n\tz =\n}\n",
+		);
+		assert_eq!(keys(&parsed.statements), ["a{y=1}"]);
+		assert_eq!(
+			parsed
+				.diagnostics
+				.iter()
+				.map(|diagnostic| (
+					diagnostic.code,
+					diagnostic.span.start.line,
+					diagnostic.repair.is_some()
+				))
+				.collect::<Vec<_>>(),
+			[
+				(ParseDiagnosticCode::MissingValue, 2, true),
+				(ParseDiagnosticCode::MissingValue, 4, true),
+			]
+		);
+	}
+
+	#[test]
+	fn a_value_on_the_next_line_still_belongs_to_its_key() {
+		let parsed = parse_clausewitz_statements(
+			ScriptSyntax::Clausewitz,
+			"a = {\n\tOR =\n\t{\n\t\tx = 1\n\t}\n\tname =\n\t\tvalue\n}\n",
+		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(keys(&parsed.statements), ["a{OR{x=1} name=value}"]);
+	}
+
+	#[test]
+	fn lua_keeps_an_assignment_with_no_value_fatal() {
+		let parsed = parse_clausewitz_statements(ScriptSyntax::Lua, "x =\ny = 1\n");
+		assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
+		assert_eq!(
+			parsed.diagnostics[0].code,
+			ParseDiagnosticCode::MissingValue
+		);
+		assert!(parsed.diagnostics[0].repair.is_none());
 	}
 
 	#[test]

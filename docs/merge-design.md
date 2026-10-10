@@ -188,6 +188,14 @@ segments; otherwise nothing is repaired. The search is bounded per file and
 gives up on a file that would need more. A reviewed repair from `foch.toml`
 must parse cleanly by itself; no automatic repair is added to it.
 
+An assignment with no value, `key =` where the block then closes or a later
+line no deeper than the key starts another assignment, is left out by the
+parser itself. Read as written, the next key would silently become the value
+and its own value would be lost; leaving out the empty assignment loses
+nothing, so it is a repair even in a file that otherwise parses. A value
+written on the next line, such as `OR =` followed by `{`, or indented deeper,
+still belongs to its key.
+
 A repair can read the file differently from the game. A stray `}` that closes
 a block early makes the game read the rest of that block as top-level
 statements, which a definition file does not allow; Foch keeps them in the
