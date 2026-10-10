@@ -93,9 +93,11 @@ checkout. The merge made `foch-cli` depend on `foch-annotation`, `foch-lsp`,
 v2 CWT schema id, which also binds file names. The install reported
 `foch-cli 0.0.1` and
 `cwt-schema db9ba69682f2b2f924eee1f13cfefde8bfe3d3e8f3552883d0b0a2aefea3b16b (embedded)`.
-`release preflight --tag v0.0.1` fails only because crates.io has no
-`tree-sitter-paradox` 0.3.0 (`foch` 0.1.0 was yanked on 2026-10-08), and notes
-that five of the six crates do not exist on crates.io yet.
+`tree-sitter-paradox` 0.3.0 is on crates.io (published 2026-10-10 from its
+`v0.3.0` tag) and `foch` 0.1.0 was yanked on 2026-10-08, so
+`release preflight --tag v0.0.1` passes all 15 checks, noting that five of the
+six crates do not exist on crates.io yet. `cargo publish --dry-run --locked`
+for the six crates packaged and verified each against the crates.io grammar.
 
 GitHub CI on [PR #74](https://github.com/Acture/foch/pull/74) at `7256b0e`
 ran `dist.yml` on hosted runners: wheels and archives for `linux-x64`
@@ -113,19 +115,19 @@ The Homebrew tap already offers an unverified `--HEAD` source build of
 `master`. It fails from the merge of this source layout until its formula
 lists the moved `src/packages/foch/vendor/cwtools-eu4-config` submodule.
 
+Configured: the `crates-io` and `pypi` environments with the maintainer as
+required reviewer, `PYPI_PUBLISH`, the PyPI pending publisher for `foch`
+(`release.yml`, environment `pypi`) and the `HOMEBREW_TAP_TOKEN` secret.
+
 Pending maintainer actions, in the [release runbook](RELEASE_CHECKLIST.md):
 
-- publish `tree-sitter-paradox` 0.3.0 by merging
-  [Acture/tree-sitter-paradox#12](https://github.com/Acture/tree-sitter-paradox/pull/12)
-  after configuring its publishers; until then no Foch crate can be published
-  to crates.io;
-- update the tap's HEAD formula submodule path when merging this layout
-  (OSS-302), and add its token and sync path;
-- create the `crates-io` and `pypi` environments and publish variables, and
-  register the PyPI pending publisher;
+- merge this layout together with the tap's HEAD formula submodule path
+  (branch `fix/foch-cwt-submodule-path` in `Acture/homebrew-ac`, OSS-302);
+- tag `v0.0.1` and approve the `pypi` environment when `release.yml` asks;
 - the first, token-based crates.io publish, which creates five crates
-  (`foch-cli`, `foch-annotation`, `foch-lsp`, `foch-runner`, `foch-test`), and
-  the WinGet community pull request.
+  (`foch-cli`, `foch-annotation`, `foch-lsp`, `foch-runner`, `foch-test`), then
+  their trusted publishers and `CRATES_IO_PUBLISH`;
+- the WinGet community pull request from `Acture/winget-pkgs`.
 
 Channel results from `verify-install.yml`: none yet.
 
