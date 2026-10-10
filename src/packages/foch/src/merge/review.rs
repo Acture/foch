@@ -176,7 +176,16 @@ impl<'de> Deserialize<'de> for MergeReview {
 pub(super) struct UnitOutcomeLedger {
 	units: Vec<Option<MergeUnitOutcome>>,
 	by_id: BTreeMap<String, usize>,
-	conflict_views: BTreeMap<String, Vec<ConflictView>>,
+	conflicts: BTreeMap<String, AttachedConflicts>,
+}
+
+/// Where a deferred unit's leaf conflicts sit and their rendered candidates.
+/// A definition module reports its conflicts under its primary output, but
+/// they belong to the namespace that conflicted, whose path their ids and any
+/// file or directory resolution are keyed by.
+struct AttachedConflicts {
+	file: GamePathBuf,
+	views: Vec<ConflictView>,
 }
 
 impl UnitOutcomeLedger {
@@ -221,15 +230,14 @@ impl UnitOutcomeLedger {
 		Ok(())
 	}
 
-	/// Keep a resolved unit's rendered conflict candidates for review.
-	pub(super) fn attach_conflict_views(
+	/// Keep the file a deferred unit's conflicts sit in and their rendered
+	/// candidates for review.
+	pub(super) fn attach_conflicts(
 		&mut self,
 		entry: &MergePlanEntry,
+		file: GamePathBuf,
 		views: Vec<ConflictView>,
 	) -> Result<(), MergeError> {
-		if views.is_empty() {
-			return Ok(());
-		}
 		let id = stable_unit_id(entry)?;
 		if !self.by_id.contains_key(&id) {
 			return Err(invariant(
@@ -237,7 +245,7 @@ impl UnitOutcomeLedger {
 				format!("unknown review unit `{id}`"),
 			));
 		}
-		self.conflict_views.entry(id).or_default().extend(views);
+		self.conflicts.insert(id, AttachedConflicts { file, views });
 		Ok(())
 	}
 
@@ -269,7 +277,7 @@ impl UnitOutcomeLedger {
 		Ok(Self {
 			units,
 			by_id,
-			conflict_views: BTreeMap::new(),
+			conflicts: BTreeMap::new(),
 		})
 	}
 
@@ -415,7 +423,7 @@ impl UnitOutcomeLedger {
 				});
 			}
 		}
-		let (conflicts, decisions) = link_conflicts(&mut resolved, report, &self.conflict_views);
+		let (conflicts, decisions) = link_conflicts(&mut resolved, report, &self.conflicts);
 		Ok(MergeReview {
 			schema: MERGE_REVIEW_SCHEMA.to_string(),
 			summary,
@@ -462,7 +470,7 @@ impl UnitOutcomeLedger {
 fn link_conflicts(
 	units: &mut [MergeUnitOutcome],
 	report: &MergeReport,
-	views: &BTreeMap<String, Vec<ConflictView>>,
+	attached: &BTreeMap<String, AttachedConflicts>,
 ) -> (Vec<UnitConflicts>, Vec<DecisionPoint>) {
 	let mut handler_resolutions = BTreeMap::<&GamePath, Vec<HandlerResolutionRecord>>::new();
 	for record in &report.handler_resolutions {
@@ -485,9 +493,11 @@ fn link_conflicts(
 		unit.handler_resolutions = handler_resolutions
 			.remove(path.as_game_path())
 			.unwrap_or_default();
-		let unit_views = views.get(&unit.id).map_or(&[][..], Vec::as_slice);
+		let attached = attached.get(&unit.id);
+		let views = attached.map_or(&[][..], |attached| attached.views.as_slice());
 		for resolution in deferred.get(path.as_game_path()).into_iter().flatten() {
-			let unit_conflicts = conflicts::unit_conflicts(unit, resolution, unit_views);
+			let file = attached.map_or(&resolution.path, |attached| &attached.file);
+			let unit_conflicts = conflicts::unit_conflicts(unit, resolution, file, views);
 			for node in &unit_conflicts.nodes {
 				for leaf in &node.conflicts {
 					unit.conflict_ids.push(leaf.conflict_id.clone());

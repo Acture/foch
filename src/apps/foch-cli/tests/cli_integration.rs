@@ -2254,6 +2254,18 @@ fn merge_review_json_never_overwrites_an_input_or_writes_into_the_output() {
 	assert!(stderr.contains("inside --out"), "{stderr}");
 	assert!(!out_dir.exists());
 
+	// `..` is applied where a write would apply it, whether or not `--out`
+	// exists yet.
+	let (code, stdout, stderr) = run(&out_dir.join("..").join("outside.json"));
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(tmp.path().join("outside.json").is_file());
+	fs::create_dir_all(out_dir.join("sub")).expect("create output subdirectory");
+	let (code, stdout, stderr) = run(&out_dir.join("sub").join("..").join("review.json"));
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("inside --out"), "{stderr}");
+	assert!(!out_dir.join("review.json").exists());
+	fs::remove_dir_all(&out_dir).expect("remove output");
+
 	let review_path = tmp.path().join("review.json");
 	for _ in 0..2 {
 		let (code, stdout, stderr) = run(&review_path);

@@ -118,6 +118,7 @@ pub struct ConflictChoice {
 pub(super) fn unit_conflicts(
 	unit: &MergeUnitOutcome,
 	resolution: &MergeReportConflictResolution,
+	file: &GamePathBuf,
 	views: &[ConflictView],
 ) -> UnitConflicts {
 	let mut nodes = Vec::<AddressNode>::new();
@@ -185,7 +186,7 @@ pub(super) fn unit_conflicts(
 	}
 	UnitConflicts {
 		unit_id: unit.id.clone(),
-		file_path: resolution.path.clone(),
+		file_path: file.clone(),
 		reason: resolution.reason.clone(),
 		deferred_reason: resolution.deferred_reason,
 		nodes,

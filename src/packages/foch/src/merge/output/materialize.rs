@@ -1084,7 +1084,9 @@ fn apply_module_unit(
 		.collect();
 	let wrote_nothing: bool = written.is_empty();
 	review.resolve_written(entry, outcome.disposition, outcome.summary, written, [])?;
-	review.attach_conflict_views(entry, outcome.conflict_views)?;
+	if let Some((file, views)) = outcome.conflicts {
+		review.attach_conflicts(entry, file, views)?;
+	}
 	// Analysis and applying may run on different threads, so the unit's time is
 	// the sum of both rather than one wall-clock span.
 	let unit_elapsed: Duration = module.elapsed + module_started.elapsed();
@@ -1251,7 +1253,7 @@ fn apply_file_unit(
 		placeholder_written.then(|| entry.output_path().to_owned()),
 		[],
 	)?;
-	review.attach_conflict_views(entry, conflict_views)
+	review.attach_conflicts(entry, entry.output_path().to_owned(), conflict_views)
 }
 
 fn copy_file_unit_winner(
@@ -1375,7 +1377,8 @@ struct CrossFileModuleMaterializeContext<'a> {
 struct CrossFileModuleOutcome {
 	disposition: MergeDisposition,
 	summary: String,
-	conflict_views: Vec<ConflictView>,
+	/// The conflicting namespace's file and its rendered candidates.
+	conflicts: Option<(GamePathBuf, Vec<ConflictView>)>,
 }
 
 /// One namespace's merged bytes, staged but not yet installed.
@@ -1455,7 +1458,12 @@ fn materialize_cross_file_module(
 
 	let mut staged: Vec<StagedNamespaceOutput<'_>> = Vec::new();
 	let mut failure: Option<(DeferredUnitReason, String)> = None;
-	let mut conflict: Option<(MergeDisposition, String, StructuralConflictReport)> = None;
+	let mut conflict: Option<(
+		MergeDisposition,
+		String,
+		&GamePath,
+		StructuralConflictReport,
+	)> = None;
 	// Staging a namespace records facts about the file it expects to write. A
 	// unit that is later withheld writes none of them, so those records are
 	// rolled back rather than published for a file the merged mod never gets.
@@ -1474,7 +1482,7 @@ fn materialize_cross_file_module(
 		) {
 			Ok(NamespaceStaging::Staged(output)) => staged.push(*output),
 			Ok(NamespaceStaging::Conflict(disposition, summary, report_detail)) => {
-				conflict = Some((disposition, summary, report_detail));
+				conflict = Some((disposition, summary, namespace.output_path(), report_detail));
 				break;
 			}
 			Ok(NamespaceStaging::Failed(reason, message)) => {
@@ -1522,7 +1530,7 @@ fn materialize_cross_file_module(
 			reason,
 		);
 	}
-	if let Some((disposition, summary, mut report_detail)) = conflict {
+	if let Some((disposition, summary, conflict_file, mut report_detail)) = conflict {
 		for output in &staged {
 			let _ = fs::remove_dir_all(&output.stage_dir);
 		}
@@ -1540,7 +1548,7 @@ fn materialize_cross_file_module(
 		return Ok(CrossFileModuleOutcome {
 			disposition,
 			summary,
-			conflict_views,
+			conflicts: Some((conflict_file.to_owned(), conflict_views)),
 		});
 	}
 
@@ -1623,7 +1631,7 @@ fn materialize_cross_file_module(
 	}
 	let _ = committed_any;
 	Ok(CrossFileModuleOutcome {
-		conflict_views: Vec::new(),
+		conflicts: None,
 		disposition: MergeDisposition::Safe,
 		summary: if namespaces.len() > 1 {
 			format!(
@@ -1899,7 +1907,7 @@ fn resolve_cross_file_module_failure(
 		StructuralConflictReport::without_details(reason),
 	)?;
 	Ok(CrossFileModuleOutcome {
-		conflict_views: Vec::new(),
+		conflicts: None,
 		disposition: match deferred_reason {
 			DeferredUnitReason::NeedsUserChoice => MergeDisposition::NeedsUserChoice,
 			DeferredUnitReason::UnsupportedInput => MergeDisposition::UnsupportedInput,

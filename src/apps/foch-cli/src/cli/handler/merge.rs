@@ -158,10 +158,10 @@ fn report_and_commit(
 }
 
 fn write_review_json(analyzed: &AnalyzedMerge, path: &Path, out_dir: &Path) -> io::Result<()> {
-	check_review_json_target(path, out_dir)?;
+	let destination = check_review_json_target(path, out_dir)?;
 	let mut json = serde_json::to_vec_pretty(analyzed.review()).map_err(io::Error::other)?;
 	json.push(b'\n');
-	fs::write(path, json).map_err(|error| {
+	fs::write(&destination, json).map_err(|error| {
 		io::Error::new(
 			error.kind(),
 			format!("failed to write merge review {}: {error}", path.display()),
@@ -174,9 +174,11 @@ fn write_review_json(analyzed: &AnalyzedMerge, path: &Path, out_dir: &Path) -> i
 /// Where `--review-json` may write. It never replaces a file that is not an
 /// earlier review, so a path naming the playset, a foch.toml or any other
 /// input is refused instead of overwritten, and it never writes into the
-/// output directory, which commit installs as a whole.
-fn check_review_json_target(path: &Path, out_dir: &Path) -> io::Result<()> {
-	if std::path::absolute(path)?.starts_with(std::path::absolute(out_dir)?) {
+/// output directory, which commit installs as a whole. Both are compared as
+/// the locations a write would reach, which the review is then written to.
+fn check_review_json_target(path: &Path, out_dir: &Path) -> io::Result<PathBuf> {
+	let destination = write_location(path)?;
+	if destination.starts_with(write_location(out_dir)?) {
 		return Err(io::Error::new(
 			io::ErrorKind::InvalidInput,
 			format!(
@@ -186,7 +188,7 @@ fn check_review_json_target(path: &Path, out_dir: &Path) -> io::Result<()> {
 			),
 		));
 	}
-	match fs::read(path) {
+	match fs::read(&destination) {
 		Ok(bytes) => {
 			let is_review = serde_json::from_slice::<serde_json::Value>(&bytes)
 				.ok()
@@ -195,7 +197,7 @@ fn check_review_json_target(path: &Path, out_dir: &Path) -> io::Result<()> {
 						== Some(MERGE_REVIEW_SCHEMA)
 				});
 			if is_review {
-				Ok(())
+				Ok(destination)
 			} else {
 				Err(io::Error::new(
 					io::ErrorKind::AlreadyExists,
@@ -206,12 +208,41 @@ fn check_review_json_target(path: &Path, out_dir: &Path) -> io::Result<()> {
 				))
 			}
 		}
-		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(destination),
 		Err(error) => Err(io::Error::new(
 			error.kind(),
 			format!("cannot check --review-json {}: {error}", path.display()),
 		)),
 	}
+}
+
+/// The location a write to `path` reaches: its deepest existing ancestor
+/// with every link resolved, then the components that do not exist yet with
+/// `.` and `..` applied. A lexical comparison would let `out/x/../review.json`
+/// slip into `out` and would refuse `out/../review.json`.
+fn write_location(path: &Path) -> io::Result<PathBuf> {
+	let absolute = std::path::absolute(path)?;
+	let components = absolute.components().collect::<Vec<_>>();
+	for existing in (1..=components.len()).rev() {
+		let ancestor = components[..existing].iter().collect::<PathBuf>();
+		match fs::canonicalize(&ancestor) {
+			Ok(mut location) => {
+				for component in &components[existing..] {
+					match component {
+						std::path::Component::ParentDir => {
+							location.pop();
+						}
+						std::path::Component::CurDir => {}
+						other => location.push(other.as_os_str()),
+					}
+				}
+				return Ok(location);
+			}
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error),
+		}
+	}
+	Ok(absolute)
 }
 
 /// The current EU4 input without the named mods. A mod is named by its

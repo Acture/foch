@@ -129,8 +129,9 @@ fn conflicted_review() -> MergeReview {
 		)
 		.unwrap();
 	ledger
-		.attach_conflict_views(
+		.attach_conflicts(
 			&plan.paths[0],
+			game_path("events/a.txt"),
 			vec![candidate_view("events/a.txt", "flavor.1/option", "name")],
 		)
 		.unwrap();
@@ -396,4 +397,87 @@ fn review_round_trips_through_json_and_keeps_its_unit_index() {
 			.map(|unit| unit.summary.as_str()),
 		Some("merged")
 	);
+}
+
+/// A definition module reports its conflicts under its primary output, but a
+/// conflict in another of its namespaces is keyed by that namespace's file:
+/// its file and directory rules must name that file, or a re-run would match
+/// nothing and defer.
+#[test]
+fn module_rules_name_the_namespace_that_conflicted() {
+	use crate::model::{MergeModuleOutput, MergeModuleOutputs, MergeUnitId};
+
+	let primary = "common/ideas/zzz_foch_ideas.txt";
+	let namespace = "common/policies/zzz_foch_ideas.txt";
+	let entry = MergePlanEntry {
+		target: MergePlanTarget::Module {
+			id: MergeUnitId {
+				family_id: "ideas".into(),
+				module_name: "ideas".into(),
+			},
+			input_paths: Vec::new(),
+			outputs: MergeModuleOutputs::new(vec![
+				MergeModuleOutput::new(game_path(primary), None).expect("primary namespace"),
+				MergeModuleOutput::new(game_path(namespace), None).expect("second namespace"),
+			])
+			.expect("two outputs"),
+		},
+		strategy: MergePlanStrategy::StructuralMerge,
+		contributors: vec![contributor("a", 1, false), contributor("b", 2, false)],
+		winner: None,
+		notes: Vec::new(),
+	};
+	let plan = MergePlanResult {
+		paths: vec![entry],
+		..Default::default()
+	};
+	let mut ledger = UnitOutcomeLedger::from_plan(&plan).unwrap();
+	ledger
+		.resolve(
+			&plan.paths[0],
+			MergeDisposition::NeedsUserChoice,
+			"conflicts",
+			None,
+			[],
+		)
+		.unwrap();
+	ledger
+		.attach_conflicts(&plan.paths[0], game_path(namespace), Vec::new())
+		.unwrap();
+	let report = MergeReport {
+		conflict_resolutions: vec![MergeReportConflictResolution {
+			path: game_path(primary),
+			reason: "structural merge has 1 unresolved conflict(s)".to_string(),
+			deferred_reason: DeferredUnitReason::NeedsUserChoice,
+			kind: None,
+			leaf_conflicts: vec![leaf(namespace, "policy_a", "allow")],
+		}],
+		..MergeReport::default()
+	};
+	let review = ledger
+		.finish(&HashMap::new(), &report, PlaysetProvenance::default())
+		.unwrap();
+
+	assert_eq!(review.conflicts()[0].file_path.as_str(), namespace);
+	let [point] = review.decisions() else {
+		panic!("one decision point");
+	};
+	assert_eq!(point.file_path.as_str(), namespace);
+	for scope in &review.decisions()[0].options[0].scopes {
+		let (DecisionScope::File { resolution } | DecisionScope::Directory { resolution }) = scope
+		else {
+			continue;
+		};
+		let map = ResolutionMap::from_entries(std::slice::from_ref(resolution)).unwrap();
+		assert_eq!(
+			map.lookup(&game_path(namespace), &point.conflict_id, &point.address),
+			Some(&ResolutionDecision::PreferMod("a".to_string())),
+			"{scope:?}"
+		);
+		assert_eq!(
+			map.lookup(&game_path(primary), "other", &point.address),
+			None,
+			"{scope:?}"
+		);
+	}
 }
