@@ -505,6 +505,7 @@ pub struct BackupManifest {
 }
 
 const BACKUP_MANIFEST: &str = "manifest.json";
+const BACKUP_FILES: &str = "files";
 
 /// The directory backups of in-place repairs are kept under.
 pub fn backup_root() -> PathBuf {
@@ -515,11 +516,15 @@ pub fn backup_root() -> PathBuf {
 /// copied first into a new directory under [`backup_root`], whose manifest
 /// [`restore_backup`] reads; that directory is returned.
 pub fn repair_in_place(plan: &RepairPlan) -> Result<PathBuf, RepairError> {
+	repair_in_place_under(plan, &backup_root())
+}
+
+fn repair_in_place_under(plan: &RepairPlan, root: &Path) -> Result<PathBuf, RepairError> {
 	verify_unchanged(plan)?;
 	let stamp = std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
 		.map_or(0, |elapsed| elapsed.as_millis());
-	let backup_dir = backup_root().join(stamp.to_string());
+	let backup_dir = root.join(stamp.to_string());
 	if backup_dir.exists() {
 		return Err(RepairError(format!(
 			"{} already exists; try again",
@@ -527,13 +532,12 @@ pub fn repair_in_place(plan: &RepairPlan) -> Result<PathBuf, RepairError> {
 		)));
 	}
 	let mut manifest = BackupManifest::default();
-	for file in &plan.files {
-		let backup = Path::new(&file.mod_id).join(file.path.to_path(Path::new("")));
-		let target = backup_dir.join(&backup);
-		if let Some(parent) = target.parent() {
-			fs::create_dir_all(parent)?;
-		}
-		fs::copy(&file.source, &target)?;
+	// A backup is named by its position, never by the mod id or game path,
+	// which a playset or `foch.toml` sets and could lead out of the backup.
+	fs::create_dir_all(backup_dir.join(BACKUP_FILES))?;
+	for (index, file) in plan.files.iter().enumerate() {
+		let backup = Path::new(BACKUP_FILES).join(index.to_string());
+		fs::copy(&file.source, backup_dir.join(&backup))?;
 		manifest.files.push(BackedUpFile {
 			mod_id: file.mod_id.clone(),
 			path: file.path.clone(),
@@ -571,6 +575,17 @@ pub fn restore_backup(backup_dir: &Path) -> Result<RestoreSummary, RepairError> 
 			.map_err(|error| RepairError(format!("{}: {error}", backup_dir.display())))?;
 	let mut summary = RestoreSummary::default();
 	for file in manifest.files {
+		if !file
+			.backup
+			.components()
+			.all(|component| matches!(component, std::path::Component::Normal(_)))
+		{
+			return Err(RepairError(format!(
+				"the backup of {} is not inside {}",
+				file.source.display(),
+				backup_dir.display()
+			)));
+		}
 		let current = fs::read(&file.source).ok().map(|bytes| sha256(&bytes));
 		if current.as_deref() != Some(file.sha256_after.as_str()) {
 			summary.skipped.push(file.source);
@@ -587,4 +602,60 @@ pub fn restore_backup(backup_dir: &Path) -> Result<RestoreSummary, RepairError> 
 		summary.restored.push(file.source);
 	}
 	Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_backup_stays_inside_its_directory_whatever_the_mod_id() {
+		let temp = tempfile::tempdir().unwrap();
+		let source = temp.path().join("mods").join("a.txt");
+		fs::create_dir_all(source.parent().unwrap()).unwrap();
+		fs::write(&source, "a = {\n}\n}\n").unwrap();
+		let original = fs::read(&source).unwrap();
+		let repaired = b"a = {\n}\n\n".to_vec();
+		let plan = RepairPlan {
+			files: vec![FileRepair {
+				mod_id: "../../escaped".into(),
+				path: GamePath::new("common/a.txt").unwrap().to_owned(),
+				source: source.clone(),
+				changes: Vec::new(),
+				sha256_before: sha256(&original),
+				sha256_after: sha256(&repaired),
+				original,
+				repaired,
+			}],
+			unrepaired: Vec::new(),
+		};
+		let root = temp.path().join("backups");
+		let backup_dir = repair_in_place_under(&plan, &root).unwrap();
+		assert_eq!(
+			fs::read_dir(temp.path()).unwrap().count(),
+			2,
+			"only the mods and the backups"
+		);
+		let manifest: BackupManifest =
+			serde_json::from_slice(&fs::read(backup_dir.join(BACKUP_MANIFEST)).unwrap()).unwrap();
+		assert_eq!(manifest.files[0].backup, Path::new("files").join("0"));
+
+		// A manifest naming a file outside the backup is refused.
+		let mut tampered = manifest.clone();
+		tampered.files[0].backup = PathBuf::from("../../mods/a.txt");
+		fs::write(
+			backup_dir.join(BACKUP_MANIFEST),
+			serde_json::to_vec(&tampered).unwrap(),
+		)
+		.unwrap();
+		assert!(restore_backup(&backup_dir).is_err());
+		fs::write(
+			backup_dir.join(BACKUP_MANIFEST),
+			serde_json::to_vec(&manifest).unwrap(),
+		)
+		.unwrap();
+		let summary = restore_backup(&backup_dir).unwrap();
+		assert_eq!(summary.restored, vec![source.clone()]);
+		assert_eq!(fs::read(&source).unwrap(), b"a = {\n}\n}\n");
+	}
 }
