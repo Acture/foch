@@ -146,6 +146,29 @@ pub struct Isolation {
 	pub end_line: usize,
 	/// One-token repairs that could be meant, the likeliest first.
 	pub proposals: Vec<RepairProposal>,
+	/// When only part of the definition is left out: the lines of the
+	/// smallest statement in it whose removal leaves the rest readable. The
+	/// definition is then read without them, rather than not at all.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub dropped: Option<LineRange>,
+}
+
+/// Lines of a source file, both included.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Eq,
+	PartialEq,
+	Serialize,
+	Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+pub struct LineRange {
+	pub first: usize,
+	pub last: usize,
 }
 
 /// A one-token repair that could be meant, offered for review.

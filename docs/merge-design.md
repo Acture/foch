@@ -212,18 +212,25 @@ exactly the original bytes; a file where it does not, or a UTF-16 file, is
 copied unchanged with a warning. A copied file with an isolated definition is
 copied unchanged, with a note.
 
-A broken segment with no trustworthy repair is isolated when it starts with a
-definition head whose key the file does not repeat. Its text is left out up to
-the next head that follows a line at column 1, so a column-1 line inside the
-broken block is not taken for a definition; the rest of the file is parsed as
-usual. The merge reads the isolated definition as the mod's parent has it,
-never as deleted, so that mod's version of it is missing from the result:
+A broken segment with no trustworthy repair that starts with a definition
+head is isolated. First Foch looks for the smallest statement inside the
+definition whose removal leaves the rest of it readable; a statement reaches,
+by the indentation, from its own line to the next line no deeper than it,
+with the `}` line that closes it. The definition is then read without those
+lines, so the rest of the mod's version of it still counts. Only when no
+single statement will do, and the file does not repeat the definition's key,
+is the whole definition left out, up to the next head that follows a line at
+column 1, so a column-1 line inside the broken block is not taken for a
+definition. The merge reads a definition left out whole as the mod's parent
+has it, never as deleted. Either way part of that mod's version is missing
+from the result:
 
 - the unit is held for review as `needs_user_choice`, and its notes and the
   report's `isolated_definitions` name the mod, file, lines and the one-token
   repairs that could be meant, the likeliest first;
-- `--force` keeps the unit with the parent's version and a warning, on the
-  default backend only. Any other backend would read the absence as a
+- `--force` keeps the unit, with the definition read without its unreadable
+  statement, or with the parent's version, and a warning, on the default
+  backend only. Any other backend would read the absence as a
   deletion, so it always holds the unit.
 
 A reviewed `[[repairs]]` entry in `foch.toml` applies one of the proposals, or

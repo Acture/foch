@@ -916,14 +916,23 @@ fn withhold_isolated_definitions(
 					fs::read(contributor.relative_path.to_path(&contributor.root_path)).ok()?;
 				crate::project::proposed_repair_entry(mod_id, &issue.path, &bytes, *proposal)
 			});
+			let what = match isolation.dropped {
+				Some(lines) => format!(
+					"lines {}-{} of definition `{}` in {}: {} have a syntax error with no trustworthy repair, so {}'s version of the definition is read without them",
+					lines.first, lines.last, isolation.definition, mod_id, issue.path, mod_id
+				),
+				None => format!(
+					"definition `{}` in {}: {}:{}-{} has a syntax error with no trustworthy repair, so {}'s version of it is not in the result",
+					isolation.definition,
+					mod_id,
+					issue.path,
+					issue.line,
+					isolation.end_line,
+					mod_id
+				),
+			};
 			notes.push(format!(
-				"definition `{}` in {}: {}:{}-{} has a syntax error with no trustworthy repair, so {}'s version of it is not in the result{}{}",
-				isolation.definition,
-				mod_id,
-				issue.path,
-				issue.line,
-				isolation.end_line,
-				mod_id,
+				"{what}{}{}",
 				if proposals.is_empty() {
 					String::new()
 				} else {
@@ -951,13 +960,13 @@ fn withhold_isolated_definitions(
 		let held = matches!(disposition, MergeDisposition::Safe) && !keep_with_force;
 		if held {
 			let reason = format!(
-				"{} definition(s) could not be read with confidence; review them or merge with --force to keep them as the mods' parents have them",
+				"{} definition(s) could not be read with confidence; review them, or merge with --force to keep each without its unreadable part, or as the mod's parent has it",
 				notes.len()
 			);
 			withhold_unit_output(entry, &reason, out_dir, outputs, review, report)?;
 		} else if matches!(disposition, MergeDisposition::Safe) {
 			let warning = format!(
-				"--force kept {} with {} definition(s) as the mods' parents have them",
+				"--force kept {} with {} definition(s) that could not be read with confidence",
 				entry.output_path(),
 				notes.len()
 			);

@@ -3669,7 +3669,7 @@ mod tests {
 			"b",
 			std::path::Path::new("/mod"),
 			crate::model::GamePath::new("common/scripted_effects/b.txt").unwrap(),
-			b"a = { x = 1 }\nb = {\n\tOR = {\n\t\tx = 1\n\ty = 2\n}\nc = { z = 1 }\n",
+			b"a = { x = 1 }\nb = { y = 2 } } }\nc = { z = 1 }\n",
 		);
 		assert_eq!(
 			crate::model::isolated_definitions(&source.parse_issues)

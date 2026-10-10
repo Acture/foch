@@ -443,7 +443,12 @@ fn a_definition_with_no_trustworthy_repair_holds_its_module_for_review() {
 			isolated.line,
 			isolated.isolation.end_line
 		),
-		("b", "b_open", 3, 7)
+		("b", "b_open", 4, 7)
+	);
+	// Only the `OR` that never closes is left out of `b_open`.
+	assert_eq!(
+		isolated.isolation.dropped,
+		Some(foch::model::LineRange { first: 4, last: 5 })
 	);
 	assert!(!isolated.isolation.proposals.is_empty(), "{isolated:?}");
 	assert!(
@@ -478,7 +483,9 @@ fn force_merges_the_rest_of_a_module_with_an_isolated_definition() {
 		merged.contains("a_check") && merged.contains("b_check"),
 		"{merged}"
 	);
-	assert!(!merged.contains("b_open"), "{merged}");
+	// `b_open` is kept without the `OR` that could not be read.
+	assert!(merged.contains("b_open"), "{merged}");
+	assert!(!merged.contains("always = no"), "{merged}");
 }
 
 #[test]
@@ -664,10 +671,9 @@ fn an_isolated_override_of_a_vanilla_definition_keeps_the_vanilla_one() {
 	let scratch = TempDir::new().unwrap();
 	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");
 	let mod_b = scratch.path().join("b");
-	// B replaces the vanilla file; its `base_check` cannot be read, and must
-	// not read as deleted.
-	let source =
-		"base_check = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\nb_new = { always = yes }\n";
+	// B replaces the vanilla file; its one-line `base_check` cannot be read
+	// at all, so it is left out whole, and must not read as deleted.
+	let source = "base_check = { always = no } } }\nb_new = { always = yes }\n";
 	write_script_file(&mod_b, "common/scripted_triggers/00_triggers.txt", source);
 	let out = scratch.path().join("out");
 	let (code, stdout, stderr) = run_foch(

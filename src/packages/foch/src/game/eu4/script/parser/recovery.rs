@@ -28,7 +28,7 @@ use super::{
 	SchemaCheck, Span, SpanRange, Token, TokenKind, lex, unrepaired,
 };
 use crate::model::{
-	Isolation, RepairProposal, SourceRepair, SourceRepairEdit, SourceRepairEvidence,
+	Isolation, LineRange, RepairProposal, SourceRepair, SourceRepairEdit, SourceRepairEvidence,
 };
 use std::collections::HashMap;
 
@@ -173,10 +173,35 @@ fn repair(
 					settled = Some((next, candidate.statements, Some((edit, evidence))));
 				}
 				Decision::Review(proposals) => {
-					let region = isolate(&tokens, &bounds, next, proposals, &following)?;
-					next = region.next_segment;
-					isolated.push(region);
-					continue;
+					// The smallest statement whose removal leaves the rest of
+					// the definition readable is left out alone; failing that,
+					// the whole definition is.
+					let partial = match definition_key(&tokens, start) {
+						Some(_) => {
+							drop_subtree(segment, &following, &layout, &reported, &mut budget)?
+						}
+						None => None,
+					};
+					match partial {
+						Some(partial) => {
+							let diagnostic = partial_diagnostic(
+								&tokens, start, segment, &following, &partial, proposals,
+							);
+							isolated.push(IsolatedRegion {
+								start: start + partial.start,
+								end: start + partial.end,
+								next_segment: next + 1,
+								diagnostic,
+							});
+							settled = Some((next, partial.statements, None));
+						}
+						None => {
+							let region = isolate(&tokens, &bounds, next, proposals, &following)?;
+							next = region.next_segment;
+							isolated.push(region);
+							continue;
+						}
+					}
 				}
 			}
 		}
@@ -480,9 +505,146 @@ fn isolate(
 				definition,
 				end_line,
 				proposals,
+				dropped: None,
 			}),
 		},
 	})
+}
+
+/// A statement inside a broken definition whose removal leaves the rest of
+/// it readable, by index into the definition's segment.
+struct Partial {
+	start: usize,
+	end: usize,
+	statements: Vec<AstStatement>,
+}
+
+/// The smallest statement inside `segment` whose removal leaves one readable
+/// definition, `Ok(None)` when no single statement's does, or `None` when the
+/// file's work budget would not cover the search. A statement reaches, by
+/// the indentation, from its own line to the next line no deeper than it,
+/// taking with it one `}` line at its own depth that closes it. Among the
+/// smallest, the one holding where the parser reported the error comes first.
+fn drop_subtree(
+	segment: &[Token],
+	following: &Span,
+	layout: &Layout,
+	reported: &[usize],
+	budget: &mut usize,
+) -> Option<Option<Partial>> {
+	let line_starts = (1..segment.len())
+		.filter(|index| matches!(segment[index - 1].kind, TokenKind::Newline))
+		.filter(|index| !matches!(segment[*index].kind, TokenKind::Newline))
+		.collect::<Vec<_>>();
+	let mut ranges = Vec::new();
+	for (position, &start) in line_starts.iter().enumerate() {
+		let opens_statement = matches!(
+			segment[start].kind,
+			TokenKind::Identifier(_) | TokenKind::String(_) | TokenKind::Number(_)
+		) && matches!(
+			segment.get(start + 1).map(|token| &token.kind),
+			Some(TokenKind::Eq | TokenKind::LBrace)
+		);
+		let Some(depth) = layout.depth(segment[start].span.start.line) else {
+			continue;
+		};
+		if !opens_statement {
+			continue;
+		}
+		let mut end = segment.len();
+		let mut closed = false;
+		for &later in &line_starts[position + 1..] {
+			let Some(later_depth) = layout.depth(segment[later].span.start.line) else {
+				continue;
+			};
+			if later_depth > depth {
+				continue;
+			}
+			if later_depth == depth && !closed && matches!(segment[later].kind, TokenKind::RBrace) {
+				closed = true;
+				continue;
+			}
+			end = later;
+			break;
+		}
+		ranges.push((start, end));
+	}
+	*budget = budget.checked_sub(ranges.len().saturating_mul(segment.len() + 1))?;
+	let buried = column_one_lines_in_blocks(segment);
+	let mut best: Option<(Partial, (usize, bool, usize))> = None;
+	for (start, end) in ranges {
+		let mut tokens = segment[..start].to_vec();
+		tokens.extend_from_slice(&segment[end..]);
+		let parsed = parse_segment(&tokens, None, following);
+		if unrepaired(&parsed.diagnostics)
+			|| !is_one_definition(&parsed.statements)
+			|| column_one_lines_in_blocks(&tokens) > buried
+		{
+			continue;
+		}
+		let first = segment[start].span.start.offset;
+		let last = segment[end - 1].span.end.offset;
+		let holds_error = reported
+			.iter()
+			.any(|offset| (first..=last).contains(offset));
+		let rank = (end - start, !holds_error, start);
+		if best.as_ref().is_none_or(|(_, best)| rank < *best) {
+			best = Some((
+				Partial {
+					start,
+					end,
+					statements: parsed.statements,
+				},
+				rank,
+			));
+		}
+	}
+	Some(best.map(|(partial, _)| partial))
+}
+
+fn partial_diagnostic(
+	tokens: &[Token],
+	start: usize,
+	segment: &[Token],
+	following: &Span,
+	partial: &Partial,
+	proposals: Vec<RepairProposal>,
+) -> ParseDiagnostic {
+	let definition = definition_key(tokens, start).unwrap_or_default();
+	let alone = parse_segment(segment, None, following);
+	let code = alone
+		.diagnostics
+		.iter()
+		.find(|diagnostic| diagnostic.repair.is_none())
+		.map_or(ParseDiagnosticCode::InvalidStatementStart, |diagnostic| {
+			diagnostic.code
+		});
+	let last_line = |tokens: &[Token]| {
+		tokens
+			.iter()
+			.rev()
+			.find(|token| !matches!(token.kind, TokenKind::Newline))
+			.map_or(0, |token| token.span.end.line)
+	};
+	let dropped = LineRange {
+		first: segment[partial.start].span.start.line,
+		last: last_line(&segment[partial.start..partial.end]),
+	};
+	ParseDiagnostic {
+		code,
+		message: format!(
+			"lines {}-{} of definition `{definition}` have a syntax error with no trustworthy repair; they are left out",
+			dropped.first, dropped.last
+		),
+		span: segment[partial.start].span.clone(),
+		repair: None,
+		isolation: Some(Isolation {
+			definition,
+			end_line: last_line(segment),
+			proposals,
+			dropped: Some(dropped),
+		}),
+	}
 }
 
 /// The key of the definition whose head starts at `index`.
@@ -1174,12 +1336,16 @@ mod tests {
 	}
 
 	#[test]
-	fn a_definition_with_no_trustworthy_repair_is_left_out_alone() {
+	fn only_the_broken_statement_of_a_definition_is_left_out() {
 		let parsed = parse("a = {\n\tOR = {\n\t\tx = 1\n\ty = 2\n}\nb = {\n\tz = 3\n}\n");
 		let isolation = only_isolation(&parsed);
 		assert_eq!(
-			(isolation.definition.as_str(), isolation.end_line),
-			("a", 5)
+			(
+				isolation.definition.as_str(),
+				isolation.end_line,
+				isolation.dropped
+			),
+			("a", 5, Some(crate::model::LineRange { first: 2, last: 3 }))
 		);
 		// The repair that moves the fewest statements first, then the one the
 		// indentation favours.
@@ -1194,6 +1360,18 @@ mod tests {
 				(SourceRepairEdit::InsertedClosingBrace, 4, 2),
 				(SourceRepairEdit::RemovedOpeningBrace, 2, 7),
 			]
+		);
+		// `OR`, which never closes, is left out; `a` keeps `y`.
+		assert_eq!(shape(&parsed.statements), "a={y=2} b={z=3}");
+	}
+
+	#[test]
+	fn a_definition_with_no_statement_to_leave_out_is_left_out_whole() {
+		let parsed = parse("a = { x = 1 } } }\nb = {\n\tz = 3\n}\n");
+		let isolation = only_isolation(&parsed);
+		assert_eq!(
+			(isolation.definition.as_str(), isolation.dropped),
+			("a", None)
 		);
 		assert_eq!(shape(&parsed.statements), "b={z=3}");
 	}
@@ -1228,10 +1406,22 @@ mod tests {
 	}
 
 	#[test]
-	fn a_key_the_file_repeats_is_not_isolated() {
+	fn a_key_the_file_repeats_keeps_its_definition_without_the_broken_part() {
+		// Leaving out a whole `country_event` would not say which one; leaving
+		// out a statement inside it keeps the event where it is.
 		let parsed = parse(
 			"country_event = {\n\tOR = {\n\t\tx = 1\n\ty = 2\n}\ncountry_event = {\n\tid = b\n}\n",
 		);
+		assert!(only_isolation(&parsed).dropped.is_some());
+		assert_eq!(
+			shape(&parsed.statements),
+			"country_event={y=2} country_event={id=b}"
+		);
+	}
+
+	#[test]
+	fn a_key_the_file_repeats_is_not_left_out_whole() {
+		let parsed = parse("country_event = { x = 1 } } }\ncountry_event = {\n\tid = b\n}\n");
 		assert!(
 			parsed
 				.diagnostics
