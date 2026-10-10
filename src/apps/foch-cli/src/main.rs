@@ -11,6 +11,9 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{fmt, registry};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
 	// Use a larger stack to handle deeply nested Clausewitz ASTs
 	// (some EU4 files have 20+ nesting levels).
