@@ -897,9 +897,12 @@ fn normalize_chain_semantic(
 			effect_signature.clone(),
 		))
 	} else if complete {
-		identity.as_ref().map(|identity| {
-			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
-		})
+		// The default effect is content, not identity: editing it must leave the
+		// chain the same chain, or the edit becomes a delete plus an insert.
+		Some(SemanticKey::parent_scoped_ordered_similarity_with_position(
+			"clausewitz.control_flow.chain.sequence",
+			"complete",
+		))
 	} else {
 		Some(SemanticKey::parent_scoped_ordered_similarity_with_position(
 			"clausewitz.control_flow.chain.sequence",

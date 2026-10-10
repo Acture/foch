@@ -7,8 +7,8 @@ use foch::input::{
 };
 use foch::merge::{
 	AnalyzedMerge, CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
-	MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition, MergeUnitKind,
-	NoopProgressObserver, analyze_merge,
+	MERGE_REVIEW_SCHEMA, MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition,
+	MergeUnitKind, NoopProgressObserver, analyze_merge,
 };
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
@@ -27,6 +27,10 @@ use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	let paradox_data_path = config.paradox_data_path.clone();
+	// Refuse a review path before the analysis it would follow.
+	if let Some(path) = &merge_args.review_json {
+		check_review_json_target(path, &merge_args.out)?;
+	}
 	let PreparedMerge { request, options } = prepare_merge(merge_args, config, None)?;
 	let analyzed = analyze_merge(
 		request,
@@ -117,6 +121,9 @@ fn report_and_commit(
 		"{}",
 		render_merge_review_text(&analyzed, merge_args.review_all)
 	);
+	if let Some(path) = &merge_args.review_json {
+		write_review_json(&analyzed, path, &merge_args.out)?;
+	}
 	let plan_exit_code = merge_plan_exit_code(analysis.plan());
 	if analysis.plan().has_fatal_errors() {
 		return Ok(plan_exit_code);
@@ -148,6 +155,106 @@ fn report_and_commit(
 		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
+}
+
+fn write_review_json(analyzed: &AnalyzedMerge, path: &Path, out_dir: &Path) -> io::Result<()> {
+	let destination = check_review_json_target(path, out_dir)?;
+	for root in analyzed.source_roots() {
+		if destination.starts_with(write_location(root)?) {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidInput,
+				format!(
+					"--review-json {} is inside the read-only input {}; write the review elsewhere",
+					path.display(),
+					root.display()
+				),
+			));
+		}
+	}
+	let mut json = serde_json::to_vec_pretty(analyzed.review()).map_err(io::Error::other)?;
+	json.push(b'\n');
+	fs::write(&destination, json).map_err(|error| {
+		io::Error::new(
+			error.kind(),
+			format!("failed to write merge review {}: {error}", path.display()),
+		)
+	})?;
+	eprintln!("[foch] wrote merge review to {}", path.display());
+	Ok(())
+}
+
+/// Where `--review-json` may write. It never replaces a file that is not an
+/// earlier review, so a path naming the playset, a foch.toml or any other
+/// input is refused instead of overwritten, and it never writes into the
+/// output directory, which commit installs as a whole. Both are compared as
+/// the locations a write would reach, which the review is then written to.
+fn check_review_json_target(path: &Path, out_dir: &Path) -> io::Result<PathBuf> {
+	let destination = write_location(path)?;
+	if destination.starts_with(write_location(out_dir)?) {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!(
+				"--review-json {} is inside --out {}; write the review outside the merge output",
+				path.display(),
+				out_dir.display()
+			),
+		));
+	}
+	match fs::read(&destination) {
+		Ok(bytes) => {
+			let is_review = serde_json::from_slice::<serde_json::Value>(&bytes)
+				.ok()
+				.is_some_and(|value| {
+					value.get("schema").and_then(serde_json::Value::as_str)
+						== Some(MERGE_REVIEW_SCHEMA)
+				});
+			if is_review {
+				Ok(destination)
+			} else {
+				Err(io::Error::new(
+					io::ErrorKind::AlreadyExists,
+					format!(
+						"--review-json {} is an existing file that is not a foch merge review; refusing to overwrite it",
+						path.display()
+					),
+				))
+			}
+		}
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(destination),
+		Err(error) => Err(io::Error::new(
+			error.kind(),
+			format!("cannot check --review-json {}: {error}", path.display()),
+		)),
+	}
+}
+
+/// The location a write to `path` reaches: its deepest existing ancestor
+/// with every link resolved, then the components that do not exist yet with
+/// `.` and `..` applied. A lexical comparison would let `out/x/../review.json`
+/// slip into `out` and would refuse `out/../review.json`.
+fn write_location(path: &Path) -> io::Result<PathBuf> {
+	let absolute = std::path::absolute(path)?;
+	let components = absolute.components().collect::<Vec<_>>();
+	for existing in (1..=components.len()).rev() {
+		let ancestor = components[..existing].iter().collect::<PathBuf>();
+		match fs::canonicalize(&ancestor) {
+			Ok(mut location) => {
+				for component in &components[existing..] {
+					match component {
+						std::path::Component::ParentDir => {
+							location.pop();
+						}
+						std::path::Component::CurDir => {}
+						other => location.push(other.as_os_str()),
+					}
+				}
+				return Ok(location);
+			}
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error),
+		}
+	}
+	Ok(absolute)
 }
 
 /// The current EU4 input without the named mods. A mod is named by its

@@ -1,12 +1,26 @@
+mod conflicts;
+mod provenance;
+
+use super::conflict_view::ConflictView;
 use super::error::{MergeError, MergeErrorSubject};
 use crate::game::eu4::content::eu4;
 use crate::model::{
-	GamePath, GamePathBuf, MergePlanContributor, MergePlanEntry, MergePlanResult,
-	MergePlanStrategy, MergePlanTarget,
+	GamePath, GamePathBuf, HandlerResolutionRecord, MergePlanContributor, MergePlanEntry,
+	MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 };
+pub use conflicts::{
+	AddressNode, ConflictCandidate, ConflictChoice, ConflictContributor, ConflictLeaf,
+	DecisionAction, DecisionOption, DecisionPoint, DecisionScope, UnitConflicts,
+};
+pub(crate) use provenance::PlaysetProvenance;
+pub use provenance::{DependencyStatus, MergeReviewDependency, MergeReviewMod};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub const MERGE_REVIEW_SCHEMA: &str = "foch.merge_review.v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MergeDisposition {
 	Safe,
 	Copy,
@@ -16,13 +30,14 @@ pub enum MergeDisposition {
 	Deferred,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MergeUnitKind {
 	File,
 	DefinitionModule,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergeReviewContributor {
 	pub mod_id: String,
 	pub name: String,
@@ -32,7 +47,7 @@ pub struct MergeReviewContributor {
 	pub is_base_game: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergeUnitOutcome {
 	/// The unit's stable key: `file:{path}` for a file, or
 	/// `module:{family}/{module}` for a definition module.
@@ -48,11 +63,17 @@ pub struct MergeUnitOutcome {
 	/// files — an EU4 database fed by more than one directory — commits all of
 	/// them or none, so this is empty exactly when `output_path` is `None`.
 	pub output_paths: Vec<GamePathBuf>,
+	/// Contributors in ascending precedence: the last one wins where nothing
+	/// merges them.
 	pub contributors: Vec<MergeReviewContributor>,
 	pub notes: Vec<String>,
+	/// Ids of this unit's leaf conflicts, each one decision point.
+	pub conflict_ids: Vec<String>,
+	/// Decisions a configured resolution or handler already made here.
+	pub handler_resolutions: Vec<HandlerResolutionRecord>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergeReviewSummary {
 	pub total: usize,
 	pub safe: usize,
@@ -63,30 +84,108 @@ pub struct MergeReviewSummary {
 	pub deferred: usize,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct MergeReview {
-	units: Vec<MergeUnitOutcome>,
-	by_id: BTreeMap<String, usize>,
+/// The review of an analyzed merge: every unit with its ordered contributors
+/// and outcome, the playset's mods and the dependency edges that order them,
+/// each deferred unit's conflict tree with the competing candidates, and
+/// every decision point. Its JSON is what exports and review frontends read.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MergeReview {
+	schema: String,
 	summary: MergeReviewSummary,
+	/// Playset mods in playset order, then any base game contributor.
+	mods: Vec<MergeReviewMod>,
+	dependencies: Vec<MergeReviewDependency>,
+	units: Vec<MergeUnitOutcome>,
+	/// One entry per unit with leaf conflicts, in review order.
+	conflicts: Vec<UnitConflicts>,
+	/// Every decision point, in review order and then address order.
+	decisions: Vec<DecisionPoint>,
+	#[serde(skip)]
+	by_id: BTreeMap<String, usize>,
 }
 
 impl MergeReview {
-	pub(super) fn summary(&self) -> &MergeReviewSummary {
+	pub fn schema(&self) -> &str {
+		&self.schema
+	}
+
+	pub fn summary(&self) -> &MergeReviewSummary {
 		&self.summary
 	}
 
-	pub(super) fn units(&self) -> &[MergeUnitOutcome] {
+	pub fn mods(&self) -> &[MergeReviewMod] {
+		&self.mods
+	}
+
+	pub fn dependencies(&self) -> &[MergeReviewDependency] {
+		&self.dependencies
+	}
+
+	pub fn units(&self) -> &[MergeUnitOutcome] {
 		&self.units
 	}
 
-	pub(super) fn unit(&self, id: &str) -> Option<&MergeUnitOutcome> {
+	pub fn unit(&self, id: &str) -> Option<&MergeUnitOutcome> {
 		self.by_id.get(id).map(|index| &self.units[*index])
+	}
+
+	pub fn conflicts(&self) -> &[UnitConflicts] {
+		&self.conflicts
+	}
+
+	pub fn decisions(&self) -> &[DecisionPoint] {
+		&self.decisions
+	}
+}
+
+impl<'de> Deserialize<'de> for MergeReview {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		#[derive(Deserialize)]
+		struct Fields {
+			schema: String,
+			summary: MergeReviewSummary,
+			mods: Vec<MergeReviewMod>,
+			dependencies: Vec<MergeReviewDependency>,
+			units: Vec<MergeUnitOutcome>,
+			conflicts: Vec<UnitConflicts>,
+			decisions: Vec<DecisionPoint>,
+		}
+		let fields = Fields::deserialize(deserializer)?;
+		let mut by_id = BTreeMap::new();
+		for (index, unit) in fields.units.iter().enumerate() {
+			if by_id.insert(unit.id.clone(), index).is_some() {
+				return Err(serde::de::Error::custom(format!(
+					"duplicate review unit id `{}`",
+					unit.id
+				)));
+			}
+		}
+		Ok(Self {
+			schema: fields.schema,
+			summary: fields.summary,
+			mods: fields.mods,
+			dependencies: fields.dependencies,
+			units: fields.units,
+			conflicts: fields.conflicts,
+			decisions: fields.decisions,
+			by_id,
+		})
 	}
 }
 
 pub(super) struct UnitOutcomeLedger {
 	units: Vec<Option<MergeUnitOutcome>>,
 	by_id: BTreeMap<String, usize>,
+	conflicts: BTreeMap<String, AttachedConflicts>,
+}
+
+/// Where a deferred unit's leaf conflicts sit and their rendered candidates.
+/// A definition module reports its conflicts under its primary output, but
+/// they belong to the namespace that conflicted, whose path their ids and any
+/// file or directory resolution are keyed by.
+struct AttachedConflicts {
+	file: GamePathBuf,
+	views: Vec<ConflictView>,
 }
 
 impl UnitOutcomeLedger {
@@ -131,6 +230,25 @@ impl UnitOutcomeLedger {
 		Ok(())
 	}
 
+	/// Keep the file a deferred unit's conflicts sit in and their rendered
+	/// candidates for review.
+	pub(super) fn attach_conflicts(
+		&mut self,
+		entry: &MergePlanEntry,
+		file: GamePathBuf,
+		views: Vec<ConflictView>,
+	) -> Result<(), MergeError> {
+		let id = stable_unit_id(entry)?;
+		if !self.by_id.contains_key(&id) {
+			return Err(invariant(
+				entry.output_path(),
+				format!("unknown review unit `{id}`"),
+			));
+		}
+		self.conflicts.insert(id, AttachedConflicts { file, views });
+		Ok(())
+	}
+
 	pub(super) fn from_plan(plan: &MergePlanResult) -> Result<Self, MergeError> {
 		let mut by_id = BTreeMap::new();
 		let mut output_paths = BTreeSet::new();
@@ -156,7 +274,11 @@ impl UnitOutcomeLedger {
 			}
 			units.push(None);
 		}
-		Ok(Self { units, by_id })
+		Ok(Self {
+			units,
+			by_id,
+			conflicts: BTreeMap::new(),
+		})
 	}
 
 	pub(super) fn resolve(
@@ -235,13 +357,19 @@ impl UnitOutcomeLedger {
 			output_path,
 			contributors: review_contributors(&entry.contributors),
 			notes,
+			conflict_ids: Vec::new(),
+			handler_resolutions: Vec::new(),
 		});
 		Ok(())
 	}
 
+	/// Close the ledger once every unit is resolved and `report` holds the
+	/// analysis' conflicts and handler decisions.
 	pub(super) fn finish(
 		mut self,
 		mod_display_names: &HashMap<String, String>,
+		report: &MergeReport,
+		playset: PlaysetProvenance,
 	) -> Result<MergeReview, MergeError> {
 		for unit in self.units.iter_mut().flatten() {
 			for contributor in &mut unit.contributors {
@@ -255,7 +383,7 @@ impl UnitOutcomeLedger {
 				};
 			}
 		}
-		let mut resolved = Vec::with_capacity(self.units.len());
+		let mut resolved = Vec::<MergeUnitOutcome>::with_capacity(self.units.len());
 		for (index, unit) in self.units.into_iter().enumerate() {
 			let Some(unit) = unit else {
 				let id = self
@@ -283,10 +411,28 @@ impl UnitOutcomeLedger {
 				"review summary does not cover every unit",
 			));
 		}
+		let mut mods = playset.mods;
+		let mut base_games = BTreeSet::new();
+		for contributor in resolved.iter().flat_map(|unit| &unit.contributors) {
+			if contributor.is_base_game && base_games.insert(contributor.mod_id.clone()) {
+				mods.push(MergeReviewMod {
+					mod_id: contributor.mod_id.clone(),
+					name: contributor.name.clone(),
+					position: None,
+					is_base_game: true,
+				});
+			}
+		}
+		let (conflicts, decisions) = link_conflicts(&mut resolved, report, &self.conflicts);
 		Ok(MergeReview {
-			units: resolved,
-			by_id: self.by_id,
+			schema: MERGE_REVIEW_SCHEMA.to_string(),
 			summary,
+			mods,
+			dependencies: playset.dependencies,
+			units: resolved,
+			conflicts,
+			decisions,
+			by_id: self.by_id,
 		})
 	}
 
@@ -317,6 +463,58 @@ impl UnitOutcomeLedger {
 		}
 		Ok(())
 	}
+}
+
+/// Attach the report's handler decisions and deferred leaf conflicts to their
+/// units, returning each unit's conflict tree and every decision point.
+fn link_conflicts(
+	units: &mut [MergeUnitOutcome],
+	report: &MergeReport,
+	attached: &BTreeMap<String, AttachedConflicts>,
+) -> (Vec<UnitConflicts>, Vec<DecisionPoint>) {
+	let mut handler_resolutions = BTreeMap::<&GamePath, Vec<HandlerResolutionRecord>>::new();
+	for record in &report.handler_resolutions {
+		handler_resolutions
+			.entry(record.path.as_game_path())
+			.or_default()
+			.push(record.clone());
+	}
+	let mut deferred = BTreeMap::<&GamePath, Vec<_>>::new();
+	for resolution in &report.conflict_resolutions {
+		deferred
+			.entry(resolution.path.as_game_path())
+			.or_default()
+			.push(resolution);
+	}
+	let mut conflicts = Vec::new();
+	let mut decisions = Vec::new();
+	for unit in units {
+		let path = unit.path.clone();
+		unit.handler_resolutions = handler_resolutions
+			.remove(path.as_game_path())
+			.unwrap_or_default();
+		let attached = attached.get(&unit.id);
+		let views = attached.map_or(&[][..], |attached| attached.views.as_slice());
+		for resolution in deferred.get(path.as_game_path()).into_iter().flatten() {
+			let file = attached.map_or(&resolution.path, |attached| &attached.file);
+			let unit_conflicts = conflicts::unit_conflicts(unit, resolution, file, views);
+			for node in &unit_conflicts.nodes {
+				for leaf in &node.conflicts {
+					unit.conflict_ids.push(leaf.conflict_id.clone());
+					decisions.push(conflicts::decision_point(
+						unit,
+						&unit_conflicts.file_path,
+						node,
+						leaf,
+					));
+				}
+			}
+			if !unit_conflicts.nodes.is_empty() {
+				conflicts.push(unit_conflicts);
+			}
+		}
+	}
+	(conflicts, decisions)
 }
 
 /// The unit's review id. A file id is its game path's canonical text; a
@@ -400,6 +598,7 @@ fn strategy_name(strategy: MergePlanStrategy) -> &'static str {
 		MergePlanStrategy::StructuralMerge => "structural_merge",
 		MergePlanStrategy::LocalisationMerge => "localisation_merge",
 		MergePlanStrategy::ManualConflict => "manual_conflict",
+		MergePlanStrategy::Generated => "generated",
 	}
 }
 
@@ -489,7 +688,13 @@ mod tests {
 				)
 				.unwrap();
 		}
-		let review = ledger.finish(&HashMap::new()).unwrap();
+		let review = ledger
+			.finish(
+				&HashMap::new(),
+				&MergeReport::default(),
+				PlaysetProvenance::default(),
+			)
+			.unwrap();
 		assert_eq!(
 			review.summary(),
 			&MergeReviewSummary {
@@ -552,7 +757,11 @@ mod tests {
 			)
 			.unwrap();
 		let review = ledger
-			.finish(&HashMap::from([("mod-a".to_string(), "Mod A".to_string())]))
+			.finish(
+				&HashMap::from([("mod-a".to_string(), "Mod A".to_string())]),
+				&MergeReport::default(),
+				PlaysetProvenance::default(),
+			)
 			.unwrap();
 		assert_eq!(review.units()[0].id, "module:ideas/ideas");
 		assert_eq!(review.units()[0].contributors[0].source_paths.len(), 2);
@@ -623,7 +832,15 @@ mod tests {
 				.is_err()
 		);
 		let pending = UnitOutcomeLedger::from_plan(&plan).unwrap();
-		assert!(pending.finish(&HashMap::new()).is_err());
+		assert!(
+			pending
+				.finish(
+					&HashMap::new(),
+					&MergeReport::default(),
+					PlaysetProvenance::default()
+				)
+				.is_err()
+		);
 
 		let mut wrong_output = UnitOutcomeLedger::from_plan(&plan).unwrap();
 		assert!(
@@ -679,7 +896,11 @@ mod tests {
 			)
 			.unwrap();
 		let review = ledger
-			.finish(&HashMap::from([("mod-a".into(), "Example Mod".into())]))
+			.finish(
+				&HashMap::from([("mod-a".into(), "Example Mod".into())]),
+				&MergeReport::default(),
+				PlaysetProvenance::default(),
+			)
 			.unwrap();
 		let unit = &review.units()[0];
 		assert_eq!(unit.id, "file:common/test/one.txt");

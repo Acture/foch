@@ -28,6 +28,18 @@ arbitrary modlists.
 - The P-736 branch carries validated `GamePath` / `GamePathBuf` identities
   through input, semantic, provenance and cache boundaries; native paths remain
   at physical I/O. Its rebased sources follow the current workspace layout.
+- Content-family transforms run before structural merge on frozen inputs and
+  bind the source bytes they read. The culture adapter adapts renamed culture
+  identities and applies manifest-reviewed renames and repairs. Generated
+  outputs commit or are withheld as one group with their audited inputs.
+- `[gui] mode = "decisions"` migrates each mod's scripted custom GUI actions
+  into one player-only main decision per mod (panel options, province searches
+  with 32 multiplayer player numbers, rebound text and manifest overrides) and
+  hides the migrated buttons; `window` and `mixed` are not implemented.
+  The output has not been validated in game.
+- `common/on_actions` (additive since patch 1.36) and `common/estates` (mods
+  extend estates from their own files) stay per path instead of one definition
+  module, so the game combines them as it would for the source mods.
 - The test-framework worktree, rebased on `95f8554`, implements inline
   `#test(...)` annotations with `#skip`/`#ignore`/`#xfail`/`#mark`, a built-in
   runner that launches the real game, and CLI/LSP annotation help, split into
@@ -163,6 +175,14 @@ runner was verified against real EU4 1.37.5 on native Windows (`check`
 isolation). These are development checks, not a hosted CI or Workshop
 acceptance result. Verification detail and the 2026-10-02 protocol-v1
 checkpoint are recorded in the private notes.
+
+A bounded real `foch merge` of Europa Expanded (2164202838) and Religions and
+Cultures Expanded (3342969370) on 2026-10-09, with `[gui] mode = "decisions"`
+and an isolated parse cache, reported `partial_success` with no review units:
+one `unsupported_input` (EE's stray `}`, OSS-359) and one `engine_failure` (EE
+places `quebecois` in a second culture group, OSS-384). It wrote the GUI
+decisions. This is a development check, not an acceptance result or in-game
+validation.
 
 ## Evidence and maintenance
 

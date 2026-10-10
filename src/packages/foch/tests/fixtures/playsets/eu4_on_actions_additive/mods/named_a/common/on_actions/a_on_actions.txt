@@ -1,0 +1,5 @@
+on_startup = {
+	events = {
+		a.1
+	}
+}

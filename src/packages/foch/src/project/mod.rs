@@ -1,9 +1,11 @@
 mod cultures;
 mod fingerprint;
+mod gui;
 mod transform;
 
 pub use cultures::{CultureConfig, CultureRenameEntry, CultureRepairEntry};
 pub use fingerprint::compute_playset_fingerprint;
+pub use gui::{GuiConfig, GuiMode, GuiTextOverride, GuiVisibilityOverride};
 pub use transform::SourceEdit;
 
 use crate::game::eu4::Eu4;
@@ -32,6 +34,8 @@ pub struct Project {
 	pub emit: Option<EmitConfig>,
 	#[serde(default, skip_serializing_if = "CultureConfig::is_empty")]
 	pub cultures: CultureConfig,
+	#[serde(default, skip_serializing_if = "GuiConfig::is_empty")]
+	pub gui: GuiConfig,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -54,6 +58,8 @@ struct RawProject {
 	emit: Option<EmitConfig>,
 	#[serde(default)]
 	cultures: CultureConfig,
+	#[serde(default)]
+	gui: GuiConfig,
 }
 
 impl<'de> Deserialize<'de> for Project {
@@ -64,12 +70,14 @@ impl<'de> Deserialize<'de> for Project {
 		let raw = RawProject::deserialize(deserializer)?;
 		ResolutionMap::from_entries(&raw.resolutions).map_err(serde::de::Error::custom)?;
 		raw.cultures.validate().map_err(serde::de::Error::custom)?;
+		raw.gui.validate().map_err(serde::de::Error::custom)?;
 		Ok(Self {
 			project: raw.project,
 			overrides: raw.overrides,
 			resolutions: raw.resolutions,
 			emit: raw.emit,
 			cultures: raw.cultures,
+			gui: raw.gui,
 		})
 	}
 }
@@ -698,6 +706,18 @@ impl Project {
 				merged.resolutions.extend(config.resolutions);
 				merged.cultures.renames.extend(config.cultures.renames);
 				merged.cultures.repairs.extend(config.cultures.repairs);
+				if config.gui.mode.is_some() {
+					merged.gui.mode = config.gui.mode;
+				}
+				merged.gui.text.extend(config.gui.text);
+				merged.gui.visibility.extend(config.gui.visibility);
+				merged
+					.gui
+					.validate()
+					.map_err(|error| FochConfigLoadError::Parse {
+						path: path.clone(),
+						source: serde::de::Error::custom(error),
+					})?;
 				merged
 					.cultures
 					.validate()

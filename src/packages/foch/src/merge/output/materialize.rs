@@ -37,9 +37,10 @@ use crate::merge::analyze::{
 	CancellationToken, MergeAnalysisStage, MergeProgress, ProgressObserver,
 };
 use crate::merge::backend::{GumtreePcsNwayBackend, MergeBackend};
+use crate::merge::conflict_view::ConflictView;
 use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
-use crate::merge::review::{MergeDisposition, MergeReview, UnitOutcomeLedger};
+use crate::merge::review::{MergeDisposition, MergeReview, PlaysetProvenance, UnitOutcomeLedger};
 use crate::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath, GamePathBuf,
 	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
@@ -331,10 +332,8 @@ pub(crate) fn materialize_with_adaptations(
 			.map(|err| err.message.clone())
 			.or_else(|| plan.fatal_errors.first().cloned());
 		write_clean_metadata_only(out_dir, &plan, &report)?;
-		return Ok(MaterializedMerge {
-			report,
-			review: review.finish(&HashMap::new())?,
-		});
+		let review = review.finish(&HashMap::new(), &report, PlaysetProvenance::default())?;
+		return Ok(MaterializedMerge { report, review });
 	}
 	if options.backend.profile().validate_semantic_units {
 		validate_structured_plan_selection(&plan, options.retained_paths.as_ref())?;
@@ -375,6 +374,13 @@ pub(crate) fn materialize_with_adaptations(
 
 	let mod_versions = input_mod_versions(&input);
 	let mod_display_names = input_mod_display_names(&input);
+	let playset = PlaysetProvenance::new(
+		&input.mods,
+		&mod_display_names,
+		&mod_dag,
+		&dag_diagnostics,
+		&report.dep_overrides_applied,
+	);
 	let cache_game_version = input_cache_game_version(&input);
 	let cache_game_version =
 		cache_game_version_with_resolution_salt(&cache_game_version, &options.resolution_map);
@@ -426,6 +432,7 @@ pub(crate) fn materialize_with_adaptations(
 		prior_out_dir,
 		options,
 		profile,
+		transforms: adaptations,
 	};
 	let entries: &[MergePlanEntry] = &plan.paths;
 	let needs_adaptation_review =
@@ -632,10 +639,8 @@ pub(crate) fn materialize_with_adaptations(
 		&out_dir.join(MERGED_MOD_DESCRIPTOR_PATH),
 	)?;
 	write_metadata_only(out_dir, &plan, &report)?;
-	Ok(MaterializedMerge {
-		report,
-		review: review.finish(&mod_display_names)?,
-	})
+	let review = review.finish(&mod_display_names, &report, playset)?;
+	Ok(MaterializedMerge { report, review })
 }
 
 /// Output facts that units accumulate for the manifest built after the loop.
@@ -656,6 +661,7 @@ fn withhold_incomplete_transformations(
 	review: &mut UnitOutcomeLedger,
 	report: &mut MergeReport,
 ) -> Result<(), MergeError> {
+	report.warnings.extend(adaptations.unplaced_findings(plan));
 	for group in adaptations.output_groups(plan) {
 		withhold_incomplete_transform_group(&group, plan, out_dir, input, outputs, review, report)?;
 	}
@@ -690,7 +696,7 @@ fn withhold_incomplete_transform_group(
 		.map(|unit| unit.path.to_string())
 		.collect::<Vec<_>>();
 	if blocked.is_empty() && !related.is_empty() {
-		let mut documents = Vec::new();
+		let mut emitted = crate::merge::transform::EmittedOutput::default();
 		for entry in &related {
 			let unit = review.outcome(entry)?;
 			if unit.output_paths.is_empty() {
@@ -701,12 +707,14 @@ fn withhold_incomplete_transform_group(
 						.get(path)
 						.and_then(|items| items.last())
 					{
-						let parsed = crate::game::eu4::script::parse_script_file(
-							&winner.mod_id,
-							&winner.root_path,
-							path,
-						);
-						documents.push((path.clone(), parsed.ast));
+						let bytes = fs::read(winner.absolute_path()).map_err(|_| {
+							MergeError::Validation {
+								subject: Some(MergeErrorSubject::Game(path.clone())),
+								message: "cannot read original transformation fallback".into(),
+							}
+						})?;
+						// Problems in a source fallback belong to that source.
+						emitted.push(path, &bytes);
 					}
 				}
 				continue;
@@ -722,27 +730,20 @@ fn withhold_incomplete_transform_group(
 						.get(path)
 						.and_then(|items| items.last())
 					{
-						let parsed = input.script_cache.load(winner).map_err(|message| {
-							MergeError::Validation {
-								subject: Some(MergeErrorSubject::Game(path.clone())),
-								message,
-							}
-						})?;
-						documents.push((path.clone(), parsed.ast.clone()));
+						// A pending copy writes the frozen overlay when one exists.
+						let bytes = match input.script_cache.overlay_bytes(&winner.mod_id, path) {
+							Some(bytes) => bytes.to_vec(),
+							None => fs::read(winner.absolute_path())?,
+						};
+						emitted.push(path, &bytes);
 					}
 				} else {
 					let bytes = fs::read(path.to_path(out_dir))?;
-					let source = crate::game::eu4::text::decode_paradox_bytes(&bytes);
-					let parsed =
-						crate::game::eu4::script::parser::parse_clausewitz_content(path, &source);
-					if !parsed.diagnostics.is_empty() {
-						blocked.push(format!("{path}: emitted transformation has parse errors"));
-					}
-					documents.push((path.clone(), parsed.ast));
+					blocked.extend(emitted.push(path, &bytes));
 				}
 			}
 		}
-		blocked.extend(group.validate_emitted(&documents));
+		blocked.extend(group.validate_emitted(&emitted));
 	}
 	if blocked.is_empty() {
 		return Ok(());
@@ -800,6 +801,7 @@ struct ApplyEnv<'a> {
 	prior_out_dir: Option<&'a Path>,
 	options: &'a MergeMaterializeOptions,
 	profile: &'a Eu4,
+	transforms: &'a crate::merge::transform::TransformPlan,
 }
 
 fn apply_unit(
@@ -899,6 +901,44 @@ fn apply_unit(
 				));
 			}
 			review.resolve(entry, MergeDisposition::UnsupportedInput, reason, None, [])?;
+		}
+		MergePlanStrategy::Generated => {
+			let path = entry.output_path();
+			let bytes =
+				env.transforms
+					.generated_bytes(path)
+					.ok_or_else(|| MergeError::Validation {
+						subject: Some(MergeErrorSubject::Game(path.to_owned())),
+						message: "generated output has no frozen transformation payload".into(),
+					})?;
+			let omitted = options
+				.retained_paths
+				.as_ref()
+				.is_some_and(|paths| !paths.contains(path));
+			if !omitted {
+				let target = path.to_path(out_dir);
+				if let Some(parent) = target.parent() {
+					fs::create_dir_all(parent)?;
+				}
+				fs::write(&target, bytes)?;
+				record_counted_generated_output(
+					path,
+					&mut outputs.generated_paths,
+					&mut outputs.counted_generated_paths,
+					report,
+				);
+			}
+			review.resolve(
+				entry,
+				MergeDisposition::Safe,
+				if omitted {
+					"generated output omitted"
+				} else {
+					"generated by a reviewed transformation"
+				},
+				(!omitted).then(|| path.to_owned()),
+				[],
+			)?;
 		}
 	}
 	Ok(())
@@ -1044,6 +1084,9 @@ fn apply_module_unit(
 		.collect();
 	let wrote_nothing: bool = written.is_empty();
 	review.resolve_written(entry, outcome.disposition, outcome.summary, written, [])?;
+	if let Some((file, views)) = outcome.conflicts {
+		review.attach_conflicts(entry, file, views)?;
+	}
 	// Analysis and applying may run on different threads, so the unit's time is
 	// the sum of both rather than one wall-clock span.
 	let unit_elapsed: Duration = module.elapsed + module_started.elapsed();
@@ -1095,7 +1138,7 @@ fn apply_file_unit(
 			);
 		}
 	};
-	let (conflict, deferred_reason, disposition, summary, allow_force) = match *result {
+	let (mut conflict, deferred_reason, disposition, summary, allow_force) = match *result {
 		Ok(Ok(mut merge_output)) => {
 			report
 				.stale_vanilla_targets
@@ -1191,6 +1234,7 @@ fn apply_file_unit(
 		&& options.force
 		&& allow_force
 		&& is_text_placeholder_path(entry.output_path());
+	let conflict_views = std::mem::take(&mut conflict.conflict_views);
 	resolve_structural_merge_failure(StructuralMergeFailureCtx {
 		entry,
 		out_dir,
@@ -1208,7 +1252,8 @@ fn apply_file_unit(
 		summary,
 		placeholder_written.then(|| entry.output_path().to_owned()),
 		[],
-	)
+	)?;
+	review.attach_conflicts(entry, entry.output_path().to_owned(), conflict_views)
 }
 
 fn copy_file_unit_winner(
@@ -1332,6 +1377,8 @@ struct CrossFileModuleMaterializeContext<'a> {
 struct CrossFileModuleOutcome {
 	disposition: MergeDisposition,
 	summary: String,
+	/// The conflicting namespace's file and its rendered candidates.
+	conflicts: Option<(GamePathBuf, Vec<ConflictView>)>,
 }
 
 /// One namespace's merged bytes, staged but not yet installed.
@@ -1411,7 +1458,12 @@ fn materialize_cross_file_module(
 
 	let mut staged: Vec<StagedNamespaceOutput<'_>> = Vec::new();
 	let mut failure: Option<(DeferredUnitReason, String)> = None;
-	let mut conflict: Option<(MergeDisposition, String, StructuralConflictReport)> = None;
+	let mut conflict: Option<(
+		MergeDisposition,
+		String,
+		&GamePath,
+		StructuralConflictReport,
+	)> = None;
 	// Staging a namespace records facts about the file it expects to write. A
 	// unit that is later withheld writes none of them, so those records are
 	// rolled back rather than published for a file the merged mod never gets.
@@ -1430,7 +1482,7 @@ fn materialize_cross_file_module(
 		) {
 			Ok(NamespaceStaging::Staged(output)) => staged.push(*output),
 			Ok(NamespaceStaging::Conflict(disposition, summary, report_detail)) => {
-				conflict = Some((disposition, summary, report_detail));
+				conflict = Some((disposition, summary, namespace.output_path(), report_detail));
 				break;
 			}
 			Ok(NamespaceStaging::Failed(reason, message)) => {
@@ -1478,11 +1530,12 @@ fn materialize_cross_file_module(
 			reason,
 		);
 	}
-	if let Some((disposition, summary, report_detail)) = conflict {
+	if let Some((disposition, summary, conflict_file, mut report_detail)) = conflict {
 		for output in &staged {
 			let _ = fs::remove_dir_all(&output.stage_dir);
 		}
 		staging_marks.roll_back(report);
+		let conflict_views = std::mem::take(&mut report_detail.conflict_views);
 		resolve_cross_file_module_conflict(
 			entry,
 			out_dir,
@@ -1495,6 +1548,7 @@ fn materialize_cross_file_module(
 		return Ok(CrossFileModuleOutcome {
 			disposition,
 			summary,
+			conflicts: Some((conflict_file.to_owned(), conflict_views)),
 		});
 	}
 
@@ -1577,6 +1631,7 @@ fn materialize_cross_file_module(
 	}
 	let _ = committed_any;
 	Ok(CrossFileModuleOutcome {
+		conflicts: None,
 		disposition: MergeDisposition::Safe,
 		summary: if namespaces.len() > 1 {
 			format!(
@@ -1852,6 +1907,7 @@ fn resolve_cross_file_module_failure(
 		StructuralConflictReport::without_details(reason),
 	)?;
 	Ok(CrossFileModuleOutcome {
+		conflicts: None,
 		disposition: match deferred_reason {
 			DeferredUnitReason::NeedsUserChoice => MergeDisposition::NeedsUserChoice,
 			DeferredUnitReason::UnsupportedInput => MergeDisposition::UnsupportedInput,
@@ -2428,6 +2484,7 @@ fn merge_plan_strategy_name(strategy: MergePlanStrategy) -> &'static str {
 		MergePlanStrategy::StructuralMerge => "structural_merge",
 		MergePlanStrategy::LocalisationMerge => "localisation_merge",
 		MergePlanStrategy::ManualConflict => "manual_conflict",
+		MergePlanStrategy::Generated => "generated",
 	}
 }
 
@@ -2620,6 +2677,9 @@ pub(crate) struct StructuralConflictReport {
 	leaf_conflicts: Vec<LeafConflictDetail>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
 	explicitly_deferred: bool,
+	/// Each leaf conflict's competing candidates, rendered for review. They
+	/// never enter the report, so its bytes do not depend on them.
+	conflict_views: Vec<ConflictView>,
 }
 
 impl StructuralConflictReport {
@@ -2629,6 +2689,7 @@ impl StructuralConflictReport {
 			leaf_conflicts: Vec::new(),
 			handler_resolutions: Vec::new(),
 			explicitly_deferred: false,
+			conflict_views: Vec::new(),
 		}
 	}
 }
@@ -2906,6 +2967,7 @@ mod tests {
 					leaf_conflicts: Vec::new(),
 					handler_resolutions: Vec::new(),
 					explicitly_deferred: false,
+					conflict_views: Vec::new(),
 				},
 			))
 		}
@@ -3393,10 +3455,10 @@ mod tests {
 		impl OutputValidation for UnresolvedReference {
 			fn validate_emitted(
 				&self,
-				documents: &[(GamePathBuf, crate::game::eu4::script::parser::AstFile)],
+				output: &crate::merge::transform::EmittedOutput,
 			) -> Vec<String> {
 				assert_eq!(
-					documents.len(),
+					output.scripts.len(),
 					3,
 					"audit sees the complete connected output component"
 				);
@@ -3536,6 +3598,216 @@ mod tests {
 				MergeDisposition::Copy
 			);
 		}
+	}
+
+	#[test]
+	fn generated_transform_outputs_commit_or_withhold_with_their_group() {
+		use crate::merge::transform::{
+			EmittedOutput, GeneratedArtifact, OutputValidation, PreparedTransform, ScriptTransform,
+			TransformPlan,
+		};
+		use std::sync::Arc;
+
+		#[derive(Debug)]
+		struct RequiresTitle(&'static str);
+		impl OutputValidation for RequiresTitle {
+			fn validate_emitted(&self, output: &EmittedOutput) -> Vec<String> {
+				let decision = output
+					.scripts
+					.iter()
+					.any(|(path, _)| path.as_str() == "decisions/foch_test.txt");
+				let title = output
+					.localisation
+					.iter()
+					.flat_map(|(_, file)| &file.entries)
+					.any(|entry| entry.definition.key == self.0);
+				if decision && title {
+					Vec::new()
+				} else {
+					vec![format!("generated decision has no `{}` text", self.0)]
+				}
+			}
+		}
+
+		let decision = "decisions/foch_test.txt";
+		let text = "localisation/foch_test_l_english.yml";
+		for (required_key, force) in [
+			("foch_test_title", false),
+			("missing_title", false),
+			("missing_title", true),
+		] {
+			let temp = TempDir::new().unwrap();
+			let source = "history/provinces/1.txt";
+			let independent = "history/provinces/2.txt";
+			let mut input = cross_file_input(
+				temp.path(),
+				&[
+					("mod", source, "base_tax = 1\n", 1, false),
+					("mod", independent, "base_tax = 1\n", 1, false),
+				],
+			);
+			let contributor = input.file_inventory[&game_path(source)][0].clone();
+			let original = crate::game::eu4::script::parse_script_bytes_cached(
+				&contributor.mod_id,
+				&contributor.root_path,
+				&contributor.relative_path,
+				b"base_tax = 1\n",
+			);
+			input
+				.script_cache
+				.insert_overlay(original, b"base_tax = 1\n".to_vec());
+			let edited = parse_clausewitz_content(&game_path(source), "base_tax = 2\n");
+			let overlay = ScriptTransform::new(
+				input.script_cache.load(&contributor).unwrap(),
+				edited.ast,
+				b"base_tax = 2\n".to_vec(),
+			);
+			let mut transforms = TransformPlan::default();
+			transforms
+				.push(
+					&mut input,
+					PreparedTransform {
+						id: "migration".into(),
+						identity: "migration-v1".into(),
+						paths: [game_path(source)].into(),
+						overlays: vec![overlay],
+						generated: vec![
+							GeneratedArtifact {
+								path: game_path(decision),
+								bytes: Arc::from(b"foch_test = { }\n".as_slice()),
+							},
+							GeneratedArtifact {
+								path: game_path(text),
+								bytes: Arc::from(
+									"\u{feff}l_english:\n foch_test_title:0 \"Test\"\n".as_bytes(),
+								),
+							},
+						],
+						validator: Some(Arc::new(RequiresTitle(required_key))),
+						..Default::default()
+					},
+				)
+				.unwrap();
+			let mut plan = MergePlanResult {
+				paths: [source, independent]
+					.iter()
+					.map(|path| {
+						copy_through_entry(path, &input.file_inventory[&game_path(path)][0])
+					})
+					.collect(),
+				..Default::default()
+			};
+			transforms.register_generated(&input.file_inventory, &mut plan);
+			let out = temp.path().join("out");
+			let result = super::materialize_with_adaptations(
+				InputRequest::from_playset_path(
+					temp.path().join("playlist.json"),
+					Config::default(),
+				),
+				MaterializeOutput {
+					artifacts_dir: &out,
+					prior_dir: None,
+					target_dir: &out,
+				},
+				MergeMaterializeOptions {
+					force,
+					..Default::default()
+				},
+				Ok(input),
+				plan,
+				None,
+				&transforms,
+			)
+			.unwrap();
+			let disposition = |path: &str| {
+				result
+					.review
+					.units()
+					.iter()
+					.find(|unit| unit.path.as_str() == path)
+					.unwrap()
+					.disposition
+			};
+			let valid = required_key == "foch_test_title";
+			for path in [source, decision, text] {
+				assert_eq!(out.join(path).exists(), valid, "{path}, force={force}");
+			}
+			if valid {
+				assert_eq!(
+					fs::read_to_string(out.join(source)).unwrap(),
+					"base_tax = 2\n"
+				);
+				assert_eq!(
+					fs::read_to_string(out.join(decision)).unwrap(),
+					"foch_test = { }\n"
+				);
+				assert_eq!(disposition(decision), MergeDisposition::Safe);
+				assert_eq!(disposition(text), MergeDisposition::Safe);
+			} else {
+				for path in [source, decision, text] {
+					assert_eq!(disposition(path), MergeDisposition::NeedsUserChoice);
+				}
+			}
+			assert_eq!(
+				fs::read_to_string(out.join(independent)).unwrap(),
+				"base_tax = 1\n"
+			);
+			assert_eq!(
+				fs::read_to_string(temp.path().join("mod").join(source)).unwrap(),
+				"base_tax = 1\n",
+				"source mods stay read-only"
+			);
+		}
+	}
+
+	#[test]
+	fn transform_findings_without_a_review_unit_reach_the_report() {
+		use crate::merge::transform::{GeneratedArtifact, PreparedTransform, TransformPlan};
+		use std::sync::Arc;
+
+		let temp = TempDir::new().unwrap();
+		let existing = "decisions/Existing.txt";
+		let mut input = cross_file_input(temp.path(), &[("mod", existing, "a = { }\n", 1, false)]);
+		let mut transforms = TransformPlan::default();
+		transforms
+			.push(
+				&mut input,
+				PreparedTransform {
+					id: "migration".into(),
+					generated: vec![GeneratedArtifact {
+						path: game_path("decisions/existing.txt"),
+						bytes: Arc::from(b"b = { }\n".as_slice()),
+					}],
+					..Default::default()
+				},
+			)
+			.unwrap();
+		let mut plan = MergePlanResult {
+			paths: vec![copy_through_entry(
+				existing,
+				&input.file_inventory[&game_path(existing)][0],
+			)],
+			..Default::default()
+		};
+		transforms.register_generated(&input.file_inventory, &mut plan);
+		let out = temp.path().join("out");
+		let result = super::materialize_with_adaptations(
+			InputRequest::from_playset_path(temp.path().join("playlist.json"), Config::default()),
+			MaterializeOutput {
+				artifacts_dir: &out,
+				prior_dir: None,
+				target_dir: &out,
+			},
+			MergeMaterializeOptions::default(),
+			Ok(input),
+			plan,
+			None,
+			&transforms,
+		)
+		.unwrap();
+		assert!(result.report.warnings.iter().any(|warning| warning
+			== "generated output `decisions/existing.txt` collides with `decisions/Existing.txt`"));
+		assert_eq!(fs::read_to_string(out.join(existing)).unwrap(), "a = { }\n");
 	}
 
 	#[test]
@@ -3721,10 +3993,22 @@ mod tests {
 			.classify_content_family(path)
 			.expect("scripted_triggers family");
 		let vanilla = parse_test_statements(
-			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+			"byz_is_not_latin_empire = {
+	tag = LAE
+	always = no
+}
+",
 		);
 		let merged = parse_test_statements(
-			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = byz_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
+			"byz_is_not_latin_empire = {
+	OR = {
+		AND = {
+			tag = LAE
+			always = no
+		}
+	}
+}
+",
 		);
 
 		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(

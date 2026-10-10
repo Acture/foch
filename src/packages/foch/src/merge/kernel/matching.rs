@@ -707,9 +707,7 @@ fn align_ordered_similarity_group(
 		})
 		.collect::<Vec<_>>();
 	fixed.sort_unstable();
-	if fixed.windows(2).any(|pair| pair[0].1 >= pair[1].1) {
-		return;
-	}
+	let fixed = order_preserving_frame(left, left_siblings, &fixed);
 
 	let left_unmatched = left_nodes
 		.iter()
@@ -723,6 +721,16 @@ fn align_ordered_similarity_group(
 		.filter(|id| !matching.is_right_matched(*id) && !matching.is_right_ambiguous(*id))
 		.map(|id| (right_positions[&id], id))
 		.collect::<Vec<_>>();
+	// Identity does not depend on order: a sibling whose whole subtree occurs
+	// exactly once on each side is the same sibling wherever it now stands.
+	let (left_unmatched, right_unmatched) = match_unique_identical_siblings(
+		left,
+		right,
+		matching,
+		left_unmatched,
+		right_unmatched,
+		proposals,
+	);
 	if left_unmatched.is_empty() || right_unmatched.is_empty() {
 		return;
 	}
@@ -936,6 +944,101 @@ fn align_ordered_similarity_group(
 			score,
 		});
 	}
+}
+
+type PositionedSiblings = Vec<(usize, NodeId)>;
+
+fn match_unique_identical_siblings(
+	left: &NormalizedTree,
+	right: &NormalizedTree,
+	matching: &Matching,
+	left_unmatched: PositionedSiblings,
+	right_unmatched: PositionedSiblings,
+	proposals: &mut Vec<RecoveryCandidate>,
+) -> (PositionedSiblings, PositionedSiblings) {
+	let hash_owners = |tree: &NormalizedTree, siblings: &PositionedSiblings| {
+		let mut owners = BTreeMap::<SubtreeHash, Option<NodeId>>::new();
+		for (_, id) in siblings {
+			owners
+				.entry(tree.node(*id).unwrap().subtree_hash)
+				.and_modify(|owner| *owner = None)
+				.or_insert(Some(*id));
+		}
+		owners
+	};
+	let left_owners = hash_owners(left, &left_unmatched);
+	let right_owners = hash_owners(right, &right_unmatched);
+	let mut paired = BTreeSet::new();
+	for (hash, left_owner) in &left_owners {
+		if let (Some(left_id), Some(Some(right_id))) = (left_owner, right_owners.get(hash))
+			&& compatible_at_including_ordered(left, right, matching, *left_id, *right_id)
+		{
+			proposals.push(RecoveryCandidate {
+				left: *left_id,
+				right: *right_id,
+				score: 1_000_000,
+			});
+			paired.insert((*left_id, true));
+			paired.insert((*right_id, false));
+		}
+	}
+	(
+		left_unmatched
+			.into_iter()
+			.filter(|(_, id)| !paired.contains(&(*id, true)))
+			.collect(),
+		right_unmatched
+			.into_iter()
+			.filter(|(_, id)| !paired.contains(&(*id, false)))
+			.collect(),
+	)
+}
+
+/// The heaviest subset of matched sibling pairs whose order agrees on both
+/// sides. A sibling that moved crosses the others; it stays matched but must
+/// not frame the gaps, or one moved line would separate every unchanged
+/// sibling it passed from its counterpart.
+fn order_preserving_frame(
+	left: &NormalizedTree,
+	left_siblings: &[NodeId],
+	fixed: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
+	if fixed.windows(2).all(|pair| pair[0].1 < pair[1].1) {
+		return fixed.to_vec();
+	}
+	let weight = |left_index: usize| {
+		u64::from(
+			left.node(left_siblings[left_index])
+				.unwrap()
+				.descendant_count,
+		) + 1
+	};
+	// best[i]: heaviest increasing chain ending at fixed[i]; ties keep the
+	// earliest predecessor so the frame is deterministic.
+	let mut best = Vec::<(u64, Option<usize>)>::with_capacity(fixed.len());
+	for (index, (left_index, right_index)) in fixed.iter().enumerate() {
+		let mut chain = (weight(*left_index), None);
+		for (previous, (_, previous_right)) in fixed[..index].iter().enumerate() {
+			let candidate = best[previous].0 + weight(*left_index);
+			if previous_right < right_index && candidate > chain.0 {
+				chain = (candidate, Some(previous));
+			}
+		}
+		best.push(chain);
+	}
+	let mut end = None;
+	for (index, (total, _)) in best.iter().enumerate() {
+		if end.is_none_or(|end: usize| *total > best[end].0) {
+			end = Some(index);
+		}
+	}
+	let mut frame = Vec::new();
+	while let Some(index) = end {
+		frame.push(fixed[index]);
+		end = best[index].1;
+	}
+	frame.reverse();
+	frame
 }
 
 fn ordered_pair_score(
@@ -2583,19 +2686,36 @@ mod tests {
 	}
 
 	#[test]
-	fn ordered_similarity_siblings_never_cross() {
-		let item = |identity: &str| {
-			block("chain", vec![scalar(identity)])
+	fn ordered_similarity_siblings_cross_only_as_identical_subtrees() {
+		let item = |values: &[&str]| {
+			block("chain", values.iter().map(|value| scalar(value)).collect())
 				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
 		};
-		let left = NormalizedTree::from_root(block("root", vec![item("a"), item("b")])).unwrap();
-		let right = NormalizedTree::from_root(block("root", vec![item("b"), item("a")])).unwrap();
-
+		// A chain whose whole subtree occurs once on each side moved.
+		let left =
+			NormalizedTree::from_root(block("root", vec![item(&["a"]), item(&["b"])])).unwrap();
+		let right =
+			NormalizedTree::from_root(block("root", vec![item(&["b"]), item(&["a"])])).unwrap();
 		let matching = TreeMatcher::default().match_trees(&left, &right);
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(3)));
+		assert_eq!(matching.get_from_left(NodeId::new(3)), Some(NodeId::new(1)));
+		assert!(matching.ambiguities().is_empty());
 
-		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
-		assert_eq!(matching.get_from_left(NodeId::new(3)), None);
-		assert_eq!(matching.ambiguities().len(), 2);
+		// Edited chains are only similar, so their alignment stays monotonic.
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![item(&["a", "x", "y", "1"]), item(&["b", "x", "y", "1"])],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![item(&["b", "x", "y", "2"]), item(&["a", "x", "y", "2"])],
+		))
+		.unwrap();
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+		let crossed = matching.get_from_left(NodeId::new(1)) == Some(NodeId::new(6))
+			&& matching.get_from_left(NodeId::new(6)) == Some(NodeId::new(1));
+		assert!(!crossed, "{matching:?}");
 	}
 
 	#[test]

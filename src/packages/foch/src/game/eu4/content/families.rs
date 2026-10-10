@@ -60,8 +60,24 @@ fn file_identity_common_directories() -> [&'static GamePath; 2] {
 	["common/countries", "common/units"].map(table_game_path)
 }
 
+/// Directories whose same-named definitions the game combines across files
+/// instead of letting the later one replace the earlier. Each file stays at its
+/// own path, so the game combines them as it would for the source mods.
+///
+/// - `common/on_actions`: patch 1.36, "on_actions are now additive".
+/// - `common/estates`: mods add privileges and agendas to an existing estate
+///   from their own file with a partial `estate_x = { privileges = { ... } }`
+///   (seven installed Workshop mods do, RCE and EE among them), which only
+///   works if the game combines same-named estates. How it combines the other
+///   fields is unverified; folding them into one definition would read a
+///   partial estate as deleting the rest.
+fn combined_across_files() -> [&'static GamePath; 2] {
+	["common/on_actions", "common/estates"].map(table_game_path)
+}
+
 fn enable_common_definition_modules(families: &mut [ContentFamilyDescriptor]) {
 	let file_identity_directories = file_identity_common_directories();
+	let combined_directories = combined_across_files();
 	for descriptor in families {
 		if descriptor.load_policy != ContentLoadPolicy::PerPath
 			|| !matches!(
@@ -80,6 +96,9 @@ fn enable_common_definition_modules(families: &mut [ContentFamilyDescriptor]) {
 		if !namespace_prefix.is_inside(&["common"], str::eq)
 			|| file_identity_directories.contains(&namespace_prefix)
 		{
+			continue;
+		}
+		if combined_directories.contains(&namespace_prefix) {
 			continue;
 		}
 
@@ -508,12 +527,13 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.build(),
+			// `bookmark = { name = ... }`: the block key is a type, not an identity.
 			ContentFamilyDescriptor::prefix("common/bookmarks", "common/bookmarks")
 				.kind(ScriptFileKind::new("bookmarks"))
 				.module_name(ModuleNameRule::Static("bookmarks"))
 				.scope(unknown_scope())
 				.capabilities(semantic_complete_and_merge_ready())
-				.merge_key(MergeKeySource::AssignmentKey)
+				.merge_key(MergeKeySource::FieldValue("name"))
 				.build(),
 			ContentFamilyDescriptor::prefix("common/policies", "common/policies")
 				.kind(ScriptFileKind::new("policies"))
@@ -834,12 +854,14 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.build(),
+			// `custom_button = { name = ... }`: the GUI binds each definition by
+			// its `name`, so the block key is a type, not an identity.
 			ContentFamilyDescriptor::prefix("common/custom_gui", "common/custom_gui")
 				.kind(ScriptFileKind::new("custom_gui"))
 				.module_name(ModuleNameRule::Static("custom_gui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
-				.merge_key(MergeKeySource::AssignmentKey)
+				.merge_key(MergeKeySource::FieldValue("name"))
 				.build(),
 			ContentFamilyDescriptor::prefix("common/advisortypes", "common/advisortypes")
 				.kind(ScriptFileKind::new("advisortypes"))
@@ -870,6 +892,7 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.build(),
+			// `defined_text = { name = ... }`: commands are called by `name`.
 			ContentFamilyDescriptor::prefix(
 				"customizable_localization",
 				"customizable_localization",
@@ -878,7 +901,7 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			.module_name(ModuleNameRule::Static("customizable_localization"))
 			.scope(dynamic_scope_policy())
 			.capabilities(semantic_complete_and_merge_ready())
-			.merge_key(MergeKeySource::AssignmentKey)
+			.merge_key(MergeKeySource::FieldValue("name"))
 			.build(),
 			ContentFamilyDescriptor::prefix("missions", "missions")
 				.kind(ScriptFileKind::new("missions"))
@@ -1560,6 +1583,7 @@ mod tests {
 							| MergeKeySource::ChildFieldValue { .. }
 					)
 				) || file_identity_common_directories().contains(&prefix)
+				|| combined_across_files().contains(&prefix)
 			{
 				continue;
 			}
@@ -1573,6 +1597,20 @@ mod tests {
 			);
 		}
 		assert!(eligible >= 70, "expected broad common namespace coverage");
+	}
+
+	#[test]
+	fn families_the_game_combines_across_files_stay_per_path() {
+		let profile = eu4();
+		for path in [
+			"common/on_actions/00_on_actions.txt",
+			"common/estates/01_church.txt",
+		] {
+			let descriptor = profile
+				.classify_content_family(game_path(path))
+				.expect("descriptor");
+			assert_eq!(descriptor.load_policy, ContentLoadPolicy::PerPath, "{path}");
+		}
 	}
 
 	#[test]

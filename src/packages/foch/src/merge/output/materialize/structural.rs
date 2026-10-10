@@ -262,12 +262,28 @@ where
 		);
 		let explicitly_deferred =
 			all_conflicts_explicitly_deferred(target_path, &leaf_conflicts, &effective_map);
+		let conflict_views = dag_merge
+			.semantic
+			.unresolved_conflicts
+			.iter()
+			.filter_map(|conflict| {
+				semantic_conflict_view(target_path, conflict)
+					.map(|view| with_display_names(view, context.mod_display_names))
+					.map_err(|message| {
+						eprintln!(
+							"[merge] conflict candidates not rendered for {target_path}: {message}"
+						);
+					})
+					.ok()
+			})
+			.collect();
 		return Err(StructuralMergeFailure::Unresolved(
 			StructuralConflictReport {
 				reason,
 				leaf_conflicts,
 				handler_resolutions: dag_merge.semantic.handler_resolutions.clone(),
 				explicitly_deferred,
+				conflict_views,
 			},
 		));
 	}
@@ -388,6 +404,22 @@ where
 		merge_trace,
 		provenance_localisation,
 	})
+}
+
+/// The tree kernel names candidates by mod id; review shows product names.
+fn with_display_names(
+	mut view: crate::merge::conflict_view::ConflictView,
+	mod_display_names: &HashMap<String, String>,
+) -> crate::merge::conflict_view::ConflictView {
+	for candidate in &mut view.candidates {
+		if let Some(name) = mod_display_names
+			.get(&candidate.mod_id)
+			.filter(|name| !name.trim().is_empty())
+		{
+			candidate.mod_display_name = name.clone();
+		}
+	}
+	view
 }
 
 fn all_conflicts_explicitly_deferred(
