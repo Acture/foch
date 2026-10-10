@@ -55,9 +55,15 @@ impl<'a> TreeSourceObserver<'a> {
 		let mut partitions = Vec::with_capacity(partition_ids.len());
 		let mut lineage = BTreeMap::new();
 		for partition in partition_ids {
-			let base_tree = base
-				.normalize(&partition, self.policies)
-				.map_err(|error| format!("failed to normalize source-delta base: {error}"))?;
+			// The parent's statements are a rendering of its lineage tree, and
+			// re-normalizing a rendering can reshape control flow, boolean
+			// wrappers and schema-typed numbers; the tree itself is the base.
+			let base_tree = match parent_lineage.get(&partition) {
+				Some(parent) => parent.tree.clone(),
+				None => base
+					.normalize(&partition, self.policies)
+					.map_err(|error| format!("failed to normalize source-delta base: {error}"))?,
+			};
 			let revision_tree = revision
 				.normalize(&partition, self.policies)
 				.map_err(|error| format!("failed to normalize source-delta revision: {error}"))?;
@@ -101,19 +107,10 @@ fn apply_source_delta_lineage(
 	delta: &RevisionDelta,
 	resets_base: bool,
 ) -> Result<SemanticPartitionLineage, String> {
-	// The base is normalized from the parent's rendered statements, which a
-	// control-flow chain can re-normalize with its children reordered.
-	let rebased;
-	let parent = match parent {
-		Some(lineage) if lineage.tree != *base_tree => {
-			rebased = lineage.rebased_onto(base_tree).ok_or_else(|| {
-				"parent lineage tree does not match contributor delta base".to_string()
-			})?;
-			Some(&rebased)
-		}
-		other => other,
-	};
 	match parent {
+		Some(parent) if parent.tree != *base_tree => {
+			return Err("parent lineage tree does not match contributor delta base".to_string());
+		}
 		None if !resets_base && !normalized_tree_is_empty_root(base_tree)? => {
 			return Err("non-empty contributor delta base is missing parent lineage".to_string());
 		}

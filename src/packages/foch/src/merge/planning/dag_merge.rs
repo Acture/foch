@@ -2065,7 +2065,9 @@ mod tests {
 	}
 
 	#[test]
-	fn a_child_of_a_conflicted_join_reports_the_join_conflicts() {
+	fn a_child_overlay_supersedes_its_conflicted_parents() {
+		// A same-path file is a complete overlay: the child's content is final,
+		// whatever its two parents disagree about.
 		let child = "country_event = { id = demo.1 option = { name = demo.a \
 			if = { limit = { has_country_flag = one } add_legitimacy = 5 } \
 			else = { add_prestige = 3 } } }\n";
@@ -2078,7 +2080,35 @@ mod tests {
 				("child", &["LEFT", "RIGHT"], child),
 			],
 		)
-		.expect("a child over unresolved join conflicts reports those conflicts");
+		.expect("the child applies its delta to the conflicted join's tree");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+		assert!(emitted.contains("add_prestige = 3"), "{emitted}");
+	}
+
+	#[test]
+	fn a_join_on_a_conflicted_join_reports_its_conflicts() {
+		let child = |prestige: u32| {
+			format!(
+				"country_event = {{ id = demo.1 option = {{ name = demo.a \
+				if = {{ limit = {{ has_country_flag = one }} add_legitimacy = 5 }} \
+				else = {{ add_prestige = {prestige} }} }} }}\n"
+			)
+		};
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(CHAIN_REWRITE_VANILLA),
+			&[
+				("left", &[], CHAIN_REWRITE_EDIT),
+				("right", &[], CHAIN_REWRITE_REPLACE),
+				("first", &["LEFT", "RIGHT"], &child(3)),
+				("second", &["LEFT", "RIGHT"], &child(4)),
+			],
+		);
+		let result = result.expect("a join on conflicted ancestors reports conflicts");
 
 		assert!(!result.semantic.unresolved_conflicts.is_empty());
 	}
