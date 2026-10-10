@@ -39,7 +39,7 @@ use crate::model::{
 };
 use rayon::prelude::*;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -352,7 +352,7 @@ fn build_file_index(
 	cwt_rule_engine: Option<&CwtQuery>,
 	index: &mut SemanticIndex,
 ) {
-	let mut aliases = HashMap::new();
+	let mut aliases = BTreeMap::new();
 	let scope_policy = file
 		.content_family
 		.map_or(ContentFamilyScopePolicy::default(), |descriptor| {
@@ -1737,7 +1737,7 @@ struct ScopeArgs<'a> {
 	kind: ScopeKind,
 	parent: Option<usize>,
 	this_type: MaybeScope,
-	aliases: HashMap<String, MaybeScope>,
+	aliases: BTreeMap<String, MaybeScope>,
 	mod_id: &'a str,
 	path: &'a GamePath,
 	line: usize,
@@ -1956,7 +1956,7 @@ fn scope_this_type(index: &SemanticIndex, scope_id: usize) -> MaybeScope {
 		.unwrap_or(MaybeScope::Unknown)
 }
 
-fn scope_aliases(index: &SemanticIndex, scope_id: usize) -> HashMap<String, MaybeScope> {
+fn scope_aliases(index: &SemanticIndex, scope_id: usize) -> BTreeMap<String, MaybeScope> {
 	index
 		.scopes
 		.get(scope_id)

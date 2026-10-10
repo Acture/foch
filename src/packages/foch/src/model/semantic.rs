@@ -4,7 +4,7 @@ use super::document::{
 };
 use super::{GamePathBuf, MaybeScope, ScopeSet};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(
 	Clone,
@@ -87,7 +87,7 @@ pub struct ScopeNode {
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
 	pub this_type: MaybeScope,
-	pub aliases: HashMap<String, MaybeScope>,
+	pub aliases: BTreeMap<String, MaybeScope>,
 	pub mod_id: String,
 	pub path: GamePathBuf,
 	pub span: SourceSpan,
@@ -333,7 +333,7 @@ pub fn index_with_one_record_of_each_kind(path: impl Fn(usize) -> GamePathBuf) -
 			kind: ScopeKind::File,
 			parent: None,
 			this_type: MaybeScope::Unknown,
-			aliases: HashMap::new(),
+			aliases: BTreeMap::new(),
 			mod_id: mod_id(),
 			path: path(1),
 			span: SourceSpan { line: 1, column: 1 },
