@@ -76,11 +76,27 @@ pub(crate) struct SemanticPartitionLineage {
 	pub origins: BTreeMap<NodeId, BTreeSet<SemanticOrigin>>,
 }
 
+fn same_scalar_value(kind: &str, left: &Option<String>, right: &Option<String>) -> bool {
+	if left == right {
+		return true;
+	}
+	kind == crate::merge::structured::NUMBER_KIND
+		&& match (left, right) {
+			(Some(left), Some(right)) => matches!(
+				(left.parse::<f64>(), right.parse::<f64>()),
+				(Ok(left), Ok(right)) if left == right
+			),
+			_ => false,
+		}
+}
+
 impl SemanticPartitionLineage {
 	/// This lineage on `tree`, a re-normalization of the same content whose
-	/// children may be ordered or nested differently: every node of `tree`
-	/// must match a lineage node of the same kind and value, which lends it
-	/// that node's sources and origins. `None` when the content differs.
+	/// children may be ordered differently: every node of `tree` must match a
+	/// lineage node of the same kind and value, which lends it that node's
+	/// sources and origins. A number counts as the same value in another
+	/// spelling, since numeric canonicalization depends on the schema context
+	/// a re-normalized chain gives it. `None` when the content differs.
 	pub(crate) fn rebased_onto(&self, tree: &NormalizedTree) -> Option<Self> {
 		if self.tree.len() != tree.len() {
 			return None;
@@ -91,7 +107,9 @@ impl SemanticPartitionLineage {
 		for (node, rebased) in tree.nodes() {
 			let original = matching.get_from_right(node)?;
 			let lineage_node = self.tree.node(original).ok()?;
-			if lineage_node.kind != rebased.kind || lineage_node.value != rebased.value {
+			if lineage_node.kind != rebased.kind
+				|| !same_scalar_value(&rebased.kind, &lineage_node.value, &rebased.value)
+			{
 				return None;
 			}
 			if let Some(node_sources) = self.sources.get(&original) {
@@ -236,6 +254,16 @@ mod tests {
 		}
 		assert_eq!(reordered.origins.len(), reordered.tree.len());
 		assert!(original.rebased_onto(&tree(&["a", "c"])).is_none());
+		let number = |text: &str| {
+			NormalizedTree::from_root(TreeNode::branch(
+				"root",
+				vec![TreeNode::leaf(crate::merge::structured::NUMBER_KIND, text)],
+			))
+			.expect("valid tree")
+		};
+		let spelled = SemanticPartitionLineage::vanilla(number("0.2"));
+		assert!(spelled.rebased_onto(&number("0.200")).is_some());
+		assert!(spelled.rebased_onto(&number("0.201")).is_none());
 		assert!(original.rebased_onto(&tree(&["a"])).is_none());
 	}
 }

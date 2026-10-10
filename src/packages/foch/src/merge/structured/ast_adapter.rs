@@ -22,7 +22,7 @@ pub(super) const COMMENT_KIND: &str = "clausewitz.comment";
 const BLOCK_KIND_PREFIX: &str = "clausewitz.block";
 const IDENTIFIER_KIND: &str = "clausewitz.scalar.identifier";
 const STRING_KIND: &str = "clausewitz.scalar.string";
-const NUMBER_KIND: &str = "clausewitz.scalar.number";
+pub(crate) const NUMBER_KIND: &str = "clausewitz.scalar.number";
 const BOOL_KIND: &str = "clausewitz.scalar.bool";
 
 #[derive(Debug)]

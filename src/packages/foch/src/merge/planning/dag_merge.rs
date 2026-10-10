@@ -1855,7 +1855,20 @@ mod tests {
 	fn compute_missions_dag(
 		contributors: &[(&str, &[&str], &str)],
 	) -> Result<SemanticDagMergeComputation, String> {
-		let path = "missions/test_missions.txt";
+		compute_family_dag("missions/test_missions.txt", None, contributors)
+	}
+
+	/// Merges contributors of `path` over an optional vanilla file, as
+	/// [`compute_missions_dag`] describes them.
+	fn compute_family_dag(
+		path: &str,
+		vanilla: Option<&str>,
+		contributors: &[(&str, &[&str], &str)],
+	) -> Result<SemanticDagMergeComputation, String> {
+		let game_path = crate::model::GamePath::new(path).expect("valid game path");
+		let descriptor = crate::game::eu4::content::eu4()
+			.classify_content_family(game_path)
+			.expect("content family");
 		let parsed = |mod_id: &str, source: &str| {
 			let game_path = crate::model::GamePathBuf::parse(path).expect("valid game path");
 			let parsed =
@@ -1866,7 +1879,7 @@ mod tests {
 				path: None,
 				relative_path: game_path,
 				content_family: None,
-				file_kind: ScriptFileKind::new("missions"),
+				file_kind: descriptor.script_file_kind.clone(),
 				module_name: "test".to_string(),
 				ast: parsed.ast,
 				source: source.to_string(),
@@ -1890,7 +1903,6 @@ mod tests {
 			.collect::<Vec<_>>();
 		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
 		assert!(diagnostics.is_empty(), "{diagnostics:?}");
-		let game_path = crate::model::GamePath::new(path).expect("valid game path");
 		let file_dag = induced_file_dag_with_overrides(
 			&dag,
 			game_path,
@@ -1902,17 +1914,19 @@ mod tests {
 			.iter()
 			.map(|(mod_id, _, source)| (mid(mod_id), parsed(mod_id, source)))
 			.collect::<HashMap<_, _>>();
-		let descriptor = crate::game::eu4::content::eu4()
-			.classify_content_family(game_path)
-			.expect("missions content family");
+		let vanilla = vanilla.map(|source| parsed("__game__", source));
 		let mut handler = DeferHandler;
 		compute_dag_merge_from_parsed(
 			None,
 			&file_dag,
-			None,
+			vanilla.as_ref(),
 			&inventory,
 			&descriptor.merge_policies,
-			VanillaBaseMode::KnownAbsent,
+			if vanilla.is_some() {
+				VanillaBaseMode::Required
+			} else {
+				VanillaBaseMode::KnownAbsent
+			},
 			&mut handler,
 		)
 	}
@@ -1983,6 +1997,33 @@ mod tests {
 		.expect("the final join rebases its intermediate base lineage");
 
 		assert!(!result.semantic.partition_lineage.is_empty());
+	}
+
+	#[test]
+	fn a_child_of_a_join_accepts_a_number_respelled_by_its_new_context() {
+		// Numeric canonicalization depends on the schema context. The chain is
+		// canonicalized positive-first, so the rendered join moves the trigger
+		// from under `NOT`, where it is untyped, to under `OR`, where it is.
+		let mission = |icon: &str| {
+			format!(
+				"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = BYZ }} \
+				test_mission = {{ icon = {icon} required_missions = {{ }} effect = {{ \
+				if = {{ limit = {{ NOT = {{ patriarch_authority = 0.2 }} }} add_prestige = 10 }} \
+				else = {{ add_prestige = 5 }} }} }} }}\n"
+			)
+		};
+
+		let result = compute_missions_dag(&[
+			("left", &[], &mission("a")),
+			("right", &[], &mission("a")),
+			("child", &["LEFT", "RIGHT"], &mission("b")),
+		])
+		.expect("the child rebases the join lineage onto the respelled number");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(emitted.contains("icon = b"), "{emitted}");
 	}
 
 	#[test]
