@@ -235,6 +235,7 @@ pub(crate) fn apply_nway_policy(
 		debug_assert_eq!(class.id, class_id);
 	}
 	close_policy_ancestors(base, revisions, correspondence, policy, plan, &mut records);
+	close_survivor_descendants(base, correspondence, plan, &mut records);
 	records.finish(plan);
 }
 
@@ -731,6 +732,89 @@ fn close_policy_ancestors(
 			parent = tree.node(parent_node).unwrap().parent;
 		}
 	}
+}
+
+/// Completes a subtree that survived a removal because another revision
+/// edited it. The removing revisions deleted each descendant only as part of
+/// that subtree; keeping the edited ancestor without them would emit a
+/// fragment no revision wrote, such as an option without its name.
+fn close_survivor_descendants(
+	base: &NormalizedTree,
+	correspondence: &NWayCorrespondence,
+	plan: &mut NWaySelectionPlan,
+	records: &mut PolicyRecords,
+) {
+	let mut pending = vec![base.root()];
+	while let Some(node) = pending.pop() {
+		let children = base.node(node).unwrap().children.clone();
+		pending.extend(children.iter().rev().copied());
+		let class = correspondence
+			.classes
+			.class_of(RevisionNode::new(RevisionId::BASE, node));
+		if plan.classes[&class].selected.is_some() {
+			continue;
+		}
+		let Some(parent) = base.node(node).unwrap().parent else {
+			continue;
+		};
+		let parent_class = correspondence
+			.classes
+			.class_of(RevisionNode::new(RevisionId::BASE, parent));
+		let Some(parent_source) = plan.classes[&parent_class].selected else {
+			continue;
+		};
+		let parent_deleted_by = &correspondence.class_facts[&parent_class].deleted_by;
+		let deleted_by = &correspondence.class_facts[&class].deleted_by;
+		if parent_deleted_by.is_empty()
+			|| deleted_by.is_empty()
+			|| !deleted_by
+				.iter()
+				.all(|revision| parent_deleted_by.contains(revision))
+		{
+			continue;
+		}
+		// Inside control flow a restored branch would run beside the chain
+		// that replaced it; that stays a conflict for review.
+		if inside_control_flow(base, node) {
+			continue;
+		}
+		let Some(member) = correspondence
+			.classes
+			.class(class)
+			.get(parent_source.revision)
+		else {
+			continue;
+		};
+		let source = RevisionNode::new(parent_source.revision, member);
+		records.remove_for_class(class);
+		let selection = plan
+			.classes
+			.get_mut(&class)
+			.expect("every base node has a selection record");
+		selection.selected = Some(source);
+		selection.subtree_selected = false;
+		selection.scalar_synthesis = None;
+		selection.child_revision = None;
+		records.push_decision(MergeDecisionEvidence {
+			affected_class: class,
+			policy: MergePolicyKind::AncestorClosure,
+			reason: MergeDecisionReason::StructuralConstraint,
+			contributors: selection.sources.clone(),
+			result: MergeDecisionResult::SelectSource { source },
+		});
+	}
+}
+
+fn inside_control_flow(base: &NormalizedTree, node: NodeId) -> bool {
+	let mut current = base.node(node).unwrap().parent;
+	while let Some(ancestor) = current {
+		let ancestor = base.node(ancestor).unwrap();
+		if ancestor.kind.starts_with("clausewitz.control_flow.") {
+			return true;
+		}
+		current = ancestor.parent;
+	}
+	false
 }
 
 fn class_conflict(
