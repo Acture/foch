@@ -866,7 +866,7 @@ mod tests {
 			merge_clausewitz_files_n_way(&base, &[&left, &right], &descriptor.merge_policies)
 				.expect("merge independent children");
 		let statements = outcome.tentative_ast().statements.clone();
-		let (_, facts) = outcome.into_parts(SemanticPartitionId::File);
+		let (_, _, facts) = outcome.into_parts(SemanticPartitionId::File);
 		let semantic = SemanticMergeComputation {
 			statements,
 			source_deltas: Vec::new(),

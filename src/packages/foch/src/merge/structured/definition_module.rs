@@ -22,6 +22,8 @@ use super::{
 #[derive(Clone, Debug)]
 pub struct ClausewitzDefinitionModuleOutcome {
 	tentative_ast: AstFile,
+	/// `tentative_ast` assembled from each partition before output simplification.
+	lineage_ast: AstFile,
 	conflicts: Vec<StructuralConflict>,
 	kernel_facts: Vec<ClausewitzKernelFacts>,
 	base_definitions: usize,
@@ -38,8 +40,18 @@ impl ClausewitzDefinitionModuleOutcome {
 
 	pub(crate) fn into_tree_parts(
 		self,
-	) -> (AstFile, Vec<StructuralConflict>, Vec<ClausewitzKernelFacts>) {
-		(self.tentative_ast, self.conflicts, self.kernel_facts)
+	) -> (
+		AstFile,
+		AstFile,
+		Vec<StructuralConflict>,
+		Vec<ClausewitzKernelFacts>,
+	) {
+		(
+			self.tentative_ast,
+			self.lineage_ast,
+			self.conflicts,
+			self.kernel_facts,
+		)
 	}
 
 	pub const fn base_definitions(&self) -> usize {
@@ -103,9 +115,11 @@ fn merge_clausewitz_definition_module_n_way_inner(
 			.collect::<BTreeSet<_>>()
 			.len();
 		let conflicts = outcome.conflicts().to_vec();
-		let (tentative_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
+		let (tentative_ast, lineage_ast, kernel_fact) =
+			outcome.into_parts(SemanticPartitionId::File);
 		return Ok(ClausewitzDefinitionModuleOutcome {
 			tentative_ast,
+			lineage_ast,
 			conflicts,
 			kernel_facts: vec![kernel_fact],
 			base_definitions,
@@ -149,6 +163,7 @@ fn merge_clausewitz_definition_module_n_way_inner(
 		}
 	}
 	let mut statements = Vec::new();
+	let mut lineage_statements = Vec::new();
 	let mut conflicts = Vec::new();
 	let mut kernel_facts = Vec::new();
 	let mut active_definitions = 0;
@@ -167,6 +182,7 @@ fn merge_clausewitz_definition_module_n_way_inner(
 			.iter()
 			.all(|revision| statements_content_equal(&base_group.statements, &revision.statements))
 		{
+			lineage_statements.extend(base_group.statements.iter().cloned());
 			statements.extend(base_group.statements);
 		} else {
 			active_definitions += 1;
@@ -185,9 +201,10 @@ fn merge_clausewitz_definition_module_n_way_inner(
 				conflict.detail = format!("definition `{key}`: {}", conflict.detail);
 				conflict
 			}));
-			let (partition_ast, kernel_fact) =
+			let (partition_ast, partition_lineage, kernel_fact) =
 				outcome.into_parts(SemanticPartitionId::Definition(key.to_owned()));
 			statements.extend(partition_ast.statements);
+			lineage_statements.extend(partition_lineage.statements);
 			kernel_facts.push(kernel_fact);
 			structured_definitions += 1;
 		}
@@ -203,14 +220,21 @@ fn merge_clausewitz_definition_module_n_way_inner(
 		}
 	}
 	statements.sort_by(compare_top_level_statements);
+	lineage_statements.sort_by(compare_top_level_statements);
 	let mut tentative_ast = AstFile {
 		path: base.path.clone(),
 		statements,
 	};
+	let mut lineage_ast = AstFile {
+		path: base.path.clone(),
+		statements: lineage_statements,
+	};
 	let trivia = merge_trivia_n_way(&base_trivia, &revision_trivia);
 	attach_trivia(&mut tentative_ast, &trivia);
+	attach_trivia(&mut lineage_ast, &trivia);
 	Ok(ClausewitzDefinitionModuleOutcome {
 		tentative_ast,
+		lineage_ast,
 		conflicts,
 		kernel_facts,
 		base_definitions,
@@ -234,9 +258,11 @@ fn merge_clausewitz_definition_module_inner(
 	{
 		let outcome = merge_clausewitz_files(base, left, right, policies)?;
 		let conflicts = outcome.conflicts().to_vec();
-		let (tentative_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
+		let (tentative_ast, lineage_ast, kernel_fact) =
+			outcome.into_parts(SemanticPartitionId::File);
 		return Ok(ClausewitzDefinitionModuleOutcome {
 			tentative_ast,
+			lineage_ast,
 			conflicts,
 			kernel_facts: vec![kernel_fact],
 			base_definitions,
@@ -263,6 +289,7 @@ fn merge_clausewitz_definition_module_inner(
 		.chain(right_index.keys())
 		.collect::<BTreeSet<_>>();
 	let mut statements = Vec::new();
+	let mut lineage_statements = Vec::new();
 	let mut conflicts = Vec::new();
 	let mut kernel_facts = Vec::new();
 	let mut active_definitions = 0;
@@ -278,12 +305,14 @@ fn merge_clausewitz_definition_module_inner(
 		if statements_content_equal(&base_group.statements, &left_group.statements)
 			&& statements_content_equal(&base_group.statements, &right_group.statements)
 		{
+			lineage_statements.extend(base_group.statements.iter().cloned());
 			statements.extend(base_group.statements);
 		} else {
 			active_definitions += 1;
 			if let Some(selected) =
 				direct_three_way_selection(&base_group, &left_group, &right_group, policies)
 			{
+				lineage_statements.extend(selected.iter().cloned());
 				statements.extend(selected.iter().cloned());
 				copy_through_definitions += 1;
 			} else {
@@ -293,9 +322,10 @@ fn merge_clausewitz_definition_module_inner(
 					conflict.detail = format!("definition `{key}`: {}", conflict.detail);
 					conflict
 				}));
-				let (partition_ast, kernel_fact) =
+				let (partition_ast, partition_lineage, kernel_fact) =
 					outcome.into_parts(SemanticPartitionId::Definition(key.to_owned()));
 				statements.extend(partition_ast.statements);
+				lineage_statements.extend(partition_lineage.statements);
 				kernel_facts.push(kernel_fact);
 				structured_definitions += 1;
 			}
@@ -312,14 +342,21 @@ fn merge_clausewitz_definition_module_inner(
 		}
 	}
 	statements.sort_by(compare_top_level_statements);
+	lineage_statements.sort_by(compare_top_level_statements);
 	let mut tentative_ast = AstFile {
 		path: base.path.clone(),
 		statements,
 	};
+	let mut lineage_ast = AstFile {
+		path: base.path.clone(),
+		statements: lineage_statements,
+	};
 	let trivia = merge_trivia(&base_trivia, &left_trivia, &right_trivia);
 	attach_trivia(&mut tentative_ast, &trivia);
+	attach_trivia(&mut lineage_ast, &trivia);
 	Ok(ClausewitzDefinitionModuleOutcome {
 		tentative_ast,
+		lineage_ast,
 		conflicts,
 		kernel_facts,
 		base_definitions,

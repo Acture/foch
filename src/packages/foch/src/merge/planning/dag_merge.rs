@@ -1850,6 +1850,84 @@ mod tests {
 	}
 
 	#[test]
+	fn a_child_of_an_intermediate_join_reads_the_join_before_output_simplification() {
+		// Output simplification rewrites a trigger `OR` that holds control flow,
+		// dropping the single-child `AND`. The child of the join must see the
+		// form the join's lineage describes, not the simplified output.
+		let path = "missions/test_missions.txt";
+		let mission = |icon: &str, prestige: u32| {
+			format!(
+				"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = HAB }} 				test_mission = {{ icon = {icon} required_missions = {{ }} 				trigger = {{ OR = {{ senior_union_with = BOH AND = {{ 266 = {{ owned_by = BOH }} }} 				BOH = {{ if = {{ limit = {{ ai = no }} }} has_regency = no }} }} }} 				effect = {{ add_prestige = {prestige} }} }} }}
+"
+			)
+		};
+		let parsed = |mod_id: &str, source: &str| {
+			let game_path = crate::model::GamePathBuf::parse(path).expect("valid game path");
+			let parsed =
+				crate::game::eu4::script::parser::parse_clausewitz_content(&game_path, source);
+			assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+			ParsedScriptFile {
+				mod_id: mod_id.to_string(),
+				path: None,
+				relative_path: game_path,
+				content_family: None,
+				file_kind: ScriptFileKind::new("missions"),
+				module_name: "test".to_string(),
+				ast: parsed.ast,
+				source: source.to_string(),
+				parse_issues: Vec::new(),
+				parse_cache_hit: false,
+			}
+		};
+		let mods = vec![
+			mod_with("left", "Left", vec![], vec![]),
+			mod_with("right", "Right", vec![], vec![]),
+			mod_with("child", "Child", vec!["Left", "Right"], vec![]),
+		];
+		let contributors = vec![
+			file_contributor("left", 1),
+			file_contributor("right", 2),
+			file_contributor("child", 3),
+		];
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let game_path = crate::model::GamePath::new(path).expect("valid game path");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			game_path,
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let inventory = HashMap::from([
+			(mid("left"), parsed("left", &mission("a", 1))),
+			(mid("right"), parsed("right", &mission("b", 1))),
+			(mid("child"), parsed("child", &mission("b", 2))),
+		]);
+		let descriptor = crate::game::eu4::content::eu4()
+			.classify_content_family(game_path)
+			.expect("missions content family");
+		let mut handler = DeferHandler;
+
+		let result = compute_dag_merge_from_parsed(
+			None,
+			&file_dag,
+			None,
+			&inventory,
+			&descriptor.merge_policies,
+			VanillaBaseMode::KnownAbsent,
+			&mut handler,
+		)
+		.expect("the child applies its delta to the joined parent");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(emitted.contains("add_prestige = 2"), "{emitted}");
+		assert!(emitted.contains("owned_by = BOH"), "{emitted}");
+	}
+
+	#[test]
 	fn tree_handler_can_select_any_of_three_original_sources() {
 		let mods = vec![
 			mod_with("a", "A", vec![], vec![]),

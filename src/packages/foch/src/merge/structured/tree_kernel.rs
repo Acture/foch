@@ -144,6 +144,8 @@ pub(crate) trait TreeJoinProtocol {
 #[derive(Clone, Debug)]
 pub(crate) struct TreeMergeStep {
 	pub statements: Vec<AstStatement>,
+	/// `statements` before output simplification, as the kernel facts describe them.
+	pub lineage_statements: Vec<AstStatement>,
 	pub conflicts: Vec<StructuralConflict>,
 	pub kernel_facts: Vec<ClausewitzKernelFacts>,
 }
@@ -151,6 +153,7 @@ pub(crate) struct TreeMergeStep {
 #[derive(Clone, Debug)]
 pub(crate) struct TreeKernelOutcome {
 	pub statements: Vec<AstStatement>,
+	pub lineage_statements: Vec<AstStatement>,
 	pub conflicts: Vec<StructuralConflict>,
 	pub merge_facts: Vec<SemanticMergeFacts>,
 }
@@ -308,9 +311,10 @@ impl TreeJoinProtocol for DefinitionModuleJoin {
 			outcome.copy_through_definitions(),
 			outcome.structured_definitions(),
 		);
-		let (tentative_ast, conflicts, kernel_facts) = outcome.into_tree_parts();
+		let (tentative_ast, lineage_ast, conflicts, kernel_facts) = outcome.into_tree_parts();
 		Ok(TreeMergeStep {
 			statements: tentative_ast.statements,
+			lineage_statements: lineage_ast.statements,
 			conflicts,
 			kernel_facts,
 		})
@@ -319,9 +323,10 @@ impl TreeJoinProtocol for DefinitionModuleJoin {
 
 fn clausewitz_step(outcome: super::ClausewitzMergeOutcome) -> TreeMergeStep {
 	let conflicts = outcome.conflicts().to_vec();
-	let (tentative_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
+	let (tentative_ast, lineage_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
 	TreeMergeStep {
 		statements: tentative_ast.statements,
+		lineage_statements: lineage_ast.statements,
 		conflicts,
 		kernel_facts: vec![kernel_fact],
 	}
@@ -390,6 +395,7 @@ impl<'a> TreeMergeKernel<'a> {
 		let merge_facts = attribute_kernel_facts(input, step.kernel_facts)?;
 		Ok(TreeKernelOutcome {
 			statements: step.statements,
+			lineage_statements: step.lineage_statements,
 			conflicts: step.conflicts,
 			merge_facts,
 		})
@@ -1430,7 +1436,13 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 					)
 				})?
 		};
-		state.statements = outcome.statements;
+		state.statements = match request.plan.scope() {
+			// Only further merging reads an intermediate join. Its children and
+			// later joins re-normalize these statements and compare them with
+			// the join's lineage, which output simplification would not match.
+			DagJoinScope::Intermediate => outcome.lineage_statements,
+			DagJoinScope::Final => outcome.statements,
+		};
 		for facts in outcome.merge_facts {
 			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)?;
 			state
@@ -1727,12 +1739,14 @@ mod tests {
 					.map(|revision| scalar_value(revision).to_string())
 					.collect(),
 			);
+			let statements = revisions
+				.last()
+				.expect("recording adapter requires revisions")
+				.statements
+				.clone();
 			Ok(TreeMergeStep {
-				statements: revisions
-					.last()
-					.expect("recording adapter requires revisions")
-					.statements
-					.clone(),
+				lineage_statements: statements.clone(),
+				statements,
 				conflicts: Vec::new(),
 				kernel_facts: Vec::new(),
 			})

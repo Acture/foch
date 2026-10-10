@@ -27,6 +27,9 @@ use super::trivia::{attach_trivia, detach_trivia, merge_trivia_n_way};
 #[derive(Clone, Debug)]
 pub struct ClausewitzMergeOutcome {
 	tentative_ast: AstFile,
+	/// `tentative_ast` before output simplification: the form the kernel's
+	/// tentative tree describes, which further merging must read.
+	lineage_ast: AstFile,
 	base_tree: NormalizedTree,
 	revision_trees: BTreeMap<RevisionId, NormalizedTree>,
 	kernel: MergeOutcome,
@@ -66,12 +69,14 @@ impl ClausewitzMergeOutcome {
 		&self.tentative_ast
 	}
 
+	/// The simplified output, its unsimplified lineage form, and the kernel facts.
 	pub(crate) fn into_parts(
 		self,
 		partition: SemanticPartitionId,
-	) -> (AstFile, ClausewitzKernelFacts) {
+	) -> (AstFile, AstFile, ClausewitzKernelFacts) {
 		(
 			self.tentative_ast,
+			self.lineage_ast,
 			ClausewitzKernelFacts {
 				partition,
 				base_tree: self.base_tree,
@@ -305,12 +310,14 @@ pub(super) fn merge_clausewitz_files_with_context(
 		));
 	}
 	attach_trivia(&mut tentative_ast, &merged_trivia);
+	let lineage_ast = tentative_ast.clone();
 	simplify_boolean_or_definitions(&mut tentative_ast, policies, &mut scope_cache);
 	if reduce_event_fallbacks {
 		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
 	}
 	Ok(ClausewitzMergeOutcome {
 		tentative_ast,
+		lineage_ast,
 		base_tree,
 		revision_trees: revision_trees.into_iter().collect(),
 		kernel,
