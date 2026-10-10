@@ -13,8 +13,15 @@ static const char *exports[] = {
 };
 
 static int native_at_constructor;
+static void stage(const wchar_t *name) {
+	HANDLE file = CreateFileW(name, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+}
+
 static void before_main(void) {
 	HMODULE native = GetModuleHandleW(L"native.dll");
+	stage(L"foch-host\\game-constructor-entered");
 	if (native) {
 		typedef int (*ReadyFn)(void);
 		ReadyFn ready = (ReadyFn)GetProcAddress(native, "FixtureInitialized");
@@ -37,6 +44,7 @@ int main(int argc, char **argv) {
 	DWORD ignored = 0, proxy_size, real_size;
 	typedef DWORD (WINAPI *SizeFn)(LPCWSTR, LPDWORD);
 	unsigned i;
+	stage(L"foch-host\\game-main-entered");
 	GetSystemDirectoryW(system, MAX_PATH);
 	swprintf_s(sample, MAX_PATH, L"%s\\kernel32.dll", system);
 	wcscat_s(system, MAX_PATH, L"\\version.dll");
@@ -55,6 +63,7 @@ int main(int argc, char **argv) {
 		}
 	}
 	proxy_size = GetFileVersionInfoSizeW(sample, &ignored);
+	stage(L"foch-host\\game-version-resolved");
 	real = LoadLibraryExW(system, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	if (!real) return 1;
 	/* Each forwarding stub must tail-jump to the corresponding system export. */

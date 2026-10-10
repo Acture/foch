@@ -57,6 +57,14 @@ checked consistently on every management platform.
 The host requires the prepared runtime marker and writes events only to
 `foch-host/events.jsonl` beside its DLL. Event and diagnostic files reject
 reparse points and existing hard links before any append or truncation.
+The status command validates the frozen plan and reads that same owned event
+file, refusing linked files. INI adapter destinations follow the package's
+Windows path rules, including trailing-dot/space and reserved-name checks.
+
+Native initialization polling lasts at most 120 seconds. A plugin still
+initializing then reports unknown, and deferred loading can proceed; retained
+callbacks can report a later state. Native functions must return promptly, since
+the host cannot interrupt a DLL call.
 
 Player layers are retained when management exits, and test-session sweeping
 skips them. Close the game before removing a retained layer; unlink its data

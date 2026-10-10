@@ -440,6 +440,127 @@ fn run_foch_with_env(
 }
 
 #[test]
+fn plugin_plan_recognizes_an_enabled_builtin_without_an_imported_release() {
+	let scratch = TempDir::new().unwrap();
+	let game = scratch.path().join("game");
+	write_game_version(&game, "1.37.5.0");
+	let id = "io.github.yozoratempest.eu4-unicode-patch";
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"plugin",
+			"enable",
+			id,
+			"--version",
+			"0.1.14",
+			"--playset",
+			"builtin",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"plugin",
+			"plan",
+			"--playset",
+			"builtin",
+			"--game-path",
+			game.to_str().unwrap(),
+			"--format",
+			"json",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 1, "{stdout}\n{stderr}");
+	let output: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+	assert!(
+		output["errors"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|error| error
+				.as_str()
+				.unwrap()
+				.contains("expected one installed artifact")),
+		"{stdout}"
+	);
+	assert_eq!(output["errors"].as_array().unwrap().len(), 1, "{stdout}");
+	assert_eq!(output["order"][0]["id"], id);
+}
+
+#[test]
+fn plugin_status_rejects_external_event_files_and_invalid_plans() {
+	let scratch = TempDir::new().unwrap();
+	let runtime = scratch.path().join("runtime");
+	let host = runtime.join("foch-host");
+	fs::create_dir_all(&host).unwrap();
+	fs::write(runtime.join("foch-runtime"), "1\n").unwrap();
+	let record = json!({"run_id":"status-fixture", "plugin_id":"sample",
+		"event":"state", "state":"active", "reason":"private outside marker"})
+	.to_string()
+		+ "\n";
+	let outside = scratch.path().join("outside.jsonl");
+	fs::write(&outside, &record).unwrap();
+	let own_events = host.join("events.jsonl");
+	let original = json!({"format":1, "run_id":"status-fixture", "game_version":"1.37.5",
+		"events":foch::plugin::deployment::path_text(&own_events).unwrap(),
+		"plugins":[{"id":"sample", "version":"1.0.0", "kind":"native", "phase":"entry",
+			"path":r"C:\runtime\sample.dll", "sha256":"a".repeat(64),
+			"config_json":"{}", "dirs":{}, "status":null, "abi_major":1}]});
+	let args = [
+		"plugin",
+		"status",
+		"--run-dir",
+		runtime.to_str().unwrap(),
+		"--format",
+		"json",
+	];
+	#[cfg(windows)]
+	{
+		fs::write(
+			host.join("plan.json"),
+			serde_json::to_vec(&original).unwrap(),
+		)
+		.unwrap();
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_eq!(code, 0, "{stdout}\n{stderr}");
+		assert!(stdout.contains("not_loaded"), "{stdout}");
+		fs::write(
+			&own_events,
+			record.replace("private outside marker", "owned record"),
+		)
+		.unwrap();
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_eq!(code, 0, "{stdout}\n{stderr}");
+		assert!(stdout.contains("owned record"), "{stdout}");
+		fs::remove_file(&own_events).unwrap();
+	}
+	for mode in ["external", "hardlink", "invalid"] {
+		let mut plan = original.clone();
+		match mode {
+			"external" => {
+				plan["events"] = foch::plugin::deployment::path_text(&outside)
+					.unwrap()
+					.into()
+			}
+			"hardlink" => fs::hard_link(&outside, &own_events).unwrap(),
+			_ => {
+				fs::remove_file(&own_events).unwrap();
+				fs::write(&own_events, &record).unwrap();
+				plan["format"] = 99.into();
+			}
+		}
+		fs::write(host.join("plan.json"), serde_json::to_vec(&plan).unwrap()).unwrap();
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_ne!(code, 0, "{mode}: {stdout}\n{stderr}");
+		assert!(
+			!stdout.contains("private outside marker"),
+			"{mode}: {stdout}"
+		);
+	}
+}
+
+#[test]
 fn plugin_plan_agrees_with_launch_resolution_for_an_undeclared_entry_digest() {
 	use foch::plugin::{deployment, planner, selection, store};
 	for identical in [true, false] {

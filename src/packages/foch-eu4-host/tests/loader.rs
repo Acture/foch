@@ -137,6 +137,17 @@ impl Runtime {
 }
 
 fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
+	for marker in [
+		"game-constructor-entered",
+		"game-main-entered",
+		"game-version-resolved",
+		"fixture-complete",
+	] {
+		let path = directory.join("foch-host").join(marker);
+		if path.exists() {
+			fs::remove_file(path).unwrap();
+		}
+	}
 	let expected: Vec<String> = fs::read(directory.join("foch-host/plan.json"))
 		.ok()
 		.and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -156,7 +167,9 @@ fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
-	let deadline = Instant::now() + Duration::from_secs(10);
+	// Include process/DLL/CRT startup in addition to the C fixture's separate
+	// 10-second event acknowledgement (or concurrent-forwarding) deadline.
+	let deadline = Instant::now() + Duration::from_secs(30);
 	while child.try_wait().unwrap().is_none() {
 		let events = read_events(directory);
 		let callbacks_complete = expected.iter().all(|id| {
@@ -183,8 +196,24 @@ fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
 			fs::write(directory.join("foch-host/fixture-complete"), "1").unwrap();
 		}
 		if Instant::now() > deadline {
+			let stages: Vec<_> = [
+				"game-constructor-entered",
+				"game-main-entered",
+				"game-version-resolved",
+				"fixture-complete",
+			]
+			.into_iter()
+			.map(|name| (name, directory.join("foch-host").join(name).exists()))
+			.collect();
+			let diagnostic = fs::read_to_string(directory.join("foch-host/host-error.txt"));
 			let _ = child.kill();
-			panic!("loader deadlocked");
+			let output = child.wait_with_output().unwrap();
+			panic!(
+				"loader timed out: mode={mode}, stages={stages:?}, callbacks_complete={callbacks_complete}, events={events:?}, diagnostic={diagnostic:?}; child={:?}, stdout={}, stderr={}",
+				output.status.code(),
+				String::from_utf8_lossy(&output.stdout),
+				String::from_utf8_lossy(&output.stderr)
+			);
 		}
 		std::thread::sleep(Duration::from_millis(20));
 	}
@@ -624,7 +653,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 	let events = run_runtime(&layer.directory, "native");
 	assert_eq!(states(&events, "z-native").last(), Some(&"active"));
 	assert_eq!(states(&events, "a-legacy").last(), Some(&"active"));
-	let actual = deployment::states(&prepared.plan).unwrap();
+	let actual = deployment::states(&prepared.plan, &layer.directory).unwrap();
 	assert_eq!(actual["z-native"]["state"], "active");
 	assert!(!actual.contains_key("disabled"));
 	// Keep management's preflight aligned with the host's actual wire parser.

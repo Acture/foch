@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
 	collections::{BTreeMap, BTreeSet},
-	fs, io,
+	fs,
+	io::{self, Read},
 	path::{Path, PathBuf},
 };
 
@@ -530,17 +531,7 @@ fn write_config(root: &Path, manifest: &Manifest, config: &Value) -> io::Result<
 		let Some(adapter) = adapter else {
 			continue;
 		};
-		let ini = adapter.ini.replace('\\', "/");
-		if ini.starts_with('/')
-			|| ini.contains(':')
-			|| ini
-				.split('/')
-				.any(|part| part.is_empty() || part == "." || part == "..")
-		{
-			return Err(io::Error::other(
-				"INI adapter path escapes the plugin package",
-			));
-		}
+		let ini = store::safe_relative(&adapter.ini).map_err(io::Error::other)?;
 		if [&adapter.section, &adapter.key]
 			.iter()
 			.any(|text| text.is_empty() || text.contains(['\r', '\n', '\0', '[', ']', '=']))
@@ -628,17 +619,94 @@ fn update_ini(text: &str, changes: BTreeMap<(String, String), String>) -> String
 
 /// Read only complete state records belonging to this frozen run. Missing
 /// entries stay not_loaded; a partial final JSONL line is retried next time.
-pub fn states(plan: &HostPlan) -> io::Result<BTreeMap<String, Value>> {
+pub fn states(plan: &HostPlan, runtime: &Path) -> io::Result<BTreeMap<String, Value>> {
+	plan.validate().map_err(io::Error::other)?;
+	if !store::ordinary_metadata(runtime)?.is_dir()
+		|| !store::ordinary_metadata(&runtime.join("foch-runtime"))?.is_file()
+	{
+		return Err(io::Error::other("status requires a prepared runtime layer"));
+	}
+	let runtime = runtime.canonicalize()?;
+	let directory = runtime.join("foch-host");
+	if !store::ordinary_metadata(&directory)?.is_dir() {
+		return Err(io::Error::other("host directory is not ordinary"));
+	}
+	let directory = directory.canonicalize()?;
+	if directory.parent() != Some(runtime.as_path()) {
+		return Err(io::Error::other(
+			"host directory resolves outside the runtime",
+		));
+	}
+	let declared = Path::new(&plan.events);
+	if !declared
+		.file_name()
+		.and_then(|name| name.to_str())
+		.is_some_and(|name| name.eq_ignore_ascii_case("events.jsonl"))
+		|| declared
+			.parent()
+			.and_then(|parent| parent.canonicalize().ok())
+			.as_deref()
+			!= Some(directory.as_path())
+	{
+		return Err(io::Error::other(
+			"status events must belong to the prepared runtime",
+		));
+	}
 	let mut states: BTreeMap<_, _> = plan
 		.plugins
 		.iter()
 		.map(|plugin| (plugin.id.clone(), json!({"state":"not_loaded"})))
 		.collect();
-	let text = match fs::read_to_string(&plan.events) {
-		Ok(text) => text,
+	let path = directory.join("events.jsonl");
+	match store::ordinary_metadata(&path) {
+		Ok(metadata) if metadata.is_file() => {}
+		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(states),
+		Err(error) => return Err(error),
+		Ok(_) => return Err(io::Error::other("events are not a regular file")),
+	}
+	let mut options = fs::OpenOptions::new();
+	options.read(true);
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::{
+			FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+		};
+		options
+			.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+	}
+	let mut file = match options.open(path) {
+		Ok(file) => file,
 		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(states),
 		Err(error) => return Err(error),
 	};
+	if !file.metadata()?.is_file() {
+		return Err(io::Error::other("events are not a regular file"));
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::io::AsRawHandle;
+		use windows_sys::Win32::Storage::FileSystem::{
+			BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
+		};
+		let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+		if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+			return Err(io::Error::last_os_error());
+		}
+		if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.nNumberOfLinks != 1 {
+			return Err(io::Error::other("events cannot be linked files"));
+		}
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::MetadataExt;
+		if file.metadata()?.nlink() != 1 {
+			return Err(io::Error::other("events cannot be linked files"));
+		}
+	}
+	let mut text = String::new();
+	file.read_to_string(&mut text)?;
 	for line in text
 		.split_inclusive('\n')
 		.filter(|line| line.ends_with('\n'))
@@ -658,6 +726,32 @@ pub fn states(plan: &HostPlan) -> io::Result<BTreeMap<String, Value>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn ini_paths_are_checked_before_any_configuration_write() {
+		let root = tempfile::tempdir().unwrap();
+		for path in [
+			".. /outside.ini",
+			"config.ini.",
+			"NUL.ini",
+			"config.ini:extra",
+		] {
+			let mut manifest = super::super::builtin::adapters().remove(0);
+			let ConfigField::Int {
+				adapter: Some(adapter),
+				..
+			} = manifest.config.get_mut("typo_tolerance").unwrap()
+			else {
+				panic!("missing adapter")
+			};
+			adapter.ini = path.into();
+			assert!(
+				write_config(root.path(), &manifest, &manifest.default_config()).is_err(),
+				"{path}"
+			);
+			assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0, "{path}");
+		}
+	}
 
 	#[test]
 	fn adapter_config_merges_defaults_checks_types_and_preserves_other_ini_keys() {

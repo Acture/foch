@@ -137,7 +137,7 @@ fn hex(bytes: &[u8]) -> String {
 /// `/` and `\` separators and rejects absolute paths, drive letters, `..`,
 /// and `.` components. Package-relative names currently use ASCII so the
 /// case-collision checks match supported Windows paths on every platform.
-fn safe_relative(path: &str) -> Result<String, ImportError> {
+pub(super) fn safe_relative(path: &str) -> Result<String, ImportError> {
 	let unsafe_path = || ImportError::UnsafePath(path.to_string());
 	if path.is_empty() || !path.is_ascii() {
 		return Err(unsafe_path());

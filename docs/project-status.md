@@ -55,7 +55,7 @@ arbitrary modlists.
 
 - The OSS-400 worktree connects `foch plugin` package/selection management to
   runtime staging, launch and actual JSONL status through the unpublished
-  Windows x64 `foch-eu4-host` DLL. Verified 2026-10-11: 26 host/ABI tests cover
+  Windows x64 `foch-eu4-host` DLL. Verified 2026-10-11: 35 host/ABI tests cover
   management-to-host execution, pre-CRT initialization, and all 17 VERSION
   exports by name/ordinal. On real EU4 1.37.5, official Unicode 0.1.14 reports
   `active` and reaches the main menu/country selection; Menu 0.1.4-experimental

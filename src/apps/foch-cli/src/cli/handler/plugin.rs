@@ -237,7 +237,7 @@ fn plan_launch(args: &PluginPlanArgs, config: &Config) -> HandlerResult {
 	};
 
 	let store_root = plugin::paths::store_root();
-	let (catalog, _) = store::catalog(&store_root);
+	let (catalog, _) = catalog_with_builtins(&store_root);
 	let (_, selections) = load_selections()?;
 	let chosen = selections.for_playset(&args.playset);
 	let selections = chosen.to_selections();
@@ -429,7 +429,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 fn show_status(args: &PluginStatusArgs) -> HandlerResult {
 	let plan: plugin::deployment::HostPlan =
 		serde_json::from_slice(&std::fs::read(args.run_dir.join("foch-host/plan.json"))?)?;
-	let states = plugin::deployment::states(&plan)?;
+	let states = plugin::deployment::states(&plan, &args.run_dir)?;
 	match args.format {
 		CheckOutputFormat::Json => print_json(&json!({"run_id":plan.run_id,"plugins":states}))?,
 		CheckOutputFormat::Text => {

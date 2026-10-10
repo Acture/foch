@@ -101,6 +101,30 @@ impl Context {
 		let Ok(mut last) = self.last.lock() else {
 			return;
 		};
+		self.state_locked(&mut last, state, reason, code);
+	}
+
+	fn initialization_timed_out(&self, reason: String) {
+		let Ok(mut last) = self.last.lock() else {
+			return;
+		};
+		// A callback can complete between polls. Make the deadline transition
+		// under the same lock as report(), preserving its terminal outcome.
+		if last
+			.as_ref()
+			.is_some_and(|(state, _, _)| state == "initializing")
+		{
+			self.state_locked(&mut last, "unknown", Some(reason), 0);
+		}
+	}
+
+	fn state_locked(
+		&self,
+		last: &mut Option<(String, Option<String>, i32)>,
+		state: &str,
+		reason: Option<String>,
+		code: i32,
+	) {
 		if self.invalid_status.load(Ordering::Acquire) && state != "failed" {
 			return;
 		}
@@ -559,6 +583,8 @@ enum Source {
 	Legacy(unsafe extern "C" fn() -> i32),
 }
 
+const NATIVE_INIT_TIMEOUT: Duration = Duration::from_millis(120_000);
+
 struct Pending {
 	ctx: &'static Context,
 	source: Source,
@@ -574,11 +600,18 @@ impl Pending {
 		}
 		match self.source {
 			Source::Native(status) => {
+				if self.since.elapsed() >= NATIVE_INIT_TIMEOUT {
+					self.ctx.initialization_timed_out(format!(
+						"native initialization remained pending after {} ms",
+						NATIVE_INIT_TIMEOUT.as_millis()
+					));
+					return false;
+				}
 				let mut out = FochStatus::new(abi::state::INITIALIZING);
 				unsafe {
 					status(&mut out);
 				}
-				publish(self.ctx, &out) && out.state == abi::state::INITIALIZING
+				publish_initialization(self.ctx, &out)
 			}
 			Source::Legacy(status) => {
 				let value = unsafe { status() };
@@ -611,15 +644,51 @@ fn invalid_status(ctx: &Context, reason: &str) {
 	ctx.state("failed", Some(reason.into()), abi::result::E_INVALID);
 }
 
+fn status_detail(status: &FochStatus) -> Result<Option<String>, &'static str> {
+	if status.size < size_of::<FochStatus>() as u32 || state_name(status.state).is_none() {
+		return Err("plugin returned an invalid status structure");
+	}
+	unsafe { text(status.detail) }
+}
+
+fn publish_initialization(ctx: &Context, status: &FochStatus) -> bool {
+	if ctx.invalid_status.load(Ordering::Acquire) {
+		return false;
+	}
+	// Invalid ABI data is always a failure, even after a valid callback.
+	let detail = match status_detail(status) {
+		Ok(detail) => detail,
+		Err(error) => {
+			invalid_status(ctx, error);
+			return false;
+		}
+	};
+	let Ok(mut last) = ctx.last.lock() else {
+		return false;
+	};
+	// status() can return an old snapshot after report() completed on another
+	// thread. Initialization polling must preserve that terminal callback.
+	if ctx.invalid_status.load(Ordering::Acquire)
+		|| last
+			.as_ref()
+			.is_some_and(|(state, _, _)| state != "initializing")
+	{
+		return false;
+	}
+	ctx.state_locked(
+		&mut last,
+		state_name(status.state).unwrap(),
+		detail,
+		status.reason_code,
+	);
+	status.state == abi::state::INITIALIZING && !ctx.invalid_status.load(Ordering::Acquire)
+}
+
 fn publish(ctx: &Context, status: &FochStatus) -> bool {
 	if ctx.invalid_status.load(Ordering::Acquire) {
 		return false;
 	}
-	if status.size < size_of::<FochStatus>() as u32 || state_name(status.state).is_none() {
-		invalid_status(ctx, "plugin returned an invalid status structure");
-		return false;
-	}
-	let detail = match unsafe { text(status.detail) } {
+	let detail = match status_detail(status) {
 		Ok(detail) => detail,
 		Err(error) => {
 			invalid_status(ctx, error);
@@ -801,6 +870,95 @@ mod tests {
 		MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
 		PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
 	};
+
+	#[test]
+	fn native_initialization_times_out_without_losing_async_callbacks() {
+		use std::io::{Seek, SeekFrom};
+		use std::sync::atomic::AtomicPtr;
+		static REPORT_CONTEXT: AtomicPtr<Context> = AtomicPtr::new(std::ptr::null_mut());
+		unsafe extern "C" fn still_initializing(out: *mut FochStatus) {
+			unsafe { *out = FochStatus::new(abi::state::INITIALIZING) };
+		}
+		unsafe extern "C" fn callback_before_returning_a_stale_snapshot(out: *mut FochStatus) {
+			let ctx = unsafe { &*REPORT_CONTEXT.load(Ordering::Acquire) };
+			publish(ctx, &FochStatus::new(abi::state::ACTIVE));
+			unsafe { *out = FochStatus::new(abi::state::INITIALIZING) };
+		}
+		let file = tempfile::tempfile().unwrap();
+		let mut reader = file.try_clone().unwrap();
+		let plan: Plan = serde_json::from_value(json!({
+			"format":1, "run_id":"pending", "events":r"C:\runtime\foch-host\events.jsonl",
+			"plugins":[{"id":"pending", "version":"1.0.0", "kind":"native",
+				"phase":"entry", "path":r"C:\runtime\pending.dll", "abi_major":1}]
+		}))
+		.unwrap();
+		let runtime = Box::leak(Box::new(Runtime {
+			plan,
+			root: PathBuf::new(),
+			events: Mutex::new(file),
+			states: Mutex::new(BTreeMap::new()),
+			exe_hash: String::new(),
+			exe_size: 0,
+		}));
+		let ctx = context(runtime, &runtime.plan.plugins[0]);
+		let mut pending = Pending {
+			ctx,
+			source: Source::Native(still_initializing),
+			since: Instant::now(),
+		};
+		assert!(pending.poll());
+		pending.since = Instant::now() - Duration::from_secs(121);
+		assert!(
+			!pending.poll(),
+			"a stalled native plugin kept the worker waiting"
+		);
+		reader.seek(SeekFrom::Start(0)).unwrap();
+		let mut records = String::new();
+		reader.read_to_string(&mut records).unwrap();
+		let terminal: Value = serde_json::from_str(records.lines().last().unwrap()).unwrap();
+		assert_eq!(terminal["state"], "unknown");
+		assert!(terminal["reason"].as_str().unwrap().contains("120000 ms"));
+		assert!(publish(ctx, &FochStatus::new(abi::state::ACTIVE)));
+		assert_eq!(
+			runtime.states.lock().unwrap()["pending"],
+			abi::state::ACTIVE
+		);
+		for state in [abi::state::ACTIVE, abi::state::FAILED, abi::state::REFUSED] {
+			let ctx = context(runtime, &runtime.plan.plugins[0]);
+			let mut pending = Pending {
+				ctx,
+				source: Source::Native(still_initializing),
+				since: Instant::now(),
+			};
+			assert!(pending.poll());
+			assert!(publish(ctx, &FochStatus::new(state)));
+			pending.since = Instant::now() - Duration::from_secs(121);
+			assert!(!pending.poll());
+			assert_eq!(
+				runtime.states.lock().unwrap()["pending"],
+				state,
+				"timeout overwrote a completed callback"
+			);
+		}
+		let ctx = context(runtime, &runtime.plan.plugins[0]);
+		ctx.state("initializing", None, 0);
+		REPORT_CONTEXT.store(ctx as *const Context as *mut Context, Ordering::Release);
+		let mut pending = Pending {
+			ctx,
+			source: Source::Native(callback_before_returning_a_stale_snapshot),
+			since: Instant::now(),
+		};
+		assert!(
+			!pending.poll(),
+			"stale polling erased a callback completed during status()"
+		);
+		pending.since = Instant::now() - Duration::from_secs(121);
+		assert!(!pending.poll());
+		assert_eq!(
+			runtime.states.lock().unwrap()["pending"],
+			abi::state::ACTIVE
+		);
+	}
 
 	#[test]
 	fn readable_requires_a_readable_page_protection() {

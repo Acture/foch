@@ -342,6 +342,18 @@ impl Manifest {
 			}
 		}
 		for (name, field) in &self.config {
+			let adapter = match field {
+				ConfigField::Bool { adapter, .. }
+				| ConfigField::Int { adapter, .. }
+				| ConfigField::String { adapter, .. } => adapter,
+			};
+			if let Some(adapter) = adapter
+				&& super::store::safe_relative(&adapter.ini).is_err()
+			{
+				return Err(ManifestError::Invalid(format!(
+					"{id}: unsafe INI adapter path for {name}"
+				)));
+			}
 			if let ConfigField::Int {
 				default, min, max, ..
 			} = field && (min.is_some_and(|min| *default < min)
@@ -417,6 +429,31 @@ values = [
 	{ value = 0, state = "refused", reason = "see eu4_unicode_patch.log" },
 ]
 "#;
+
+	#[test]
+	fn ini_adapters_reject_windows_path_aliases() {
+		for path in [
+			".. /outside.ini",
+			"config.ini.",
+			"NUL.ini",
+			"config.ini:extra",
+			"a\0.ini",
+		] {
+			let mut manifest = Manifest::parse(UNICODE).unwrap();
+			let ConfigField::Int {
+				adapter: Some(adapter),
+				..
+			} = manifest.config.get_mut("typo_tolerance").unwrap()
+			else {
+				panic!("missing adapter")
+			};
+			adapter.ini = path.into();
+			assert!(
+				Manifest::parse(&toml::to_string(&manifest).unwrap()).is_err(),
+				"{path:?}"
+			);
+		}
+	}
 
 	#[test]
 	fn parses_a_legacy_manifest() {
