@@ -89,6 +89,7 @@ impl Runtime {
 			.tempdir()
 			.unwrap();
 		fs::create_dir(temp.path().join("foch-host")).unwrap();
+		fs::write(temp.path().join("foch-runtime"), "1\n").unwrap();
 		fs::create_dir(temp.path().join("plugins")).unwrap();
 		fs::copy(
 			fixtures().path().join("eu4.exe"),
@@ -220,6 +221,11 @@ fn states<'a>(events: &'a [Value], id: &str) -> Vec<&'a str> {
 fn proxy_forwards_without_a_plan_and_ignores_unlisted_dlls() {
 	let rt = Runtime::new();
 	assert!(rt.run("plain").is_empty());
+	fs::remove_file(rt.path("foch-runtime")).unwrap();
+	rt.plan(Vec::new());
+	assert!(rt.run("forward-only").is_empty());
+	assert!(!rt.path("foch-host/events.jsonl").exists());
+	assert!(!rt.path("foch-host/host-error.txt").exists());
 }
 
 #[test]
@@ -317,6 +323,55 @@ fn invalid_plan_leaves_proxy_operational_and_writes_a_diagnostic() {
 	fs::write(rt.path("foch-host/plan.json"), "{broken").unwrap();
 	assert!(rt.run("plain").is_empty());
 	assert!(rt.path("foch-host/host-error.txt").is_file());
+}
+
+#[test]
+fn event_files_cannot_redirect_host_writes_outside_the_runtime() {
+	let original = "{\"guard\":\"original bytes\"}\n";
+	for mode in ["existing", "missing", "hardlink"] {
+		let rt = Runtime::new();
+		let outside = tempfile::tempdir().unwrap();
+		let destination = outside.path().join("guarded-events.jsonl");
+		if mode != "missing" {
+			fs::write(&destination, original).unwrap();
+		}
+		rt.plan(vec![rt.plugin("native", "native", "entry")]);
+		if mode == "hardlink" {
+			fs::hard_link(&destination, rt.path("foch-host/events.jsonl")).unwrap();
+		} else {
+			let mut plan: Value =
+				serde_json::from_slice(&fs::read(rt.path("foch-host/plan.json")).unwrap()).unwrap();
+			plan["events"] = destination.to_str().unwrap().into();
+			fs::write(
+				rt.path("foch-host/plan.json"),
+				serde_json::to_vec(&plan).unwrap(),
+			)
+			.unwrap();
+		}
+		rt.run("forward-only");
+		if mode == "missing" {
+			assert!(!destination.exists(), "external event file created");
+		} else {
+			assert_eq!(
+				fs::read_to_string(&destination).unwrap(),
+				original,
+				"{mode}"
+			);
+		}
+		assert!(rt.path("foch-host/host-error.txt").is_file(), "{mode}");
+	}
+}
+
+#[test]
+fn diagnostic_files_cannot_overwrite_an_external_hardlink() {
+	let rt = Runtime::new();
+	let outside = tempfile::tempdir().unwrap();
+	let destination = outside.path().join("guarded-diagnostic.txt");
+	fs::write(&destination, "original bytes").unwrap();
+	fs::hard_link(&destination, rt.path("foch-host/host-error.txt")).unwrap();
+	fs::write(rt.path("foch-host/plan.json"), "{broken").unwrap();
+	assert!(rt.run("forward-only").is_empty());
+	assert_eq!(fs::read_to_string(destination).unwrap(), "original bytes");
 }
 
 #[test]

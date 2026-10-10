@@ -19,7 +19,8 @@ pub struct Plan {
 	pub run_id: String,
 	#[serde(default)]
 	pub game_version: String,
-	/// Absolute path of the JSONL event stream the host appends to.
+	/// Absolute path of the prepared runtime's `foch-host/events.jsonl`.
+	/// The executing host checks runtime ownership before opening this file.
 	pub events: String,
 	pub plugins: Vec<PlannedPlugin>,
 }

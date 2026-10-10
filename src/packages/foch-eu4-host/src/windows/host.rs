@@ -13,7 +13,8 @@ use std::{
 	mem::{offset_of, size_of},
 	os::windows::{
 		ffi::{OsStrExt, OsStringExt},
-		fs::OpenOptionsExt,
+		fs::{MetadataExt, OpenOptionsExt},
+		io::AsRawHandle,
 	},
 	path::{Path, PathBuf},
 	sync::{
@@ -24,7 +25,10 @@ use std::{
 };
 use windows_sys::Win32::{
 	Foundation::HMODULE,
-	Storage::FileSystem::FILE_SHARE_READ,
+	Storage::FileSystem::{
+		BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+		FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, GetFileInformationByHandle,
+	},
 	System::{
 		LibraryLoader::{
 			GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
@@ -149,7 +153,7 @@ pub(super) fn start(exe_size: usize) {
 }
 
 fn prepare(root: &Path, module: HMODULE, exe_size: usize) -> Result<(), String> {
-	let path = root.join(plan::PLAN_FILE);
+	let path = host_path(root, "plan.json")?;
 	let file = match File::open(path) {
 		Ok(file) => file,
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -163,11 +167,21 @@ fn prepare(root: &Path, module: HMODULE, exe_size: usize) -> Result<(), String> 
 		return Err("plan exceeds 1 MiB".into());
 	}
 	let plan = plan::parse(&text)?;
-	let events = OpenOptions::new()
-		.create(true)
-		.append(true)
-		.open(&plan.events)
-		.map_err(|e| format!("cannot open event stream: {e}"))?;
+	let expected = host_path(root, "events.jsonl")?;
+	let declared = Path::new(&plan.events);
+	if !declared
+		.file_name()
+		.and_then(|name| name.to_str())
+		.is_some_and(|name| name.eq_ignore_ascii_case("events.jsonl"))
+		|| declared
+			.parent()
+			.and_then(|parent| parent.canonicalize().ok())
+			.as_deref()
+			!= expected.parent()
+	{
+		return Err("event stream must be the prepared runtime's foch-host/events.jsonl".into());
+	}
+	let events = open_host_file(root, "events.jsonl", true)?;
 	// Pin the host before exposing any callback. Plugin modules and their
 	// threads are also never unloaded by this host.
 	let mut pinned = std::ptr::null_mut();
@@ -229,9 +243,71 @@ fn module_path(module: HMODULE) -> Option<PathBuf> {
 }
 
 fn diagnostic(root: &Path, error: &str) {
-	// Do not create a directory inside an arbitrary executable's install.
-	// The runtime manager must have created foch-host before launch.
-	let _ = std::fs::write(root.join("foch-host/host-error.txt"), error);
+	if let Ok(mut file) = open_host_file(root, "host-error.txt", false)
+		&& file.set_len(0).is_ok()
+	{
+		let _ = file.write_all(error.as_bytes());
+	}
+}
+
+fn ordinary(path: &Path) -> Result<std::fs::Metadata, String> {
+	let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+	if metadata.file_type().is_symlink()
+		|| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+	{
+		return Err("host paths cannot contain symbolic links or reparse points".into());
+	}
+	Ok(metadata)
+}
+
+fn host_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+	if !ordinary(root)?.is_dir() || !ordinary(&root.join("foch-runtime"))?.is_file() {
+		return Err("host files require a prepared runtime layer".into());
+	}
+	let root = root.canonicalize().map_err(|error| error.to_string())?;
+	let directory = root.join("foch-host");
+	if !ordinary(&directory)?.is_dir() {
+		return Err("host directory is not an ordinary directory".into());
+	}
+	let directory = directory
+		.canonicalize()
+		.map_err(|error| error.to_string())?;
+	if directory.parent() != Some(root.as_path()) {
+		return Err("host directory resolves outside the runtime layer".into());
+	}
+	let path = directory.join(name);
+	match std::fs::symlink_metadata(&path) {
+		Ok(metadata)
+			if metadata.is_file()
+				&& metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 => {}
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+		Ok(_) => return Err("host path is not a regular file".into()),
+		Err(error) => return Err(error.to_string()),
+	}
+	Ok(path)
+}
+
+fn open_host_file(root: &Path, name: &str, append: bool) -> Result<File, String> {
+	let path = host_path(root, name)?;
+	let file = OpenOptions::new()
+		.write(true)
+		.create(true)
+		.truncate(false)
+		.append(append)
+		.share_mode(FILE_SHARE_READ)
+		.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+		.open(path)
+		.map_err(|error| error.to_string())?;
+	let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+	if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+		return Err(std::io::Error::last_os_error().to_string());
+	}
+	if info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0
+		|| info.nNumberOfLinks != 1
+	{
+		return Err("host output must be an ordinary file with a single link".into());
+	}
+	Ok(file)
 }
 
 fn digest(file: &mut File) -> std::io::Result<String> {

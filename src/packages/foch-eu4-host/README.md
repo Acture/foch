@@ -54,6 +54,9 @@ Installed plugin/version directories and manifests must be ordinary entries
 inside the configured store; symbolic links and reparse points are refused.
 Package-relative file paths currently use ASCII so Windows case collisions are
 checked consistently on every management platform.
+The host requires the prepared runtime marker and writes events only to
+`foch-host/events.jsonl` beside its DLL. Event and diagnostic files reject
+reparse points and existing hard links before any append or truncation.
 
 Player layers are retained when management exits, and test-session sweeping
 skips them. Close the game before removing a retained layer; unlink its data
