@@ -580,6 +580,7 @@ impl App {
 			cli_prompt: false,
 			jobs: (settings.merge_workers != default_merge_workers())
 				.then_some(settings.merge_workers),
+			review_json: None,
 		}
 	}
 

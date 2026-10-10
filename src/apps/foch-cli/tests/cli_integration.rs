@@ -2117,6 +2117,83 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 	);
 }
 
+/// `--review-json` writes the review before confirmation: an analysis
+/// without `--confirm` leaves the output absent but the review written, with
+/// the dependency edges, the conflict's candidates and its decision point.
+#[test]
+fn merge_review_json_is_written_without_committing() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let review_path = tmp.path().join("merge-review.json");
+	stage_dag_genuine_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+	);
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist_path),
+			"--out",
+			path_text(&out_dir),
+			"--no-game-base",
+			"--non-interactive",
+			"--review-json",
+			path_text(&review_path),
+		],
+		tmp.path(),
+	);
+	assert_eq!(
+		code, 0,
+		"{stdout}
+{stderr}"
+	);
+	assert!(!out_dir.exists());
+	let review = read_json_file(&review_path);
+	assert_eq!(review["schema"], "foch.merge_review.v1");
+	let edges = review["dependencies"].as_array().expect("dependency edges");
+	for child in ["9102", "9103"] {
+		assert!(
+			edges.iter().any(|edge| edge["child"] == child
+				&& edge["parent"] == "9101"
+				&& edge["status"] == "active"),
+			"{edges:#?}"
+		);
+	}
+	let leaf = review["conflicts"][0]["nodes"]
+		.as_array()
+		.expect("address nodes")
+		.iter()
+		.flat_map(|node| node["conflicts"].as_array().cloned().unwrap_or_default())
+		.next()
+		.expect("a conflict leaf");
+	let rendered = leaf["candidates"]
+		.as_array()
+		.expect("candidates")
+		.iter()
+		.map(|candidate| {
+			candidate["rendered"]
+				.as_str()
+				.unwrap_or_default()
+				.to_owned()
+		})
+		.collect::<Vec<_>>();
+	assert!(
+		rendered.iter().any(|text| text.contains("alpha"))
+			&& rendered.iter().any(|text| text.contains("beta")),
+		"{leaf:#}"
+	);
+	let point = &review["decisions"][0];
+	assert_eq!(point["conflict_id"], leaf["conflict_id"]);
+	assert_eq!(
+		point["options"][0]["scopes"][0]["resolution"]["conflict_id"],
+		leaf["conflict_id"]
+	);
+}
+
 #[test]
 fn merge_command_force_writes_placeholder_only_for_genuine_user_choice() {
 	let tmp = TempDir::new().expect("temp dir");

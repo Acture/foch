@@ -295,6 +295,12 @@ impl AnalyzedMerge {
 	pub fn unit(&self, id: &str) -> Option<&MergeUnitOutcome> {
 		self.review.unit(id)
 	}
+
+	/// The complete review: units, their contributors and dependency edges,
+	/// conflict trees with candidates, and decision points.
+	pub fn review(&self) -> &MergeReview {
+		&self.review
+	}
 }
 
 fn analyze_merge_with_backend_and_observer(

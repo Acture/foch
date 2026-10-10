@@ -2553,3 +2553,82 @@ fn eu4_replaced_trigger_chain_merges_branch_by_branch_through_the_dag() {
 	}
 	assert!(!decision.contains("has_dlc"), "{decision}");
 }
+
+/// Without an interactive handler, the review still carries each conflict's
+/// competing candidates and links them to the playset's mods.
+#[test]
+fn eu4_review_exposes_rendered_candidates_without_an_interactive_handler() {
+	let fixture = fixture_dir("eu4_two_mod_conflict");
+	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("target")
+		.join("merge-e2e");
+	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
+	let temp_dir = Builder::new()
+		.prefix("eu4_review_candidates-")
+		.tempdir_in(&scratch_root)
+		.expect("create merge e2e tempdir");
+	let game_root = temp_dir.path().join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create fixture game root");
+
+	let analyzed = analyze_merge_for_playset(
+		&fixture.join("dlc_load.json"),
+		temp_dir.path().join("out"),
+		game_root,
+		false,
+		None,
+	);
+	let review = analyzed.review();
+
+	let mod_ids = review
+		.mods()
+		.iter()
+		.map(|node| node.mod_id.as_str())
+		.collect::<Vec<_>>();
+	let [unit] = review.conflicts() else {
+		panic!("one conflicted unit: {review:#?}");
+	};
+	assert_eq!(unit.unit_id, "file:history/countries/TES - Test.txt");
+	let leaves = unit
+		.nodes
+		.iter()
+		.flat_map(|node| node.conflicts.iter().map(move |leaf| (node, leaf)))
+		.collect::<Vec<_>>();
+	let (node, religion) = leaves
+		.iter()
+		.find(|(node, _)| node.segment == "religion")
+		.expect("religion conflict leaf");
+	let rendered = religion
+		.candidates
+		.iter()
+		.map(|candidate| candidate.rendered.trim())
+		.collect::<Vec<_>>();
+	// Without a game base every mod inserts its own `religion`.
+	assert_eq!(
+		rendered,
+		[
+			"religion = catholic",
+			"religion = orthodox",
+			"religion = protestant"
+		],
+		"{religion:#?}"
+	);
+	for candidate in &religion.candidates {
+		assert!(mod_ids.contains(&candidate.mod_id.as_str()));
+		assert_ne!(candidate.mod_display_name, candidate.mod_id);
+	}
+	assert_eq!(religion.vanilla_snippet, None);
+	assert!(religion.reason.is_some());
+	let point = review
+		.decisions()
+		.iter()
+		.find(|point| point.conflict_id == religion.conflict_id)
+		.expect("religion decision point");
+	assert_eq!(point.node_id, node.id);
+	assert_eq!(
+		review.units()[0].conflict_ids,
+		leaves
+			.iter()
+			.map(|(_, leaf)| leaf.conflict_id.clone())
+			.collect::<Vec<_>>()
+	);
+}

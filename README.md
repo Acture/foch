@@ -115,6 +115,11 @@ empty path. `--non-interactive` disables prompts and does not imply
 The terminal review shows the first 20 units of each disposition, the complete
 totals, and explicit counts of omitted units. Add `--review-all` to inspect
 every unit before committing; this changes presentation only.
+`--review-json PATH` also writes the complete review as JSON before
+confirmation: the mods, their dependency edges and each unit's ordered
+contributors; each deferred unit's conflict address tree with the competing
+candidates' text; and every decision point with the `[[resolutions]]` entries
+that would persist it for one conflict, its file or its directory.
 
 Unresolved files or complete definition modules are withheld while unrelated
 safe units are written. This `partial_success` result is valid. `--force`

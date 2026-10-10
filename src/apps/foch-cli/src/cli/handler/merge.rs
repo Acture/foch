@@ -117,6 +117,9 @@ fn report_and_commit(
 		"{}",
 		render_merge_review_text(&analyzed, merge_args.review_all)
 	);
+	if let Some(path) = &merge_args.review_json {
+		write_review_json(&analyzed, path)?;
+	}
 	let plan_exit_code = merge_plan_exit_code(analysis.plan());
 	if analysis.plan().has_fatal_errors() {
 		return Ok(plan_exit_code);
@@ -148,6 +151,19 @@ fn report_and_commit(
 		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
+}
+
+fn write_review_json(analyzed: &AnalyzedMerge, path: &Path) -> io::Result<()> {
+	let mut json = serde_json::to_vec_pretty(analyzed.review()).map_err(io::Error::other)?;
+	json.push(b'\n');
+	fs::write(path, json).map_err(|error| {
+		io::Error::new(
+			error.kind(),
+			format!("failed to write merge review {}: {error}", path.display()),
+		)
+	})?;
+	eprintln!("[foch] wrote merge review to {}", path.display());
+	Ok(())
 }
 
 /// The current EU4 input without the named mods. A mod is named by its
