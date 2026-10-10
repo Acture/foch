@@ -974,7 +974,8 @@ fn merge_plan_marks_invalid_structural_overlap_as_manual_conflict() {
 	write_script_file(
 		&mod_b,
 		"events/shared.txt",
-		"namespace = broken\ncountry_event = =\n",
+		// Text that names no definition cannot be isolated.
+		"}\nnamespace = broken\ncountry_event = =\n",
 	);
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
@@ -1094,6 +1095,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		stale_vanilla_targets: Vec::new(),
 		warnings: Vec::new(),
 		source_repairs: Vec::new(),
+		isolated_definitions: Vec::new(),
 		dep_overrides_applied: Vec::new(),
 		playset_fingerprint: None,
 		definition_provenance: std::collections::BTreeMap::new(),

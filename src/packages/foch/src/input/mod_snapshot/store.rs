@@ -1,9 +1,9 @@
 use crate::model::{
 	AliasUsage, AsGamePathText, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf,
-	GamePathError, JsonProperty, KeyUsage, LocalisationDefinition, LocalisationDuplicate,
-	MaybeScope, ParamBinding, ParamContract, ParseIssue, ResourceReference, ScalarAssignment,
-	ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceRepair, SourceSpan, SymbolDefinition,
-	SymbolKind, SymbolReference, UiDefinition,
+	GamePathError, Isolation, JsonProperty, KeyUsage, LocalisationDefinition,
+	LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract, ParseIssue, ResourceReference,
+	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceRepair, SourceSpan,
+	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
 use crate::platform::cache_store::{CacheError, default_foch_cache_dir};
 use flate2::Compression;
@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "13.0.0";
+pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "14.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const MOD_SNAPSHOT_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
 const MOD_SNAPSHOT_CACHE_HEADER_BYTES: usize = MOD_SNAPSHOT_CACHE_MAGIC.len() + size_of::<u64>();
@@ -307,6 +307,7 @@ struct StoredParseIssue {
 	column: usize,
 	message: String,
 	repair: Option<SourceRepair>,
+	isolation: Option<Isolation>,
 }
 
 impl ModSnapshotCache {
@@ -1093,6 +1094,7 @@ impl StoredParseIssue {
 			column: item.column,
 			message: item.message,
 			repair: item.repair,
+			isolation: item.isolation,
 		}
 	}
 
@@ -1104,6 +1106,7 @@ impl StoredParseIssue {
 			column: self.column,
 			message: self.message,
 			repair: self.repair,
+			isolation: self.isolation,
 		}
 	}
 }

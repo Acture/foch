@@ -1,4 +1,4 @@
-use crate::model::{GamePath, GamePathBuf, SourceRepair};
+use crate::model::{GamePath, GamePathBuf, Isolation, SourceRepair};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -124,6 +124,10 @@ pub struct ParseDiagnostic {
 	/// or `None` when they cannot be trusted. The text is never changed.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub repair: Option<SourceRepair>,
+	/// The definition the parsed statements leave out because this error has
+	/// no trustworthy repair, when the rest of the file is sound.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub isolation: Option<Isolation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -363,6 +367,7 @@ impl<'a> Lexer<'a> {
 							end: self.current_span(),
 						},
 						repair: None,
+						isolation: None,
 					});
 				}
 				Token {
@@ -496,6 +501,7 @@ impl<'a> Lexer<'a> {
 								end: self.current_span(),
 							},
 							repair: None,
+							isolation: None,
 						});
 						return;
 					};
@@ -632,6 +638,7 @@ impl ParserState {
 							message: "missing closing brace before end of file".into(),
 							span,
 							repair: None,
+							isolation: None,
 						});
 					}
 					break;
@@ -648,6 +655,7 @@ impl ParserState {
 						message: "unexpected closing brace without an opening block".into(),
 						span,
 						repair: None,
+						isolation: None,
 					});
 				}
 				TokenKind::Newline | TokenKind::Comma => {
@@ -851,6 +859,7 @@ impl ParserState {
 					message: "could not parse statement start token".to_string(),
 					span: first.span,
 					repair: None,
+					isolation: None,
 				});
 				None
 			}
@@ -929,6 +938,7 @@ impl ParserState {
 					message: "value parse failed; downgraded to empty identifier".to_string(),
 					span: token.span.clone(),
 					repair: None,
+					isolation: None,
 				});
 				AstValue::Scalar {
 					value: ScalarValue::Identifier("<parse-error>".to_string()),
@@ -996,6 +1006,7 @@ pub(crate) fn read_failure(err: &std::io::Error) -> ParsedStatements {
 				end: start,
 			},
 			repair: None,
+			isolation: None,
 		}],
 	}
 }

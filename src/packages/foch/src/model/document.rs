@@ -95,19 +95,91 @@ pub struct ParseIssue {
 	/// issue, at `line`:`column`, or `None` when it cannot be trusted.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub repair: Option<SourceRepair>,
+	/// The definition left out of the parsed document because this issue has
+	/// no trustworthy repair, when the rest of the file is sound.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub isolation: Option<Isolation>,
 }
 
 impl ParseIssue {
-	/// Whether the document carrying this issue cannot be used as parsed.
+	/// Whether the document carrying this issue cannot be used as parsed: it
+	/// is neither repaired nor confined to one left-out definition.
 	pub fn is_fatal(&self) -> bool {
-		self.repair.is_none()
+		self.repair.is_none() && self.isolation.is_none()
 	}
 }
 
 /// Whether a document with these issues cannot be used as parsed: an issue
-/// that is a recorded repair leaves the document usable.
+/// that is a recorded repair or an isolated definition leaves it usable.
 pub fn has_fatal_parse_issue(issues: &[ParseIssue]) -> bool {
 	issues.iter().any(ParseIssue::is_fatal)
+}
+
+/// Whether a document with these issues holds all of its text: every issue
+/// is a repair, and no definition was left out.
+pub fn reads_completely(issues: &[ParseIssue]) -> bool {
+	issues.iter().all(|issue| issue.repair.is_some())
+}
+
+/// The definitions these issues leave out of their document.
+pub fn isolated_definitions(issues: &[ParseIssue]) -> impl Iterator<Item = &Isolation> {
+	issues.iter().filter_map(|issue| issue.isolation.as_ref())
+}
+
+/// A top-level definition left out of a parsed document because an error in
+/// it has no trustworthy repair. The rest of the document is unaffected.
+#[derive(
+	Clone,
+	Debug,
+	Eq,
+	PartialEq,
+	Serialize,
+	Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+pub struct Isolation {
+	/// The definition's key.
+	pub definition: String,
+	/// The last line the left-out text reaches.
+	pub end_line: usize,
+	/// One-token repairs that could be meant, the likeliest first.
+	pub proposals: Vec<RepairProposal>,
+}
+
+/// A one-token repair that could be meant, offered for review.
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Eq,
+	PartialEq,
+	Serialize,
+	Deserialize,
+	rkyv::Archive,
+	rkyv::Serialize,
+	rkyv::Deserialize,
+)]
+pub struct RepairProposal {
+	pub edit: SourceRepairEdit,
+	pub line: usize,
+	pub column: usize,
+	/// The byte offset in the decoded text where the edit applies.
+	pub offset: usize,
+}
+
+impl RepairProposal {
+	pub fn description(self) -> String {
+		let edit = match self.edit {
+			SourceRepairEdit::RemovedClosingBrace => "leave out the `}`",
+			SourceRepairEdit::RemovedOpeningBrace => "leave out the `{`",
+			SourceRepairEdit::InsertedClosingBrace => "add a `}`",
+			SourceRepairEdit::InsertedOpeningBrace => "add a `{`",
+			SourceRepairEdit::ClosedStringAtLineEnd => "end the string",
+		};
+		format!("{edit} at {}:{}", self.line, self.column)
+	}
 }
 
 /// A one-token repair of a source file's syntax, applied only to Foch's

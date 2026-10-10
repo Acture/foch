@@ -112,6 +112,8 @@ fn main() {
 
 	let mut ok = 0usize;
 	let mut repaired = 0usize;
+	let mut isolating = 0usize;
+	let mut isolations: Vec<String> = Vec::new();
 	let mut failed = 0usize;
 	let mut total_diag = 0usize;
 	let mut failed_examples: Vec<(PathBuf, usize)> = Vec::new();
@@ -133,12 +135,44 @@ fn main() {
 		for diag in &parsed.diagnostics {
 			let state = if diag.repair.is_some() {
 				"repaired"
+			} else if diag.isolation.is_some() {
+				"isolated"
 			} else {
 				"fatal"
 			};
 			*diag_buckets
 				.entry(format!("{:?} ({state})", diag.code))
 				.or_insert(0) += 1;
+		}
+		let rel = file.strip_prefix(&root).unwrap_or(file.as_path());
+		if parsed
+			.diagnostics
+			.iter()
+			.all(|diag| diag.repair.is_some() || diag.isolation.is_some())
+			&& parsed
+				.diagnostics
+				.iter()
+				.any(|diag| diag.isolation.is_some())
+		{
+			isolating += 1;
+			for diag in &parsed.diagnostics {
+				if let Some(isolation) = &diag.isolation {
+					isolations.push(format!(
+						"{}:{}-{} `{}` proposals: {}",
+						rel.display(),
+						diag.span.start.line,
+						isolation.end_line,
+						isolation.definition,
+						isolation
+							.proposals
+							.iter()
+							.map(|proposal| proposal.description())
+							.collect::<Vec<_>>()
+							.join(", ")
+					));
+				}
+			}
+			continue;
 		}
 		if parsed.diagnostics.iter().all(|diag| diag.repair.is_some()) {
 			repaired += 1;
@@ -182,6 +216,7 @@ fn main() {
 	println!("total_files={total}");
 	println!("ok_files={ok}");
 	println!("repaired_files={repaired}");
+	println!("isolating_files={isolating}");
 	println!("failed_files={failed}");
 	println!("success_rate_percent={rate:.4}");
 	println!("total_diagnostics={total_diag}");
@@ -203,6 +238,13 @@ fn main() {
 		println!("repairs:");
 		for repair in &repairs {
 			println!("\t{repair}");
+		}
+	}
+
+	if !isolations.is_empty() {
+		println!("isolations:");
+		for isolation in &isolations {
+			println!("\t{isolation}");
 		}
 	}
 

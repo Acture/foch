@@ -459,6 +459,7 @@ fn parse_csv_document(
 				column: 1,
 				message: format!("unable to read csv file: {err}"),
 				repair: None,
+				isolation: None,
 			});
 			return ParsedCsvDocument {
 				mod_id: mod_id.to_string(),
@@ -504,6 +505,7 @@ fn parse_csv_document(
 					"inconsistent csv column count: expected {expected}, got {actual}"
 				),
 				repair: None,
+				isolation: None,
 			});
 		}
 
@@ -596,6 +598,7 @@ fn parse_json_document(
 				column: 1,
 				message: format!("unable to read json file: {err}"),
 				repair: None,
+				isolation: None,
 			});
 			return ParsedJsonDocument {
 				mod_id: mod_id.to_string(),
@@ -615,6 +618,7 @@ fn parse_json_document(
 			column: err.column(),
 			message: err.to_string(),
 			repair: None,
+			isolation: None,
 		}),
 	}
 

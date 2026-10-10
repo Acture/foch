@@ -198,12 +198,29 @@ column, edit and evidence. The merge report lists the same facts in
 `source_repairs`. Copied units install source bytes unchanged, so they record
 no repair.
 
+A broken segment with no trustworthy repair is isolated when it starts with a
+definition head whose key the file does not repeat. Its text is left out up to
+the next head that follows a line at column 1, so a column-1 line inside the
+broken block is not taken for a definition; the rest of the file is parsed as
+usual. The merge reads the isolated definition as the mod's parent has it,
+never as deleted, so that mod's version of it is missing from the result:
+
+- the unit is held for review as `needs_user_choice`, and its notes and the
+  report's `isolated_definitions` name the mod, file, lines and the one-token
+  repairs that could be meant, the likeliest first;
+- `--force` keeps the unit with the parent's version and a warning, on the
+  default backend only. Any other backend would read the absence as a
+  deletion, so it always holds the unit.
+
+Text that names no definition, a key the file repeats, as events repeat
+`country_event`, and any other error without a repair still make the file
+unsupported, and `--force` does not change that.
+
 Repairs are chosen by the parser's stable diagnostic codes, never by message
-text. They do not apply to `.lua` files, which a Lua interpreter loads. An
-unrepaired error still defers the unit, and `--force` does not change that.
-Repairs are part of the analysis rules identity, so cached snapshots and frozen
-analyses made before them are not reused. How EU4 itself handles each error has
-not been confirmed in a game log.
+text. They do not apply to `.lua` files, which a Lua interpreter loads.
+Repairs and isolation are part of the analysis rules identity, so cached
+snapshots and frozen analyses made before them are not reused. How EU4 itself
+handles each error has not been confirmed in a game log.
 
 ## Resolution policy
 

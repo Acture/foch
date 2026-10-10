@@ -782,6 +782,7 @@ mod tests {
 				edit: SourceRepairEdit::RemovedClosingBrace,
 				evidence: SourceRepairEvidence::OnlyReading,
 			}),
+			isolation: None,
 		});
 
 		let module = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())
@@ -801,6 +802,7 @@ mod tests {
 			column: 1,
 			message: "synthetic parse issue".to_string(),
 			repair: None,
+			isolation: None,
 		});
 
 		let error = load_definition_module(&[DefinitionModuleInput::new(&path, &file)], policy())

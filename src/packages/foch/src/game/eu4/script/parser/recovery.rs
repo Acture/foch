@@ -13,16 +13,27 @@
 //!   only checks this choice; when it clearly favours another tree the
 //!   evidence conflicts and nothing is repaired.
 //!
-//! The chosen edits are then applied to the whole file, which must parse
-//! cleanly into exactly the statements of its segments. When any of this
-//! fails nothing is repaired and the first parse stands.
+//! A broken segment with no such reading that starts with a definition head
+//! is isolated instead: it is left out of the statements, up to the next head
+//! that follows a line at column 1, and the readings that could be meant are
+//! kept as proposals for review.
+//!
+//! The chosen edits are then applied to the whole file and the isolated text
+//! left out, and what remains must parse cleanly into exactly the statements
+//! of its segments. When any of this fails nothing is repaired and the first
+//! parse stands.
 
 use super::{
 	AstStatement, AstValue, ParseDiagnostic, ParseDiagnosticCode, ParsedStatements, ParserState,
 	SchemaCheck, Span, SpanRange, Token, TokenKind, lex,
 };
-use crate::model::{SourceRepair, SourceRepairEdit, SourceRepairEvidence};
+use crate::model::{
+	Isolation, RepairProposal, SourceRepair, SourceRepairEdit, SourceRepairEvidence,
+};
 use std::collections::HashMap;
+
+/// Most proposals kept for an isolated definition.
+const MAX_PROPOSALS: usize = 3;
 
 /// Most tokens the repair of one file may parse, across every segment and
 /// every edit it tries. A file that needs more is left as first parsed: the
@@ -67,6 +78,14 @@ impl Edit {
 			Self::InsertOpening(index) => Self::InsertOpening(index + by),
 		}
 	}
+}
+
+/// What a broken segment's search concludes.
+enum Decision {
+	Repair(Candidate, SourceRepairEvidence),
+	/// No trustworthy reading; the repairs that could be meant, likeliest
+	/// first.
+	Review(Vec<RepairProposal>),
 }
 
 struct Candidate {
@@ -118,6 +137,7 @@ fn repair(
 	let bounds = segments(&tokens);
 	let mut budget = WORK_BUDGET;
 	let mut edits = Vec::new();
+	let mut isolated = Vec::new();
 	let mut statements = Vec::new();
 	let mut next = 0;
 	while next < bounds.len() {
@@ -147,11 +167,17 @@ fn repair(
 		// indentation describes is not among those tried.
 		if settled.is_none() {
 			let (segment, following) = range(next);
-			if let Some((candidate, evidence)) =
-				repair_segment(segment, &following, &layout, &reported, schema, &mut budget)?
-			{
-				let edit = candidate.edit.shifted(start);
-				settled = Some((next, candidate.statements, Some((edit, evidence))));
+			match repair_segment(segment, &following, &layout, &reported, schema, &mut budget)? {
+				Decision::Repair(candidate, evidence) => {
+					let edit = candidate.edit.shifted(start);
+					settled = Some((next, candidate.statements, Some((edit, evidence))));
+				}
+				Decision::Review(proposals) => {
+					let region = isolate(&tokens, &bounds, next, proposals, &following)?;
+					next = region.next_segment;
+					isolated.push(region);
+					continue;
+				}
 			}
 		}
 		let (last, segment_statements, edit) = settled?;
@@ -160,13 +186,27 @@ fn repair(
 		next = last + 1;
 	}
 
+	// Apply edits and leave out isolated text from the back, so that every
+	// index still refers to the original tokens; at one index the isolated
+	// text goes first, and an edit there lands where it began.
+	let mut operations = edits
+		.iter()
+		.map(|(edit, _)| (edit_anchor(*edit), 0, Some(*edit), 0))
+		.chain(
+			isolated
+				.iter()
+				.map(|region| (region.start, 1, None, region.end)),
+		)
+		.collect::<Vec<_>>();
+	operations.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
 	let mut repaired_tokens = tokens.clone();
-	for (edit, _) in edits.iter().rev() {
-		apply(
-			&mut repaired_tokens,
-			*edit,
-			&tokens[edit_anchor(*edit)].span.start,
-		);
+	for (index, _, edit, end) in operations {
+		match edit {
+			Some(edit) => apply(&mut repaired_tokens, edit, &tokens[index].span.start),
+			None => {
+				repaired_tokens.drain(index..end);
+			}
+		}
 	}
 	let whole = ParserState::new(repaired_tokens).parse_file();
 	if !whole.diagnostics.is_empty() || whole.statements != statements {
@@ -175,6 +215,7 @@ fn repair(
 	for (edit, evidence) in edits {
 		diagnostics.push(edit_diagnostic(&tokens, edit, evidence));
 	}
+	diagnostics.extend(isolated.into_iter().map(|region| region.diagnostic));
 	Some(ParsedStatements {
 		statements: whole.statements,
 		diagnostics,
@@ -213,9 +254,8 @@ fn is_definition_head(tokens: &[Token], index: usize) -> bool {
 	)
 }
 
-/// The one-token repair of a broken segment, `Ok(None)` when it has no
-/// single trustworthy reading, or `None` when the file's work budget would
-/// not cover the search.
+/// What the search for a broken segment's one-token repair concludes, or
+/// `None` when the file's work budget would not cover the search.
 fn repair_segment(
 	segment: &[Token],
 	following: &Span,
@@ -223,12 +263,10 @@ fn repair_segment(
 	reported: &[usize],
 	schema: Option<&SchemaCheck<'_>>,
 	budget: &mut usize,
-) -> Option<Option<(Candidate, SourceRepairEvidence)>> {
+) -> Option<Decision> {
 	let edits = candidate_edits(segment);
 	*budget = budget.checked_sub(edits.len().saturating_mul(segment.len() + 1))?;
-	Some(choose_reading(
-		segment, following, layout, reported, schema, edits, budget,
-	))
+	choose_reading(segment, following, layout, reported, schema, edits, budget)
 }
 
 fn choose_reading(
@@ -239,8 +277,9 @@ fn choose_reading(
 	schema: Option<&SchemaCheck<'_>>,
 	edits: Vec<Edit>,
 	budget: &mut usize,
-) -> Option<(Candidate, SourceRepairEvidence)> {
+) -> Option<Decision> {
 	let unedited = parents(&parse_segment(segment, None, following).statements);
+	let buried = column_one_lines_in_blocks(segment);
 	let mut candidates = Vec::new();
 	for edit in edits {
 		let parsed = parse_segment(segment, Some(edit), following);
@@ -249,6 +288,12 @@ fn choose_reading(
 		}
 		let mut tokens = segment.to_vec();
 		apply(&mut tokens, edit, &anchor_span(segment, edit, following));
+		// A line at column 1 reads as top level; an edit that puts more of
+		// them inside a block than the text already has swallows a definition
+		// the author wrote at the top.
+		if column_one_lines_in_blocks(&tokens) > buried {
+			continue;
+		}
 		candidates.push(Candidate {
 			edit,
 			moved: moved_statements(&unedited, &parents(&parsed.statements)),
@@ -270,7 +315,7 @@ fn choose_reading(
 	}
 	if readings.len() == 1 {
 		let chosen = choose_edit(readings.pop()?, segment, following, reported)?;
-		return Some((chosen, SourceRepairEvidence::OnlyReading));
+		return Some(Decision::Repair(chosen, SourceRepairEvidence::OnlyReading));
 	}
 	// The schema rules out the readings that break more of its rules than
 	// another; a reading it alone leaves is the repair. Checking a definition
@@ -310,34 +355,46 @@ fn choose_reading(
 		readings = kept;
 		if readings.len() == 1 {
 			let chosen = choose_edit(readings.pop()?, segment, following, reported)?;
-			return Some((chosen, SourceRepairEvidence::OnlySchemaValid));
+			return Some(Decision::Repair(
+				chosen,
+				SourceRepairEvidence::OnlySchemaValid,
+			));
 		}
 	}
+	let fewest = |reading: &Vec<Candidate>| {
+		reading
+			.iter()
+			.map(|candidate| candidate.violations)
+			.min()
+			.unwrap_or(usize::MAX)
+	};
+	readings.sort_by_key(|reading| (reading[0].moved, fewest(reading)));
+	let review = |readings: Vec<Vec<Candidate>>| {
+		let proposals = readings
+			.into_iter()
+			.take(MAX_PROPOSALS)
+			.filter_map(|reading| choose_edit(reading, segment, following, reported))
+			.map(|candidate| proposal(segment, following, candidate.edit))
+			.collect();
+		Some(Decision::Review(proposals))
+	};
 	let (reading, evidence) = match readings.len() {
-		0 => return None,
+		0 => return review(readings),
 		1 => (readings.pop()?, SourceRepairEvidence::OnlyReading),
 		_ => {
 			// The reading that changes the tree least wins, if it is the only
 			// one that does.
 			let moved = |reading: &Vec<Candidate>| reading[0].moved;
-			readings.sort_by_key(moved);
 			if moved(&readings[1]) == moved(&readings[0]) {
-				return None;
+				return review(readings);
 			}
 			// The indentation only checks it. Lines no edit moves disagree with
 			// every reading alike, so the indentation clearly favours a reading
 			// when fewer than half as many lines disagree with it as with any
 			// other; when that reading is another one, the evidence conflicts.
-			let fewest = |reading: &Vec<Candidate>| {
-				reading
-					.iter()
-					.map(|candidate| candidate.violations)
-					.min()
-					.unwrap_or(usize::MAX)
-			};
 			let winner = fewest(&readings[0]);
 			if readings[1..].iter().any(|other| 2 * fewest(other) < winner) {
-				return None;
+				return review(readings);
 			}
 			(
 				readings.swap_remove(0),
@@ -346,7 +403,139 @@ fn choose_reading(
 		}
 	};
 	let chosen = choose_edit(reading, segment, following, reported)?;
-	Some((chosen, evidence))
+	Some(Decision::Repair(chosen, evidence))
+}
+
+/// A broken segment's text, left out of the statements.
+struct IsolatedRegion {
+	/// The first token left out, and the token after the last one.
+	start: usize,
+	end: usize,
+	/// The segment the rest of the file resumes at.
+	next_segment: usize,
+	diagnostic: ParseDiagnostic,
+}
+
+/// Isolates the segment at `segment`, which no repair settles, and whatever
+/// follows it up to the next head that follows a line at column 1: a head
+/// after a deeper line may be a line inside the broken block. `None` when the
+/// segment does not start with a definition head, so nothing names what is
+/// left out.
+fn isolate(
+	tokens: &[Token],
+	bounds: &[(usize, usize)],
+	segment: usize,
+	proposals: Vec<RepairProposal>,
+	following: &Span,
+) -> Option<IsolatedRegion> {
+	let start = bounds[segment].0;
+	let definition = definition_key(tokens, start)?;
+	// A key the file repeats, as events repeat `country_event`, does not tell
+	// which definition was left out.
+	let repeated = bounds.iter().enumerate().any(|(index, bound)| {
+		index != segment && definition_key(tokens, bound.0).as_deref() == Some(definition.as_str())
+	});
+	if repeated {
+		return None;
+	}
+	let next_segment = (segment + 1..bounds.len())
+		.find(|index| follows_column_one_line(tokens, bounds[*index].0))
+		.unwrap_or(bounds.len());
+	let end = bounds
+		.get(next_segment)
+		.map_or(tokens.len() - 1, |bound| bound.0);
+	// What is left out must read, unedited, as that one definition: other
+	// statements after it, whether written at column 1 or indented, may be
+	// definitions of their own and would be dropped without a name.
+	let region_following = tokens[end].span.start.clone();
+	if !is_one_definition(&parse_segment(&tokens[start..end], None, &region_following).statements) {
+		return None;
+	}
+	let alone = parse_segment(&tokens[start..bounds[segment].1], None, following);
+	let code = alone
+		.diagnostics
+		.first()
+		.map_or(ParseDiagnosticCode::InvalidStatementStart, |diagnostic| {
+			diagnostic.code
+		});
+	let end_line = tokens[start..end]
+		.iter()
+		.rev()
+		.find(|token| !matches!(token.kind, TokenKind::Newline))
+		.map_or(tokens[start].span.start.line, |token| token.span.end.line);
+	Some(IsolatedRegion {
+		start,
+		end,
+		next_segment,
+		diagnostic: ParseDiagnostic {
+			code,
+			message: format!(
+				"definition `{definition}` has a syntax error with no trustworthy repair; it is left out"
+			),
+			span: tokens[start].span.clone(),
+			repair: None,
+			isolation: Some(Isolation {
+				definition,
+				end_line,
+				proposals,
+			}),
+		},
+	})
+}
+
+/// The key of the definition whose head starts at `index`.
+fn definition_key(tokens: &[Token], index: usize) -> Option<String> {
+	let key = match &tokens[index].kind {
+		TokenKind::Identifier(key) | TokenKind::String(key) | TokenKind::Number(key) => key,
+		_ => return None,
+	};
+	matches!(
+		tokens.get(index + 1).map(|next| &next.kind),
+		Some(TokenKind::Eq | TokenKind::LBrace)
+	)
+	.then(|| key.clone())
+}
+
+/// Whether the head at `index` follows a line whose code starts at column 1,
+/// or nothing at all; comment lines are passed over.
+fn follows_column_one_line(tokens: &[Token], index: usize) -> bool {
+	let mut end = index;
+	loop {
+		while end > 0 && matches!(tokens[end - 1].kind, TokenKind::Newline) {
+			end -= 1;
+		}
+		if end == 0 {
+			return true;
+		}
+		let mut start = end - 1;
+		while start > 0 && !matches!(tokens[start - 1].kind, TokenKind::Newline) {
+			start -= 1;
+		}
+		if matches!(tokens[start].kind, TokenKind::Comment(_)) && start + 1 == end {
+			end = start;
+			continue;
+		}
+		return tokens[start].span.start.column == 1;
+	}
+}
+
+/// How a one-token edit is offered for review.
+fn proposal(segment: &[Token], following: &Span, edit: Edit) -> RepairProposal {
+	let at = anchor_span(segment, edit, following);
+	let edit = match edit {
+		Edit::Remove(index) if matches!(segment[index].kind, TokenKind::RBrace) => {
+			SourceRepairEdit::RemovedClosingBrace
+		}
+		Edit::Remove(_) => SourceRepairEdit::RemovedOpeningBrace,
+		Edit::InsertClosing(_) => SourceRepairEdit::InsertedClosingBrace,
+		Edit::InsertOpening(_) => SourceRepairEdit::InsertedOpeningBrace,
+	};
+	RepairProposal {
+		edit,
+		line: at.line,
+		column: at.column,
+		offset: at.offset,
+	}
 }
 
 /// Of the edits that give one reading, the one the indentation agrees with
@@ -361,6 +550,37 @@ fn choose_edit(
 		let offset = anchor_span(segment, candidate.edit, following).offset;
 		(candidate.violations, !reported.contains(&offset))
 	})
+}
+
+/// How many lines starting at column 1 with anything but `}` or a comment
+/// lie inside a block.
+fn column_one_lines_in_blocks(tokens: &[Token]) -> usize {
+	let mut depth = 0usize;
+	let mut buried = 0;
+	let mut line_start = true;
+	for token in tokens {
+		if matches!(token.kind, TokenKind::Newline) {
+			line_start = true;
+			continue;
+		}
+		if line_start {
+			line_start = false;
+			if depth > 0
+				&& token.span.start.column == 1
+				&& !matches!(
+					token.kind,
+					TokenKind::RBrace | TokenKind::Comment(_) | TokenKind::Eof
+				) {
+				buried += 1;
+			}
+		}
+		match token.kind {
+			TokenKind::LBrace => depth += 1,
+			TokenKind::RBrace => depth = depth.saturating_sub(1),
+			_ => {}
+		}
+	}
+	buried
 }
 
 /// Whether a repaired segment reads as what it was cut as: one definition,
@@ -584,6 +804,7 @@ fn repaired(
 		message: message.to_string(),
 		span,
 		repair: Some(repair),
+		isolation: None,
 	}
 }
 
@@ -936,6 +1157,100 @@ mod tests {
 		let (code, line, _, _) = only_repair(&parsed);
 		assert_eq!((code, line), (ParseDiagnosticCode::MissingClosingBrace, 7));
 		assert_eq!(shape(&parsed.statements), "a={b={c=1} d=2} e={f=1}");
+	}
+
+	/// The one diagnostic of `parsed`, which must isolate a definition.
+	fn only_isolation(parsed: &ParsedStatements) -> &crate::model::Isolation {
+		let [diagnostic] = parsed.diagnostics.as_slice() else {
+			panic!("expected one diagnostic: {:?}", parsed.diagnostics);
+		};
+		assert!(diagnostic.repair.is_none(), "{diagnostic:?}");
+		diagnostic
+			.isolation
+			.as_ref()
+			.unwrap_or_else(|| panic!("expected an isolation: {diagnostic:?}"))
+	}
+
+	#[test]
+	fn a_definition_with_no_trustworthy_repair_is_left_out_alone() {
+		let parsed = parse("a = {\n\tOR = {\n\t\tx = 1\n\ty = 2\n}\nb = {\n\tz = 3\n}\n");
+		let isolation = only_isolation(&parsed);
+		assert_eq!(
+			(isolation.definition.as_str(), isolation.end_line),
+			("a", 5)
+		);
+		// The repair that moves the fewest statements first, then the one the
+		// indentation favours.
+		assert_eq!(
+			isolation
+				.proposals
+				.iter()
+				.map(|proposal| (proposal.edit, proposal.line, proposal.column))
+				.collect::<Vec<_>>(),
+			[
+				(SourceRepairEdit::InsertedClosingBrace, 5, 1),
+				(SourceRepairEdit::InsertedClosingBrace, 4, 2),
+				(SourceRepairEdit::RemovedOpeningBrace, 2, 7),
+			]
+		);
+		assert_eq!(shape(&parsed.statements), "b={z=3}");
+	}
+
+	#[test]
+	fn a_column_one_line_inside_a_broken_definition_is_left_out_with_it() {
+		// `x` is written at column 1 inside `t`, after a deeper line, so it is
+		// no definition of its own; `b` follows a line at column 1.
+		let parsed = parse("a = {\n\tt = {\nx = { y = 1 # }\n\t}\n\tq = 1\n}\nb = {\n\tz = 2\n}\n");
+		let isolation = only_isolation(&parsed);
+		assert_eq!(
+			(isolation.definition.as_str(), isolation.end_line),
+			("a", 6)
+		);
+		assert_eq!(shape(&parsed.statements), "b={z=2}");
+	}
+
+	#[test]
+	fn a_definition_missing_its_equals_is_neither_swallowed_nor_isolated() {
+		// `b` lacks ` = {`. Leaving out the `}` that closes `a` parses as one
+		// definition, but it would put `b`, written at column 1, inside `a`;
+		// and `a` with `b` after it is more than one definition to leave out.
+		let parsed = parse("a = {\n\tx = 1\n}\nb\n\ty = 1\n}\nc = {\n\tz = 1\n}\n");
+		assert!(
+			parsed
+				.diagnostics
+				.iter()
+				.all(|diagnostic| diagnostic.repair.is_none() && diagnostic.isolation.is_none()),
+			"{:?}",
+			parsed.diagnostics
+		);
+	}
+
+	#[test]
+	fn a_key_the_file_repeats_is_not_isolated() {
+		let parsed = parse(
+			"country_event = {\n\tOR = {\n\t\tx = 1\n\ty = 2\n}\ncountry_event = {\n\tid = b\n}\n",
+		);
+		assert!(
+			parsed
+				.diagnostics
+				.iter()
+				.all(|diagnostic| diagnostic.isolation.is_none()),
+			"{:?}",
+			parsed.diagnostics
+		);
+	}
+
+	#[test]
+	fn text_that_names_no_definition_is_not_isolated() {
+		let parsed = parse("}\n}\na = { b = 1 }\n");
+		assert!(
+			parsed
+				.diagnostics
+				.iter()
+				.all(|diagnostic| diagnostic.repair.is_none() && diagnostic.isolation.is_none()),
+			"{:?}",
+			parsed.diagnostics
+		);
 	}
 
 	#[test]

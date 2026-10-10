@@ -6,9 +6,7 @@ use crate::game::eu4::content::MergeKeySource;
 use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use crate::game::eu4::script::{ParsedScriptFile, is_decision_container_key, parse_script_file};
 use crate::input::{ResolvedInput, ResolvedInputContributor};
-use crate::model::{
-	GamePath, GamePathBuf, HandlerResolutionRecord, MergeReport, has_fatal_parse_issue,
-};
+use crate::model::{GamePath, GamePathBuf, HandlerResolutionRecord, MergeReport, reads_completely};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
@@ -319,7 +317,7 @@ fn extract_key_value_fingerprints(
 			},
 		},
 	};
-	if has_fatal_parse_issue(&parsed.parse_issues) {
+	if !reads_completely(&parsed.parse_issues) {
 		extraction.mark_untracked();
 	}
 	extraction

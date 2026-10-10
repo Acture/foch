@@ -48,7 +48,7 @@ pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section or its outer envelope becomes
 // wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 16;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 17;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";

@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // v13 was allocated to path-free entries; v14 also invalidates entries whose
 // diagnostics predate unmatched-brace and unclosed-block detection. v17
 // entries hold the parse as written; repair runs after the cache.
-const PARSE_CACHE_VERSION: &str = "17.0.0";
+const PARSE_CACHE_VERSION: &str = "18.0.0";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const OBSOLETE_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 

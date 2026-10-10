@@ -243,6 +243,7 @@ fn parsed_script_file_from_result(
 			column: item.span.start.column,
 			message: item.message,
 			repair: item.repair,
+			isolation: item.isolation,
 		})
 		.collect();
 

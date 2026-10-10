@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::analysis::Severity;
-use super::{GamePath, GamePathBuf, SourceRepair};
+use super::{GamePath, GamePathBuf, Isolation, SourceRepair};
 use crate::playset::steam::WorkshopInstallIdentity;
 use crate::project::AppliedDepOverride;
 
@@ -932,6 +932,20 @@ pub struct MergeReportSourceRepair {
 	pub repair: SourceRepair,
 }
 
+/// A definition left out of a source file a merge unit read, because its
+/// syntax error has no trustworthy repair. The merge read it as the mod's
+/// parent has it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeReportIsolatedDefinition {
+	/// The stable id of the unit that read the file.
+	pub unit: String,
+	pub mod_id: String,
+	pub path: GamePathBuf,
+	pub line: usize,
+	pub column: usize,
+	pub isolation: Isolation,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergeReportConflictResolution {
 	/// The deferred unit's primary output.
@@ -1123,6 +1137,9 @@ pub struct MergeReport {
 	/// Source syntax repairs behind the units' analysis, in plan order.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub source_repairs: Vec<MergeReportSourceRepair>,
+	/// Definitions left out of source files for review, in plan order.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub isolated_definitions: Vec<MergeReportIsolatedDefinition>,
 	// D2 local dependency overrides applied during DAG-based merge.
 	#[serde(default)]
 	pub dep_overrides_applied: Vec<AppliedDepOverride>,

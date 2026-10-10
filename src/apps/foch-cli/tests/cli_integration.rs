@@ -382,15 +382,115 @@ fn a_definition_left_open_is_closed_where_the_indentation_says() {
 	);
 }
 
+/// `b_check` has a stray brace with one reading. Closing `OR` at the end of
+/// `b_open` moves the fewest statements, but the tabs put `always = yes`
+/// beside `OR`: that evidence conflicts, so `b_open` is isolated.
+const ISOLATED_TRIGGERS: &str =
+	"b_check = { always = yes }\n}\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n";
+
+fn merge_triggers(scratch: &Path, source: &str, force: bool) -> (PathBuf, String, String) {
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch, source);
+	let out = scratch.join("out");
+	let mut args = vec![
+		"merge",
+		path_text(&manifest),
+		"--out",
+		path_text(&out),
+		"--non-interactive",
+		"--confirm",
+	];
+	if force {
+		args.push("--force");
+	}
+	let (code, stdout, stderr) = run_foch(&args, scratch);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		source,
+		"the source file is read-only"
+	);
+	(out, stdout, stderr)
+}
+
+fn merged_triggers(out: &Path) -> String {
+	fs::read_dir(out.join("common/scripted_triggers"))
+		.unwrap()
+		.map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+		.collect()
+}
+
 #[test]
-fn an_error_without_a_single_reading_defers_the_module_even_with_force() {
+fn a_definition_with_no_trustworthy_repair_holds_its_module_for_review() {
 	let scratch = TempDir::new().unwrap();
-	// The stray brace has one reading. Closing `OR` at the end of `b_open`
-	// moves the fewest statements, but the tabs put `always = yes` beside
-	// `OR`: the evidence conflicts.
+	let (out, stdout, _) = merge_triggers(scratch.path(), ISOLATED_TRIGGERS, false);
+	assert!(stdout.contains("definition `b_open` in b"), "{stdout}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::PartialSuccess,
+		"{report:#?}"
+	);
+	assert_eq!(report.unsupported_input_count, 0, "{report:#?}");
+	assert_eq!(report.manual_conflict_count, 1, "{report:#?}");
+	let [isolated] = report.isolated_definitions.as_slice() else {
+		panic!("expected one isolated definition: {report:#?}");
+	};
+	assert_eq!(
+		(
+			isolated.mod_id.as_str(),
+			isolated.isolation.definition.as_str(),
+			isolated.line,
+			isolated.isolation.end_line
+		),
+		("b", "b_open", 3, 7)
+	);
+	assert!(!isolated.isolation.proposals.is_empty(), "{isolated:?}");
+	assert!(
+		fs::read_dir(out.join("common/scripted_triggers"))
+			.map_or(true, |mut files| files.next().is_none()),
+		"a module held for review writes no output"
+	);
+}
+
+#[test]
+fn force_merges_the_rest_of_a_module_with_an_isolated_definition() {
+	let scratch = TempDir::new().unwrap();
+	let (out, _, _) = merge_triggers(scratch.path(), ISOLATED_TRIGGERS, true);
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert_eq!(report.isolated_definitions.len(), 1, "{report:#?}");
+	assert!(
+		report
+			.warnings
+			.iter()
+			.any(|warning| warning.contains("--force kept")),
+		"{:?}",
+		report.warnings
+	);
+	let merged = merged_triggers(&out);
+	assert!(
+		merged.contains("a_check") && merged.contains("b_check"),
+		"{merged}"
+	);
+	assert!(!merged.contains("b_open"), "{merged}");
+}
+
+#[test]
+fn an_isolated_override_of_a_vanilla_definition_keeps_the_vanilla_one() {
+	let scratch = TempDir::new().unwrap();
+	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");
+	let mod_b = scratch.path().join("b");
+	// B replaces the vanilla file; its `base_check` cannot be read, and must
+	// not read as deleted.
 	let source =
-		"b_check = { always = yes }\n}\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n";
-	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+		"base_check = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\nb_new = { always = yes }\n";
+	write_script_file(&mod_b, "common/scripted_triggers/00_triggers.txt", source);
 	let out = scratch.path().join("out");
 	let (code, stdout, stderr) = run_foch(
 		&[
@@ -409,17 +509,32 @@ fn an_error_without_a_single_reading_defers_the_module_even_with_force() {
 		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
 	assert_eq!(
 		report.status,
-		foch::model::MergeReportStatus::PartialSuccess,
+		foch::model::MergeReportStatus::Ready,
 		"{report:#?}"
 	);
-	assert_eq!(report.unsupported_input_count, 1, "{report:#?}");
-	assert!(
-		fs::read_dir(out.join("common/scripted_triggers")).is_err(),
-		"a deferred module writes no output"
-	);
 	assert_eq!(
-		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
-		source
+		report
+			.isolated_definitions
+			.iter()
+			.map(|isolated| isolated.isolation.definition.as_str())
+			.collect::<Vec<_>>(),
+		["base_check"]
+	);
+	let merged = merged_triggers(&out);
+	assert!(merged.contains("b_new"), "{merged}");
+	assert!(!merged.contains("always = no"), "{merged}");
+	// Either the vanilla definition stays the game's own, or it is written as
+	// vanilla has it; it is never dropped.
+	if merged.contains("base_check") {
+		let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+			foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+			&merged,
+		);
+		assert!(parsed.diagnostics.is_empty(), "{merged}");
+	}
+	assert!(
+		!merged.contains("base_check") || merged.contains("base_check = {"),
+		"{merged}"
 	);
 }
 
@@ -501,12 +616,12 @@ fn stage_structural_manual_conflict(mod_a: &Path, mod_b: &Path) {
 		STRUCTURAL_CONFLICT_PATH,
 		"country_event = { id = test.1 }\n",
 	);
-	// Malformed Clausewitz: produces a parse diagnostic ("无法解析的语句起始 token"),
-	// which downgrades the structural merge to ManualConflict.
+	// Malformed Clausewitz that names no definition, so no part of it can be
+	// repaired or isolated: the structural merge reports unsupported input.
 	write_script_file(
 		mod_b,
 		STRUCTURAL_CONFLICT_PATH,
-		"name { = invalid syntax with unclosed\nbraces\n",
+		"} name { = invalid syntax with unclosed\nbraces\n",
 	);
 }
 
@@ -1198,7 +1313,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v17.0.0")
+			.join("v18.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),

@@ -401,6 +401,7 @@ pub fn index_with_one_record_of_each_kind(path: impl Fn(usize) -> GamePathBuf) -
 			column: 1,
 			message: "issue".to_string(),
 			repair: None,
+			isolation: None,
 		}],
 	}
 }

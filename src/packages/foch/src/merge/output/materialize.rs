@@ -43,10 +43,11 @@ use crate::merge::model::VanillaBaseMode;
 use crate::merge::review::{MergeDisposition, MergeReview, PlaysetProvenance, UnitOutcomeLedger};
 use crate::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath, GamePathBuf,
-	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
-	MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
-	MergeReportConflictResolution, MergeReportSourceRepair, MergeReportStatus, MergeTraceEntry,
-	SemanticIndex, StaleVanillaTargetDescriptor,
+	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeBackendId,
+	MergeModuleOutput, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget,
+	MergeReport, MergeReportConflictResolution, MergeReportIsolatedDefinition,
+	MergeReportSourceRepair, MergeReportStatus, MergeTraceEntry, SemanticIndex,
+	StaleVanillaTargetDescriptor,
 };
 use crate::project::{AppliedDepOverride, DepOverride, ResolutionDecision, ResolutionMap};
 use analysis::{
@@ -522,6 +523,19 @@ pub(crate) fn materialize_with_adaptations(
 		&mut review,
 		&mut report,
 	)?;
+	// Only the default backend reads an isolated definition as unchanged; any
+	// other would have read its absence as a deletion.
+	let keep_with_force =
+		options.force && options.backend.descriptor().id == MergeBackendId::GumtreePcsNway;
+	withhold_isolated_definitions(
+		&input,
+		&plan,
+		keep_with_force,
+		out_dir,
+		&mut outputs,
+		&mut review,
+		&mut report,
+	)?;
 	let UnitOutputs {
 		generated_paths,
 		mut counted_generated_paths,
@@ -668,45 +682,27 @@ fn record_source_repairs(
 			continue;
 		}
 		let unit_id = unit.id.clone();
-		let input_paths: Vec<&GamePath> = match &entry.target {
-			MergePlanTarget::File { path } => vec![path],
-			MergePlanTarget::Module { input_paths, .. } => {
-				input_paths.iter().map(GamePathBuf::as_game_path).collect()
-			}
-		};
 		let mut notes = Vec::new();
-		for path in input_paths {
-			for contributor in input.file_inventory.get(path).into_iter().flatten() {
-				if contributor.is_synthetic_base {
-					continue;
-				}
-				// Only a parsed script can carry a repair; anything else fails
-				// to load here and is reported by the unit itself.
-				let Ok(parsed) = input.script_cache.load(contributor) else {
-					continue;
-				};
-				for issue in &parsed.parse_issues {
-					let Some(repair) = issue.repair else {
-						continue;
-					};
-					notes.push(format!(
-						"source repair in {}: {}:{}:{}: {}; the source file is unchanged",
-						issue.mod_id,
-						issue.path,
-						issue.line,
-						issue.column,
-						repair.description()
-					));
-					report.source_repairs.push(MergeReportSourceRepair {
-						unit: unit_id.clone(),
-						mod_id: issue.mod_id.clone(),
-						path: issue.path.clone(),
-						line: issue.line,
-						column: issue.column,
-						repair,
-					});
-				}
-			}
+		for (_, issue) in unit_parse_issues(input, entry, unit.disposition) {
+			let Some(repair) = issue.repair else {
+				continue;
+			};
+			notes.push(format!(
+				"source repair in {}: {}:{}:{}: {}; the source file is unchanged",
+				issue.mod_id,
+				issue.path,
+				issue.line,
+				issue.column,
+				repair.description()
+			));
+			report.source_repairs.push(MergeReportSourceRepair {
+				unit: unit_id.clone(),
+				mod_id: issue.mod_id,
+				path: issue.path,
+				line: issue.line,
+				column: issue.column,
+				repair,
+			});
 		}
 		if !notes.is_empty() {
 			review.add_notes(entry, notes)?;
@@ -816,43 +812,172 @@ fn withhold_incomplete_transform_group(
 		blocked.join(", ")
 	);
 	for entry in related {
-		let unit = review.outcome(entry)?;
-		let was_safe = matches!(
-			unit.disposition,
-			MergeDisposition::Safe | MergeDisposition::Copy
-		);
-		let written = !unit.output_paths.is_empty();
-		discard_module_output(entry, out_dir, &mut outputs.generated_paths)?;
-		for path in entry.target.output_paths() {
-			outputs.counted_generated_paths.remove(path);
-			outputs.provenance_localisation_by_script.remove(path);
-		}
-		let queued = outputs.pending_copy_through.len();
-		outputs
-			.pending_copy_through
-			.retain(|pending| pending.output_path() != entry.output_path());
-		report.copied_file_count -= queued - outputs.pending_copy_through.len();
-		if written && entry.strategy == MergePlanStrategy::LastWriterOverlay {
-			report.overlay_file_count = report.overlay_file_count.saturating_sub(1);
-		}
-		if was_safe {
-			record_deferred_unit(report, DeferredUnitReason::NeedsUserChoice);
-			if matches!(entry.target, MergePlanTarget::Module { .. }) {
-				report.definition_module_blocked_count += 1;
-			}
-			report
-				.conflict_resolutions
-				.push(input_conflict_skipped_resolution(
-					entry,
-					&reason,
-					DeferredUnitReason::NeedsUserChoice,
-					Vec::new(),
-				));
-		}
-		review.withhold_dependency(entry, &reason)?;
+		withhold_unit_output(entry, &reason, out_dir, outputs, review, report)?;
 	}
 	report.warnings.push(reason);
 	Ok(())
+}
+
+/// Takes back everything a resolved unit wrote or queued and leaves it for
+/// review with `reason`; a unit that was safe is counted as deferred.
+fn withhold_unit_output(
+	entry: &MergePlanEntry,
+	reason: &str,
+	out_dir: &Path,
+	outputs: &mut UnitOutputs,
+	review: &mut UnitOutcomeLedger,
+	report: &mut MergeReport,
+) -> Result<(), MergeError> {
+	let unit = review.outcome(entry)?;
+	let was_safe = matches!(
+		unit.disposition,
+		MergeDisposition::Safe | MergeDisposition::Copy
+	);
+	let written = !unit.output_paths.is_empty();
+	discard_module_output(entry, out_dir, &mut outputs.generated_paths)?;
+	for path in entry.target.output_paths() {
+		outputs.counted_generated_paths.remove(path);
+		outputs.provenance_localisation_by_script.remove(path);
+	}
+	let queued = outputs.pending_copy_through.len();
+	outputs
+		.pending_copy_through
+		.retain(|pending| pending.output_path() != entry.output_path());
+	report.copied_file_count -= queued - outputs.pending_copy_through.len();
+	if written && entry.strategy == MergePlanStrategy::LastWriterOverlay {
+		report.overlay_file_count = report.overlay_file_count.saturating_sub(1);
+	}
+	if was_safe {
+		record_deferred_unit(report, DeferredUnitReason::NeedsUserChoice);
+		if matches!(entry.target, MergePlanTarget::Module { .. }) {
+			report.definition_module_blocked_count += 1;
+		}
+		report
+			.conflict_resolutions
+			.push(input_conflict_skipped_resolution(
+				entry,
+				reason,
+				DeferredUnitReason::NeedsUserChoice,
+				Vec::new(),
+			));
+	}
+	review.withhold_dependency(entry, reason)
+}
+
+/// Each definition a unit read that was left out of its file because its
+/// syntax error has no trustworthy repair. The merge read it as the mod's
+/// parent has it, so that mod's version is missing from the result: a unit
+/// that read one is held for review, unless `--force` accepts the result. A
+/// copied unit installs the file's bytes unchanged and only gets the notes.
+fn withhold_isolated_definitions(
+	input: &ResolvedInput,
+	plan: &MergePlanResult,
+	keep_with_force: bool,
+	out_dir: &Path,
+	outputs: &mut UnitOutputs,
+	review: &mut UnitOutcomeLedger,
+	report: &mut MergeReport,
+) -> Result<(), MergeError> {
+	for entry in &plan.paths {
+		let unit = review.outcome(entry)?;
+		let disposition = unit.disposition;
+		let unit_id = unit.id.clone();
+		let mut notes = Vec::new();
+		for (contributor, issue) in unit_parse_issues(input, entry, disposition) {
+			let Some(isolation) = &issue.isolation else {
+				continue;
+			};
+			let proposals = isolation
+				.proposals
+				.iter()
+				.map(|proposal| proposal.description())
+				.collect::<Vec<_>>();
+			notes.push(format!(
+				"definition `{}` in {}: {}:{}-{} has a syntax error with no trustworthy repair, so {}'s version of it is not in the result{}",
+				isolation.definition,
+				contributor,
+				issue.path,
+				issue.line,
+				isolation.end_line,
+				contributor,
+				if proposals.is_empty() {
+					String::new()
+				} else {
+					format!("; repairs that could be meant: {}", proposals.join(", "))
+				}
+			));
+			report
+				.isolated_definitions
+				.push(MergeReportIsolatedDefinition {
+					unit: unit_id.clone(),
+					mod_id: contributor.to_owned(),
+					path: issue.path.clone(),
+					line: issue.line,
+					column: issue.column,
+					isolation: isolation.clone(),
+				});
+		}
+		if notes.is_empty() {
+			continue;
+		}
+		let held = matches!(disposition, MergeDisposition::Safe) && !keep_with_force;
+		if held {
+			let reason = format!(
+				"{} definition(s) could not be read with confidence; review them or merge with --force to keep them as the mods' parents have them",
+				notes.len()
+			);
+			withhold_unit_output(entry, &reason, out_dir, outputs, review, report)?;
+		} else if matches!(disposition, MergeDisposition::Safe) {
+			let warning = format!(
+				"--force kept {} with {} definition(s) as the mods' parents have them",
+				entry.output_path(),
+				notes.len()
+			);
+			report.warnings.push(warning.clone());
+			notes.push(warning);
+		}
+		review.add_notes(entry, notes)?;
+	}
+	Ok(())
+}
+
+/// The parse issues of the files a unit read, with the mod that each file
+/// belongs to. A copied unit reads nothing, so it only reports issues a file
+/// was already parsed with.
+fn unit_parse_issues<'a>(
+	input: &'a ResolvedInput,
+	entry: &'a MergePlanEntry,
+	disposition: MergeDisposition,
+) -> Vec<(&'a str, crate::model::ParseIssue)> {
+	let input_paths: Vec<&GamePath> = match &entry.target {
+		MergePlanTarget::File { path } => vec![path],
+		MergePlanTarget::Module { input_paths, .. } => {
+			input_paths.iter().map(GamePathBuf::as_game_path).collect()
+		}
+	};
+	let mut issues = Vec::new();
+	for path in input_paths {
+		for contributor in input.file_inventory.get(path).into_iter().flatten() {
+			if contributor.is_synthetic_base {
+				continue;
+			}
+			let parsed = if disposition == MergeDisposition::Copy {
+				input
+					.script_cache
+					.get(&contributor.mod_id, &contributor.relative_path)
+					.ok()
+					.flatten()
+			} else {
+				// Only a parsed script has issues; anything else fails to
+				// load here and is reported by the unit itself.
+				input.script_cache.load(contributor).ok()
+			};
+			for issue in parsed.iter().flat_map(|parsed| &parsed.parse_issues) {
+				issues.push((contributor.mod_id.as_str(), issue.clone()));
+			}
+		}
+	}
+	issues
 }
 
 /// What applying a unit's analysis reads. Applying writes the output tree and
