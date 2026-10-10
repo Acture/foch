@@ -31,7 +31,11 @@ use windows_sys::Win32::{
 			GetModuleFileNameW, GetModuleHandleExW, GetProcAddress,
 			LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 		},
-		Memory::{MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery},
+		Memory::{
+			MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+			PAGE_EXECUTE_WRITECOPY, PAGE_GUARD, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE,
+			PAGE_WRITECOPY, VirtualQuery,
+		},
 		Threading::GetCurrentProcessId,
 	},
 };
@@ -452,7 +456,15 @@ fn readable(ptr: *const u8, len: usize) -> bool {
 			)
 		} == 0 || info.State != MEM_COMMIT
 			|| info.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0
-		{
+			|| !matches!(
+				info.Protect & 0xff,
+				PAGE_READONLY
+					| PAGE_READWRITE
+					| PAGE_WRITECOPY
+					| PAGE_EXECUTE_READ
+					| PAGE_EXECUTE_READWRITE
+					| PAGE_EXECUTE_WRITECOPY
+			) {
 			return false;
 		}
 		let Some(next) = (info.BaseAddress as usize).checked_add(info.RegionSize) else {
@@ -704,4 +716,49 @@ unsafe extern "C" fn unsupported_patch_toggle(
 	_: i32,
 ) -> i32 {
 	abi::result::E_UNSUPPORTED
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use windows_sys::Win32::System::Memory::{
+		MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+		PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
+	};
+
+	#[test]
+	fn readable_requires_a_readable_page_protection() {
+		let page = unsafe {
+			VirtualAlloc(
+				std::ptr::null(),
+				4096,
+				MEM_COMMIT | MEM_RESERVE,
+				PAGE_READWRITE,
+			)
+		};
+		assert!(!page.is_null());
+		let checks: Vec<_> = [
+			(PAGE_EXECUTE, false),
+			(PAGE_NOACCESS, false),
+			(PAGE_READWRITE | PAGE_GUARD, false),
+			(PAGE_READONLY, true),
+			(PAGE_READWRITE, true),
+			(PAGE_EXECUTE_READ, true),
+			(PAGE_EXECUTE_READWRITE, true),
+		]
+		.into_iter()
+		.map(|(protection, expected)| {
+			let mut old = 0;
+			assert_ne!(
+				unsafe { VirtualProtect(page, 4096, protection, &mut old) },
+				0
+			);
+			(protection, expected, readable(page.cast(), 4096))
+		})
+		.collect();
+		assert_ne!(unsafe { VirtualFree(page, 0, MEM_RELEASE) }, 0);
+		for (protection, expected, actual) in checks {
+			assert_eq!(actual, expected, "protection {protection:#x}");
+		}
+	}
 }

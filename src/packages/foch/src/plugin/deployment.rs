@@ -355,13 +355,19 @@ impl Deployment {
 		run_id: &str,
 		game_root: &Path,
 	) -> io::Result<Prepared> {
+		if !store::ordinary_metadata(runtime)?.is_dir() {
+			return Err(io::Error::other(
+				"runtime layer is not an ordinary directory",
+			));
+		}
 		let runtime = runtime.canonicalize()?;
-		if !runtime.join("foch-runtime").is_file() {
+		if !store::ordinary_metadata(&runtime.join("foch-runtime"))?.is_file() {
 			return Err(io::Error::other("not a prepared Foch runtime layer"));
 		}
+		ensure_outside_game(game_root, &runtime)?;
+		ensure_outside_game(game_root, data_root)?;
 		fs::create_dir(runtime.join("plugins"))?;
 		fs::create_dir(runtime.join("foch-host"))?;
-		ensure_outside_game(game_root, data_root)?;
 		fs::create_dir_all(data_root)?;
 		let data_root = data_root.canonicalize()?;
 		let mut plan = HostPlan {

@@ -52,6 +52,8 @@ it is not a filesystem sandbox. Game and native DLL code runs with the player's
 permissions and can write through shared links or access original paths.
 Installed plugin/version directories and manifests must be ordinary entries
 inside the configured store; symbolic links and reparse points are refused.
+Package-relative file paths currently use ASCII so Windows case collisions are
+checked consistently on every management platform.
 
 Player layers are retained when management exits, and test-session sweeping
 skips them. Close the game before removing a retained layer; unlink its data

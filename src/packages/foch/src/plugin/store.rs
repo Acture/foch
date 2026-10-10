@@ -135,10 +135,11 @@ fn hex(bytes: &[u8]) -> String {
 
 /// A normalized, verified-safe relative path, or why it is unsafe. Accepts
 /// `/` and `\` separators and rejects absolute paths, drive letters, `..`,
-/// and `.` components.
+/// and `.` components. Package-relative names currently use ASCII so the
+/// case-collision checks match supported Windows paths on every platform.
 fn safe_relative(path: &str) -> Result<String, ImportError> {
 	let unsafe_path = || ImportError::UnsafePath(path.to_string());
-	if path.is_empty() {
+	if path.is_empty() || !path.is_ascii() {
 		return Err(unsafe_path());
 	}
 	let normalized = path.replace('\\', "/");
@@ -470,7 +471,7 @@ pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<Stri
 	(versions, problems)
 }
 
-fn ordinary_metadata(path: &Path) -> io::Result<fs::Metadata> {
+pub(super) fn ordinary_metadata(path: &Path) -> io::Result<fs::Metadata> {
 	let metadata = fs::symlink_metadata(path)?;
 	if metadata.file_type().is_symlink() {
 		return Err(io::Error::other(
@@ -628,6 +629,18 @@ sha256 = "{dll_digest}"
 				.iter()
 				.any(|e| matches!(e, ImportError::CaseCollision(_, _)))
 		);
+	}
+
+	#[test]
+	fn rejects_non_ascii_package_paths() {
+		let mut entries = package(fake_dll());
+		for path in ["ä.dll", "Ä.dll"] {
+			entries.push(ArchiveEntry {
+				path: path.into(),
+				data: fake_dll(),
+			});
+		}
+		assert!(validate(entries).is_err());
 	}
 
 	#[test]

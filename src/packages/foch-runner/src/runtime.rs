@@ -480,5 +480,29 @@ mod tests {
 		);
 		assert_eq!(fs::read_dir(source.path()).unwrap().count(), 0);
 		platform::remove_layer(&state);
+		let marked_outside = output.path().join("marked-outside");
+		fs::create_dir(&marked_outside).unwrap();
+		fs::write(marked_outside.join("foch-runtime"), "fixture marker").unwrap();
+		let runtime_link = output.path().join("runtime-link");
+		platform::link_dir(&marked_outside, &runtime_link).unwrap();
+		let result = deployment.stage(&runtime_link, &data, "linked-runtime", source.path());
+		platform::remove_layer(&runtime_link);
+		assert!(result.is_err(), "linked runtime accepted for staging");
+		assert_eq!(fs::read_dir(&marked_outside).unwrap().count(), 1);
+		fs::write(source.path().join("foch-runtime"), "fixture marker").unwrap();
+		assert!(
+			deployment
+				.stage(source.path(), &data, "inside-game", source.path())
+				.is_err()
+		);
+		platform::link_dir(source.path(), &runtime_link).unwrap();
+		let result = deployment.stage(&runtime_link, &data, "linked-game", source.path());
+		platform::remove_layer(&runtime_link);
+		assert!(result.is_err());
+		assert_eq!(fs::read_dir(source.path()).unwrap().count(), 1);
+		assert_eq!(
+			fs::read_to_string(source.path().join("foch-runtime")).unwrap(),
+			"fixture marker"
+		);
 	}
 }
