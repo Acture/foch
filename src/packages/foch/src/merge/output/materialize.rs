@@ -1019,6 +1019,7 @@ fn apply_module_unit(
 	module: ModuleAnalysis,
 ) -> Result<(), MergeError> {
 	let module_started = Instant::now();
+	report.warnings.extend(module.warnings.iter().cloned());
 	let deferred_before = report.deferred_unit_count();
 	let outcome = materialize_cross_file_module(CrossFileModuleMaterializeContext {
 		input: env.input,

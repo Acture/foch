@@ -275,6 +275,15 @@ fn assert_culture_adaptation(case: CultureCase) {
 		"common/scripted_triggers/base.txt",
 		"base_culture_check = { primary_culture = old }\n",
 	);
+	if case == CultureCase::GroupKey {
+		// The game ships reforms; the family requires that vanilla base.
+		write(
+			&game,
+			"common/government_reforms/base.txt",
+			"base_reform = { icon = base }
+",
+		);
+	}
 	if case == CultureCase::BaseParameter {
 		write(
 			&game,
@@ -650,14 +659,40 @@ fn assert_culture_adaptation(case: CultureCase) {
 		assert!(!out.exists());
 		return;
 	}
-	if case == CultureCase::RetainedGroupMove {
-		assert_eq!(analyzed.review_summary().engine_failure, 0);
-		assert!(analyzed.review_summary().needs_user_choice > 0);
+	if matches!(
+		case,
+		CultureCase::GroupPredicate
+			| CultureCase::SiblingGroupMove
+			| CultureCase::GroupModifier
+			| CultureCase::DynamicGroup
+			| CultureCase::GroupKey
+			| CultureCase::RetainedGroupMove
+			| CultureCase::IntroducedGroupMove
+			| CultureCase::IgnoredGroupPredicate
+	) {
+		// A group move adapts nothing: the game evaluates group predicates and
+		// inherited fields against the merged hierarchy, as it would load the
+		// moving mod. The move is reported on the culture unit, not withheld.
+		assert_eq!(
+			analyzed.review_summary().engine_failure,
+			0,
+			"{:#?}",
+			analyzed.list_units()
+		);
+		assert_eq!(
+			analyzed.review_summary().needs_user_choice,
+			0,
+			"{:#?}",
+			analyzed.list_units()
+		);
 		assert!(
 			analyzed
 				.list_units()
 				.iter()
-				.all(|unit| unit.output_paths.is_empty())
+				.flat_map(|unit| &unit.notes)
+				.any(|note| note.contains("moves from group")),
+			"{:#?}",
+			analyzed.list_units()
 		);
 		return;
 	}
@@ -667,15 +702,7 @@ fn assert_culture_adaptation(case: CultureCase) {
 			| CultureCase::UnsupportedUse
 			| CultureCase::ForceUnsupportedUse
 			| CultureCase::Ambiguous
-			| CultureCase::GroupPredicate
-			| CultureCase::SiblingGroupMove
-			| CultureCase::GroupModifier
-			| CultureCase::DynamicGroup
-			| CultureCase::GroupKey
-			| CultureCase::RetainedGroupMove
-			| CultureCase::IntroducedGroupMove
 			| CultureCase::IgnoredReferences
-			| CultureCase::IgnoredGroupPredicate
 			| CultureCase::ParameterizedReference
 			| CultureCase::ForwardedParameter
 			| CultureCase::ParameterDefault

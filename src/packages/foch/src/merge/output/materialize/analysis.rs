@@ -126,6 +126,8 @@ pub(super) struct ModuleAnalysis {
 	/// namespace that did not merge: a unit that stops there writes nothing,
 	/// so the namespaces after it are never needed.
 	pub(super) namespaces: Vec<NamespaceAnalysis>,
+	/// Overrides the module views resolved, reported on the merge.
+	pub(super) warnings: Vec<String>,
 	pub(super) elapsed: Duration,
 }
 
@@ -221,9 +223,10 @@ fn analyze_structural_unit(
 	}
 	if matches!(&entry.target, MergePlanTarget::Module { .. }) {
 		let started: Instant = Instant::now();
-		let namespaces: Vec<NamespaceAnalysis> = analyze_module(context, entry, prompt);
+		let (namespaces, warnings) = analyze_module(context, entry, prompt);
 		return UnitAnalysis::Module(ModuleAnalysis {
 			namespaces,
+			warnings,
 			elapsed: started.elapsed(),
 		});
 	}
@@ -300,18 +303,19 @@ fn analyze_module(
 	context: &UnitAnalysisContext<'_>,
 	entry: &MergePlanEntry,
 	mut prompt: InteractivePrompt<'_>,
-) -> Vec<NamespaceAnalysis> {
+) -> (Vec<NamespaceAnalysis>, Vec<String>) {
 	let mut analyses: Vec<NamespaceAnalysis> = Vec::new();
+	let mut warnings: Vec<String> = Vec::new();
 	for namespace in entry.target.module_outputs() {
 		let analysis: NamespaceAnalysis =
-			analyze_module_namespace(context, entry, namespace, prompt.reborrow());
+			analyze_module_namespace(context, entry, namespace, prompt.reborrow(), &mut warnings);
 		let merged: bool = analysis.merged();
 		analyses.push(analysis);
 		if !merged {
 			break;
 		}
 	}
-	analyses
+	(analyses, warnings)
 }
 
 fn analyze_module_namespace(
@@ -319,6 +323,7 @@ fn analyze_module_namespace(
 	entry: &MergePlanEntry,
 	namespace: &MergeModuleOutput,
 	prompt: InteractivePrompt<'_>,
+	warnings: &mut Vec<String>,
 ) -> NamespaceAnalysis {
 	let output_path: &GamePath = namespace.output_path();
 	eprintln!("[merge] definition module: start {output_path}");
@@ -357,6 +362,12 @@ fn analyze_module_namespace(
 			return NamespaceAnalysis::Failed(DeferredUnitReason::EngineFailure, reason);
 		}
 	};
+	warnings.extend(
+		views
+			.warnings
+			.iter()
+			.map(|warning| format!("{output_path}: {warning}")),
+	);
 	let merge_context: StructuralMergeContext<'_> = StructuralMergeContext {
 		entity_transform: context.transforms.entity_transform(output_path),
 		descriptor,

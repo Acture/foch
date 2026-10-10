@@ -23,6 +23,9 @@ pub(crate) struct CrossFileModuleViews {
 	pub vanilla: Option<ParsedScriptFile>,
 	pub contributors: HashMap<ModId, ParsedScriptFile>,
 	pub definition_sources: HashMap<ModId, BTreeMap<String, ModuleDefinitionSource>>,
+	/// Overrides the folded views resolved, such as a mod's file redefining a
+	/// vanilla culture, deduplicated across views.
+	pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -153,18 +156,30 @@ pub(crate) fn build_cross_file_module_views(
 		ignore_replace_path,
 		dep_overrides,
 	);
+	let resolves_culture_overrides =
+		crate::game::eu4::cultures::correspondence::CultureCorrespondence::applies_to(
+			namespace.output_path(),
+		);
+	let mut warnings = BTreeSet::new();
+	let mut resolve_overrides = |parsed: &mut ParsedScriptFile| {
+		if resolves_culture_overrides {
+			warnings.extend(crate::game::eu4::cultures::supersede_redefined_cultures(
+				&mut parsed.ast,
+			));
+		}
+	};
 	let vanilla = if base_files.is_empty() {
 		None
 	} else {
-		Some(
-			fold_visible_module_files(
-				"__base_game__",
-				&merge_unit.module_name,
-				module_policy,
-				&base_files,
-			)?
-			.parsed,
-		)
+		let mut parsed = fold_visible_module_files(
+			"__base_game__",
+			&merge_unit.module_name,
+			module_policy,
+			&base_files,
+		)?
+		.parsed;
+		resolve_overrides(&mut parsed);
+		Some(parsed)
 	};
 
 	let mut effective_views = HashMap::new();
@@ -204,8 +219,10 @@ pub(crate) fn build_cross_file_module_views(
 			module_policy,
 			&visible,
 		)?;
+		let mut parsed = folded.parsed;
+		resolve_overrides(&mut parsed);
 		definition_sources.insert(mod_id.clone(), folded.sources);
-		effective_views.insert(mod_id.clone(), folded.parsed);
+		effective_views.insert(mod_id.clone(), parsed);
 	}
 
 	Ok(CrossFileModuleViews {
@@ -214,6 +231,7 @@ pub(crate) fn build_cross_file_module_views(
 		vanilla,
 		contributors: effective_views,
 		definition_sources,
+		warnings: warnings.into_iter().collect(),
 	})
 }
 
@@ -1003,6 +1021,7 @@ mod tests {
 			vanilla: None,
 			contributors: std::collections::HashMap::from([(mod_id.clone(), folded.parsed)]),
 			definition_sources: std::collections::HashMap::from([(mod_id.clone(), folded.sources)]),
+			warnings: Vec::new(),
 		};
 		let mut entry = CultureRenameEntry {
 			from: "old_culture".into(),

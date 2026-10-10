@@ -163,6 +163,81 @@ impl CultureIndex {
 	}
 }
 
+/// Keeps only the last definition of each culture in a folded module view.
+///
+/// A view folds every visible file in load order, so a mod that redefines a
+/// vanilla culture in its own file, possibly in another group, lists it twice.
+/// The later definition is the mod's override: the earlier one is removed from
+/// its group and each override is returned as a warning.
+pub(crate) fn supersede_redefined_cultures(ast: &mut AstFile) -> Vec<String> {
+	let mut last: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+	let mut groups_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+	for (group_index, statement) in ast.statements.iter().enumerate() {
+		let AstStatement::Assignment {
+			key: group,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		for (child_index, child) in items.iter().enumerate() {
+			if let AstStatement::Assignment {
+				key,
+				value: AstValue::Block { .. },
+				..
+			} = child && !is_metadata(key)
+				&& key != "primary"
+			{
+				last.insert(key.clone(), (group_index, child_index));
+				groups_of
+					.entry(key.clone())
+					.or_default()
+					.push(group.clone());
+			}
+		}
+	}
+	let mut warnings = Vec::new();
+	for (id, groups) in &groups_of {
+		if let [earlier @ .., latest] = groups.as_slice()
+			&& !earlier.is_empty()
+		{
+			warnings.push(format!(
+				"culture `{id}` is redefined by a later file in group `{latest}`; it overrides the earlier definition in {}",
+				earlier
+					.iter()
+					.map(|group| format!("`{group}`"))
+					.collect::<Vec<_>>()
+					.join(", ")
+			));
+		}
+	}
+	if warnings.is_empty() {
+		return warnings;
+	}
+	for (group_index, statement) in ast.statements.iter_mut().enumerate() {
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		let mut child_index = 0;
+		items.retain(|child| {
+			let keep = match child {
+				AstStatement::Assignment { key, .. } => last
+					.get(key)
+					.is_none_or(|position| *position == (group_index, child_index)),
+				_ => true,
+			};
+			child_index += 1;
+			keep
+		});
+	}
+	warnings
+}
+
 fn location(path: &GamePath, span: &SpanRange) -> CultureLocation {
 	CultureLocation {
 		relative_path: path.to_owned(),
@@ -769,6 +844,40 @@ mod tests {
 
 	fn game_path(text: &str) -> crate::model::GamePathBuf {
 		crate::model::GamePathBuf::parse(text).expect("test game path")
+	}
+
+	#[test]
+	fn a_later_culture_definition_overrides_the_earlier_one_with_a_warning() {
+		let path = game_path("common/cultures/zzz_foch_cultures.txt");
+		// The folded view of a mod moving `quebecois` from vanilla's group.
+		let mut ast = super::super::script::parser::parse_clausewitz_content(
+			&path,
+			"latin = { graphical_culture = westerngfx french = { primary = FRA } quebecois = { primary = QUE } }
+			british = { english = { primary = ENG } quebecois = { primary = CAN } }
+",
+		)
+		.ast;
+
+		let warnings = supersede_redefined_cultures(&mut ast);
+
+		assert_eq!(warnings.len(), 1, "{warnings:?}");
+		assert!(warnings[0].contains("`quebecois`"), "{warnings:?}");
+		assert!(warnings[0].contains("`british`") && warnings[0].contains("`latin`"));
+		let index = CultureIndex::from_documents(&[(path, ast)]).expect("one definition each");
+		assert_eq!(index.definitions["quebecois"].group, "british");
+		assert_eq!(index.definitions["french"].group, "latin");
+	}
+
+	#[test]
+	fn a_view_without_redefinitions_is_unchanged() {
+		let path = game_path("common/cultures/zzz_foch_cultures.txt");
+		let source = "latin = { french = { primary = FRA } }
+";
+		let mut ast = super::super::script::parser::parse_clausewitz_content(&path, source).ast;
+		let before = ast.clone();
+
+		assert!(supersede_redefined_cultures(&mut ast).is_empty());
+		assert_eq!(ast, before);
 	}
 
 	#[test]
