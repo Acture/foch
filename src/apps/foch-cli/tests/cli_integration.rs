@@ -2201,6 +2201,74 @@ fn merge_review_json_is_written_without_committing() {
 	assert_eq!(point["options"][0]["scopes"][1]["scope"], "file");
 }
 
+/// `--review-json` refuses, before analysis, to overwrite a file that is not
+/// an earlier review, such as the playset, and to write into `--out`. A
+/// repeated run may replace its own earlier review.
+#[test]
+fn merge_review_json_never_overwrites_an_input_or_writes_into_the_output() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	stage_dag_genuine_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+	);
+	let playlist = fs::read(&playlist_path).expect("read playlist");
+	let run = |review: &Path| {
+		run_foch(
+			&[
+				"merge",
+				path_text(&playlist_path),
+				"--out",
+				path_text(&out_dir),
+				"--no-game-base",
+				"--non-interactive",
+				"--review-json",
+				path_text(review),
+			],
+			tmp.path(),
+		)
+	};
+
+	let (code, stdout, stderr) = run(&playlist_path);
+	assert_ne!(
+		code, 0,
+		"{stdout}
+{stderr}"
+	);
+	assert!(stderr.contains("not a foch merge review"), "{stderr}");
+	assert!(
+		!stdout.contains("Foch Merge Review"),
+		"refused before analysis: {stdout}"
+	);
+	assert_eq!(fs::read(&playlist_path).expect("read playlist"), playlist);
+
+	let (code, stdout, stderr) = run(&out_dir.join("review.json"));
+	assert_ne!(
+		code, 0,
+		"{stdout}
+{stderr}"
+	);
+	assert!(stderr.contains("inside --out"), "{stderr}");
+	assert!(!out_dir.exists());
+
+	let review_path = tmp.path().join("review.json");
+	for _ in 0..2 {
+		let (code, stdout, stderr) = run(&review_path);
+		assert_eq!(
+			code, 0,
+			"{stdout}
+{stderr}"
+		);
+		assert_eq!(
+			read_json_file(&review_path)["schema"],
+			"foch.merge_review.v1"
+		);
+	}
+}
+
 #[test]
 fn merge_command_force_writes_placeholder_only_for_genuine_user_choice() {
 	let tmp = TempDir::new().expect("temp dir");

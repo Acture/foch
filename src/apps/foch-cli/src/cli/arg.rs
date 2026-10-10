@@ -257,7 +257,8 @@ pub struct MergeArgs {
 	/// contributors, each deferred unit's conflict tree with the competing
 	/// candidates, and every decision point: a choice for one conflict as a
 	/// decision record, and one for its file or directory as the foch.toml
-	/// rule that would persist it.
+	/// rule that would persist it. It only replaces an earlier review and is
+	/// never written inside --out.
 	#[arg(long, value_name = "PATH")]
 	pub review_json: Option<PathBuf>,
 }
