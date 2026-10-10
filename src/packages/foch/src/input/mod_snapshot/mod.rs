@@ -3,10 +3,9 @@ mod store;
 use crate::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
 use crate::game::eu4::base::analysis_rules_version;
 use crate::game::eu4::script::documents::{
-	ParsedTextDocument, build_semantic_index_from_owned_documents,
-	discover_text_documents_from_paths, parse_discovered_text_documents,
+	build_semantic_index_from_owned_documents, discover_text_documents_from_paths,
+	parse_discovered_text_documents,
 };
-use crate::game::eu4::script::parser::AstStatement;
 use crate::model::{
 	DocumentFamily, DocumentRecord, FamilyParseStats, GamePathBuf, ModCandidate, ParseFamilyStats,
 	SemanticIndex,
@@ -33,7 +32,6 @@ pub(crate) struct LoadedModSnapshot {
 	#[cfg(test)]
 	pub clausewitz_parse_cache_misses: usize,
 	pub document_parse_hints: HashMap<GamePathBuf, bool>,
-	pub document_noop_hints: HashMap<GamePathBuf, bool>,
 	pub document_input_identities: HashMap<GamePathBuf, CachedDocumentInputIdentity>,
 	pub cache_hit: bool,
 }
@@ -276,7 +274,6 @@ fn to_loaded_snapshot_with_stats(
 	let CachedModData {
 		mut semantic_index,
 		inventory_paths,
-		document_noop_hints,
 		document_input_identities,
 	} = data;
 	apply_registered_param_contracts(&mut semantic_index);
@@ -285,11 +282,6 @@ fn to_loaded_snapshot_with_stats(
 		.iter()
 		.cloned()
 		.zip(semantic_index.documents.iter().map(|item| item.parse_ok))
-		.collect();
-	let document_noop_hints = document_paths
-		.iter()
-		.cloned()
-		.zip(document_noop_hints)
 		.collect();
 	let document_input_identities = document_paths
 		.into_iter()
@@ -308,7 +300,6 @@ fn to_loaded_snapshot_with_stats(
 		#[cfg(test)]
 		clausewitz_parse_cache_misses: _clausewitz_parse_cache_misses,
 		document_parse_hints,
-		document_noop_hints,
 		document_input_identities,
 		cache_hit,
 	})
@@ -358,7 +349,6 @@ fn parse_mod_snapshot(
 	let documents = discover_text_documents_from_paths(root, &document_paths);
 	let mut parsed = parse_discovered_text_documents(&mod_item.mod_id, root, &documents);
 	let semantic_started = Instant::now();
-	let document_noop_hints_by_path = collect_document_noop_hints(&parsed.documents);
 	let mut document_input_identities_by_path = parsed
 		.document_input_identities
 		.drain(..)
@@ -374,8 +364,6 @@ fn parse_mod_snapshot(
 		.collect::<HashMap<GamePathBuf, _>>();
 	let semantic_index =
 		build_semantic_index_from_owned_documents(std::mem::take(&mut parsed.documents));
-	let document_noop_hints =
-		document_noop_hints_for_index(&semantic_index, &document_noop_hints_by_path);
 	let document_input_identities = semantic_index
 		.documents
 		.iter()
@@ -387,7 +375,6 @@ fn parse_mod_snapshot(
 		data: CachedModData {
 			semantic_index,
 			inventory_paths,
-			document_noop_hints,
 			document_input_identities,
 		},
 		parse_stats,
@@ -417,39 +404,6 @@ pub(crate) fn build_transient_mod_snapshot(
 		full_snapshot.mod_hash.clone(),
 	)
 	.map(Some)
-}
-
-fn collect_document_noop_hints(documents: &[ParsedTextDocument]) -> HashMap<GamePathBuf, bool> {
-	documents
-		.iter()
-		.filter_map(|document| match document {
-			ParsedTextDocument::Clausewitz(file) => Some((
-				file.relative_path.clone(),
-				file.parse_issues.is_empty()
-					&& !ast_statement_list_has_real_content(&file.ast.statements),
-			)),
-			ParsedTextDocument::Localisation(_)
-			| ParsedTextDocument::Csv(_)
-			| ParsedTextDocument::Json(_) => None,
-		})
-		.collect()
-}
-
-fn document_noop_hints_for_index(
-	semantic_index: &SemanticIndex,
-	by_path: &HashMap<GamePathBuf, bool>,
-) -> Vec<bool> {
-	semantic_index
-		.documents
-		.iter()
-		.map(|document| by_path.get(&document.path).copied().unwrap_or(false))
-		.collect()
-}
-
-fn ast_statement_list_has_real_content(statements: &[AstStatement]) -> bool {
-	statements
-		.iter()
-		.any(|statement| !matches!(statement, AstStatement::Comment { .. }))
 }
 
 fn parse_stats_from_index(index: &SemanticIndex) -> ParseFamilyStats {
@@ -701,28 +655,6 @@ mod tests {
 				content_digest: blake3::hash(&effects_bytes).to_hex().to_string(),
 			})
 		);
-		assert_eq!(
-			warm.document_noop_hints
-				.get(&game_path("common/scripted_effects/comments.txt")),
-			Some(&true)
-		);
-		assert_eq!(
-			warm.document_noop_hints
-				.get(&game_path("common/scripted_effects/empty_block.txt")),
-			Some(&false),
-			"an empty assignment block can clear or override prior content"
-		);
-		assert_eq!(
-			warm.document_noop_hints
-				.get(&game_path("common/scripted_effects/comment_block.txt")),
-			Some(&false),
-			"comments inside an assigned block do not make the assignment a no-op"
-		);
-		assert_eq!(
-			warm.document_noop_hints
-				.get(&game_path("common/scripted_effects/effects.txt")),
-			Some(&false)
-		);
 		let semantic_entry = fs::read_dir(&cache_dir)
 			.expect("list semantic cache")
 			.filter_map(Result::ok)
@@ -825,7 +757,6 @@ mod tests {
 			})
 			.collect::<Vec<_>>();
 		let corrupt = CachedModData {
-			document_noop_hints: vec![false; documents.len()],
 			document_input_identities: vec![None; documents.len()],
 			semantic_index: SemanticIndex {
 				documents,

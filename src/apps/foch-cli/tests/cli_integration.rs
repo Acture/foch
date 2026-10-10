@@ -145,6 +145,43 @@ fn merge_keeps_an_event_file_namespace_before_its_events() {
 }
 
 #[test]
+fn merge_keeps_an_empty_file_that_disables_its_dependency() {
+	// An empty file at the same path replaces the file it overrides: a
+	// patch empties its dependency's events to disable them.
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let playlist: PathBuf = scratch.path().join("playset").join("dlc_load.json");
+	write_dlc_load(&playlist, &[("9321", "Base"), ("9322", "Patch")]);
+	let mods: &Path = playlist.parent().unwrap();
+	write_descriptor(&mods.join("9321"), "Base");
+	write_descriptor_with_dependencies(&mods.join("9322"), "Patch", &["Base"]);
+	write_script_file(
+		&mods.join("9321"),
+		"events/zz_disabled.txt",
+		"namespace = zz_disabled\ncountry_event = { id = zz_disabled.1 title = a is_triggered_only = yes option = { name = a } }\n",
+	);
+	write_script_file(&mods.join("9322"), "events/zz_disabled.txt", "");
+	let out: PathBuf = scratch.path().join("out");
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let merged = fs::read_to_string(out.join("events/zz_disabled.txt"))
+		.expect("the emptied file must still override its dependency");
+	assert!(!merged.contains("zz_disabled.1"), "{merged}");
+}
+
+#[test]
 fn merge_keeps_windows_1252_script_bytes() {
 	// A translation mod's 0x10-escaped name and a windows-1252 accent: the
 	// game reads these bytes, so a merged file must write them back as is.

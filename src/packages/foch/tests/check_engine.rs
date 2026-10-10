@@ -736,7 +736,9 @@ fn merge_plan_marks_single_contributor_path_as_copy_through() {
 }
 
 #[test]
-fn merge_plan_prunes_empty_structural_mod_layer_before_classification() {
+fn merge_plan_keeps_an_empty_structural_mod_layer() {
+	// An empty file at a path replaces the files it overrides, so it is a
+	// contributor like any other, not a no-op to prune.
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 	let mod_a = temp.path().join("9451");
@@ -755,15 +757,15 @@ fn merge_plan_prunes_empty_structural_mod_layer_before_classification() {
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "events/shared.txt");
 	assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
-	assert_eq!(entry.contributors.len(), 2);
+	assert_eq!(entry.contributors.len(), 3, "{:?}", entry.contributors);
 	assert_eq!(
 		entry
 			.contributors
 			.iter()
 			.filter(|contributor| contributor.mod_id == "9451")
 			.count(),
-		1,
-		"only the synthetic base derived from the empty mod should remain"
+		2,
+		"the empty mod keeps its own layer beside the synthetic base derived from it"
 	);
 }
 

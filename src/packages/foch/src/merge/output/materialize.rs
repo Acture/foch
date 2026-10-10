@@ -20,9 +20,7 @@ use super::super::error::{MergeError, MergeErrorSubject};
 use super::super::namespace::{
 	FamilyKeyIndex, build_family_key_index, detect_key_conflicts, group_by_family,
 };
-use super::super::path_plan::{
-	build_merge_plan_from_input, fatal_plan_from_input_error, prune_noop_script_contributors,
-};
+use super::super::path_plan::{build_merge_plan_from_input, fatal_plan_from_input_error};
 use super::super::planning::module_view::declared_definition_keys;
 use super::localisation_merge::LocalisationMergeOutcome;
 use crate::game::eu4::Eu4;
@@ -176,7 +174,6 @@ pub(crate) fn freeze_path_plan(
 ) -> MergePlanResult {
 	if let Ok(input) = input_result {
 		apply_mod_priority_boosts(input, &resolution_map.mod_priority_boost);
-		prune_noop_script_contributors(input, eu4());
 	}
 
 	stage_log_with("build_merge_plan", || {
