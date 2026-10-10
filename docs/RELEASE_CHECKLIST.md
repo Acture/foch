@@ -33,8 +33,9 @@ carry no EU4 base data; users build it from their own game installation.
    (`release/0.3.0`: the CWT grammar, the 0.3.0 version bump, anchored crate
    include patterns, dispatch of its publishing workflows, and the review fix
    that ends inline `--[[ ]]` comments before following code). Foch's gitlink
-   records its head, `d7999af`; with it the embedded CWT rule pack is
-   byte-identical to the one built from the previous grammar.
+   records the tagged `v0.3.0` commit `9a21dfc` (the squashed merge, same tree
+   as `d7999af`); with it the embedded CWT rule pack is byte-identical to the
+   one built from the previous grammar.
    - Configure the publishers its `package.yml` uses first: the crates.io
      trusted publisher for `tree-sitter-paradox` (workflow `package.yml`,
      environment `release`), the PyPI trusted publisher for project
