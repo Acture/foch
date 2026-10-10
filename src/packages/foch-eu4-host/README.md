@@ -30,6 +30,8 @@ Extract ZIP releases before importing. Optional Unicode fonts must be placed in
 the extracted package's `plugins/eu4_unicode_patch` directory before importing.
 Copy linked files or directories into the extracted package; import rejects
 links and reparse points rather than silently omitting their resources.
+Built-in adapters omit upstream proxy DLLs at every directory depth; other
+packages containing a known proxy loader are rejected before installation.
 Built-in adapter metadata alone is not an installed artifact: missing,
 ambiguous or modified selected versions are refused before launch.
 
@@ -64,8 +66,10 @@ checked consistently on every management platform.
 The host requires the prepared runtime marker and writes events only to
 `foch-host/events.jsonl` beside its DLL. Event and diagnostic files reject
 reparse points and existing hard links before any append or truncation.
-The status command validates the frozen plan and reads that same owned event
-file, refusing linked files. INI adapter destinations follow the package's
+The status command checks runtime ownership and the opened plan file before
+reading or parsing up to 1 MiB, then validates the frozen plan and reads that
+same owned event file. Both files reject reparse points and hard links.
+INI adapter destinations follow the package's
 Windows path rules, including trailing-dot/space and reserved-name checks.
 
 Native initialization polling lasts at most 120 seconds. A plugin still

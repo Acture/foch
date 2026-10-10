@@ -443,8 +443,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 }
 
 fn show_status(args: &PluginStatusArgs) -> HandlerResult {
-	let plan: plugin::deployment::HostPlan =
-		serde_json::from_slice(&std::fs::read(args.run_dir.join("foch-host/plan.json"))?)?;
+	let plan = plugin::deployment::read_plan(&args.run_dir)?;
 	let states = plugin::deployment::states(&plan, &args.run_dir)?;
 	match args.format {
 		CheckOutputFormat::Json => print_json(&json!({"run_id":plan.run_id,"plugins":states}))?,

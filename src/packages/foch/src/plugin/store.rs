@@ -20,7 +20,11 @@ pub const MACHINE_AMD64: u16 = 0x8664;
 /// Known installation proxies are excluded, not copied into a Foch layer.
 pub fn is_proxy_name(name: &str) -> bool {
 	matches!(
-		name.to_ascii_lowercase().as_str(),
+		name.rsplit(['/', '\\'])
+			.next()
+			.unwrap_or_default()
+			.to_ascii_lowercase()
+			.as_str(),
 		"version.dll" | "d3d9.dll" | "dinput8.dll" | "winmm.dll" | "dxgi.dll"
 	)
 }
@@ -60,6 +64,8 @@ pub struct ArchiveEntry {
 pub enum ImportError {
 	/// A path escapes the package root or is otherwise unsafe.
 	UnsafePath(String),
+	/// Another proxy loader would conflict with Foch's host.
+	ProxyLoader(String),
 	/// Two entries differ only by case; Windows would collapse them.
 	CaseCollision(String, String),
 	/// No `foch-plugin.toml` at the package root.
@@ -82,6 +88,7 @@ impl std::fmt::Display for ImportError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::UnsafePath(path) => write!(f, "unsafe path in package: {path}"),
+			Self::ProxyLoader(path) => write!(f, "package contains another proxy loader: {path}"),
 			Self::CaseCollision(a, b) => {
 				write!(f, "paths collide case-insensitively on Windows: {a} vs {b}")
 			}
@@ -209,6 +216,9 @@ pub fn validate(entries: Vec<ArchiveEntry>) -> Result<ValidatedPackage, Vec<Impo
 	for entry in entries {
 		match safe_relative(&entry.path) {
 			Ok(normalized) => {
+				if is_proxy_name(&normalized) {
+					errors.push(ImportError::ProxyLoader(normalized.clone()));
+				}
 				let lower = normalized.to_ascii_lowercase();
 				if let Some(existing) = seen_lower.get(&lower) {
 					errors.push(ImportError::CaseCollision(
@@ -569,6 +579,27 @@ sha256 = "{dll_digest}"
 		assert_eq!(validated.manifest.plugin.id, "dev.foch.sample");
 		assert!(validated.version_dir_name().starts_with("0.1.0+"));
 		assert_eq!(validated.digest.len(), 64);
+	}
+
+	#[test]
+	fn proxy_loaders_are_filtered_or_rejected_at_every_package_depth() {
+		for path in ["VERSION.dll", "plugins/version.dll", "plugins\\DINPUT8.dll"] {
+			assert!(is_proxy_name(path), "{path}");
+			let mut entries = package(fake_dll());
+			let manifest = Manifest::parse(std::str::from_utf8(&entries[0].data).unwrap()).unwrap();
+			entries.push(ArchiveEntry {
+				path: path.into(),
+				data: fake_dll(),
+			});
+			assert!(validate(entries.clone()).is_err(), "{path}");
+			let adapted = adapt(manifest, entries).unwrap();
+			assert!(
+				adapted
+					.entries()
+					.iter()
+					.all(|entry| !is_proxy_name(&entry.path))
+			);
+		}
 	}
 
 	#[test]

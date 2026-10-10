@@ -621,22 +621,7 @@ fn update_ini(text: &str, changes: BTreeMap<(String, String), String>) -> String
 /// entries stay not_loaded; a partial final JSONL line is retried next time.
 pub fn states(plan: &HostPlan, runtime: &Path) -> io::Result<BTreeMap<String, Value>> {
 	plan.validate().map_err(io::Error::other)?;
-	if !store::ordinary_metadata(runtime)?.is_dir()
-		|| !store::ordinary_metadata(&runtime.join("foch-runtime"))?.is_file()
-	{
-		return Err(io::Error::other("status requires a prepared runtime layer"));
-	}
-	let runtime = runtime.canonicalize()?;
-	let directory = runtime.join("foch-host");
-	if !store::ordinary_metadata(&directory)?.is_dir() {
-		return Err(io::Error::other("host directory is not ordinary"));
-	}
-	let directory = directory.canonicalize()?;
-	if directory.parent() != Some(runtime.as_path()) {
-		return Err(io::Error::other(
-			"host directory resolves outside the runtime",
-		));
-	}
+	let directory = status_directory(runtime)?;
 	let declared = Path::new(&plan.events);
 	if !declared
 		.file_name()
@@ -658,53 +643,11 @@ pub fn states(plan: &HostPlan, runtime: &Path) -> io::Result<BTreeMap<String, Va
 		.map(|plugin| (plugin.id.clone(), json!({"state":"not_loaded"})))
 		.collect();
 	let path = directory.join("events.jsonl");
-	match store::ordinary_metadata(&path) {
-		Ok(metadata) if metadata.is_file() => {}
-		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(states),
-		Err(error) => return Err(error),
-		Ok(_) => return Err(io::Error::other("events are not a regular file")),
-	}
-	let mut options = fs::OpenOptions::new();
-	options.read(true);
-	#[cfg(windows)]
-	{
-		use std::os::windows::fs::OpenOptionsExt;
-		use windows_sys::Win32::Storage::FileSystem::{
-			FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-		};
-		options
-			.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-	}
-	let mut file = match options.open(path) {
+	let mut file = match open_status_file(&path) {
 		Ok(file) => file,
 		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(states),
 		Err(error) => return Err(error),
 	};
-	if !file.metadata()?.is_file() {
-		return Err(io::Error::other("events are not a regular file"));
-	}
-	#[cfg(windows)]
-	{
-		use std::os::windows::io::AsRawHandle;
-		use windows_sys::Win32::Storage::FileSystem::{
-			BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
-		};
-		let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-		if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-			return Err(io::Error::last_os_error());
-		}
-		if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.nNumberOfLinks != 1 {
-			return Err(io::Error::other("events cannot be linked files"));
-		}
-	}
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::MetadataExt;
-		if file.metadata()?.nlink() != 1 {
-			return Err(io::Error::other("events cannot be linked files"));
-		}
-	}
 	let mut text = String::new();
 	file.read_to_string(&mut text)?;
 	for line in text
@@ -721,6 +664,85 @@ pub fn states(plan: &HostPlan, runtime: &Path) -> io::Result<BTreeMap<String, Va
 		}
 	}
 	Ok(states)
+}
+
+/// Validate runtime ownership and the opened plan handle before parsing bytes.
+pub fn read_plan(runtime: &Path) -> io::Result<HostPlan> {
+	let directory = status_directory(runtime)?;
+	let file = open_status_file(&directory.join("plan.json"))?;
+	let mut bytes = Vec::new();
+	file.take((MAX_PLAN_BYTES + 1) as u64)
+		.read_to_end(&mut bytes)?;
+	if bytes.len() > MAX_PLAN_BYTES {
+		return Err(io::Error::other("host plan exceeds the 1 MiB limit"));
+	}
+	let plan: HostPlan = serde_json::from_slice(&bytes)?;
+	plan.validate().map_err(io::Error::other)?;
+	Ok(plan)
+}
+
+fn status_directory(runtime: &Path) -> io::Result<PathBuf> {
+	if !store::ordinary_metadata(runtime)?.is_dir()
+		|| !store::ordinary_metadata(&runtime.join("foch-runtime"))?.is_file()
+	{
+		return Err(io::Error::other("status requires a prepared runtime layer"));
+	}
+	let runtime = runtime.canonicalize()?;
+	let directory = runtime.join("foch-host");
+	if !store::ordinary_metadata(&directory)?.is_dir() {
+		return Err(io::Error::other("host directory is not ordinary"));
+	}
+	let directory = directory.canonicalize()?;
+	if directory.parent() != Some(runtime.as_path()) {
+		return Err(io::Error::other(
+			"host directory resolves outside the runtime",
+		));
+	}
+	Ok(directory)
+}
+
+fn open_status_file(path: &Path) -> io::Result<fs::File> {
+	if !store::ordinary_metadata(path)?.is_file() {
+		return Err(io::Error::other("host file is not a regular file"));
+	}
+	let mut options = fs::OpenOptions::new();
+	options.read(true);
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::{
+			FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+		};
+		options
+			.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+	}
+	let file = options.open(path)?;
+	if !file.metadata()?.is_file() {
+		return Err(io::Error::other("host file is not a regular file"));
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::io::AsRawHandle;
+		use windows_sys::Win32::Storage::FileSystem::{
+			BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
+		};
+		let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+		if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+			return Err(io::Error::last_os_error());
+		}
+		if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.nNumberOfLinks != 1 {
+			return Err(io::Error::other("host file cannot be linked"));
+		}
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::MetadataExt;
+		if file.metadata()?.nlink() != 1 {
+			return Err(io::Error::other("host file cannot be linked"));
+		}
+	}
+	Ok(file)
 }
 
 #[cfg(test)]

@@ -561,6 +561,40 @@ fn plugin_status_rejects_external_event_files_and_invalid_plans() {
 }
 
 #[test]
+fn plugin_status_checks_runtime_and_plan_ownership_before_parsing() {
+	let scratch = TempDir::new().unwrap();
+	let runtime = scratch.path().join("runtime");
+	let host = runtime.join("foch-host");
+	fs::create_dir_all(&host).unwrap();
+	fs::create_dir(runtime.join("foch-runtime")).unwrap();
+	fs::write(host.join("plan.json"), "invalid JSON from unowned runtime").unwrap();
+	let args = [
+		"plugin",
+		"status",
+		"--run-dir",
+		runtime.to_str().unwrap(),
+		"--format",
+		"json",
+	];
+	let (code, stdout, stderr) = run_foch(&args, scratch.path());
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("prepared runtime"), "{stderr}");
+	fs::remove_dir(runtime.join("foch-runtime")).unwrap();
+	fs::write(runtime.join("foch-runtime"), "1\n").unwrap();
+	fs::remove_file(host.join("plan.json")).unwrap();
+	let external = scratch.path().join("external-plan.json");
+	fs::write(&external, "invalid JSON from linked plan").unwrap();
+	fs::hard_link(&external, host.join("plan.json")).unwrap();
+	let (code, stdout, stderr) = run_foch(&args, scratch.path());
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("linked"), "{stderr}");
+	assert_eq!(
+		fs::read_to_string(&external).unwrap(),
+		"invalid JSON from linked plan"
+	);
+}
+
+#[test]
 fn plugin_plan_agrees_with_launch_resolution_for_an_undeclared_entry_digest() {
 	use foch::plugin::{deployment, planner, selection, store};
 	for identical in [true, false] {
