@@ -177,7 +177,7 @@ where
 	} else {
 		merged_statements
 	};
-	let emit_options = super::emit_options_for_descriptor(context.emit_options, context.descriptor);
+	let emit_options = context.emit_options.clone();
 	let rendered = emit_clausewitz_statements_with_options(&merged_statements, &emit_options)?;
 	let merge_result = dag_merge.merge_result;
 	Ok(StructuralMergeOutput {

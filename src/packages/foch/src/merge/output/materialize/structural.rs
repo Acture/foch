@@ -23,9 +23,7 @@ use super::{
 	StructuralConflictReport, StructuralMergeContext, StructuralMergeFailure, StructuralMergeOutput,
 };
 use crate::game::eu4::cwt::merge::classify_conflict_kind;
-use crate::game::eu4::script::emit::{
-	EmitOptions, EmitOrdering, emit_clausewitz_statements_with_options,
-};
+use crate::game::eu4::script::emit::emit_clausewitz_statements_with_options;
 use crate::input::ResolvedInputContributor;
 use crate::merge::model::{
 	ExternalFileResolution, MergeOutputDirective, SemanticMergeComputation, SemanticMergeConflict,
@@ -371,7 +369,7 @@ where
 	} else {
 		(tooltip_output.statements, tooltip_output.localisation)
 	};
-	let emit_options = emit_options_for_descriptor(context.emit_options, context.descriptor);
+	let emit_options = context.emit_options.clone();
 	let rendered = emit_clausewitz_statements_with_options(&merged_statements, &emit_options)?;
 	let (handler_resolutions, external_file_resolutions, keep_existing_paths) =
 		semantic_output_metadata(target_path, dag_merge.semantic);
@@ -446,25 +444,6 @@ fn preserves_complete_tree_module(descriptor: &ContentFamilyDescriptor) -> bool 
 	matches!(
 		descriptor.load_policy,
 		ContentLoadPolicy::DefinitionModule(_)
-	)
-}
-
-fn emit_options_for_descriptor(
-	options: &EmitOptions,
-	descriptor: &ContentFamilyDescriptor,
-) -> EmitOptions {
-	let ordering = if descriptor_preserves_sibling_order(descriptor) {
-		EmitOrdering::Preserve
-	} else {
-		EmitOrdering::FixedTopLevel
-	};
-	options.clone().with_ordering(ordering)
-}
-
-fn descriptor_preserves_sibling_order(descriptor: &ContentFamilyDescriptor) -> bool {
-	matches!(
-		descriptor.id.as_str(),
-		"interface" | "common/interface" | "gfx"
 	)
 }
 

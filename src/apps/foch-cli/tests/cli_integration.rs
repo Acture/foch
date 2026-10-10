@@ -87,6 +87,64 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 }
 
 #[test]
+fn merge_keeps_an_event_file_namespace_before_its_events() {
+	// EU4 applies `namespace` and file-level flags to the events after them,
+	// so a merged event file must keep its top-level order.
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let playlist: PathBuf = scratch.path().join("playset").join("dlc_load.json");
+	write_dlc_load(&playlist, &[("9301", "Base"), ("9302", "Patch")]);
+	let mods: &Path = playlist.parent().unwrap();
+	write_descriptor(&mods.join("9301"), "Base");
+	write_descriptor_with_dependencies(&mods.join("9302"), "Patch", &["Base"]);
+	let events = "namespace = zz_order\n\
+		normal_or_historical_nations = yes\n\
+		country_event = { id = zz_order.1 title = a is_triggered_only = yes option = { name = a add_prestige = 1 } }\n\
+		province_event = { id = zz_order.2 title = b is_triggered_only = yes option = { name = b } }\n\
+		country_event = { id = zz_order.3 title = c is_triggered_only = yes option = { name = c } }\n";
+	write_script_file(&mods.join("9301"), "events/zz_order.txt", events);
+	write_script_file(
+		&mods.join("9302"),
+		"events/zz_order.txt",
+		&events.replace("add_prestige = 1", "add_prestige = 2"),
+	);
+	let out: PathBuf = scratch.path().join("out");
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let merged = fs::read_to_string(out.join("events/zz_order.txt")).expect("merged events");
+	let position = |needle: &str| {
+		merged
+			.find(needle)
+			.unwrap_or_else(|| panic!("missing {needle}:\n{merged}"))
+	};
+	assert!(merged.contains("add_prestige = 2"), "{merged}");
+	assert!(
+		position("namespace = zz_order") < position("id = zz_order.1"),
+		"{merged}"
+	);
+	assert!(
+		position("normal_or_historical_nations") < position("id = zz_order.1"),
+		"{merged}"
+	);
+	assert!(
+		position("id = zz_order.2") < position("id = zz_order.3"),
+		"{merged}"
+	);
+}
+
+#[test]
 fn culture_cli_repairs_and_adapts_reviewed_sources_without_mutating_them() {
 	use foch::project::{CultureRenameEntry, CultureRepairEntry, Project, SourceEdit};
 	use sha2::{Digest, Sha256};
