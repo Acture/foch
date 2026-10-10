@@ -37,9 +37,10 @@ use crate::merge::analyze::{
 	CancellationToken, MergeAnalysisStage, MergeProgress, ProgressObserver,
 };
 use crate::merge::backend::{GumtreePcsNwayBackend, MergeBackend};
+use crate::merge::conflict_view::ConflictView;
 use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
-use crate::merge::review::{MergeDisposition, MergeReview, UnitOutcomeLedger};
+use crate::merge::review::{MergeDisposition, MergeReview, PlaysetProvenance, UnitOutcomeLedger};
 use crate::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath, GamePathBuf,
 	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
@@ -331,10 +332,8 @@ pub(crate) fn materialize_with_adaptations(
 			.map(|err| err.message.clone())
 			.or_else(|| plan.fatal_errors.first().cloned());
 		write_clean_metadata_only(out_dir, &plan, &report)?;
-		return Ok(MaterializedMerge {
-			report,
-			review: review.finish(&HashMap::new())?,
-		});
+		let review = review.finish(&HashMap::new(), &report, PlaysetProvenance::default())?;
+		return Ok(MaterializedMerge { report, review });
 	}
 	if options.backend.profile().validate_semantic_units {
 		validate_structured_plan_selection(&plan, options.retained_paths.as_ref())?;
@@ -375,6 +374,13 @@ pub(crate) fn materialize_with_adaptations(
 
 	let mod_versions = input_mod_versions(&input);
 	let mod_display_names = input_mod_display_names(&input);
+	let playset = PlaysetProvenance::new(
+		&input.mods,
+		&mod_display_names,
+		&mod_dag,
+		&dag_diagnostics,
+		&report.dep_overrides_applied,
+	);
 	let cache_game_version = input_cache_game_version(&input);
 	let cache_game_version =
 		cache_game_version_with_resolution_salt(&cache_game_version, &options.resolution_map);
@@ -633,10 +639,8 @@ pub(crate) fn materialize_with_adaptations(
 		&out_dir.join(MERGED_MOD_DESCRIPTOR_PATH),
 	)?;
 	write_metadata_only(out_dir, &plan, &report)?;
-	Ok(MaterializedMerge {
-		report,
-		review: review.finish(&mod_display_names)?,
-	})
+	let review = review.finish(&mod_display_names, &report, playset)?;
+	Ok(MaterializedMerge { report, review })
 }
 
 /// Output facts that units accumulate for the manifest built after the loop.
@@ -1080,6 +1084,9 @@ fn apply_module_unit(
 		.collect();
 	let wrote_nothing: bool = written.is_empty();
 	review.resolve_written(entry, outcome.disposition, outcome.summary, written, [])?;
+	if let Some((file, views)) = outcome.conflicts {
+		review.attach_conflicts(entry, file, views)?;
+	}
 	// Analysis and applying may run on different threads, so the unit's time is
 	// the sum of both rather than one wall-clock span.
 	let unit_elapsed: Duration = module.elapsed + module_started.elapsed();
@@ -1131,7 +1138,7 @@ fn apply_file_unit(
 			);
 		}
 	};
-	let (conflict, deferred_reason, disposition, summary, allow_force) = match *result {
+	let (mut conflict, deferred_reason, disposition, summary, allow_force) = match *result {
 		Ok(Ok(mut merge_output)) => {
 			report
 				.stale_vanilla_targets
@@ -1227,6 +1234,7 @@ fn apply_file_unit(
 		&& options.force
 		&& allow_force
 		&& is_text_placeholder_path(entry.output_path());
+	let conflict_views = std::mem::take(&mut conflict.conflict_views);
 	resolve_structural_merge_failure(StructuralMergeFailureCtx {
 		entry,
 		out_dir,
@@ -1244,7 +1252,8 @@ fn apply_file_unit(
 		summary,
 		placeholder_written.then(|| entry.output_path().to_owned()),
 		[],
-	)
+	)?;
+	review.attach_conflicts(entry, entry.output_path().to_owned(), conflict_views)
 }
 
 fn copy_file_unit_winner(
@@ -1368,6 +1377,8 @@ struct CrossFileModuleMaterializeContext<'a> {
 struct CrossFileModuleOutcome {
 	disposition: MergeDisposition,
 	summary: String,
+	/// The conflicting namespace's file and its rendered candidates.
+	conflicts: Option<(GamePathBuf, Vec<ConflictView>)>,
 }
 
 /// One namespace's merged bytes, staged but not yet installed.
@@ -1447,7 +1458,12 @@ fn materialize_cross_file_module(
 
 	let mut staged: Vec<StagedNamespaceOutput<'_>> = Vec::new();
 	let mut failure: Option<(DeferredUnitReason, String)> = None;
-	let mut conflict: Option<(MergeDisposition, String, StructuralConflictReport)> = None;
+	let mut conflict: Option<(
+		MergeDisposition,
+		String,
+		&GamePath,
+		StructuralConflictReport,
+	)> = None;
 	// Staging a namespace records facts about the file it expects to write. A
 	// unit that is later withheld writes none of them, so those records are
 	// rolled back rather than published for a file the merged mod never gets.
@@ -1466,7 +1482,7 @@ fn materialize_cross_file_module(
 		) {
 			Ok(NamespaceStaging::Staged(output)) => staged.push(*output),
 			Ok(NamespaceStaging::Conflict(disposition, summary, report_detail)) => {
-				conflict = Some((disposition, summary, report_detail));
+				conflict = Some((disposition, summary, namespace.output_path(), report_detail));
 				break;
 			}
 			Ok(NamespaceStaging::Failed(reason, message)) => {
@@ -1514,11 +1530,12 @@ fn materialize_cross_file_module(
 			reason,
 		);
 	}
-	if let Some((disposition, summary, report_detail)) = conflict {
+	if let Some((disposition, summary, conflict_file, mut report_detail)) = conflict {
 		for output in &staged {
 			let _ = fs::remove_dir_all(&output.stage_dir);
 		}
 		staging_marks.roll_back(report);
+		let conflict_views = std::mem::take(&mut report_detail.conflict_views);
 		resolve_cross_file_module_conflict(
 			entry,
 			out_dir,
@@ -1531,6 +1548,7 @@ fn materialize_cross_file_module(
 		return Ok(CrossFileModuleOutcome {
 			disposition,
 			summary,
+			conflicts: Some((conflict_file.to_owned(), conflict_views)),
 		});
 	}
 
@@ -1613,6 +1631,7 @@ fn materialize_cross_file_module(
 	}
 	let _ = committed_any;
 	Ok(CrossFileModuleOutcome {
+		conflicts: None,
 		disposition: MergeDisposition::Safe,
 		summary: if namespaces.len() > 1 {
 			format!(
@@ -1888,6 +1907,7 @@ fn resolve_cross_file_module_failure(
 		StructuralConflictReport::without_details(reason),
 	)?;
 	Ok(CrossFileModuleOutcome {
+		conflicts: None,
 		disposition: match deferred_reason {
 			DeferredUnitReason::NeedsUserChoice => MergeDisposition::NeedsUserChoice,
 			DeferredUnitReason::UnsupportedInput => MergeDisposition::UnsupportedInput,
@@ -2657,6 +2677,9 @@ pub(crate) struct StructuralConflictReport {
 	leaf_conflicts: Vec<LeafConflictDetail>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
 	explicitly_deferred: bool,
+	/// Each leaf conflict's competing candidates, rendered for review. They
+	/// never enter the report, so its bytes do not depend on them.
+	conflict_views: Vec<ConflictView>,
 }
 
 impl StructuralConflictReport {
@@ -2666,6 +2689,7 @@ impl StructuralConflictReport {
 			leaf_conflicts: Vec::new(),
 			handler_resolutions: Vec::new(),
 			explicitly_deferred: false,
+			conflict_views: Vec::new(),
 		}
 	}
 }
@@ -2943,6 +2967,7 @@ mod tests {
 					leaf_conflicts: Vec::new(),
 					handler_resolutions: Vec::new(),
 					explicitly_deferred: false,
+					conflict_views: Vec::new(),
 				},
 			))
 		}

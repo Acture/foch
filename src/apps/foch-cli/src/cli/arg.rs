@@ -251,6 +251,16 @@ pub struct MergeArgs {
 	/// prompts still come in plan order, with the other units paused.
 	#[arg(long, value_name = "N")]
 	pub jobs: Option<NonZeroUsize>,
+
+	/// Write the complete review as JSON to this file before confirmation:
+	/// the mods and their dependency edges, every unit with its ordered
+	/// contributors, each deferred unit's conflict tree with the competing
+	/// candidates, and every decision point: a choice for one conflict as a
+	/// decision record, and one for its file or directory as the foch.toml
+	/// rule that would persist it. It only replaces an earlier review and is
+	/// never written inside --out, a source mod or the game installation.
+	#[arg(long, value_name = "PATH")]
+	pub review_json: Option<PathBuf>,
 }
 
 impl MergeArgs {
@@ -293,6 +303,10 @@ impl MergeArgs {
 		if let Some(jobs) = self.jobs {
 			args.push("--jobs".to_string());
 			args.push(jobs.to_string());
+		}
+		if let Some(path) = &self.review_json {
+			args.push("--review-json".to_string());
+			args.push(path.display().to_string());
 		}
 		for name in &self.exclude {
 			args.push("--exclude".to_string());

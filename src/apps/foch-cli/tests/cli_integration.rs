@@ -2117,6 +2117,177 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 	);
 }
 
+/// `--review-json` writes the review before confirmation: an analysis
+/// without `--confirm` leaves the output absent but the review written, with
+/// the dependency edges, the conflict's candidates and its decision point.
+#[test]
+fn merge_review_json_is_written_without_committing() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let review_path = tmp.path().join("merge-review.json");
+	stage_dag_genuine_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+	);
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist_path),
+			"--out",
+			path_text(&out_dir),
+			"--no-game-base",
+			"--non-interactive",
+			"--review-json",
+			path_text(&review_path),
+		],
+		tmp.path(),
+	);
+	assert_eq!(
+		code, 0,
+		"{stdout}
+{stderr}"
+	);
+	assert!(!out_dir.exists());
+	let review = read_json_file(&review_path);
+	assert_eq!(review["schema"], "foch.merge_review.v1");
+	let edges = review["dependencies"].as_array().expect("dependency edges");
+	for child in ["9102", "9103"] {
+		assert!(
+			edges.iter().any(|edge| edge["child"] == child
+				&& edge["parent"] == "9101"
+				&& edge["status"] == "active"),
+			"{edges:#?}"
+		);
+	}
+	let leaf = review["conflicts"][0]["nodes"]
+		.as_array()
+		.expect("address nodes")
+		.iter()
+		.flat_map(|node| node["conflicts"].as_array().cloned().unwrap_or_default())
+		.next()
+		.expect("a conflict leaf");
+	let rendered = leaf["candidates"]
+		.as_array()
+		.expect("candidates")
+		.iter()
+		.map(|candidate| {
+			candidate["rendered"]
+				.as_str()
+				.unwrap_or_default()
+				.to_owned()
+		})
+		.collect::<Vec<_>>();
+	assert!(
+		rendered.iter().any(|text| text.contains("alpha"))
+			&& rendered.iter().any(|text| text.contains("beta")),
+		"{leaf:#}"
+	);
+	let point = &review["decisions"][0];
+	assert_eq!(point["conflict_id"], leaf["conflict_id"]);
+	let conflict_scope = &point["options"][0]["scopes"][0];
+	assert_eq!(conflict_scope["scope"], "conflict");
+	assert_eq!(
+		conflict_scope["decision"]["conflict_id"],
+		leaf["conflict_id"]
+	);
+	assert!(
+		conflict_scope.get("resolution").is_none(),
+		"{conflict_scope:#}"
+	);
+	assert_eq!(point["options"][0]["scopes"][1]["scope"], "file");
+}
+
+/// `--review-json` refuses, before analysis, to overwrite a file that is not
+/// an earlier review, such as the playset, and to write into `--out`. A
+/// repeated run may replace its own earlier review.
+#[test]
+fn merge_review_json_never_overwrites_an_input_or_writes_into_the_output() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	stage_dag_genuine_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+	);
+	let playlist = fs::read(&playlist_path).expect("read playlist");
+	let run = |review: &Path| {
+		run_foch(
+			&[
+				"merge",
+				path_text(&playlist_path),
+				"--out",
+				path_text(&out_dir),
+				"--no-game-base",
+				"--non-interactive",
+				"--review-json",
+				path_text(review),
+			],
+			tmp.path(),
+		)
+	};
+
+	let (code, stdout, stderr) = run(&playlist_path);
+	assert_ne!(
+		code, 0,
+		"{stdout}
+{stderr}"
+	);
+	assert!(stderr.contains("not a foch merge review"), "{stderr}");
+	assert!(
+		!stdout.contains("Foch Merge Review"),
+		"refused before analysis: {stdout}"
+	);
+	assert_eq!(fs::read(&playlist_path).expect("read playlist"), playlist);
+
+	let (code, stdout, stderr) = run(&out_dir.join("review.json"));
+	assert_ne!(
+		code, 0,
+		"{stdout}
+{stderr}"
+	);
+	assert!(stderr.contains("inside --out"), "{stderr}");
+	assert!(!out_dir.exists());
+
+	// `..` is applied where a write would apply it, whether or not `--out`
+	// exists yet.
+	let (code, stdout, stderr) = run(&out_dir.join("..").join("outside.json"));
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(tmp.path().join("outside.json").is_file());
+	fs::create_dir_all(out_dir.join("sub")).expect("create output subdirectory");
+	let (code, stdout, stderr) = run(&out_dir.join("sub").join("..").join("review.json"));
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("inside --out"), "{stderr}");
+	assert!(!out_dir.join("review.json").exists());
+	fs::remove_dir_all(&out_dir).expect("remove output");
+
+	// A source mod is a read-only input: the review is refused there too.
+	let in_mod = tmp.path().join("9102").join("review.json");
+	let (code, stdout, stderr) = run(&in_mod);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("read-only input"), "{stderr}");
+	assert!(!in_mod.exists());
+
+	let review_path = tmp.path().join("review.json");
+	for _ in 0..2 {
+		let (code, stdout, stderr) = run(&review_path);
+		assert_eq!(
+			code, 0,
+			"{stdout}
+{stderr}"
+		);
+		assert_eq!(
+			read_json_file(&review_path)["schema"],
+			"foch.merge_review.v1"
+		);
+	}
+}
+
 #[test]
 fn merge_command_force_writes_placeholder_only_for_genuine_user_choice() {
 	let tmp = TempDir::new().expect("temp dir");
