@@ -1286,6 +1286,10 @@ pub(crate) struct TreeDagProtocol<'a> {
 	has_vanilla_base: bool,
 	vanilla_base_mode: VanillaBaseMode,
 	handler: &'a mut dyn ConflictHandler,
+	/// The first state with unresolved conflicts that a later step failed to
+	/// build on. Its tree is only a tentative preview of those conflicts, so
+	/// they, not the failure, are what the unit reports.
+	blocked_by_conflicts: Option<TreeDagState>,
 }
 
 impl<'a> TreeDagProtocol<'a> {
@@ -1304,6 +1308,18 @@ impl<'a> TreeDagProtocol<'a> {
 			has_vanilla_base,
 			vanilla_base_mode,
 			handler,
+			blocked_by_conflicts: None,
+		}
+	}
+
+	/// The conflicted state a failed pipeline was building on, if any.
+	pub(crate) fn take_blocked_by_conflicts(&mut self) -> Option<TreeDagState> {
+		self.blocked_by_conflicts.take()
+	}
+
+	fn record_blocked(&mut self, state: &TreeDagState) {
+		if self.blocked_by_conflicts.is_none() && !state.unresolved_conflicts.is_empty() {
+			self.blocked_by_conflicts = Some(state.clone());
 		}
 	}
 }
@@ -1323,13 +1339,16 @@ impl EffectiveNodeProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			path: request.source.ast.path.clone(),
 			statements: request.parent.statements.clone(),
 		};
-		let observation = self.source_observer.observe(
-			&parent,
-			&request.source.ast,
-			source,
-			&request.parent.partition_lineage,
-			request.resets_base,
-		)?;
+		let observation = self
+			.source_observer
+			.observe(
+				&parent,
+				&request.source.ast,
+				source,
+				&request.parent.partition_lineage,
+				request.resets_base,
+			)
+			.inspect_err(|_| self.record_blocked(request.parent))?;
 		let mut source_deltas = request.parent.source_deltas.clone();
 		if !source_deltas.contains(&observation.delta) {
 			source_deltas.push(observation.delta);
@@ -1457,7 +1476,8 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			DagJoinScope::Final => outcome.statements,
 		};
 		for facts in outcome.merge_facts {
-			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)?;
+			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)
+				.inspect_err(|_| self.record_blocked(&state))?;
 			state
 				.partition_lineage
 				.insert(facts.partition.clone(), lineage);

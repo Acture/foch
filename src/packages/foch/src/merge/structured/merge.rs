@@ -286,7 +286,29 @@ pub(super) fn merge_clausewitz_files_with_context(
 			resolutions,
 		)?
 	};
-	let mut tentative_ast = denormalize_ast(base.path.clone(), kernel.tentative_tree())?;
+	let rendered = denormalize_ast(base.path.clone(), kernel.tentative_tree());
+	let renderable = rendered.is_ok();
+	let mut tentative_ast = match rendered {
+		Ok(ast) => ast,
+		Err(error) => {
+			// The kernel accepted a tree no script can spell, such as a guarded
+			// branch whose `limit` one revision deleted with the chain while
+			// another edited the branch. That is diverging intent to review,
+			// not an engine failure; the highest-precedence revision stands in
+			// as the preview.
+			kernel.push_conflict(StructuralConflictDraft::new(
+				ConflictKind::Policy,
+				None,
+				None,
+				SourceSet::default(),
+				Vec::new(),
+				format!("merged tree cannot be rendered: {error}"),
+			));
+			revision_files
+				.last()
+				.map_or_else(|| base.clone(), |revision| (*revision).clone())
+		}
+	};
 	control_flow_findings.extend(
 		super::control_flow::orphan_paths(&tentative_ast.statements)
 			.into_iter()
@@ -309,7 +331,9 @@ pub(super) fn merge_clausewitz_files_with_context(
 			format!("{count} control-flow finding(s) require review: {examples}"),
 		));
 	}
-	attach_trivia(&mut tentative_ast, &merged_trivia);
+	if renderable {
+		attach_trivia(&mut tentative_ast, &merged_trivia);
+	}
 	let lineage_ast = tentative_ast.clone();
 	simplify_boolean_or_definitions(&mut tentative_ast, policies, &mut scope_cache);
 	if reduce_event_fallbacks {

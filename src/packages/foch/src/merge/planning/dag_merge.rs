@@ -236,11 +236,12 @@ fn compute_semantic_dag_merge_from_parsed(
 		base_observation.mode(),
 		handler,
 	);
-	let pipeline = execute_dag_pipeline(file_dag, contributors, root, &mut protocol)?;
-	let DagPipelineResult {
-		final_state: semantic,
-		..
-	} = pipeline;
+	let semantic = match execute_dag_pipeline(file_dag, contributors, root, &mut protocol) {
+		Ok(DagPipelineResult { final_state, .. }) => final_state,
+		// A step built on a conflicted tentative tree: those conflicts carry
+		// the unit, and resolving them lets the next analysis finish the DAG.
+		Err(error) => protocol.take_blocked_by_conflicts().ok_or(error)?,
+	};
 	let merged_statements = semantic.statements.clone();
 	let direct_definition_keys = compute_semantic_direct_definition_keys(&semantic.source_deltas)?;
 	let definition_provenance = compute_semantic_definition_provenance(&semantic)?;
@@ -2024,6 +2025,62 @@ mod tests {
 				.expect("emit tree result");
 
 		assert!(emitted.contains("icon = b"), "{emitted}");
+	}
+
+	/// Vanilla and two rewrites of one event option's control-flow chain: one
+	/// edits the guarded branch and adds an `else_if`, the other replaces the
+	/// branch's effect, which changes the chain's identity.
+	const CHAIN_REWRITE_VANILLA: &str = "country_event = { id = demo.1 option = { name = demo.a \
+		if = { limit = { has_country_flag = one } define_ruler = { dynasty = \"A\" change_adm = 1 } } \
+		else = { add_prestige = 1 } } }\n";
+	const CHAIN_REWRITE_EDIT: &str = "country_event = { id = demo.1 option = { name = demo.a \
+		if = { limit = { has_country_flag = one } define_ruler = { dynasty = \"B\" change_adm = 2 } } \
+		else_if = { limit = { has_country_flag = two } add_stability = 1 } \
+		else = { add_prestige = 1 } } }\n";
+	const CHAIN_REWRITE_REPLACE: &str = "country_event = { id = demo.1 option = { name = demo.a \
+		if = { limit = { has_country_flag = one } add_legitimacy = 5 } \
+		else = { add_prestige = 2 } } }\n";
+
+	#[test]
+	fn diverging_rewrites_of_one_control_flow_chain_need_review() {
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(CHAIN_REWRITE_VANILLA),
+			&[
+				("left", &[], CHAIN_REWRITE_EDIT),
+				("right", &[], CHAIN_REWRITE_REPLACE),
+			],
+		)
+		.expect("an unrenderable merged chain is a reviewable conflict");
+
+		assert!(
+			result
+				.semantic
+				.unresolved_conflicts
+				.iter()
+				.any(|conflict| conflict.reason.contains("cannot be rendered")),
+			"{:?}",
+			result.semantic.unresolved_conflicts
+		);
+	}
+
+	#[test]
+	fn a_child_of_a_conflicted_join_reports_the_join_conflicts() {
+		let child = "country_event = { id = demo.1 option = { name = demo.a \
+			if = { limit = { has_country_flag = one } add_legitimacy = 5 } \
+			else = { add_prestige = 3 } } }\n";
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(CHAIN_REWRITE_VANILLA),
+			&[
+				("left", &[], CHAIN_REWRITE_EDIT),
+				("right", &[], CHAIN_REWRITE_REPLACE),
+				("child", &["LEFT", "RIGHT"], child),
+			],
+		)
+		.expect("a child over unresolved join conflicts reports those conflicts");
+
+		assert!(!result.semantic.unresolved_conflicts.is_empty());
 	}
 
 	#[test]
