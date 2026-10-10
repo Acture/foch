@@ -2266,6 +2266,13 @@ fn merge_review_json_never_overwrites_an_input_or_writes_into_the_output() {
 	assert!(!out_dir.join("review.json").exists());
 	fs::remove_dir_all(&out_dir).expect("remove output");
 
+	// A source mod is a read-only input: the review is refused there too.
+	let in_mod = tmp.path().join("9102").join("review.json");
+	let (code, stdout, stderr) = run(&in_mod);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("read-only input"), "{stderr}");
+	assert!(!in_mod.exists());
+
 	let review_path = tmp.path().join("review.json");
 	for _ in 0..2 {
 		let (code, stdout, stderr) = run(&review_path);

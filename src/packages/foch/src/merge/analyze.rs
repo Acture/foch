@@ -262,6 +262,7 @@ pub struct AnalyzedMerge {
 	pub(super) product_input_commit_guard: Option<ProductInputCommitGuard>,
 	pub(super) prior_output_guard: Option<PriorOutputGuard>,
 	pub(super) review: MergeReview,
+	source_roots: Vec<PathBuf>,
 }
 
 struct PendingAnalysis {
@@ -277,6 +278,7 @@ struct PendingAnalysis {
 	product_input_commit_guard: Option<ProductInputCommitGuard>,
 	execution_attestation: MergeExecutionAttestation,
 	transforms: super::transform::TransformPlan,
+	source_roots: Vec<PathBuf>,
 }
 
 impl AnalyzedMerge {
@@ -294,6 +296,13 @@ impl AnalyzedMerge {
 
 	pub fn unit(&self, id: &str) -> Option<&MergeUnitOutcome> {
 		self.review.unit(id)
+	}
+
+	/// The directories the analysis read: each mod's root and the game
+	/// installation. They are read-only inputs, so nothing written for this
+	/// analysis may land inside them.
+	pub fn source_roots(&self) -> &[PathBuf] {
+		&self.source_roots
 	}
 
 	/// The complete review: units, their contributors and dependency edges,
@@ -357,6 +366,17 @@ fn analyze_merge_with_backend_and_observer(
 		.as_ref()
 		.ok()
 		.and_then(|inventory| ProductInputCommitGuard::from_inventory(request.clone(), inventory));
+	let source_roots = inventory_result
+		.as_ref()
+		.map(|inventory| {
+			inventory
+				.mods
+				.iter()
+				.filter_map(|candidate| candidate.root_path.clone())
+				.chain(inventory.base_game_root.clone())
+				.collect::<Vec<_>>()
+		})
+		.unwrap_or_default();
 	let execution_attestation = merge_execution_attestation(
 		backend_id,
 		options.retained_paths.is_some(),
@@ -496,6 +516,7 @@ fn analyze_merge_with_backend_and_observer(
 			product_input_commit_guard,
 			execution_attestation,
 			transforms,
+			source_roots,
 		},
 		progress,
 		cancellation,
@@ -522,6 +543,7 @@ fn complete_merge_analysis(
 		product_input_commit_guard,
 		execution_attestation,
 		transforms,
+		source_roots,
 	} = pending;
 
 	let final_out_dir = options.out_dir.clone();
@@ -674,6 +696,7 @@ fn complete_merge_analysis(
 		product_input_commit_guard,
 		prior_output_guard,
 		review,
+		source_roots,
 	})
 }
 

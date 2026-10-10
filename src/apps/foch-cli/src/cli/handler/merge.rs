@@ -159,6 +159,18 @@ fn report_and_commit(
 
 fn write_review_json(analyzed: &AnalyzedMerge, path: &Path, out_dir: &Path) -> io::Result<()> {
 	let destination = check_review_json_target(path, out_dir)?;
+	for root in analyzed.source_roots() {
+		if destination.starts_with(write_location(root)?) {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidInput,
+				format!(
+					"--review-json {} is inside the read-only input {}; write the review elsewhere",
+					path.display(),
+					root.display()
+				),
+			));
+		}
+	}
 	let mut json = serde_json::to_vec_pretty(analyzed.review()).map_err(io::Error::other)?;
 	json.push(b'\n');
 	fs::write(&destination, json).map_err(|error| {
