@@ -82,11 +82,20 @@ pub(crate) fn build_cross_file_module_views(
 		input.game_version.as_deref(),
 	)
 	.map_err(CrossFileModuleViewError::engine_failure)?;
-	let module_policy = apply_duplicate_definition_override(
+	let mut module_policy = apply_duplicate_definition_override(
 		module_policy,
 		duplicate_definitions,
 		descriptor.merge_key_source,
 	);
+	let resolves_culture_overrides =
+		crate::game::eu4::cultures::correspondence::CultureCorrespondence::applies_to(
+			namespace.output_path(),
+		);
+	if resolves_culture_overrides {
+		// The game merges a culture group defined in several files; the
+		// culture view resolves members itself, so keep every definition.
+		module_policy.duplicate_definitions = DuplicateDefinitionPolicy::PreserveAll;
+	}
 
 	let mut base_files = BTreeMap::new();
 	let mut files_by_mod: HashMap<ModId, BTreeMap<GamePathBuf, ParsedScriptFile>> = HashMap::new();
@@ -156,14 +165,10 @@ pub(crate) fn build_cross_file_module_views(
 		ignore_replace_path,
 		dep_overrides,
 	);
-	let resolves_culture_overrides =
-		crate::game::eu4::cultures::correspondence::CultureCorrespondence::applies_to(
-			namespace.output_path(),
-		);
 	let mut warnings = BTreeSet::new();
 	let mut resolve_overrides = |parsed: &mut ParsedScriptFile| {
 		if resolves_culture_overrides {
-			warnings.extend(crate::game::eu4::cultures::supersede_redefined_cultures(
+			warnings.extend(crate::game::eu4::cultures::normalize_culture_view(
 				&mut parsed.ast,
 			));
 		}

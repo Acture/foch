@@ -81,7 +81,7 @@ fn ambiguous_culture_identity_is_reviewable_and_cannot_partly_emit() {
 }
 
 #[test]
-fn culture_rename_from_later_filename_adapts_vanilla_references() {
+fn culture_redefined_in_a_later_filename_adds_beside_vanilla() {
 	assert_culture_adaptation(CultureCase::LaterFilename);
 }
 
@@ -781,6 +781,34 @@ fn assert_culture_adaptation(case: CultureCase) {
 				.contains("set_country_flag = old")
 		);
 		assert!(!out.join("common/scripted_triggers/base.txt").exists());
+		return;
+	}
+	if case == CultureCase::LaterFilename {
+		// The game merges a group defined again in a later file, and vanilla's
+		// own file still defines `old`: the mod adds `renamed` beside it. That
+		// is no rename, so nothing is adapted and vanilla references stay.
+		assert_eq!(
+			analyzed.analysis().report().status,
+			MergeReportStatus::Ready,
+			"{:?}",
+			analyzed.analysis().report()
+		);
+		assert!(
+			!analyzed.list_units().iter().any(|unit| unit
+				.path
+				.as_str()
+				.starts_with("common/scripted_triggers/")
+				&& unit.output_path.is_some()),
+			"vanilla references must not be rewritten: {:#?}",
+			analyzed.list_units()
+		);
+		analyzed
+			.commit(CommitAuthorization::EmptyTargetOnly)
+			.unwrap();
+		let cultures = fs::read_to_string(out.join("common/cultures/zzz_foch_cultures.txt"))
+			.expect("merged cultures");
+		assert!(cultures.contains("old ="), "{cultures}");
+		assert!(cultures.contains("renamed ="), "{cultures}");
 		return;
 	}
 	assert_eq!(
