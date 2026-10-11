@@ -1,6 +1,8 @@
-use crate::model::{GamePath, GamePathBuf};
+use crate::model::{GamePath, GamePathBuf, Isolation, SourceRepair};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+mod recovery;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Span {
@@ -86,10 +88,68 @@ pub struct AstFile {
 	pub statements: Vec<AstStatement>,
 }
 
+/// What a parse diagnostic found. Consumers decide on the code, never on the
+/// message text, which is for people only.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParseDiagnosticCode {
+	/// The file could not be read; nothing was parsed.
+	ReadFailure,
+	/// A Lua block comment runs to the end of the file.
+	UnterminatedLuaBlockComment,
+	/// A block is still open where it should have closed.
+	MissingClosingBrace,
+	/// A `}` that no block opened. Read alone, the parser skips one at the
+	/// outermost level and keeps every statement around it.
+	UnmatchedClosingBrace,
+	/// A `{` that no `}` closes.
+	UnmatchedOpeningBrace,
+	/// A block value whose `{` is missing.
+	MissingOpeningBrace,
+	/// A string whose closing quote is missing, so it runs to the end of the
+	/// file.
+	UnterminatedString,
+	/// An `=` with no value: the block closes, or a later line no deeper than
+	/// the key starts another assignment. Read as written, the next key would
+	/// silently become the value.
+	MissingValue,
+	/// A token that cannot start a statement; it is skipped.
+	InvalidStatementStart,
+	/// A token that cannot be a value; it is read as an empty identifier.
+	InvalidValue,
+}
+
+impl ParseDiagnosticCode {
+	/// The code's stable public name, as reports and editors show it.
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::ReadFailure => "read_failure",
+			Self::UnterminatedLuaBlockComment => "unterminated_lua_block_comment",
+			Self::MissingClosingBrace => "missing_closing_brace",
+			Self::UnmatchedClosingBrace => "unmatched_closing_brace",
+			Self::UnmatchedOpeningBrace => "unmatched_opening_brace",
+			Self::MissingOpeningBrace => "missing_opening_brace",
+			Self::UnterminatedString => "unterminated_string",
+			Self::MissingValue => "missing_value",
+			Self::InvalidStatementStart => "invalid_statement_start",
+			Self::InvalidValue => "invalid_value",
+		}
+	}
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParseDiagnostic {
+	pub code: ParseDiagnosticCode,
 	pub message: String,
 	pub span: SpanRange,
+	/// The edit the parsed statements already include to get past this error,
+	/// or `None` when they cannot be trusted. The text is never changed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub repair: Option<SourceRepair>,
+	/// The definition the parsed statements leave out because this error has
+	/// no trustworthy repair, when the rest of the file is sound.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub isolation: Option<Isolation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -179,6 +239,9 @@ struct Lexer<'a> {
 	line: usize,
 	column: usize,
 	lua_mode: bool,
+	/// The opening quote of a string to end at its line's end instead of
+	/// running to the end of the file.
+	close_string_at_line_end: Option<usize>,
 	diagnostics: Vec<ParseDiagnostic>,
 }
 
@@ -191,6 +254,7 @@ impl<'a> Lexer<'a> {
 			line: 1,
 			column: 1,
 			lua_mode,
+			close_string_at_line_end: None,
 			diagnostics: Vec::new(),
 		}
 	}
@@ -296,10 +360,12 @@ impl<'a> Lexer<'a> {
 				}
 			}
 			b'"' => {
+				let quote = self.index;
+				let close_at_line_end = self.close_string_at_line_end == Some(quote);
 				self.advance_byte();
 				let text_start = self.index;
 				while let Some(next) = self.peek_byte() {
-					if next == b'"' {
+					if next == b'"' || (close_at_line_end && matches!(next, b'\r' | b'\n')) {
 						break;
 					}
 					if next == b'\\' {
@@ -314,6 +380,17 @@ impl<'a> Lexer<'a> {
 				let text = self.source[text_start..self.index].to_string();
 				if self.peek_byte() == Some(b'"') {
 					self.advance_byte();
+				} else if self.peek_byte().is_none() {
+					self.diagnostics.push(ParseDiagnostic {
+						code: ParseDiagnosticCode::UnterminatedString,
+						message: "string has no closing quote before end of file".to_string(),
+						span: SpanRange {
+							start: start.clone(),
+							end: self.current_span(),
+						},
+						repair: None,
+						isolation: None,
+					});
 				}
 				Token {
 					kind: TokenKind::String(text),
@@ -436,6 +513,7 @@ impl<'a> Lexer<'a> {
 				loop {
 					let Some(byte) = self.peek_byte() else {
 						self.diagnostics.push(ParseDiagnostic {
+							code: ParseDiagnosticCode::UnterminatedLuaBlockComment,
 							message: format!(
 								"unterminated Lua block comment --[{}[",
 								"=".repeat(level)
@@ -444,6 +522,8 @@ impl<'a> Lexer<'a> {
 								start: start.clone(),
 								end: self.current_span(),
 							},
+							repair: None,
+							isolation: None,
 						});
 						return;
 					};
@@ -547,6 +627,9 @@ struct ParserState {
 	tokens: Vec<Token>,
 	index: usize,
 	diagnostics: Vec<ParseDiagnostic>,
+	/// Whether the text is Lua, whose interpreter rejects what Clausewitz
+	/// reading can repair.
+	lua: bool,
 }
 
 impl ParserState {
@@ -555,7 +638,13 @@ impl ParserState {
 			tokens,
 			index: 0,
 			diagnostics: Vec::new(),
+			lua: false,
 		}
+	}
+
+	fn reading_lua(mut self, lua: bool) -> Self {
+		self.lua = lua;
+		self
 	}
 
 	fn parse_file(mut self) -> ParsedStatements {
@@ -576,8 +665,11 @@ impl ParserState {
 					if stop_at_rbrace {
 						let span = token.span.clone();
 						self.diagnostics.push(ParseDiagnostic {
+							code: ParseDiagnosticCode::MissingClosingBrace,
 							message: "missing closing brace before end of file".into(),
 							span,
+							repair: None,
+							isolation: None,
 						});
 					}
 					break;
@@ -590,8 +682,11 @@ impl ParserState {
 					let span = token.span.clone();
 					self.bump();
 					self.diagnostics.push(ParseDiagnostic {
+						code: ParseDiagnosticCode::UnmatchedClosingBrace,
 						message: "unexpected closing brace without an opening block".into(),
 						span,
+						repair: None,
+						isolation: None,
 					});
 				}
 				TokenKind::Newline | TokenKind::Comma => {
@@ -619,6 +714,9 @@ impl ParserState {
 		match first.kind {
 			TokenKind::Identifier(key) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
+					if self.leave_out_empty_assignment(&first.span) {
+						return None;
+					}
 					self.bump();
 					let value = self.parse_value();
 					let end = value.span().end.clone();
@@ -659,6 +757,9 @@ impl ParserState {
 			}
 			TokenKind::String(value) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
+					if self.leave_out_empty_assignment(&first.span) {
+						return None;
+					}
 					let _ = self.bump();
 					let value_node = self.parse_value();
 					let end = value_node.span().end.clone();
@@ -695,6 +796,9 @@ impl ParserState {
 			}
 			TokenKind::Number(value) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
+					if self.leave_out_empty_assignment(&first.span) {
+						return None;
+					}
 					let _ = self.bump();
 					let value_node = self.parse_value();
 					let end = value_node.span().end.clone();
@@ -791,12 +895,69 @@ impl ParserState {
 			TokenKind::RBrace | TokenKind::Eof => None,
 			_ => {
 				self.diagnostics.push(ParseDiagnostic {
+					code: ParseDiagnosticCode::InvalidStatementStart,
 					message: "could not parse statement start token".to_string(),
 					span: first.span,
+					repair: None,
+					isolation: None,
 				});
 				None
 			}
 		}
+	}
+
+	/// Leaves out the assignment `key =` when its `=`, the next token, has no
+	/// value: past line breaks and comments the block closes or the file
+	/// ends, or a later line no deeper than the key starts another
+	/// assignment. Nothing the author wrote is lost, so in Clausewitz the
+	/// diagnostic records the repair; a Lua interpreter rejects the text.
+	fn leave_out_empty_assignment(&mut self, key: &SpanRange) -> bool {
+		let mut index = self.index + 1;
+		let mut crossed_line = false;
+		while let Some(token) = self.tokens.get(index) {
+			match token.kind {
+				TokenKind::Newline => crossed_line = true,
+				TokenKind::Comment(_) => {}
+				_ => break,
+			}
+			index += 1;
+		}
+		let Some(next) = self.tokens.get(index) else {
+			return false;
+		};
+		let empty = match next.kind {
+			TokenKind::RBrace | TokenKind::Eof => true,
+			TokenKind::Identifier(_)
+			| TokenKind::String(_)
+			| TokenKind::Number(_)
+			| TokenKind::Bool(_) => {
+				crossed_line
+					&& next.span.start.column <= key.start.column
+					&& matches!(
+						self.tokens.get(index + 1).map(|token| &token.kind),
+						Some(TokenKind::Eq)
+					)
+			}
+			_ => false,
+		};
+		if !empty {
+			return false;
+		}
+		let eq = self.bump();
+		self.diagnostics.push(ParseDiagnostic {
+			code: ParseDiagnosticCode::MissingValue,
+			message: "assignment has no value".to_string(),
+			span: SpanRange {
+				start: key.start.clone(),
+				end: eq.span.end,
+			},
+			repair: (!self.lua).then_some(SourceRepair {
+				edit: crate::model::SourceRepairEdit::RemovedEmptyAssignment,
+				evidence: crate::model::SourceRepairEvidence::NothingLost,
+			}),
+			isolation: None,
+		});
+		true
 	}
 
 	fn parse_value(&mut self) -> AstValue {
@@ -867,8 +1028,11 @@ impl ParserState {
 			},
 			_ => {
 				self.diagnostics.push(ParseDiagnostic {
+					code: ParseDiagnosticCode::InvalidValue,
 					message: "value parse failed; downgraded to empty identifier".to_string(),
 					span: token.span.clone(),
+					repair: None,
+					isolation: None,
 				});
 				AstValue::Scalar {
 					value: ScalarValue::Identifier("<parse-error>".to_string()),
@@ -929,25 +1093,200 @@ pub(crate) fn read_failure(err: &std::io::Error) -> ParsedStatements {
 	ParsedStatements {
 		statements: Vec::new(),
 		diagnostics: vec![ParseDiagnostic {
+			code: ParseDiagnosticCode::ReadFailure,
 			message: format!("failed to read file: {err}"),
 			span: SpanRange {
 				start: start.clone(),
 				end: start,
 			},
+			repair: None,
+			isolation: None,
 		}],
 	}
 }
 
 /// Parses the script loaded at `path`; the syntax follows its extension and
-/// the AST carries the path.
+/// the AST carries the path. Errors are repaired without the schema; a mod's
+/// files are read through `parse_cache`, which repairs them under the schema
+/// for their path.
 pub fn parse_clausewitz_content(path: &GamePath, content: &str) -> ParseResult {
 	parse_clausewitz_statements(ScriptSyntax::for_game_path(path), content)
 		.into_parse_result(path.to_owned())
 }
 
 /// Parses script text in `syntax` without identifying which file it is.
+///
+/// A Clausewitz script with errors is repaired where one small edit has a
+/// single trustworthy reading; see [`recovery`]. A `.lua` file is read by a
+/// Lua interpreter, which rejects the whole file instead, so it is not.
+///
+/// No schema is known here; a caller that knows which file the text is passes
+/// one to [`recover_clausewitz_statements`] instead.
 pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> ParsedStatements {
-	let mut lexer = Lexer::new(content, syntax == ScriptSyntax::Lua);
+	recover_clausewitz_statements(
+		syntax,
+		content,
+		parse_unrecovered_statements(syntax, content),
+		None,
+	)
+}
+
+/// Parses script text exactly as written, with no repair.
+pub fn parse_unrecovered_statements(syntax: ScriptSyntax, content: &str) -> ParsedStatements {
+	let (tokens, lexer_diagnostics) = lex(content, syntax == ScriptSyntax::Lua, None);
+	let mut result = ParserState::new(tokens)
+		.reading_lua(syntax == ScriptSyntax::Lua)
+		.parse_file();
+	result.diagnostics.extend(lexer_diagnostics);
+	result
+}
+
+/// The edits that write the repairs `diagnostics` record into `content`,
+/// the text they were parsed from. `None` when a repair is not where the
+/// text says it is.
+pub fn repair_text_edits(
+	content: &str,
+	diagnostics: &[ParseDiagnostic],
+) -> Option<Vec<crate::game::eu4::text::TextEdit>> {
+	diagnostics
+		.iter()
+		.filter_map(|diagnostic| {
+			let repair = diagnostic.repair?;
+			Some(repair_text_edit(
+				content,
+				repair.edit,
+				diagnostic.span.start.offset,
+			))
+		})
+		.collect()
+}
+
+/// The edit that writes one repair into `content` at `offset`: a brace left
+/// out is removed, a missing `}` goes on its own line before the line it was
+/// added before, a missing `{` follows the `=`, and an unterminated string,
+/// whose quote is at `offset`, is ended at its line's end. `None` when the
+/// text does not have what the repair expects there.
+pub fn repair_text_edit(
+	content: &str,
+	edit: crate::model::SourceRepairEdit,
+	offset: usize,
+) -> Option<crate::game::eu4::text::TextEdit> {
+	use crate::game::eu4::text::TextEdit;
+	use crate::model::SourceRepairEdit;
+
+	Some(match edit {
+		SourceRepairEdit::RemovedClosingBrace | SourceRepairEdit::RemovedOpeningBrace => {
+			let brace = if edit == SourceRepairEdit::RemovedClosingBrace {
+				"}"
+			} else {
+				"{"
+			};
+			if content.get(offset..offset + 1)? != brace {
+				return None;
+			}
+			TextEdit {
+				offset,
+				remove: 1,
+				insert: "",
+			}
+		}
+		SourceRepairEdit::InsertedClosingBrace => {
+			let line_start = content.get(..offset)?.rfind('\n').map_or(0, |at| at + 1);
+			if content[line_start..offset].trim().is_empty() {
+				TextEdit {
+					offset: line_start,
+					remove: 0,
+					insert: "}\n",
+				}
+			} else if offset == content.len() {
+				TextEdit {
+					offset,
+					remove: 0,
+					insert: "\n}\n",
+				}
+			} else {
+				return None;
+			}
+		}
+		SourceRepairEdit::RemovedEmptyAssignment => {
+			// The key at `offset` through its `=`; with nothing else on its
+			// line, the whole line goes.
+			let eq = offset + content.get(offset..)?.find('=')? + 1;
+			let line_start = content[..offset].rfind('\n').map_or(0, |at| at + 1);
+			let rest = &content[eq..];
+			let line_end = rest.find('\n').map_or(content.len(), |at| eq + at + 1);
+			if content[line_start..offset].trim().is_empty()
+				&& content[eq..line_end].trim().is_empty()
+			{
+				TextEdit {
+					offset: line_start,
+					remove: line_end - line_start,
+					insert: "",
+				}
+			} else {
+				TextEdit {
+					offset,
+					remove: eq - offset,
+					insert: "",
+				}
+			}
+		}
+		SourceRepairEdit::InsertedOpeningBrace => {
+			if !content.get(..offset)?.ends_with('=') {
+				return None;
+			}
+			TextEdit {
+				offset,
+				remove: 0,
+				insert: " {",
+			}
+		}
+		SourceRepairEdit::ClosedStringAtLineEnd => {
+			let rest = content.get(offset..)?;
+			let line = rest.find('\n').map_or(rest.len(), |at| at);
+			let end = offset + line - usize::from(rest[..line].ends_with('\r'));
+			TextEdit {
+				offset: end,
+				remove: 0,
+				insert: "\"",
+			}
+		}
+	})
+}
+
+/// How many of one definition's values have a shape the schema for the file
+/// being read rejects.
+pub type SchemaCheck<'a> = dyn Fn(&[AstStatement]) -> usize + 'a;
+
+/// Repairs `parsed`, the unrecovered parse of `content`, where it can. A
+/// schema check, when given, rules out repairs whose definition has more
+/// values of a rejected shape than another repair's.
+pub fn recover_clausewitz_statements(
+	syntax: ScriptSyntax,
+	content: &str,
+	parsed: ParsedStatements,
+	schema: Option<&SchemaCheck<'_>>,
+) -> ParsedStatements {
+	if syntax == ScriptSyntax::Clausewitz && unrepaired(&parsed.diagnostics) {
+		return recovery::recover(content, parsed, schema);
+	}
+	parsed
+}
+
+/// Whether any of `diagnostics` is an error the parse did not repair.
+fn unrepaired(diagnostics: &[ParseDiagnostic]) -> bool {
+	diagnostics
+		.iter()
+		.any(|diagnostic| diagnostic.repair.is_none())
+}
+
+fn lex(
+	content: &str,
+	lua_mode: bool,
+	close_string_at_line_end: Option<usize>,
+) -> (Vec<Token>, Vec<ParseDiagnostic>) {
+	let mut lexer = Lexer::new(content, lua_mode);
+	lexer.close_string_at_line_end = close_string_at_line_end;
 	let mut tokens = Vec::new();
 	loop {
 		let token = lexer.next_token();
@@ -957,18 +1296,14 @@ pub fn parse_clausewitz_statements(syntax: ScriptSyntax, content: &str) -> Parse
 			break;
 		}
 	}
-	let lexer_diagnostics = lexer.take_diagnostics();
-
-	let mut result = ParserState::new(tokens).parse_file();
-	result.diagnostics.extend(lexer_diagnostics);
-	result
+	(tokens, lexer.take_diagnostics())
 }
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		AstStatement, AstValue, ScalarValue, ScriptSyntax, parse_clausewitz_content,
-		parse_clausewitz_file, parse_clausewitz_statements,
+		AstStatement, AstValue, ParseDiagnosticCode, ScalarValue, ScriptSyntax,
+		parse_clausewitz_content, parse_clausewitz_file, parse_clausewitz_statements,
 	};
 	use crate::model::GamePath;
 	use std::fs;
@@ -1074,7 +1409,10 @@ mod tests {
 		let source = "g = { old = { primary = AAA }";
 		let parsed = parse_clausewitz_content(game_path("common/cultures/test.txt"), source);
 		assert_eq!(parsed.diagnostics.len(), 1);
-		assert!(parsed.diagnostics[0].message.contains("closing brace"));
+		assert_eq!(
+			parsed.diagnostics[0].code,
+			ParseDiagnosticCode::MissingClosingBrace
+		);
 		assert_eq!(parsed.diagnostics[0].span.start.offset, source.len());
 		assert_eq!(parsed.ast.statements.len(), 1);
 	}
@@ -1085,7 +1423,10 @@ mod tests {
 			include_str!("../../../../tests/fixtures/cultures/malformed/extra_closing_brace.txt");
 		let parsed = parse_clausewitz_content(game_path("common/cultures/test.txt"), source);
 		assert_eq!(parsed.diagnostics.len(), 1);
-		assert!(parsed.diagnostics[0].message.contains("closing brace"));
+		assert_eq!(
+			parsed.diagnostics[0].code,
+			ParseDiagnosticCode::UnmatchedClosingBrace
+		);
 		assert_eq!(parsed.diagnostics[0].span.start.line, 5);
 		assert_eq!(
 			parsed
@@ -1508,6 +1849,87 @@ next_effect = { add_prestige = 1 }
 			panic!("expected scalar value");
 		};
 		assert_eq!(value, &ScalarValue::Number("1".to_string()));
+	}
+
+	fn keys(statements: &[AstStatement]) -> Vec<String> {
+		statements
+			.iter()
+			.filter_map(|statement| match statement {
+				AstStatement::Assignment { key, value, .. } => Some(match value {
+					AstValue::Block { items, .. } => format!("{key}{{{}}}", keys(items).join(" ")),
+					AstValue::Scalar { value, .. } => format!("{key}={}", value.as_text()),
+				}),
+				_ => None,
+			})
+			.collect()
+	}
+
+	#[test]
+	fn an_assignment_with_no_value_is_left_out_instead_of_taking_the_next_key() {
+		// Read as written, `x` would take `y` as its value and `y`'s own value
+		// would be lost without a word.
+		let parsed = parse_clausewitz_statements(
+			ScriptSyntax::Clausewitz,
+			"a = {\n\tx =\n\ty = 1\n\tz =\n}\n",
+		);
+		assert_eq!(keys(&parsed.statements), ["a{y=1}"]);
+		assert_eq!(
+			parsed
+				.diagnostics
+				.iter()
+				.map(|diagnostic| (
+					diagnostic.code,
+					diagnostic.span.start.line,
+					diagnostic.repair.is_some()
+				))
+				.collect::<Vec<_>>(),
+			[
+				(ParseDiagnosticCode::MissingValue, 2, true),
+				(ParseDiagnosticCode::MissingValue, 4, true),
+			]
+		);
+	}
+
+	#[test]
+	fn a_value_on_the_next_line_still_belongs_to_its_key() {
+		let parsed = parse_clausewitz_statements(
+			ScriptSyntax::Clausewitz,
+			"a = {\n\tOR =\n\t{\n\t\tx = 1\n\t}\n\tname =\n\t\tvalue\n}\n",
+		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(keys(&parsed.statements), ["a{OR{x=1} name=value}"]);
+	}
+
+	#[test]
+	fn each_code_name_is_how_it_serializes() {
+		for code in [
+			ParseDiagnosticCode::ReadFailure,
+			ParseDiagnosticCode::UnterminatedLuaBlockComment,
+			ParseDiagnosticCode::MissingClosingBrace,
+			ParseDiagnosticCode::UnmatchedClosingBrace,
+			ParseDiagnosticCode::UnmatchedOpeningBrace,
+			ParseDiagnosticCode::MissingOpeningBrace,
+			ParseDiagnosticCode::UnterminatedString,
+			ParseDiagnosticCode::MissingValue,
+			ParseDiagnosticCode::InvalidStatementStart,
+			ParseDiagnosticCode::InvalidValue,
+		] {
+			assert_eq!(
+				serde_json::to_string(&code).unwrap(),
+				format!("\"{}\"", code.name())
+			);
+		}
+	}
+
+	#[test]
+	fn lua_keeps_an_assignment_with_no_value_fatal() {
+		let parsed = parse_clausewitz_statements(ScriptSyntax::Lua, "x =\ny = 1\n");
+		assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
+		assert_eq!(
+			parsed.diagnostics[0].code,
+			ParseDiagnosticCode::MissingValue
+		);
+		assert!(parsed.diagnostics[0].repair.is_none());
 	}
 
 	#[test]

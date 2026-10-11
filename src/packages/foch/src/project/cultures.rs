@@ -94,25 +94,7 @@ impl CultureConfig {
 					entry.mod_id, entry.file
 				)));
 			}
-			if entry.edits.is_empty() {
-				return Err(invalid("a repair must contain at least one edit"));
-			}
-			let mut edits = entry.edits.iter().collect::<Vec<_>>();
-			edits.sort_by_key(|edit| (edit.start, edit.end));
-			for edit in &edits {
-				if edit.end.checked_sub(edit.start) != Some(edit.expected.len()) {
-					return Err(invalid(
-						"repair range must match the UTF-8 byte length of expected text",
-					));
-				}
-			}
-			for pair in edits.windows(2) {
-				if pair[1].start < pair[0].end || pair[1].start == pair[0].start {
-					return Err(invalid(
-						"repair edits overlap or share an insertion position",
-					));
-				}
-			}
+			super::transform::validate_edits(&entry.edits).map_err(invalid)?;
 		}
 		Ok(())
 	}

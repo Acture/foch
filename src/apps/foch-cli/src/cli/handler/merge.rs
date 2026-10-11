@@ -150,9 +150,14 @@ fn report_and_commit(
 		execution.merge_status.status,
 		foch::model::MergeReportStatus::Ready | foch::model::MergeReportStatus::PartialSuccess
 	) && let Some(paradox_dir) = paradox_data_path.as_ref()
-		&& let Err(err) = install_launcher_stub(&merge_args.out, paradox_dir)
 	{
-		eprintln!("[foch] failed to install launcher stub: {err}");
+		match install_launcher_stub(&merge_args.out, paradox_dir, "foch merge") {
+			Ok(stub_path) => eprintln!(
+				"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
+				stub_path.display()
+			),
+			Err(err) => eprintln!("[foch] failed to install launcher stub: {err}"),
+		}
 	}
 	Ok(execution.exit_code)
 }
@@ -669,17 +674,19 @@ fn confirm_existing_out_dir(out_dir: &Path) -> io::Result<bool> {
 }
 
 /// Drop a `<paradox_data_path>/mod/foch_<slug>.mod` stub pointing at the
-/// freshly-merged `out_dir` so the Paradox launcher lists the merge under
-/// "Mods" without the user having to hand-write a descriptor.
+/// mod Foch wrote into `out_dir`, a merge or a patch mod, so the Paradox
+/// launcher lists it under "Mods" as `<label> (<slug>)` without the user
+/// having to hand-write a descriptor; the stub's path is returned.
 ///
 /// The launcher only enumerates `.mod` files inside its game-specific mod
 /// directory; the in-`out_dir` `descriptor.mod` we already write isn't
 /// enough on its own. The user still has to open the launcher and toggle
-/// the merge on (and disable the source mods to avoid double-loading).
-fn install_launcher_stub(
+/// the mod on.
+pub(crate) fn install_launcher_stub(
 	out_dir: &Path,
 	paradox_data_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+	label: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
 	let mod_dir = paradox_data_path.join("mod");
 	fs::create_dir_all(&mod_dir)?;
 	let absolute_out = fs::canonicalize(out_dir).unwrap_or_else(|_| out_dir.to_path_buf());
@@ -691,7 +698,7 @@ fn install_launcher_stub(
 		)
 	})?;
 	let (stub_path, stem) = launcher_stub_path(&mod_dir, &slug, &descriptor_value)?;
-	let display_name = format!("foch merge ({stem})");
+	let display_name = format!("{label} ({stem})");
 	let body = format!(
 		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
 		descriptor_comment_text(&out_dir.display().to_string()),
@@ -699,11 +706,7 @@ fn install_launcher_stub(
 		descriptor_value
 	);
 	fs::write(&stub_path, body)?;
-	eprintln!(
-		"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
-		stub_path.display()
-	);
-	Ok(())
+	Ok(stub_path)
 }
 
 /// Where the stub for the output named by `descriptor_value` goes, with the
@@ -817,7 +820,7 @@ mod tests {
 		fs::create_dir_all(&out_dir).expect("create output");
 		let paradox_dir = temp.path().join("paradox");
 
-		install_launcher_stub(&out_dir, &paradox_dir).expect("install stub");
+		install_launcher_stub(&out_dir, &paradox_dir, "foch merge").expect("install stub");
 
 		let stub = paradox_dir.join("mod").join(format!(
 			"foch_{}.mod",
@@ -845,9 +848,10 @@ mod tests {
 		];
 		for out_dir in &outputs {
 			fs::create_dir_all(out_dir).expect("create output");
-			install_launcher_stub(out_dir, &paradox_dir).expect("install stub");
+			install_launcher_stub(out_dir, &paradox_dir, "foch merge").expect("install stub");
 		}
-		install_launcher_stub(&outputs[0], &paradox_dir).expect("reinstall first stub");
+		install_launcher_stub(&outputs[0], &paradox_dir, "foch merge")
+			.expect("reinstall first stub");
 
 		let mut stubs = fs::read_dir(paradox_dir.join("mod"))
 			.expect("mod dir")
@@ -882,7 +886,7 @@ mod tests {
 		let out_dir = temp.path().join("x\nreplace_path=common\n#");
 		let paradox_dir = temp.path().join("paradox");
 
-		let error = install_launcher_stub(&out_dir, &paradox_dir)
+		let error = install_launcher_stub(&out_dir, &paradox_dir, "foch merge")
 			.expect_err("a line break has no descriptor spelling")
 			.to_string();
 		assert!(error.contains("line break"), "{error}");
@@ -902,7 +906,7 @@ mod tests {
 		let out_dir = temp.path().join("merged \"out\"");
 		let paradox_dir = temp.path().join("paradox");
 
-		let error = install_launcher_stub(&out_dir, &paradox_dir)
+		let error = install_launcher_stub(&out_dir, &paradox_dir, "foch merge")
 			.expect_err("a quote has no descriptor spelling")
 			.to_string();
 		assert!(error.contains("cannot be named"), "{error}");
@@ -931,7 +935,7 @@ mod tests {
 			let out_dir = temp.path().join(OsStr::from_bytes(name));
 			let error = launcher_stub_slug(&out_dir).expect_err("not UTF-8");
 			assert!(error.contains("cannot name a launcher stub"), "{error}");
-			let error = install_launcher_stub(&out_dir, &paradox_dir)
+			let error = install_launcher_stub(&out_dir, &paradox_dir, "foch merge")
 				.expect_err("not UTF-8")
 				.to_string();
 			assert!(error.contains("cannot name a launcher stub"), "{error}");
@@ -966,7 +970,7 @@ mod tests {
 		std::os::unix::fs::symlink(&target, &link).expect("link output");
 		let paradox_dir = temp.path().join("paradox");
 
-		let error = install_launcher_stub(&link, &paradox_dir)
+		let error = install_launcher_stub(&link, &paradox_dir, "foch merge")
 			.expect_err("a link name that is not UTF-8")
 			.to_string();
 		assert!(error.contains("cannot name a launcher stub"), "{error}");

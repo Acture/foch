@@ -129,8 +129,8 @@ pub struct LspArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "Check a playset and report findings",
-	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./foch.toml\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json"
+	about = "Check a playset and report findings, or fix its syntax errors",
+	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./foch.toml\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json\n\nSyntax fixes, as a linter's:\n  foch check ./my-mod --diff                      # show the fixes, write nothing\n  foch check ./my-mod --fix                       # fix a mod directory in place\n  foch check ./my-mod --fix --unsafe-fixes        # also fix what a merge holds for review\n  foch check ./foch.toml --fix --patch-mod ./fixes # a playset: write a patch mod\n  foch check ./foch.toml --fix --in-place         # a playset: fix the mods, backed up\n  foch check --restore <BACKUP_DIR>               # undo an in-place fix"
 )]
 pub struct CheckArgs {
 	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
@@ -161,6 +161,51 @@ pub struct CheckArgs {
 
 	#[arg(long)]
 	pub no_color: bool,
+
+	/// Fix the syntax errors Foch repairs by itself, as a linter's --fix. A
+	/// mod directory is fixed in place; a playset needs --patch-mod or
+	/// --in-place. Exits with 1 while errors remain unfixed.
+	#[arg(long)]
+	pub fix: bool,
+
+	/// Also apply unsafe fixes, which settle what a merge holds for review:
+	/// leave out a statement that cannot be read with confidence, or apply
+	/// the likeliest repair of a definition that cannot be read at all.
+	#[arg(long)]
+	pub unsafe_fixes: bool,
+
+	/// Show the fixes as a unified diff and write nothing. Exits with 1 when
+	/// there is something to fix.
+	#[arg(long, conflicts_with = "fix")]
+	pub diff: bool,
+
+	/// With --fix: write a patch mod holding only the fixed files into this
+	/// new or empty directory, to load after the mods it fixes, instead of
+	/// changing them.
+	#[arg(
+		long,
+		value_name = "DIR",
+		requires = "fix",
+		conflicts_with = "in_place"
+	)]
+	pub patch_mod: Option<PathBuf>,
+
+	/// With --fix on a playset or a Steam Workshop mod: fix the mods' own
+	/// files, after backing up each original, as a mod directory of one's own
+	/// is fixed. Steam replaces a Workshop mod's files when it updates, which
+	/// undoes the fix.
+	#[arg(long, requires = "fix")]
+	pub in_place: bool,
+
+	/// Put back the originals an earlier in-place --fix backed up into this
+	/// directory, for each file that still holds the fixed bytes.
+	#[arg(long, value_name = "BACKUP_DIR", conflicts_with_all = ["fix", "diff"])]
+	pub restore: Option<PathBuf>,
+
+	/// Load reviewed repairs from this foch.toml instead of the default search
+	/// path.
+	#[arg(long, value_name = "PATH")]
+	pub config: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

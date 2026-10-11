@@ -363,6 +363,24 @@ impl UnitOutcomeLedger {
 		Ok(())
 	}
 
+	/// Add notes to a unit that is already resolved.
+	pub(super) fn add_notes(
+		&mut self,
+		entry: &MergePlanEntry,
+		notes: impl IntoIterator<Item = String>,
+	) -> Result<(), MergeError> {
+		let id = stable_unit_id(entry)?;
+		let unit = self
+			.by_id
+			.get(&id)
+			.and_then(|index| self.units[*index].as_mut())
+			.ok_or_else(|| {
+				invariant(entry.output_path(), "notes require a resolved review unit")
+			})?;
+		unit.notes.extend(notes);
+		Ok(())
+	}
+
 	/// Close the ledger once every unit is resolved and `report` holds the
 	/// analysis' conflicts and handler decisions.
 	pub(super) fn finish(

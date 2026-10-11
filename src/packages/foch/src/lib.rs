@@ -9,4 +9,5 @@ pub mod model;
 pub mod platform;
 pub mod playset;
 pub mod project;
+pub mod repair;
 pub mod simplify;

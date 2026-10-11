@@ -9,7 +9,7 @@ use crate::game::eu4::script::documents::{
 use crate::game::eu4::script::parser::AstStatement;
 use crate::model::{
 	DocumentFamily, DocumentRecord, FamilyParseStats, GamePathBuf, ModCandidate, ParseFamilyStats,
-	SemanticIndex,
+	SemanticIndex, has_fatal_parse_issue,
 };
 pub use crate::platform::cache_store::CacheError;
 use std::collections::{HashMap, HashSet};
@@ -425,7 +425,7 @@ fn collect_document_noop_hints(documents: &[ParsedTextDocument]) -> HashMap<Game
 		.filter_map(|document| match document {
 			ParsedTextDocument::Clausewitz(file) => Some((
 				file.relative_path.clone(),
-				file.parse_issues.is_empty()
+				!has_fatal_parse_issue(&file.parse_issues)
 					&& !ast_statement_list_has_real_content(&file.ast.statements),
 			)),
 			ParsedTextDocument::Localisation(_)

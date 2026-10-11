@@ -207,16 +207,52 @@ impl TransformPlan {
 			.iter()
 			.filter_map(|descriptor| descriptor.transform_adapter())
 			.collect::<Vec<_>>();
-		let policies = adapters
+		let mut policies = adapters
 			.iter()
 			.map(|adapter| adapter.reviewed_inputs(request.project))
 			.collect::<Result<Vec<_>, _>>()?;
-		let reviewed = input::ReviewedInputBatch::prepare(input, &policies)?.apply(input);
+		// Reviewed syntax repairs belong to no content family; they come last
+		// and compose with the families' own edits to the same file.
+		let repairs = &request.project.repairs;
+		policies.push(input::ReviewedInputPolicy {
+			label: "syntax",
+			sources: Vec::new(),
+			repairs: repairs
+				.iter()
+				.map(|entry| input::SourceRepair {
+					source: input::SourceBinding {
+						mod_id: &entry.mod_id,
+						file: &entry.file,
+						sha256: &entry.sha256,
+					},
+					edits: &entry.edits,
+				})
+				.collect(),
+			validate: None,
+		});
+		let mut reviewed = input::ReviewedInputBatch::prepare(input, &policies)?.apply(input);
+		let syntax = reviewed.pop().expect("one reviewed input per policy");
 		let mut plan = Self::default();
 		for (adapter, reviewed) in adapters.into_iter().zip(reviewed) {
 			for prepared in adapter.prepare(input, request, reviewed)? {
 				plan.push(input, prepared)?;
 			}
+		}
+		if !repairs.is_empty() {
+			plan.push(
+				input,
+				PreparedTransform {
+					id: "syntax-repairs".into(),
+					identity: crate::project::repairs_identity(repairs),
+					paths: repairs
+						.iter()
+						.filter_map(|entry| GamePathBuf::parse(&entry.file).ok())
+						.collect(),
+					evidence: syntax.evidence,
+					source_guard: syntax.source_guard,
+					..PreparedTransform::default()
+				},
+			)?;
 		}
 		Ok(plan)
 	}

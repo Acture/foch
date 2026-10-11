@@ -373,7 +373,9 @@ fn assert_culture_adaptation(case: CultureCase) {
 		renamed = renamed.replacen("group = {", "group", 1);
 	}
 	if case == CultureCase::IncompleteRepair {
-		renamed.remove(renamed.rfind('}').unwrap());
+		// The reviewed edit opens `group` again but leaves it unclosed; the
+		// automatic repair that would close it is in the reviewed definition.
+		renamed.remove(renamed.find("}\nother_group").unwrap());
 	}
 	if case == CultureCase::ReviewedRename {
 		renamed = renamed.replace("primary = AAA", "primary = AAA male_names = { NewName }");

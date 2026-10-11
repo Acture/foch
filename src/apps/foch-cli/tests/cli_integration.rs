@@ -214,6 +214,632 @@ fn culture_cli_repairs_and_adapts_reviewed_sources_without_mutating_them() {
 	assert!(!stale_out.exists());
 }
 
+const STRAY_BRACE_TRIGGERS: &str = "common/scripted_triggers/b_triggers.txt";
+
+/// Stages a scripted-trigger database whose second mod's file ends with an
+/// unmatched top-level `}`, and returns the manifest to merge and that mod.
+fn stage_stray_brace_triggers(scratch: &Path, mod_b_triggers: &str) -> (PathBuf, PathBuf) {
+	let game = scratch.join("game");
+	let mod_a = scratch.join("a");
+	let mod_b = scratch.join("b");
+	write_game_version(&game, "stray-brace-1.0");
+	write_script_file(
+		&game,
+		"common/scripted_triggers/00_triggers.txt",
+		"base_check = { always = yes }\n",
+	);
+	write_descriptor(&mod_a, "A");
+	write_script_file(
+		&mod_a,
+		"common/scripted_triggers/a_triggers.txt",
+		"a_check = { always = yes }\n",
+	);
+	write_descriptor(&mod_b, "B");
+	write_script_file(&mod_b, STRAY_BRACE_TRIGGERS, mod_b_triggers);
+	write_game_path_config(scratch, &game);
+	build_base_data_install(scratch, &game);
+	let manifest = scratch.join("foch.toml");
+	fs::write(
+		&manifest,
+		"[project]\ngame='eu4'\n[[project.mods]]\nid='a'\npath='a'\n[[project.mods]]\nid='b'\npath='b'\n",
+	)
+	.unwrap();
+	(manifest, mod_b)
+}
+
+#[test]
+fn an_unmatched_top_level_brace_is_ignored_with_a_located_repair_warning() {
+	let scratch = TempDir::new().unwrap();
+	let source = "b_check = {\n\talways = yes\n}\n}\nb_later = { always = no }\n";
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(
+		stdout.contains("source repair in b: common/scripted_triggers/b_triggers.txt:4:1"),
+		"{stdout}"
+	);
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert_eq!(report.unsupported_input_count, 0, "{report:#?}");
+	let [repair] = report.source_repairs.as_slice() else {
+		panic!("expected one source repair: {report:#?}");
+	};
+	assert_eq!(repair.mod_id, "b");
+	assert_eq!(repair.path.as_str(), STRAY_BRACE_TRIGGERS);
+	assert_eq!((repair.line, repair.column), (4, 1));
+	assert_eq!(
+		repair.repair,
+		foch::model::SourceRepair {
+			edit: foch::model::SourceRepairEdit::RemovedClosingBrace,
+			evidence: foch::model::SourceRepairEvidence::OnlyReading,
+		}
+	);
+	assert!(repair.unit.starts_with("module:"), "{repair:?}");
+
+	let mut merged = String::new();
+	for entry in fs::read_dir(out.join("common/scripted_triggers")).unwrap() {
+		let path = entry.unwrap().path();
+		let text = fs::read_to_string(&path).unwrap();
+		let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+			foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+			&text,
+		);
+		assert!(
+			parsed.diagnostics.is_empty(),
+			"{}: {:?}",
+			path.display(),
+			parsed.diagnostics
+		);
+		merged.push_str(&text);
+	}
+	for key in ["a_check", "b_check", "b_later"] {
+		assert!(merged.contains(key), "{key} missing from {merged}");
+	}
+	assert_eq!(
+		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		source,
+		"the source file is read-only"
+	);
+}
+
+#[test]
+fn a_definition_left_open_is_closed_where_the_indentation_says() {
+	let scratch = TempDir::new().unwrap();
+	let source = "b_check = {\n\talways = yes\nb_later = {\n\talways = no\n}\n";
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	let [repair] = report.source_repairs.as_slice() else {
+		panic!("expected one source repair: {report:#?}");
+	};
+	assert_eq!((repair.line, repair.column), (3, 1));
+	assert_eq!(
+		repair.repair,
+		foch::model::SourceRepair {
+			edit: foch::model::SourceRepairEdit::InsertedClosingBrace,
+			evidence: foch::model::SourceRepairEvidence::SmallestChange,
+		}
+	);
+	let merged = fs::read_dir(out.join("common/scripted_triggers"))
+		.unwrap()
+		.map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+		.collect::<String>();
+	let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+		foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+		&merged,
+	);
+	assert!(parsed.diagnostics.is_empty(), "{merged}");
+	let keys = parsed
+		.statements
+		.iter()
+		.filter_map(|statement| match statement {
+			foch::game::eu4::script::parser::AstStatement::Assignment { key, .. } => {
+				Some(key.as_str())
+			}
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	for key in ["b_check", "b_later"] {
+		assert!(keys.contains(&key), "{key} is not top-level in {merged}");
+	}
+	assert_eq!(
+		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		source
+	);
+}
+
+/// `b_check` has a stray brace with one reading. Closing `OR` at the end of
+/// `b_open` moves the fewest statements, but the tabs put `always = yes`
+/// beside `OR`: that evidence conflicts, so `b_open` is isolated.
+const ISOLATED_TRIGGERS: &str =
+	"b_check = { always = yes }\n}\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n";
+
+fn merge_triggers(scratch: &Path, source: &str, force: bool) -> (PathBuf, String, String) {
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch, source);
+	let out = scratch.join("out");
+	let mut args = vec![
+		"merge",
+		path_text(&manifest),
+		"--out",
+		path_text(&out),
+		"--non-interactive",
+		"--confirm",
+	];
+	if force {
+		args.push("--force");
+	}
+	let (code, stdout, stderr) = run_foch(&args, scratch);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		fs::read_to_string(mod_b.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		source,
+		"the source file is read-only"
+	);
+	(out, stdout, stderr)
+}
+
+fn merged_triggers(out: &Path) -> String {
+	fs::read_dir(out.join("common/scripted_triggers"))
+		.unwrap()
+		.map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+		.collect()
+}
+
+#[test]
+fn a_definition_with_no_trustworthy_repair_holds_its_module_for_review() {
+	let scratch = TempDir::new().unwrap();
+	let (out, stdout, _) = merge_triggers(scratch.path(), ISOLATED_TRIGGERS, false);
+	assert!(stdout.contains("definition `b_open` in b"), "{stdout}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::PartialSuccess,
+		"{report:#?}"
+	);
+	assert_eq!(report.unsupported_input_count, 0, "{report:#?}");
+	assert_eq!(report.manual_conflict_count, 1, "{report:#?}");
+	let [isolated] = report.isolated_definitions.as_slice() else {
+		panic!("expected one isolated definition: {report:#?}");
+	};
+	assert_eq!(
+		(
+			isolated.mod_id.as_str(),
+			isolated.isolation.definition.as_str(),
+			isolated.line,
+			isolated.isolation.end_line
+		),
+		("b", "b_open", 4, 7)
+	);
+	// Only the `OR` that never closes is left out of `b_open`.
+	assert_eq!(
+		isolated.isolation.dropped,
+		Some(foch::model::LineRange { first: 4, last: 5 })
+	);
+	assert!(!isolated.isolation.proposals.is_empty(), "{isolated:?}");
+	assert!(
+		fs::read_dir(out.join("common/scripted_triggers"))
+			.map_or(true, |mut files| files.next().is_none()),
+		"a module held for review writes no output"
+	);
+}
+
+#[test]
+fn force_merges_the_rest_of_a_module_with_an_isolated_definition() {
+	let scratch = TempDir::new().unwrap();
+	let (out, _, _) = merge_triggers(scratch.path(), ISOLATED_TRIGGERS, true);
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert_eq!(report.isolated_definitions.len(), 1, "{report:#?}");
+	assert!(
+		report
+			.warnings
+			.iter()
+			.any(|warning| warning.contains("--force kept")),
+		"{:?}",
+		report.warnings
+	);
+	let merged = merged_triggers(&out);
+	assert!(
+		merged.contains("a_check") && merged.contains("b_check"),
+		"{merged}"
+	);
+	// `b_open` is kept without the `OR` that could not be read.
+	assert!(merged.contains("b_open"), "{merged}");
+	assert!(!merged.contains("always = no"), "{merged}");
+}
+
+#[test]
+fn a_reviewed_repair_lets_an_isolated_definition_merge_until_its_source_changes() {
+	let scratch = TempDir::new().unwrap();
+	let (out, stdout, _) = merge_triggers(scratch.path(), ISOLATED_TRIGGERS, false);
+	assert!(stdout.contains("[[repairs]]"), "{stdout}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	let isolated = &report.isolated_definitions[0];
+	let source_path = scratch.path().join("b").join(STRAY_BRACE_TRIGGERS);
+	let entry = foch::project::proposed_repair_entry(
+		"b",
+		&isolated.path,
+		&fs::read(&source_path).unwrap(),
+		isolated.isolation.proposals[0],
+	)
+	.expect("the first proposal applies");
+	let manifest = scratch.path().join("foch.toml");
+	let mut config = fs::read_to_string(&manifest).unwrap();
+	config.push('\n');
+	config.push_str(&foch::project::render_repairs_toml(&[entry]));
+	fs::write(&manifest, config).unwrap();
+
+	let reviewed_out = scratch.path().join("reviewed-out");
+	let args = |out: &Path| {
+		vec![
+			"merge".to_owned(),
+			path_text(&manifest).to_owned(),
+			"--out".to_owned(),
+			path_text(out).to_owned(),
+			"--non-interactive".to_owned(),
+			"--confirm".to_owned(),
+		]
+	};
+	let reviewed_args = args(&reviewed_out);
+	let (code, stdout, stderr) = run_foch(
+		&reviewed_args.iter().map(String::as_str).collect::<Vec<_>>(),
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("accepted syntax repair"), "{stdout}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(reviewed_out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap())
+			.unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert!(report.isolated_definitions.is_empty(), "{report:#?}");
+	let merged = merged_triggers(&reviewed_out);
+	assert!(merged.contains("b_open"), "{merged}");
+	assert_eq!(
+		fs::read_to_string(&source_path).unwrap(),
+		ISOLATED_TRIGGERS,
+		"the source file is read-only"
+	);
+
+	// The review was of those exact bytes.
+	fs::write(&source_path, format!("{ISOLATED_TRIGGERS}# edited\n")).unwrap();
+	let stale_out = scratch.path().join("stale-out");
+	let stale_args = args(&stale_out);
+	let (code, stdout, stderr) = run_foch(
+		&stale_args.iter().map(String::as_str).collect::<Vec<_>>(),
+		scratch.path(),
+	);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("stale"), "{stderr}");
+}
+
+#[test]
+fn check_fix_writes_a_patch_mod_or_the_source_with_a_backup_that_restores() {
+	let scratch = TempDir::new().unwrap();
+	let source = "b_check = {\n\talways = yes\n}\n}\nb_later = { always = no }\n";
+	let repaired = "b_check = {\n\talways = yes\n}\n\nb_later = { always = no }\n";
+	let (manifest, mod_b) = stage_stray_brace_triggers(scratch.path(), source);
+	let file = mod_b.join(STRAY_BRACE_TRIGGERS);
+	let check = |extra: &[&str], expected: i32| {
+		let mut args = vec!["check", path_text(&manifest)];
+		args.extend_from_slice(extra);
+		let (code, stdout, stderr) = run_foch(&args, scratch.path());
+		assert_eq!(code, expected, "{stdout}\n{stderr}");
+		stdout
+	};
+
+	// A diff shows the fix, writes nothing, and exits with 1 like a linter.
+	let stdout = check(&["--diff"], 1);
+	assert!(
+		stdout.contains("a/b/common/scripted_triggers/b_triggers.txt") && stdout.contains("-}"),
+		"{stdout}"
+	);
+	assert_eq!(fs::read_to_string(&file).unwrap(), source);
+
+	// A playset needs to say where the fixes go.
+	let (code, stdout, stderr) =
+		run_foch(&["check", path_text(&manifest), "--fix"], scratch.path());
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("--patch-mod"), "{stderr}");
+	assert_eq!(fs::read_to_string(&file).unwrap(), source);
+
+	let paradox = scratch.path().join("paradox");
+	let config = fs::read_to_string(scratch.path().join("config.toml")).unwrap();
+	fs::write(
+		scratch.path().join("config.toml"),
+		format!("paradox_data_path = '{}'\n{config}", path_text(&paradox)),
+	)
+	.unwrap();
+	let patch = scratch.path().join("patch");
+	let stdout = check(&["--fix", "--patch-mod", path_text(&patch)], 0);
+	assert!(patch.join("descriptor.mod").is_file());
+	// The launcher lists the patch mod through a `.mod` file in its folder.
+	let stub = paradox.join("mod").join("foch_patch.mod");
+	assert!(stdout.contains("the launcher lists it"), "{stdout}");
+	let descriptor = foch::playset::descriptor::load_launcher_descriptor(&stub).unwrap();
+	assert_eq!(
+		descriptor.path.map(fs::canonicalize).transpose().unwrap(),
+		Some(fs::canonicalize(&patch).unwrap())
+	);
+	assert_eq!(
+		fs::read_to_string(patch.join(STRAY_BRACE_TRIGGERS)).unwrap(),
+		repaired
+	);
+	assert_eq!(
+		fs::read_to_string(&file).unwrap(),
+		source,
+		"a patch mod leaves the source alone"
+	);
+
+	let stdout = check(&["--fix", "--in-place"], 0);
+	assert_eq!(fs::read_to_string(&file).unwrap(), repaired);
+	let backup = stdout
+		.lines()
+		.find_map(|line| line.strip_prefix("undo with: foch check --restore \""))
+		.and_then(|rest| rest.strip_suffix('"'))
+		.unwrap_or_else(|| panic!("{stdout}"))
+		.to_owned();
+	let (code, stdout, stderr) = run_foch(&["check", "--restore", &backup], scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(fs::read_to_string(&file).unwrap(), source);
+
+	// A file changed after the fix is not overwritten by a restore.
+	check(&["--fix", "--in-place"], 0);
+	let latest = fs::read_dir(scratch.path().join(".foch-data").join("repair-backups"))
+		.unwrap()
+		.map(|entry| entry.unwrap().path())
+		.max()
+		.unwrap();
+	fs::write(&file, "b_check = { always = no }\n").unwrap();
+	let (code, stdout, stderr) =
+		run_foch(&["check", "--restore", path_text(&latest)], scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("left "), "{stdout}");
+	assert_eq!(
+		fs::read_to_string(&file).unwrap(),
+		"b_check = { always = no }\n"
+	);
+}
+
+#[test]
+fn check_fix_fixes_a_mod_directory_in_place_and_unsafe_fixes_settle_isolations() {
+	let scratch = TempDir::new().unwrap();
+	let mod_dir = scratch.path().join("my-mod");
+	write_descriptor(&mod_dir, "My mod");
+	let path = mod_dir.join(STRAY_BRACE_TRIGGERS);
+	write_script_file(&mod_dir, STRAY_BRACE_TRIGGERS, ISOLATED_TRIGGERS);
+	let check = |extra: &[&str]| {
+		let mut args = vec!["check", path_text(&mod_dir)];
+		args.extend_from_slice(extra);
+		run_foch(&args, scratch.path())
+	};
+
+	// The safe fix is made, as a linter's is, and `b_open` is reported for
+	// review, so the exit is 1.
+	let (code, stdout, stderr) = check(&["--fix"]);
+	assert_eq!(code, 1, "{stdout}\n{stderr}");
+	assert!(stdout.contains("cannot fix"), "{stdout}");
+	assert_eq!(
+		fs::read_to_string(&path).unwrap(),
+		"b_check = { always = yes }\n\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n"
+	);
+
+	// The unsafe fix leaves out `b_open`'s unreadable `OR`, as a forced
+	// merge reads it, and the file then reads cleanly.
+	let (code, stdout, stderr) = check(&["--fix", "--unsafe-fixes"]);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("unsafe"), "{stdout}");
+	let fixed = fs::read_to_string(&path).unwrap();
+	assert_eq!(
+		fixed,
+		"b_check = { always = yes }\n\nb_open = {\n\talways = yes\n}\n"
+	);
+	let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+		foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+		&fixed,
+	);
+	assert!(parsed.diagnostics.is_empty(), "{fixed}");
+
+	// Each fix kept the file it changed, so a mistaken one can be undone.
+	let backup = stdout
+		.lines()
+		.find_map(|line| line.strip_prefix("undo with: foch check --restore \""))
+		.and_then(|rest| rest.strip_suffix('"'))
+		.unwrap_or_else(|| panic!("{stdout}"))
+		.to_owned();
+	assert!(!stdout.contains("Steam replaces"), "{stdout}");
+	let (code, stdout, stderr) = run_foch(&["check", "--restore", &backup], scratch.path());
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		fs::read_to_string(&path).unwrap(),
+		"b_check = { always = yes }\n\nb_open = {\n\tOR = {\n\t\talways = no\n\talways = yes\n}\n"
+	);
+}
+
+#[test]
+fn check_fix_treats_a_workshop_mod_directory_as_other_peoples_work() {
+	let scratch = TempDir::new().unwrap();
+	let mod_dir = scratch
+		.path()
+		.join("steamapps")
+		.join("workshop")
+		.join("content")
+		.join("236850")
+		.join("1001");
+	write_descriptor(&mod_dir, "Workshop mod");
+	let path = mod_dir.join(STRAY_BRACE_TRIGGERS);
+	let source = "b_check = {\n\talways = yes\n}\n}\nb_later = { always = no }\n";
+	write_script_file(&mod_dir, STRAY_BRACE_TRIGGERS, source);
+	let check = |extra: &[&str]| {
+		let mut args = vec!["check", path_text(&mod_dir)];
+		args.extend_from_slice(extra);
+		run_foch(&args, scratch.path())
+	};
+
+	// Fixing it needs to say where the fixes go, as a playset does.
+	let (code, stdout, stderr) = check(&["--fix"]);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(stderr.contains("Steam Workshop mod"), "{stderr}");
+	assert_eq!(fs::read_to_string(&path).unwrap(), source);
+
+	let patch = scratch.path().join("patch");
+	let (code, stdout, stderr) = check(&["--fix", "--patch-mod", path_text(&patch)]);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(patch.join(STRAY_BRACE_TRIGGERS).is_file());
+	// With no Paradox data folder configured, the user is told what to add.
+	assert!(stdout.contains("to enable it, add a .mod file"), "{stdout}");
+	assert_eq!(fs::read_to_string(&path).unwrap(), source);
+
+	let (code, stdout, stderr) = check(&["--fix", "--in-place"]);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert!(stdout.contains("undo with:"), "{stdout}");
+	assert!(stdout.contains("Steam replaces"), "{stdout}");
+	assert_ne!(fs::read_to_string(&path).unwrap(), source);
+}
+
+#[test]
+fn a_copied_file_is_written_with_its_repair_in_its_own_encoding() {
+	let scratch = TempDir::new().unwrap();
+	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");
+	let mod_b = scratch.path().join("b");
+	let path = "events/b_only.txt";
+	// Windows-1252 text that only B ships; the stray `}` would close the event
+	// early and leave its option outside it.
+	let source: &[u8] =
+		b"namespace = b\ncountry_event = {\n\tid = b.1\n\ttitle = \"Bragan\xe7a\"\n}\n\toption = { name = b.1.a }\n}\n";
+	fs::create_dir_all(mod_b.join("events")).unwrap();
+	fs::write(mod_b.join(path), source).unwrap();
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		fs::read(out.join(path)).unwrap(),
+		b"namespace = b\ncountry_event = {\n\tid = b.1\n\ttitle = \"Bragan\xe7a\"\n\n\toption = { name = b.1.a }\n}\n",
+		"the brace that closed the event early is left out, and nothing else changes"
+	);
+	assert_eq!(fs::read(mod_b.join(path)).unwrap(), source);
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert!(
+		report
+			.source_repairs
+			.iter()
+			.any(|repair| repair.unit == format!("file:{path}") && repair.line == 5),
+		"{:#?}",
+		report.source_repairs
+	);
+}
+
+#[test]
+fn an_isolated_override_of_a_vanilla_definition_keeps_the_vanilla_one() {
+	let scratch = TempDir::new().unwrap();
+	let (manifest, _) = stage_stray_brace_triggers(scratch.path(), "b_check = { always = yes }\n");
+	let mod_b = scratch.path().join("b");
+	// B replaces the vanilla file; its one-line `base_check` cannot be read
+	// at all, so it is left out whole, and must not read as deleted.
+	let source = "base_check = { always = no } } }\nb_new = { always = yes }\n";
+	write_script_file(&mod_b, "common/scripted_triggers/00_triggers.txt", source);
+	let out = scratch.path().join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&manifest),
+			"--out",
+			path_text(&out),
+			"--non-interactive",
+			"--force",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let report: foch::model::MergeReport =
+		serde_json::from_slice(&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).unwrap()).unwrap();
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"{report:#?}"
+	);
+	assert_eq!(
+		report
+			.isolated_definitions
+			.iter()
+			.map(|isolated| isolated.isolation.definition.as_str())
+			.collect::<Vec<_>>(),
+		["base_check"]
+	);
+	let merged = merged_triggers(&out);
+	assert!(merged.contains("b_new"), "{merged}");
+	assert!(!merged.contains("always = no"), "{merged}");
+	// Either the vanilla definition stays the game's own, or it is written as
+	// vanilla has it; it is never dropped.
+	if merged.contains("base_check") {
+		let parsed = foch::game::eu4::script::parser::parse_clausewitz_statements(
+			foch::game::eu4::script::parser::ScriptSyntax::Clausewitz,
+			&merged,
+		);
+		assert!(parsed.diagnostics.is_empty(), "{merged}");
+	}
+	assert!(
+		!merged.contains("base_check") || merged.contains("base_check = {"),
+		"{merged}"
+	);
+}
+
 /// A test path as an argument, environment or configuration value. Test
 /// directories are UTF-8; one that is not fails the test instead of being
 /// rendered as some other path.
@@ -292,12 +918,12 @@ fn stage_structural_manual_conflict(mod_a: &Path, mod_b: &Path) {
 		STRUCTURAL_CONFLICT_PATH,
 		"country_event = { id = test.1 }\n",
 	);
-	// Malformed Clausewitz: produces a parse diagnostic ("无法解析的语句起始 token"),
-	// which downgrades the structural merge to ManualConflict.
+	// Malformed Clausewitz that names no definition, so no part of it can be
+	// repaired or isolated: the structural merge reports unsupported input.
 	write_script_file(
 		mod_b,
 		STRUCTURAL_CONFLICT_PATH,
-		"name { = invalid syntax with unclosed\nbraces\n",
+		"} name { = invalid syntax with unclosed\nbraces\n",
 	);
 }
 
@@ -989,7 +1615,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v14.0.0")
+			.join("v19.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),

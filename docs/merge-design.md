@@ -141,6 +141,139 @@ An implicit interactive/TUI defer remains `needs_user_choice`. `deferred` is
 reserved for an explicit configured defer decision. `--force` must not emit an
 explicitly deferred unit.
 
+## Source syntax repairs
+
+A source file that fails to parse makes every unit that reads it
+`unsupported_input`, and for a definition module that is the whole folder-wide
+database. Foch repairs the errors that have one trustworthy reading, in its own
+parsed copy only. The source file is never changed.
+
+The file is split at its definition heads, the lines that start at column 1
+with `key =` or `key {`. Each segment is parsed on its own, so an error stays
+in its definition instead of swallowing the rest of the file. A column-1 line
+inside a sound block is recognised because the segments around it parse
+cleanly together. For a broken segment Foch tries every one-token edit:
+
+- leave out a `{` or `}`;
+- add a `}` before a line;
+- add a `{` after an `=` that ends its line; or
+- end a string that has no closing quote at the end of its line.
+
+An edit counts only if the segment then parses as exactly one definition. It
+is applied when one of three kinds of evidence holds:
+
+- every such edit gives the same tree;
+- the schema for the file rejects the block-or-value shape of some value in
+  every tree but one, the one with the fewest such values; or
+- one tree changes the tree the text gives unedited least: it alone moves
+  the fewest statements to another parent, or adds or drops the fewest.
+
+The schema is consulted only where the file's game path is known, which is
+how a merge reads every mod file. Only shape is used: the schema's other
+diagnostics are not reliable enough yet to choose between readings, and where
+its binding cannot tell the trees apart they all keep the same count. Only the
+trees that move the fewest statements, and the one the indentation agrees
+with most, are checked against it.
+
+Indentation only checks the last choice. When the indentation clearly
+favours another tree, with fewer than half as many lines indented other than
+their depth, the evidence conflicts and the segment is not repaired.
+Indentation is read in the file's own style, tabs or spaces, and lines
+indented in the other style count for neither.
+
+A segment that needs two edits, or whose readings tie, is not repaired. Only
+a segment on its own is repaired, never one read together with the next. The
+repaired file must then parse cleanly as a whole into exactly the repaired
+segments; otherwise nothing is repaired. The search is bounded per file and
+gives up on a file that would need more. A reviewed repair from `foch.toml`
+must parse cleanly by itself; no automatic repair is added to it.
+
+An assignment with no value, `key =` where the block then closes or a later
+line no deeper than the key starts another assignment, is left out by the
+parser itself. Read as written, the next key would silently become the value
+and its own value would be lost; leaving out the empty assignment loses
+nothing, so it is a repair even in a file that otherwise parses. A value
+written on the next line, such as `OR =` followed by `{`, or indented deeper,
+still belongs to its key.
+
+A repair can read the file differently from the game. A stray `}` that closes
+a block early makes the game read the rest of that block as top-level
+statements, which a definition file does not allow; Foch keeps them in the
+block.
+
+Each unit that read a repaired file carries a note naming the mod, file, line,
+column, edit and evidence. The merge report lists the same facts in
+`source_repairs`.
+
+A file only one mod ships is copied, and the copy is written with its
+repairs: each one-token edit is made in the file's own bytes and encoding, so
+nothing else in it changes. That requires the decoded text to encode back to
+exactly the original bytes; a file where it does not, or a UTF-16 file, is
+copied unchanged with a warning. A copied file with an isolated definition is
+copied unchanged, with a note.
+
+A broken segment with no trustworthy repair that starts with a definition
+head is isolated. First Foch looks for the smallest statement inside the
+definition whose removal leaves the rest of it readable; a statement reaches,
+by the indentation, from its own line to the next line no deeper than it,
+with the `}` line that closes it. The definition is then read without those
+lines, so the rest of the mod's version of it still counts. Only when no
+single statement will do, and the file does not repeat the definition's key,
+is the whole definition left out, up to the next head that follows a line at
+column 1, so a column-1 line inside the broken block is not taken for a
+definition. The merge reads a definition left out whole as the mod's parent
+has it, never as deleted. Either way part of that mod's version is missing
+from the result:
+
+- the unit is held for review as `needs_user_choice`, and its notes and the
+  report's `isolated_definitions` name the mod, file, lines and the one-token
+  repairs that could be meant, the likeliest first;
+- `--force` keeps the unit, with the definition read without its unreadable
+  statement, or with the parent's version, and a warning, on the default
+  backend only. Any other backend would read the absence as a
+  deletion, so it always holds the unit.
+
+A reviewed `[[repairs]]` entry in `foch.toml` applies one of the proposals, or
+any exact edit, to Foch's copy of the file, after which it merges as usual; see
+[the project manifest](./foch-project-manifest.md#reviewed-syntax-repairs).
+
+The same repairs can be written out without a merge, as a linter's fixes:
+`foch check --fix`, or `--diff` to show them and write nothing. Safe fixes are
+the automatic repairs and the reviewed `[[repairs]]`; `--unsafe-fixes` also
+settles what a merge holds for review, leaving out an isolated statement as a
+forced merge reads it, or applying the likeliest proposal of a definition left
+out whole. Like a linter, `--fix` writes the fixes it can, reports the errors
+that remain, and exits with 1 while any do.
+
+Each fix is reported under its diagnostic's stable code, such as
+`unmatched_closing_brace` or `missing_value`, as `line:column [code]`. The
+language server publishes the same diagnostics under the same codes, a repaired
+one as a warning and one Foch cannot repair as an error, and offers the same
+fixes as quick fixes: each safe fix, preferred, each unsafe one, and one that
+makes every safe fix in the file.
+
+Where the fixes go depends on the input. A mod directory is an author's own
+work and is fixed in place. A playset, or a mod in Steam's Workshop folder, is
+other people's work: `--patch-mod <DIR>` writes a patch mod holding only the
+fixed files, to load after the mods it fixes, and lists it in the launcher
+through a `.mod` file in `paradox_data_path`'s mod folder, as a merge does
+(without that setting, it says what file to add); `--in-place` writes into
+the mods' own files. Every in-place fix first backs up each original under
+Foch's data directory; `foch check --restore <BACKUP_DIR>` puts back every
+file that still holds the fixed bytes. Steam replaces a Workshop mod's
+files when it updates, which undoes an in-place fix. These are the only cases
+where Foch writes to a source mod.
+
+Text that names no definition, a key the file repeats, as events repeat
+`country_event`, and any other error without a repair still make the file
+unsupported, and `--force` does not change that.
+
+Repairs are chosen by the parser's stable diagnostic codes, never by message
+text. They do not apply to `.lua` files, which a Lua interpreter loads.
+Repairs and isolation are part of the analysis rules identity, so cached
+snapshots and frozen analyses made before them are not reused. How EU4 itself
+handles each error has not been confirmed in a game log.
+
 ## Resolution policy
 
 Reviewed static decisions live in `foch.toml` `[[resolutions]]`. Exact conflict

@@ -96,3 +96,27 @@ and script outputs are withheld together when adaptation needs review; unrelated
 safe output remains committable. Conditional split/fusion scripts retain their
 branches and distinct destinations; the merger does not infer arbitrary
 one-to-many or many-to-one identity mappings.
+
+## Reviewed syntax repairs
+
+When a definition's syntax error has no trustworthy automatic repair, the
+merge holds its unit for review and its notes offer the one-token repairs that
+could be meant, the likeliest first, with a `[[repairs]]` entry for the first
+one ready to copy into `foch.toml`:
+
+```toml
+[[repairs]]
+mod = "b"
+file = "common/scripted_triggers/b_triggers.txt"
+sha256 = "<SHA256 of the file's raw bytes>"
+edits = [{ start = 59, end = 59, expected = "", replacement = "}\n" }]
+```
+
+An entry may name any Clausewitz script of an enabled mod, but not a `.lua`,
+localisation, CSV or JSON file. It uses the same SHA256 binding and edit
+coordinates as culture repairs. After its edits, the definitions they touch must parse with no repair of their own;
+elsewhere in the file the usual automatic repairs still apply. A reviewed
+repair is frozen with the analysis, adds its evidence to the units that read
+the file, and is checked for source drift again before commit: a file whose
+bytes no longer match the review is rejected as stale. It never writes to the
+source mod.

@@ -187,7 +187,7 @@ changes a reader invalidates the equivalences, not just their precision.
 | `foch` | Open a read-only terminal browser over the current EU4 playset and its full merge analysis. |
 | `foch input inspect` | Show the game and ordered mod inputs Foch will use; without a path, the current EU4 input bare `foch` shows (`--format json` for scripts). |
 | `foch input repair` | List current-playset mods that cannot be analyzed and, with `--open`, open their Workshop pages in Steam to resubscribe. |
-| `foch check` | Parse and analyze an input without writing a merge. |
+| `foch check` | Parse and analyze an input without writing a merge. With `--fix` (or `--diff` to preview), fix syntax errors as a linter does: a mod directory in place, a playset or a Workshop mod as a patch mod (`--patch-mod`) or in the mods' own files (`--in-place`); in-place fixes are backed up and `--restore` undoes them. `--unsafe-fixes` also settles what a merge holds for review. |
 | `foch merge` | Analyze and review a semantic result; commit only after confirmation. |
 | `foch graph` | Write call, definition-dependency, mod-dependency, and semantic graphs. |
 | `foch simplify` | Remove target-mod definitions equivalent to effective base definitions. |

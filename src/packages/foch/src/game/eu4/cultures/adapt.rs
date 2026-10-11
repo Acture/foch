@@ -9,7 +9,7 @@ use crate::game::eu4::script::documents::classify_document_family;
 use crate::game::eu4::script::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::game::eu4::script::parser::{AstFile, AstValue};
 use crate::input::ResolvedInput;
-use crate::model::{DocumentFamily, GamePathBuf};
+use crate::model::{DocumentFamily, GamePathBuf, reads_completely};
 use crate::project::DepOverride;
 
 use crate::merge::dag::{IgnoreReplacePath, build_mod_dag};
@@ -477,7 +477,7 @@ fn prepare_cultures(
 			if result.changes.is_empty() {
 				continue;
 			}
-			if !parsed.parse_issues.is_empty() {
+			if !reads_completely(&parsed.parse_issues) {
 				paths.insert(path.clone());
 				findings.push(format!(
 					"culture adaptation requires a repaired input: {}:{path}",
