@@ -405,7 +405,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	let mut record = json!({
 		"format":1, "run_id":run_id, "playset":args.plan.playset, "runtime":directory,
 		"user_dir":user_dir, "game_version":raw_version,
-		"game_exe_sha256":plugin::deployment::hash(&std::fs::read(directory.join("eu4.exe"))?),
+		"game_exe_sha256":plugin::deployment::hash(&plugin::store::read_package_file(&directory.join("eu4.exe"))?),
 		"host_sha256":plugin::deployment::hash(&host_bytes), "plan_sha256":prepared.plan_sha256,
 		"artifacts":prepared.artifacts, "excluded":layer.excluded,
 		"events":prepared.plan.events, "pid":null, "prepared_only":args.prepare_only,

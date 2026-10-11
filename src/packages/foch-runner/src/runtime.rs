@@ -87,7 +87,10 @@ impl RuntimeLayer {
 					sha256: if is_dir {
 						None
 					} else {
-						Some(format!("{:x}", Sha256::digest(fs::read(entry.path())?)))
+						Some(format!(
+							"{:x}",
+							Sha256::digest(store::read_package_file(&entry.path())?)
+						))
 					},
 				}),
 			}
@@ -460,10 +463,8 @@ mod tests {
 				.find(|item| item.path == "VERSION.dll")
 				.unwrap()
 				.sha256
-				.as_ref()
-				.unwrap()
-				.len(),
-			64
+				.as_deref(),
+			Some("9aa2bd801c7163b8dc8a6668b43928b3ad16a19124f4e3e8dfb3e0db6ca607d8")
 		);
 		fs::write(layer.directory.join("gfx/fonts/base.fnt"), "new font").unwrap();
 		fs::write(
