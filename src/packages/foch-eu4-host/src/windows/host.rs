@@ -226,8 +226,7 @@ fn prepare(root: &Path, module: HMODULE, exe_size: usize) -> Result<(), String> 
 		return Err("cannot retain host callback module".into());
 	}
 	let exe_hash = module_path(std::ptr::null_mut())
-		.and_then(|p| File::open(p).ok())
-		.and_then(|mut file| digest(&mut file).ok())
+		.and_then(|path| executable_digest(&path))
 		.unwrap_or_default();
 	let runtime: &'static Runtime = Box::leak(Box::new(Runtime {
 		plan,
@@ -343,6 +342,18 @@ fn check_host_file(file: &File) -> Result<(), String> {
 		return Err("host file must be an ordinary file with a single link".into());
 	}
 	Ok(())
+}
+
+/// Read a diagnostic digest through an ordinary, retained no-follow handle.
+fn executable_digest(path: &Path) -> Option<String> {
+	let mut file = OpenOptions::new()
+		.read(true)
+		.share_mode(FILE_SHARE_READ)
+		.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+		.open(path)
+		.ok()?;
+	check_host_file(&file).ok()?;
+	digest(&mut file).ok()
 }
 
 fn digest(file: &mut File) -> std::io::Result<String> {
@@ -885,6 +896,34 @@ mod tests {
 		MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
 		PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
 	};
+
+	#[test]
+	fn executable_digests_refuse_linked_leaves_and_keep_external_bytes_unchanged() {
+		let scratch = tempfile::tempdir().unwrap();
+		let path = scratch.path().join("eu4.exe");
+		let external = scratch.path().join("external.exe");
+		std::fs::write(&path, b"runtime executable").unwrap();
+		std::fs::write(&external, b"external executable").unwrap();
+		let expected = format!("{:x}", Sha256::digest(b"runtime executable"));
+		assert_eq!(executable_digest(&path), Some(expected.clone()));
+		std::fs::remove_file(&path).unwrap();
+		std::os::windows::fs::symlink_file(&external, &path).unwrap();
+		assert_eq!(executable_digest(&path), None);
+		std::fs::remove_file(&path).unwrap();
+		std::os::windows::fs::symlink_file(scratch.path().join("missing"), &path).unwrap();
+		assert_eq!(executable_digest(&path), None);
+		std::fs::remove_file(&path).unwrap();
+		std::fs::hard_link(&external, &path).unwrap();
+		assert_eq!(executable_digest(&path), None);
+		std::fs::remove_file(&path).unwrap();
+		assert_eq!(executable_digest(&path), None);
+		std::fs::create_dir(&path).unwrap();
+		assert_eq!(executable_digest(&path), None);
+		std::fs::remove_dir(&path).unwrap();
+		std::fs::write(&path, b"runtime executable").unwrap();
+		assert_eq!(executable_digest(&path), Some(expected));
+		assert_eq!(std::fs::read(&external).unwrap(), b"external executable");
+	}
 
 	#[test]
 	fn native_initialization_times_out_without_losing_async_callbacks() {

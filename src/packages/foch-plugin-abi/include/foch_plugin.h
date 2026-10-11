@@ -94,7 +94,7 @@ struct FochHostApi {
 	FochStr plugin_id;
 	FochStr run_id;
 	FochStr game_version; /* e.g. "1.37.5.0" */
-	FochStr exe_sha256;   /* diagnostic; never the sole compatibility proof */
+	FochStr exe_sha256;   /* diagnostic; empty if unavailable, never the sole compatibility proof */
 	void *exe_base;       /* eu4.exe image base */
 	size_t exe_size;      /* eu4.exe SizeOfImage */
 

@@ -90,7 +90,8 @@ pub fn sweep_runtime_base(runtime_base: &Path, max_age: Duration) {
 		};
 		if metadata.is_dir()
 			&& ordinary_runtime_marker(&entry.path().join("foch-runtime"))
-			&& !entry.path().join("foch-player-runtime").exists()
+			&& fs::symlink_metadata(entry.path().join("foch-player-runtime"))
+				.is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 			&& metadata
 				.modified()
 				.is_ok_and(|modified| is_stale(modified, now, max_age))
@@ -464,6 +465,54 @@ mod tests {
 				b"keep these bytes",
 				"swept {name}"
 			);
+		}
+		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		assert_eq!(fs::read_dir(&source).unwrap().count(), 0);
+	}
+
+	#[test]
+	fn sweeping_preserves_every_existing_player_marker_entry() {
+		let scratch = tempfile::tempdir().unwrap();
+		let source = scratch.path().join("game");
+		let base = scratch.path().join("runtimes");
+		fs::create_dir(&source).unwrap();
+		let external = scratch.path().join("external-marker");
+		fs::write(&external, b"external bytes").unwrap();
+		for name in ["file", "directory", "link", "dangling", "absent"] {
+			let mut layer = RuntimeLayer::prepare(&source, &base, name).unwrap();
+			let directory = layer.retain().unwrap();
+			fs::write(directory.join("keep"), b"player bytes").unwrap();
+			let marker = directory.join("foch-player-runtime");
+			if name != "file" {
+				fs::remove_file(&marker).unwrap();
+			}
+			match name {
+				"directory" => fs::create_dir(&marker).unwrap(),
+				"link" | "dangling" => {
+					let target = if name == "link" {
+						external.clone()
+					} else {
+						scratch.path().join("missing")
+					};
+					#[cfg(unix)]
+					std::os::unix::fs::symlink(&target, &marker).unwrap();
+					#[cfg(windows)]
+					std::os::windows::fs::symlink_file(&target, &marker).unwrap();
+				}
+				_ => {}
+			}
+			sweep_runtime_base(&base, Duration::ZERO);
+			if name == "absent" {
+				assert!(!directory.exists(), "absent marker prevented sweeping");
+			} else {
+				assert_eq!(
+					fs::read(directory.join("keep"))
+						.unwrap_or_else(|error| panic!("swept {name} player: {error}")),
+					b"player bytes"
+				);
+				platform::remove_layer(&directory);
+			}
+			drop(layer);
 		}
 		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
 		assert_eq!(fs::read_dir(&source).unwrap().count(), 0);
