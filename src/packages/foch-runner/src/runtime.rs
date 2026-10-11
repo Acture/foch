@@ -420,6 +420,31 @@ mod tests {
 		);
 		assert!(!source.path().join("generated").exists());
 		platform::remove_layer(&cache_link);
+		// A user-selected base may alias an outside directory. Ownership begins
+		// at the fresh run directory, never at the base or an existing run.
+		let external = tempfile::tempdir().unwrap();
+		fs::write(external.path().join("original"), "unchanged").unwrap();
+		let base_alias = output.path().join("external-base");
+		platform::link_dir(external.path(), &base_alias).unwrap();
+		let owned = RuntimeLayer::prepare(source.path(), &base_alias, "owned-run").unwrap();
+		assert_eq!(
+			owned.directory.canonicalize().unwrap(),
+			external.path().join("owned-run").canonicalize().unwrap()
+		);
+		fs::write(owned.directory.join("sentinel"), "existing run").unwrap();
+		assert!(RuntimeLayer::prepare(source.path(), &base_alias, "owned-run").is_err());
+		assert_eq!(
+			fs::read_to_string(owned.directory.join("sentinel")).unwrap(),
+			"existing run"
+		);
+		drop(owned);
+		assert!(!external.path().join("owned-run").exists());
+		assert_eq!(
+			fs::read_to_string(external.path().join("original")).unwrap(),
+			"unchanged"
+		);
+		assert!(base_alias.exists());
+		platform::remove_layer(&base_alias);
 	}
 
 	#[test]

@@ -258,11 +258,17 @@ impl std::fmt::Display for ManifestError {
 impl std::error::Error for ManifestError {}
 
 impl Manifest {
-	/// Parse and validate a manifest from TOML text.
+	/// Parse, validate and normalize package paths from TOML text.
 	pub fn parse(text: &str) -> Result<Self, ManifestError> {
-		let manifest: Manifest =
+		let mut manifest: Manifest =
 			toml::from_str(text).map_err(|error| ManifestError::Parse(error.to_string()))?;
 		manifest.validate()?;
+		manifest.entry.path = super::store::safe_relative(&manifest.entry.path)
+			.map_err(|error| ManifestError::Invalid(error.to_string()))?;
+		for file in &mut manifest.files {
+			file.path = super::store::safe_relative(&file.path)
+				.map_err(|error| ManifestError::Invalid(error.to_string()))?;
+		}
 		Ok(manifest)
 	}
 

@@ -49,6 +49,10 @@ profile (default: the player's usual EU4 directory). Extra game arguments follow
 `--`. Without `--host-dll`, launch looks beside the `foch` executable for
 `foch_eu4_host.dll`. Both `launch` and `status` support `--format json`.
 
+The selected runtime base may resolve through a directory alias outside the
+game installation. Foch owns only the newly created run directory in that
+resolved base; an existing run ID is refused before any layer contents change.
+
 Preparation excludes old `VERSION`, `d3d9`, `dinput8`, `winmm`, `dxgi` proxies
 and the installation's `plugins` directory, recording exclusions in
 `foch-host/run.json`. Plugin resources and INI configuration are copied into
@@ -69,6 +73,8 @@ Installed plugin/version directories and manifests must be ordinary entries
 inside the configured store; symbolic links and reparse points are refused.
 Package-relative file paths currently use ASCII so Windows case collisions are
 checked consistently on every management platform.
+Both slash styles in manifest entry/file paths are validated and normalized
+to forward slashes before package lookup and catalog reads.
 The host requires the prepared runtime marker and writes events only to
 `foch-host/events.jsonl` beside its DLL. Event and diagnostic files reject
 reparse points and existing hard links before any append or truncation.

@@ -574,6 +574,32 @@ sha256 = "{dll_digest}"
 	}
 
 	#[test]
+	fn manifest_and_archive_paths_use_the_same_separator_normalization() {
+		for archive_path in ["plugins/sample.dll", "plugins\\sample.dll"] {
+			for declared_path in ["plugins/sample.dll", "plugins\\sample.dll"] {
+				let mut entries = package(fake_dll());
+				let mut manifest =
+					Manifest::parse(std::str::from_utf8(&entries[0].data).unwrap()).unwrap();
+				manifest.entry.path = declared_path.into();
+				manifest.files[0].path = declared_path.into();
+				entries[0].data = toml::to_string(&manifest).unwrap().into_bytes();
+				entries[1].path = archive_path.into();
+				let validated = validate(entries).unwrap();
+				assert_eq!(validated.manifest.entry.path, "plugins/sample.dll");
+				assert_eq!(validated.manifest.files[0].path, "plugins/sample.dll");
+				let root = tempfile::tempdir().unwrap();
+				install(root.path(), &validated).unwrap();
+				let (installed, errors) = installed_versions(root.path());
+				assert!(errors.is_empty(), "{errors:?}");
+				assert_eq!(installed.len(), 1);
+				assert_eq!(installed[0].manifest.entry.path, "plugins/sample.dll");
+				assert_eq!(installed[0].manifest.files[0].path, "plugins/sample.dll");
+				assert!(installed[0].dir.join("plugins/sample.dll").is_file());
+			}
+		}
+	}
+
+	#[test]
 	fn accepts_a_well_formed_package() {
 		let validated = validate(package(fake_dll())).unwrap();
 		assert_eq!(validated.manifest.plugin.id, "dev.foch.sample");
