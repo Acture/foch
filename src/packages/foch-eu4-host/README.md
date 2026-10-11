@@ -69,7 +69,8 @@ roots: each must be an ordinary directory within that resolved data root.
 State and cache contents are persistent plugin data under the player's normal
 file permissions.
 CLI catalog and planning commands validate the same derived store components
-without creating missing directories. Imports check their data root and final
+without creating missing directories; an absent root yields an empty catalog.
+Imports check their data root and final
 destination against the extracted package and any configured/discovered game
 installation before creating the store; importing without an installed game
 remains supported.
@@ -78,7 +79,9 @@ Preparation excludes old `VERSION`, `d3d9`, `dinput8`, `winmm`, `dxgi` proxies
 and the installation's `plugins` directory, recording exclusions in
 `foch-host/run.json`. Plugin resources and INI configuration are copied into
 separate package directories. The layer owns `gfx/fonts`; Unicode's generated
-font cache is linked to Foch data and keyed by package/base-font identity.
+font cache is linked to Foch data and keyed by the game version, base fonts,
+and every declared font-cache writer's frozen package and effective configuration
+in load order. Changing any of these inputs selects a fresh cache identity.
 Every Foch-managed writable destination is checked against the source
 installation before creation, including nested data junctions; parent traversal
 is refused. Source game entries that are copied or shared must not be symbolic

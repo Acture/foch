@@ -456,32 +456,40 @@ impl Deployment {
 	}
 
 	/// Prepare an ordinary cache below the selected data root before exposing
-	/// it through the runtime font link.
+	/// it through the runtime font link. Identity includes the game/base fonts
+	/// and every font writer's frozen package/configuration in load order.
 	pub fn prepare_font_cache(
 		&self,
 		data_root: &Path,
 		base_fonts_sha256: &str,
 		game_root: &Path,
 	) -> io::Result<Option<PathBuf>> {
-		self.packages
+		let writers: Vec<_> = self
+			.packages
 			.iter()
-			.find(|package| {
+			.filter(|package| {
 				package
 					.validated
 					.manifest
 					.writes
 					.contains(&super::manifest::WriteKind::FontCache)
 			})
-			.map(|package| {
-				let identity =
-					hash(format!("{}:{base_fonts_sha256}", package.validated.digest).as_bytes());
-				data_directory(
-					data_root,
-					game_root,
-					&format!("plugins/font-cache/{identity}"),
-				)
-			})
-			.transpose()
+			.map(|package| (&package.validated.digest, &package.config))
+			.collect();
+		if writers.is_empty() {
+			return Ok(None);
+		}
+		let identity = hash(&serde_json::to_vec(&(
+			self.game_version.as_str(),
+			base_fonts_sha256,
+			writers,
+		))?);
+		data_directory(
+			data_root,
+			game_root,
+			&format!("plugins/font-cache/{identity}"),
+		)
+		.map(Some)
 	}
 }
 
@@ -938,6 +946,136 @@ mod tests {
 		assert!(text.contains("other=yes\n"));
 		assert!(text.contains("typo_tolerance=2\n"));
 		assert!(!text.contains("typo_tolerance=0"));
+	}
+
+	#[test]
+	fn font_cache_identity_tracks_every_writer_and_its_effective_inputs() {
+		fn writer(id: &str, resource: u8) -> Package {
+			let mut manifest = Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+			manifest.plugin.id = id.into();
+			manifest.entry.path = format!("{id}.dll");
+			manifest
+				.writes
+				.push(super::super::manifest::WriteKind::FontCache);
+			manifest.config.insert(
+				"scale".into(),
+				ConfigField::Int {
+					default: 1,
+					min: Some(1),
+					max: Some(2),
+					description: None,
+					adapter: None,
+				},
+			);
+			let mut dll = vec![0; 0x80];
+			dll[..2].copy_from_slice(b"MZ");
+			dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+			dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+			dll[0x44..0x46].copy_from_slice(&store::MACHINE_AMD64.to_le_bytes());
+			let validated = store::adapt(
+				manifest,
+				vec![
+					ArchiveEntry {
+						path: format!("{id}.dll"),
+						data: dll,
+					},
+					ArchiveEntry {
+						path: format!("{id}.font"),
+						data: vec![resource],
+					},
+				],
+			)
+			.unwrap();
+			let config = effective_config(&validated.manifest, &json!({})).unwrap();
+			Package { validated, config }
+		}
+		let scratch = tempfile::tempdir().unwrap();
+		let game = scratch.path().join("game");
+		fs::create_dir(&game).unwrap();
+		let data = scratch.path().join("data");
+		let mut deployment = Deployment {
+			game_version: "1.37.5".into(),
+			packages: Vec::new(),
+			resolution: Default::default(),
+		};
+		assert!(
+			deployment
+				.prepare_font_cache(&data, "fonts", &game)
+				.unwrap()
+				.is_none()
+		);
+		assert!(!data.exists());
+		deployment.packages = vec![writer("first", 1), writer("second", 2)];
+		let original = deployment
+			.prepare_font_cache(&data, "fonts", &game)
+			.unwrap()
+			.unwrap();
+		fs::write(original.join("generated"), "cached fonts").unwrap();
+		assert_eq!(
+			deployment
+				.prepare_font_cache(&data, "fonts", &game)
+				.unwrap()
+				.unwrap(),
+			original
+		);
+		deployment.packages[1] = writer("second", 3);
+		let changed = deployment
+			.prepare_font_cache(&data, "fonts", &game)
+			.unwrap()
+			.unwrap();
+		assert_ne!(
+			changed, original,
+			"second writer changed but stale fonts were reused"
+		);
+		assert!(!changed.join("generated").exists());
+		deployment.packages[1] = writer("second", 2);
+		for index in 0..2 {
+			deployment.packages[index].config = json!({"scale":2});
+			assert_ne!(
+				deployment
+					.prepare_font_cache(&data, "fonts", &game)
+					.unwrap()
+					.unwrap(),
+				original
+			);
+			deployment.packages[index].config = json!({"scale":1});
+		}
+		deployment.packages.reverse();
+		assert_ne!(
+			deployment
+				.prepare_font_cache(&data, "fonts", &game)
+				.unwrap()
+				.unwrap(),
+			original
+		);
+		deployment.packages.reverse();
+		assert_ne!(
+			deployment
+				.prepare_font_cache(&data, "new-fonts", &game)
+				.unwrap()
+				.unwrap(),
+			original
+		);
+		deployment.game_version = "1.38.0".into();
+		assert_ne!(
+			deployment
+				.prepare_font_cache(&data, "fonts", &game)
+				.unwrap()
+				.unwrap(),
+			original
+		);
+		deployment.game_version = "1.37.5".into();
+		assert_eq!(
+			deployment
+				.prepare_font_cache(&data, "fonts", &game)
+				.unwrap()
+				.unwrap(),
+			original
+		);
+		assert_eq!(
+			fs::read_to_string(original.join("generated")).unwrap(),
+			"cached fonts"
+		);
 	}
 
 	#[test]

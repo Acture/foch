@@ -754,6 +754,16 @@ mod tests {
 		platform::link_dir(outside.path(), &alias).unwrap();
 		let root = plugin::paths::checked_store_root(&alias).unwrap();
 		assert!(plugin::store::catalog(&root).0.contains_key("fixture"));
+		let entries_before = fs::read_dir(outside.path()).unwrap().count();
+		let missing = alias.join("missing-data");
+		let root = plugin::paths::checked_store_root(&missing).unwrap();
+		assert!(plugin::store::catalog(&root).0.is_empty());
+		assert!(!missing.exists());
+		assert_eq!(
+			fs::read_dir(outside.path()).unwrap().count(),
+			entries_before
+		);
+		assert_eq!(fs::read(installed.join("fixture.dll")).unwrap(), dll);
 		platform::remove_layer(&alias);
 	}
 
@@ -843,10 +853,16 @@ mod tests {
 				"unchanged"
 			);
 		}
-		let font_leaf = format!(
-			"plugins/font-cache/{}",
-			plugin::deployment::hash(format!("{}:base-fonts", package.digest).as_bytes())
-		);
+		let baseline = deployment
+			.prepare_font_cache(
+				&output.path().join("font-baseline"),
+				"base-fonts",
+				source.path(),
+			)
+			.unwrap()
+			.unwrap();
+		let font_leaf = Path::new("plugins/font-cache").join(baseline.file_name().unwrap());
+		let font_leaf = font_leaf.to_string_lossy().into_owned();
 		for (index, relative) in ["plugins".into(), "plugins/font-cache".into(), font_leaf]
 			.iter()
 			.enumerate()
