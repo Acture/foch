@@ -10,9 +10,10 @@ The repository is a Cargo and Bun workspace. The root Cargo manifest only
 configures the workspace. All maintained code lives below `src/`; the Rust domain
 model and orchestration remain one primary package at `src/packages/foch`.
 Its integration tests, independent cargo-fuzz package and build script live
-alongside its `src/`. External CWT rules remain in top-level `vendor/`; the
-build script compiles them into the binary. Source releases contain the entire
-workspace and its public submodules, without private notes.
+alongside its `src/`. External CWT rules are its `vendor/cwtools-eu4-config`
+submodule; the build script compiles them into the binary, so the packaged
+crate builds without the rest of the workspace. Source releases contain the
+entire workspace and its public submodules, without private notes.
 
 ### Main `foch` library
 

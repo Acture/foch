@@ -917,9 +917,8 @@ fn normalize_chain_semantic(
 			effect_signature.clone(),
 		))
 	} else if complete {
-		// Not by its default effect: a mod that only translates the `else`
-		// text would otherwise give the chain a new identity, so another mod's
-		// edit to the same chain merged against a deletion plus an insertion.
+		// The default effect is content, not identity: editing it must leave the
+		// chain the same chain, or the edit becomes a delete plus an insert.
 		Some(SemanticKey::parent_scoped_ordered_similarity_with_position(
 			"clausewitz.control_flow.chain.sequence",
 			"complete",

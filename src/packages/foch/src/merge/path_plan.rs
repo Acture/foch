@@ -465,6 +465,7 @@ fn summarize_paths(paths: &[MergePlanEntry]) -> MergePlanStrategies {
 			MergePlanStrategy::StructuralMerge => strategies.structural_merge += 1,
 			MergePlanStrategy::LocalisationMerge => strategies.localisation_merge += 1,
 			MergePlanStrategy::ManualConflict => strategies.manual_conflict += 1,
+			MergePlanStrategy::Generated => strategies.generated += 1,
 		}
 	}
 

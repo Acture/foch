@@ -1,0 +1,31 @@
+# cargo-about configuration for THIRD-PARTY-LICENSES.txt at the repository
+# root: the license of every crate linked into the `foch` executable on the
+# three release targets. Regenerate it after any Cargo.lock change, from the
+# repository root:
+#
+#   cargo about generate --frozen -m src/apps/foch-cli/Cargo.toml \
+#     -o THIRD-PARTY-LICENSES.txt src/apps/foch-cli/about.hbs
+#
+# dist.yml fails while the committed file differs from that output.
+
+# In priority order: an `A OR B` crate is listed under the first one here.
+accepted = [
+	"MIT",
+	"Apache-2.0",
+	"ISC",
+	"BSD-2-Clause",
+	"BSD-3-Clause",
+	"Zlib",
+	"Unicode-3.0",
+	"MPL-2.0",
+	"CDLA-Permissive-2.0",
+	"AGPL-3.0-only",
+	"GPL-3.0-only",
+]
+targets = [
+	"x86_64-unknown-linux-gnu",
+	"aarch64-apple-darwin",
+	"x86_64-pc-windows-msvc",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

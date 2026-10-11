@@ -1,0 +1,6 @@
+defined_text = {
+	name = GetBaselineText
+	text = {
+		localisation_key = baseline_text
+	}
+}

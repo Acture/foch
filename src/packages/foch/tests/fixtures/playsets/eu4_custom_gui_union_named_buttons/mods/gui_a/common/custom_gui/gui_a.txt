@@ -1,0 +1,8 @@
+custom_window = {
+	name = gui_a_window
+	potential = { ai = no }
+}
+custom_button = {
+	name = gui_a_button
+	effect = { add_adm_power = 10 }
+}

@@ -9,7 +9,7 @@ use crate::game::eu4::script::documents::classify_document_family;
 use crate::game::eu4::script::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::game::eu4::script::parser::{AstFile, AstValue};
 use crate::input::ResolvedInput;
-use crate::model::{DocumentFamily, GamePathBuf};
+use crate::model::{DocumentFamily, GamePathBuf, reads_completely};
 use crate::project::DepOverride;
 
 use crate::merge::dag::{IgnoreReplacePath, build_mod_dag};
@@ -22,7 +22,8 @@ use crate::merge::transform::input::{
 	ReviewedInputPolicy, ReviewedInputs, SourceBinding, SourceRepair,
 };
 use crate::merge::transform::{
-	OutputValidation, PreparedTransform, ScriptTransform, TransformAdapter, TransformRequest,
+	EmittedOutput, OutputValidation, PreparedTransform, ScriptTransform, TransformAdapter,
+	TransformRequest,
 };
 use std::sync::Arc;
 
@@ -116,7 +117,7 @@ impl TransformAdapter for CultureAdapter {
 		input: &mut ResolvedInput,
 		request: &TransformRequest<'_>,
 		reviewed: ReviewedInputs,
-	) -> Result<PreparedTransform, MergeError> {
+	) -> Result<Vec<PreparedTransform>, MergeError> {
 		let config = &request.project.cultures;
 		if !config.renames.is_empty() && input.installed_base_snapshot.is_none() {
 			return Err(invalid(
@@ -185,7 +186,7 @@ impl TransformAdapter for CultureAdapter {
 			));
 		}
 		evidence.extend(std::mem::take(&mut culture.warnings));
-		Ok(PreparedTransform {
+		Ok(vec![PreparedTransform {
 			id: "eu4.culture".into(),
 			identity,
 			paths: std::mem::take(&mut culture.paths),
@@ -196,8 +197,9 @@ impl TransformAdapter for CultureAdapter {
 			}),
 			source_guard: reviewed.source_guard,
 			overlays: std::mem::take(&mut culture.overlays),
+			generated: Vec::new(),
 			validator: Some(Arc::new(culture)),
-		})
+		}])
 	}
 }
 
@@ -213,7 +215,8 @@ struct CultureAdaptations {
 }
 
 impl OutputValidation for CultureAdaptations {
-	fn validate_emitted(&self, documents: &[(GamePathBuf, AstFile)]) -> Vec<String> {
+	fn validate_emitted(&self, output: &EmittedOutput) -> Vec<String> {
+		let documents = output.scripts.as_slice();
 		if self.mapping.mappings().is_empty() {
 			return Vec::new();
 		}
@@ -492,7 +495,7 @@ fn prepare_cultures(
 			if result.changes.is_empty() {
 				continue;
 			}
-			if !parsed.parse_issues.is_empty() {
+			if !reads_completely(&parsed.parse_issues) {
 				paths.insert(path.clone());
 				findings.push(format!(
 					"culture adaptation requires a repaired input: {}:{path}",
@@ -809,7 +812,10 @@ mod tests {
 		);
 		assert!(
 			adaptations
-				.validate_emitted(&[culture.clone(), effect.clone()])
+				.validate_emitted(&EmittedOutput {
+					scripts: vec![culture.clone(), effect.clone()],
+					..Default::default()
+				})
 				.is_empty()
 		);
 		let stale_effect = document(
@@ -818,7 +824,10 @@ mod tests {
 		);
 		assert!(
 			!adaptations
-				.validate_emitted(&[culture.clone(), stale_effect])
+				.validate_emitted(&EmittedOutput {
+					scripts: vec![culture.clone(), stale_effect],
+					..Default::default()
+				})
 				.is_empty()
 		);
 		let unsupported = document(
@@ -827,7 +836,10 @@ mod tests {
 		);
 		assert!(
 			!adaptations
-				.validate_emitted(&[culture, unsupported])
+				.validate_emitted(&EmittedOutput {
+					scripts: vec![culture, unsupported],
+					..Default::default()
+				})
 				.is_empty()
 		);
 		let stale_culture = document(
@@ -836,7 +848,10 @@ mod tests {
 		);
 		assert!(
 			!adaptations
-				.validate_emitted(&[stale_culture, effect])
+				.validate_emitted(&EmittedOutput {
+					scripts: vec![stale_culture, effect],
+					..Default::default()
+				})
 				.is_empty()
 		);
 	}

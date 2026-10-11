@@ -120,12 +120,13 @@ fn stage_playset(root: &Path) -> PathBuf {
 		CONFLICT_PATH,
 		"country_event = { id = test.1 }\n",
 	);
-	// Malformed Clausewitz: the structural merge reports unsupported input.
+	// Malformed Clausewitz that names no definition, so no part of it can be
+	// repaired or isolated: the structural merge reports unsupported input.
 	write(
 		root,
 		"7252",
 		CONFLICT_PATH,
-		"name { = invalid syntax with unclosed\nbraces\n",
+		"} name { = invalid syntax with unclosed\nbraces\n",
 	);
 	fs::create_dir_all(root.join("7251/gfx")).expect("gfx dir");
 	fs::write(root.join("7251/gfx/only-a.dds"), [0, 1, 2]).expect("asset");

@@ -909,6 +909,7 @@ fn probe_conflict(target: &str) -> BackendOutcome {
 				rationale: None,
 			}],
 			explicitly_deferred: false,
+			conflict_views: Vec::new(),
 		},
 	))
 }

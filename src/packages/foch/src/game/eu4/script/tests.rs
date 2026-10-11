@@ -8004,3 +8004,96 @@ province_event = {
 				&& reference.value == "germanic")
 	);
 }
+
+#[test]
+fn parsed_scripts_carry_the_parsers_repairs_except_in_lua() {
+	use super::parse_script_bytes_cached;
+	use crate::model::{SourceRepairEdit, has_fatal_parse_issue};
+
+	let root = Path::new("/mod");
+	let stray = b"a = { b = 1 }\n}\nc = { d = 2 }\n";
+	let parsed = parse_script_bytes_cached(
+		"m",
+		root,
+		game_path("common/scripted_triggers/a.txt"),
+		stray,
+	);
+	let [issue] = parsed.parse_issues.as_slice() else {
+		panic!("expected one issue: {:?}", parsed.parse_issues);
+	};
+	assert_eq!((issue.line, issue.column), (2, 1));
+	assert_eq!(
+		issue.repair.map(|repair| repair.edit),
+		Some(SourceRepairEdit::RemovedClosingBrace)
+	);
+	assert!(!has_fatal_parse_issue(&parsed.parse_issues));
+	assert_eq!(parsed.ast.statements.len(), 2);
+
+	// A Lua interpreter rejects the whole file instead.
+	let lua = parse_script_bytes_cached("m", root, game_path("common/defines/a.lua"), stray);
+	assert!(has_fatal_parse_issue(&lua.parse_issues), "{lua:?}");
+}
+
+#[test]
+fn the_schema_rules_out_a_repair_that_gives_a_value_the_wrong_shape() {
+	use super::parse_script_bytes_cached;
+	use super::parser::{AstStatement, AstValue};
+	use crate::model::{SourceRepairEdit, SourceRepairEvidence, has_fatal_parse_issue};
+
+	init_scopes();
+	// Leaving out the `}` after `is_year` moves the fewest statements, but it
+	// reads `trigger = has_country_flag = x` as `trigger = x`, and an event's
+	// trigger is a block. Adding `{` after `trigger =` is the one repair the
+	// schema accepts.
+	let source = b"country_event = {\n\tid = a.1\n\ttrigger =\n\t\thas_country_flag = x\n\t\tis_year = 1500\n\t}\n\toption = { name = a.1.a }\n}\n";
+	let parsed =
+		parse_script_bytes_cached("m", Path::new("/mod"), game_path("events/a.txt"), source);
+	assert!(!has_fatal_parse_issue(&parsed.parse_issues), "{parsed:?}");
+	let [issue] = parsed.parse_issues.as_slice() else {
+		panic!("expected one issue: {:?}", parsed.parse_issues);
+	};
+	let repair = issue.repair.expect("a repair");
+	assert_eq!(
+		(repair.edit, repair.evidence),
+		(
+			SourceRepairEdit::InsertedOpeningBrace,
+			SourceRepairEvidence::OnlySchemaValid
+		)
+	);
+	let [AstStatement::Assignment { value, .. }] = parsed.ast.statements.as_slice() else {
+		panic!("expected one event: {:?}", parsed.ast.statements);
+	};
+	let AstValue::Block { items, .. } = value else {
+		panic!("expected a block: {value:?}");
+	};
+	let keys = items
+		.iter()
+		.filter_map(|item| match item {
+			AstStatement::Assignment { key, value, .. } => Some((key.as_str(), value)),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(
+		keys.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+		["id", "trigger", "option"]
+	);
+	assert!(
+		matches!(keys[1].1, AstValue::Block { items, .. } if items.len() == 2),
+		"{:?}",
+		keys[1]
+	);
+
+	// Without the schema the fewest moves and the indentation disagree.
+	let unchecked = super::parser::parse_clausewitz_statements(
+		super::parser::ScriptSyntax::Clausewitz,
+		std::str::from_utf8(source).unwrap(),
+	);
+	assert!(
+		unchecked
+			.diagnostics
+			.iter()
+			.all(|diagnostic| diagnostic.repair.is_none()),
+		"{:?}",
+		unchecked.diagnostics
+	);
+}

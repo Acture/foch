@@ -1,0 +1,6 @@
+bookmark = {
+	name = "BM_baseline"
+	desc = "BM_baseline_DESC"
+	date = 1444.11.11
+	country = FRA
+}

@@ -2,12 +2,25 @@
 name = "foch-annotation"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+# The same page as foch-cli; cargo packages it as this crate's README.md.
+readme = "../../apps/foch-cli/README.md"
 homepage.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "game-development"]
 description = "Foch annotations carried in EU4 script comments: extraction, schemas, validation and editor support"
-# Internal workspace library; its Rust API carries no semver promise.
-publish = false
+# An internal library of the `foch` program, published because crates.io
+# builds foch-cli from published crates only; its Rust API carries no semver
+# promise. The crate is its sources and license texts; tests stay in the
+# repository.
+include = [
+	"/src/**",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
 
 [dependencies]
 foch.workspace = true

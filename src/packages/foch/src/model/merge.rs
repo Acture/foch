@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::analysis::Severity;
-use super::{GamePath, GamePathBuf};
+use super::{GamePath, GamePathBuf, Isolation, SourceRepair};
 use crate::playset::steam::WorkshopInstallIdentity;
 use crate::project::AppliedDepOverride;
 
@@ -41,6 +41,9 @@ pub enum MergePlanStrategy {
 	/// collision the highest-precedence contributor wins.
 	LocalisationMerge,
 	ManualConflict,
+	/// A file a reviewed transformation creates. It has no source contributor;
+	/// its frozen bytes live in the transformation plan.
+	Generated,
 }
 
 /// One contributor to a planned unit. `mod_id`, `precedence` and
@@ -400,7 +403,7 @@ mod tests {
 		};
 		let expected = concat!(
 			r#"{"game":"eu4","playset_name":"playset","generated_at":"1","include_game_base":true,"#,
-			r#""strategies":{"total_paths":2,"copy_through":0,"last_writer_overlay":1,"structural_merge":1,"localisation_merge":0,"manual_conflict":0},"#,
+			r#""strategies":{"total_paths":2,"copy_through":0,"last_writer_overlay":1,"structural_merge":1,"localisation_merge":0,"manual_conflict":0,"generated":0},"#,
 			r#""paths":[{"target":{"kind":"module","id":{"family_id":"CStaticModifierDataBase","module_name":"CStaticModifierDataBase"},"#,
 			r#""input_paths":["common/event_modifiers/a.txt","common/static_modifiers/b.txt"],"#,
 			r#""outputs":[{"output_path":"common/event_modifiers/zzz_foch_event_modifiers.txt","namespace_prefix":"common/event_modifiers"},"#,
@@ -637,6 +640,8 @@ pub struct MergePlanStrategies {
 	#[serde(default)]
 	pub localisation_merge: usize,
 	pub manual_conflict: usize,
+	#[serde(default)]
+	pub generated: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -914,6 +919,33 @@ impl DeferredUnitReason {
 	}
 }
 
+/// A repair Foch applied to its parsed copy of a source file that a merge unit
+/// read. The source file itself is unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeReportSourceRepair {
+	/// The stable id of the unit that read the repaired file.
+	pub unit: String,
+	pub mod_id: String,
+	pub path: GamePathBuf,
+	pub line: usize,
+	pub column: usize,
+	pub repair: SourceRepair,
+}
+
+/// A definition left out of a source file a merge unit read, because its
+/// syntax error has no trustworthy repair. The merge read it as the mod's
+/// parent has it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeReportIsolatedDefinition {
+	/// The stable id of the unit that read the file.
+	pub unit: String,
+	pub mod_id: String,
+	pub path: GamePathBuf,
+	pub line: usize,
+	pub column: usize,
+	pub isolation: Isolation,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergeReportConflictResolution {
 	/// The deferred unit's primary output.
@@ -1102,6 +1134,12 @@ pub struct MergeReport {
 	pub stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
+	/// Source syntax repairs behind the units' analysis, in plan order.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub source_repairs: Vec<MergeReportSourceRepair>,
+	/// Definitions left out of source files for review, in plan order.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub isolated_definitions: Vec<MergeReportIsolatedDefinition>,
 	// D2 local dependency overrides applied during DAG-based merge.
 	#[serde(default)]
 	pub dep_overrides_applied: Vec<AppliedDepOverride>,

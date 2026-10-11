@@ -466,6 +466,7 @@ fn attribute_kernel_facts(
 				sources: sources.clone(),
 				base_tree: fact.base_tree,
 				revision_trees: fact.revision_trees,
+				input_rewrites: fact.input_rewrites,
 				outcome: fact.outcome,
 			})
 		})
@@ -1008,6 +1009,56 @@ fn merge_tree_metadata(
 /// owner's synthetic deletion partition is removed from its source observation.
 /// This keeps the neutral input provenance- and participant-free instead of
 /// attributing the retained definition to the reset mod that omitted it.
+/// The source a mod node is observed from. A definition the mod's file has
+/// but no reading can be trusted for was left out of it; it is read as the
+/// parent has it, so the mod neither changes nor deletes it. Where the file
+/// held it is kept when the source is one file, and otherwise it comes last.
+fn with_isolated_definitions_unchanged<'a>(
+	source: &'a crate::game::eu4::script::ParsedScriptFile,
+	parent: &[AstStatement],
+) -> std::borrow::Cow<'a, AstFile> {
+	if crate::model::isolated_definitions(&source.parse_issues)
+		.next()
+		.is_none()
+	{
+		return std::borrow::Cow::Borrowed(&source.ast);
+	}
+	let mut ast = source.ast.clone();
+	for issue in source
+		.parse_issues
+		.iter()
+		.filter(|issue| issue.isolation.is_some())
+	{
+		let key = &issue.isolation.as_ref().expect("filtered").definition;
+		let has_key = |statement: &AstStatement| matches!(statement, AstStatement::Assignment { key: present, .. } if present == key);
+		if ast.statements.iter().any(has_key) {
+			continue;
+		}
+		let position = if source.path.is_some() {
+			ast.statements
+				.iter()
+				.take_while(|statement| statement_line(statement) < issue.line)
+				.count()
+		} else {
+			ast.statements.len()
+		};
+		let unchanged = parent
+			.iter()
+			.filter(|statement| has_key(statement))
+			.cloned();
+		ast.statements.splice(position..position, unchanged);
+	}
+	std::borrow::Cow::Owned(ast)
+}
+
+fn statement_line(statement: &AstStatement) -> usize {
+	match statement {
+		AstStatement::Assignment { span, .. }
+		| AstStatement::Item { span, .. }
+		| AstStatement::Comment { span, .. } => span.start.line,
+	}
+}
+
 fn neutralize_sparse_reset_definition_absence(
 	file_dag: &FileDag,
 	base: &TreeDagState,
@@ -1215,6 +1266,17 @@ fn compose_join_lineage(
 		let mut original_sources = BTreeSet::new();
 		let mut original_origins = BTreeSet::new();
 		for input_source in input_sources.iter() {
+			// A rewritten revision traces through the mod's own file.
+			let rewrite = facts.input_rewrites.get(&input_source.revision);
+			let input_node = match rewrite {
+				Some(rewrite) => *rewrite.nodes.get(&input_source.node).ok_or_else(|| {
+					format!(
+						"rewritten merge input has no trace for node {}",
+						input_source.node.get()
+					)
+				})?,
+				None => input_source.node,
+			};
 			let (expected_tree, lineage) = if input_source.revision == RevisionId::BASE {
 				(
 					&facts.base_tree,
@@ -1233,9 +1295,12 @@ fn compose_join_lineage(
 				let lineage = revision_lineage
 					.get(&input_source.revision)
 					.and_then(|partitions| partitions.get(&facts.partition));
-				(expected_tree, lineage)
+				(
+					rewrite.map_or(expected_tree, |rewrite| &rewrite.original),
+					lineage,
+				)
 			};
-			expected_tree.node(input_source.node).map_err(|error| {
+			expected_tree.node(input_node).map_err(|error| {
 				format!(
 					"merge provenance references an invalid input node {}: {error}",
 					input_source.node.get()
@@ -1267,13 +1332,13 @@ fn compose_join_lineage(
 				slot.insert(resolved);
 			}
 			if let Some(lineage) = resolved_lineage[&input_source.revision].as_deref() {
-				if let Some(node_sources) = lineage.sources.get(&input_source.node) {
+				if let Some(node_sources) = lineage.sources.get(&input_node) {
 					original_sources.extend(node_sources.iter().cloned());
 				}
-				let node_origins = lineage.origins.get(&input_source.node).ok_or_else(|| {
+				let node_origins = lineage.origins.get(&input_node).ok_or_else(|| {
 					format!(
 						"lineage is missing origins for input node {} in partition {:?}",
-						input_source.node.get(),
+						input_node.get(),
 						facts.partition,
 					)
 				})?;
@@ -1361,11 +1426,12 @@ impl EffectiveNodeProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			path: request.source.ast.path.clone(),
 			statements: request.parent.statements.clone(),
 		};
+		let source_ast = with_isolated_definitions_unchanged(request.source, &parent.statements);
 		let observation = self
 			.source_observer
 			.observe(
 				&parent,
-				&request.source.ast,
+				&source_ast,
 				source,
 				&request.parent.partition_lineage,
 				request.resets_base,
@@ -1378,7 +1444,7 @@ impl EffectiveNodeProtocol<TreeDagState> for TreeDagProtocol<'_> {
 		let mut partition_lineage = request.parent.partition_lineage.clone();
 		partition_lineage.extend(observation.lineage);
 		Ok(TreeDagState {
-			statements: request.source.ast.statements.clone(),
+			statements: source_ast.statements.clone(),
 			source_deltas,
 			merge_facts: request.parent.merge_facts.clone(),
 			partition_lineage,
@@ -3668,5 +3734,41 @@ mod tests {
 				offset: 0,
 			},
 		}
+	}
+
+	#[test]
+	fn an_isolated_definition_reads_as_the_parent_has_it_where_the_file_held_it() {
+		let source = crate::game::eu4::script::parse_script_bytes_cached(
+			"b",
+			std::path::Path::new("/mod"),
+			crate::model::GamePath::new("common/scripted_effects/b.txt").unwrap(),
+			b"a = { x = 1 }\nb = { y = 2 } } }\nc = { z = 1 }\n",
+		);
+		assert_eq!(
+			crate::model::isolated_definitions(&source.parse_issues)
+				.map(|isolation| isolation.definition.as_str())
+				.collect::<Vec<_>>(),
+			["b"]
+		);
+		let parent = parse_clausewitz_content(
+			crate::model::GamePath::new("common/scripted_effects/b.txt").unwrap(),
+			"a = { x = 0 }\nb = { old = yes }\nc = { z = 0 }\n",
+		);
+		let read = super::with_isolated_definitions_unchanged(&source, &parent.ast.statements);
+		let emitted = emit_clausewitz_statements(&read.statements).unwrap();
+		let keys = read
+			.statements
+			.iter()
+			.filter_map(|statement| match statement {
+				AstStatement::Assignment { key, .. } => Some(key.as_str()),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(keys, ["a", "b", "c"], "{emitted}");
+		assert!(emitted.contains("old = yes"), "{emitted}");
+		assert!(
+			emitted.contains("x = 1") && emitted.contains("z = 1"),
+			"{emitted}"
+		);
 	}
 }

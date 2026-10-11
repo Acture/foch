@@ -54,7 +54,107 @@ pub enum FochCliCommands {
 	Cache(FochCliCacheArgs),
 	Config(ConfigArgs),
 	Input(InputArgs),
+	Plugin(PluginArgs),
 	Lsp(LspArgs),
+}
+
+#[derive(Parser, Debug)]
+#[command(about = "Manage native DLL plugins (install, select per playset, plan a launch)")]
+pub struct PluginArgs {
+	#[command(subcommand)]
+	pub command: PluginCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PluginCommand {
+	/// List installed plugin versions and a playset's selection.
+	List(PluginListArgs),
+	/// Import a plugin package from an extracted directory into the store.
+	Import(PluginImportArgs),
+	/// Enable a plugin for a playset, pinned to an installed version.
+	Enable(PluginToggleArgs),
+	/// Disable a plugin for a playset.
+	Disable(PluginToggleArgs),
+	/// Resolve a playset's selection into a launch plan and report problems.
+	Plan(PluginPlanArgs),
+	/// Prepare an isolated runtime and start the selected plugins with EU4.
+	Launch(PluginLaunchArgs),
+	/// Read the actual plugin states from a prepared or running runtime.
+	Status(PluginStatusArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginListArgs {
+	/// Playset name whose selection to show.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginImportArgs {
+	/// A directory holding an extracted plugin package (with foch-plugin.toml).
+	#[arg(value_name = "DIR")]
+	pub path: PathBuf,
+	/// Bind an upstream release directory to a built-in legacy adapter.
+	#[arg(long, value_name = "PLUGIN_ID")]
+	pub adapter: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginToggleArgs {
+	/// Stable plugin id.
+	#[arg(value_name = "PLUGIN_ID")]
+	pub id: String,
+	/// Playset name to change.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	/// Exact installed version to pin; defaults to the highest installed.
+	#[arg(long, value_name = "VERSION")]
+	pub version: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginPlanArgs {
+	/// Playset name to plan.
+	#[arg(long, default_value = "default", value_name = "NAME")]
+	pub playset: String,
+	/// EU4 install to target; defaults to the configured or Steam install.
+	#[arg(long, value_name = "PATH")]
+	pub game_path: Option<PathBuf>,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginLaunchArgs {
+	#[command(flatten)]
+	pub plan: PluginPlanArgs,
+	/// Built foch_eu4_host.dll; defaults to the directory containing foch.
+	#[arg(long, value_name = "DLL")]
+	pub host_dll: Option<PathBuf>,
+	/// Short directory for new runtime layers; defaults to the temp foch-rt.
+	#[arg(long, value_name = "PATH")]
+	pub runtime_base: Option<PathBuf>,
+	/// Profile to use; defaults to the player's normal EU4 user directory.
+	#[arg(long, value_name = "PATH")]
+	pub user_dir: Option<PathBuf>,
+	/// Stage the frozen plan and files without starting EU4.
+	#[arg(long)]
+	pub prepare_only: bool,
+	/// Additional game arguments, following --.
+	#[arg(last = true)]
+	pub game_args: Vec<std::ffi::OsString>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginStatusArgs {
+	/// Runtime directory printed by plugin launch.
+	#[arg(long, value_name = "PATH")]
+	pub run_dir: PathBuf,
+	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
+	pub format: CheckOutputFormat,
 }
 
 #[derive(Parser, Debug)]
@@ -129,8 +229,8 @@ pub struct LspArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "Check a playset and report findings",
-	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./foch.toml\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json"
+	about = "Check a playset and report findings, or fix its syntax errors",
+	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./foch.toml\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json\n\nSyntax fixes, as a linter's:\n  foch check ./my-mod --diff                      # show the fixes, write nothing\n  foch check ./my-mod --fix                       # fix a mod directory in place\n  foch check ./my-mod --fix --unsafe-fixes        # also fix what a merge holds for review\n  foch check ./foch.toml --fix --patch-mod ./fixes # a playset: write a patch mod\n  foch check ./foch.toml --fix --in-place         # a playset: fix the mods, backed up\n  foch check --restore <BACKUP_DIR>               # undo an in-place fix"
 )]
 pub struct CheckArgs {
 	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
@@ -161,6 +261,51 @@ pub struct CheckArgs {
 
 	#[arg(long)]
 	pub no_color: bool,
+
+	/// Fix the syntax errors Foch repairs by itself, as a linter's --fix. A
+	/// mod directory is fixed in place; a playset needs --patch-mod or
+	/// --in-place. Exits with 1 while errors remain unfixed.
+	#[arg(long)]
+	pub fix: bool,
+
+	/// Also apply unsafe fixes, which settle what a merge holds for review:
+	/// leave out a statement that cannot be read with confidence, or apply
+	/// the likeliest repair of a definition that cannot be read at all.
+	#[arg(long)]
+	pub unsafe_fixes: bool,
+
+	/// Show the fixes as a unified diff and write nothing. Exits with 1 when
+	/// there is something to fix.
+	#[arg(long, conflicts_with = "fix")]
+	pub diff: bool,
+
+	/// With --fix: write a patch mod holding only the fixed files into this
+	/// new or empty directory, to load after the mods it fixes, instead of
+	/// changing them.
+	#[arg(
+		long,
+		value_name = "DIR",
+		requires = "fix",
+		conflicts_with = "in_place"
+	)]
+	pub patch_mod: Option<PathBuf>,
+
+	/// With --fix on a playset or a Steam Workshop mod: fix the mods' own
+	/// files, after backing up each original, as a mod directory of one's own
+	/// is fixed. Steam replaces a Workshop mod's files when it updates, which
+	/// undoes the fix.
+	#[arg(long, requires = "fix")]
+	pub in_place: bool,
+
+	/// Put back the originals an earlier in-place --fix backed up into this
+	/// directory, for each file that still holds the fixed bytes.
+	#[arg(long, value_name = "BACKUP_DIR", conflicts_with_all = ["fix", "diff"])]
+	pub restore: Option<PathBuf>,
+
+	/// Load reviewed repairs from this foch.toml instead of the default search
+	/// path.
+	#[arg(long, value_name = "PATH")]
+	pub config: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -251,6 +396,16 @@ pub struct MergeArgs {
 	/// prompts still come in plan order, with the other units paused.
 	#[arg(long, value_name = "N")]
 	pub jobs: Option<NonZeroUsize>,
+
+	/// Write the complete review as JSON to this file before confirmation:
+	/// the mods and their dependency edges, every unit with its ordered
+	/// contributors, each deferred unit's conflict tree with the competing
+	/// candidates, and every decision point: a choice for one conflict as a
+	/// decision record, and one for its file or directory as the foch.toml
+	/// rule that would persist it. It only replaces an earlier review and is
+	/// never written inside --out, a source mod or the game installation.
+	#[arg(long, value_name = "PATH")]
+	pub review_json: Option<PathBuf>,
 }
 
 impl MergeArgs {
@@ -293,6 +448,10 @@ impl MergeArgs {
 		if let Some(jobs) = self.jobs {
 			args.push("--jobs".to_string());
 			args.push(jobs.to_string());
+		}
+		if let Some(path) = &self.review_json {
+			args.push("--review-json".to_string());
+			args.push(path.display().to_string());
 		}
 		for name in &self.exclude {
 			args.push("--exclude".to_string());

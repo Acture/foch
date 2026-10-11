@@ -129,11 +129,23 @@ where
 		&dag_merge.mod_patches,
 	);
 	if !dag_merge.merge_result.conflicts.is_empty() {
+		let conflict_views = survivor_views(
+			target_path,
+			&dag_merge.merge_result,
+			vanilla.as_ref(),
+			context.mod_display_names,
+			context.emit_options,
+		)
+		.unwrap_or_else(|error| {
+			eprintln!("[merge] conflict candidates not rendered for {target_path}: {error}");
+			Vec::new()
+		});
 		return Err(StructuralMergeFailure::Unresolved(unresolved_report(
 			target_path,
 			&dag_merge.merge_result,
 			context.mod_versions,
 			&effective_map,
+			conflict_views,
 		)));
 	}
 
@@ -296,6 +308,7 @@ pub(super) fn unresolved_report(
 	merge_result: &PatchMergeResult,
 	mod_versions: &HashMap<String, String>,
 	resolution_map: &crate::project::ResolutionMap,
+	conflict_views: Vec<ConflictView>,
 ) -> StructuralConflictReport {
 	let conflict_keys = merge_result
 		.conflicts
@@ -319,6 +332,7 @@ pub(super) fn unresolved_report(
 		leaf_conflicts,
 		handler_resolutions: merge_result.handler_resolutions.clone(),
 		explicitly_deferred,
+		conflict_views,
 	}
 }
 

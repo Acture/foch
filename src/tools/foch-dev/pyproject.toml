@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Internal Foch repository checks and diagnostic workflows"
 requires-python = ">=3.11"
 classifiers = ["Private :: Do Not Upload"]
+dependencies = ["jsonschema>=4.26,<5", "pyyaml>=6.0.3,<7"]
 
 [dependency-groups]
 dev = ["ruff>=0.6.7", "ty>=0.0.82"]

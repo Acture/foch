@@ -95,13 +95,20 @@ pub enum LayerAction {
 	Skip,
 }
 
-/// The launcher, checksum patcher and stale console history never belong in a
+/// Foch metadata, old loaders and stale console history never belong in a
 /// fresh runtime layer; everything else loose is copied, directories linked.
 pub fn classify_entry(name: &str, is_dir: bool) -> LayerAction {
+	let lower = name.to_ascii_lowercase();
+	if matches!(
+		lower.as_str(),
+		"plugins" | "foch-runtime" | "foch-player-runtime" | "foch-host"
+	) || foch::plugin::store::is_proxy_name(&lower)
+	{
+		return LayerAction::Skip;
+	}
 	if is_dir {
 		return LayerAction::Link;
 	}
-	let lower = name.to_ascii_lowercase();
 	let skip = matches!(
 		lower.as_str(),
 		"universal-checksum-patcher.exe" | "console_history.txt" | "userdir.txt"
@@ -209,7 +216,10 @@ mod tests {
 	#[test]
 	fn layer_classification_copies_files_links_dirs_skips_noise() {
 		assert_eq!(classify_entry("eu4.exe", false), LayerAction::Copy);
-		assert_eq!(classify_entry("d3d9.dll", false), LayerAction::Copy);
+		assert_eq!(classify_entry("d3d9.dll", false), LayerAction::Skip);
+		assert_eq!(classify_entry("VERSION.DLL", false), LayerAction::Skip);
+		assert_eq!(classify_entry("Plugins", true), LayerAction::Skip);
+		assert_eq!(classify_entry("steam_api64.dll", false), LayerAction::Copy);
 		assert_eq!(classify_entry("common", true), LayerAction::Link);
 		assert_eq!(
 			classify_entry("console_history.txt", false),

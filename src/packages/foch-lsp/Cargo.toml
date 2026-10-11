@@ -2,12 +2,26 @@
 name = "foch-lsp"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+# The same page as foch-cli; cargo packages it as this crate's README.md.
+readme = "../../apps/foch-cli/README.md"
 homepage.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "game-development"]
 description = "Language server for EU4 mod scripts and Foch annotations, started by `foch lsp`"
-# Linked into the `foch` binary; not a separate executable or published crate.
-publish = false
+# Linked into the `foch` binary, not a separate executable; published because
+# crates.io builds foch-cli from published crates only, and its Rust API
+# carries no semver promise. The crate is its sources and license texts; the
+# LSP fixtures under `tests/`, which in-source tests read, stay in the
+# repository.
+include = [
+	"/src/**",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
 
 [dependencies]
 foch.workspace = true

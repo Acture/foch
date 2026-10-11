@@ -1,0 +1,18 @@
+country_decisions = {
+	persian_nation = {
+		potential = {
+			NOT = { tag = MUG }
+			if = {
+				limit = { has_dlc = "King of Kings" }
+				OR = { culture_group = iranian primary_culture = azeri_culture }
+			}
+			else = {
+				OR = { culture_group = iranian primary_culture = azeri_culture tag = AKK }
+			}
+			is_colonial_nation = no
+		}
+		effect = {
+			change_tag = PER
+		}
+	}
+}

@@ -10,8 +10,8 @@ use foch::merge::timing::{
 };
 use foch::merge::{
 	AnalyzedMerge, CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
-	MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition, MergeUnitKind,
-	NoopProgressObserver, analyze_merge,
+	MERGE_REVIEW_SCHEMA, MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition,
+	MergeUnitKind, NoopProgressObserver, analyze_merge,
 };
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
@@ -62,6 +62,10 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 
 fn run_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	let paradox_data_path = config.paradox_data_path.clone();
+	// Refuse a review path before the analysis it would follow.
+	if let Some(path) = &merge_args.review_json {
+		check_review_json_target(path, &merge_args.out)?;
+	}
 	let PreparedMerge { request, options } =
 		stage("prepare_merge", || prepare_merge(merge_args, config, None))?;
 	let analyzed = stage("analyze", || {
@@ -155,6 +159,9 @@ fn report_and_commit(
 		render_merge_review_text(&analyzed, merge_args.review_all)
 	});
 	println!("{review}");
+	if let Some(path) = &merge_args.review_json {
+		write_review_json(&analyzed, path, &merge_args.out)?;
+	}
 	let plan_exit_code = merge_plan_exit_code(analysis.plan());
 	if analysis.plan().has_fatal_errors() {
 		return Ok(plan_exit_code);
@@ -181,11 +188,116 @@ fn report_and_commit(
 		execution.merge_status.status,
 		foch::model::MergeReportStatus::Ready | foch::model::MergeReportStatus::PartialSuccess
 	) && let Some(paradox_dir) = paradox_data_path.as_ref()
-		&& let Err(err) = install_launcher_stub(&merge_args.out, paradox_dir)
 	{
-		eprintln!("[foch] failed to install launcher stub: {err}");
+		match install_launcher_stub(&merge_args.out, paradox_dir, "foch merge") {
+			Ok(stub_path) => eprintln!(
+				"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
+				stub_path.display()
+			),
+			Err(err) => eprintln!("[foch] failed to install launcher stub: {err}"),
+		}
 	}
 	Ok(execution.exit_code)
+}
+
+fn write_review_json(analyzed: &AnalyzedMerge, path: &Path, out_dir: &Path) -> io::Result<()> {
+	let destination = check_review_json_target(path, out_dir)?;
+	for root in analyzed.source_roots() {
+		if destination.starts_with(write_location(root)?) {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidInput,
+				format!(
+					"--review-json {} is inside the read-only input {}; write the review elsewhere",
+					path.display(),
+					root.display()
+				),
+			));
+		}
+	}
+	let mut json = serde_json::to_vec_pretty(analyzed.review()).map_err(io::Error::other)?;
+	json.push(b'\n');
+	fs::write(&destination, json).map_err(|error| {
+		io::Error::new(
+			error.kind(),
+			format!("failed to write merge review {}: {error}", path.display()),
+		)
+	})?;
+	eprintln!("[foch] wrote merge review to {}", path.display());
+	Ok(())
+}
+
+/// Where `--review-json` may write. It never replaces a file that is not an
+/// earlier review, so a path naming the playset, a foch.toml or any other
+/// input is refused instead of overwritten, and it never writes into the
+/// output directory, which commit installs as a whole. Both are compared as
+/// the locations a write would reach, which the review is then written to.
+fn check_review_json_target(path: &Path, out_dir: &Path) -> io::Result<PathBuf> {
+	let destination = write_location(path)?;
+	if destination.starts_with(write_location(out_dir)?) {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!(
+				"--review-json {} is inside --out {}; write the review outside the merge output",
+				path.display(),
+				out_dir.display()
+			),
+		));
+	}
+	match fs::read(&destination) {
+		Ok(bytes) => {
+			let is_review = serde_json::from_slice::<serde_json::Value>(&bytes)
+				.ok()
+				.is_some_and(|value| {
+					value.get("schema").and_then(serde_json::Value::as_str)
+						== Some(MERGE_REVIEW_SCHEMA)
+				});
+			if is_review {
+				Ok(destination)
+			} else {
+				Err(io::Error::new(
+					io::ErrorKind::AlreadyExists,
+					format!(
+						"--review-json {} is an existing file that is not a foch merge review; refusing to overwrite it",
+						path.display()
+					),
+				))
+			}
+		}
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(destination),
+		Err(error) => Err(io::Error::new(
+			error.kind(),
+			format!("cannot check --review-json {}: {error}", path.display()),
+		)),
+	}
+}
+
+/// The location a write to `path` reaches: its deepest existing ancestor
+/// with every link resolved, then the components that do not exist yet with
+/// `.` and `..` applied. A lexical comparison would let `out/x/../review.json`
+/// slip into `out` and would refuse `out/../review.json`.
+fn write_location(path: &Path) -> io::Result<PathBuf> {
+	let absolute = std::path::absolute(path)?;
+	let components = absolute.components().collect::<Vec<_>>();
+	for existing in (1..=components.len()).rev() {
+		let ancestor = components[..existing].iter().collect::<PathBuf>();
+		match fs::canonicalize(&ancestor) {
+			Ok(mut location) => {
+				for component in &components[existing..] {
+					match component {
+						std::path::Component::ParentDir => {
+							location.pop();
+						}
+						std::path::Component::CurDir => {}
+						other => location.push(other.as_os_str()),
+					}
+				}
+				return Ok(location);
+			}
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error),
+		}
+	}
+	Ok(absolute)
 }
 
 /// The current EU4 input without the named mods. A mod is named by its
@@ -600,17 +712,19 @@ fn confirm_existing_out_dir(out_dir: &Path) -> io::Result<bool> {
 }
 
 /// Drop a `<paradox_data_path>/mod/foch_<slug>.mod` stub pointing at the
-/// freshly-merged `out_dir` so the Paradox launcher lists the merge under
-/// "Mods" without the user having to hand-write a descriptor.
+/// mod Foch wrote into `out_dir`, a merge or a patch mod, so the Paradox
+/// launcher lists it under "Mods" as `<label> (<slug>)` without the user
+/// having to hand-write a descriptor; the stub's path is returned.
 ///
 /// The launcher only enumerates `.mod` files inside its game-specific mod
 /// directory; the in-`out_dir` `descriptor.mod` we already write isn't
 /// enough on its own. The user still has to open the launcher and toggle
-/// the merge on (and disable the source mods to avoid double-loading).
-fn install_launcher_stub(
+/// the mod on.
+pub(crate) fn install_launcher_stub(
 	out_dir: &Path,
 	paradox_data_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+	label: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
 	let mod_dir = paradox_data_path.join("mod");
 	fs::create_dir_all(&mod_dir)?;
 	let absolute_out = fs::canonicalize(out_dir).unwrap_or_else(|_| out_dir.to_path_buf());
@@ -622,7 +736,7 @@ fn install_launcher_stub(
 		)
 	})?;
 	let (stub_path, stem) = launcher_stub_path(&mod_dir, &slug, &descriptor_value)?;
-	let display_name = format!("foch merge ({stem})");
+	let display_name = format!("{label} ({stem})");
 	let body = format!(
 		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
 		descriptor_comment_text(&out_dir.display().to_string()),
@@ -630,11 +744,7 @@ fn install_launcher_stub(
 		descriptor_value
 	);
 	fs::write(&stub_path, body)?;
-	eprintln!(
-		"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
-		stub_path.display()
-	);
-	Ok(())
+	Ok(stub_path)
 }
 
 /// Where the stub for the output named by `descriptor_value` goes, with the
@@ -748,7 +858,7 @@ mod tests {
 		fs::create_dir_all(&out_dir).expect("create output");
 		let paradox_dir = temp.path().join("paradox");
 
-		install_launcher_stub(&out_dir, &paradox_dir).expect("install stub");
+		install_launcher_stub(&out_dir, &paradox_dir, "foch merge").expect("install stub");
 
 		let stub = paradox_dir.join("mod").join(format!(
 			"foch_{}.mod",
@@ -776,9 +886,10 @@ mod tests {
 		];
 		for out_dir in &outputs {
 			fs::create_dir_all(out_dir).expect("create output");
-			install_launcher_stub(out_dir, &paradox_dir).expect("install stub");
+			install_launcher_stub(out_dir, &paradox_dir, "foch merge").expect("install stub");
 		}
-		install_launcher_stub(&outputs[0], &paradox_dir).expect("reinstall first stub");
+		install_launcher_stub(&outputs[0], &paradox_dir, "foch merge")
+			.expect("reinstall first stub");
 
 		let mut stubs = fs::read_dir(paradox_dir.join("mod"))
 			.expect("mod dir")
@@ -813,7 +924,7 @@ mod tests {
 		let out_dir = temp.path().join("x\nreplace_path=common\n#");
 		let paradox_dir = temp.path().join("paradox");
 
-		let error = install_launcher_stub(&out_dir, &paradox_dir)
+		let error = install_launcher_stub(&out_dir, &paradox_dir, "foch merge")
 			.expect_err("a line break has no descriptor spelling")
 			.to_string();
 		assert!(error.contains("line break"), "{error}");
@@ -833,7 +944,7 @@ mod tests {
 		let out_dir = temp.path().join("merged \"out\"");
 		let paradox_dir = temp.path().join("paradox");
 
-		let error = install_launcher_stub(&out_dir, &paradox_dir)
+		let error = install_launcher_stub(&out_dir, &paradox_dir, "foch merge")
 			.expect_err("a quote has no descriptor spelling")
 			.to_string();
 		assert!(error.contains("cannot be named"), "{error}");
@@ -862,7 +973,7 @@ mod tests {
 			let out_dir = temp.path().join(OsStr::from_bytes(name));
 			let error = launcher_stub_slug(&out_dir).expect_err("not UTF-8");
 			assert!(error.contains("cannot name a launcher stub"), "{error}");
-			let error = install_launcher_stub(&out_dir, &paradox_dir)
+			let error = install_launcher_stub(&out_dir, &paradox_dir, "foch merge")
 				.expect_err("not UTF-8")
 				.to_string();
 			assert!(error.contains("cannot name a launcher stub"), "{error}");
@@ -897,7 +1008,7 @@ mod tests {
 		std::os::unix::fs::symlink(&target, &link).expect("link output");
 		let paradox_dir = temp.path().join("paradox");
 
-		let error = install_launcher_stub(&link, &paradox_dir)
+		let error = install_launcher_stub(&link, &paradox_dir, "foch merge")
 			.expect_err("a link name that is not UTF-8")
 			.to_string();
 		assert!(error.contains("cannot name a launcher stub"), "{error}");

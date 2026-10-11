@@ -5,6 +5,7 @@ pub mod data;
 pub mod graph;
 pub mod input;
 pub mod merge;
+pub mod plugin;
 pub mod simplify;
 pub mod testing;
 

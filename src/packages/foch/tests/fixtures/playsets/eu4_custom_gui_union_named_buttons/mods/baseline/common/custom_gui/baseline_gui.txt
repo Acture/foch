@@ -1,0 +1,4 @@
+custom_button = {
+	name = baseline_button
+	effect = { add_prestige = 1 }
+}

@@ -55,7 +55,7 @@ fs.chmodSync(terminateDest, 0o755);
 
 const source = fs.readFileSync(outputPath, 'utf8');
 const patched = source.replace(
-	/var __dirname = ".*?vscode-languageclient\/lib\/node";/,
+	/var __dirname = "[^"]*?vscode-languageclient[\\/]+lib[\\/]+node";/,
 	'var __dirname = require("path").join(globalThis.__fochExtensionDistDir, "vendor", "vscode-languageclient", "lib", "node");'
 );
 if (patched === source) {

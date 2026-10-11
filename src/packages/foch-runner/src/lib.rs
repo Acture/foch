@@ -16,6 +16,9 @@
 
 pub mod layout;
 mod platform;
+pub mod runtime;
+
+use runtime::RuntimeLayer;
 
 use foch::game::eu4::Eu4;
 use foch::game::eu4::base::snapshot::resolve_game_root;
@@ -86,6 +89,9 @@ pub fn sweep_runtime_base(runtime_base: &Path, max_age: Duration) {
 			continue;
 		};
 		if metadata.is_dir()
+			&& ordinary_runtime_marker(&entry.path().join("foch-runtime"))
+			&& fs::symlink_metadata(entry.path().join("foch-player-runtime"))
+				.is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 			&& metadata
 				.modified()
 				.is_ok_and(|modified| is_stale(modified, now, max_age))
@@ -93,6 +99,18 @@ pub fn sweep_runtime_base(runtime_base: &Path, max_age: Duration) {
 			platform::remove_layer(&entry.path());
 		}
 	}
+}
+
+fn ordinary_runtime_marker(path: &Path) -> bool {
+	fs::symlink_metadata(path).is_ok_and(|metadata| {
+		let linked = metadata.file_type().is_symlink();
+		#[cfg(windows)]
+		let linked = {
+			use std::os::windows::fs::MetadataExt;
+			linked || metadata.file_attributes() & 0x400 != 0
+		};
+		metadata.is_file() && !linked
+	})
 }
 
 fn is_stale(modified: SystemTime, now: SystemTime, max_age: Duration) -> bool {
@@ -216,7 +234,7 @@ pub fn run_session(
 	installation: &Installation,
 	options: &RunOptions,
 ) -> io::Result<SessionOutcome> {
-	let runtime = RuntimeLayer::build(bundle, &installation.game_root, &installation.runtime_base)?;
+	let runtime = assemble_runtime(bundle, &installation.game_root, &installation.runtime_base)?;
 	if let Some(message) = runtime.budget_error() {
 		return Err(io::Error::other(message));
 	}
@@ -381,102 +399,124 @@ fn write_descriptor(path: &Path, name: &str, mod_path: &Path) -> io::Result<()> 
 	fs::write(path, format!("name=\"{name}\"\npath=\"{normalized}\"\n"))
 }
 
-/// A per-session copy of the install: loose files copied, data directories
-/// linked, laid out on a short path.
-struct RuntimeLayer {
-	directory: PathBuf,
-	longest_relative: usize,
-}
-
-impl RuntimeLayer {
-	fn build(bundle: &Bundle, game_root: &Path, runtime_base: &Path) -> io::Result<Self> {
-		let directory = runtime_base.join(&bundle.namespace);
-		fs::create_dir_all(&directory)?;
-		let mut longest_relative = 0;
-		for entry in fs::read_dir(game_root)? {
-			let entry = entry?;
-			let name = entry.file_name();
-			let name = name.to_string_lossy();
-			let is_dir = entry.file_type()?.is_dir();
-			match layout::classify_entry(&name, is_dir) {
-				layout::LayerAction::Copy => {
-					fs::copy(entry.path(), directory.join(&*name))?;
-				}
-				layout::LayerAction::Link => {
-					longest_relative =
-						longest_relative.max(deepest_relative(&entry.path(), name.len()));
-					platform::link_dir(&entry.path(), &directory.join(&*name))?;
-				}
-				layout::LayerAction::Skip => {}
-			}
-		}
-		fs::write(directory.join("userdir.txt"), "")?;
-		fs::write(
-			directory.join("steam_appid.txt"),
-			Eu4::STEAM_APP_ID.to_string(),
-		)?;
-		fs::write(
-			directory.join("commands.txt"),
-			layout::command_file(bundle, bundle.requires.ai_off),
-		)?;
-		// The start file is referenced by `run <name>`, resolved against the
-		// game's working directory, so it lives beside the executable.
-		for (relative, content) in &bundle.files {
-			if relative.ends_with("_start.txt") && !relative.contains('/') {
-				fs::write(directory.join(relative), content)?;
-			}
-		}
-		Ok(Self {
-			directory,
-			longest_relative,
-		})
-	}
-
-	fn budget_error(&self) -> Option<String> {
-		if layout::fits_path_budget(self.directory.as_os_str().len(), self.longest_relative) {
-			None
-		} else {
-			Some(format!(
-				"runtime layer path {} is too long for the game's files (deepest relative {} chars); choose a shorter runtime base",
-				self.directory.display(),
-				self.longest_relative
-			))
+fn assemble_runtime(
+	bundle: &Bundle,
+	game_root: &Path,
+	runtime_base: &Path,
+) -> io::Result<RuntimeLayer> {
+	let runtime = RuntimeLayer::prepare(game_root, runtime_base, &bundle.namespace)?;
+	foch::plugin::store::replace_package_file(
+		&runtime.directory.join("commands.txt"),
+		layout::command_file(bundle, bundle.requires.ai_off).as_bytes(),
+	)?;
+	for (relative, content) in &bundle.files {
+		if relative.ends_with("_start.txt") && !relative.contains('/') {
+			foch::plugin::store::replace_package_file(
+				&runtime.directory.join(relative),
+				content.as_bytes(),
+			)?;
 		}
 	}
-}
-
-impl Drop for RuntimeLayer {
-	/// Tear the layer down on any exit from `run_session`, including early
-	/// returns, so a failed launch never leaves junctions or copies behind.
-	fn drop(&mut self) {
-		platform::remove_layer(&self.directory);
-	}
-}
-
-/// Deepest `<dir>/<file>` length under `root`, relative to the install root
-/// (so it already counts `dir_name` as its first component).
-fn deepest_relative(root: &Path, dir_name_len: usize) -> usize {
-	fn walk(path: &Path, prefix: usize) -> usize {
-		let mut deepest = prefix;
-		if let Ok(entries) = fs::read_dir(path) {
-			for entry in entries.flatten() {
-				let name_len = entry.file_name().to_string_lossy().chars().count();
-				let child = prefix + 1 + name_len;
-				deepest = deepest.max(if entry.path().is_dir() {
-					walk(&entry.path(), child)
-				} else {
-					child
-				});
-			}
-		}
-		deepest
-	}
-	walk(root, dir_name_len)
+	Ok(runtime)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(any(unix, windows))]
+	#[test]
+	fn sweeping_requires_an_ordinary_runtime_marker_and_preserves_other_contents() {
+		let scratch = tempfile::tempdir().unwrap();
+		let base = scratch.path().join("runtimes");
+		let source = scratch.path().join("game");
+		fs::create_dir(&source).unwrap();
+		fs::create_dir(&base).unwrap();
+		let external = scratch.path().join("external-marker");
+		fs::write(&external, b"external bytes").unwrap();
+		for name in ["linked", "dangling", "directory-marker", "unmarked"] {
+			let directory = base.join(name);
+			fs::create_dir(&directory).unwrap();
+			fs::write(directory.join("unrelated"), b"keep these bytes").unwrap();
+			let marker = directory.join("foch-runtime");
+			match name {
+				"linked" | "dangling" => {
+					let target = if name == "linked" {
+						external.clone()
+					} else {
+						scratch.path().join("missing")
+					};
+					#[cfg(unix)]
+					std::os::unix::fs::symlink(&target, &marker).unwrap();
+					#[cfg(windows)]
+					std::os::windows::fs::symlink_file(&target, &marker).unwrap();
+				}
+				"directory-marker" => fs::create_dir(&marker).unwrap(),
+				_ => {}
+			}
+		}
+		let owned = RuntimeLayer::prepare(&source, &base, "owned").unwrap();
+		sweep_runtime_base(&base, Duration::ZERO);
+		assert!(!owned.directory.exists());
+		for name in ["linked", "dangling", "directory-marker", "unmarked"] {
+			assert_eq!(
+				fs::read(base.join(name).join("unrelated"))
+					.unwrap_or_else(|error| panic!("swept {name}: {error}")),
+				b"keep these bytes",
+				"swept {name}"
+			);
+		}
+		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		assert_eq!(fs::read_dir(&source).unwrap().count(), 0);
+	}
+
+	#[test]
+	fn sweeping_preserves_every_existing_player_marker_entry() {
+		let scratch = tempfile::tempdir().unwrap();
+		let source = scratch.path().join("game");
+		let base = scratch.path().join("runtimes");
+		fs::create_dir(&source).unwrap();
+		let external = scratch.path().join("external-marker");
+		fs::write(&external, b"external bytes").unwrap();
+		for name in ["file", "directory", "link", "dangling", "absent"] {
+			let mut layer = RuntimeLayer::prepare(&source, &base, name).unwrap();
+			let directory = layer.retain().unwrap();
+			fs::write(directory.join("keep"), b"player bytes").unwrap();
+			let marker = directory.join("foch-player-runtime");
+			if name != "file" {
+				fs::remove_file(&marker).unwrap();
+			}
+			match name {
+				"directory" => fs::create_dir(&marker).unwrap(),
+				"link" | "dangling" => {
+					let target = if name == "link" {
+						external.clone()
+					} else {
+						scratch.path().join("missing")
+					};
+					#[cfg(unix)]
+					std::os::unix::fs::symlink(&target, &marker).unwrap();
+					#[cfg(windows)]
+					std::os::windows::fs::symlink_file(&target, &marker).unwrap();
+				}
+				_ => {}
+			}
+			sweep_runtime_base(&base, Duration::ZERO);
+			if name == "absent" {
+				assert!(!directory.exists(), "absent marker prevented sweeping");
+			} else {
+				assert_eq!(
+					fs::read(directory.join("keep"))
+						.unwrap_or_else(|error| panic!("swept {name} player: {error}")),
+					b"player bytes"
+				);
+				platform::remove_layer(&directory);
+			}
+			drop(layer);
+		}
+		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		assert_eq!(fs::read_dir(&source).unwrap().count(), 0);
+	}
 
 	#[test]
 	fn stale_layers_are_older_than_the_grace_period() {

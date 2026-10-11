@@ -233,6 +233,7 @@ pub fn render_merge_plan_text(result: &MergePlanResult) -> String {
 		MergePlanStrategy::ManualConflict,
 		MergePlanStrategy::StructuralMerge,
 		MergePlanStrategy::LocalisationMerge,
+		MergePlanStrategy::Generated,
 		MergePlanStrategy::LastWriterOverlay,
 	] {
 		for entry in result
@@ -635,6 +636,7 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 		MergePlanStrategy::StructuralMerge => "STRUCTURAL_MERGE",
 		MergePlanStrategy::LocalisationMerge => "LOCALISATION_MERGE",
 		MergePlanStrategy::ManualConflict => "MANUAL_CONFLICT",
+		MergePlanStrategy::Generated => "GENERATED",
 	};
 	let contributors = entry
 		.contributors

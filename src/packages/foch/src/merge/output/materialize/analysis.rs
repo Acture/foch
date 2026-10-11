@@ -189,7 +189,8 @@ pub(super) fn analyze_unit(
 		MergePlanStrategy::StructuralMerge => analyze_structural_unit(context, entry, prompt),
 		MergePlanStrategy::CopyThrough
 		| MergePlanStrategy::LastWriterOverlay
-		| MergePlanStrategy::ManualConflict => UnitAnalysis::Nothing,
+		| MergePlanStrategy::ManualConflict
+		| MergePlanStrategy::Generated => UnitAnalysis::Nothing,
 	}
 }
 

@@ -91,7 +91,9 @@ class CatalogTests(unittest.TestCase):
 		assert options.rules_directory.parent.name == "content"
 		workspace_root: Path = options.workspace.parent.parent
 		self.assertTrue((workspace_root / "Cargo.lock").is_file())
-		self.assertTrue((workspace_root / "vendor/cwtools-eu4-config").is_dir())
+		self.assertTrue(
+			(workspace_root / "src/packages/foch/vendor/cwtools-eu4-config").is_dir()
+		)
 
 	def test_all_candidates_are_processed_and_unknowns_remain_visible(self) -> None:
 		result: CatalogDiscovery = discover_catalog(

@@ -16,6 +16,11 @@ impl ContentFamilyDescriptor {
 			ContentFamilyPathMatcher::Prefix(prefix) if prefix.as_str() == "common/cultures" => {
 				Some(&crate::game::eu4::cultures::adapt::CultureAdapter)
 			}
+			// One adapter for GUI migration; `common/interface/` shares the
+			// `ui` kind but must not register it a second time.
+			ContentFamilyPathMatcher::Prefix(prefix) if prefix.as_str() == "interface" => {
+				Some(&crate::game::eu4::gui::adapt::GuiAdapter)
+			}
 			_ => None,
 		}
 	}

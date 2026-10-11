@@ -9,6 +9,8 @@ src/apps/vscode-foch/dist/
 src/apps/vscode-foch/*.vsix
 .direnv/
 /output/
+# maturin wheels and the release archives made from them
+/dist/
 local_merge/
 
 # Local secrets (Steam Web API key for the merge-quality harness, etc.) — never commit

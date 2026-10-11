@@ -2,12 +2,24 @@
 name = "foch-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 homepage.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 default-run = "foch"
-description = "Paradox mod static analysis toolkit with CLI and EU4-focused language tooling"
+description = "EU4 mod analysis, merge and language server CLI"
+# The binary and its feature-gated maintainer examples. Integration tests and
+# the merge-quality corpus stay in the repository.
+include = [
+	"/src/**",
+	"/examples/**",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
 
 [dependencies]
 clap.workspace = true
@@ -20,6 +32,7 @@ foch-runner.workspace = true
 foch-test.workspace = true
 crossterm = { version = "0.29.0", features = ["osc52"] }
 ratatui = "0.30.0"
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -27,6 +40,7 @@ tracing-subscriber.workspace = true
 walkdir.workspace = true
 mimalloc = { version = "0.1.43", default-features = false }
 ctrlc = { version = "3.5.2", default-features = false, features = ["termination"] }
+similar = "2.7.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"

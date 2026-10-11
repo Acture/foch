@@ -42,16 +42,43 @@ Linear owns active milestones, issues, and dependencies. The repository records
 the verified implementation state in [the current checkpoint](./docs/project-status.md)
 and the stable execution contract in [the architecture](docs/architecture.md).
 
+## Install
+
+> **Not available yet.** No channel below has published Foch. Each becomes
+> usable only once the first release has been installed and verified from it,
+> which [the project status](./docs/project-status.md#distribution) records.
+> Until then, build from source as described in the next section.
+
+Every channel installs the same `foch` program, including `foch lsp`, for
+Linux x64, macOS arm64 and Windows x64:
+
+| Channel | Command, once released |
+| --- | --- |
+| WinGet (Windows x64) | `winget install --id Acture.Foch -e` |
+| Homebrew (macOS arm64, Linux x64) | `brew install acture/ac/foch` |
+| crates.io | `cargo install foch-cli --locked` |
+| PyPI through uv | `uvx foch <command>` to run it once, or `uv tool install foch` |
+
+All of them report one identity: `foch --version` prints `foch-cli <version>`
+and the `cwt-schema` id of the rules embedded at that release.
+
+The crates.io `foch 0.1.0` package is an older, superseded product, not this
+source line. If you installed it, remove it with `cargo uninstall foch` before
+installing `foch-cli`; both provide a `foch` executable.
+
+An installed program is not yet ready to merge. Its first run needs an EU4
+base-data snapshot built from your own game installation (`foch data build eu4
+... --install`, below), and merge quality is a separate acceptance gate, not a
+property of any install channel; see the [current boundary](#current-boundary).
+
 ## Build and try it
 
-There is no released binary matching this source line. The crates.io
-`foch 0.1.0` package is an older, superseded build; do not use `cargo install
-foch` for this repository.
+Building from source is the current way to run Foch:
 
 ```fish
 git clone https://github.com/Acture/foch.git
 cd foch
-git submodule update --init --recursive src/packages/tree-sitter-paradox vendor/cwtools-eu4-config
+git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
 cargo install --path src/apps/foch-cli
 ```
 
@@ -88,6 +115,13 @@ empty path. `--non-interactive` disables prompts and does not imply
 The terminal review shows the first 20 units of each disposition, the complete
 totals, and explicit counts of omitted units. Add `--review-all` to inspect
 every unit before committing; this changes presentation only.
+`--review-json PATH` also writes the complete review as JSON before
+confirmation: the mods, their dependency edges and each unit's ordered
+contributors; each deferred unit's conflict address tree with the competing
+candidates' text; and every decision point. A choice for just one conflict is
+a decision record keyed by its conflict id, kept apart from `foch.toml`; a
+choice for its file or directory is the `[[resolutions]]` rule that would
+persist it.
 
 Unresolved files or complete definition modules are withheld while unrelated
 safe units are written. This `partial_success` result is valid. `--force`
@@ -153,7 +187,7 @@ changes a reader invalidates the equivalences, not just their precision.
 | `foch` | Open a read-only terminal browser over the current EU4 playset and its full merge analysis. |
 | `foch input inspect` | Show the game and ordered mod inputs Foch will use; without a path, the current EU4 input bare `foch` shows (`--format json` for scripts). |
 | `foch input repair` | List current-playset mods that cannot be analyzed and, with `--open`, open their Workshop pages in Steam to resubscribe. |
-| `foch check` | Parse and analyze an input without writing a merge. |
+| `foch check` | Parse and analyze an input without writing a merge. With `--fix` (or `--diff` to preview), fix syntax errors as a linter does: a mod directory in place, a playset or a Workshop mod as a patch mod (`--patch-mod`) or in the mods' own files (`--in-place`); in-place fixes are backed up and `--restore` undoes them. `--unsafe-fixes` also settles what a merge holds for review. |
 | `foch merge` | Analyze and review a semantic result; commit only after confirmation. |
 | `foch graph` | Write call, definition-dependency, mod-dependency, and semantic graphs. |
 | `foch simplify` | Remove target-mod definitions equivalent to effective base definitions. |
@@ -176,27 +210,32 @@ Run `foch <command> --help` for authoritative options.
 ## Repository layout
 
 - `src/packages/foch` — the main Rust library, with its own `src/`, `tests/`,
-  `fuzz/`, and `build.rs`
+  `fuzz/`, `build.rs`, and `vendor/` (the externally maintained CWT rules,
+  pinned as a build submodule)
 - `src/apps/foch-cli` — the `foch` executable, LSP, integration tests, and test-only
   merge-quality harness
+- `src/packages/foch-annotation`, `foch-test`, `foch-runner` and `foch-lsp` —
+  libraries the `foch` executable links: Foch annotations, in-game test
+  planning and judging, the game runner, and the language server
 - `src/apps/foch-desktop` — the Tauri desktop product, linked directly to `foch`
 - `src/packages/tree-sitter-paradox` — independently versioned grammar package
 - `src/apps/vscode-foch` — independently versioned VS Code extension
 - `src/tools/eu4-analysis` — maintainer tooling for extracting EU4 loading rules
 - `src/tools/foch-dev` — reusable repository checks and diagnostic workflows
-- `vendor/` — externally maintained CWT rules, pinned as a build submodule
 - `scripts/` — build, release, and repository maintenance workflows
 - `docs/` — current public usage, contributor guides, architecture, and status
-- `notes/research/` — private research, experimental interpretation, and design history
-  in the [unified notes repository](https://github.com/Acture/obsidian-vault/tree/project/foch)
 
-The root Cargo manifest is a virtual workspace. Foch's Rust library is built
-from the complete workspace, including `vendor/`; release source archives carry
-both public submodules and exclude private notes. It is not published as a
-standalone crates.io package.
+The root Cargo manifest is a virtual workspace. The `foch` library package
+carries its CWT build input, so the packaged crates build without the rest of
+the checkout; `python -m foch_dev crate-smoke` packages them with the pinned
+grammar and installs `foch` from those crates outside the repository. A
+release publishes `foch-cli` to crates.io with every workspace crate it builds
+from (`foch`, `foch-annotation`, `foch-lsp`, `foch-runner` and `foch-test`),
+against `tree-sitter-paradox` released from its own repository; none is
+published yet. Release source archives include both build submodules.
 
 The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
-`tree-sitter-paradox` at `0.2.0`. Cache and report schema generations are
+`tree-sitter-paradox` at `0.3.0`. Cache and report schema generations are
 versioned independently.
 
 ## Development
@@ -210,7 +249,7 @@ bun run --cwd src/packages/tree-sitter-paradox test
 bun run --cwd src/apps/vscode-foch smoke
 ```
 
-EU4 CWT schemas are vendored at `vendor/cwtools-eu4-config`. The build
+EU4 CWT schemas are vendored at `src/packages/foch/vendor/cwtools-eu4-config`. The build
 compiles that directory into a rule pack embedded in the binary, so the
 submodule must be checked out to build at all; `foch --version` names the
 embedded pack's `cwt-schema` identity. Refreshing that submodule and its
@@ -300,8 +339,9 @@ uv run --locked --project src/tools/foch-dev python -m foch_dev check
 uv run --locked --project src/tools/foch-dev python -m foch_dev schema-hash
 ```
 
-Its `smoke` and `compare` subcommands run diagnostic checks and compare summaries.
-Use `--help` for their inputs. These diagnostics are separate from `cargo acceptance`.
+Its `smoke` and `compare` subcommands run diagnostic checks and compare summaries;
+`crate-smoke`, `dist`, `winget` and `release preflight` build and verify the
+release channels. Use `--help` for their inputs. These diagnostics are separate from `cargo acceptance`.
 Root `scripts/` holds hooks and release wrappers; the desktop app owns its
 Windows installer smoke script. Ordinary Foch users do not need these Python tools.
 
@@ -319,80 +359,15 @@ Windows installer smoke script. Ordinary Foch users do not need these Python too
 - [Known issues](./docs/known-issues.md)
 - [Release checklist](./docs/RELEASE_CHECKLIST.md)
 
-### Private research notes
-
-`notes/` is a submodule of `https://github.com/Acture/obsidian-vault.git`,
-configured for `project/foch`. Its Foch entry is
-[`notes/首页.md`](./notes/首页.md). The project branch root is the notes root;
-research lives under `notes/research/`. Public usage, contributor and architecture
-documents and current measured status remain in Foch. Numeric records and raw
-evidence stay with their producing code or test harness. Superseded reports,
-release drafts and development history belong in notes, outside public docs.
-Reading public documentation, building and testing do not require private access.
-
-Use the latest published `project/foch` notes by default. After cloning,
-creating a worktree, or pulling Foch, refresh a clean notes worktree with:
-
-```fish
-git submodule update --init --remote --checkout -- notes
-```
-
-Preserve local edits and unpublished commits before refreshing; do not force
-the checkout. If refresh fails, report that notes are stale instead of treating
-the cached checkout as current.
-
-Git still records a fixed commit in the parent. Plain `git clone`, `git pull`,
-and `git submodule update --init` do not fetch the latest notes automatically;
-even `git clone --recurse-submodules` needs the refresh above. The branch setting
-selects what `--remote` follows. Restoring the recorded commit is an explicit
-historical-reproduction operation: `git submodule update --init --checkout -- notes`.
-
-The refresh may leave a detached HEAD. Before editing, switch to the project
-branch and fast-forward it to the published notes:
-
-```fish
-git -C notes fetch origin
-git -C notes switch project/foch
-git -C notes pull --ff-only origin project/foch
-```
-
-The first `switch` creates a local tracking branch when only
-`origin/project/foch` exists. Preserve local changes and resolve divergence
-before continuing. Edit only this project's branch; integration with the vault's
-`master` is managed in that repository.
-
-Install or refresh the notes repository's existing push checker once per clone
-using Git, Python 3.10+ and authenticated `gh`:
-
-```fish
-git -C notes fetch origin refs/heads/master:refs/remotes/origin/master
-and set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
-and git -C notes show origin/master:.github/scripts/install_push_hook.py > "$notes_common_gitdir/install_push_hook.py"
-and python3 "$notes_common_gitdir/install_push_hook.py" --repo notes --source-ref origin/master
-```
-
-After editing `notes/`, publish notes before updating Foch's reference:
-
-```fish
-git -C notes add -- research 首页.md
-git -C notes commit -m "Update Foch research notes"
-set notes_common_gitdir (git -C notes rev-parse --path-format=absolute --git-common-dir)
-python3 "$notes_common_gitdir/hooks/notes-boundary/submit_project.py" --repo notes --branch project/foch
-# Continue only after the notes push succeeds.
-git add notes
-git commit -m "Update Foch notes reference"
-git push
-```
-
-The submission tool runs the vault's required remote boundary check before
-updating `project/foch`. A direct push of a new commit lacks that check. Follow
-the vault's [project integration guide](https://github.com/Acture/obsidian-vault/blob/master/项目接入.md)
-if the checker changes; do not disable hooks or branch protection.
-
-A refresh can change the gitlink shown by `git status`; review and commit that
-reference separately when adopting the update in Foch. Earlier document paths
-and content remain available in each repository's Git history.
-
 ## License
 
-AGPL-3.0-only. See [LICENSE](./LICENSE).
+Foch's own code is AGPL-3.0-only ([LICENSE](./LICENSE)). The `foch` library,
+and every distributed `foch` program, also contains an adaptation of Mergiraf
+(GPL-3.0-only, [LICENSE-MERGIRAF.txt](./LICENSE-MERGIRAF.txt)) and embeds a rule
+pack compiled from the CWTools EU4 config (MIT), so both are distributed as
+`AGPL-3.0-only AND GPL-3.0-only AND MIT`; the own source of `foch-cli` and of
+its internal libraries `foch-annotation`, `foch-lsp`, `foch-runner` and
+`foch-test` is AGPL-3.0-only. Each program also statically links Rust crates
+under their own licenses, given in
+[THIRD-PARTY-LICENSES.txt](./THIRD-PARTY-LICENSES.txt). See
+[NOTICE.md](./NOTICE.md).

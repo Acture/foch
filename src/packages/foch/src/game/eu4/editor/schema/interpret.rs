@@ -992,6 +992,30 @@ pub(super) fn schema_diagnostics_for_text_with_index(
 	schema_diagnostics_for_ast_with_index(engine, file_path, &parsed.statements, dynamic_values)
 }
 
+/// The diagnostic code for a value whose block-or-scalar shape the rules
+/// reject.
+const SCHEMA_SHAPE_CODE: &str = "V006";
+
+/// How many values in `statements`, read as the file at `file_path`, have a
+/// shape the active rules reject: a block where a value belongs, or a value
+/// where a block does.
+///
+/// Only the shape is counted. Other diagnostics are not reliable enough to
+/// choose between readings of a broken file: a definition's own key is
+/// reported as unknown at the top level, and keys inside some alias bodies,
+/// such as a scripted trigger's, are too.
+pub(crate) fn schema_shape_violations(file_path: &GamePath, statements: &[AstStatement]) -> usize {
+	schema_diagnostics_for_ast_with_index(
+		crate::game::eu4::cwt::rule_engine(),
+		file_path,
+		statements,
+		None,
+	)
+	.iter()
+	.filter(|diagnostic| diagnostic.code.as_deref() == Some(SCHEMA_SHAPE_CODE))
+	.count()
+}
+
 fn schema_diagnostics_for_ast_with_index(
 	engine: &CwtQuery,
 	file_path: &GamePath,
@@ -1691,7 +1715,7 @@ fn schema_value_shape_diagnostic(
 			field_match,
 			Severity::Error,
 		)),
-		code: Some("V006".to_string()),
+		code: Some(SCHEMA_SHAPE_CODE.to_string()),
 		source: Some("foch".to_string()),
 		message: format!(
 			"value for `{key}` is a schema {}, but this assignment uses a {}",
