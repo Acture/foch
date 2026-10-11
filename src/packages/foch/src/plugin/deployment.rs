@@ -762,10 +762,8 @@ fn status_directory(runtime: &Path) -> io::Result<PathBuf> {
 	Ok(directory)
 }
 
-fn open_status_file(path: &Path) -> io::Result<fs::File> {
-	if !store::ordinary_metadata(path)?.is_file() {
-		return Err(io::Error::other("host file is not a regular file"));
-	}
+/// Keep the final status-file entry from being followed during the open.
+fn status_file_options() -> fs::OpenOptions {
 	let mut options = fs::OpenOptions::new();
 	options.read(true);
 	#[cfg(windows)]
@@ -778,7 +776,19 @@ fn open_status_file(path: &Path) -> io::Result<fs::File> {
 			.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
 			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
 	}
-	let file = options.open(path)?;
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+	}
+	options
+}
+
+fn open_status_file(path: &Path) -> io::Result<fs::File> {
+	if !store::ordinary_metadata(path)?.is_file() {
+		return Err(io::Error::other("host file is not a regular file"));
+	}
+	let file = status_file_options().open(path)?;
 	if !file.metadata()?.is_file() {
 		return Err(io::Error::other("host file is not a regular file"));
 	}
@@ -809,6 +819,34 @@ fn open_status_file(path: &Path) -> io::Result<fs::File> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(unix)]
+	#[test]
+	fn status_file_open_refuses_a_leaf_symlink_swap_after_metadata_validation() {
+		let scratch = tempfile::tempdir().unwrap();
+		let host = scratch.path().join("foch-host");
+		fs::create_dir(&host).unwrap();
+		let external = scratch.path().join("external");
+		fs::write(&external, "external bytes").unwrap();
+		for name in ["plan.json", "events.jsonl"] {
+			let path = host.join(name);
+			fs::write(&path, "owned bytes").unwrap();
+			assert!(store::ordinary_metadata(&path).unwrap().is_file());
+			let options = status_file_options();
+			fs::remove_file(&path).unwrap();
+			std::os::unix::fs::symlink(&external, &path).unwrap();
+			assert!(options.open(&path).is_err(), "followed a swapped {name}");
+			assert_eq!(fs::read_to_string(&external).unwrap(), "external bytes");
+			fs::remove_file(&path).unwrap();
+			fs::write(&path, "owned bytes").unwrap();
+			let mut bytes = String::new();
+			open_status_file(&path)
+				.unwrap()
+				.read_to_string(&mut bytes)
+				.unwrap();
+			assert_eq!(bytes, "owned bytes");
+		}
+	}
 
 	#[cfg(windows)]
 	fn status_fixture() -> (tempfile::TempDir, HostPlan) {

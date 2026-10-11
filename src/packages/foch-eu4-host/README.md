@@ -109,6 +109,8 @@ The status command checks runtime ownership and the opened plan file before
 reading or parsing up to 1 MiB, then validates the frozen plan and reads that
 same owned event file. Both files reject reparse points and hard links.
 The host also checks its opened plan handle for a single link before parsing.
+Management opens plan and event files without following a final symlink/reparse
+entry, including Unix status reads, and checks the opened file for hard links.
 Status streams a snapshot of the event file, retains only each plugin's latest
 state, and limits each complete or partial record to 1 MiB; an ordinary partial
 final record is retried on the next call.
