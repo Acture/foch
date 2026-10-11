@@ -120,6 +120,35 @@ impl Selections {
 		}
 	}
 
+	/// Apply a mutation to the latest snapshot while holding a cross-process
+	/// lock. The sibling lock file stays in place because replacing or deleting
+	/// it would let concurrent writers lock different files. Readers need no lock.
+	pub fn update<T>(path: &Path, edit: impl FnOnce(&mut Self) -> io::Result<T>) -> io::Result<T> {
+		let parent = path
+			.parent()
+			.filter(|parent| !parent.as_os_str().is_empty())
+			.unwrap_or_else(|| Path::new("."));
+		fs::create_dir_all(parent)?;
+		let mut name = path
+			.file_name()
+			.ok_or_else(|| {
+				io::Error::new(io::ErrorKind::InvalidInput, "selections need a file name")
+			})?
+			.to_os_string();
+		name.push(".lock");
+		let lock = fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.create(true)
+			.truncate(false)
+			.open(parent.join(name))?;
+		lock.lock()?;
+		let mut selections = Self::load(path)?;
+		let result = edit(&mut selections)?;
+		selections.save(path)?;
+		Ok(result)
+	}
+
 	/// The choices for one playset, or an empty set.
 	pub fn for_playset(&self, playset: &str) -> PlaysetSelections {
 		self.playsets.get(playset).cloned().unwrap_or_default()
@@ -191,6 +220,97 @@ mod tests {
 		);
 		selections.set_playset("My Playset", choices);
 		selections
+	}
+
+	#[test]
+	fn updates_load_after_locking_and_preserve_other_concurrent_choices() {
+		let temp = tempfile::tempdir().unwrap();
+		let path = temp.path().join("selections.toml");
+		let mut original = sample();
+		original.save(&path).unwrap();
+		let lock = fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.create(true)
+			.truncate(false)
+			.open(temp.path().join("selections.toml.lock"))
+			.unwrap();
+		lock.lock().unwrap();
+		let (started_tx, started_rx) = std::sync::mpsc::channel();
+		let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+		std::thread::scope(|scope| {
+			let lock = lock;
+			scope.spawn(|| {
+				started_tx.send(()).unwrap();
+				let result = Selections::update(&path, |selections| {
+					selections
+						.playsets
+						.get_mut("My Playset")
+						.unwrap()
+						.plugins
+						.get_mut("io.github.yozoratempest.eu4-menu-patch")
+						.unwrap()
+						.enabled = true;
+					Ok(())
+				});
+				finished_tx.send(result).unwrap();
+			});
+			started_rx.recv().unwrap();
+			assert!(matches!(
+				finished_rx.recv_timeout(Duration::from_millis(100)),
+				Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+			));
+			original
+				.playsets
+				.get_mut("My Playset")
+				.unwrap()
+				.plugins
+				.get_mut("io.github.yozoratempest.eu4-unicode-patch")
+				.unwrap()
+				.enabled = false;
+			original.save(&path).unwrap();
+			lock.unlock().unwrap();
+			finished_rx
+				.recv_timeout(Duration::from_secs(5))
+				.unwrap()
+				.unwrap();
+		});
+		let barrier = std::sync::Barrier::new(12);
+		std::thread::scope(|scope| {
+			for index in 0..12 {
+				let barrier = &barrier;
+				let path = &path;
+				scope.spawn(move || {
+					barrier.wait();
+					Selections::update(path, |selections| {
+						selections.set_playset(
+							&format!("concurrent-{index}"),
+							PlaysetSelections::default(),
+						);
+						Ok(())
+					})
+					.unwrap();
+				});
+			}
+		});
+		let final_choices = Selections::load(&path).unwrap();
+		assert_eq!(final_choices.playsets.len(), 13);
+		let choices = final_choices.for_playset("My Playset");
+		assert!(!choices.plugins["io.github.yozoratempest.eu4-unicode-patch"].enabled);
+		assert!(choices.plugins["io.github.yozoratempest.eu4-menu-patch"].enabled);
+		assert_eq!(
+			choices.plugins["io.github.yozoratempest.eu4-unicode-patch"].config["typo_tolerance"],
+			toml::Value::Integer(2)
+		);
+		let bytes = fs::read(&path).unwrap();
+		assert!(
+			Selections::update(&path, |selections| {
+				selections.playsets.clear();
+				Err::<(), _>(io::Error::other("cancel mutation"))
+			})
+			.is_err()
+		);
+		assert_eq!(fs::read(&path).unwrap(), bytes);
 	}
 
 	#[test]

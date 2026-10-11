@@ -390,21 +390,62 @@ pub struct InstalledVersion {
 
 /// Read the store into the map the planner wants: plugin id → version →
 /// manifest. Unreadable or malformed version directories are skipped so one
-/// bad entry never hides the rest; `problems` collects why each was skipped.
+/// bad entry never hides the rest. Ambiguous versions are excluded and every
+/// conflicting directory is reported in `problems`.
 pub fn catalog(
 	store_root: &Path,
 ) -> (
 	BTreeMap<String, BTreeMap<semver::Version, Manifest>>,
 	Vec<String>,
 ) {
+	catalog_with_defaults(store_root, std::iter::empty())
+}
+
+/// Add default manifests only for versions with no installed directory. An
+/// ambiguous installed version remains excluded rather than gaining a fallback.
+pub fn catalog_with_defaults(
+	store_root: &Path,
+	defaults: impl IntoIterator<Item = Manifest>,
+) -> (
+	BTreeMap<String, BTreeMap<semver::Version, Manifest>>,
+	Vec<String>,
+) {
 	let mut catalog: BTreeMap<String, BTreeMap<semver::Version, Manifest>> = BTreeMap::new();
-	let (versions, problems) = installed_versions(store_root);
+	let (versions, mut problems) = installed_versions(store_root);
+	let mut groups: BTreeMap<_, Vec<InstalledVersion>> = BTreeMap::new();
 	for version in versions {
-		let manifest = version.manifest;
-		catalog
-			.entry(manifest.plugin.id.clone())
+		groups
+			.entry((
+				version.manifest.plugin.id.clone(),
+				version.manifest.plugin.version.clone(),
+			))
 			.or_default()
-			.insert(manifest.plugin.version.clone(), manifest);
+			.push(version);
+	}
+	for manifest in defaults {
+		if !groups.contains_key(&(manifest.plugin.id.clone(), manifest.plugin.version.clone())) {
+			catalog
+				.entry(manifest.plugin.id.clone())
+				.or_default()
+				.entry(manifest.plugin.version.clone())
+				.or_insert(manifest);
+		}
+	}
+	for ((id, version), mut installed) in groups {
+		if installed.len() > 1 {
+			installed.sort_by(|a, b| a.dir.cmp(&b.dir));
+			problems.push(format!(
+				"ambiguous installed version {id} {version}: {}",
+				installed
+					.iter()
+					.map(|item| item.dir.display().to_string())
+					.collect::<Vec<_>>()
+					.join(", ")
+			));
+			continue;
+		}
+		let manifest = installed.pop().unwrap().manifest;
+		catalog.entry(id).or_default().insert(version, manifest);
 	}
 	(catalog, problems)
 }
@@ -616,6 +657,44 @@ sha256 = "{dll_digest}"
 				assert!(installed[0].dir.join("plugins/sample.dll").is_file());
 			}
 		}
+	}
+
+	#[test]
+	fn catalog_reports_all_ambiguous_artifacts_and_refuses_default_fallbacks() {
+		let root = tempfile::tempdir().unwrap();
+		let mut directories = Vec::new();
+		let fallback = validate(package(fake_dll())).unwrap().manifest;
+		for value in 0..3 {
+			let mut entries = package(fake_dll());
+			entries.push(ArchiveEntry {
+				path: "resource.bin".into(),
+				data: vec![value],
+			});
+			let validated = validate(entries).unwrap();
+			install(root.path(), &validated).unwrap();
+			directories.push(version_dir(root.path(), &validated).canonicalize().unwrap());
+		}
+		let mut entries = package(fake_dll());
+		let mut newer = fallback.clone();
+		newer.plugin.version = semver::Version::new(0, 2, 0);
+		entries[0].data = toml::to_string(&newer).unwrap().into_bytes();
+		install(root.path(), &validate(entries).unwrap()).unwrap();
+		let mut builtin = fallback.clone();
+		builtin.plugin.id = "dev.foch.builtin".into();
+		let (catalog, problems) = catalog_with_defaults(root.path(), [fallback, builtin]);
+		assert_eq!(problems.len(), 1, "{problems:?}");
+		for directory in directories {
+			assert!(
+				problems[0].contains(&directory.display().to_string()),
+				"{problems:?}"
+			);
+		}
+		assert_eq!(catalog["dev.foch.sample"].len(), 1);
+		assert!(catalog["dev.foch.sample"].contains_key(&newer.plugin.version));
+		assert!(catalog.contains_key("dev.foch.builtin"));
+		let (plain, problems) = self::catalog(root.path());
+		assert_eq!(problems.len(), 1);
+		assert_eq!(plain["dev.foch.sample"].len(), 1);
 	}
 
 	#[test]

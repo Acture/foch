@@ -521,6 +521,127 @@ fn plugin_import_preserves_known_game_and_package_inputs_but_allows_offline_impo
 }
 
 #[test]
+fn plugin_disable_preserves_existing_choices_when_installed_versions_are_ambiguous() {
+	use foch::plugin::{selection, store};
+	let scratch = TempDir::new().unwrap();
+	let id = "dev.foch.sample";
+	let manifest = "schema=1\n[plugin]\nid=\"dev.foch.sample\"\nname=\"Sample\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"sample.dll\"";
+	for index in 0..2 {
+		let package = scratch.path().join(format!("package-{index}"));
+		fs::create_dir(&package).unwrap();
+		fs::write(package.join("foch-plugin.toml"), manifest).unwrap();
+		let mut dll = vec![0u8; 0x80];
+		dll[..2].copy_from_slice(b"MZ");
+		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+		dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+		dll[0x44..0x46].copy_from_slice(&store::MACHINE_AMD64.to_le_bytes());
+		dll[0x70] = index;
+		fs::write(package.join("sample.dll"), dll).unwrap();
+		let (code, stdout, stderr) = run_foch(
+			&["plugin", "import", package.to_str().unwrap()],
+			scratch.path(),
+		);
+		assert_eq!(code, 0, "{stdout}\n{stderr}");
+		if index == 0 {
+			let (code, stdout, stderr) = run_foch(
+				&["plugin", "enable", id, "--playset", "test"],
+				scratch.path(),
+			);
+			assert_eq!(code, 0, "{stdout}\n{stderr}");
+			selection::Selections::update(
+				&scratch.path().join("plugins/selections.toml"),
+				|selections| {
+					selections
+						.playsets
+						.get_mut("test")
+						.unwrap()
+						.plugins
+						.get_mut(id)
+						.unwrap()
+						.config
+						.insert("caption".into(), toml::Value::String("preserved".into()));
+					Ok(())
+				},
+			)
+			.unwrap();
+		}
+	}
+	let (code, stdout, stderr) = run_foch(
+		&["plugin", "list", "--playset", "test", "--format", "json"],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let listing: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+	assert_eq!(listing["problems"].as_array().unwrap().len(), 1);
+	assert!(
+		listing["problems"][0]
+			.as_str()
+			.unwrap()
+			.contains("ambiguous installed version")
+	);
+	assert!(
+		!listing["plugins"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|plugin| plugin["id"] == id)
+	);
+	let (code, stdout, stderr) = run_foch(
+		&["plugin", "disable", id, "--playset", "test"],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let choices = selection::Selections::load(&scratch.path().join("plugins/selections.toml"))
+		.unwrap()
+		.for_playset("test");
+	assert!(!choices.plugins[id].enabled);
+	assert_eq!(choices.plugins[id].version, "1.0.0".parse().unwrap());
+	assert_eq!(
+		choices.plugins[id].config["caption"],
+		toml::Value::String("preserved".into())
+	);
+	for command in ["enable", "disable"] {
+		let (code, stdout, stderr) = run_foch(
+			&[
+				"plugin",
+				command,
+				id,
+				"--playset",
+				"test",
+				"--version",
+				"1.0.0",
+			],
+			scratch.path(),
+		);
+		assert_ne!(code, 0, "{stdout}\n{stderr}");
+	}
+	let choices = selection::Selections::load(&scratch.path().join("plugins/selections.toml"))
+		.unwrap()
+		.for_playset("test");
+	assert!(!choices.plugins[id].enabled);
+	let game = scratch.path().join("game");
+	write_game_version(&game, "1.37.5.0");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"plugin",
+			"plan",
+			"--playset",
+			"test",
+			"--game-path",
+			game.to_str().unwrap(),
+			"--format",
+			"json",
+		],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		serde_json::from_str::<serde_json::Value>(&stdout).unwrap()["launchable"],
+		true
+	);
+}
+
+#[test]
 fn plugin_plan_recognizes_an_enabled_builtin_without_an_imported_release() {
 	let scratch = TempDir::new().unwrap();
 	let game = scratch.path().join("game");

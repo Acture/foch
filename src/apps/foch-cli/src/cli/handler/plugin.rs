@@ -36,15 +36,7 @@ pub fn handle_plugin(args: &PluginArgs, config: Config) -> HandlerResult {
 fn catalog_with_builtins(
 	store_root: &Path,
 ) -> (BTreeMap<String, BTreeMap<Version, Manifest>>, Vec<String>) {
-	let (mut catalog, problems) = store::catalog(store_root);
-	for adapter in plugin::builtin::adapters() {
-		catalog
-			.entry(adapter.plugin.id.clone())
-			.or_default()
-			.entry(adapter.plugin.version.clone())
-			.or_insert(adapter);
-	}
-	(catalog, problems)
+	store::catalog_with_defaults(store_root, plugin::builtin::adapters())
 }
 
 fn load_selections() -> Result<(PathBuf, Selections), Box<dyn std::error::Error>> {
@@ -196,44 +188,58 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 fn set_enabled(args: &PluginToggleArgs, enabled: bool) -> HandlerResult {
 	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let (catalog, _) = catalog_with_builtins(&store_root);
-	let Some(versions) = catalog.get(&args.id) else {
-		return Err(format!("no plugin with id {} is installed", args.id).into());
-	};
 
-	let (path, mut selections) = load_selections()?;
-	let mut chosen = selections.for_playset(&args.playset);
+	let path = plugin::paths::selections_path()?;
+	let requested = args.version.as_deref().map(Version::parse).transpose()?;
+	let version = Selections::update(&path, |selections| {
+		let mut chosen = selections.for_playset(&args.playset);
+		// Disabling an existing choice must remain possible after its installed
+		// version becomes missing or ambiguous. Preserve its pin and config.
+		if !enabled
+			&& requested.is_none()
+			&& let Some(choice) = chosen.plugins.get_mut(&args.id)
+		{
+			choice.enabled = false;
+			let version = choice.version.clone();
+			selections.set_playset(&args.playset, chosen);
+			return Ok(version);
+		}
+		let versions = catalog.get(&args.id).ok_or_else(|| {
+			std::io::Error::other(format!("no plugin with id {} is installed", args.id))
+		})?;
+		let version = match &requested {
+			Some(version) => version.clone(),
+			None => match chosen.plugins.get(&args.id) {
+				// Keep the already-pinned version when only toggling state.
+				Some(choice) if versions.contains_key(&choice.version) => choice.version.clone(),
+				// Otherwise pin the highest installed version.
+				_ => versions.keys().next_back().cloned().ok_or_else(|| {
+					std::io::Error::other(format!("no installed version of {} to pin", args.id))
+				})?,
+			},
+		};
+		if !versions.contains_key(&version) {
+			return Err(std::io::Error::other(format!(
+				"{} {version} is not installed",
+				args.id
+			)));
+		}
 
-	let version = match &args.version {
-		Some(text) => Version::parse(text)?,
-		None => match chosen.plugins.get(&args.id) {
-			// Keep the already-pinned version when only toggling state.
-			Some(choice) if versions.contains_key(&choice.version) => choice.version.clone(),
-			// Otherwise pin the highest installed version.
-			_ => versions
-				.keys()
-				.next_back()
-				.cloned()
-				.ok_or_else(|| format!("no installed version of {} to pin", args.id))?,
-		},
-	};
-	if !versions.contains_key(&version) {
-		return Err(format!("{} {version} is not installed", args.id).into());
-	}
+		let entry =
+			chosen
+				.plugins
+				.entry(args.id.clone())
+				.or_insert_with(|| plugin::selection::Choice {
+					version: version.clone(),
+					enabled,
+					config: BTreeMap::new(),
+				});
+		entry.version = version.clone();
+		entry.enabled = enabled;
 
-	let entry =
-		chosen
-			.plugins
-			.entry(args.id.clone())
-			.or_insert_with(|| plugin::selection::Choice {
-				version: version.clone(),
-				enabled,
-				config: BTreeMap::new(),
-			});
-	entry.version = version.clone();
-	entry.enabled = enabled;
-
-	selections.set_playset(&args.playset, chosen);
-	selections.save(&path)?;
+		selections.set_playset(&args.playset, chosen);
+		Ok(version)
+	})?;
 	println!(
 		"{} {} {version} for playset '{}'",
 		if enabled { "Enabled" } else { "Disabled" },
@@ -404,30 +410,26 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		"artifacts":prepared.artifacts, "excluded":layer.excluded,
 		"events":prepared.plan.events, "pid":null, "prepared_only":args.prepare_only,
 	});
-	let mut child = if args.prepare_only {
-		None
-	} else {
-		Some(foch_runner::runtime::spawn_player(
-			&directory,
-			&user_dir,
-			&args.game_args,
-		)?)
-	};
-	if let Some(child) = &child {
-		record["pid"] = child.id().into();
-	}
-	let retain = std::fs::write(
+	std::fs::write(
 		directory.join("foch-host/run.json"),
 		serde_json::to_vec_pretty(&record)?,
-	)
-	.and_then(|()| layer.retain().map(|_| ()));
-	if let Err(error) = retain {
-		if let Some(child) = &mut child {
+	)?;
+	let child = layer.retain_after(|directory| {
+		if args.prepare_only {
+			return Ok(None);
+		}
+		let mut child = foch_runner::runtime::spawn_player(directory, &user_dir, &args.game_args)?;
+		record["pid"] = child.id().into();
+		let recorded = serde_json::to_vec_pretty(&record)
+			.map_err(std::io::Error::other)
+			.and_then(|bytes| std::fs::write(directory.join("foch-host/run.json"), bytes));
+		if let Err(error) = recorded {
 			let _ = child.kill();
 			let _ = child.wait();
+			return Err(error);
 		}
-		return Err(error.into());
-	}
+		Ok(Some(child))
+	})?;
 	match args.plan.format {
 		CheckOutputFormat::Json => print_json(&record)?,
 		CheckOutputFormat::Text => {

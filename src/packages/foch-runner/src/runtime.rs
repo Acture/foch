@@ -158,9 +158,17 @@ impl RuntimeLayer {
 	/// Player games keep running when the launching manager exits. Their layer
 	/// is retained with an ownership marker, and never swept as a test session.
 	pub fn retain(&mut self) -> io::Result<PathBuf> {
+		self.retain_after(|directory| Ok(directory.to_path_buf()))
+	}
+
+	/// Mark the layer before starting a player, then commit retention only when
+	/// startup and its bookkeeping succeed. On error the caller must stop any
+	/// child it started; dropping this layer then removes the failed preparation.
+	pub fn retain_after<T>(&mut self, start: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
 		fs::write(self.directory.join("foch-player-runtime"), "1\n")?;
+		let result = start(&self.directory)?;
 		self.remove_on_drop = false;
-		Ok(self.directory.clone())
+		Ok(result)
 	}
 }
 
@@ -382,6 +390,38 @@ mod tests {
 			"linked resource"
 		);
 		assert!(RuntimeLayer::prepare(source.path(), source.path(), "unsafe").is_err());
+	}
+
+	#[test]
+	fn player_startup_is_marked_before_handoff_and_failed_starts_are_removed() {
+		let source = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		let mut layer = RuntimeLayer::prepare(source.path(), output.path(), "handoff").unwrap();
+		let directory = layer.directory.clone();
+		let result: io::Result<()> = layer.retain_after(|directory| {
+			assert!(directory.join("foch-player-runtime").is_file());
+			crate::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
+			assert!(directory.is_dir());
+			Err(io::Error::other("startup or PID bookkeeping failed"))
+		});
+		assert!(result.is_err());
+		drop(layer);
+		assert!(!directory.exists());
+
+		let mut layer = RuntimeLayer::prepare(source.path(), output.path(), "handoff").unwrap();
+		fs::create_dir(directory.join("foch-player-runtime")).unwrap();
+		let result: io::Result<()> =
+			layer.retain_after(|_| panic!("marker failure must prevent startup"));
+		assert!(result.is_err());
+		drop(layer);
+		assert!(!directory.exists());
+
+		let mut layer = RuntimeLayer::prepare(source.path(), output.path(), "handoff").unwrap();
+		layer.retain_after(|_| Ok(())).unwrap();
+		drop(layer);
+		crate::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
+		assert!(directory.is_dir());
+		platform::remove_layer(&directory);
 	}
 
 	#[test]

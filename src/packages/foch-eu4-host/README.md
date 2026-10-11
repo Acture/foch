@@ -39,11 +39,18 @@ Built-in adapters omit upstream proxy DLLs at every directory depth; other
 packages containing a known proxy loader are rejected before installation.
 Built-in adapter metadata alone is not an installed artifact: missing,
 ambiguous or modified selected versions are refused before launch.
+The catalog reports every directory for an ambiguous ID/version and excludes
+that version from available choices, including built-in adapter fallbacks.
+An already selected plugin can still be disabled without changing its pinned
+version or configuration, even if that version is missing or ambiguous.
 
 Nonempty `plugins/selections.toml` files must declare `format = 1`; unsupported
 or omitted format markers are rejected before choices can be overwritten.
-An absent or blank file starts with no choices. Saves publish complete snapshots
-through independent temporary files; the last successful concurrent save wins.
+An absent or blank file starts with no choices. CLI toggles lock a persistent
+sibling `selections.toml.lock` before reading and updating the latest choices,
+so an unrelated concurrent edit cannot restore a completed disable. Readers
+need no lock. The snapshot `save` API still publishes complete replacements
+through independent temporary files; use `Selections::update` for mutations.
 
 `launch --prepare-only` writes the same reviewable layer without starting EU4.
 `--runtime-base` chooses a short local directory; `--user-dir` chooses a game
@@ -106,7 +113,12 @@ callbacks can report a later state. Native functions must return promptly, since
 the host cannot interrupt a DLL call.
 
 Player layers are retained when management exits, and test-session sweeping
-skips them. Close the game before removing a retained layer; unlink its data
+skips them. The player marker is published before starting the child; startup
+and PID bookkeeping must succeed before normal Drop cleanup is disabled.
+Failed starts are removed after any child has been stopped. Runtime markers
+are existence sentinels, not authentication against the same user's code;
+plan, event and DLL files have their own opened-handle checks.
+Close the game before removing a retained layer; unlink its data
 junctions without traversing them. Configuration/enable changes apply to the
 next launch. `status` reads complete JSONL events from this run and does not
 equate a successful DLL load with an active plugin.
