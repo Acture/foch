@@ -76,7 +76,8 @@ installation before creating the store; importing without an installed game
 remains supported.
 
 Preparation excludes old `VERSION`, `d3d9`, `dinput8`, `winmm`, `dxgi` proxies
-and the installation's `plugins` directory, recording exclusions in
+and the installation's `plugins` directory and Foch runtime metadata names
+(`foch-runtime`, `foch-player-runtime`, `foch-host`), recording exclusions in
 `foch-host/run.json`. Plugin resources and INI configuration are copied into
 separate package directories. Package validation refuses INI adapter destinations
 ending in `.dll`, including case and separator variants, before import or staging.
@@ -123,8 +124,9 @@ Player layers are retained when management exits, and test-session sweeping
 skips them. The player marker is published before starting the child; startup
 and PID bookkeeping must succeed before normal Drop cleanup is disabled.
 Failed starts are removed after any child has been stopped. Runtime markers
-are existence sentinels, not authentication against the same user's code;
-plan, event and DLL files have their own opened-handle checks.
+are created exclusively through a new file handle; existing entries are refused
+without truncation. They are existence sentinels, not authentication against
+the same user's code; plan, event and DLL files have their own opened-handle checks.
 Close the game before removing a retained layer; unlink its data
 junctions without traversing them. Configuration/enable changes apply to the
 next launch. `status` reads complete JSONL events from this run and does not

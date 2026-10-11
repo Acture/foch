@@ -95,11 +95,15 @@ pub enum LayerAction {
 	Skip,
 }
 
-/// The launcher, checksum patcher and stale console history never belong in a
+/// Foch metadata, old loaders and stale console history never belong in a
 /// fresh runtime layer; everything else loose is copied, directories linked.
 pub fn classify_entry(name: &str, is_dir: bool) -> LayerAction {
 	let lower = name.to_ascii_lowercase();
-	if lower == "plugins" || foch::plugin::store::is_proxy_name(&lower) {
+	if matches!(
+		lower.as_str(),
+		"plugins" | "foch-runtime" | "foch-player-runtime" | "foch-host"
+	) || foch::plugin::store::is_proxy_name(&lower)
+	{
 		return LayerAction::Skip;
 	}
 	if is_dir {

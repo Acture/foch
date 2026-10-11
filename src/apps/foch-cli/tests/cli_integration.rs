@@ -613,7 +613,11 @@ fn plugin_disable_preserves_existing_choices_when_installed_versions_are_ambiguo
 			],
 			scratch.path(),
 		);
-		assert_ne!(code, 0, "{stdout}\n{stderr}");
+		assert_eq!(code, 1, "{stdout}\n{stderr}");
+		assert!(
+			stderr.contains(&format!("no plugin with id {id} is installed")),
+			"{stdout}\n{stderr}"
+		);
 	}
 	let choices = selection::Selections::load(&scratch.path().join("plugins/selections.toml"))
 		.unwrap()

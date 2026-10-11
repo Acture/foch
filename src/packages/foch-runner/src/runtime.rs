@@ -7,7 +7,8 @@
 use crate::{layout, platform};
 use sha2::{Digest, Sha256};
 use std::{
-	fs, io,
+	fs,
+	io::{self, Write},
 	path::{Path, PathBuf},
 };
 
@@ -54,7 +55,7 @@ impl RuntimeLayer {
 			longest_relative: 0,
 			remove_on_drop: true,
 		};
-		fs::write(layer.directory.join("foch-runtime"), "1\n")?;
+		create_marker(&layer.directory.join("foch-runtime"))?;
 		for entry in fs::read_dir(&game_root)? {
 			let entry = entry?;
 			let name = entry.file_name();
@@ -165,11 +166,20 @@ impl RuntimeLayer {
 	/// startup and its bookkeeping succeed. On error the caller must stop any
 	/// child it started; dropping this layer then removes the failed preparation.
 	pub fn retain_after<T>(&mut self, start: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
-		fs::write(self.directory.join("foch-player-runtime"), "1\n")?;
+		create_marker(&self.directory.join("foch-player-runtime"))?;
 		let result = start(&self.directory)?;
 		self.remove_on_drop = false;
 		Ok(result)
 	}
+}
+
+/// Publish a fresh marker through an exclusively created file handle.
+fn create_marker(path: &Path) -> io::Result<()> {
+	fs::OpenOptions::new()
+		.write(true)
+		.create_new(true)
+		.open(path)?
+		.write_all(b"1\n")
 }
 
 /// Start an ordinary player game; dropping its Child handle does not stop it.
@@ -233,6 +243,92 @@ fn deepest_relative(root: &Path, prefix: usize) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn fresh_layers_exclude_runtime_metadata_and_preserve_source_entries() {
+		for is_dir in [false, true] {
+			let source = tempfile::tempdir().unwrap();
+			let output = tempfile::tempdir().unwrap();
+			let names = ["FOCH-RUNTIME", "Foch-Player-Runtime", "FOCH-HOST"];
+			for name in names {
+				let path = source.path().join(name);
+				if is_dir {
+					fs::create_dir(&path).unwrap();
+					fs::write(path.join("original"), "unchanged").unwrap();
+				} else {
+					fs::write(path, "unchanged").unwrap();
+				}
+			}
+			let layer = RuntimeLayer::prepare(source.path(), output.path(), "reserved").unwrap();
+			assert_eq!(
+				fs::read_to_string(layer.directory.join("foch-runtime")).unwrap(),
+				"1\n"
+			);
+			assert!(!layer.directory.join("foch-player-runtime").exists());
+			assert!(!layer.directory.join("foch-host").exists());
+			for name in names {
+				let excluded = layer
+					.excluded
+					.iter()
+					.find(|entry| entry.path == name)
+					.unwrap();
+				assert_eq!(excluded.sha256.is_none(), is_dir);
+				assert_eq!(
+					fs::read_to_string(if is_dir {
+						source.path().join(name).join("original")
+					} else {
+						source.path().join(name)
+					})
+					.unwrap(),
+					"unchanged"
+				);
+			}
+			let directory = layer.directory.clone();
+			crate::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
+			assert!(
+				!directory.exists(),
+				"source player marker retained a test layer"
+			);
+			drop(layer);
+		}
+	}
+
+	#[test]
+	fn runtime_markers_refuse_existing_entries_without_truncating_external_files() {
+		let scratch = tempfile::tempdir().unwrap();
+		let original = scratch.path().join("original");
+		fs::write(&original, "unchanged").unwrap();
+		for name in ["foch-runtime", "foch-player-runtime"] {
+			let path = scratch.path().join(name);
+			fs::hard_link(&original, &path).unwrap();
+			assert_eq!(
+				create_marker(&path).unwrap_err().kind(),
+				io::ErrorKind::AlreadyExists
+			);
+			assert_eq!(fs::read_to_string(&original).unwrap(), "unchanged");
+			fs::remove_file(&path).unwrap();
+			fs::write(&path, "existing marker").unwrap();
+			assert_eq!(
+				create_marker(&path).unwrap_err().kind(),
+				io::ErrorKind::AlreadyExists
+			);
+			assert_eq!(fs::read_to_string(&path).unwrap(), "existing marker");
+			fs::remove_file(&path).unwrap();
+			create_marker(&path).unwrap();
+			assert_eq!(fs::read_to_string(&path).unwrap(), "1\n");
+		}
+		let source = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		let mut layer = RuntimeLayer::prepare(source.path(), output.path(), "marker").unwrap();
+		let directory = layer.directory.clone();
+		fs::hard_link(&original, directory.join("foch-player-runtime")).unwrap();
+		let result: io::Result<()> =
+			layer.retain_after(|_| panic!("existing marker must prevent startup"));
+		assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+		drop(layer);
+		assert!(!directory.exists());
+		assert_eq!(fs::read_to_string(&original).unwrap(), "unchanged");
+	}
 
 	#[test]
 	fn source_directory_links_are_refused_without_traversal_or_source_changes() {
