@@ -33,6 +33,8 @@ package; import rejects symbolic links and reparse points rather than silently
 omitting their resources. File hard links are read as bytes and copied into
 fresh store files; deployment freezes and checks those bytes again before
 staging independent runtime copies.
+Extracted-package, installed-artifact and catalog-manifest reads refuse final
+links when opening and copy bytes through that checked ordinary file handle.
 Plugin IDs follow the same Windows component rules as package paths; device
 names such as `CON` and `NUL` are rejected, including case and extension variants.
 The host requires each opened entry DLL to be an ordinary single-link file
@@ -129,7 +131,9 @@ callbacks can report a later state. Native functions must return promptly, since
 the host cannot interrupt a DLL call.
 
 Player layers are retained when management exits, and test-session sweeping
-skips them. The player marker is published before starting the child; startup
+skips them. Sweeping requires an ordinary runtime marker; a symbolic link,
+reparse point, directory or absent marker cannot authorize deletion.
+The player marker is published before starting the child; startup
 and PID bookkeeping must succeed before normal Drop cleanup is disabled.
 Failed starts are removed after any child has been stopped. Runtime markers
 are created exclusively through a new file handle; existing entries are refused

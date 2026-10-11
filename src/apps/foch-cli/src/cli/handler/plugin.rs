@@ -179,7 +179,7 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 		let path = relative.to_string_lossy().replace('\\', "/");
 		entries.push(store::ArchiveEntry {
 			path,
-			data: std::fs::read(entry.path())?,
+			data: store::read_package_file(entry.path())?,
 		});
 	}
 	Ok(entries)

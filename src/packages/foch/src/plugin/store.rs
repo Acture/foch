@@ -506,7 +506,10 @@ pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<Stri
 					if !metadata.is_file() {
 						return Err(io::Error::other("manifest is not a regular file"));
 					}
-					fs::read_to_string(&manifest_path)
+					read_package_file(&manifest_path).and_then(|bytes| {
+						String::from_utf8(bytes)
+							.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+					})
 				})
 				.map_err(|error| error.to_string())
 				.and_then(|text| Manifest::parse(&text).map_err(|error| error.to_string()))
@@ -520,6 +523,43 @@ pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<Stri
 	}
 	versions.sort_by(|a, b| a.dir.cmp(&b.dir));
 	(versions, problems)
+}
+
+/// Read an ordinary package file without following a final link.
+/// Input hard links are copied as bytes and remain supported.
+pub fn read_package_file(path: &Path) -> io::Result<Vec<u8>> {
+	use std::io::Read;
+	let mut options = fs::OpenOptions::new();
+	options.read(true);
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::{
+			FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+		};
+		options
+			.share_mode(FILE_SHARE_READ)
+			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+	}
+	let mut file = options.open(path)?;
+	let metadata = file.metadata()?;
+	let linked = metadata.file_type().is_symlink();
+	#[cfg(windows)]
+	let linked = {
+		use std::os::windows::fs::MetadataExt;
+		linked || metadata.file_attributes() & 0x400 != 0
+	};
+	if !metadata.is_file() || linked {
+		return Err(io::Error::other("package entry must be an ordinary file"));
+	}
+	let mut bytes = Vec::new();
+	file.read_to_end(&mut bytes)?;
+	Ok(bytes)
 }
 
 pub(super) fn ordinary_metadata(path: &Path) -> io::Result<fs::Metadata> {
@@ -585,6 +625,35 @@ fn write_entries(root: &Path, package: &ValidatedPackage) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(any(unix, windows))]
+	#[test]
+	fn package_reads_refuse_leaf_link_swaps_and_preserve_hard_link_inputs() {
+		let scratch = tempfile::tempdir().unwrap();
+		let package = scratch.path().join("package");
+		fs::create_dir(&package).unwrap();
+		let external = scratch.path().join("external");
+		fs::write(&external, b"external bytes").unwrap();
+		for name in [FILE_NAME, "entry.dll"] {
+			let path = package.join(name);
+			fs::write(&path, b"owned bytes").unwrap();
+			assert!(ordinary_metadata(&path).unwrap().is_file());
+			fs::remove_file(&path).unwrap();
+			#[cfg(unix)]
+			std::os::unix::fs::symlink(&external, &path).unwrap();
+			#[cfg(windows)]
+			std::os::windows::fs::symlink_file(&external, &path).unwrap();
+			assert!(read_package_file(&path).is_err(), "followed swapped {name}");
+			assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+			fs::remove_file(&path).unwrap();
+			fs::write(&path, b"owned bytes").unwrap();
+			assert_eq!(read_package_file(&path).unwrap(), b"owned bytes");
+			fs::remove_file(&path).unwrap();
+			fs::hard_link(&external, &path).unwrap();
+			assert_eq!(read_package_file(&path).unwrap(), b"external bytes");
+			assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		}
+	}
 
 	// A minimal AMD64 PE image: MZ header, e_lfanew -> "PE\0\0" + machine.
 	fn fake_dll() -> Vec<u8> {

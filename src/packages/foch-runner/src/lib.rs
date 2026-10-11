@@ -89,7 +89,7 @@ pub fn sweep_runtime_base(runtime_base: &Path, max_age: Duration) {
 			continue;
 		};
 		if metadata.is_dir()
-			&& entry.path().join("foch-runtime").is_file()
+			&& ordinary_runtime_marker(&entry.path().join("foch-runtime"))
 			&& !entry.path().join("foch-player-runtime").exists()
 			&& metadata
 				.modified()
@@ -98,6 +98,18 @@ pub fn sweep_runtime_base(runtime_base: &Path, max_age: Duration) {
 			platform::remove_layer(&entry.path());
 		}
 	}
+}
+
+fn ordinary_runtime_marker(path: &Path) -> bool {
+	fs::symlink_metadata(path).is_ok_and(|metadata| {
+		let linked = metadata.file_type().is_symlink();
+		#[cfg(windows)]
+		let linked = {
+			use std::os::windows::fs::MetadataExt;
+			linked || metadata.file_attributes() & 0x400 != 0
+		};
+		metadata.is_file() && !linked
+	})
 }
 
 fn is_stale(modified: SystemTime, now: SystemTime, max_age: Duration) -> bool {
@@ -407,6 +419,52 @@ fn assemble_runtime(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(any(unix, windows))]
+	#[test]
+	fn sweeping_requires_an_ordinary_runtime_marker_and_preserves_other_contents() {
+		let scratch = tempfile::tempdir().unwrap();
+		let base = scratch.path().join("runtimes");
+		let source = scratch.path().join("game");
+		fs::create_dir(&source).unwrap();
+		fs::create_dir(&base).unwrap();
+		let external = scratch.path().join("external-marker");
+		fs::write(&external, b"external bytes").unwrap();
+		for name in ["linked", "dangling", "directory-marker", "unmarked"] {
+			let directory = base.join(name);
+			fs::create_dir(&directory).unwrap();
+			fs::write(directory.join("unrelated"), b"keep these bytes").unwrap();
+			let marker = directory.join("foch-runtime");
+			match name {
+				"linked" | "dangling" => {
+					let target = if name == "linked" {
+						external.clone()
+					} else {
+						scratch.path().join("missing")
+					};
+					#[cfg(unix)]
+					std::os::unix::fs::symlink(&target, &marker).unwrap();
+					#[cfg(windows)]
+					std::os::windows::fs::symlink_file(&target, &marker).unwrap();
+				}
+				"directory-marker" => fs::create_dir(&marker).unwrap(),
+				_ => {}
+			}
+		}
+		let owned = RuntimeLayer::prepare(&source, &base, "owned").unwrap();
+		sweep_runtime_base(&base, Duration::ZERO);
+		assert!(!owned.directory.exists());
+		for name in ["linked", "dangling", "directory-marker", "unmarked"] {
+			assert_eq!(
+				fs::read(base.join(name).join("unrelated"))
+					.unwrap_or_else(|error| panic!("swept {name}: {error}")),
+				b"keep these bytes",
+				"swept {name}"
+			);
+		}
+		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		assert_eq!(fs::read_dir(&source).unwrap().count(), 0);
+	}
 
 	#[test]
 	fn stale_layers_are_older_than_the_grace_period() {

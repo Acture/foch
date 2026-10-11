@@ -294,7 +294,7 @@ fn read_package(root: &Path) -> io::Result<Vec<ArchiveEntry>> {
 						.unwrap()
 						.to_string_lossy()
 						.replace('\\', "/"),
-					data: fs::read(&path)?,
+					data: store::read_package_file(&path)?,
 				});
 			}
 		}
