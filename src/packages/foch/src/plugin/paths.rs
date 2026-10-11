@@ -6,14 +6,43 @@
 
 use crate::game::eu4::base::snapshot::data_root;
 use crate::input::config::get_config_dir_path;
-use std::path::PathBuf;
+use std::{
+	fs, io,
+	path::{Path, PathBuf},
+};
 
 /// Prepare the version store below the explicitly selected data root.
-pub fn prepare_store_root(data_root: &std::path::Path) -> std::io::Result<PathBuf> {
+pub fn prepare_store_root(data_root: &Path) -> io::Result<PathBuf> {
 	super::store::prepare_data_directory(data_root, "plugins/store")
 }
 
-/// The immutable version store: `<data root>/plugins/store`.
+/// Read the derived store without creating its directories.
+pub fn checked_store_root(data_root: &Path) -> io::Result<PathBuf> {
+	let root = match data_root.canonicalize() {
+		Ok(root) => root,
+		Err(error) if error.kind() == io::ErrorKind::NotFound => {
+			return Ok(data_root.join("plugins/store"));
+		}
+		Err(error) => return Err(error),
+	};
+	if !root.is_dir() {
+		return Err(io::Error::other("plugin data root is not a directory"));
+	}
+	let mut directory = root.clone();
+	for component in ["plugins", "store"] {
+		directory.push(component);
+		match fs::symlink_metadata(&directory) {
+			Ok(_) => directory = super::store::checked_directory(&directory, &root)?,
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {
+				return Ok(root.join("plugins/store"));
+			}
+			Err(error) => return Err(error),
+		}
+	}
+	Ok(directory)
+}
+
+/// The store location; use [`checked_store_root`] before reading its contents.
 pub fn store_root() -> PathBuf {
 	data_root().join("plugins").join("store")
 }

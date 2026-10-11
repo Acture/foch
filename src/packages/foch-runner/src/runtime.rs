@@ -637,6 +637,56 @@ mod tests {
 	}
 
 	#[test]
+	fn derived_store_reads_refuse_internal_links_without_creating_missing_directories() {
+		use foch::plugin::{self, store::ArchiveEntry};
+		let outside = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let mut dll = vec![0; 0x80];
+		dll[..2].copy_from_slice(b"MZ");
+		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+		dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+		dll[0x44..0x46].copy_from_slice(&plugin::store::MACHINE_AMD64.to_le_bytes());
+		let package = plugin::store::adapt(
+			manifest,
+			vec![ArchiveEntry {
+				path: "fixture.dll".into(),
+				data: dll.clone(),
+			}],
+		)
+		.unwrap();
+		let real_store = plugin::paths::prepare_store_root(outside.path()).unwrap();
+		let installed = plugin::store::version_dir(&real_store, &package);
+		plugin::install(&real_store, &package).unwrap();
+		for (index, relative) in ["plugins", "plugins/store"].iter().enumerate() {
+			let data = output.path().join(format!("read-{index}"));
+			let link = data.join(relative);
+			fs::create_dir_all(link.parent().unwrap()).unwrap();
+			platform::link_dir(&outside.path().join(relative), &link).unwrap();
+			let result =
+				plugin::paths::checked_store_root(&data).map(|root| plugin::store::catalog(&root));
+			platform::remove_layer(&link);
+			assert!(result.is_err(), "{relative} read an external plugin store");
+			assert_eq!(fs::read(installed.join("fixture.dll")).unwrap(), dll);
+		}
+		for existing_root in [false, true] {
+			let data = output.path().join(format!("empty-{existing_root}"));
+			if existing_root {
+				fs::create_dir(&data).unwrap();
+			}
+			let root = plugin::paths::checked_store_root(&data).unwrap();
+			assert!(plugin::store::catalog(&root).0.is_empty());
+			assert_eq!(data.exists(), existing_root);
+			assert!(!data.join("plugins").exists());
+		}
+		let alias = output.path().join("selected-data-root");
+		platform::link_dir(outside.path(), &alias).unwrap();
+		let root = plugin::paths::checked_store_root(&alias).unwrap();
+		assert!(plugin::store::catalog(&root).0.contains_key("fixture"));
+		platform::remove_layer(&alias);
+	}
+
+	#[test]
 	fn deployment_refuses_a_nested_state_junction_before_writing_the_game() {
 		use foch::plugin::{self, store::ArchiveEntry};
 		let source = tempfile::tempdir().unwrap();

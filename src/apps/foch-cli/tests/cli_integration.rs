@@ -440,6 +440,87 @@ fn run_foch_with_env(
 }
 
 #[test]
+fn plugin_import_preserves_known_game_and_package_inputs_but_allows_offline_imports() {
+	fn write_package(root: &Path) {
+		fs::create_dir_all(root).unwrap();
+		fs::write(root.join("foch-plugin.toml"), "schema=1\n[plugin]\nid=\"dev.foch.sample\"\nname=\"Sample\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"sample.dll\"").unwrap();
+		let mut dll = vec![0; 0x80];
+		dll[..2].copy_from_slice(b"MZ");
+		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+		dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+		dll[0x44..0x46].copy_from_slice(&foch::plugin::store::MACHINE_AMD64.to_le_bytes());
+		fs::write(root.join("sample.dll"), dll).unwrap();
+	}
+	for case in [
+		"game-data",
+		"game-at-plugin",
+		"package-data",
+		"package-at-plugin",
+	] {
+		let scratch = TempDir::new().unwrap();
+		let ordinary_data = scratch.path().join("data");
+		let game = if case == "game-at-plugin" {
+			ordinary_data.join("plugins/store/dev.foch.sample")
+		} else {
+			scratch.path().join("game")
+		};
+		let package = if case == "package-at-plugin" {
+			ordinary_data.join("plugins/store/dev.foch.sample")
+		} else {
+			scratch.path().join("package")
+		};
+		write_game_version(&game, "1.37.5.0");
+		write_game_path_config(scratch.path(), &game);
+		write_package(&package);
+		let data = match case {
+			"game-data" => game.join("new-data"),
+			"package-data" => package.join("new-data"),
+			_ => ordinary_data,
+		};
+		let package_before = fs::read(package.join("sample.dll")).unwrap();
+		let game_before = fs::read(game.join("launcher-settings.json")).unwrap();
+		let game_count = fs::read_dir(&game).unwrap().count();
+		let package_count = fs::read_dir(&package).unwrap().count();
+		let (code, stdout, stderr) = run_foch_with_env(
+			&["plugin", "import", package.to_str().unwrap()],
+			scratch.path(),
+			&[("FOCH_DATA_DIR", data.to_str().unwrap())],
+		);
+		assert_ne!(code, 0, "{case}: {stdout}\n{stderr}");
+		assert_eq!(fs::read_dir(&game).unwrap().count(), game_count, "{case}");
+		assert_eq!(
+			fs::read_dir(&package).unwrap().count(),
+			package_count,
+			"{case}"
+		);
+		assert_eq!(
+			fs::read(package.join("sample.dll")).unwrap(),
+			package_before
+		);
+		assert_eq!(
+			fs::read(game.join("launcher-settings.json")).unwrap(),
+			game_before
+		);
+	}
+	let scratch = TempDir::new().unwrap();
+	write_no_auto_detect_config(scratch.path());
+	let package = scratch.path().join("package");
+	write_package(&package);
+	let (code, stdout, stderr) = run_foch(
+		&["plugin", "import", package.to_str().unwrap()],
+		scratch.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	assert_eq!(
+		foch::plugin::store::installed_versions(&scratch.path().join(".foch-data/plugins/store"))
+			.0
+			.len(),
+		1
+	);
+	assert_eq!(fs::read_dir(&package).unwrap().count(), 2);
+}
+
+#[test]
 fn plugin_plan_recognizes_an_enabled_builtin_without_an_imported_release() {
 	let scratch = TempDir::new().unwrap();
 	let game = scratch.path().join("game");

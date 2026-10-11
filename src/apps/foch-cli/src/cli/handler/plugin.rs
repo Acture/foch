@@ -10,7 +10,7 @@ use crate::cli::arg::{
 	PluginListArgs, PluginPlanArgs, PluginStatusArgs, PluginToggleArgs,
 };
 use foch::game::eu4::Eu4;
-use foch::game::eu4::base::snapshot::{detect_game_version, resolve_game_root};
+use foch::game::eu4::base::snapshot::{data_root, detect_game_version, resolve_game_root};
 use foch::input::Config;
 use foch::plugin::manifest::Manifest;
 use foch::plugin::{self, GameIdentity, Selections, planner, store};
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 pub fn handle_plugin(args: &PluginArgs, config: Config) -> HandlerResult {
 	match &args.command {
 		PluginCommand::List(list) => list_plugins(list, &config),
-		PluginCommand::Import(import) => import_plugin(import),
+		PluginCommand::Import(import) => import_plugin(import, &config),
 		PluginCommand::Enable(toggle) => set_enabled(toggle, true),
 		PluginCommand::Disable(toggle) => set_enabled(toggle, false),
 		PluginCommand::Plan(plan) => plan_launch(plan, &config),
@@ -54,7 +54,7 @@ fn load_selections() -> Result<(PathBuf, Selections), Box<dyn std::error::Error>
 }
 
 fn list_plugins(args: &PluginListArgs, _config: &Config) -> HandlerResult {
-	let store_root = plugin::paths::store_root();
+	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let (catalog, problems) = catalog_with_builtins(&store_root);
 	let (_, selections) = load_selections()?;
 	let chosen = selections.for_playset(&args.playset);
@@ -100,7 +100,7 @@ fn list_plugins(args: &PluginListArgs, _config: &Config) -> HandlerResult {
 	Ok(0)
 }
 
-fn import_plugin(args: &PluginImportArgs) -> HandlerResult {
+fn import_plugin(args: &PluginImportArgs, config: &Config) -> HandlerResult {
 	if !args.path.is_dir() {
 		return Err(format!(
 			"{} is not a directory; extract the plugin package first",
@@ -126,8 +126,14 @@ fn import_plugin(args: &PluginImportArgs) -> HandlerResult {
 			return Err(message.into());
 		}
 	};
-	let store_root =
-		plugin::paths::prepare_store_root(&foch::game::eu4::base::snapshot::data_root())?;
+	let data_root = data_root();
+	let destination = store::version_dir(&data_root.join("plugins/store"), &validated);
+	let game_root = resolve_game_root(config, &Eu4);
+	for source in std::iter::once(args.path.as_path()).chain(game_root.as_deref()) {
+		plugin::deployment::ensure_outside_game(source, &data_root)?;
+		plugin::deployment::ensure_outside_game(source, &destination)?;
+	}
+	let store_root = plugin::paths::prepare_store_root(&data_root)?;
 	match plugin::install(&store_root, &validated)? {
 		plugin::Installed::New(path) => {
 			println!(
@@ -188,7 +194,7 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 }
 
 fn set_enabled(args: &PluginToggleArgs, enabled: bool) -> HandlerResult {
-	let store_root = plugin::paths::store_root();
+	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let (catalog, _) = catalog_with_builtins(&store_root);
 	let Some(versions) = catalog.get(&args.id) else {
 		return Err(format!("no plugin with id {} is installed", args.id).into());
@@ -253,7 +259,7 @@ fn plan_launch(args: &PluginPlanArgs, config: &Config) -> HandlerResult {
 		platform: planner::WINDOWS_X64.into(),
 	};
 
-	let store_root = plugin::paths::store_root();
+	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let (catalog, _) = catalog_with_builtins(&store_root);
 	let (_, selections) = load_selections()?;
 	let chosen = selections.for_playset(&args.playset);
@@ -337,7 +343,8 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	};
 	let (_, selections) = load_selections()?;
 	let selected = selections.for_playset(&args.plan.playset).to_selections();
-	let deployment = plugin::deployment::resolve(&game, &plugin::paths::store_root(), &selected)?;
+	let store_root = plugin::paths::checked_store_root(&data_root())?;
+	let deployment = plugin::deployment::resolve(&game, &store_root, &selected)?;
 	let host = args.host_dll.clone().unwrap_or(
 		std::env::current_exe()?
 			.parent()
