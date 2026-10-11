@@ -511,6 +511,25 @@ pub(super) fn checked_directory(path: &Path, canonical_store: &Path) -> io::Resu
 	Ok(directory)
 }
 
+/// Preserve a selected data-root alias while refusing links in its managed
+/// descendants before creating further directories or writing artifacts.
+pub(super) fn prepare_data_directory(data_root: &Path, relative: &str) -> io::Result<PathBuf> {
+	let relative = safe_relative(relative).map_err(io::Error::other)?;
+	fs::create_dir_all(data_root)?;
+	let root = data_root.canonicalize()?;
+	let mut directory = root.clone();
+	for component in relative.split('/') {
+		directory.push(component);
+		match fs::create_dir(&directory) {
+			Ok(()) => {}
+			Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+			Err(error) => return Err(error),
+		}
+		directory = checked_directory(&directory, &root)?;
+	}
+	Ok(directory)
+}
+
 fn write_entries(root: &Path, package: &ValidatedPackage) -> io::Result<()> {
 	for entry in &package.entries {
 		let path = root.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));

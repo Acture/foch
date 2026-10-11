@@ -126,7 +126,8 @@ fn import_plugin(args: &PluginImportArgs) -> HandlerResult {
 			return Err(message.into());
 		}
 	};
-	let store_root = plugin::paths::store_root();
+	let store_root =
+		plugin::paths::prepare_store_root(&foch::game::eu4::base::snapshot::data_root())?;
 	match plugin::install(&store_root, &validated)? {
 		plugin::Installed::New(path) => {
 			println!(

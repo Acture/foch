@@ -8,6 +8,11 @@ use crate::game::eu4::base::snapshot::data_root;
 use crate::input::config::get_config_dir_path;
 use std::path::PathBuf;
 
+/// Prepare the version store below the explicitly selected data root.
+pub fn prepare_store_root(data_root: &std::path::Path) -> std::io::Result<PathBuf> {
+	super::store::prepare_data_directory(data_root, "plugins/store")
+}
+
 /// The immutable version store: `<data root>/plugins/store`.
 pub fn store_root() -> PathBuf {
 	data_root().join("plugins").join("store")

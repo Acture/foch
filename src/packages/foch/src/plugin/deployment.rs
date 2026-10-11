@@ -494,17 +494,7 @@ fn data_directory(data_root: &Path, game_root: &Path, relative: &str) -> io::Res
 	let root = data_root.canonicalize()?;
 	ensure_outside_game(game_root, &root)?;
 	ensure_outside_game(game_root, &root.join(&relative))?;
-	let mut directory = root.clone();
-	for component in relative.split('/') {
-		directory.push(component);
-		match fs::create_dir(&directory) {
-			Ok(()) => {}
-			Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-			Err(error) => return Err(error),
-		}
-		directory = store::checked_directory(&directory, &root)?;
-	}
-	Ok(directory)
+	store::prepare_data_directory(&root, &relative)
 }
 
 /// Ordinary Windows paths for JSON and MAX_PATH consumers, without the

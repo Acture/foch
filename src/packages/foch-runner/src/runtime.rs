@@ -534,6 +534,54 @@ mod tests {
 	}
 
 	#[test]
+	fn derived_store_links_cannot_redirect_imports_into_source_directories() {
+		use foch::plugin::{self, store::ArchiveEntry};
+		let source = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let mut dll = vec![0; 0x80];
+		dll[..2].copy_from_slice(b"MZ");
+		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+		dll[0x40..0x44].copy_from_slice(b"PE\0\0");
+		dll[0x44..0x46].copy_from_slice(&plugin::store::MACHINE_AMD64.to_le_bytes());
+		let package = plugin::store::adapt(
+			manifest,
+			vec![ArchiveEntry {
+				path: "fixture.dll".into(),
+				data: dll,
+			}],
+		)
+		.unwrap();
+		for (index, relative) in ["plugins", "plugins/store"].iter().enumerate() {
+			let data = output.path().join(format!("data-{index}"));
+			let link = data.join(relative);
+			fs::create_dir_all(link.parent().unwrap()).unwrap();
+			platform::link_dir(source.path(), &link).unwrap();
+			let result = plugin::paths::prepare_store_root(&data)
+				.and_then(|root| plugin::install(&root, &package));
+			platform::remove_layer(&link);
+			assert!(
+				result.is_err(),
+				"{relative} redirected an import into a source directory"
+			);
+			assert_eq!(fs::read_dir(source.path()).unwrap().count(), 0);
+		}
+		let alias_target = tempfile::tempdir().unwrap();
+		let data_alias = output.path().join("data-alias");
+		platform::link_dir(alias_target.path(), &data_alias).unwrap();
+		let store_root = plugin::paths::prepare_store_root(&data_alias).unwrap();
+		plugin::install(&store_root, &package).unwrap();
+		assert!(
+			store_root
+				.canonicalize()
+				.unwrap()
+				.starts_with(alias_target.path().canonicalize().unwrap())
+		);
+		assert_eq!(plugin::store::installed_versions(&store_root).0.len(), 1);
+		platform::remove_layer(&data_alias);
+	}
+
+	#[test]
 	fn deployment_refuses_a_nested_state_junction_before_writing_the_game() {
 		use foch::plugin::{self, store::ArchiveEntry};
 		let source = tempfile::tempdir().unwrap();
