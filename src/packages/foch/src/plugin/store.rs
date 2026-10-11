@@ -529,6 +529,13 @@ pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<Stri
 /// Input hard links are copied as bytes and remain supported.
 pub fn read_package_file(path: &Path) -> io::Result<Vec<u8>> {
 	use std::io::Read;
+	let mut file = open_package_file(path)?;
+	let mut bytes = Vec::new();
+	file.read_to_end(&mut bytes)?;
+	Ok(bytes)
+}
+
+fn open_package_file(path: &Path) -> io::Result<fs::File> {
 	let mut options = fs::OpenOptions::new();
 	options.read(true);
 	#[cfg(windows)]
@@ -546,7 +553,7 @@ pub fn read_package_file(path: &Path) -> io::Result<Vec<u8>> {
 		use std::os::unix::fs::OpenOptionsExt;
 		options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
 	}
-	let mut file = options.open(path)?;
+	let file = options.open(path)?;
 	let metadata = file.metadata()?;
 	let linked = metadata.file_type().is_symlink();
 	#[cfg(windows)]
@@ -557,9 +564,61 @@ pub fn read_package_file(path: &Path) -> io::Result<Vec<u8>> {
 	if !metadata.is_file() || linked {
 		return Err(io::Error::other("package entry must be an ordinary file"));
 	}
-	let mut bytes = Vec::new();
-	file.read_to_end(&mut bytes)?;
-	Ok(bytes)
+	Ok(file)
+}
+
+/// Create a fresh output without overwriting an existing leaf or link target.
+pub fn create_package_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+	use std::io::Write;
+	fs::OpenOptions::new()
+		.write(true)
+		.create_new(true)
+		.open(path)?
+		.write_all(bytes)
+}
+
+/// Replace an owned output by renaming a unique sibling, never truncating the
+/// previous inode. Failure removes only this writer's temporary file.
+pub fn replace_package_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+	use std::io::Write;
+	let parent = path
+		.parent()
+		.filter(|parent| !parent.as_os_str().is_empty())
+		.unwrap_or_else(|| Path::new("."));
+	// tempfile's Windows persist calls Win32 directly. Give both paths the
+	// extended parent, since the random sibling can exceed MAX_PATH even when
+	// the short destination fits. Resolve the parent, never a linked leaf.
+	#[cfg(windows)]
+	let parent = parent.canonicalize()?;
+	#[cfg(windows)]
+	let destination =
+		parent.join(path.file_name().ok_or_else(|| {
+			io::Error::new(io::ErrorKind::InvalidInput, "output needs a file name")
+		})?);
+	#[cfg(windows)]
+	let path = destination.as_path();
+	let mut temporary = tempfile::Builder::new()
+		.prefix(".foch-output-")
+		.tempfile_in(parent)?;
+	temporary.write_all(bytes)?;
+	// Close the written handle before the Windows replacement operation.
+	temporary
+		.into_temp_path()
+		.persist(path)
+		.map_err(|error| error.error)
+}
+
+/// Copy an ordinary input through its checked handle into a fresh output,
+/// preserving the input's permissions without reopening either file path.
+pub fn copy_package_file(source: &Path, destination: &Path) -> io::Result<()> {
+	let mut source = open_package_file(source)?;
+	let permissions = source.metadata()?.permissions();
+	let mut destination = fs::OpenOptions::new()
+		.write(true)
+		.create_new(true)
+		.open(destination)?;
+	io::copy(&mut source, &mut destination)?;
+	destination.set_permissions(permissions)
 }
 
 pub(super) fn ordinary_metadata(path: &Path) -> io::Result<fs::Metadata> {
@@ -617,7 +676,7 @@ fn write_entries(root: &Path, package: &ValidatedPackage) -> io::Result<()> {
 		if let Some(dir) = path.parent() {
 			fs::create_dir_all(dir)?;
 		}
-		fs::write(&path, &entry.data)?;
+		create_package_file(&path, &entry.data)?;
 	}
 	Ok(())
 }
@@ -653,6 +712,129 @@ mod tests {
 			assert_eq!(read_package_file(&path).unwrap(), b"external bytes");
 			assert_eq!(fs::read(&external).unwrap(), b"external bytes");
 		}
+	}
+
+	#[cfg(any(unix, windows))]
+	#[test]
+	fn copying_and_replacing_outputs_preserve_external_link_targets() {
+		let scratch = tempfile::tempdir().unwrap();
+		let source = scratch.path().join("source");
+		let output = scratch.path().join("output");
+		let external = scratch.path().join("external");
+		fs::write(&external, b"external bytes").unwrap();
+		fs::write(&source, b"owned bytes").unwrap();
+		assert!(ordinary_metadata(&source).unwrap().is_file());
+		fs::remove_file(&source).unwrap();
+		#[cfg(unix)]
+		std::os::unix::fs::symlink(&external, &source).unwrap();
+		#[cfg(windows)]
+		std::os::windows::fs::symlink_file(&external, &source).unwrap();
+		assert!(copy_package_file(&source, &output).is_err());
+		assert!(!output.exists());
+		fs::remove_file(&source).unwrap();
+		fs::hard_link(&external, &source).unwrap();
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			fs::set_permissions(&external, fs::Permissions::from_mode(0o755)).unwrap();
+		}
+		copy_package_file(&source, &output).unwrap();
+		assert_eq!(fs::read(&output).unwrap(), b"external bytes");
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			assert_eq!(
+				fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+				0o755
+			);
+		}
+		fs::remove_file(&output).unwrap();
+		fs::hard_link(&external, &output).unwrap();
+		assert_eq!(
+			copy_package_file(&source, &output).unwrap_err().kind(),
+			io::ErrorKind::AlreadyExists
+		);
+		assert_eq!(
+			create_package_file(&output, b"new bytes")
+				.unwrap_err()
+				.kind(),
+			io::ErrorKind::AlreadyExists
+		);
+		replace_package_file(&output, b"new bytes").unwrap();
+		assert_eq!(fs::read(&output).unwrap(), b"new bytes");
+		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		fs::remove_file(&output).unwrap();
+		#[cfg(unix)]
+		std::os::unix::fs::symlink(&external, &output).unwrap();
+		#[cfg(windows)]
+		std::os::windows::fs::symlink_file(&external, &output).unwrap();
+		assert_eq!(
+			create_package_file(&output, b"new bytes")
+				.unwrap_err()
+				.kind(),
+			io::ErrorKind::AlreadyExists
+		);
+		replace_package_file(&output, b"replaced bytes").unwrap();
+		assert!(
+			!fs::symlink_metadata(&output)
+				.unwrap()
+				.file_type()
+				.is_symlink()
+		);
+		assert_eq!(fs::read(&output).unwrap(), b"replaced bytes");
+		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		let blocked = scratch.path().join("directory");
+		fs::create_dir(&blocked).unwrap();
+		assert!(replace_package_file(&blocked, b"new bytes").is_err());
+		assert!(fs::read_dir(scratch.path()).unwrap().all(|entry| {
+			!entry
+				.unwrap()
+				.file_name()
+				.to_string_lossy()
+				.starts_with(".foch-output-")
+		}));
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn replacing_short_filenames_near_the_windows_path_limit_uses_extended_paths() {
+		use std::os::windows::ffi::OsStrExt;
+		let scratch = tempfile::tempdir().unwrap();
+		let root = PathBuf::from(super::super::deployment::path_text(scratch.path()).unwrap());
+		let padding = 243 - root.as_os_str().encode_wide().count() - 1;
+		let parent = root.join("a".repeat(padding));
+		fs::create_dir(&parent).unwrap();
+		let output = parent.join("x.ini");
+		assert_eq!(output.as_os_str().encode_wide().count(), 249);
+		create_package_file(&output, b"original bytes").unwrap();
+		for bytes in [b"first replacement".as_slice(), b"second replacement"] {
+			replace_package_file(&output, bytes).unwrap();
+			assert_eq!(fs::read(&output).unwrap(), bytes);
+			assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+		}
+		let blocked = parent.join("folder");
+		fs::create_dir(&blocked).unwrap();
+		assert!(replace_package_file(&blocked, b"blocked bytes").is_err());
+		assert_eq!(fs::read_dir(&parent).unwrap().count(), 2);
+		assert_eq!(fs::read(&output).unwrap(), b"second replacement");
+	}
+
+	#[test]
+	fn staged_package_entries_never_truncate_existing_files() {
+		let scratch = tempfile::tempdir().unwrap();
+		let root = scratch.path().join("staging");
+		fs::create_dir(&root).unwrap();
+		let external = scratch.path().join("external.dll");
+		fs::write(&external, b"external bytes").unwrap();
+		fs::hard_link(&external, root.join("sample.dll")).unwrap();
+		let validated = validate(package(fake_dll())).unwrap();
+		let result = write_entries(&root, &validated);
+		assert_eq!(fs::read(&external).unwrap(), b"external bytes");
+		assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+		let fresh = scratch.path().join("fresh");
+		fs::create_dir(&fresh).unwrap();
+		write_entries(&fresh, &validated).unwrap();
+		assert_eq!(fs::read(fresh.join("sample.dll")).unwrap(), fake_dll());
 	}
 
 	// A minimal AMD64 PE image: MZ header, e_lfanew -> "PE\0\0" + machine.

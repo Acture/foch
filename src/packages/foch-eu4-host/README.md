@@ -35,6 +35,11 @@ fresh store files; deployment freezes and checks those bytes again before
 staging independent runtime copies.
 Extracted-package, installed-artifact and catalog-manifest reads refuse final
 links when opening and copy bytes through that checked ordinary file handle.
+New store files and runtime resources are created exclusively. Existing INI,
+profile redirects and launch records are replaced through unique sibling files,
+so updates do not truncate an external hard-link or symbolic-link target.
+INI reads refuse final links. The host plan's entry digest comes from the frozen
+validated package bytes, rather than trusting a later read of the staged path.
 Plugin IDs follow the same Windows component rules as package paths; device
 names such as `CON` and `NUL` are rejected, including case and extension variants.
 The host requires each opened entry DLL to be an ordinary single-link file
@@ -99,6 +104,8 @@ is refused. Source game entries that are copied or shared must not be symbolic
 links or reparse points; recursive path-budget scans reject them without
 following external directories or loops. The selected installation root may
 itself resolve through a directory alias.
+Copied game files and fonts are read through checked ordinary-file handles;
+loose-file copies retain the source permissions and use fresh output files.
 
 Other game asset directories are shared through directory links. The layer
 isolates Foch's deployment, plugin configuration and known font/cache writes;

@@ -402,9 +402,15 @@ impl Deployment {
 				if let Some(parent) = destination.parent() {
 					fs::create_dir_all(parent)?;
 				}
-				fs::write(destination, &file.data)?;
+				store::create_package_file(&destination, &file.data)?;
 			}
 			write_config(&root, manifest, &package.config)?;
+			let entry = package
+				.validated
+				.entries()
+				.iter()
+				.find(|file| file.path == manifest.entry.path)
+				.ok_or_else(|| io::Error::other("validated package is missing its entry"))?;
 			let path = root.join(&manifest.entry.path);
 			let plugin_dir = path.parent().unwrap();
 			let state = data_directory(
@@ -429,7 +435,7 @@ impl Deployment {
 				kind: manifest.entry.kind.clone(),
 				phase: manifest.entry.phase,
 				path: path_text(&path)?,
-				sha256: hash(&fs::read(&path)?),
+				sha256: hash(&entry.data),
 				config_json: serde_json::to_string(&package.config)?,
 				dirs,
 				status: manifest.status.clone(),
@@ -443,10 +449,10 @@ impl Deployment {
 		}
 		let bytes = wire_bytes(&plan)?;
 		let plan_sha256 = hash(&bytes);
-		fs::write(runtime.join("foch-host/plan.json"), bytes)?;
-		fs::write(
-			runtime.join("foch-host/artifacts.json"),
-			serde_json::to_vec_pretty(&artifacts)?,
+		store::create_package_file(&runtime.join("foch-host/plan.json"), &bytes)?;
+		store::create_package_file(
+			&runtime.join("foch-host/artifacts.json"),
+			&serde_json::to_vec_pretty(&artifacts)?,
 		)?;
 		Ok(Prepared {
 			plan,
@@ -601,15 +607,16 @@ fn write_config(root: &Path, manifest: &Manifest, config: &Value) -> io::Result<
 	}
 	for (relative, changes) in changes {
 		let path = root.join(relative);
-		let text = match fs::read_to_string(&path) {
-			Ok(text) => text,
+		let text = match store::read_package_file(&path) {
+			Ok(bytes) => String::from_utf8(bytes)
+				.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
 			Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
 			Err(error) => return Err(error),
 		};
 		if let Some(parent) = path.parent() {
 			fs::create_dir_all(parent)?;
 		}
-		fs::write(path, update_ini(&text, changes))?;
+		store::replace_package_file(&path, update_ini(&text, changes).as_bytes())?;
 	}
 	Ok(())
 }
@@ -934,6 +941,44 @@ mod tests {
 		let result = states(&plan, root.path()).unwrap();
 		assert_eq!(result["a"]["state"], "active");
 		assert_eq!(result["b"]["state"], "failed");
+	}
+
+	#[test]
+	fn ini_updates_preserve_hard_link_targets_and_refuse_symbolic_links() {
+		let scratch = tempfile::tempdir().unwrap();
+		let root = scratch.path().join("package");
+		fs::create_dir(&root).unwrap();
+		let manifest =
+			super::super::builtin::adapter("io.github.yozoratempest.eu4-unicode-patch").unwrap();
+		let ConfigField::Int {
+			adapter: Some(adapter),
+			..
+		} = &manifest.config["typo_tolerance"]
+		else {
+			panic!("missing adapter")
+		};
+		let external = scratch.path().join("external.ini");
+		let original = "[search]\nother=yes\ntypo_tolerance=0\n";
+		fs::write(&external, original).unwrap();
+		let path = root.join(&adapter.ini);
+		fs::create_dir_all(path.parent().unwrap()).unwrap();
+		fs::hard_link(&external, &path).unwrap();
+		let config = effective_config(&manifest, &json!({"typo_tolerance":2})).unwrap();
+		write_config(&root, &manifest, &config).unwrap();
+		assert_eq!(fs::read_to_string(&external).unwrap(), original);
+		let updated = fs::read_to_string(&path).unwrap();
+		assert!(updated.contains("other=yes"));
+		assert!(updated.contains("typo_tolerance=2"));
+		fs::remove_file(&path).unwrap();
+		#[cfg(unix)]
+		std::os::unix::fs::symlink(&external, &path).unwrap();
+		#[cfg(windows)]
+		std::os::windows::fs::symlink_file(&external, &path).unwrap();
+		#[cfg(any(unix, windows))]
+		{
+			assert!(write_config(&root, &manifest, &config).is_err());
+			assert_eq!(fs::read_to_string(&external).unwrap(), original);
+		}
 	}
 
 	#[test]

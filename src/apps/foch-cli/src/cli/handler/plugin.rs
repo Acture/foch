@@ -398,8 +398,8 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	foch_runner::runtime::ensure_outside_game(&game_root, &user_dir)?;
 	std::fs::create_dir_all(&user_dir)?;
 	let user_dir = PathBuf::from(plugin::deployment::path_text(&user_dir.canonicalize()?)?);
-	std::fs::write(
-		directory.join("userdir.txt"),
+	plugin::store::replace_package_file(
+		&directory.join("userdir.txt"),
 		user_dir.to_string_lossy().as_bytes(),
 	)?;
 	let mut record = json!({
@@ -410,9 +410,9 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		"artifacts":prepared.artifacts, "excluded":layer.excluded,
 		"events":prepared.plan.events, "pid":null, "prepared_only":args.prepare_only,
 	});
-	std::fs::write(
-		directory.join("foch-host/run.json"),
-		serde_json::to_vec_pretty(&record)?,
+	plugin::store::create_package_file(
+		&directory.join("foch-host/run.json"),
+		&serde_json::to_vec_pretty(&record)?,
 	)?;
 	let child = layer.retain_after(|directory| {
 		if args.prepare_only {
@@ -422,7 +422,9 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		record["pid"] = child.id().into();
 		let recorded = serde_json::to_vec_pretty(&record)
 			.map_err(std::io::Error::other)
-			.and_then(|bytes| std::fs::write(directory.join("foch-host/run.json"), bytes));
+			.and_then(|bytes| {
+				plugin::store::replace_package_file(&directory.join("foch-host/run.json"), &bytes)
+			});
 		if let Err(error) = recorded {
 			let _ = child.kill();
 			let _ = child.wait();
@@ -456,12 +458,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 
 /// Create the proxy host exclusively and write through the new handle.
 fn write_host_dll(directory: &Path, bytes: &[u8]) -> std::io::Result<()> {
-	use std::io::Write;
-	let mut host = std::fs::OpenOptions::new()
-		.write(true)
-		.create_new(true)
-		.open(directory.join("VERSION.dll"))?;
-	host.write_all(bytes)
+	plugin::store::create_package_file(&directory.join("VERSION.dll"), bytes)
 }
 
 fn show_status(args: &PluginStatusArgs) -> HandlerResult {

@@ -5,10 +5,10 @@
 //! permissions, including writes through those shared links.
 
 use crate::{layout, platform};
+use foch::plugin::store;
 use sha2::{Digest, Sha256};
 use std::{
-	fs,
-	io::{self, Write},
+	fs, io,
 	path::{Path, PathBuf},
 };
 
@@ -73,7 +73,7 @@ impl RuntimeLayer {
 				layout::LayerAction::Copy => {
 					layer.longest_relative =
 						layer.longest_relative.max(name.encode_utf16().count());
-					fs::copy(entry.path(), layer.directory.join(&*name))?;
+					store::copy_package_file(&entry.path(), &layer.directory.join(&*name))?;
 				}
 				layout::LayerAction::Link => {
 					layer.longest_relative = layer.longest_relative.max(deepest_relative(
@@ -93,8 +93,8 @@ impl RuntimeLayer {
 			}
 		}
 		fs::create_dir_all(layer.directory.join("gfx/fonts/eu4-unicode"))?;
-		fs::write(layer.directory.join("userdir.txt"), "")?;
-		fs::write(layer.directory.join("steam_appid.txt"), "236850")?;
+		store::replace_package_file(&layer.directory.join("userdir.txt"), b"")?;
+		store::replace_package_file(&layer.directory.join("steam_appid.txt"), b"236850")?;
 		if let Some(error) = layer.budget_error() {
 			return Err(io::Error::other(error));
 		}
@@ -125,17 +125,17 @@ impl RuntimeLayer {
 					if source_metadata(&font.path())?.is_dir() {
 						platform::link_dir(&font.path(), &fonts.join(font.file_name()))?;
 					} else {
-						let bytes = fs::read(font.path())?;
+						let bytes = store::read_package_file(&font.path())?;
 						digest.update(font.file_name().to_string_lossy().as_bytes());
 						digest.update(Sha256::digest(&bytes));
-						fs::write(fonts.join(font.file_name()), bytes)?;
+						store::create_package_file(&fonts.join(font.file_name()), &bytes)?;
 					}
 				}
 				self.fonts_sha256 = format!("{:x}", digest.finalize());
 			} else if metadata.is_dir() {
 				platform::link_dir(&entry.path(), &destination.join(name))?;
 			} else {
-				fs::copy(entry.path(), destination.join(name))?;
+				store::copy_package_file(&entry.path(), &destination.join(name))?;
 			}
 		}
 		Ok(())
@@ -175,11 +175,7 @@ impl RuntimeLayer {
 
 /// Publish a fresh marker through an exclusively created file handle.
 fn create_marker(path: &Path) -> io::Result<()> {
-	fs::OpenOptions::new()
-		.write(true)
-		.create_new(true)
-		.open(path)?
-		.write_all(b"1\n")
+	store::create_package_file(path, b"1\n")
 }
 
 /// Start an ordinary player game; dropping its Child handle does not stop it.

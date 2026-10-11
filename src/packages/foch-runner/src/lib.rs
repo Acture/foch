@@ -404,13 +404,16 @@ fn assemble_runtime(
 	runtime_base: &Path,
 ) -> io::Result<RuntimeLayer> {
 	let runtime = RuntimeLayer::prepare(game_root, runtime_base, &bundle.namespace)?;
-	fs::write(
-		runtime.directory.join("commands.txt"),
-		layout::command_file(bundle, bundle.requires.ai_off),
+	foch::plugin::store::replace_package_file(
+		&runtime.directory.join("commands.txt"),
+		layout::command_file(bundle, bundle.requires.ai_off).as_bytes(),
 	)?;
 	for (relative, content) in &bundle.files {
 		if relative.ends_with("_start.txt") && !relative.contains('/') {
-			fs::write(runtime.directory.join(relative), content)?;
+			foch::plugin::store::replace_package_file(
+				&runtime.directory.join(relative),
+				content.as_bytes(),
+			)?;
 		}
 	}
 	Ok(runtime)
