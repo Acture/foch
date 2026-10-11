@@ -511,6 +511,7 @@ pub fn path_text(path: &Path) -> io::Result<String> {
 
 /// Resolve existing ancestors before any write, including nested junctions.
 /// Parent traversal is refused rather than creating a missing prefix first.
+/// Unresolved links and metadata errors never authorize an outside parent.
 pub fn ensure_outside_game(game_root: &Path, destination: &Path) -> io::Result<()> {
 	if destination
 		.components()
@@ -522,11 +523,21 @@ pub fn ensure_outside_game(game_root: &Path, destination: &Path) -> io::Result<(
 	}
 	let source = game_root.canonicalize()?;
 	let mut existing = destination;
-	while !existing.exists() {
-		existing = existing
-			.parent()
-			.filter(|parent| !parent.as_os_str().is_empty())
-			.unwrap_or(Path::new("."));
+	loop {
+		match fs::symlink_metadata(existing) {
+			Ok(_) => break,
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {
+				existing = match existing
+					.parent()
+					.filter(|parent| !parent.as_os_str().is_empty())
+				{
+					Some(parent) => parent,
+					None if !existing.is_absolute() && existing != Path::new(".") => Path::new("."),
+					None => return Err(error),
+				};
+			}
+			Err(error) => return Err(error),
+		}
 	}
 	let existing = existing.canonicalize()?;
 	#[cfg(windows)]

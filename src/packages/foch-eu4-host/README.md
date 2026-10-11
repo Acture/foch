@@ -61,6 +61,8 @@ profile (default: the player's usual EU4 directory). Extra game arguments follow
 The selected runtime base may resolve through a directory alias outside the
 game installation. Foch owns only the newly created run directory in that
 resolved base; an existing run ID is refused before any layer contents change.
+Writable-path checks reject unresolved links, including dangling ancestors,
+before treating missing components as a future path outside the installation.
 The selected data root may also resolve through an alias. Foch validates every
 directory component leading to its plugin-store, state, cache and font-cache
 roots: each must be an ordinary directory within that resolved data root.

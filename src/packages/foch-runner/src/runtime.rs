@@ -492,6 +492,37 @@ mod tests {
 		assert!(!source.path().join("new-state").exists());
 		platform::remove_layer(&link);
 		assert!(source.path().exists());
+		// An unresolved link is an existing directory entry, not a missing
+		// component whose outside parent can authorize later writes.
+		let target = source.path().join("pending-target");
+		let moved = source.path().join("moved-target");
+		fs::create_dir(&target).unwrap();
+		fs::write(target.join("original"), "unchanged").unwrap();
+		let dangling = output.path().join("dangling");
+		platform::link_dir(&target, &dangling).unwrap();
+		fs::rename(&target, &moved).unwrap();
+		assert!(!dangling.exists());
+		assert!(fs::symlink_metadata(&dangling).is_ok());
+		for destination in [
+			dangling.clone(),
+			dangling.join("child"),
+			dangling.join("child/nested"),
+		] {
+			assert!(
+				ensure_outside_game(source.path(), &destination).is_err(),
+				"{}",
+				destination.display()
+			);
+		}
+		assert!(!target.exists());
+		assert_eq!(
+			fs::read_to_string(moved.join("original")).unwrap(),
+			"unchanged"
+		);
+		platform::remove_layer(&dangling);
+		let ordinary_missing = output.path().join("missing/nested");
+		ensure_outside_game(source.path(), &ordinary_missing).unwrap();
+		assert!(!output.path().join("missing").exists());
 		let sibling_source = output.path().join("game");
 		fs::create_dir(&sibling_source).unwrap();
 		assert!(
