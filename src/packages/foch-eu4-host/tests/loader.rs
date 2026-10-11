@@ -489,6 +489,34 @@ fn hard_linked_entry_dlls_are_refused_with_or_without_a_digest() {
 }
 
 #[test]
+fn symbolic_linked_entry_dlls_are_refused_with_or_without_a_digest() {
+	use sha2::{Digest, Sha256};
+	for with_digest in [false, true] {
+		let rt = Runtime::new();
+		let mut plugin = rt.plugin("native", "native", "entry");
+		let entry = rt.path("plugins/native.dll");
+		let target = rt.path("plugins/selected-target.dll");
+		let bytes = fs::read(&entry).unwrap();
+		fs::rename(&entry, &target).unwrap();
+		std::os::windows::fs::symlink_file(&target, &entry).unwrap();
+		if with_digest {
+			plugin["sha256"] = format!("{:x}", Sha256::digest(&bytes)).into();
+		}
+		rt.plan(vec![plugin]);
+		let events = rt.run("plain");
+		assert_eq!(states(&events, "native").last(), Some(&"refused"));
+		assert!(!states(&events, "native").contains(&"dll_loaded"));
+		assert!(events.iter().any(|event| {
+			event["plugin_id"] == "native"
+				&& event["reason"]
+					.as_str()
+					.is_some_and(|reason| reason.contains("ordinary file"))
+		}));
+		assert_eq!(fs::read(target).unwrap(), bytes);
+	}
+}
+
+#[test]
 fn a_hard_linked_plan_is_refused_before_loading_any_plugin() {
 	let rt = Runtime::new();
 	rt.plan(vec![rt.plugin("native", "native", "entry")]);

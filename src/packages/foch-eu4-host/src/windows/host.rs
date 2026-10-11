@@ -413,20 +413,22 @@ fn load_phase(runtime: &'static Runtime, phase: Phase) -> Vec<Pending> {
 }
 
 fn load(ctx: &'static Context) -> Result<Option<Pending>, String> {
-	let path = Path::new(&ctx.plugin.path)
+	let declared = Path::new(&ctx.plugin.path);
+	// Check the declared leaf before canonicalization can remove a reparse point.
+	// Deny concurrent replacement while resolving, hashing and loading the DLL.
+	let mut file = OpenOptions::new()
+		.read(true)
+		.share_mode(FILE_SHARE_READ)
+		.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+		.open(declared)
+		.map_err(|e| format!("entry DLL unavailable: {e}"))?;
+	check_host_file(&file).map_err(|error| format!("entry DLL: {error}"))?;
+	let path = declared
 		.canonicalize()
 		.map_err(|e| format!("entry DLL unavailable: {e}"))?;
 	if !path.starts_with(&ctx.runtime.root) {
 		return Err("entry DLL resolves outside the runtime layer".into());
 	}
-	// Deny concurrent replacement while hashing and loading the selected DLL.
-	let mut file = OpenOptions::new()
-		.read(true)
-		.share_mode(FILE_SHARE_READ)
-		.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-		.open(&path)
-		.map_err(|e| e.to_string())?;
-	check_host_file(&file).map_err(|error| format!("entry DLL: {error}"))?;
 	if let Some(expected) = &ctx.plugin.sha256 {
 		let actual = digest(&mut file).map_err(|e| e.to_string())?;
 		if !actual.eq_ignore_ascii_case(expected) {

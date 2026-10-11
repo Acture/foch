@@ -37,6 +37,8 @@ Plugin IDs follow the same Windows component rules as package paths; device
 names such as `CON` and `NUL` are rejected, including case and extension variants.
 The host requires each opened entry DLL to be an ordinary single-link file
 before hashing or loading it, including plans without an entry digest.
+It opens and checks the declared entry before resolving its load path, so a
+final symbolic link is refused even when its target lies within the runtime.
 Built-in adapters omit upstream proxy DLLs at every directory depth; other
 packages containing a known proxy loader are rejected before installation.
 Built-in adapter metadata alone is not an installed artifact: missing,
