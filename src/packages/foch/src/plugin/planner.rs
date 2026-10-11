@@ -69,6 +69,8 @@ pub struct Resolved {
 /// A problem that keeps a plan from being launchable, or a warning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Diagnostic {
+	/// An enabled plugin id appears more than once in the input selection.
+	DuplicateSelection { id: String },
 	/// The selected version is not in the store.
 	Missing { id: String, version: Version },
 	/// Platform or game version is out of the declared range.
@@ -116,10 +118,25 @@ pub fn plan(
 	selection: &[Selection],
 ) -> Resolution {
 	let mut resolution = Resolution::default();
+	let mut seen = BTreeSet::new();
+	let mut duplicates = BTreeSet::new();
+	for item in selection.iter().filter(|item| item.enabled) {
+		if !seen.insert(item.id.clone()) {
+			duplicates.insert(item.id.clone());
+		}
+	}
+	for id in &duplicates {
+		resolution
+			.errors
+			.push(Diagnostic::DuplicateSelection { id: id.clone() });
+	}
 
 	// Resolve each enabled selection to its manifest, collecting hard errors.
 	let mut resolved: BTreeMap<String, &Manifest> = BTreeMap::new();
-	for item in selection.iter().filter(|item| item.enabled) {
+	for item in selection
+		.iter()
+		.filter(|item| item.enabled && !duplicates.contains(&item.id))
+	{
 		let Some(versions) = store.get(&item.id) else {
 			resolution.errors.push(Diagnostic::Missing {
 				id: item.id.clone(),
@@ -350,7 +367,9 @@ fn check_file_collisions(resolved: &BTreeMap<String, &Manifest>, resolution: &mu
 
 fn has_blocking_error(resolution: &Resolution, id: &str) -> bool {
 	resolution.errors.iter().any(|diagnostic| match diagnostic {
-		Diagnostic::Dependency { id: who, .. } => who == id,
+		Diagnostic::DuplicateSelection { id: who } | Diagnostic::Dependency { id: who, .. } => {
+			who == id
+		}
 		Diagnostic::Conflict { id: a, with: b, .. } => a == id || b == id,
 		Diagnostic::FileCollision { ids, .. } => ids.iter().any(|who| who == id),
 		_ => false,
@@ -475,6 +494,55 @@ phase = "deferred"
 			enabled: true,
 			config: serde_json::Value::Null,
 		}
+	}
+
+	#[test]
+	fn duplicate_enabled_ids_are_rejected_independently_of_input_order() {
+		let store = store(vec![
+			manifest("duplicate", "1.0.0", ""),
+			manifest("duplicate", "2.0.0", ""),
+			manifest("leaf", "1.0.0", "[[depends]]\nid='duplicate'\nversion='*'"),
+			manifest("independent", "1.0.0", ""),
+		]);
+		for second_version in ["1.0.0", "2.0.0"] {
+			let mut choices = vec![
+				select("duplicate", "1.0.0"),
+				select("duplicate", second_version),
+				select("duplicate", "1.0.0"),
+				select("leaf", "1.0.0"),
+				select("independent", "1.0.0"),
+			];
+			let forward = plan(&game(), &store, &choices);
+			assert!(!forward.is_launchable(), "accepted repeated enabled IDs");
+			assert_eq!(
+				forward
+					.errors
+					.iter()
+					.filter(
+						|error| matches!(error, Diagnostic::DuplicateSelection { id } if id == "duplicate")
+					)
+					.count(),
+				1
+			);
+			assert_eq!(
+				forward
+					.order
+					.iter()
+					.map(|item| item.id.as_str())
+					.collect::<Vec<_>>(),
+				["independent"]
+			);
+			choices.reverse();
+			let reversed = plan(&game(), &store, &choices);
+			assert_eq!(forward.order, reversed.order);
+			assert_eq!(forward.errors, reversed.errors);
+		}
+		let mut disabled = select("duplicate", "2.0.0");
+		disabled.enabled = false;
+		let resolution = plan(&game(), &store, &[select("duplicate", "1.0.0"), disabled]);
+		assert!(resolution.is_launchable());
+		assert_eq!(resolution.order.len(), 1);
+		assert_eq!(resolution.order[0].version, Version::new(1, 0, 0));
 	}
 
 	#[test]

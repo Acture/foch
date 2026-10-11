@@ -511,8 +511,8 @@ pub(super) fn checked_directory(path: &Path, canonical_store: &Path) -> io::Resu
 	Ok(directory)
 }
 
-/// Preserve a selected data-root alias while refusing links in its managed
-/// descendants before creating further directories or writing artifacts.
+/// Preserve a selected data-root alias while refusing links in the directory
+/// components leading to the managed root, before any further creation.
 pub(super) fn prepare_data_directory(data_root: &Path, relative: &str) -> io::Result<PathBuf> {
 	let relative = safe_relative(relative).map_err(io::Error::other)?;
 	fs::create_dir_all(data_root)?;

@@ -54,9 +54,11 @@ profile (default: the player's usual EU4 directory). Extra game arguments follow
 The selected runtime base may resolve through a directory alias outside the
 game installation. Foch owns only the newly created run directory in that
 resolved base; an existing run ID is refused before any layer contents change.
-The selected data root may also resolve through an alias. Its plugin store,
-state, cache and font-cache descendants must be ordinary directories within that
-resolved root; internal symbolic links or reparse points are refused.
+The selected data root may also resolve through an alias. Foch validates every
+directory component leading to its plugin-store, state, cache and font-cache
+roots: each must be an ordinary directory within that resolved data root.
+State and cache contents are persistent plugin data under the player's normal
+file permissions.
 
 Preparation excludes old `VERSION`, `d3d9`, `dinput8`, `winmm`, `dxgi` proxies
 and the installation's `plugins` directory, recording exclusions in
