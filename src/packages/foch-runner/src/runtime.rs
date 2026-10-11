@@ -70,6 +70,8 @@ impl RuntimeLayer {
 			}
 			match layout::classify_entry(&name, is_dir) {
 				layout::LayerAction::Copy => {
+					layer.longest_relative =
+						layer.longest_relative.max(name.encode_utf16().count());
 					fs::copy(entry.path(), layer.directory.join(&*name))?;
 				}
 				layout::LayerAction::Link => {
@@ -281,6 +283,59 @@ mod tests {
 			fs::read(layer.directory.join("目录😀/nested/file")).unwrap(),
 			b"resource"
 		);
+	}
+
+	#[test]
+	fn copied_files_obey_the_utf16_path_budget_and_failed_layers_are_removed() {
+		let source = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		fs::create_dir(source.path().join("assets")).unwrap();
+		fs::write(source.path().join("assets/original"), "shared resource").unwrap();
+		let directory = PathBuf::from(
+			foch::plugin::deployment::path_text(&output.path().canonicalize().unwrap()).unwrap(),
+		)
+		.join("within");
+		let relative_len =
+			layout::MAX_PATH - directory.to_string_lossy().encode_utf16().count() - 2;
+		let filename = format!("{}😀.txt", "x".repeat(relative_len - 6));
+		fs::write(source.path().join(&filename), "copied resource").unwrap();
+		let layer = RuntimeLayer::prepare(source.path(), output.path(), "within").unwrap();
+		assert_eq!(
+			fs::read(layer.directory.join(&filename)).unwrap(),
+			b"copied resource"
+		);
+		assert!(layer.budget_error().is_none());
+		drop(layer);
+		assert!(!output.path().join("within").exists());
+
+		let too_long = format!("{filename}x");
+		fs::rename(source.path().join(&filename), source.path().join(&too_long)).unwrap();
+		let result = RuntimeLayer::prepare(source.path(), output.path(), "beyond");
+		let error = match result {
+			Ok(layer) => {
+				drop(layer);
+				panic!("accepted a copied file beyond the classic Windows path budget")
+			}
+			Err(error) => error,
+		};
+		assert!(error.to_string().contains("too long"), "{error}");
+		assert!(!output.path().join("beyond").exists());
+		assert_eq!(
+			fs::read(source.path().join(&too_long)).unwrap(),
+			b"copied resource"
+		);
+		assert_eq!(
+			fs::read(source.path().join("assets/original")).unwrap(),
+			b"shared resource"
+		);
+		fs::rename(source.path().join(&too_long), source.path().join(&filename)).unwrap();
+		let retry = RuntimeLayer::prepare(source.path(), output.path(), "beyond").unwrap();
+		assert_eq!(
+			fs::read(retry.directory.join(&filename)).unwrap(),
+			b"copied resource"
+		);
+		drop(retry);
+		assert!(!output.path().join("beyond").exists());
 	}
 
 	#[test]
