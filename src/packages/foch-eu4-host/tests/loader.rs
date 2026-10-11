@@ -459,6 +459,26 @@ fn invalid_status_is_terminal_and_never_repeatedly_polled() {
 }
 
 #[test]
+fn a_hard_linked_plan_is_refused_before_loading_any_plugin() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("native", "native", "entry")]);
+	let outside = tempfile::tempdir().unwrap();
+	let bytes = fs::read(rt.path("foch-host/plan.json")).unwrap();
+	let external = outside.path().join("plan.json");
+	fs::write(&external, &bytes).unwrap();
+	fs::remove_file(rt.path("foch-host/plan.json")).unwrap();
+	fs::hard_link(&external, rt.path("foch-host/plan.json")).unwrap();
+	rt.run("forward-only");
+	assert!(!rt.path("foch-host/events.jsonl").exists());
+	assert!(
+		fs::read_to_string(rt.path("foch-host/host-error.txt"))
+			.unwrap()
+			.contains("single link")
+	);
+	assert_eq!(fs::read(external).unwrap(), bytes);
+}
+
+#[test]
 fn frozen_digest_accepts_the_selected_bytes_and_external_paths_are_refused() {
 	use sha2::{Digest, Sha256};
 	let rt = Runtime::new();
@@ -626,7 +646,21 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 		version: "1.37.5".parse().unwrap(),
 		platform: plugin::WINDOWS_X64.into(),
 	};
+	// Input hard links remain read-only inputs: resolution freezes bytes,
+	// staging copies them into independent files, and later drift is refused.
+	let (versions, _) = plugin::store::installed_versions(&store);
+	let installed = versions
+		.iter()
+		.find(|item| item.manifest.plugin.id == "z-native")
+		.unwrap();
+	let native_source = installed.dir.join(&installed.manifest.entry.path);
+	let linked_source = output.path().join("externally-linked-native.dll");
+	fs::copy(&native_source, &linked_source).unwrap();
+	fs::remove_file(&native_source).unwrap();
+	fs::hard_link(&linked_source, &native_source).unwrap();
 	let selected = deployment::resolve(&game, &store, &selections).unwrap();
+	fs::write(&linked_source, "changed").unwrap();
+	assert!(deployment::resolve(&game, &store, &selections).is_err());
 	let layer = foch_runner::runtime::RuntimeLayer::prepare(
 		source.path(),
 		&output.path().join("rt"),
@@ -687,12 +721,5 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 			"host accepted case {change}"
 		);
 	}
-	// Stored content drift is detected before making another runtime.
-	let (versions, _) = plugin::store::installed_versions(&store);
-	fs::write(
-		versions[0].dir.join(&versions[0].manifest.entry.path),
-		"changed",
-	)
-	.unwrap();
-	assert!(deployment::resolve(&game, &store, &selections).is_err());
+	assert_eq!(fs::read(linked_source).unwrap(), b"changed");
 }

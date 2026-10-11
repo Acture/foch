@@ -178,11 +178,17 @@ pub(super) fn start(exe_size: usize) {
 
 fn prepare(root: &Path, module: HMODULE, exe_size: usize) -> Result<(), String> {
 	let path = host_path(root, "plan.json")?;
-	let file = match File::open(path) {
+	let file = match OpenOptions::new()
+		.read(true)
+		.share_mode(FILE_SHARE_READ)
+		.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+		.open(path)
+	{
 		Ok(file) => file,
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
 		Err(error) => return Err(format!("cannot read plan: {error}")),
 	};
+	check_host_file(&file)?;
 	let mut text = String::new();
 	file.take(1_048_577)
 		.read_to_string(&mut text)
@@ -322,6 +328,11 @@ fn open_host_file(root: &Path, name: &str, append: bool) -> Result<File, String>
 		.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
 		.open(path)
 		.map_err(|error| error.to_string())?;
+	check_host_file(&file)?;
+	Ok(file)
+}
+
+fn check_host_file(file: &File) -> Result<(), String> {
 	let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
 	if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
 		return Err(std::io::Error::last_os_error().to_string());
@@ -329,9 +340,9 @@ fn open_host_file(root: &Path, name: &str, append: bool) -> Result<File, String>
 	if info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0
 		|| info.nNumberOfLinks != 1
 	{
-		return Err("host output must be an ordinary file with a single link".into());
+		return Err("host file must be an ordinary file with a single link".into());
 	}
-	Ok(file)
+	Ok(())
 }
 
 fn digest(file: &mut File) -> std::io::Result<String> {

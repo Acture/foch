@@ -59,11 +59,12 @@ impl RuntimeLayer {
 			let entry = entry?;
 			let name = entry.file_name();
 			let name = name.to_string_lossy();
-			let is_dir = entry.file_type()?.is_dir();
+			let is_dir = source_metadata(&entry.path())?.is_dir();
 			if name.eq_ignore_ascii_case("gfx") && is_dir {
-				layer.longest_relative = layer
-					.longest_relative
-					.max(deepest_relative(&entry.path(), name.encode_utf16().count()));
+				layer.longest_relative = layer.longest_relative.max(deepest_relative(
+					&entry.path(),
+					name.encode_utf16().count(),
+				)?);
 				layer.prepare_gfx(&entry.path())?;
 				continue;
 			}
@@ -72,9 +73,10 @@ impl RuntimeLayer {
 					fs::copy(entry.path(), layer.directory.join(&*name))?;
 				}
 				layout::LayerAction::Link => {
-					layer.longest_relative = layer
-						.longest_relative
-						.max(deepest_relative(&entry.path(), name.encode_utf16().count()));
+					layer.longest_relative = layer.longest_relative.max(deepest_relative(
+						&entry.path(),
+						name.encode_utf16().count(),
+					)?);
 					platform::link_dir(&entry.path(), &layer.directory.join(&*name))?;
 				}
 				layout::LayerAction::Skip => layer.excluded.push(Excluded {
@@ -102,6 +104,7 @@ impl RuntimeLayer {
 		for entry in fs::read_dir(source)? {
 			let entry = entry?;
 			let name = entry.file_name();
+			let metadata = source_metadata(&entry.path())?;
 			if name.to_string_lossy().eq_ignore_ascii_case("fonts") {
 				let fonts = destination.join("fonts");
 				fs::create_dir(&fonts)?;
@@ -116,7 +119,7 @@ impl RuntimeLayer {
 					{
 						continue;
 					}
-					if font.file_type()?.is_dir() {
+					if source_metadata(&font.path())?.is_dir() {
 						platform::link_dir(&font.path(), &fonts.join(font.file_name()))?;
 					} else {
 						let bytes = fs::read(font.path())?;
@@ -126,7 +129,7 @@ impl RuntimeLayer {
 					}
 				}
 				self.fonts_sha256 = format!("{:x}", digest.finalize());
-			} else if entry.file_type()?.is_dir() {
+			} else if metadata.is_dir() {
 				platform::link_dir(&entry.path(), &destination.join(name))?;
 			} else {
 				fs::copy(entry.path(), destination.join(name))?;
@@ -185,24 +188,85 @@ impl Drop for RuntimeLayer {
 	}
 }
 
-fn deepest_relative(root: &Path, prefix: usize) -> usize {
-	let mut deepest = prefix;
-	if let Ok(entries) = fs::read_dir(root) {
-		for entry in entries.flatten() {
-			let child = prefix + 1 + entry.file_name().to_string_lossy().encode_utf16().count();
-			deepest = deepest.max(if entry.path().is_dir() {
-				deepest_relative(&entry.path(), child)
-			} else {
-				child
-			});
-		}
+fn source_metadata(path: &Path) -> io::Result<fs::Metadata> {
+	let metadata = fs::symlink_metadata(path)?;
+	let linked = metadata.file_type().is_symlink();
+	#[cfg(windows)]
+	let linked = {
+		use std::os::windows::fs::MetadataExt;
+		linked || metadata.file_attributes() & 0x400 != 0
+	};
+	if linked {
+		return Err(io::Error::other(format!(
+			"source game entry cannot be linked: {}",
+			path.display()
+		)));
 	}
-	deepest
+	Ok(metadata)
+}
+
+fn deepest_relative(root: &Path, prefix: usize) -> io::Result<usize> {
+	let mut deepest = prefix;
+	for entry in fs::read_dir(root)? {
+		let entry = entry?;
+		let metadata = source_metadata(&entry.path())?;
+		let child = prefix + 1 + entry.file_name().to_string_lossy().encode_utf16().count();
+		deepest = deepest.max(if metadata.is_dir() {
+			deepest_relative(&entry.path(), child)?
+		} else {
+			child
+		});
+	}
+	Ok(deepest)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn source_directory_links_are_refused_without_traversal_or_source_changes() {
+		for relative in [
+			"assets/nested-link",
+			"gfx/fonts/nested-link",
+			"top-link",
+			"assets/loop",
+		] {
+			let source = tempfile::tempdir().unwrap();
+			let outside = tempfile::tempdir().unwrap();
+			let output = tempfile::tempdir().unwrap();
+			fs::create_dir_all(source.path().join("assets")).unwrap();
+			fs::create_dir_all(source.path().join("gfx/fonts")).unwrap();
+			fs::write(outside.path().join("original"), "untouched").unwrap();
+			let link = source.path().join(relative);
+			let target = if relative.ends_with("loop") {
+				source.path().join("assets")
+			} else {
+				outside.path().to_owned()
+			};
+			platform::link_dir(&target, &link).unwrap();
+			let result = RuntimeLayer::prepare(source.path(), output.path(), "linked-source");
+			platform::remove_layer(&link);
+			let error = match result {
+				Ok(layer) => {
+					drop(layer);
+					panic!("accepted source directory link {relative}")
+				}
+				Err(error) => error,
+			};
+			assert!(
+				error
+					.to_string()
+					.contains("source game entry cannot be linked"),
+				"{relative}: {error}"
+			);
+			assert!(!output.path().join("linked-source").exists());
+			assert_eq!(
+				fs::read(outside.path().join("original")).unwrap(),
+				b"untouched"
+			);
+		}
+	}
 
 	#[test]
 	fn non_ascii_game_directories_use_windows_path_units() {

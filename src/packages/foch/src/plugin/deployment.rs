@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::{
 	collections::{BTreeMap, BTreeSet},
 	fs,
-	io::{self, Read},
+	io::{self, BufRead, BufReader, Read},
 	path::{Path, PathBuf},
 };
 
@@ -28,6 +28,9 @@ pub struct HostPlan {
 
 /// The host refuses larger frozen plans before loading any plugin.
 pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
+
+/// Bound each event record while streaming the run's state history.
+const MAX_EVENT_RECORD_BYTES: usize = 1024 * 1024;
 
 fn wire_bytes(plan: &HostPlan) -> io::Result<Vec<u8>> {
 	plan.validate().map_err(io::Error::other)?;
@@ -643,18 +646,31 @@ pub fn states(plan: &HostPlan, runtime: &Path) -> io::Result<BTreeMap<String, Va
 		.map(|plugin| (plugin.id.clone(), json!({"state":"not_loaded"})))
 		.collect();
 	let path = directory.join("events.jsonl");
-	let mut file = match open_status_file(&path) {
+	let file = match open_status_file(&path) {
 		Ok(file) => file,
 		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(states),
 		Err(error) => return Err(error),
 	};
-	let mut text = String::new();
-	file.read_to_string(&mut text)?;
-	for line in text
-		.split_inclusive('\n')
-		.filter(|line| line.ends_with('\n'))
-	{
-		let record: Value = serde_json::from_str(line)?;
+	// A finite snapshot also prevents continuously appended logs from keeping
+	// this invocation alive. Preserve complete records; retry a partial tail.
+	let snapshot_len = file.metadata()?.len();
+	let mut reader = BufReader::new(file.take(snapshot_len));
+	let mut line = Vec::new();
+	loop {
+		line.clear();
+		let count = reader
+			.by_ref()
+			.take((MAX_EVENT_RECORD_BYTES + 1) as u64)
+			.read_until(b'\n', &mut line)?;
+		if count > MAX_EVENT_RECORD_BYTES {
+			return Err(io::Error::other(
+				"host event record exceeds the 1 MiB limit",
+			));
+		}
+		if line.last() != Some(&b'\n') {
+			break;
+		}
+		let record: Value = serde_json::from_slice(&line)?;
 		if record["run_id"] == plan.run_id
 			&& record["event"] == "state"
 			&& let Some(id) = record["plugin_id"].as_str()
@@ -748,6 +764,94 @@ fn open_status_file(path: &Path) -> io::Result<fs::File> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(windows)]
+	fn status_fixture() -> (tempfile::TempDir, HostPlan) {
+		let root = tempfile::tempdir().unwrap();
+		fs::write(root.path().join("foch-runtime"), "1\n").unwrap();
+		fs::create_dir(root.path().join("foch-host")).unwrap();
+		let plan = HostPlan {
+			format: 1,
+			run_id: "status".into(),
+			game_version: "1.37.5".into(),
+			events: path_text(&root.path().join("foch-host/events.jsonl")).unwrap(),
+			plugins: ["a", "b"]
+				.into_iter()
+				.map(|id| HostPlugin {
+					id: id.into(),
+					version: "1.0.0".into(),
+					kind: Kind::Native,
+					phase: Phase::Entry,
+					path: path_text(&root.path().join(format!("{id}.dll"))).unwrap(),
+					sha256: "a".repeat(64),
+					config_json: "{}".into(),
+					dirs: BTreeMap::new(),
+					status: None,
+					abi_major: Some(1),
+				})
+				.collect(),
+		};
+		(root, plan)
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn oversized_status_records_are_rejected_even_without_a_final_newline() {
+		let (root, plan) = status_fixture();
+		for complete in [false, true] {
+			let mut bytes = vec![b' '; MAX_EVENT_RECORD_BYTES + 1];
+			if complete {
+				bytes.push(b'\n');
+			}
+			fs::write(root.path().join("foch-host/events.jsonl"), bytes).unwrap();
+			assert!(
+				states(&plan, root.path())
+					.unwrap_err()
+					.to_string()
+					.contains("event record exceeds")
+			);
+		}
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn status_stream_retains_latest_states_across_long_history_and_partial_records() {
+		use std::io::Write;
+		let (root, plan) = status_fixture();
+		let mut file = fs::File::create(root.path().join("foch-host/events.jsonl")).unwrap();
+		writeln!(
+			file,
+			"{}",
+			json!({"run_id":"status", "event":"state", "plugin_id":"a", "state":"active"})
+		)
+		.unwrap();
+		let log = json!({"run_id":"status", "event":"log", "message":"x".repeat(4096)}).to_string();
+		for _ in 0..1024 {
+			writeln!(file, "{log}").unwrap();
+		}
+		for (run, state) in [
+			("status", "active"),
+			("other", "refused"),
+			("status", "failed"),
+		] {
+			writeln!(
+				file,
+				"{}",
+				json!({"run_id":run, "event":"state", "plugin_id":"b", "state":state})
+			)
+			.unwrap();
+		}
+		write!(
+			file,
+			"{}",
+			json!({"run_id":"status", "event":"state", "plugin_id":"a", "state":"refused"})
+		)
+		.unwrap();
+		drop(file);
+		let result = states(&plan, root.path()).unwrap();
+		assert_eq!(result["a"]["state"], "active");
+		assert_eq!(result["b"]["state"], "failed");
+	}
 
 	#[test]
 	fn ini_paths_are_checked_before_any_configuration_write() {

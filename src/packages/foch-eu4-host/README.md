@@ -28,8 +28,11 @@ foch plugin status --run-dir "<runtime directory printed by launch>"
 
 Extract ZIP releases before importing. Optional Unicode fonts must be placed in
 the extracted package's `plugins/eu4_unicode_patch` directory before importing.
-Copy linked files or directories into the extracted package; import rejects
-links and reparse points rather than silently omitting their resources.
+Copy the targets of symbolic links or directory junctions into the extracted
+package; import rejects symbolic links and reparse points rather than silently
+omitting their resources. File hard links are read as bytes and copied into
+fresh store files; deployment freezes and checks those bytes again before
+staging independent runtime copies.
 Built-in adapters omit upstream proxy DLLs at every directory depth; other
 packages containing a known proxy loader are rejected before installation.
 Built-in adapter metadata alone is not an installed artifact: missing,
@@ -53,7 +56,10 @@ separate package directories. The layer owns `gfx/fonts`; Unicode's generated
 font cache is linked to Foch data and keyed by package/base-font identity.
 Every Foch-managed writable destination is checked against the source
 installation before creation, including nested data junctions; parent traversal
-is refused.
+is refused. Source game entries that are copied or shared must not be symbolic
+links or reparse points; recursive path-budget scans reject them without
+following external directories or loops. The selected installation root may
+itself resolve through a directory alias.
 
 Other game asset directories are shared through directory links. The layer
 isolates Foch's deployment, plugin configuration and known font/cache writes;
@@ -69,6 +75,10 @@ reparse points and existing hard links before any append or truncation.
 The status command checks runtime ownership and the opened plan file before
 reading or parsing up to 1 MiB, then validates the frozen plan and reads that
 same owned event file. Both files reject reparse points and hard links.
+The host also checks its opened plan handle for a single link before parsing.
+Status streams a snapshot of the event file, retains only each plugin's latest
+state, and limits each complete or partial record to 1 MiB; an ordinary partial
+final record is retried on the next call.
 INI adapter destinations follow the package's
 Windows path rules, including trailing-dot/space and reserved-name checks.
 
