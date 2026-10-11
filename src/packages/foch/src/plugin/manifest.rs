@@ -177,7 +177,8 @@ pub enum ConfigField {
 }
 
 /// How a configuration value reaches a legacy plugin: a key in an INI file,
-/// relative to the plugin's own directory.
+/// relative to the plugin's own directory. DLL destinations are refused
+/// during package validation, before any configuration is staged.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigAdapter {
@@ -353,12 +354,15 @@ impl Manifest {
 				| ConfigField::Int { adapter, .. }
 				| ConfigField::String { adapter, .. } => adapter,
 			};
-			if let Some(adapter) = adapter
-				&& super::store::safe_relative(&adapter.ini).is_err()
-			{
-				return Err(ManifestError::Invalid(format!(
-					"{id}: unsafe INI adapter path for {name}"
-				)));
+			if let Some(adapter) = adapter {
+				let ini = super::store::safe_relative(&adapter.ini).map_err(|_| {
+					ManifestError::Invalid(format!("{id}: unsafe INI adapter path for {name}"))
+				})?;
+				if ini.to_ascii_lowercase().ends_with(".dll") {
+					return Err(ManifestError::Invalid(format!(
+						"{id}: INI adapter destination for {name} must not be a DLL"
+					)));
+				}
 			}
 			if let ConfigField::Int {
 				default, min, max, ..

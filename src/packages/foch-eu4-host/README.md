@@ -78,7 +78,9 @@ remains supported.
 Preparation excludes old `VERSION`, `d3d9`, `dinput8`, `winmm`, `dxgi` proxies
 and the installation's `plugins` directory, recording exclusions in
 `foch-host/run.json`. Plugin resources and INI configuration are copied into
-separate package directories. The layer owns `gfx/fonts`; Unicode's generated
+separate package directories. Package validation refuses INI adapter destinations
+ending in `.dll`, including case and separator variants, before import or staging.
+The layer owns `gfx/fonts`; Unicode's generated
 font cache is linked to Foch data and keyed by the game version, base fonts,
 and every declared font-cache writer's frozen package and effective configuration
 in load order. Changing any of these inputs selects a fresh cache identity.

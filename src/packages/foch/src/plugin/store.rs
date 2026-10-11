@@ -706,6 +706,71 @@ sha256 = "{dll_digest}"
 	}
 
 	#[test]
+	fn ini_adapters_cannot_target_entry_or_auxiliary_dlls() {
+		let base = validate(package(fake_dll())).unwrap();
+		for (destination, rejected) in [
+			("sample.dll", true),
+			("SAMPLE.DLL", true),
+			("private/helper.dll", true),
+			("PRIVATE\\HELPER.DLL", true),
+			("resources/unlisted.dll", true),
+			("resources/new.DLL", true),
+			("private/config.ini", false),
+			("settings.cfg", false),
+		] {
+			let mut manifest = base.manifest.clone();
+			manifest.files.push(super::super::manifest::FileEntry {
+				path: "private/helper.dll".into(),
+				sha256: sha256_hex(&fake_dll()),
+			});
+			manifest.config.insert(
+				"enabled".into(),
+				super::super::manifest::ConfigField::Bool {
+					default: true,
+					description: None,
+					adapter: Some(super::super::manifest::ConfigAdapter {
+						ini: destination.into(),
+						section: "settings".into(),
+						key: "enabled".into(),
+					}),
+				},
+			);
+			let mut entries = base.entries().to_vec();
+			for path in ["private/helper.dll", "resources/unlisted.dll"] {
+				entries.push(ArchiveEntry {
+					path: path.into(),
+					data: fake_dll(),
+				});
+			}
+			entries[0].data = toml::to_string(&manifest).unwrap().into_bytes();
+			let imported = validate(entries.clone());
+			let adapted = adapt(manifest, entries);
+			for result in [imported, adapted] {
+				if rejected {
+					let errors = result.expect_err(destination);
+					assert!(
+						errors.iter().any(|error| matches!(
+							error, ImportError::Manifest(message) if message.contains("DLL")
+						)),
+						"{destination}: {errors:?}"
+					);
+				} else {
+					let validated = result.unwrap();
+					assert_eq!(
+						validated
+							.entries()
+							.iter()
+							.find(|entry| entry.path == "sample.dll")
+							.unwrap()
+							.data,
+						fake_dll()
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
 	fn proxy_loaders_are_filtered_or_rejected_at_every_package_depth() {
 		for path in ["VERSION.dll", "plugins/version.dll", "plugins\\DINPUT8.dll"] {
 			assert!(is_proxy_name(path), "{path}");
