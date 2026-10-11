@@ -7,7 +7,8 @@
  * FochHostApi table of its own.
  *
  * Rules (see the design note for the rationale):
- * - Every struct starts with `size`; whoever fills a struct writes sizeof.
+ * - Versioned API and status structs start with `size`; writers set sizeof.
+ *   FochStr is a fixed-layout pointer/length pair without a size field.
  *   Minor versions only append fields, so read a field only when `size`
  *   covers it. A different major version is never loaded.
  * - Strings are UTF-8 with an explicit length and need no NUL terminator.
