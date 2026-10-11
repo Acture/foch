@@ -285,6 +285,7 @@ impl Manifest {
 			|| !id
 				.bytes()
 				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+			|| super::store::safe_relative(id).is_err()
 		{
 			return Err(ManifestError::Invalid(
 				"plugin id must be a safe identifier of 1..256 ASCII bytes".into(),
@@ -477,6 +478,49 @@ values = [
 		let status = manifest.status.as_ref().unwrap();
 		assert_eq!(status.values.len(), 2);
 		assert_eq!(manifest.default_config()["typo_tolerance"], 1);
+	}
+
+	#[test]
+	fn plugin_ids_reject_windows_device_names_and_preserve_safe_identifiers() {
+		let mut manifest = Manifest::parse(UNICODE).unwrap();
+		for id in [
+			"CON",
+			"con",
+			"Con.plugin",
+			"NUL",
+			"nul.dll",
+			"PRN",
+			"AUX",
+			"COM1",
+			"com9.sample",
+			"LPT1",
+			"lpt9.sample",
+			"name.",
+		] {
+			manifest.plugin.id = id.into();
+			let error = Manifest::parse(&toml::to_string(&manifest).unwrap()).unwrap_err();
+			assert!(matches!(error, ManifestError::Invalid(_)), "{id}: {error}");
+			assert!(error.to_string().contains("plugin id"), "{id}: {error}");
+		}
+		for id in [
+			"dev.foch.sample",
+			"com.example.plugin",
+			"CONSOLE",
+			"NUL_plugin",
+			"COM0",
+			"COM10",
+			"LPT0",
+			"LPT10",
+		] {
+			manifest.plugin.id = id.into();
+			assert_eq!(
+				Manifest::parse(&toml::to_string(&manifest).unwrap())
+					.unwrap()
+					.plugin
+					.id,
+				id
+			);
+		}
 	}
 
 	#[test]

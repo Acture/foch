@@ -33,6 +33,8 @@ package; import rejects symbolic links and reparse points rather than silently
 omitting their resources. File hard links are read as bytes and copied into
 fresh store files; deployment freezes and checks those bytes again before
 staging independent runtime copies.
+Plugin IDs follow the same Windows component rules as package paths; device
+names such as `CON` and `NUL` are rejected, including case and extension variants.
 The host requires each opened entry DLL to be an ordinary single-link file
 before hashing or loading it, including plans without an entry digest.
 Built-in adapters omit upstream proxy DLLs at every directory depth; other
@@ -57,6 +59,8 @@ through independent temporary files; use `Selections::update` for mutations.
 profile (default: the player's usual EU4 directory). Extra game arguments follow
 `--`. Without `--host-dll`, launch looks beside the `foch` executable for
 `foch_eu4_host.dll`. Both `launch` and `status` support `--format json`.
+Launch creates `VERSION.dll` exclusively and writes through its new handle;
+existing entries fail preparation without truncating an external hard-link target.
 
 The selected runtime base may resolve through a directory alias outside the
 game installation. Foch owns only the newly created run directory in that

@@ -379,7 +379,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	let mut layer =
 		foch_runner::runtime::RuntimeLayer::prepare(&game_root, &runtime_base, &run_id)?;
 	let directory = layer.directory.clone();
-	std::fs::write(directory.join("VERSION.dll"), &host_bytes)?;
+	write_host_dll(&directory, &host_bytes)?;
 	let data_root = foch::game::eu4::base::snapshot::data_root();
 	foch_runner::runtime::ensure_outside_game(&game_root, &data_root)?;
 	let prepared = deployment.stage(&directory, &data_root, &run_id, &game_root)?;
@@ -454,6 +454,16 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	Ok(0)
 }
 
+/// Create the proxy host exclusively and write through the new handle.
+fn write_host_dll(directory: &Path, bytes: &[u8]) -> std::io::Result<()> {
+	use std::io::Write;
+	let mut host = std::fs::OpenOptions::new()
+		.write(true)
+		.create_new(true)
+		.open(directory.join("VERSION.dll"))?;
+	host.write_all(bytes)
+}
+
 fn show_status(args: &PluginStatusArgs) -> HandlerResult {
 	let plan = plugin::deployment::read_plan(&args.run_dir)?;
 	let states = plugin::deployment::states(&plan, &args.run_dir)?;
@@ -478,6 +488,43 @@ fn show_status(args: &PluginStatusArgs) -> HandlerResult {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn host_staging_refuses_existing_entries_and_preserves_external_targets() {
+		let scratch = tempfile::tempdir().unwrap();
+		let game = scratch.path().join("game");
+		std::fs::create_dir(&game).unwrap();
+		let external = scratch.path().join("external.dll");
+		std::fs::write(&external, b"external bytes").unwrap();
+		let layer = foch_runner::runtime::RuntimeLayer::prepare(
+			&game,
+			&scratch.path().join("runtimes"),
+			"host-staging",
+		)
+		.unwrap();
+		let runtime = layer.directory.clone();
+		let host = runtime.join("VERSION.dll");
+		std::fs::hard_link(&external, &host).unwrap();
+		assert_eq!(
+			write_host_dll(&runtime, b"host bytes").unwrap_err().kind(),
+			std::io::ErrorKind::AlreadyExists
+		);
+		assert_eq!(std::fs::read(&external).unwrap(), b"external bytes");
+		std::fs::remove_file(&host).unwrap();
+		std::fs::write(&host, b"existing bytes").unwrap();
+		assert_eq!(
+			write_host_dll(&runtime, b"host bytes").unwrap_err().kind(),
+			std::io::ErrorKind::AlreadyExists
+		);
+		assert_eq!(std::fs::read(&host).unwrap(), b"existing bytes");
+		std::fs::remove_file(&host).unwrap();
+		write_host_dll(&runtime, b"host bytes").unwrap();
+		assert_eq!(std::fs::read(&host).unwrap(), b"host bytes");
+		drop(layer);
+		assert!(!runtime.exists());
+		assert_eq!(std::fs::read(&external).unwrap(), b"external bytes");
+		assert_eq!(std::fs::read_dir(&game).unwrap().count(), 0);
+	}
 
 	#[test]
 	fn package_links_are_rejected_instead_of_losing_optional_resources() {
