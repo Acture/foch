@@ -197,12 +197,11 @@ pub fn pe_machine(bytes: &[u8]) -> Option<u16> {
 		return None;
 	}
 	let e_lfanew = u32::from_le_bytes(bytes[0x3c..0x40].try_into().ok()?) as usize;
-	if bytes.len() < e_lfanew + 6 || &bytes[e_lfanew..e_lfanew + 4] != b"PE\0\0" {
+	let nt = bytes.get(e_lfanew..)?;
+	if nt.get(..4) != Some(b"PE\0\0") {
 		return None;
 	}
-	Some(u16::from_le_bytes(
-		bytes[e_lfanew + 4..e_lfanew + 6].try_into().ok()?,
-	))
+	Some(u16::from_le_bytes(nt.get(4..6)?.try_into().ok()?))
 }
 
 /// Validate a candidate package's entries. On success the manifest, the safe
@@ -1137,6 +1136,34 @@ sha256 = "{dll_digest}"
 				.iter()
 				.any(|e| matches!(e, ImportError::BadEntryDll { .. }))
 		);
+	}
+
+	#[test]
+	fn rejects_truncated_or_out_of_range_pe_headers_without_panicking() {
+		let valid = fake_dll();
+		assert_eq!(pe_machine(&valid), Some(MACHINE_AMD64));
+		assert_eq!(pe_machine(&valid[..0x46]), Some(MACHINE_AMD64));
+		for length in 0..0x46 {
+			let dll = valid[..length].to_vec();
+			assert_eq!(pe_machine(&dll), None, "truncation at {length}");
+			let errors = validate(package(dll)).unwrap_err();
+			assert!(
+				errors
+					.iter()
+					.any(|error| matches!(error, ImportError::BadEntryDll { .. }))
+			);
+		}
+		for offset in [0x7c, 0x80, 0x81, u32::MAX - 5, u32::MAX - 3, u32::MAX] {
+			let mut dll = fake_dll();
+			dll[0x3c..0x40].copy_from_slice(&offset.to_le_bytes());
+			assert_eq!(pe_machine(&dll), None, "NT offset {offset:#x}");
+			let errors = validate(package(dll)).unwrap_err();
+			assert!(
+				errors
+					.iter()
+					.any(|error| matches!(error, ImportError::BadEntryDll { .. }))
+			);
+		}
 	}
 
 	#[test]

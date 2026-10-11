@@ -128,10 +128,11 @@ impl RuntimeLayer {
 					if source_metadata(&font.path())?.is_dir() {
 						platform::link_dir(&font.path(), &fonts.join(font.file_name()))?;
 					} else {
-						let bytes = store::read_package_file(&font.path())?;
+						let copied = fonts.join(font.file_name());
+						store::copy_package_file(&font.path(), &copied)?;
+						let bytes = store::read_package_file(&copied)?;
 						digest.update(font.file_name().to_string_lossy().as_bytes());
 						digest.update(Sha256::digest(&bytes));
-						store::create_package_file(&fonts.join(font.file_name()), &bytes)?;
 					}
 				}
 				self.fonts_sha256 = format!("{:x}", digest.finalize());
@@ -483,6 +484,55 @@ mod tests {
 			"linked resource"
 		);
 		assert!(RuntimeLayer::prepare(source.path(), source.path(), "unsafe").is_err());
+	}
+
+	#[test]
+	fn copied_font_permissions_and_digest_match_the_source() {
+		let source = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		fs::create_dir_all(source.path().join("gfx/fonts")).unwrap();
+		let font = source.path().join("gfx/fonts/base.fnt");
+		fs::write(&font, "original font").unwrap();
+		let original = fs::metadata(&font).unwrap().permissions();
+		#[cfg(unix)]
+		let permissions = {
+			use std::os::unix::fs::PermissionsExt;
+			fs::Permissions::from_mode(0o640)
+		};
+		#[cfg(windows)]
+		let permissions = {
+			let mut permissions = original.clone();
+			permissions.set_readonly(true);
+			permissions
+		};
+		fs::set_permissions(&font, permissions.clone()).unwrap();
+		let expected_permissions = fs::metadata(&font).unwrap().permissions();
+		let prepared = RuntimeLayer::prepare(source.path(), output.path(), "font-mode");
+		let layer = prepared.unwrap();
+		let copied = layer.directory.join("gfx/fonts/base.fnt");
+		let copied_permissions = fs::metadata(&copied).unwrap().permissions();
+		let copied_bytes = fs::read(&copied).unwrap();
+		let directory = layer.directory.clone();
+		let fonts_sha256 = layer.fonts_sha256.clone();
+		drop(layer);
+		let source_permissions = fs::metadata(&font).unwrap().permissions();
+		// Restore only the disposable source fixture for tempfile cleanup.
+		fs::set_permissions(&font, original.clone()).unwrap();
+		let remained = directory.exists();
+		if remained {
+			// Keep a failing cleanup regression from leaking this owned fixture.
+			fs::set_permissions(&copied, original).unwrap();
+			platform::remove_layer(&directory);
+		}
+		let mut digest = Sha256::new();
+		digest.update(b"base.fnt");
+		digest.update(Sha256::digest(b"original font"));
+		assert_eq!(fonts_sha256, format!("{:x}", digest.finalize()));
+		assert_eq!(copied_bytes, b"original font");
+		assert_eq!(fs::read(&font).unwrap(), b"original font");
+		assert_eq!(source_permissions, expected_permissions);
+		assert_eq!(copied_permissions, expected_permissions);
+		assert!(!remained, "dropping a layer left its read-only font behind");
 	}
 
 	#[test]
