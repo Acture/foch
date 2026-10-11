@@ -369,7 +369,9 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	let data_root = foch::game::eu4::base::snapshot::data_root();
 	foch_runner::runtime::ensure_outside_game(&game_root, &data_root)?;
 	let prepared = deployment.stage(&directory, &data_root, &run_id, &game_root)?;
-	if let Some(cache) = deployment.font_cache(&data_root, &layer.fonts_sha256) {
+	if let Some(cache) =
+		deployment.prepare_font_cache(&data_root, &layer.fonts_sha256, &game_root)?
+	{
 		layer.redirect_unicode_cache(&cache)?;
 	}
 	let user_dir = args

@@ -459,6 +459,36 @@ fn invalid_status_is_terminal_and_never_repeatedly_polled() {
 }
 
 #[test]
+fn hard_linked_entry_dlls_are_refused_with_or_without_a_digest() {
+	use sha2::{Digest, Sha256};
+	for with_digest in [false, true] {
+		let rt = Runtime::new();
+		let mut plugin = rt.plugin("native", "native", "entry");
+		let entry = rt.path("plugins/native.dll");
+		let outside = tempfile::tempdir().unwrap();
+		let external = outside.path().join("external.dll");
+		let bytes = fs::read(&entry).unwrap();
+		fs::write(&external, &bytes).unwrap();
+		fs::remove_file(&entry).unwrap();
+		fs::hard_link(&external, &entry).unwrap();
+		if with_digest {
+			plugin["sha256"] = format!("{:x}", Sha256::digest(&bytes)).into();
+		}
+		rt.plan(vec![plugin]);
+		let events = rt.run("plain");
+		assert_eq!(states(&events, "native").last(), Some(&"refused"));
+		assert!(!states(&events, "native").contains(&"dll_loaded"));
+		assert!(events.iter().any(|event| {
+			event["plugin_id"] == "native"
+				&& event["reason"]
+					.as_str()
+					.is_some_and(|reason| reason.contains("single link"))
+		}));
+		assert_eq!(fs::read(external).unwrap(), bytes);
+	}
+}
+
+#[test]
 fn a_hard_linked_plan_is_refused_before_loading_any_plugin() {
 	let rt = Runtime::new();
 	rt.plan(vec![rt.plugin("native", "native", "entry")]);

@@ -539,6 +539,8 @@ mod tests {
 		let source = tempfile::tempdir().unwrap();
 		let output = tempfile::tempdir().unwrap();
 		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let mut manifest = manifest;
+		manifest.writes.push(plugin::manifest::WriteKind::FontCache);
 		let mut dll = vec![0; 0x80];
 		dll[..2].copy_from_slice(b"MZ");
 		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
@@ -584,6 +586,98 @@ mod tests {
 		);
 		assert_eq!(fs::read_dir(source.path()).unwrap().count(), 0);
 		platform::remove_layer(&state);
+		let outside = tempfile::tempdir().unwrap();
+		fs::write(outside.path().join("sentinel"), "unchanged").unwrap();
+		let state_leaf = format!(
+			"plugins/state/{}",
+			&plugin::deployment::hash(b"fixture")[..12]
+		);
+		let cache_leaf = format!("plugins/cache/{}", package.digest);
+		for (index, relative) in [
+			"plugins".into(),
+			"plugins/state".into(),
+			"plugins/cache".into(),
+			state_leaf,
+			cache_leaf,
+		]
+		.iter()
+		.enumerate()
+		{
+			let data = output.path().join(format!("data-{index}"));
+			let link = data.join(relative);
+			fs::create_dir_all(link.parent().unwrap()).unwrap();
+			platform::link_dir(outside.path(), &link).unwrap();
+			let run_id = format!("outside-data-{index}");
+			let layer =
+				RuntimeLayer::prepare(source.path(), &output.path().join("rt"), &run_id).unwrap();
+			let result = deployment.stage(&layer.directory, &data, &run_id, source.path());
+			platform::remove_layer(&link);
+			assert!(result.is_err(), "{relative} followed an outside link");
+			assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+			assert_eq!(
+				fs::read_to_string(outside.path().join("sentinel")).unwrap(),
+				"unchanged"
+			);
+		}
+		let font_leaf = format!(
+			"plugins/font-cache/{}",
+			plugin::deployment::hash(format!("{}:base-fonts", package.digest).as_bytes())
+		);
+		for (index, relative) in ["plugins".into(), "plugins/font-cache".into(), font_leaf]
+			.iter()
+			.enumerate()
+		{
+			let data = output.path().join(format!("font-data-{index}"));
+			let link = data.join(relative);
+			fs::create_dir_all(link.parent().unwrap()).unwrap();
+			platform::link_dir(outside.path(), &link).unwrap();
+			let result = deployment.prepare_font_cache(&data, "base-fonts", source.path());
+			platform::remove_layer(&link);
+			assert!(
+				result.is_err(),
+				"{relative} followed an outside font-cache link"
+			);
+			assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+		}
+		// A selected root alias is supported, while its children remain owned.
+		let aliased_root = output.path().join("data-alias");
+		let alias_target = tempfile::tempdir().unwrap();
+		platform::link_dir(alias_target.path(), &aliased_root).unwrap();
+		let layer = RuntimeLayer::prepare(source.path(), &output.path().join("rt"), "aliased-data")
+			.unwrap();
+		let prepared = deployment
+			.stage(
+				&layer.directory,
+				&aliased_root,
+				"aliased-data",
+				source.path(),
+			)
+			.unwrap();
+		for kind in ["data", "cache"] {
+			assert!(
+				Path::new(&prepared.plan.plugins[0].dirs[kind])
+					.canonicalize()
+					.unwrap()
+					.starts_with(alias_target.path().canonicalize().unwrap())
+			);
+		}
+		let font_cache = deployment
+			.prepare_font_cache(&aliased_root, "base-fonts", source.path())
+			.unwrap()
+			.unwrap();
+		assert!(font_cache.starts_with(alias_target.path().canonicalize().unwrap()));
+		layer.redirect_unicode_cache(&font_cache).unwrap();
+		fs::write(
+			layer.directory.join("gfx/fonts/eu4-unicode/generated"),
+			"font cache",
+		)
+		.unwrap();
+		assert_eq!(
+			fs::read_to_string(font_cache.join("generated")).unwrap(),
+			"font cache"
+		);
+		assert_eq!(fs::read_dir(source.path()).unwrap().count(), 0);
+		platform::remove_layer(&aliased_root);
 		let marked_outside = output.path().join("marked-outside");
 		fs::create_dir(&marked_outside).unwrap();
 		fs::write(marked_outside.join("foch-runtime"), "fixture marker").unwrap();

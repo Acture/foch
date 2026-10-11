@@ -33,6 +33,8 @@ package; import rejects symbolic links and reparse points rather than silently
 omitting their resources. File hard links are read as bytes and copied into
 fresh store files; deployment freezes and checks those bytes again before
 staging independent runtime copies.
+The host requires each opened entry DLL to be an ordinary single-link file
+before hashing or loading it, including plans without an entry digest.
 Built-in adapters omit upstream proxy DLLs at every directory depth; other
 packages containing a known proxy loader are rejected before installation.
 Built-in adapter metadata alone is not an installed artifact: missing,
@@ -52,6 +54,9 @@ profile (default: the player's usual EU4 directory). Extra game arguments follow
 The selected runtime base may resolve through a directory alias outside the
 game installation. Foch owns only the newly created run directory in that
 resolved base; an existing run ID is refused before any layer contents change.
+The selected data root may also resolve through an alias. Its plugin state,
+cache and font-cache descendants must be ordinary directories within that
+resolved root; internal symbolic links or reparse points are refused.
 
 Preparation excludes old `VERSION`, `d3d9`, `dinput8`, `winmm`, `dxgi` proxies
 and the installation's `plugins` directory, recording exclusions in

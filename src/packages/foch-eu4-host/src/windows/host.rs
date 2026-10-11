@@ -423,8 +423,10 @@ fn load(ctx: &'static Context) -> Result<Option<Pending>, String> {
 	let mut file = OpenOptions::new()
 		.read(true)
 		.share_mode(FILE_SHARE_READ)
+		.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
 		.open(&path)
 		.map_err(|e| e.to_string())?;
+	check_host_file(&file).map_err(|error| format!("entry DLL: {error}"))?;
 	if let Some(expected) = &ctx.plugin.sha256 {
 		let actual = digest(&mut file).map_err(|e| e.to_string())?;
 		if !actual.eq_ignore_ascii_case(expected) {

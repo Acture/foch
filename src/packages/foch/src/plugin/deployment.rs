@@ -407,14 +407,16 @@ impl Deployment {
 			write_config(&root, manifest, &package.config)?;
 			let path = root.join(&manifest.entry.path);
 			let plugin_dir = path.parent().unwrap();
-			let state = data_root.join("plugins/state").join(&identity[..12]);
-			let cache = data_root
-				.join("plugins/cache")
-				.join(&package.validated.digest);
-			ensure_outside_game(game_root, &state)?;
-			ensure_outside_game(game_root, &cache)?;
-			fs::create_dir_all(&state)?;
-			fs::create_dir_all(&cache)?;
+			let state = data_directory(
+				&data_root,
+				game_root,
+				&format!("plugins/state/{}", &identity[..12]),
+			)?;
+			let cache = data_directory(
+				&data_root,
+				game_root,
+				&format!("plugins/cache/{}", package.validated.digest),
+			)?;
 			let dirs = BTreeMap::from([
 				("data".into(), path_text(&state)?),
 				("cache".into(), path_text(&cache)?),
@@ -453,7 +455,14 @@ impl Deployment {
 		})
 	}
 
-	pub fn font_cache(&self, data_root: &Path, base_fonts_sha256: &str) -> Option<PathBuf> {
+	/// Prepare an ordinary cache below the selected data root before exposing
+	/// it through the runtime font link.
+	pub fn prepare_font_cache(
+		&self,
+		data_root: &Path,
+		base_fonts_sha256: &str,
+		game_root: &Path,
+	) -> io::Result<Option<PathBuf>> {
 		self.packages
 			.iter()
 			.find(|package| {
@@ -466,9 +475,36 @@ impl Deployment {
 			.map(|package| {
 				let identity =
 					hash(format!("{}:{base_fonts_sha256}", package.validated.digest).as_bytes());
-				data_root.join("plugins/font-cache").join(identity)
+				data_directory(
+					data_root,
+					game_root,
+					&format!("plugins/font-cache/{identity}"),
+				)
 			})
+			.transpose()
 	}
+}
+
+/// The explicitly selected root may alias another directory; descendants
+/// must be ordinary directories within its canonical location.
+fn data_directory(data_root: &Path, game_root: &Path, relative: &str) -> io::Result<PathBuf> {
+	let relative = store::safe_relative(relative).map_err(io::Error::other)?;
+	ensure_outside_game(game_root, data_root)?;
+	fs::create_dir_all(data_root)?;
+	let root = data_root.canonicalize()?;
+	ensure_outside_game(game_root, &root)?;
+	ensure_outside_game(game_root, &root.join(&relative))?;
+	let mut directory = root.clone();
+	for component in relative.split('/') {
+		directory.push(component);
+		match fs::create_dir(&directory) {
+			Ok(()) => {}
+			Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+			Err(error) => return Err(error),
+		}
+		directory = store::checked_directory(&directory, &root)?;
+	}
+	Ok(directory)
 }
 
 /// Ordinary Windows paths for JSON and MAX_PATH consumers, without the
