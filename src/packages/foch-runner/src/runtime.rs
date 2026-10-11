@@ -645,21 +645,25 @@ mod tests {
 		platform::link_dir(alias_target.path(), &aliased_root).unwrap();
 		let layer = RuntimeLayer::prepare(source.path(), &output.path().join("rt"), "aliased-data")
 			.unwrap();
-		let prepared = deployment
-			.stage(
-				&layer.directory,
-				&aliased_root,
-				"aliased-data",
-				source.path(),
-			)
-			.unwrap();
-		for kind in ["data", "cache"] {
-			assert!(
-				Path::new(&prepared.plan.plugins[0].dirs[kind])
-					.canonicalize()
-					.unwrap()
-					.starts_with(alias_target.path().canonicalize().unwrap())
-			);
+		// Host wire plans use Windows paths; directory/cache checks are portable.
+		#[cfg(windows)]
+		{
+			let prepared = deployment
+				.stage(
+					&layer.directory,
+					&aliased_root,
+					"aliased-data",
+					source.path(),
+				)
+				.unwrap();
+			for kind in ["data", "cache"] {
+				assert!(
+					Path::new(&prepared.plan.plugins[0].dirs[kind])
+						.canonicalize()
+						.unwrap()
+						.starts_with(alias_target.path().canonicalize().unwrap())
+				);
+			}
 		}
 		let font_cache = deployment
 			.prepare_font_cache(&aliased_root, "base-fonts", source.path())
