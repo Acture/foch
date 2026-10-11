@@ -1,0 +1,61 @@
+# Foch adapter manifest for the EU4 Unicode Patch (an existing third-party DLL
+# Foch drives through its legacy adapter; the upstream package is unchanged).
+#
+# The structural facts below were read from the upstream source at
+# EU4-Unicode-Patch v0.1.14. File digests are intentionally absent: they are
+# filled from the release asset when the package is imported, not hard-coded
+# here against bytes this build has not seen.
+schema = 1
+
+# Generates a font cache the game reads back; Foch gives it a writable overlay
+# so it never writes into the read-only install.
+writes = ["font_cache"]
+
+[plugin]
+id = "io.github.yozoratempest.eu4-unicode-patch"
+name = "EU4 Unicode Patch"
+version = "0.1.14"
+authors = ["YozoraTempest"]
+license = "MIT"
+description = "UTF-8 text, Chinese input, search and fonts for EU4 1.37.5."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "=1.37.5"
+
+[entry]
+kind = "legacy"
+path = "plugins/eu4_unicode_patch.dll"
+# Hooks localisation, script and font loading; must run before the game reads
+# them. The verified load phase is confirmed by experiment E1 before release.
+phase = "entry"
+
+[lifecycle]
+restart_required = true
+
+[config.typo_tolerance]
+type = "int"
+default = 1
+min = 0
+max = 2
+description = "Search typo tolerance."
+adapter = { ini = "plugins/eu4_unicode_patch/config.ini", section = "search", key = "typo_tolerance" }
+
+[config.fuzzy_pinyin]
+type = "int"
+default = 0
+min = 0
+max = 1
+description = "Fuzzy pinyin matching in search (0 off, 1 on)."
+adapter = { ini = "plugins/eu4_unicode_patch/config.ini", section = "search", key = "fuzzy_pinyin" }
+
+# Synchronous: valid as soon as the DLL loads, because the patch initializes
+# inside its own DllMain. 1 = active; 0 = refused (reason in the patch log).
+[status]
+export = "Eu4UnicodeProbeEnabled"
+mode = "sync"
+values = [
+	{ value = 1, state = "active" },
+	{ value = 0, state = "refused", reason = "see plugins/eu4_unicode_patch.log" },
+]

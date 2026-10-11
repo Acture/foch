@@ -68,23 +68,7 @@ pub fn spawn(spec: &LaunchSpec) -> io::Result<GameProcess> {
 pub fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
 	#[cfg(windows)]
 	{
-		// A directory junction needs no symlink privilege.
-		let status = Command::new("cmd")
-			.args(["/c", "mklink", "/J"])
-			.arg(link)
-			.arg(target)
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.status()?;
-		if status.success() {
-			Ok(())
-		} else {
-			Err(io::Error::other(format!(
-				"failed to create junction {} -> {}",
-				link.display(),
-				target.display()
-			)))
-		}
+		junction(target, link)
 	}
 	#[cfg(not(windows))]
 	{
@@ -92,9 +76,85 @@ pub fn link_dir(target: &Path, link: &Path) -> io::Result<()> {
 	}
 }
 
+#[cfg(windows)]
+fn junction(target: &Path, link: &Path) -> io::Result<()> {
+	use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+	use windows_sys::Win32::{
+		Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT},
+		System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_REPARSE_POINT},
+	};
+	let target = foch::plugin::deployment::path_text(&target.canonicalize()?)?.replace('/', "\\");
+	if target.starts_with(r"\\") {
+		return Err(io::Error::other(
+			"directory junctions require a local target",
+		));
+	}
+	let substitute: Vec<u16> = format!(r"\??\{target}").encode_utf16().collect();
+	let print: Vec<u16> = target.encode_utf16().collect();
+	let data_length = 8 + (substitute.len() + print.len() + 2) * 2;
+	if data_length + 8 > 16_384 {
+		return Err(io::Error::other(
+			"junction target exceeds the reparse buffer limit",
+		));
+	}
+	// REPARSE_DATA_BUFFER, mount-point variant (IO_REPARSE_TAG_MOUNT_POINT).
+	// Offsets/lengths count bytes from PathBuffer, excluding terminators.
+	let mut buffer: Vec<u16> = vec![
+		0x0003,
+		0xa000,
+		data_length as u16,
+		0,
+		0,
+		(substitute.len() * 2) as u16,
+		((substitute.len() + 1) * 2) as u16,
+		(print.len() * 2) as u16,
+	];
+	buffer.extend(substitute);
+	buffer.push(0);
+	buffer.extend(print);
+	buffer.push(0);
+	std::fs::create_dir(link)?;
+	let result = (|| {
+		let file = std::fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+			.open(link)?;
+		let mut returned = 0;
+		// The owned aligned buffer remains alive for this synchronous call.
+		if unsafe {
+			DeviceIoControl(
+				file.as_raw_handle(),
+				FSCTL_SET_REPARSE_POINT,
+				buffer.as_ptr().cast(),
+				(buffer.len() * 2) as u32,
+				std::ptr::null_mut(),
+				0,
+				&mut returned,
+				std::ptr::null_mut(),
+			)
+		} == 0
+		{
+			return Err(io::Error::last_os_error());
+		}
+		Ok(())
+	})();
+	if result.is_err() {
+		let _ = std::fs::remove_dir(link);
+	}
+	result
+}
+
 /// Remove a runtime layer: unlink the linked directories first so their
 /// targets are never touched, then delete the copied files.
 pub fn remove_layer(directory: &Path) {
+	let Ok(metadata) = std::fs::symlink_metadata(directory) else {
+		return;
+	};
+	if metadata.file_type().is_symlink() || is_reparse_point(directory) {
+		unlink(directory, metadata.is_dir());
+		return;
+	}
 	let Ok(entries) = std::fs::read_dir(directory) else {
 		return;
 	};
@@ -104,14 +164,31 @@ pub fn remove_layer(directory: &Path) {
 		};
 		if file_type.is_symlink() || (file_type.is_dir() && is_reparse_point(&entry.path())) {
 			// A junction/symlink: removing the link leaves its target intact.
-			let _ = std::fs::remove_dir(entry.path());
+			unlink(&entry.path(), file_type.is_dir());
 		} else if file_type.is_dir() {
-			let _ = std::fs::remove_dir_all(entry.path());
+			remove_layer(&entry.path());
 		} else {
 			let _ = std::fs::remove_file(entry.path());
 		}
 	}
 	let _ = std::fs::remove_dir(directory);
+}
+
+fn unlink(path: &Path, directory: bool) {
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::FileTypeExt;
+		let directory = directory
+			|| std::fs::symlink_metadata(path)
+				.is_ok_and(|metadata| metadata.file_type().is_symlink_dir());
+		if directory {
+			let _ = std::fs::remove_dir(path);
+			return;
+		}
+	}
+	#[cfg(not(windows))]
+	let _ = directory;
+	let _ = std::fs::remove_file(path);
 }
 
 #[cfg(windows)]

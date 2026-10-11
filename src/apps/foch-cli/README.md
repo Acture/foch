@@ -11,8 +11,10 @@ crates.io builds `foch-cli` from published crates only; their Rust APIs carry
 no semver promise.
 
 Foch supports Europa Universalis IV only and is alpha software: merging is not
-yet reliable across arbitrary modlists, and Foch does not launch the game, so
-check a merged mod in game. Read the
+yet reliable across arbitrary modlists, so check a merged mod in game. The
+development plugin launcher supports isolated Windows x64 EU4 launches with a
+separately built DLL host; see the [plugin deployment commands](https://github.com/Acture/foch/blob/master/src/packages/foch-eu4-host/README.md).
+Read the
 [current boundary](https://github.com/Acture/foch#current-boundary) before
 relying on merge output.
 

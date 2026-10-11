@@ -32,6 +32,7 @@ foch-runner.workspace = true
 foch-test.workspace = true
 crossterm = { version = "0.29.0", features = ["osc52"] }
 ratatui = "0.30.0"
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

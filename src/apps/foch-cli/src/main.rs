@@ -111,6 +111,9 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 			handler::simplify::handle_simplify(simplify_args, config)
 		}
 		arg::FochCliCommands::Data(data_args) => handler::data::handle_data(data_args, config),
+		arg::FochCliCommands::Plugin(plugin_args) => {
+			handler::plugin::handle_plugin(plugin_args, config)
+		}
 		arg::FochCliCommands::Cache(_)
 		| arg::FochCliCommands::Test(_)
 		| arg::FochCliCommands::Input(_)

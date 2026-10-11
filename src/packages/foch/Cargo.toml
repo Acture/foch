@@ -46,7 +46,7 @@ remove_dir_all.workspace = true
 reqwest.workspace = true
 rustix.workspace = true
 same-file.workspace = true
-semver.workspace = true
+semver = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
