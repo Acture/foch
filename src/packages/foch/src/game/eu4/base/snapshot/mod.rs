@@ -1915,6 +1915,17 @@ pub(crate) fn clear_cached_loaded_base_snapshot(_path: &Path) {
 }
 
 #[cfg(test)]
+fn loaded_base_snapshot_last_used(sha256: &str) -> Option<u64> {
+	LOADED_BASE_SNAPSHOTS
+		.get_or_init(|| Mutex::new(LoadedBaseSnapshotCache::default()))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner)
+		.entries
+		.get(sha256)
+		.map(|entry| entry.last_used)
+}
+
+#[cfg(test)]
 fn loaded_base_snapshot_cache_completed_count() -> usize {
 	LOADED_BASE_SNAPSHOTS
 		.get_or_init(|| Mutex::new(LoadedBaseSnapshotCache::default()))
