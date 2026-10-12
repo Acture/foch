@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::Instant;
 
 use crate::game::eu4::content::{
 	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
@@ -12,6 +13,7 @@ use crate::merge::kernel::{
 	SourceSet, StructuralConflict, StructuralConflictDraft, TreeMatcher, n_way_merge_with_policy,
 	n_way_merge_with_policy_and_resolutions,
 };
+use crate::merge::timing::{KernelStep, charge};
 use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, ScopeKind};
 
@@ -27,6 +29,9 @@ use super::trivia::{attach_trivia, detach_trivia, merge_trivia_n_way};
 #[derive(Clone, Debug)]
 pub struct ClausewitzMergeOutcome {
 	tentative_ast: AstFile,
+	/// `tentative_ast` before output simplification: the form the kernel's
+	/// tentative tree describes, which further merging must read.
+	lineage_ast: AstFile,
 	base_tree: NormalizedTree,
 	revision_trees: BTreeMap<RevisionId, NormalizedTree>,
 	input_rewrites: BTreeMap<RevisionId, InputRewrite>,
@@ -68,12 +73,14 @@ impl ClausewitzMergeOutcome {
 		&self.tentative_ast
 	}
 
+	/// The simplified output, its unsimplified lineage form, and the kernel facts.
 	pub(crate) fn into_parts(
 		self,
 		partition: SemanticPartitionId,
-	) -> (AstFile, ClausewitzKernelFacts) {
+	) -> (AstFile, AstFile, ClausewitzKernelFacts) {
 		(
 			self.tentative_ast,
+			self.lineage_ast,
 			ClausewitzKernelFacts {
 				partition,
 				base_tree: self.base_tree,
@@ -246,6 +253,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 		|| ContentFamilyMergePolicy::new(policies),
 		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
 	);
+	let started = Instant::now();
 	let mut scope_cache = HashMap::new();
 	let base = canonicalize_for_merge(base, policies, schema, &mut scope_cache);
 	let revisions = revisions
@@ -274,6 +282,8 @@ pub(super) fn merge_clausewitz_files_with_context(
 		);
 	}
 	let merged_trivia = merge_trivia_n_way(&base_trivia, &revision_trivia);
+	charge(KernelStep::JoinCanonicalize, started);
+	let started = Instant::now();
 	let (base_tree, base_normalization_findings) = normalize_ast_with_findings(&base, &policy)?;
 	control_flow_findings.extend(
 		base_normalization_findings
@@ -313,6 +323,8 @@ pub(super) fn merge_clausewitz_files_with_context(
 		.iter()
 		.map(|(revision, tree)| MergeRevision::new(*revision, tree))
 		.collect::<Vec<_>>();
+	charge(KernelStep::JoinNormalize, started);
+	let started = Instant::now();
 	let mut kernel = if resolutions.is_empty() {
 		n_way_merge_with_policy(&base_tree, &kernel_revisions, &policy)?
 	} else {
@@ -323,7 +335,33 @@ pub(super) fn merge_clausewitz_files_with_context(
 			resolutions,
 		)?
 	};
-	let mut tentative_ast = denormalize_ast(base.path.clone(), kernel.tentative_tree())?;
+	charge(KernelStep::JoinMerge, started);
+	let started = Instant::now();
+	let rendered = denormalize_ast(base.path.clone(), kernel.tentative_tree());
+	charge(KernelStep::JoinRender, started);
+	let started = Instant::now();
+	let renderable = rendered.is_ok();
+	let mut tentative_ast = match rendered {
+		Ok(ast) => ast,
+		Err(error) => {
+			// The kernel accepted a tree no script can spell, such as a guarded
+			// branch whose `limit` one revision deleted with the chain while
+			// another edited the branch. That is diverging intent to review,
+			// not an engine failure; the highest-precedence revision stands in
+			// as the preview.
+			kernel.push_conflict(StructuralConflictDraft::new(
+				ConflictKind::Policy,
+				None,
+				None,
+				SourceSet::default(),
+				Vec::new(),
+				format!("merged tree cannot be rendered: {error}"),
+			));
+			revision_files
+				.last()
+				.map_or_else(|| base.clone(), |revision| (*revision).clone())
+		}
+	};
 	control_flow_findings.extend(
 		super::control_flow::orphan_paths(&tentative_ast.statements)
 			.into_iter()
@@ -346,13 +384,18 @@ pub(super) fn merge_clausewitz_files_with_context(
 			format!("{count} control-flow finding(s) require review: {examples}"),
 		));
 	}
-	attach_trivia(&mut tentative_ast, &merged_trivia);
+	if renderable {
+		attach_trivia(&mut tentative_ast, &merged_trivia);
+	}
+	let lineage_ast = tentative_ast.clone();
 	simplify_boolean_or_definitions(&mut tentative_ast, policies, &mut scope_cache);
 	if reduce_event_fallbacks {
 		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
 	}
+	charge(KernelStep::JoinFinish, started);
 	Ok(ClausewitzMergeOutcome {
 		tentative_ast,
+		lineage_ast,
 		base_tree,
 		revision_trees: revision_trees.into_iter().collect(),
 		input_rewrites,

@@ -6,14 +6,14 @@ use crate::playset::Playset;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Severity {
 	Error,
 	Warning,
 	Info,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum FindingChannel {
 	Strict,
 	Advisory,
@@ -150,7 +150,40 @@ impl CheckResult {
 		self.fatal_errors.push(message.into());
 	}
 
+	/// Put the findings in one order, whatever order the analyses that
+	/// produced them iterated in, and split them by channel.
 	pub fn recompute_channels(&mut self) {
+		self.findings.sort_by(|left, right| {
+			(
+				&left.path,
+				left.line,
+				left.column,
+				&left.rule_id,
+				&left.mod_id,
+				&left.message,
+				&left.evidence,
+				&left.source_file,
+				left.severity,
+				left.channel,
+			)
+				.cmp(&(
+					&right.path,
+					right.line,
+					right.column,
+					&right.rule_id,
+					&right.mod_id,
+					&right.message,
+					&right.evidence,
+					&right.source_file,
+					right.severity,
+					right.channel,
+				))
+				.then_with(|| {
+					left.confidence
+						.unwrap_or_default()
+						.total_cmp(&right.confidence.unwrap_or_default())
+				})
+		});
 		self.strict_findings = self
 			.findings
 			.iter()
@@ -199,7 +232,7 @@ pub struct SemanticDiagnostics {
 
 #[cfg(test)]
 mod tests {
-	use super::{Finding, FindingChannel, Severity};
+	use super::{CheckResult, Finding, FindingChannel, Severity};
 	use crate::model::GamePathBuf;
 	use std::path::PathBuf;
 
@@ -217,6 +250,38 @@ mod tests {
 			column: None,
 			confidence: None,
 		}
+	}
+
+	#[test]
+	fn findings_take_one_order_whatever_order_they_were_found_in() {
+		let path = |text: &str| Some(GamePathBuf::parse(text).expect("valid game path"));
+		let found = vec![
+			finding(path("events/b.txt"), None),
+			Finding {
+				channel: FindingChannel::Strict,
+				..finding(path("events/a.txt"), None)
+			},
+			finding(None, Some(PathBuf::from("playset.json"))),
+			Finding {
+				line: Some(1),
+				..finding(path("events/b.txt"), None)
+			},
+		];
+		let ordered = |findings: Vec<Finding>| {
+			let mut result = CheckResult {
+				findings,
+				..CheckResult::default()
+			};
+			result.recompute_channels();
+			result
+		};
+		let forward = ordered(found.clone());
+		let backward = ordered(found.into_iter().rev().collect());
+		assert_eq!(forward.findings, backward.findings);
+		assert_eq!(forward.strict_findings, backward.strict_findings);
+		assert_eq!(forward.advisory_findings, backward.advisory_findings);
+		assert_eq!(forward.findings[0].path, None);
+		assert_eq!(forward.findings[2].line, Some(1));
 	}
 
 	#[test]

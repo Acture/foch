@@ -163,6 +163,129 @@ impl CultureIndex {
 	}
 }
 
+/// Brings a folded culture view to the hierarchy the game loads from it.
+///
+/// The game merges a culture group defined in several files: a mod adds
+/// cultures to a vanilla group by defining the group again with only its new
+/// members. A culture or group field defined more than once takes its last
+/// definition in load order, so a mod that redefines a vanilla culture in
+/// another group moves it there; each such move is returned as a warning.
+pub(crate) fn normalize_culture_view(ast: &mut AstFile) -> Vec<String> {
+	// (group, child) in load order, with the group's first statement index.
+	let mut groups: Vec<(String, usize)> = Vec::new();
+	let mut occurrences: Vec<(String, AstStatement)> = Vec::new();
+	let mut culture_last: BTreeMap<String, usize> = BTreeMap::new();
+	let mut culture_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+	let mut field_last: BTreeMap<(String, String), usize> = BTreeMap::new();
+	for (index, statement) in ast.statements.iter().enumerate() {
+		let AstStatement::Assignment {
+			key: group,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		if !groups.iter().any(|(name, _)| name == group) {
+			groups.push((group.clone(), index));
+		}
+		for child in items {
+			if let AstStatement::Assignment { key, value, .. } = child {
+				if is_metadata(key) || key == "primary" || !matches!(value, AstValue::Block { .. })
+				{
+					field_last.insert((group.clone(), key.clone()), occurrences.len());
+				} else {
+					culture_last.insert(key.clone(), occurrences.len());
+					let seen = culture_groups.entry(key.clone()).or_default();
+					if seen.last() != Some(group) {
+						seen.push(group.clone());
+					}
+				}
+			}
+			occurrences.push((group.clone(), child.clone()));
+		}
+	}
+	if groups.len() == ast.statements.iter().filter(|s| is_group_block(s)).count()
+		&& culture_groups.values().all(|seen| seen.len() == 1)
+		&& culture_last.len()
+			== occurrences
+				.iter()
+				.filter(|(_, child)| is_culture_definition(child))
+				.count()
+	{
+		return Vec::new();
+	}
+	let warnings = culture_groups
+		.iter()
+		.filter(|(_, seen)| seen.len() > 1)
+		.map(|(id, seen)| {
+			let (latest, earlier) = seen.split_last().expect("two or more groups");
+			format!(
+				"culture `{id}` is redefined by a later file in group `{latest}`; it overrides the earlier definition in {}",
+				earlier
+					.iter()
+					.map(|group| format!("`{group}`"))
+					.collect::<Vec<_>>()
+					.join(", ")
+			)
+		})
+		.collect::<Vec<_>>();
+	let mut merged: BTreeMap<String, Vec<AstStatement>> = BTreeMap::new();
+	for (position, (group, child)) in occurrences.into_iter().enumerate() {
+		let keep = match &child {
+			AstStatement::Assignment { key, .. } => field_last
+				.get(&(group.clone(), key.clone()))
+				.or_else(|| culture_last.get(key))
+				.is_none_or(|last| *last == position),
+			_ => true,
+		};
+		if keep {
+			merged.entry(group).or_default().push(child);
+		}
+	}
+	let first_index: BTreeMap<usize, String> = groups
+		.into_iter()
+		.map(|(group, index)| (index, group))
+		.collect();
+	let statements = std::mem::take(&mut ast.statements);
+	for (index, mut statement) in statements.into_iter().enumerate() {
+		if !is_group_block(&statement) {
+			ast.statements.push(statement);
+			continue;
+		}
+		let Some(group) = first_index.get(&index) else {
+			continue;
+		};
+		if let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &mut statement
+		{
+			*items = merged.remove(group).unwrap_or_default();
+		}
+		ast.statements.push(statement);
+	}
+	warnings
+}
+
+fn is_group_block(statement: &AstStatement) -> bool {
+	matches!(
+		statement,
+		AstStatement::Assignment {
+			value: AstValue::Block { .. },
+			..
+		}
+	)
+}
+
+fn is_culture_definition(child: &AstStatement) -> bool {
+	matches!(
+		child,
+		AstStatement::Assignment { key, value: AstValue::Block { .. }, .. }
+			if !is_metadata(key) && key != "primary"
+	)
+}
+
 fn location(path: &GamePath, span: &SpanRange) -> CultureLocation {
 	CultureLocation {
 		relative_path: path.to_owned(),
@@ -769,6 +892,66 @@ mod tests {
 
 	fn game_path(text: &str) -> crate::model::GamePathBuf {
 		crate::model::GamePathBuf::parse(text).expect("test game path")
+	}
+
+	#[test]
+	fn a_later_culture_definition_overrides_the_earlier_one_with_a_warning() {
+		let path = game_path("common/cultures/zzz_foch_cultures.txt");
+		// The folded view of a mod moving `quebecois` from vanilla's group.
+		let mut ast = super::super::script::parser::parse_clausewitz_content(
+			&path,
+			"latin = { graphical_culture = westerngfx french = { primary = FRA } quebecois = { primary = QUE } }
+			british = { english = { primary = ENG } quebecois = { primary = CAN } }
+",
+		)
+		.ast;
+
+		let warnings = normalize_culture_view(&mut ast);
+
+		assert_eq!(warnings.len(), 1, "{warnings:?}");
+		assert!(warnings[0].contains("`quebecois`"), "{warnings:?}");
+		assert!(warnings[0].contains("`british`") && warnings[0].contains("`latin`"));
+		let index = CultureIndex::from_documents(&[(path, ast)]).expect("one definition each");
+		assert_eq!(index.definitions["quebecois"].group, "british");
+		assert_eq!(index.definitions["french"].group, "latin");
+	}
+
+	#[test]
+	fn a_group_defined_again_by_a_later_file_gains_its_members() {
+		let path = game_path("common/cultures/zzz_foch_cultures.txt");
+		// Vanilla's group, then a mod file adding one culture to it.
+		let mut ast = super::super::script::parser::parse_clausewitz_content(
+			&path,
+			"caucasian = { graphical_culture = easterngfx georgian = { primary = GEO } dagestani = { primary = GAZ } }
+			iranian = { persian = { primary = PER } }
+			caucasian = { avar = { primary = AVR } }
+",
+		)
+		.ast;
+
+		let warnings = normalize_culture_view(&mut ast);
+
+		assert!(
+			warnings.is_empty(),
+			"adding members is not an override: {warnings:?}"
+		);
+		let index = CultureIndex::from_documents(&[(path, ast)]).expect("one group each");
+		for culture in ["georgian", "dagestani", "avar"] {
+			assert_eq!(index.definitions[culture].group, "caucasian", "{culture}");
+		}
+		assert_eq!(index.groups.len(), 2);
+	}
+
+	#[test]
+	fn a_view_without_redefinitions_is_unchanged() {
+		let path = game_path("common/cultures/zzz_foch_cultures.txt");
+		let source = "latin = { french = { primary = FRA } }
+";
+		let mut ast = super::super::script::parser::parse_clausewitz_content(&path, source).ast;
+		let before = ast.clone();
+
+		assert!(normalize_culture_view(&mut ast).is_empty());
+		assert_eq!(ast, before);
 	}
 
 	#[test]

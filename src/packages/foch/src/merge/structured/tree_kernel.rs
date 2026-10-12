@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
@@ -6,6 +8,7 @@ use crate::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
+use crate::merge::timing::{KernelStep, charge};
 use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, HandlerResolutionRecord};
 
@@ -101,6 +104,26 @@ impl TreePartitionIndex<'_> {
 			.collect()
 	}
 
+	/// Whether `other` holds the same content as this input in `partition`,
+	/// ignoring source positions and comments.
+	pub(crate) fn same_partition(&self, other: &Self, partition: &SemanticPartitionId) -> bool {
+		match (partition, &self.definitions, &other.definitions) {
+			(SemanticPartitionId::Definition(key), Some(left), Some(right)) => {
+				super::definition_module::statements_content_equal(
+					&left.select(key).statements,
+					&right.select(key).statements,
+				)
+			}
+			(SemanticPartitionId::Definition(_), _, _) => false,
+			(SemanticPartitionId::File, _, _) => {
+				super::definition_module::statements_content_equal(
+					&self.file.statements,
+					&other.file.statements,
+				)
+			}
+		}
+	}
+
 	pub(crate) fn normalize(
 		&self,
 		partition: &SemanticPartitionId,
@@ -144,6 +167,8 @@ pub(crate) trait TreeJoinProtocol {
 #[derive(Clone, Debug)]
 pub(crate) struct TreeMergeStep {
 	pub statements: Vec<AstStatement>,
+	/// `statements` before output simplification, as the kernel facts describe them.
+	pub lineage_statements: Vec<AstStatement>,
 	pub conflicts: Vec<StructuralConflict>,
 	pub kernel_facts: Vec<ClausewitzKernelFacts>,
 }
@@ -151,6 +176,7 @@ pub(crate) struct TreeMergeStep {
 #[derive(Clone, Debug)]
 pub(crate) struct TreeKernelOutcome {
 	pub statements: Vec<AstStatement>,
+	pub lineage_statements: Vec<AstStatement>,
 	pub conflicts: Vec<StructuralConflict>,
 	pub merge_facts: Vec<SemanticMergeFacts>,
 }
@@ -308,9 +334,10 @@ impl TreeJoinProtocol for DefinitionModuleJoin {
 			outcome.copy_through_definitions(),
 			outcome.structured_definitions(),
 		);
-		let (tentative_ast, conflicts, kernel_facts) = outcome.into_tree_parts();
+		let (tentative_ast, lineage_ast, conflicts, kernel_facts) = outcome.into_tree_parts();
 		Ok(TreeMergeStep {
 			statements: tentative_ast.statements,
+			lineage_statements: lineage_ast.statements,
 			conflicts,
 			kernel_facts,
 		})
@@ -319,9 +346,10 @@ impl TreeJoinProtocol for DefinitionModuleJoin {
 
 fn clausewitz_step(outcome: super::ClausewitzMergeOutcome) -> TreeMergeStep {
 	let conflicts = outcome.conflicts().to_vec();
-	let (tentative_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
+	let (tentative_ast, lineage_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
 	TreeMergeStep {
 		statements: tentative_ast.statements,
+		lineage_statements: lineage_ast.statements,
 		conflicts,
 		kernel_facts: vec![kernel_fact],
 	}
@@ -390,6 +418,7 @@ impl<'a> TreeMergeKernel<'a> {
 		let merge_facts = attribute_kernel_facts(input, step.kernel_facts)?;
 		Ok(TreeKernelOutcome {
 			statements: step.statements,
+			lineage_statements: step.lineage_statements,
 			conflicts: step.conflicts,
 			merge_facts,
 		})
@@ -1229,7 +1258,10 @@ fn compose_join_lineage(
 
 	let mut sources = BTreeMap::new();
 	let mut origins = BTreeMap::new();
-	let mut validated_revisions = BTreeSet::new();
+	// Each input's lineage, validated against the tree the kernel normalized
+	// for it, and rebased when that tree only reorders the same content.
+	let mut resolved_lineage: BTreeMap<RevisionId, Option<Cow<'_, SemanticPartitionLineage>>> =
+		BTreeMap::new();
 	for (output_node, input_sources) in &facts.outcome.provenance {
 		let mut original_sources = BTreeSet::new();
 		let mut original_origins = BTreeSet::new();
@@ -1274,23 +1306,32 @@ fn compose_join_lineage(
 					input_source.node.get()
 				)
 			})?;
-			if validated_revisions.insert(input_source.revision) {
+			if let std::collections::btree_map::Entry::Vacant(slot) =
+				resolved_lineage.entry(input_source.revision)
+			{
 				#[cfg(test)]
 				super::work::compare_lineage_tree();
-				if lineage.is_some_and(|lineage| lineage.tree != *expected_tree) {
-					return Err(format!(
-						"lineage tree does not match merge input for partition {:?}",
-						facts.partition
-					));
-				}
-				if lineage.is_none() && !normalized_tree_is_empty_root(expected_tree)? {
-					return Err(format!(
-						"non-empty merge input is missing lineage for partition {:?}",
-						facts.partition,
-					));
-				}
+				let resolved = match lineage {
+					Some(lineage) if lineage.tree != *expected_tree => Some(Cow::Owned(
+						lineage.rebased_onto(expected_tree).ok_or_else(|| {
+							format!(
+								"lineage tree does not match merge input for partition {:?}",
+								facts.partition
+							)
+						})?,
+					)),
+					Some(lineage) => Some(Cow::Borrowed(lineage)),
+					None if !normalized_tree_is_empty_root(expected_tree)? => {
+						return Err(format!(
+							"non-empty merge input is missing lineage for partition {:?}",
+							facts.partition,
+						));
+					}
+					None => None,
+				};
+				slot.insert(resolved);
 			}
-			if let Some(lineage) = lineage {
+			if let Some(lineage) = resolved_lineage[&input_source.revision].as_deref() {
 				if let Some(node_sources) = lineage.sources.get(&input_node) {
 					original_sources.extend(node_sources.iter().cloned());
 				}
@@ -1332,6 +1373,10 @@ pub(crate) struct TreeDagProtocol<'a> {
 	has_vanilla_base: bool,
 	vanilla_base_mode: VanillaBaseMode,
 	handler: &'a mut dyn ConflictHandler,
+	/// The first state with unresolved conflicts that a later step failed to
+	/// build on. Its tree is only a tentative preview of those conflicts, so
+	/// they, not the failure, are what the unit reports.
+	blocked_by_conflicts: Option<TreeDagState>,
 }
 
 impl<'a> TreeDagProtocol<'a> {
@@ -1350,6 +1395,18 @@ impl<'a> TreeDagProtocol<'a> {
 			has_vanilla_base,
 			vanilla_base_mode,
 			handler,
+			blocked_by_conflicts: None,
+		}
+	}
+
+	/// The conflicted state a failed pipeline was building on, if any.
+	pub(crate) fn take_blocked_by_conflicts(&mut self) -> Option<TreeDagState> {
+		self.blocked_by_conflicts.take()
+	}
+
+	fn record_blocked(&mut self, state: &TreeDagState) {
+		if self.blocked_by_conflicts.is_none() && !state.unresolved_conflicts.is_empty() {
+			self.blocked_by_conflicts = Some(state.clone());
 		}
 	}
 }
@@ -1370,13 +1427,16 @@ impl EffectiveNodeProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			statements: request.parent.statements.clone(),
 		};
 		let source_ast = with_isolated_definitions_unchanged(request.source, &parent.statements);
-		let observation = self.source_observer.observe(
-			&parent,
-			&source_ast,
-			source,
-			&request.parent.partition_lineage,
-			request.resets_base,
-		)?;
+		let observation = self
+			.source_observer
+			.observe(
+				&parent,
+				&source_ast,
+				source,
+				&request.parent.partition_lineage,
+				request.resets_base,
+			)
+			.inspect_err(|_| self.record_blocked(request.parent))?;
 		let mut source_deltas = request.parent.source_deltas.clone();
 		if !source_deltas.contains(&observation.delta) {
 			source_deltas.push(observation.delta);
@@ -1479,10 +1539,12 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				request.file_dag.file_path(),
 			)
 		})?;
+		let started = Instant::now();
 		let mut record_builder =
 			ConflictRecordBuilder::new(&input, self.kernel.policies, self.partition_adapter);
 		let mut resolution =
 			resolve_tree_conflicts(&mut record_builder, &probe.conflicts, self.handler)?;
+		charge(KernelStep::JoinResolve, started);
 		let outcome = if resolution.resolutions.is_empty() {
 			probe
 		} else {
@@ -1496,9 +1558,18 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 					)
 				})?
 		};
-		state.statements = outcome.statements;
+		state.statements = match request.plan.scope() {
+			// Only further merging reads an intermediate join. Its children and
+			// later joins re-normalize these statements and compare them with
+			// the join's lineage, which output simplification would not match.
+			DagJoinScope::Intermediate => outcome.lineage_statements,
+			DagJoinScope::Final => outcome.statements,
+		};
 		for facts in outcome.merge_facts {
-			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)?;
+			let started = Instant::now();
+			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)
+				.inspect_err(|_| self.record_blocked(&state))?;
+			charge(KernelStep::JoinLineage, started);
 			state
 				.partition_lineage
 				.insert(facts.partition.clone(), lineage);
@@ -1793,12 +1864,14 @@ mod tests {
 					.map(|revision| scalar_value(revision).to_string())
 					.collect(),
 			);
+			let statements = revisions
+				.last()
+				.expect("recording adapter requires revisions")
+				.statements
+				.clone();
 			Ok(TreeMergeStep {
-				statements: revisions
-					.last()
-					.expect("recording adapter requires revisions")
-					.statements
-					.clone(),
+				lineage_statements: statements.clone(),
+				statements,
 				conflicts: Vec::new(),
 				kernel_facts: Vec::new(),
 			})

@@ -19,7 +19,6 @@ pub(crate) struct CultureCorrespondence {
 
 #[derive(Clone, Debug)]
 pub(crate) struct CultureGroupMove {
-	pub old: String,
 	pub new: String,
 	pub from: String,
 	pub to: String,
@@ -170,7 +169,6 @@ impl CultureCorrespondence {
 					&& changed.group != original.group
 				{
 					result.group_moves.push(CultureGroupMove {
-						old: old.clone(),
 						new: new.clone(),
 						from: original.group.clone(),
 						to: changed.group.clone(),
@@ -420,10 +418,7 @@ mod tests {
 			"renaming in one branch must not hide another branch's group move"
 		);
 		let movement = &correspondence.group_moves[0];
-		assert_eq!(
-			(movement.old.as_str(), movement.new.as_str()),
-			("old_culture", "new_culture")
-		);
+		assert_eq!(movement.new, "new_culture");
 		assert_eq!((movement.from.as_str(), movement.to.as_str()), ("g", "h"));
 		assert_eq!(movement.inherited_fields[0].0, "country");
 	}

@@ -87,6 +87,149 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 }
 
 #[test]
+fn merge_keeps_an_event_file_namespace_before_its_events() {
+	// EU4 applies `namespace` and file-level flags to the events after them,
+	// so a merged event file must keep its top-level order.
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let playlist: PathBuf = scratch.path().join("playset").join("dlc_load.json");
+	write_dlc_load(&playlist, &[("9301", "Base"), ("9302", "Patch")]);
+	let mods: &Path = playlist.parent().unwrap();
+	write_descriptor(&mods.join("9301"), "Base");
+	write_descriptor_with_dependencies(&mods.join("9302"), "Patch", &["Base"]);
+	let events = "namespace = zz_order\n\
+		normal_or_historical_nations = yes\n\
+		country_event = { id = zz_order.1 title = a is_triggered_only = yes option = { name = a add_prestige = 1 } }\n\
+		province_event = { id = zz_order.2 title = b is_triggered_only = yes option = { name = b } }\n\
+		country_event = { id = zz_order.3 title = c is_triggered_only = yes option = { name = c } }\n";
+	write_script_file(&mods.join("9301"), "events/zz_order.txt", events);
+	write_script_file(
+		&mods.join("9302"),
+		"events/zz_order.txt",
+		&events.replace("add_prestige = 1", "add_prestige = 2"),
+	);
+	let out: PathBuf = scratch.path().join("out");
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let merged = fs::read_to_string(out.join("events/zz_order.txt")).expect("merged events");
+	let position = |needle: &str| {
+		merged
+			.find(needle)
+			.unwrap_or_else(|| panic!("missing {needle}:\n{merged}"))
+	};
+	assert!(merged.contains("add_prestige = 2"), "{merged}");
+	assert!(
+		position("namespace = zz_order") < position("id = zz_order.1"),
+		"{merged}"
+	);
+	assert!(
+		position("normal_or_historical_nations") < position("id = zz_order.1"),
+		"{merged}"
+	);
+	assert!(
+		position("id = zz_order.2") < position("id = zz_order.3"),
+		"{merged}"
+	);
+}
+
+#[test]
+fn merge_keeps_an_empty_file_that_disables_its_dependency() {
+	// An empty file at the same path replaces the file it overrides: a
+	// patch empties its dependency's events to disable them.
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let playlist: PathBuf = scratch.path().join("playset").join("dlc_load.json");
+	write_dlc_load(&playlist, &[("9321", "Base"), ("9322", "Patch")]);
+	let mods: &Path = playlist.parent().unwrap();
+	write_descriptor(&mods.join("9321"), "Base");
+	write_descriptor_with_dependencies(&mods.join("9322"), "Patch", &["Base"]);
+	write_script_file(
+		&mods.join("9321"),
+		"events/zz_disabled.txt",
+		"namespace = zz_disabled\ncountry_event = { id = zz_disabled.1 title = a is_triggered_only = yes option = { name = a } }\n",
+	);
+	write_script_file(&mods.join("9322"), "events/zz_disabled.txt", "");
+	let out: PathBuf = scratch.path().join("out");
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let merged = fs::read_to_string(out.join("events/zz_disabled.txt"))
+		.expect("the emptied file must still override its dependency");
+	assert!(!merged.contains("zz_disabled.1"), "{merged}");
+}
+
+#[test]
+fn merge_keeps_windows_1252_script_bytes() {
+	// A translation mod's 0x10-escaped name and a windows-1252 accent: the
+	// game reads these bytes, so a merged file must write them back as is.
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let playlist: PathBuf = scratch.path().join("playset").join("dlc_load.json");
+	write_dlc_load(&playlist, &[("9311", "Base"), ("9312", "Patch")]);
+	let mods: &Path = playlist.parent().unwrap();
+	write_descriptor(&mods.join("9311"), "Base");
+	write_descriptor_with_dependencies(&mods.join("9312"), "Patch", &["Base"]);
+	let events: &[u8] = b"namespace = zz_bytes\n\
+		country_event = { id = zz_bytes.1 title = a is_triggered_only = yes \
+		option = { name = a add_prestige = 1 define_ruler = { \
+		dynasty = \"\x10\xafQ \x10\xc8T\" name = \"Bragan\xe7a\" } } }\n";
+	let needle: &[u8] = b"add_prestige = 1";
+	let at = events
+		.windows(needle.len())
+		.position(|window| window == needle)
+		.expect("prestige");
+	let mut patched: Vec<u8> = events.to_vec();
+	patched[at + needle.len() - 1] = b'2';
+	fs::create_dir_all(mods.join("9311/events")).unwrap();
+	fs::create_dir_all(mods.join("9312/events")).unwrap();
+	fs::write(mods.join("9311/events/zz_bytes.txt"), events).unwrap();
+	fs::write(mods.join("9312/events/zz_bytes.txt"), &patched).unwrap();
+	let out: PathBuf = scratch.path().join("out");
+
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			path_text(&playlist),
+			"--out",
+			path_text(&out),
+			"--no-game-base",
+			"--non-interactive",
+			"--confirm",
+		],
+		scratch.path(),
+	);
+
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+	let merged = fs::read(out.join("events/zz_bytes.txt")).expect("merged events");
+	let contains = |needle: &[u8]| merged.windows(needle.len()).any(|window| window == needle);
+	assert!(contains(b"add_prestige = 2"));
+	assert!(contains(b"\"\x10\xafQ \x10\xc8T\""), "{merged:?}");
+	assert!(contains(b"\"Bragan\xe7a\""), "{merged:?}");
+}
+
+#[test]
 fn culture_cli_repairs_and_adapts_reviewed_sources_without_mutating_them() {
 	use foch::project::{CultureRenameEntry, CultureRepairEntry, Project, SourceEdit};
 	use sha2::{Digest, Sha256};
@@ -2144,7 +2287,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		cwt_rules: root.join("cwt-rules").join("v0.12.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v19.0.0")
+			.join("v20.0.0")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),

@@ -5,7 +5,7 @@
 // `src/tree_matcher/priority_list.rs`) at upstream revision
 // e8e13887b85b8cb56b1dc1624c5f94e3d39182b6.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ pub struct MatchRecord {
 	pub score: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct AmbiguousMatch {
 	pub left: NodeId,
 	pub candidates: Vec<NodeId>,
@@ -51,6 +51,9 @@ struct Ambiguities {
 	left: BTreeSet<NodeId>,
 	#[serde(skip)]
 	right: BTreeSet<NodeId>,
+	/// `entries` as a set, so recording a known ambiguity again is not a scan.
+	#[serde(skip)]
+	recorded: HashSet<AmbiguousMatch>,
 }
 
 impl Ambiguities {
@@ -61,14 +64,17 @@ impl Ambiguities {
 			.iter()
 			.flat_map(|entry| entry.candidates.iter().copied())
 			.collect();
+		self.recorded = self.entries.iter().cloned().collect();
 	}
 
-	fn insert(&mut self, ambiguity: AmbiguousMatch) {
-		if !self.entries.contains(&ambiguity) {
-			self.left.insert(ambiguity.left);
-			self.right.extend(ambiguity.candidates.iter().copied());
-			self.entries.push(ambiguity);
+	fn insert(&mut self, ambiguity: AmbiguousMatch) -> bool {
+		if !self.recorded.insert(ambiguity.clone()) {
+			return false;
 		}
+		self.left.insert(ambiguity.left);
+		self.right.extend(ambiguity.candidates.iter().copied());
+		self.entries.push(ambiguity);
+		true
 	}
 }
 
@@ -83,11 +89,34 @@ impl<'de> Deserialize<'de> for Ambiguities {
 	}
 }
 
+/// A node whose availability changed: it was matched or marked ambiguous.
+#[derive(Clone, Copy, Debug)]
+enum Change {
+	Left(NodeId),
+	Right(NodeId),
+}
+
+/// The order in which nodes stopped being available, which lets a pass
+/// revisit only the parents a change affects. It is bookkeeping, not part of
+/// the matching's value: equality and serialization ignore it.
+#[derive(Clone, Debug, Default)]
+struct ChangeLog(Vec<Change>);
+
+impl PartialEq for ChangeLog {
+	fn eq(&self, _: &Self) -> bool {
+		true
+	}
+}
+
+impl Eq for ChangeLog {}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Matching {
 	by_left: BTreeMap<NodeId, MatchRecord>,
 	by_right: BTreeMap<NodeId, NodeId>,
 	ambiguous: Ambiguities,
+	#[serde(skip)]
+	changes: ChangeLog,
 }
 
 impl Matching {
@@ -160,11 +189,20 @@ impl Matching {
 		}
 		self.by_right.insert(record.right, record.left);
 		self.by_left.insert(record.left, record);
+		self.changes.0.push(Change::Left(record.left));
+		self.changes.0.push(Change::Right(record.right));
 		true
 	}
 
 	fn record_ambiguity(&mut self, ambiguity: AmbiguousMatch) {
-		self.ambiguous.insert(ambiguity);
+		let left = ambiguity.left;
+		let candidates = ambiguity.candidates.clone();
+		if self.ambiguous.insert(ambiguity) {
+			self.changes.0.push(Change::Left(left));
+			self.changes
+				.0
+				.extend(candidates.into_iter().map(Change::Right));
+		}
 	}
 }
 
@@ -203,6 +241,7 @@ impl TreeMatcher {
 		seed: Option<&Matching>,
 	) -> Matching {
 		let mut matching = Matching::default();
+		let mut work = MatchWork::default();
 		let left_root = left.root();
 		let right_root = right.root();
 		let left_root_node = left.node(left_root).unwrap();
@@ -249,44 +288,61 @@ impl TreeMatcher {
 		}
 
 		match_unique_anchors(left, right, &mut matching);
-		match_required_slots(left, right, &mut matching);
-		match_parent_scoped_anchors(left, right, &mut matching);
+		match_required_slots(left, right, &mut matching, &mut work);
+		match_parent_scoped_anchors(left, right, &mut matching, &mut work);
 		match_ordered_similarity_siblings(
 			left,
 			right,
 			&mut matching,
 			self.config.similarity_threshold,
+			&mut work,
 		);
-		match_soft_signatures(left, right, &mut matching);
+		match_soft_signatures(left, right, &mut matching, &mut work);
 		match_exact_subtrees(left, right, &mut matching, self.config.min_height);
 		match_repeated_parent_scoped_siblings(
 			left,
 			right,
 			&mut matching,
 			self.config.similarity_threshold,
+			&mut work,
 		);
-		match_parent_scoped_anchors(left, right, &mut matching);
+		match_parent_scoped_anchors(left, right, &mut matching, &mut work);
 		match_ordered_similarity_siblings(
 			left,
 			right,
 			&mut matching,
 			self.config.similarity_threshold,
+			&mut work,
 		);
 		match_by_descendants(left, right, &mut matching, self.config.similarity_threshold);
-		match_required_slots(left, right, &mut matching);
-		match_parent_scoped_anchors(left, right, &mut matching);
-		recover_children(left, right, &mut matching, self.config.max_recovery_size);
-		match_parent_scoped_anchors(left, right, &mut matching);
+		match_required_slots(left, right, &mut matching, &mut work);
+		match_parent_scoped_anchors(left, right, &mut matching, &mut work);
+		recover_children(
+			left,
+			right,
+			&mut matching,
+			self.config.max_recovery_size,
+			&mut work,
+		);
+		match_parent_scoped_anchors(left, right, &mut matching, &mut work);
 		match_repeated_parent_scoped_siblings(
 			left,
 			right,
 			&mut matching,
 			self.config.similarity_threshold,
+			&mut work,
 		);
-		match_parent_scoped_anchors(left, right, &mut matching);
-		match_soft_signatures(left, right, &mut matching);
-		recover_children(left, right, &mut matching, self.config.max_recovery_size);
+		match_parent_scoped_anchors(left, right, &mut matching, &mut work);
+		match_soft_signatures(left, right, &mut matching, &mut work);
+		recover_children(
+			left,
+			right,
+			&mut matching,
+			self.config.max_recovery_size,
+			&mut work,
+		);
 		record_unresolved_soft_signature_ambiguities(left, right, &mut matching);
+
 		if let Some(seed) = seed {
 			retain_seeded_lineage_matches(left, right, seed, &mut matching);
 		}
@@ -410,9 +466,14 @@ fn ordered_similarity_anchor(node: &NormalizedNode) -> Option<&SemanticKey> {
 	})
 }
 
-fn match_soft_signatures(left: &NormalizedTree, right: &NormalizedTree, matching: &mut Matching) {
+fn match_soft_signatures(
+	left: &NormalizedTree,
+	right: &NormalizedTree,
+	matching: &mut Matching,
+	work: &mut MatchWork,
+) {
 	loop {
-		match_required_slots(left, right, matching);
+		match_required_slots(left, right, matching, work);
 		let parents = matching.records().copied().collect::<Vec<_>>();
 		let mut changed = false;
 		for parent in parents {
@@ -529,10 +590,11 @@ fn match_ordered_similarity_siblings(
 	right: &NormalizedTree,
 	matching: &mut Matching,
 	threshold: u32,
+	work: &mut MatchWork,
 ) {
 	loop {
-		match_required_slots(left, right, matching);
-		match_parent_scoped_anchors(left, right, matching);
+		match_required_slots(left, right, matching, work);
+		match_parent_scoped_anchors(left, right, matching, work);
 		if match_unique_ordered_signatures(left, right, matching) {
 			continue;
 		}
@@ -1177,14 +1239,76 @@ fn anchors_by_key(tree: &NormalizedTree) -> BTreeMap<SemanticKey, Vec<NodeId>> {
 	anchors
 }
 
+/// Work state of one `match_trees` run for the passes that revisit matched
+/// parents until nothing changes.
+///
+/// What such a pass does for one matched parent depends only on the parent's
+/// match and on which of its children are still available on each side, and
+/// within a run availability only shrinks: no phase unmatches a node. A pass
+/// therefore revisits only the parents whose children changed since its last
+/// visit; every other parent would repeat a visit that matched nothing new.
+#[derive(Default)]
+struct MatchWork {
+	required_slots: DirtyParents,
+	parent_anchors: DirtyParents,
+}
+
+#[derive(Default)]
+struct DirtyParents {
+	started: bool,
+	cursor: usize,
+	pending: BTreeSet<NodeId>,
+}
+
+impl DirtyParents {
+	/// The matched parents, by left node, to visit now: every one on the
+	/// first visit, then those that were matched or had a child change since.
+	fn take(
+		&mut self,
+		left: &NormalizedTree,
+		right: &NormalizedTree,
+		matching: &Matching,
+	) -> Vec<MatchRecord> {
+		let changes = &matching.changes.0;
+		if !self.started {
+			self.started = true;
+			self.cursor = changes.len();
+			return matching.records().copied().collect();
+		}
+		for change in &changes[self.cursor..] {
+			match *change {
+				Change::Left(node) => {
+					self.pending.insert(node);
+					if let Some(parent) = left.node(node).unwrap().parent {
+						self.pending.insert(parent);
+					}
+				}
+				Change::Right(node) => {
+					if let Some(parent) = right.node(node).unwrap().parent
+						&& let Some(left_parent) = matching.get_from_right(parent)
+					{
+						self.pending.insert(left_parent);
+					}
+				}
+			}
+		}
+		self.cursor = changes.len();
+		std::mem::take(&mut self.pending)
+			.into_iter()
+			.filter_map(|parent| matching.record(parent).copied())
+			.collect()
+	}
+}
+
 fn match_parent_scoped_anchors(
 	left: &NormalizedTree,
 	right: &NormalizedTree,
 	matching: &mut Matching,
+	work: &mut MatchWork,
 ) {
 	loop {
-		match_required_slots(left, right, matching);
-		let parents = matching.records().copied().collect::<Vec<_>>();
+		match_required_slots(left, right, matching, work);
+		let parents = work.parent_anchors.take(left, right, matching);
 		let mut changed = false;
 		for parent in parents {
 			let left_groups = unmatched_parent_anchor_groups(
@@ -1193,23 +1317,20 @@ fn match_parent_scoped_anchors(
 				matching,
 				true,
 			);
+			if left_groups.free.is_empty() {
+				continue;
+			}
 			let right_groups = unmatched_parent_anchor_groups(
 				right,
 				&right.node(parent.right).unwrap().children,
 				matching,
 				false,
 			);
-			for (key, left_nodes) in left_groups {
-				let Some(right_nodes) = right_groups.get(&key) else {
+			for (key, left_nodes) in &left_groups.free {
+				let Some(right_nodes) = right_groups.free.get(key) else {
 					continue;
 				};
-				let repeated = left_nodes
-					.first()
-					.is_some_and(|id| anchor_repeats_under_parent(left, *id, &key))
-					|| right_nodes
-						.first()
-						.is_some_and(|id| anchor_repeats_under_parent(right, *id, &key));
-				if repeated {
+				if left_groups.repeats(key) || right_groups.repeats(key) {
 					continue;
 				}
 				if let ([left_node], [right_node]) = (left_nodes.as_slice(), right_nodes.as_slice())
@@ -1230,34 +1351,49 @@ fn match_parent_scoped_anchors(
 	}
 }
 
-fn unmatched_parent_anchor_groups(
-	tree: &NormalizedTree,
+/// The parent-scoped anchors among one parent's children: the free
+/// children grouped by anchor, and the anchors more than one child carries,
+/// matched or not.
+struct ParentAnchorGroups<'tree> {
+	free: BTreeMap<&'tree SemanticKey, Vec<NodeId>>,
+	repeated: BTreeSet<&'tree SemanticKey>,
+}
+
+impl ParentAnchorGroups<'_> {
+	fn repeats(&self, anchor: &SemanticKey) -> bool {
+		self.repeated.contains(anchor)
+	}
+}
+
+fn unmatched_parent_anchor_groups<'tree>(
+	tree: &'tree NormalizedTree,
 	children: &[NodeId],
 	matching: &Matching,
 	left_side: bool,
-) -> BTreeMap<SemanticKey, Vec<NodeId>> {
-	let mut groups = BTreeMap::new();
+) -> ParentAnchorGroups<'tree> {
+	let mut free = BTreeMap::new();
+	let mut seen = BTreeSet::new();
+	let mut repeated = BTreeSet::new();
 	for child in children {
-		let unavailable = if left_side {
-			matching.is_left_matched(*child) || matching.is_left_ambiguous(*child)
-		} else {
-			matching.is_right_matched(*child) || matching.is_right_ambiguous(*child)
-		};
-		if unavailable {
-			continue;
-		}
 		let Some(anchor) = tree.node(*child).unwrap().anchor.as_ref() else {
 			continue;
 		};
 		if anchor.scope != SemanticKeyScope::Parent {
 			continue;
 		}
-		groups
-			.entry(anchor.clone())
-			.or_insert_with(Vec::new)
-			.push(*child);
+		if !seen.insert(anchor) {
+			repeated.insert(anchor);
+		}
+		let unavailable = if left_side {
+			matching.is_left_matched(*child) || matching.is_left_ambiguous(*child)
+		} else {
+			matching.is_right_matched(*child) || matching.is_right_ambiguous(*child)
+		};
+		if !unavailable {
+			free.entry(anchor).or_insert_with(Vec::new).push(*child);
+		}
 	}
-	groups
+	ParentAnchorGroups { free, repeated }
 }
 
 fn match_repeated_parent_scoped_siblings(
@@ -1265,6 +1401,7 @@ fn match_repeated_parent_scoped_siblings(
 	right: &NormalizedTree,
 	matching: &mut Matching,
 	threshold: u32,
+	work: &mut MatchWork,
 ) {
 	loop {
 		let parents = matching.records().copied().collect::<Vec<_>>();
@@ -1282,16 +1419,11 @@ fn match_repeated_parent_scoped_siblings(
 				matching,
 				false,
 			);
-			for (key, left_nodes) in left_groups {
-				let Some(right_nodes) = right_groups.get(&key) else {
+			for (key, left_nodes) in &left_groups.free {
+				let Some(right_nodes) = right_groups.free.get(key) else {
 					continue;
 				};
-				let repeated = left_nodes
-					.first()
-					.is_some_and(|id| anchor_repeats_under_parent(left, *id, &key))
-					|| right_nodes
-						.first()
-						.is_some_and(|id| anchor_repeats_under_parent(right, *id, &key));
+				let repeated = left_groups.repeats(key) || right_groups.repeats(key);
 				if !repeated {
 					continue;
 				}
@@ -1299,7 +1431,7 @@ fn match_repeated_parent_scoped_siblings(
 					left,
 					right,
 					matching,
-					&left_nodes,
+					left_nodes,
 					right_nodes,
 					threshold,
 				);
@@ -1326,8 +1458,8 @@ fn match_repeated_parent_scoped_siblings(
 		if !changed {
 			break;
 		}
-		match_required_slots(left, right, matching);
-		match_parent_scoped_anchors(left, right, matching);
+		match_required_slots(left, right, matching, work);
+		match_parent_scoped_anchors(left, right, matching, work);
 	}
 
 	record_unresolved_repeated_sibling_ambiguities(left, right, matching, threshold);
@@ -1497,16 +1629,11 @@ fn record_unresolved_repeated_sibling_ambiguities(
 			matching,
 			false,
 		);
-		for (key, left_nodes) in left_groups {
-			let Some(right_nodes) = right_groups.get(&key) else {
+		for (key, left_nodes) in &left_groups.free {
+			let Some(right_nodes) = right_groups.free.get(key) else {
 				continue;
 			};
-			let repeated = left_nodes
-				.first()
-				.is_some_and(|id| anchor_repeats_under_parent(left, *id, &key))
-				|| right_nodes
-					.first()
-					.is_some_and(|id| anchor_repeats_under_parent(right, *id, &key));
+			let repeated = left_groups.repeats(key) || right_groups.repeats(key);
 			if !repeated {
 				continue;
 			}
@@ -1514,11 +1641,11 @@ fn record_unresolved_repeated_sibling_ambiguities(
 				left,
 				right,
 				matching,
-				&left_nodes,
+				left_nodes,
 				right_nodes,
 				threshold,
 			);
-			for left_node in left_nodes {
+			for &left_node in left_nodes {
 				let Some(best) = candidates.left.remove(&left_node) else {
 					continue;
 				};
@@ -1532,9 +1659,14 @@ fn record_unresolved_repeated_sibling_ambiguities(
 	}
 }
 
-fn match_required_slots(left: &NormalizedTree, right: &NormalizedTree, matching: &mut Matching) {
+fn match_required_slots(
+	left: &NormalizedTree,
+	right: &NormalizedTree,
+	matching: &mut Matching,
+	work: &mut MatchWork,
+) {
 	loop {
-		let parents = matching.records().copied().collect::<Vec<_>>();
+		let parents = work.required_slots.take(left, right, matching);
 		let mut changed = false;
 		for parent in parents {
 			let left_parent = left.node(parent.left).unwrap();
@@ -1922,10 +2054,11 @@ fn recover_children(
 	right: &NormalizedTree,
 	matching: &mut Matching,
 	max_recovery_size: usize,
+	work: &mut MatchWork,
 ) {
 	let mut processed = BTreeSet::new();
 	loop {
-		match_required_slots(left, right, matching);
+		match_required_slots(left, right, matching, work);
 		let mut parents = matching
 			.records()
 			.copied()
@@ -2859,7 +2992,7 @@ mod tests {
 			});
 		}
 
-		match_required_slots(&left, &right, &mut matching);
+		match_required_slots(&left, &right, &mut matching, &mut MatchWork::default());
 
 		assert_eq!(matching.ambiguities().len(), 1);
 		assert_eq!(matching.ambiguities()[0].left, NodeId::new(2));

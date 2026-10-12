@@ -3,6 +3,7 @@
 pub(crate) mod input;
 pub(crate) mod tree;
 
+use crate::merge::timing::stage;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -205,11 +206,15 @@ impl TransformPlan {
 		let adapters = eu4()
 			.content_families()
 			.iter()
-			.filter_map(|descriptor| descriptor.transform_adapter())
+			.filter_map(|descriptor| {
+				descriptor
+					.transform_adapter()
+					.map(|adapter| (&descriptor.id, adapter))
+			})
 			.collect::<Vec<_>>();
 		let mut policies = adapters
 			.iter()
-			.map(|adapter| adapter.reviewed_inputs(request.project))
+			.map(|(_, adapter)| adapter.reviewed_inputs(request.project))
 			.collect::<Result<Vec<_>, _>>()?;
 		// Reviewed syntax repairs belong to no content family; they come last
 		// and compose with the families' own edits to the same file.
@@ -230,11 +235,16 @@ impl TransformPlan {
 				.collect(),
 			validate: None,
 		});
-		let mut reviewed = input::ReviewedInputBatch::prepare(input, &policies)?.apply(input);
+		let mut reviewed = stage("apply_reviewed_inputs", || {
+			Ok::<_, MergeError>(input::ReviewedInputBatch::prepare(input, &policies)?.apply(input))
+		})?;
 		let syntax = reviewed.pop().expect("one reviewed input per policy");
 		let mut plan = Self::default();
-		for (adapter, reviewed) in adapters.into_iter().zip(reviewed) {
-			for prepared in adapter.prepare(input, request, reviewed)? {
+		for ((family, adapter), reviewed) in adapters.into_iter().zip(reviewed) {
+			let prepared = stage(&format!("prepare_transform {family:?}"), || {
+				adapter.prepare(input, request, reviewed)
+			})?;
+			for prepared in prepared {
 				plan.push(input, prepared)?;
 			}
 		}

@@ -1,5 +1,6 @@
 //! Automatic, resumable discovery probes. Separate from the fixed acceptance cohort.
 mod account;
+mod combination;
 mod process;
 mod selection;
 
@@ -97,27 +98,12 @@ fn workshop_recent_page() {
 
 fn live_config(root: PathBuf) -> ProbeResult<ProbeConfig> {
 	let game = discover_eu4_game(&DiscoveryOverrides::default())?;
-	let libraries: Vec<LibraryPair> = match game.steam_root.as_ref() {
-		Some(steam) => match SteamWorkshopCatalog::discover_from_steam_root(steam, 236850) {
-			Ok(catalog) => catalog
-				.libraries()
-				.iter()
-				.map(|library| LibraryPair {
-					content_root: library.content_root.clone(),
-					manifest_path: library.manifest_path.clone(),
-				})
-				.collect(),
-			Err(SteamWorkshopError::NoWorkshopLibraries { .. }) => Vec::new(),
-			Err(error) => return Err(error.into()),
-		},
-		None => Vec::new(),
-	};
 	Ok(ProbeConfig {
 		root,
 		url: PAGE_URL.into(),
 		count: 30,
+		libraries: installed_libraries(&game)?,
 		game,
-		libraries,
 		base_data: snapshot::data_root(),
 		steamcmd: std::env::var_os("FOCH_STEAMCMD")
 			.map(PathBuf::from)
@@ -269,9 +255,9 @@ fn workflow(
 	};
 	fs::write(run.join("foch.toml"), toml::to_string_pretty(&project)?)?;
 	report.stage = "base_preparation".into();
-	ensure_base(config, run)?;
+	ensure_base(&config.game, &config.base_data, &config.root, run)?;
 	report.stage = "merge".into();
-	let mut command = foch_command(config, run);
+	let mut command = foch_command(&config.base_data, &config.root, run);
 	command
 		.arg("merge")
 		.arg(run.join("foch.toml"))
@@ -344,6 +330,25 @@ fn workflow(
 	Ok(())
 }
 
+/// The installed Workshop libraries of the discovered Steam root, if any.
+fn installed_libraries(game: &Eu4GameDiscovery) -> ProbeResult<Vec<LibraryPair>> {
+	let Some(steam) = game.steam_root.as_ref() else {
+		return Ok(Vec::new());
+	};
+	match SteamWorkshopCatalog::discover_from_steam_root(steam, 236850) {
+		Ok(catalog) => Ok(catalog
+			.libraries()
+			.iter()
+			.map(|library| LibraryPair {
+				content_root: library.content_root.clone(),
+				manifest_path: library.manifest_path.clone(),
+			})
+			.collect()),
+		Err(SteamWorkshopError::NoWorkshopLibraries { .. }) => Ok(Vec::new()),
+		Err(error) => Err(error.into()),
+	}
+}
+
 fn normalize_pairs(pairs: Vec<LibraryPair>) -> ProbeResult<Vec<LibraryPair>> {
 	pairs
 		.into_iter()
@@ -361,6 +366,20 @@ fn resolve_selection(
 	selection: &Selection,
 	pairs: &[LibraryPair],
 ) -> ProbeResult<(Vec<WorkshopItemVersion>, Vec<UnavailableInput>)> {
+	let ids: Vec<&str> = selection
+		.items
+		.iter()
+		.map(|item| item.publishedfileid.as_str())
+		.collect();
+	resolve_installed(&ids, pairs)
+}
+
+/// Each requested Workshop item, in request order, paired with its ACF
+/// identity and a readable descriptor; the rest are reported unavailable.
+fn resolve_installed(
+	ids: &[&str],
+	pairs: &[LibraryPair],
+) -> ProbeResult<(Vec<WorkshopItemVersion>, Vec<UnavailableInput>)> {
 	let catalog = if pairs.is_empty() {
 		None
 	} else {
@@ -375,11 +394,11 @@ fn resolve_selection(
 	};
 	let mut sources = Vec::new();
 	let mut missing = Vec::new();
-	for item in &selection.items {
+	for id in ids {
 		match catalog
 			.as_ref()
 			.ok_or_else(|| "no installed Workshop catalog".to_string())
-			.and_then(|catalog| catalog.require_item(&item.publishedfileid))
+			.and_then(|catalog| catalog.require_item(id))
 			.and_then(|source| {
 				load_descriptor(&source.content_path.join("descriptor.mod"))
 					.map(|_| source)
@@ -387,7 +406,7 @@ fn resolve_selection(
 			}) {
 			Ok(source) => sources.push(source),
 			Err(reason) => missing.push(UnavailableInput {
-				id: item.publishedfileid.clone(),
+				id: (*id).to_string(),
 				reason,
 			}),
 		}
@@ -499,18 +518,24 @@ fn download_locations(text: &str, requested: &[String]) -> ProbeResult<Vec<Libra
 	Ok(pairs)
 }
 
-fn foch_command(config: &ProbeConfig, run: &Path) -> Command {
+/// The exact Cargo-built `foch`, isolated from the user's config and cache.
+fn foch_command(base_data: &Path, probe_root: &Path, run: &Path) -> Command {
 	let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));
 	command
 		.current_dir(run)
-		.env("FOCH_DATA_DIR", &config.base_data)
-		.env("FOCH_CACHE_ROOT", config.root.join("cache"))
+		.env("FOCH_DATA_DIR", base_data)
+		.env("FOCH_CACHE_ROOT", probe_root.join("cache"))
 		.env("FOCH_CONFIG_DIR", run.join("config"));
 	command
 }
 
-fn ensure_base(config: &ProbeConfig, run: &Path) -> ProbeResult<()> {
-	let version = &config.game.game_version;
+fn ensure_base(
+	game: &Eu4GameDiscovery,
+	base_data: &Path,
+	probe_root: &Path,
+	run: &Path,
+) -> ProbeResult<()> {
+	let version = &game.game_version;
 	if version.is_empty()
 		|| !version.chars().any(|c| c.is_ascii_digit())
 		|| !version
@@ -519,7 +544,7 @@ fn ensure_base(config: &ProbeConfig, run: &Path) -> ProbeResult<()> {
 	{
 		return Err("invalid EU4 version for installed base lookup".into());
 	}
-	let dir = config.base_data.join("eu4").join(version);
+	let dir = base_data.join("eu4").join(version);
 	let current = if dir.join(snapshot::INSTALLED_METADATA_FILE_NAME).is_file() {
 		let metadata: InstalledBaseDataMetadata =
 			serde_json::from_slice(&fs::read(dir.join(snapshot::INSTALLED_METADATA_FILE_NAME))?)?;
@@ -531,9 +556,9 @@ fn ensure_base(config: &ProbeConfig, run: &Path) -> ProbeResult<()> {
 	};
 	if !current {
 		let result = process::run(
-			foch_command(config, run)
+			foch_command(base_data, probe_root, run)
 				.args(["data", "build", "eu4", "--from-game-path"])
-				.arg(&config.game.game_root)
+				.arg(&game.game_root)
 				.args(["--game-version", "auto", "--install", "--output-dir"])
 				.arg(run.join("base-build")),
 			run,
@@ -565,7 +590,7 @@ mod tests {
 	use super::*;
 	use crate::write_file;
 
-	fn fixture(root: &Path) -> ProbeConfig {
+	pub(super) fn fixture(root: &Path) -> ProbeConfig {
 		let root = root.canonicalize().unwrap();
 		let game = root.join("game");
 		write_file(&game, "version.txt", "v1.37.5.0");
@@ -611,7 +636,10 @@ mod tests {
 		}
 	}
 
-	fn install_fixture(config: &ProbeConfig, ids: &[String]) -> ProbeResult<Vec<LibraryPair>> {
+	pub(super) fn install_fixture(
+		config: &ProbeConfig,
+		ids: &[String],
+	) -> ProbeResult<Vec<LibraryPair>> {
 		let workshop = config.root.join("steam/steamapps/workshop");
 		let content_root = workshop.join("content/236850");
 		fs::create_dir_all(&content_root)?;

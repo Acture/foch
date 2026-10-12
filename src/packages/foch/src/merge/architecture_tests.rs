@@ -221,7 +221,7 @@ fn commit_consumes_frozen_artifacts_without_reanalysis() {
 			"cwt",
 		],
 	);
-	assert!(commit.contains("artifacts.copy_into"));
+	assert!(commit.contains("artifacts.move_into"));
 	assert!(commit.contains("transaction.commit"));
 	assert!(include_str!("output/materialize/output_transaction.rs").contains("fn commit("));
 }

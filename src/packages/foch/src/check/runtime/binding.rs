@@ -197,7 +197,7 @@ fn collect_input_semantic_index(
 		for document in &mut base_index.documents {
 			document.mod_id = base.to_string();
 		}
-		merged = merge_semantic_indexes(merged, base_index);
+		merged.append(base_index);
 	}
 	for (mod_item, snapshot) in input.mods.iter().zip(input.mod_snapshots.iter()) {
 		if !enabled_mod_ids.contains(&mod_item.mod_id) {
@@ -206,7 +206,7 @@ fn collect_input_semantic_index(
 		let Some(snapshot) = snapshot.as_ref() else {
 			continue;
 		};
-		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
+		merged.append(snapshot.semantic_index.clone());
 	}
 	merged
 }
@@ -301,49 +301,6 @@ fn runtime_contributors_by_key<'a>(
 		}
 	}
 	Ok(contributors_by_key)
-}
-
-fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
-	let offset = base.scopes.len();
-	for scope in &mut overlay.scopes {
-		scope.id += offset;
-		if let Some(parent) = scope.parent {
-			scope.parent = Some(parent + offset);
-		}
-	}
-	for definition in &mut overlay.definitions {
-		definition.scope_id += offset;
-	}
-	for reference in &mut overlay.references {
-		reference.scope_id += offset;
-	}
-	for alias in &mut overlay.alias_usages {
-		alias.scope_id += offset;
-	}
-	for usage in &mut overlay.key_usages {
-		usage.scope_id += offset;
-	}
-	for assignment in &mut overlay.scalar_assignments {
-		assignment.scope_id += offset;
-	}
-
-	base.scopes.extend(overlay.scopes);
-	base.definitions.extend(overlay.definitions);
-	base.references.extend(overlay.references);
-	base.alias_usages.extend(overlay.alias_usages);
-	base.key_usages.extend(overlay.key_usages);
-	base.scalar_assignments.extend(overlay.scalar_assignments);
-	base.documents.extend(overlay.documents);
-	base.localisation_definitions
-		.extend(overlay.localisation_definitions);
-	base.localisation_duplicates
-		.extend(overlay.localisation_duplicates);
-	base.ui_definitions.extend(overlay.ui_definitions);
-	base.resource_references.extend(overlay.resource_references);
-	base.csv_rows.extend(overlay.csv_rows);
-	base.json_properties.extend(overlay.json_properties);
-	base.parse_issues.extend(overlay.parse_issues);
-	base
 }
 
 fn build_precedence_map(

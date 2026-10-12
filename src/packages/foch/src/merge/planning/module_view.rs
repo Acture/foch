@@ -23,6 +23,9 @@ pub(crate) struct CrossFileModuleViews {
 	pub vanilla: Option<ParsedScriptFile>,
 	pub contributors: HashMap<ModId, ParsedScriptFile>,
 	pub definition_sources: HashMap<ModId, BTreeMap<String, ModuleDefinitionSource>>,
+	/// Overrides the folded views resolved, such as a mod's file redefining a
+	/// vanilla culture, deduplicated across views.
+	pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,11 +82,20 @@ pub(crate) fn build_cross_file_module_views(
 		input.game_version.as_deref(),
 	)
 	.map_err(CrossFileModuleViewError::engine_failure)?;
-	let module_policy = apply_duplicate_definition_override(
+	let mut module_policy = apply_duplicate_definition_override(
 		module_policy,
 		duplicate_definitions,
 		descriptor.merge_key_source,
 	);
+	let resolves_culture_overrides =
+		crate::game::eu4::cultures::correspondence::CultureCorrespondence::applies_to(
+			namespace.output_path(),
+		);
+	if resolves_culture_overrides {
+		// The game merges a culture group defined in several files; the
+		// culture view resolves members itself, so keep every definition.
+		module_policy.duplicate_definitions = DuplicateDefinitionPolicy::PreserveAll;
+	}
 
 	let mut base_files = BTreeMap::new();
 	let mut files_by_mod: HashMap<ModId, BTreeMap<GamePathBuf, ParsedScriptFile>> = HashMap::new();
@@ -153,18 +165,26 @@ pub(crate) fn build_cross_file_module_views(
 		ignore_replace_path,
 		dep_overrides,
 	);
+	let mut warnings = BTreeSet::new();
+	let mut resolve_overrides = |parsed: &mut ParsedScriptFile| {
+		if resolves_culture_overrides {
+			warnings.extend(crate::game::eu4::cultures::normalize_culture_view(
+				&mut parsed.ast,
+			));
+		}
+	};
 	let vanilla = if base_files.is_empty() {
 		None
 	} else {
-		Some(
-			fold_visible_module_files(
-				"__base_game__",
-				&merge_unit.module_name,
-				module_policy,
-				&base_files,
-			)?
-			.parsed,
-		)
+		let mut parsed = fold_visible_module_files(
+			"__base_game__",
+			&merge_unit.module_name,
+			module_policy,
+			&base_files,
+		)?
+		.parsed;
+		resolve_overrides(&mut parsed);
+		Some(parsed)
 	};
 
 	let mut effective_views = HashMap::new();
@@ -204,8 +224,10 @@ pub(crate) fn build_cross_file_module_views(
 			module_policy,
 			&visible,
 		)?;
+		let mut parsed = folded.parsed;
+		resolve_overrides(&mut parsed);
 		definition_sources.insert(mod_id.clone(), folded.sources);
-		effective_views.insert(mod_id.clone(), folded.parsed);
+		effective_views.insert(mod_id.clone(), parsed);
 	}
 
 	Ok(CrossFileModuleViews {
@@ -214,6 +236,7 @@ pub(crate) fn build_cross_file_module_views(
 		vanilla,
 		contributors: effective_views,
 		definition_sources,
+		warnings: warnings.into_iter().collect(),
 	})
 }
 
@@ -1010,6 +1033,7 @@ mod tests {
 			vanilla: None,
 			contributors: std::collections::HashMap::from([(mod_id.clone(), folded.parsed)]),
 			definition_sources: std::collections::HashMap::from([(mod_id.clone(), folded.sources)]),
+			warnings: Vec::new(),
 		};
 		let mut entry = CultureRenameEntry {
 			from: "old_culture".into(),

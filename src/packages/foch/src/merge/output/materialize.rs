@@ -20,9 +20,7 @@ use super::super::error::{MergeError, MergeErrorSubject};
 use super::super::namespace::{
 	FamilyKeyIndex, build_family_key_index, detect_key_conflicts, group_by_family,
 };
-use super::super::path_plan::{
-	build_merge_plan_from_input, fatal_plan_from_input_error, prune_noop_script_contributors,
-};
+use super::super::path_plan::{build_merge_plan_from_input, fatal_plan_from_input_error};
 use super::super::planning::module_view::declared_definition_keys;
 use super::localisation_merge::LocalisationMergeOutcome;
 use crate::game::eu4::Eu4;
@@ -41,6 +39,7 @@ use crate::merge::conflict_view::ConflictView;
 use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
 use crate::merge::review::{MergeDisposition, MergeReview, PlaysetProvenance, UnitOutcomeLedger};
+use crate::merge::timing::{KernelTimes, stage, stage_log_with};
 use crate::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, GamePath, GamePathBuf,
 	HandlerResolutionRecord, LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeBackendId,
@@ -178,7 +177,6 @@ pub(crate) fn freeze_path_plan(
 ) -> MergePlanResult {
 	if let Ok(input) = input_result {
 		apply_mod_priority_boosts(input, &resolution_map.mod_priority_boost);
-		prune_noop_script_contributors(input, eu4());
 	}
 
 	stage_log_with("build_merge_plan", || {
@@ -391,6 +389,7 @@ pub(crate) fn materialize_with_adaptations(
 	crate::merge::address_patch::cache::reset_mod_diff_cache_stats();
 	crate::merge::address_patch::cache::reset_dag_base_cache_stats();
 	let materialize_started = Instant::now();
+	let kernel_started = KernelTimes::now();
 	let total_paths = plan.paths.len();
 	let mut interactive_handler = options.interactive_conflict_handler.take();
 	// Prompts, and the resolutions they persist, must follow plan order: a
@@ -589,6 +588,11 @@ pub(crate) fn materialize_with_adaptations(
 	let mod_diff_cache_stats = crate::merge::address_patch::cache::mod_diff_cache_stats();
 	let dag_base_cache_stats = crate::merge::address_patch::cache::dag_base_cache_stats();
 	eprintln!(
+		"[merge] materialize: kernels {}",
+		KernelTimes::now().summary_since(&kernel_started)
+	);
+	crate::merge::timing::record_stage("materialize", materialize_started);
+	eprintln!(
 		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} definition_modules={} definition_modules_generated={} definition_modules_blocked={} definition_module_elapsed_ms={} base_passthrough_skipped={} noop_skipped={} cross_file_noop_skipped={} per_entry_noop_skipped={} mod_diff_cache_hits={} mod_diff_cache_misses={} dag_base_cache_hits={} dag_base_cache_misses={}",
 		materialize_started.elapsed().as_millis(),
 		report.generated_file_count,
@@ -653,8 +657,14 @@ pub(crate) fn materialize_with_adaptations(
 		&committed_module_replacements,
 		&out_dir.join(MERGED_MOD_DESCRIPTOR_PATH),
 	)?;
-	write_metadata_only(out_dir, &plan, &report)?;
-	let review = review.finish(&mod_display_names, &report, playset)?;
+	stage("write_merge_metadata", || {
+		write_metadata_only(out_dir, &plan, &report)
+	})?;
+	let review = stage("finish_review", || {
+		review.finish(&mod_display_names, &report, playset)
+	})?;
+	// The frozen input holds every parsed source document.
+	crate::platform::memory::release_in_background(input);
 	Ok(MaterializedMerge { report, review })
 }
 
@@ -1296,6 +1306,7 @@ fn apply_module_unit(
 	module: ModuleAnalysis,
 ) -> Result<(), MergeError> {
 	let module_started = Instant::now();
+	report.warnings.extend(module.warnings.iter().cloned());
 	let deferred_before = report.deferred_unit_count();
 	let outcome = materialize_cross_file_module(CrossFileModuleMaterializeContext {
 		input: env.input,
@@ -1440,6 +1451,8 @@ fn apply_file_unit(
 		}
 		Ok(Err(StructuralMergeFailure::Unresolved(conflict))) => {
 			let explicitly_deferred = conflict.explicitly_deferred;
+			// The review shows which conflicts, as it does for definition modules.
+			let reason = conflict.reason.clone();
 			(
 				conflict,
 				DeferredUnitReason::NeedsUserChoice,
@@ -1448,22 +1461,26 @@ fn apply_file_unit(
 				} else {
 					MergeDisposition::NeedsUserChoice
 				},
-				"structural conflict deferred",
+				reason,
 				!explicitly_deferred,
 			)
 		}
-		Ok(Err(StructuralMergeFailure::Merge(err))) => (
-			StructuralConflictReport::without_details(format!("structural merge failed: {err}")),
-			DeferredUnitReason::EngineFailure,
-			MergeDisposition::EngineFailure,
-			"structural backend failed",
-			true,
-		),
+		Ok(Err(StructuralMergeFailure::Merge(err))) => {
+			// The review shows the cause before commit, as definition modules do.
+			let reason = format!("structural merge failed: {err}");
+			(
+				StructuralConflictReport::without_details(reason.clone()),
+				DeferredUnitReason::EngineFailure,
+				MergeDisposition::EngineFailure,
+				reason,
+				true,
+			)
+		}
 		Err(_) => (
 			StructuralConflictReport::without_details("structural merge panicked".to_string()),
 			DeferredUnitReason::EngineFailure,
 			MergeDisposition::EngineFailure,
-			"structural backend panicked",
+			"structural backend panicked".to_string(),
 			true,
 		),
 	};
@@ -1486,7 +1503,7 @@ fn apply_file_unit(
 	review.resolve(
 		entry,
 		disposition,
-		summary,
+		&summary,
 		placeholder_written.then(|| entry.output_path().to_owned()),
 		[],
 	)?;
@@ -2462,52 +2479,9 @@ fn input_mod_display_names(input: &ResolvedInput) -> HashMap<String, String> {
 fn input_mod_semantic_index(input: &ResolvedInput) -> SemanticIndex {
 	let mut merged = SemanticIndex::default();
 	for snapshot in input.mod_snapshots.iter().flatten() {
-		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
+		merged.append(snapshot.semantic_index.clone());
 	}
 	merged
-}
-
-fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
-	let offset = base.scopes.len();
-	for scope in &mut overlay.scopes {
-		scope.id += offset;
-		if let Some(parent) = scope.parent {
-			scope.parent = Some(parent + offset);
-		}
-	}
-	for definition in &mut overlay.definitions {
-		definition.scope_id += offset;
-	}
-	for reference in &mut overlay.references {
-		reference.scope_id += offset;
-	}
-	for alias in &mut overlay.alias_usages {
-		alias.scope_id += offset;
-	}
-	for usage in &mut overlay.key_usages {
-		usage.scope_id += offset;
-	}
-	for assignment in &mut overlay.scalar_assignments {
-		assignment.scope_id += offset;
-	}
-
-	base.scopes.extend(overlay.scopes);
-	base.definitions.extend(overlay.definitions);
-	base.references.extend(overlay.references);
-	base.alias_usages.extend(overlay.alias_usages);
-	base.key_usages.extend(overlay.key_usages);
-	base.scalar_assignments.extend(overlay.scalar_assignments);
-	base.documents.extend(overlay.documents);
-	base.localisation_definitions
-		.extend(overlay.localisation_definitions);
-	base.localisation_duplicates
-		.extend(overlay.localisation_duplicates);
-	base.ui_definitions.extend(overlay.ui_definitions);
-	base.resource_references.extend(overlay.resource_references);
-	base.csv_rows.extend(overlay.csv_rows);
-	base.json_properties.extend(overlay.json_properties);
-	base.parse_issues.extend(overlay.parse_issues);
-	base
 }
 
 fn record_dag_diagnostics(report: &mut MergeReport, diagnostics: &[DagDiagnostic]) {
@@ -2970,24 +2944,6 @@ pub(crate) struct StructuralMergeContext<'a> {
 	vanilla_base_mode: VanillaBaseMode,
 }
 
-/// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
-/// on stderr. The closure can return `(value, Option<summary>)`; the summary, if
-/// any, is appended to the `done` line as space-separated `kv=value` pairs.
-fn stage_log_with<F, T>(name: &str, f: F) -> T
-where
-	F: FnOnce() -> (T, Option<String>),
-{
-	eprintln!("[merge] {name}: start");
-	let started = Instant::now();
-	let (value, summary) = f();
-	let elapsed_ms = started.elapsed().as_millis();
-	match summary {
-		Some(s) => eprintln!("[merge] {name}: done elapsed_ms={elapsed_ms} {s}"),
-		None => eprintln!("[merge] {name}: done elapsed_ms={elapsed_ms}"),
-	}
-	value
-}
-
 /// In-place per-file counter for the materialize loop. On a TTY, refreshes the
 /// same line via `\r`; off a TTY, prints a fresh line every `TICK_EVERY` items
 /// so piped logs stay readable.
@@ -3213,7 +3169,7 @@ mod tests {
 	#[test]
 	fn stage_log_with_invokes_closure_exactly_once_and_returns_value() {
 		let calls = Cell::new(0u32);
-		let value = super::stage_log_with("test_stage", || {
+		let value = crate::merge::timing::stage_log_with("test_stage", || {
 			calls.set(calls.get() + 1);
 			(42i32, Some("k=v".to_string()))
 		});
@@ -5148,7 +5104,11 @@ mod tests {
 	#[test]
 	fn structural_backend_failure_and_panic_are_reviewed_as_engine_failures() {
 		for (name, panic, expected_summary) in [
-			("failure", false, "structural backend failed"),
+			(
+				"failure",
+				false,
+				"structural merge failed: validation error in common/diplomatic_actions/ordinary.txt: controlled structural backend failure",
+			),
 			("panic", true, "structural backend panicked"),
 		] {
 			let temp = TempDir::new().expect("temp dir");
@@ -5189,7 +5149,7 @@ mod tests {
 			target,
 			MergeDisposition::NeedsUserChoice,
 			None,
-			"structural conflict deferred",
+			"controlled unresolved structural conflict",
 		);
 		assert!(!out_dir.join(target).exists());
 		assert_eq!(materialized.report.generated_file_count, 0);

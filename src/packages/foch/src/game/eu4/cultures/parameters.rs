@@ -251,7 +251,13 @@ fn is_callable_document(path: &GamePath) -> bool {
 }
 
 fn callable_kind(path: &GamePath) -> Option<CallableKind> {
-	if path.is_inside(&["common", "scripted_effects"], str::eq) {
+	// The game loads only `.txt` scripts here; a mod's `x.txt.bak` is not one.
+	if path
+		.extension()
+		.is_none_or(|extension| !extension.eq_ignore_ascii_case("txt"))
+	{
+		None
+	} else if path.is_inside(&["common", "scripted_effects"], str::eq) {
 		Some(CallableKind::Effect)
 	} else if path.is_inside(&["common", "scripted_triggers"], str::eq) {
 		Some(CallableKind::Trigger)
@@ -429,4 +435,21 @@ fn refers_to_changed(value: &str, mappings: &BTreeMap<String, String>) -> bool {
 			part.split_once('|')
 				.is_some_and(|(_, default)| mappings.contains_key(default))
 		})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{CallableKind, callable_kind};
+	use crate::model::GamePath;
+
+	#[test]
+	fn only_txt_files_define_callables() {
+		let path = |text| GamePath::new(text).expect("valid game path");
+		assert!(matches!(
+			callable_kind(path("common/scripted_effects/00_effects.txt")),
+			Some(CallableKind::Effect)
+		));
+		assert!(callable_kind(path("common/scripted_effects/00_effects.txt.bak")).is_none());
+		assert!(callable_kind(path("common/scripted_triggers/readme.md")).is_none());
+	}
 }

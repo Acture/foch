@@ -21,11 +21,18 @@ target directory.
 
 **Workaround:** copy [`examples/eu4-default-foch.toml`](../examples/eu4-default-foch.toml) next to `dlc_load.json`, or write narrow `[[resolutions]]` rules using the DSL in [`foch-toml-resolutions.md`](foch-toml-resolutions.md). Avoid global `last_writer` rules unless you explicitly want load-order semantics everywhere.
 
-## Localisation and legacy encodings can still mojibake
+## Script text is kept byte-faithful, so editors may show escape bytes
 
-The alpha decodes Paradox text through `decode_paradox_bytes`, with UTF-8/BOM handling plus GB18030, GBK, Big5/CJK detection, and Windows-1252 fallback via `chardetng`/`encoding_rs`. That covers common EU4 and translation-mod cases, but exotic or malformed encodings can still display as mojibake.
+EU4 reads script `.txt` files as windows-1252 bytes, and translation mods
+encode CJK text as escape byte sequences inside them for their font patch.
+`decode_paradox_bytes` in `src/packages/foch/src/game/eu4/text.rs` reads valid
+UTF-8 as UTF-8 and everything else as windows-1252, and generated scripts are
+written back as windows-1252 whenever every character has a windows-1252
+byte, so merged output keeps the source bytes. Editor views of such files
+show those escape bytes as Latin characters rather than the rendered CJK text.
+Localisation `.yml` files keep their own UTF-8 reader.
 
-**Workaround:** keep suspicious localisation files under review, report minimal byte samples, and extend the `decode_paradox_bytes` funnel in `src/packages/foch/src/game/eu4/text.rs` when a repeatable encoding family appears.
+**Workaround:** none needed for merged output; read translated names in game.
 
 ## Two total-conversion cases have a cold-path outlier
 

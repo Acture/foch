@@ -34,7 +34,6 @@ pub(crate) struct InputScriptCache {
 	overlays: Arc<HashMap<ScriptCacheKey, ScriptOverlay>>,
 	loaded: Arc<HashMap<ScriptCacheKey, Arc<ParsedScriptFile>>>,
 	lazy: Arc<HashMap<ScriptCacheKey, Arc<LazyScriptFile>>>,
-	noop_hints: Arc<HashMap<ScriptCacheKey, bool>>,
 }
 
 impl InputScriptCache {
@@ -62,13 +61,8 @@ impl InputScriptCache {
 			}
 		}
 
-		let mut noop_hints = HashMap::new();
 		for (mod_item, snapshot) in mods.iter().zip(mod_snapshots.iter()) {
-			if let Some(snapshot) = snapshot {
-				for (path, is_noop) in &snapshot.document_noop_hints {
-					noop_hints.insert((mod_item.mod_id.clone(), path.clone()), *is_noop);
-				}
-			} else {
+			if snapshot.is_none() {
 				tracing::debug!(
 					target: "crate::input::scripts",
 					mod_id = %mod_item.mod_id,
@@ -111,7 +105,6 @@ impl InputScriptCache {
 			overlays: Arc::default(),
 			loaded: Arc::new(loaded),
 			lazy: Arc::new(lazy),
-			noop_hints: Arc::new(noop_hints),
 		})
 	}
 
@@ -140,15 +133,6 @@ impl InputScriptCache {
 	#[cfg(test)]
 	pub(crate) fn is_loaded(&self, mod_id: &str, relative_path: &GamePath) -> bool {
 		matches!(self.get(mod_id, relative_path), Ok(Some(_)))
-	}
-
-	pub(crate) fn is_noop_hint(&self, mod_id: &str, relative_path: &GamePath) -> Option<bool> {
-		if self.overlay_bytes(mod_id, relative_path).is_some() {
-			return Some(false);
-		}
-		self.noop_hints
-			.get(&(mod_id.to_string(), relative_path.to_owned()))
-			.copied()
 	}
 
 	pub(crate) fn insert_overlay(&mut self, mut parsed: ParsedScriptFile, bytes: Vec<u8>) {
@@ -371,12 +355,7 @@ mod tests {
 		}
 	}
 
-	fn cache_for_files(
-		root: &Path,
-		files: &[&str],
-		parse_ok: bool,
-		noop_hints: &[(&str, bool)],
-	) -> InputScriptCache {
+	fn cache_for_files(root: &Path, files: &[&str], parse_ok: bool) -> InputScriptCache {
 		let document_input_identities = files
 			.iter()
 			.map(|relative| {
@@ -418,10 +397,6 @@ mod tests {
 				.iter()
 				.map(|relative| (game_path(relative), parse_ok))
 				.collect(),
-			document_noop_hints: noop_hints
-				.iter()
-				.map(|(relative, hint)| (game_path(relative), *hint))
-				.collect(),
 			document_input_identities,
 			cache_hit: true,
 		};
@@ -447,7 +422,7 @@ mod tests {
 		)
 		.expect("write B");
 		let contributor_a = contributor(temp.path(), relative_a);
-		let cache = cache_for_files(temp.path(), &[relative_a, relative_b], true, &[]);
+		let cache = cache_for_files(temp.path(), &[relative_a, relative_b], true);
 
 		let concurrent_loads = (0..8)
 			.map(|_| {
@@ -489,7 +464,7 @@ mod tests {
 		fs::create_dir_all(temp.path().join("common/scripted_effects"))
 			.expect("create scripts dir");
 		fs::write(temp.path().join(relative), "effect = { value = 1 }\n").expect("write source");
-		let cache = cache_for_files(temp.path(), &[relative], true, &[]);
+		let cache = cache_for_files(temp.path(), &[relative], true);
 		let contributor = contributor(temp.path(), relative);
 		fs::write(temp.path().join(relative), "effect = { value = 2 }\n").expect("mutate source");
 
@@ -508,7 +483,7 @@ mod tests {
 		fs::create_dir_all(temp.path().join("common/scripted_effects"))
 			.expect("create scripts dir");
 		fs::write(temp.path().join(relative), "effect = { value = 1 }\n").expect("write source");
-		let cache = cache_for_files(temp.path(), &[relative], true, &[]);
+		let cache = cache_for_files(temp.path(), &[relative], true);
 		fs::remove_file(temp.path().join(relative)).expect("delete source");
 
 		let error = cache
@@ -525,29 +500,13 @@ mod tests {
 		fs::create_dir_all(temp.path().join("common/scripted_effects"))
 			.expect("create scripts dir");
 		fs::write(temp.path().join(relative), "--[[ no end\n").expect("write invalid source");
-		let cache = cache_for_files(temp.path(), &[relative], true, &[]);
+		let cache = cache_for_files(temp.path(), &[relative], true);
 
 		let error = cache
 			.load(&contributor(temp.path(), relative))
 			.expect_err("parse-status mismatch");
 
 		assert!(error.contains("parse status changed"));
-	}
-
-	#[test]
-	fn noop_hints_are_available_without_loading_ast() {
-		let temp = TempDir::new().expect("temp dir");
-		let relative = "common/scripted_effects/comments.txt";
-		fs::create_dir_all(temp.path().join("common/scripted_effects"))
-			.expect("create scripts dir");
-		fs::write(temp.path().join(relative), "# comment only\n").expect("write source");
-		let cache = cache_for_files(temp.path(), &[relative], true, &[(relative, true)]);
-
-		assert_eq!(
-			cache.is_noop_hint("mod-a", &game_path(relative)),
-			Some(true)
-		);
-		assert!(!cache.is_loaded("mod-a", &game_path(relative)));
 	}
 
 	fn base_script(root: &Path, relative: &str) -> ParsedScriptFile {

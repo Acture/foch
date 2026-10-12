@@ -7,11 +7,11 @@ use super::{
 	installed_base_snapshot_identity, installed_snapshot_cold_decode_count,
 	installed_snapshot_current_digest_count, installed_snapshot_current_validation_count,
 	installed_snapshot_file_read_count, load_installed_base_snapshot,
-	loaded_base_snapshot_cache_completed_count, lock_and_validate_installed_base_snapshot_identity,
-	lock_installed_base_snapshot_for_install, reset_installed_snapshot_test_counters, sha256_hex,
-	stale_installed_base_data_message, validate_installed_base_snapshot_identity,
-	verified_snapshot_content_matches, write_release_artifacts, write_snapshot_bundle,
-	write_test_installed_snapshot,
+	loaded_base_snapshot_cache_completed_count, loaded_base_snapshot_last_used,
+	lock_and_validate_installed_base_snapshot_identity, lock_installed_base_snapshot_for_install,
+	reset_installed_snapshot_test_counters, sha256_hex, stale_installed_base_data_message,
+	validate_installed_base_snapshot_identity, verified_snapshot_content_matches,
+	write_release_artifacts, write_snapshot_bundle, write_test_installed_snapshot,
 };
 use crate::game::eu4::Eu4;
 use crate::game::eu4::base::analysis_rules_version;
@@ -3540,16 +3540,17 @@ fn decoded_snapshot_cache_never_evicts_in_flight_cells() {
 	start.wait();
 	decode_gate.wait_until_entered(2);
 
-	let (started_tx, started_rx) = std::sync::mpsc::channel();
+	// Release only once second A holds A's in-flight cell: once A completes,
+	// B's completion may evict it from the one-entry completed cache.
+	let looked_up = loaded_base_snapshot_last_used(&sha_a).expect("A is in flight");
 	let second_a = {
 		let bytes = Arc::clone(&bytes_a);
 		let sha = sha_a.clone();
-		std::thread::spawn(move || {
-			started_tx.send(()).expect("signal second A");
-			decode_cached_base_snapshot(&sha, &bytes)
-		})
+		std::thread::spawn(move || decode_cached_base_snapshot(&sha, &bytes))
 	};
-	started_rx.recv().expect("second A started");
+	while loaded_base_snapshot_last_used(&sha_a) == Some(looked_up) {
+		std::thread::yield_now();
+	}
 	decode_gate.release();
 
 	let first_a = first_a.join().expect("first A worker");

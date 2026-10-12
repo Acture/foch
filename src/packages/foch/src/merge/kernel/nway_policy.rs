@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::merge::kernel::{
 	ChildOrder, ClassId, ConflictKind, MergeDecisionEvidence, MergeDecisionReason,
@@ -107,6 +107,8 @@ pub(crate) fn apply_nway_policy(
 		.classes()
 		.map(|class| class.id)
 		.collect::<Vec<_>>();
+	// Every deleted child of one wide parent asks about the same siblings.
+	let mut gap_indexes = DeletedGapIndexes::new();
 	for class_id in class_ids {
 		let class = correspondence.classes.class(class_id);
 		let facts = &correspondence.class_facts[&class_id];
@@ -156,6 +158,7 @@ pub(crate) fn apply_nway_policy(
 						correspondence,
 						class_id,
 						&contributors,
+						&mut gap_indexes,
 					),
 			};
 			deletion_resolved = policy
@@ -235,6 +238,7 @@ pub(crate) fn apply_nway_policy(
 		debug_assert_eq!(class.id, class_id);
 	}
 	close_policy_ancestors(base, revisions, correspondence, policy, plan, &mut records);
+	close_survivor_descendants(base, correspondence, plan, &mut records);
 	records.finish(plan);
 }
 
@@ -543,12 +547,123 @@ fn parent_present_in_all_revisions(
 		.all(|revision| parent.get(*revision).is_some())
 }
 
+/// The siblings of one base parent as one deleting revision orders them,
+/// built once for every deleted child of that parent.
+struct DeletedGapIndex {
+	/// Each base child's position under the base parent.
+	base_positions: HashMap<NodeId, usize>,
+	/// The gaps holding the deleting revision's children with no base
+	/// counterpart, as (kind, nearest base position before, nearest base
+	/// position after), each with whether exactly one base child of that kind
+	/// in the gap is absent from the deleting revision. Inserted siblings in
+	/// one gap answer alike, so each gap is kept once.
+	inserted_gaps: Vec<(String, Option<usize>, Option<usize>, bool)>,
+}
+
+impl DeletedGapIndex {
+	fn build(
+		base: &NormalizedTree,
+		correspondence: &NWayCorrespondence,
+		base_parent_node: &NormalizedNode,
+		deleted_tree: &NormalizedTree,
+		deleted_parent_node: &NormalizedNode,
+		deleted_revision: RevisionId,
+	) -> Self {
+		let base_positions = base_parent_node
+			.children
+			.iter()
+			.enumerate()
+			.map(|(index, child)| (*child, index))
+			.collect::<HashMap<_, _>>();
+		let base_child_absent: Vec<bool> = base_parent_node
+			.children
+			.iter()
+			.map(|child| {
+				let class = correspondence
+					.classes
+					.class_of(RevisionNode::new(RevisionId::BASE, *child));
+				correspondence
+					.classes
+					.class(class)
+					.get(deleted_revision)
+					.is_none()
+			})
+			.collect();
+		let base_sibling = |child: &NodeId| {
+			let class = correspondence
+				.classes
+				.class_of(RevisionNode::new(deleted_revision, *child));
+			correspondence.classes.class(class).get(RevisionId::BASE)
+		};
+		let mapped = deleted_parent_node
+			.children
+			.iter()
+			.map(|child| {
+				let base_child = base_sibling(child);
+				(
+					base_child.is_none(),
+					base_child.and_then(|base_child| base_positions.get(&base_child).copied()),
+				)
+			})
+			.collect::<Vec<_>>();
+		let mut previous = Vec::with_capacity(mapped.len());
+		let mut last = None;
+		for (_, position) in &mapped {
+			previous.push(last);
+			last = position.or(last);
+		}
+		let mut next = vec![None; mapped.len()];
+		let mut following = None;
+		for (index, (_, position)) in mapped.iter().enumerate().rev() {
+			next[index] = following;
+			following = position.or(following);
+		}
+		let gaps = deleted_parent_node
+			.children
+			.iter()
+			.enumerate()
+			.filter(|(index, _)| mapped[*index].0)
+			.map(|(index, child)| {
+				(
+					deleted_tree.node(*child).unwrap().kind.as_str(),
+					previous[index],
+					next[index],
+				)
+			})
+			.collect::<BTreeSet<_>>();
+		let inserted_gaps = gaps
+			.into_iter()
+			.map(|(kind, previous, next)| {
+				let start = previous.map_or(0, |previous| previous + 1);
+				let end = next.unwrap_or(base_parent_node.children.len());
+				let absent_of_kind = (start..end)
+					.filter(|position| {
+						base_child_absent[*position]
+							&& base
+								.node(base_parent_node.children[*position])
+								.unwrap()
+								.kind == kind
+					})
+					.count();
+				(kind.to_owned(), previous, next, absent_of_kind == 1)
+			})
+			.collect();
+		Self {
+			base_positions,
+			inserted_gaps,
+		}
+	}
+}
+
+type DeletedGapIndexes = HashMap<(NodeId, RevisionId), Option<DeletedGapIndex>>;
+
 fn deleted_parent_has_same_kind_gap_replacement(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
 	correspondence: &NWayCorrespondence,
 	class: ClassId,
 	present: &[NWayNodeView<'_>],
+	gap_indexes: &mut DeletedGapIndexes,
 ) -> bool {
 	let revision_class = correspondence.classes.class(class);
 	let Some(base_node) = revision_class.get(RevisionId::BASE) else {
@@ -564,115 +679,77 @@ fn deleted_parent_has_same_kind_gap_replacement(
 		.deleted_by
 		.iter()
 		.any(|deleted_revision| {
-			present.iter().any(|present| {
-				deleted_gap_matches_present_kind(
-					base,
-					revisions,
-					correspondence,
-					base_node,
-					base_parent,
-					parent_class,
-					*deleted_revision,
-					present,
-				)
-			})
+			let index = gap_indexes
+				.entry((base_parent, *deleted_revision))
+				.or_insert_with(|| {
+					deleted_gap_index(
+						base,
+						revisions,
+						correspondence,
+						base_parent,
+						parent_class,
+						*deleted_revision,
+					)
+				});
+			let Some(index) = index else {
+				return false;
+			};
+			present
+				.iter()
+				.any(|present| deleted_gap_matches_present_kind(base_node, index, present))
 		})
 }
 
-#[allow(clippy::too_many_arguments)]
-fn deleted_gap_matches_present_kind(
+fn deleted_gap_index(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
 	correspondence: &NWayCorrespondence,
-	base_node: NodeId,
 	base_parent: NodeId,
 	parent_class: ClassId,
 	deleted_revision: RevisionId,
-	present: &NWayNodeView<'_>,
-) -> bool {
-	let Some(deleted_parent) = correspondence
+) -> Option<DeletedGapIndex> {
+	let deleted_parent = correspondence
 		.classes
 		.class(parent_class)
-		.get(deleted_revision)
-	else {
-		return false;
-	};
+		.get(deleted_revision)?;
 	let deleted_tree = tree_for_revision(base, revisions, deleted_revision);
 	let base_parent_node = base.node(base_parent).unwrap();
 	let deleted_parent_node = deleted_tree.node(deleted_parent).unwrap();
 	if base_parent_node.child_order != ChildOrder::Ordered
 		|| deleted_parent_node.child_order != ChildOrder::Ordered
 	{
-		return false;
+		return None;
 	}
-	let Some(base_index) = base_parent_node
-		.children
-		.iter()
-		.position(|child| *child == base_node)
-	else {
+	Some(DeletedGapIndex::build(
+		base,
+		correspondence,
+		base_parent_node,
+		deleted_tree,
+		deleted_parent_node,
+		deleted_revision,
+	))
+}
+
+/// Whether the deleting revision put exactly one same-kind node where it
+/// deleted `base_node`: an inserted sibling whose nearest base neighbours
+/// enclose the deleted node, and the only same-kind base node the revision
+/// lacks between them.
+fn deleted_gap_matches_present_kind(
+	base_node: NodeId,
+	index: &DeletedGapIndex,
+	present: &NWayNodeView<'_>,
+) -> bool {
+	let Some(&base_index) = index.base_positions.get(&base_node) else {
 		return false;
 	};
-	let mapped_base_index = |child: &NodeId| {
-		let sibling_class = correspondence
-			.classes
-			.class_of(RevisionNode::new(deleted_revision, *child));
-		let base_sibling = correspondence
-			.classes
-			.class(sibling_class)
-			.get(RevisionId::BASE)?;
-		base_parent_node
-			.children
-			.iter()
-			.position(|candidate| *candidate == base_sibling)
-	};
-	deleted_parent_node
-		.children
+	index
+		.inserted_gaps
 		.iter()
-		.enumerate()
-		.filter(|(_, sibling)| deleted_tree.node(**sibling).unwrap().kind == present.node.kind)
-		.filter(|(_, sibling)| {
-			let sibling_class = correspondence
-				.classes
-				.class_of(RevisionNode::new(deleted_revision, **sibling));
-			correspondence
-				.classes
-				.class(sibling_class)
-				.get(RevisionId::BASE)
-				.is_none()
-		})
-		.any(|(replacement_index, _)| {
-			let previous_base = deleted_parent_node.children[..replacement_index]
-				.iter()
-				.rev()
-				.find_map(&mapped_base_index);
-			let next_base = deleted_parent_node.children[replacement_index + 1..]
-				.iter()
-				.find_map(&mapped_base_index);
-			let target_is_in_gap = previous_base.is_none_or(|index| index < base_index)
-				&& next_base.is_none_or(|index| base_index < index);
-			if !target_is_in_gap {
-				return false;
-			}
-			base_parent_node
-				.children
-				.iter()
-				.enumerate()
-				.filter(|(index, sibling)| {
-					previous_base.is_none_or(|previous| previous < *index)
-						&& next_base.is_none_or(|next| *index < next)
-						&& base.node(**sibling).unwrap().kind == present.node.kind
-				})
-				.filter(|(_, sibling)| {
-					let sibling_class = correspondence
-						.classes
-						.class_of(RevisionNode::new(RevisionId::BASE, **sibling));
-					correspondence
-						.classes
-						.class(sibling_class)
-						.get(deleted_revision)
-						.is_none()
-				})
-				.count() == 1
+		.any(|(kind, previous_base, next_base, one_absent)| {
+			*kind == present.node.kind
+				&& *one_absent
+				&& previous_base.is_none_or(|index| index < base_index)
+				&& next_base.is_none_or(|index| base_index < index)
 		})
 }
 
@@ -738,6 +815,89 @@ fn close_policy_ancestors(
 			parent = tree.node(parent_node).unwrap().parent;
 		}
 	}
+}
+
+/// Completes a subtree that survived a removal because another revision
+/// edited it. The removing revisions deleted each descendant only as part of
+/// that subtree; keeping the edited ancestor without them would emit a
+/// fragment no revision wrote, such as an option without its name.
+fn close_survivor_descendants(
+	base: &NormalizedTree,
+	correspondence: &NWayCorrespondence,
+	plan: &mut NWaySelectionPlan,
+	records: &mut PolicyRecords,
+) {
+	let mut pending = vec![base.root()];
+	while let Some(node) = pending.pop() {
+		let children = base.node(node).unwrap().children.clone();
+		pending.extend(children.iter().rev().copied());
+		let class = correspondence
+			.classes
+			.class_of(RevisionNode::new(RevisionId::BASE, node));
+		if plan.classes[&class].selected.is_some() {
+			continue;
+		}
+		let Some(parent) = base.node(node).unwrap().parent else {
+			continue;
+		};
+		let parent_class = correspondence
+			.classes
+			.class_of(RevisionNode::new(RevisionId::BASE, parent));
+		let Some(parent_source) = plan.classes[&parent_class].selected else {
+			continue;
+		};
+		let parent_deleted_by = &correspondence.class_facts[&parent_class].deleted_by;
+		let deleted_by = &correspondence.class_facts[&class].deleted_by;
+		if parent_deleted_by.is_empty()
+			|| deleted_by.is_empty()
+			|| !deleted_by
+				.iter()
+				.all(|revision| parent_deleted_by.contains(revision))
+		{
+			continue;
+		}
+		// Inside control flow a restored branch would run beside the chain
+		// that replaced it; that stays a conflict for review.
+		if inside_control_flow(base, node) {
+			continue;
+		}
+		let Some(member) = correspondence
+			.classes
+			.class(class)
+			.get(parent_source.revision)
+		else {
+			continue;
+		};
+		let source = RevisionNode::new(parent_source.revision, member);
+		records.remove_for_class(class);
+		let selection = plan
+			.classes
+			.get_mut(&class)
+			.expect("every base node has a selection record");
+		selection.selected = Some(source);
+		selection.subtree_selected = false;
+		selection.scalar_synthesis = None;
+		selection.child_revision = None;
+		records.push_decision(MergeDecisionEvidence {
+			affected_class: class,
+			policy: MergePolicyKind::AncestorClosure,
+			reason: MergeDecisionReason::StructuralConstraint,
+			contributors: selection.sources.clone(),
+			result: MergeDecisionResult::SelectSource { source },
+		});
+	}
+}
+
+fn inside_control_flow(base: &NormalizedTree, node: NodeId) -> bool {
+	let mut current = base.node(node).unwrap().parent;
+	while let Some(ancestor) = current {
+		let ancestor = base.node(ancestor).unwrap();
+		if ancestor.kind.starts_with("clausewitz.control_flow.") {
+			return true;
+		}
+		current = ancestor.parent;
+	}
+	false
 }
 
 /// The classes of the parents a node's class has across the base and the
@@ -845,4 +1005,244 @@ fn tree_for_revision<'tree>(
 		.find(|candidate| candidate.id == revision)
 		.map(|candidate| candidate.tree)
 		.unwrap_or_else(|| panic!("unknown revision {}", revision.get()))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::merge::kernel::TreeNode;
+
+	/// The quadratic-per-sibling search the gap index replaced, kept as the
+	/// reference the index must agree with.
+	fn reference_gap_replacement(
+		base: &NormalizedTree,
+		revisions: &[MergeRevision<'_>],
+		correspondence: &NWayCorrespondence,
+		class: ClassId,
+		present: &[NWayNodeView<'_>],
+	) -> bool {
+		let revision_class = correspondence.classes.class(class);
+		let Some(base_node) = revision_class.get(RevisionId::BASE) else {
+			return false;
+		};
+		let Some(base_parent) = base.node(base_node).unwrap().parent else {
+			return false;
+		};
+		let parent_class = correspondence
+			.classes
+			.class_of(RevisionNode::new(RevisionId::BASE, base_parent));
+		correspondence.class_facts[&class]
+			.deleted_by
+			.iter()
+			.any(|deleted_revision| {
+				present.iter().any(|present| {
+					reference_gap_matches(
+						base,
+						revisions,
+						correspondence,
+						base_node,
+						base_parent,
+						parent_class,
+						*deleted_revision,
+						present,
+					)
+				})
+			})
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	fn reference_gap_matches(
+		base: &NormalizedTree,
+		revisions: &[MergeRevision<'_>],
+		correspondence: &NWayCorrespondence,
+		base_node: NodeId,
+		base_parent: NodeId,
+		parent_class: ClassId,
+		deleted_revision: RevisionId,
+		present: &NWayNodeView<'_>,
+	) -> bool {
+		let Some(deleted_parent) = correspondence
+			.classes
+			.class(parent_class)
+			.get(deleted_revision)
+		else {
+			return false;
+		};
+		let deleted_tree = tree_for_revision(base, revisions, deleted_revision);
+		let base_parent_node = base.node(base_parent).unwrap();
+		let deleted_parent_node = deleted_tree.node(deleted_parent).unwrap();
+		if base_parent_node.child_order != ChildOrder::Ordered
+			|| deleted_parent_node.child_order != ChildOrder::Ordered
+		{
+			return false;
+		}
+		let Some(base_index) = base_parent_node
+			.children
+			.iter()
+			.position(|child| *child == base_node)
+		else {
+			return false;
+		};
+		let mapped_base_index = |child: &NodeId| {
+			let sibling_class = correspondence
+				.classes
+				.class_of(RevisionNode::new(deleted_revision, *child));
+			let base_sibling = correspondence
+				.classes
+				.class(sibling_class)
+				.get(RevisionId::BASE)?;
+			base_parent_node
+				.children
+				.iter()
+				.position(|candidate| *candidate == base_sibling)
+		};
+		deleted_parent_node
+			.children
+			.iter()
+			.enumerate()
+			.filter(|(_, sibling)| deleted_tree.node(**sibling).unwrap().kind == present.node.kind)
+			.filter(|(_, sibling)| {
+				let sibling_class = correspondence
+					.classes
+					.class_of(RevisionNode::new(deleted_revision, **sibling));
+				correspondence
+					.classes
+					.class(sibling_class)
+					.get(RevisionId::BASE)
+					.is_none()
+			})
+			.any(|(replacement_index, _)| {
+				let previous_base = deleted_parent_node.children[..replacement_index]
+					.iter()
+					.rev()
+					.find_map(&mapped_base_index);
+				let next_base = deleted_parent_node.children[replacement_index + 1..]
+					.iter()
+					.find_map(&mapped_base_index);
+				let target_is_in_gap = previous_base.is_none_or(|index| index < base_index)
+					&& next_base.is_none_or(|index| base_index < index);
+				if !target_is_in_gap {
+					return false;
+				}
+				base_parent_node
+					.children
+					.iter()
+					.enumerate()
+					.filter(|(index, sibling)| {
+						previous_base.is_none_or(|previous| previous < *index)
+							&& next_base.is_none_or(|next| *index < next)
+							&& base.node(**sibling).unwrap().kind == present.node.kind
+					})
+					.filter(|(_, sibling)| {
+						let sibling_class = correspondence
+							.classes
+							.class_of(RevisionNode::new(RevisionId::BASE, **sibling));
+						correspondence
+							.classes
+							.class(sibling_class)
+							.get(deleted_revision)
+							.is_none()
+					})
+					.count() == 1
+			})
+	}
+
+	struct Lcg(u64);
+
+	impl Lcg {
+		fn next(&mut self, bound: usize) -> usize {
+			self.0 = self
+				.0
+				.wrapping_mul(6_364_136_223_846_793_005)
+				.wrapping_add(1_442_695_040_888_963_407);
+			((self.0 >> 33) as usize) % bound
+		}
+	}
+
+	fn child(kind: usize, id: usize) -> TreeNode {
+		TreeNode::leaf(["a", "b"][kind], format!("v{id}"))
+			.with_parent_scoped_anchor("child", format!("c{id}"))
+	}
+
+	fn document(children: Vec<TreeNode>) -> NormalizedTree {
+		NormalizedTree::from_root(TreeNode::branch(
+			"root",
+			vec![TreeNode::branch("parent", children)],
+		))
+		.unwrap()
+	}
+
+	/// A revision that deletes some base children and inserts new ones
+	/// between the survivors, without reordering them.
+	fn edited(rng: &mut Lcg, base: &[(usize, usize)], next_id: &mut usize) -> Vec<TreeNode> {
+		let mut children = Vec::new();
+		for &(kind, id) in base {
+			for _ in 0..rng.next(3).saturating_sub(1) {
+				children.push(child(rng.next(2), *next_id));
+				*next_id += 1;
+			}
+			if rng.next(3) != 0 {
+				children.push(child(kind, id));
+			}
+		}
+		children
+	}
+
+	#[test]
+	fn gap_index_agrees_with_the_sibling_search_it_replaced() {
+		let mut rng = Lcg(7);
+		let mut checked = 0;
+		let mut replaced = 0;
+		for _ in 0..300 {
+			let width = 1 + rng.next(12);
+			let base_children = (0..width).map(|id| (rng.next(2), id)).collect::<Vec<_>>();
+			let mut next_id = width;
+			let base = document(
+				base_children
+					.iter()
+					.map(|&(kind, id)| child(kind, id))
+					.collect(),
+			);
+			let left = document(edited(&mut rng, &base_children, &mut next_id));
+			let right = document(edited(&mut rng, &base_children, &mut next_id));
+			let revisions = [
+				MergeRevision::new(RevisionId::LEFT, &left),
+				MergeRevision::new(RevisionId::RIGHT, &right),
+			];
+			let correspondence = NWayCorrespondence::build(&base, &revisions).unwrap();
+			let mut indexes = DeletedGapIndexes::new();
+			for class in correspondence.classes.classes() {
+				if correspondence.class_facts[&class.id].deleted_by.is_empty() {
+					continue;
+				}
+				let (_, present) = class_views(&base, &revisions, &correspondence, class.id);
+				let indexed = deleted_parent_has_same_kind_gap_replacement(
+					&base,
+					&revisions,
+					&correspondence,
+					class.id,
+					&present,
+					&mut indexes,
+				);
+				let searched = reference_gap_replacement(
+					&base,
+					&revisions,
+					&correspondence,
+					class.id,
+					&present,
+				);
+				assert_eq!(indexed, searched);
+				checked += 1;
+				replaced += usize::from(indexed);
+			}
+		}
+		assert!(
+			checked > 100,
+			"only {checked} deleted classes were compared"
+		);
+		assert!(
+			replaced > 10 && replaced < checked,
+			"{replaced} of {checked} deleted classes had a gap replacement"
+		);
+	}
 }

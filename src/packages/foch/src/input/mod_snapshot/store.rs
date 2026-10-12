@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "16.0.0";
+pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "17.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const MOD_SNAPSHOT_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
 const MOD_SNAPSHOT_CACHE_HEADER_BYTES: usize = MOD_SNAPSHOT_CACHE_MAGIC.len() + size_of::<u64>();
@@ -77,9 +77,6 @@ pub struct CachedModData {
 	/// Game paths for every file in the source mod inventory, including files
 	/// outside semantic analysis, strictly increasing in byte order.
 	pub inventory_paths: Vec<GamePathBuf>,
-	/// One compact flag per `semantic_index.documents` entry. `true` means the
-	/// document parsed cleanly and contains no non-comment AST content.
-	pub document_noop_hints: Vec<bool>,
 	/// One raw-input identity per `semantic_index.documents` entry. Clausewitz
 	/// documents carry an identity; formats that do not need lazy AST reloads
 	/// use `None`.
@@ -111,7 +108,6 @@ struct StoredCachedModData {
 	game_key: String,
 	semantic_index: StoredSemanticIndex,
 	inventory_paths: Vec<String>,
-	document_noop_hints: Vec<bool>,
 	document_input_identities: Vec<Option<CachedDocumentInputIdentity>>,
 }
 
@@ -148,7 +144,7 @@ struct StoredScopeNode {
 	kind: ScopeKind,
 	parent: Option<usize>,
 	this_type: MaybeScope,
-	aliases: std::collections::HashMap<String, MaybeScope>,
+	aliases: std::collections::BTreeMap<String, MaybeScope>,
 	mod_id: String,
 	#[rkyv(with = AsGamePathText)]
 	path: GamePathBuf,
@@ -493,7 +489,6 @@ impl StoredCachedModData {
 		let CachedModData {
 			semantic_index,
 			inventory_paths,
-			document_noop_hints,
 			document_input_identities,
 		} = data;
 		let stored = Self {
@@ -506,7 +501,6 @@ impl StoredCachedModData {
 				.iter()
 				.map(|path| path.as_str().to_owned())
 				.collect(),
-			document_noop_hints,
 			document_input_identities,
 		};
 		(stored, inventory_paths)
@@ -516,12 +510,6 @@ impl StoredCachedModData {
 	/// once, when [`Self::into_cached_mod_data`] restores its typed paths.
 	fn validate_document_metadata(&self) -> Result<(), CacheError> {
 		let document_count = self.semantic_index.documents.len();
-		if self.document_noop_hints.len() != document_count {
-			return Err(CacheError::encode(format!(
-				"mod snapshot noop hint count {} does not match document count {document_count}",
-				self.document_noop_hints.len(),
-			)));
-		}
 		if self.document_input_identities.len() != document_count {
 			return Err(CacheError::encode(format!(
 				"mod snapshot input identity count {} does not match document count {document_count}",
@@ -549,7 +537,6 @@ impl StoredCachedModData {
 		CachedModData {
 			semantic_index: self.semantic_index.into_semantic_index(),
 			inventory_paths,
-			document_noop_hints: self.document_noop_hints,
 			document_input_identities: self.document_input_identities,
 		}
 	}
@@ -557,12 +544,6 @@ impl StoredCachedModData {
 
 fn validate_cached_document_metadata(data: &CachedModData) -> Result<(), CacheError> {
 	let document_count = data.semantic_index.documents.len();
-	if data.document_noop_hints.len() != document_count {
-		return Err(CacheError::encode(format!(
-			"mod snapshot noop hint count {} does not match document count {document_count}",
-			data.document_noop_hints.len(),
-		)));
-	}
 	if data.document_input_identities.len() != document_count {
 		return Err(CacheError::encode(format!(
 			"mod snapshot input identity count {} does not match document count {document_count}",
@@ -1303,7 +1284,6 @@ mod tests {
 		CachedModData {
 			semantic_index: SemanticIndex::default(),
 			inventory_paths: Vec::new(),
-			document_noop_hints: Vec::new(),
 			document_input_identities: Vec::new(),
 		}
 	}
@@ -1325,7 +1305,6 @@ mod tests {
 				game_path("common/countries/A.txt"),
 				game_path("gfx/flags/A.tga"),
 			],
-			document_noop_hints: vec![true],
 			document_input_identities: vec![Some(CachedDocumentInputIdentity {
 				size_bytes: 17,
 				content_digest: "abc123".to_string(),
@@ -1349,7 +1328,6 @@ mod tests {
 				game_path("gfx/flags/A.tga"),
 			]
 		);
-		assert_eq!(hit.document_noop_hints, vec![true]);
 		assert_eq!(
 			hit.document_input_identities,
 			vec![Some(CachedDocumentInputIdentity {
@@ -1381,18 +1359,17 @@ mod tests {
 			family: DocumentFamily::Clausewitz,
 			parse_ok: true,
 		});
+		// One document without its input identity entry is invalid metadata.
 		let data = CachedModData {
 			semantic_index: index,
 			inventory_paths: Vec::new(),
-			document_noop_hints: Vec::new(),
-			document_input_identities: vec![None],
+			document_input_identities: Vec::new(),
 		};
 
 		let (returned, result) = cache.store_owned("invalid-metadata", "0.1.0", "eu4 1.37.4", data);
 
 		assert!(result.is_err());
 		assert_eq!(returned.semantic_index.documents.len(), 1);
-		assert!(returned.document_noop_hints.is_empty());
 		assert!(
 			fs::read_dir(&cache.root)
 				.expect("read cache dir")
@@ -1560,7 +1537,6 @@ mod tests {
 					game_path(&valid(kind))
 				}),
 				inventory_paths: vec![game_path("gfx/flags/A.tga")],
-				document_noop_hints: vec![false],
 				document_input_identities: vec![None],
 			};
 			StoredCachedModData::from_cached_mod_data_owned(
@@ -1617,7 +1593,6 @@ mod tests {
 		let data = CachedModData {
 			semantic_index: SemanticIndex::default(),
 			inventory_paths: Vec::new(),
-			document_noop_hints: Vec::new(),
 			document_input_identities: Vec::new(),
 		};
 		cache
@@ -1660,7 +1635,6 @@ mod tests {
 		let data = CachedModData {
 			semantic_index: SemanticIndex::default(),
 			inventory_paths: Vec::new(),
-			document_noop_hints: Vec::new(),
 			document_input_identities: Vec::new(),
 		};
 		cache
@@ -1720,7 +1694,6 @@ mod tests {
 		let data = CachedModData {
 			semantic_index: SemanticIndex::default(),
 			inventory_paths: Vec::new(),
-			document_noop_hints: Vec::new(),
 			document_input_identities: Vec::new(),
 		};
 		cache
@@ -1741,7 +1714,6 @@ mod tests {
 		let data = CachedModData {
 			semantic_index: SemanticIndex::default(),
 			inventory_paths: Vec::new(),
-			document_noop_hints: Vec::new(),
 			document_input_identities: Vec::new(),
 		};
 		cache

@@ -35,8 +35,9 @@ use crate::model::{
 	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, ScopeType, SemanticIndex, SourceSpan,
 	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition, base_scope, has_fatal_parse_issue,
 };
+use rayon::prelude::*;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -269,49 +270,59 @@ pub fn collect_localisation_definitions(
 }
 
 pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
-	let mut index = SemanticIndex::default();
 	let map_groups = collect_map_groups(files);
 	let cwt_rule_engine = Some(super::cwt::rule_engine());
-	for file in files {
-		index.documents.push(DocumentRecord {
-			mod_id: file.mod_id.clone(),
-			path: file.relative_path.clone(),
-			family: DocumentFamily::Clausewitz,
-			parse_ok: !has_fatal_parse_issue(&file.parse_issues),
-		});
-		index.parse_issues.extend(file.parse_issues.clone());
-		build_file_index(file, &map_groups, cwt_rule_engine, &mut index);
-		let cultures = super::cultures::collect_culture_references(&file.ast, &file.relative_path);
-		index
-			.resource_references
-			.extend(
-				cultures
-					.references
-					.into_iter()
-					.map(|reference| ResourceReference {
-						key: "culture_reference".to_owned(),
-						value: reference.id,
-						mod_id: file.mod_id.clone(),
-						path: reference.location.relative_path,
-						line: reference.location.span.start.line,
-						column: reference.location.span.start.column,
-					}),
-			);
-		index
-			.resource_references
-			.extend(
-				cultures
-					.group_references
-					.into_iter()
-					.map(|reference| ResourceReference {
-						key: "culture_group_reference".to_owned(),
-						value: reference.group,
-						mod_id: file.mod_id.clone(),
-						path: reference.location.relative_path,
-						line: reference.location.span.start.line,
-						column: reference.location.span.start.column,
-					}),
-			);
+	// Files index independently: scope ids are positions within the index
+	// being built, and appending in file order moves them where a sequential
+	// build would have put them.
+	let file_indexes =
+		files
+			.par_iter()
+			.map(|file| {
+				let mut index = SemanticIndex::default();
+				index.documents.push(DocumentRecord {
+					mod_id: file.mod_id.clone(),
+					path: file.relative_path.clone(),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
+				});
+				index.parse_issues.extend(file.parse_issues.clone());
+				build_file_index(file, &map_groups, cwt_rule_engine, &mut index);
+				let cultures =
+					super::cultures::collect_culture_references(&file.ast, &file.relative_path);
+				index
+					.resource_references
+					.extend(
+						cultures
+							.references
+							.into_iter()
+							.map(|reference| ResourceReference {
+								key: "culture_reference".to_owned(),
+								value: reference.id,
+								mod_id: file.mod_id.clone(),
+								path: reference.location.relative_path,
+								line: reference.location.span.start.line,
+								column: reference.location.span.start.column,
+							}),
+					);
+				index
+					.resource_references
+					.extend(cultures.group_references.into_iter().map(|reference| {
+						ResourceReference {
+							key: "culture_group_reference".to_owned(),
+							value: reference.group,
+							mod_id: file.mod_id.clone(),
+							path: reference.location.relative_path,
+							line: reference.location.span.start.line,
+							column: reference.location.span.start.column,
+						}
+					}));
+				index
+			})
+			.collect::<Vec<_>>();
+	let mut index = SemanticIndex::default();
+	for file_index in file_indexes {
+		index.append(file_index);
 	}
 	infer_definition_scope_from_references(&mut index);
 	infer_definition_dynamic_alias_masks_from_references(&mut index);
@@ -341,7 +352,7 @@ fn build_file_index(
 	cwt_rule_engine: Option<&CwtQuery>,
 	index: &mut SemanticIndex,
 ) {
-	let mut aliases = HashMap::new();
+	let mut aliases = BTreeMap::new();
 	let scope_policy = file
 		.content_family
 		.map_or(ContentFamilyScopePolicy::default(), |descriptor| {
@@ -1726,7 +1737,7 @@ struct ScopeArgs<'a> {
 	kind: ScopeKind,
 	parent: Option<usize>,
 	this_type: MaybeScope,
-	aliases: HashMap<String, MaybeScope>,
+	aliases: BTreeMap<String, MaybeScope>,
 	mod_id: &'a str,
 	path: &'a GamePath,
 	line: usize,
@@ -1945,7 +1956,7 @@ fn scope_this_type(index: &SemanticIndex, scope_id: usize) -> MaybeScope {
 		.unwrap_or(MaybeScope::Unknown)
 }
 
-fn scope_aliases(index: &SemanticIndex, scope_id: usize) -> HashMap<String, MaybeScope> {
+fn scope_aliases(index: &SemanticIndex, scope_id: usize) -> BTreeMap<String, MaybeScope> {
 	index
 		.scopes
 		.get(scope_id)

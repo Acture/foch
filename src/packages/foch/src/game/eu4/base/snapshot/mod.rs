@@ -48,7 +48,7 @@ pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section or its outer envelope becomes
 // wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 18;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 19;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -1001,7 +1001,7 @@ pub struct BaseScopeNode {
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
 	pub this_type: MaybeScope,
-	pub aliases: HashMap<String, MaybeScope>,
+	pub aliases: BTreeMap<String, MaybeScope>,
 	#[rkyv(with = AsGamePathText)]
 	pub path: GamePathBuf,
 	pub span: SourceSpan,
@@ -1912,6 +1912,17 @@ pub(crate) fn clear_cached_loaded_base_snapshot(_path: &Path) {
 		.unwrap_or_else(std::sync::PoisonError::into_inner)
 		.entries
 		.clear();
+}
+
+#[cfg(test)]
+fn loaded_base_snapshot_last_used(sha256: &str) -> Option<u64> {
+	LOADED_BASE_SNAPSHOTS
+		.get_or_init(|| Mutex::new(LoadedBaseSnapshotCache::default()))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner)
+		.entries
+		.get(sha256)
+		.map(|entry| entry.last_used)
 }
 
 #[cfg(test)]

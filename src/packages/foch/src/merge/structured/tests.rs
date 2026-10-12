@@ -1176,7 +1176,9 @@ fn event_merge_never_exposes_a_conflicted_tree_as_resolved() {
 }
 
 #[test]
-fn event_merge_edit_wins_does_not_restore_unchanged_deleted_descendants() {
+fn event_merge_edit_wins_keeps_the_edited_block_whole() {
+	// The deleting revision removed `old` only by removing its block; the edit
+	// keeps that block, so it keeps the editor's complete version of it.
 	let base = parse(
 		"country_event = {\n\
 		\tid = 700\n\
@@ -1201,6 +1203,7 @@ fn event_merge_edit_wins_does_not_restore_unchanged_deleted_descendants() {
 		\tid = 700\n\
 		\timmediate = {\n\
 		\t\thidden_effect = {\n\
+		\t\t\told = yes\n\
 		\t\t\tadded = yes\n\
 		\t\t}\n\
 		\t}\n\
@@ -2763,6 +2766,88 @@ mod game_value_equivalence {
 			"no root type matches this path, so no field type is known"
 		);
 	}
+}
+
+#[test]
+fn a_one_sided_rewrite_of_repeated_blocks_is_not_an_ambiguity() {
+	// Only one mod rewrote the disaster's `modifier` blocks; any pairing of
+	// them yields that mod's version, so no match ambiguity needs review.
+	let path = crate::model::GamePath::new("common/disasters/test.txt").unwrap();
+	let policies = &eu4().classify_content_family(path).unwrap().merge_policies;
+	let base = parse_at(
+		"common/disasters/test.txt",
+		"test_disaster = { progress = { modifier = { factor = 1 any_owned_province = { region = a unrest = 3 } } modifier = { factor = 1 any_owned_province = { region = a unrest = 5 } } modifier = { factor = 1 any_owned_province = { region = a unrest = 7 } } } }\n",
+	);
+	let changed = parse_at(
+		"common/disasters/test.txt",
+		"test_disaster = { progress = { modifier = { factor = 0.5 always = yes } modifier = { factor = 1 num_of_owned_provinces_with = { region = a value = 1 } } modifier = { factor = 1 num_of_owned_provinces_with = { region = a value = 2 } } modifier = { factor = 1 num_of_owned_provinces_with = { region = a value = 3 } } } }\n",
+	);
+	let outcome = merge_clausewitz_files_n_way(&base, &[&base, &changed], policies).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("always = yes"), "{output}");
+	assert_eq!(output.matches("modifier =").count(), 4, "{output}");
+}
+
+#[test]
+fn an_option_edited_against_its_removal_survives_whole() {
+	// One mod removed the option, another edited one effect in it: the option
+	// the edit keeps must still carry its name and its other effects.
+	let path = crate::model::GamePath::new("events/test.txt").unwrap();
+	let policies = &eu4().classify_content_family(path).unwrap().merge_policies;
+	let base = parse_at(
+		"events/test.txt",
+		"country_event = { id = t.1 option = { name = t.1.a add_prestige = 1 } option = { name = t.1.b add_stability = 1 add_legitimacy = 5 } }\n",
+	);
+	let removed = parse_at(
+		"events/test.txt",
+		"country_event = { id = t.1 option = { name = t.1.a add_prestige = 1 } }\n",
+	);
+	let edited = parse_at(
+		"events/test.txt",
+		"country_event = { id = t.1 option = { name = t.1.a add_prestige = 1 } option = { name = t.1.b add_stability = 2 add_legitimacy = 5 } }\n",
+	);
+	let outcome = merge_clausewitz_files_n_way(&base, &[&removed, &edited], policies).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("name = t.1.b"), "{output}");
+	assert!(output.contains("add_stability = 2"), "{output}");
+	assert!(output.contains("add_legitimacy = 5"), "{output}");
+}
+
+#[test]
+fn deeply_nested_branches_normalize_in_linear_time() {
+	// EE nests advisor-cost checks two dozen `if`s deep; normalizing each
+	// branch effect twice made that 2^24 subtree normalizations.
+	let depth = 24;
+	let mut source = String::from("e = {\n");
+	for level in 0..depth {
+		source.push_str(&format!(
+			"if = {{ limit = {{ check_variable = {{ which = X value = {level} }} }}\n"
+		));
+	}
+	source.push_str("add_prestige = 1\n");
+	for level in 0..depth {
+		source.push_str(&format!(
+			"}} else_if = {{ limit = {{ has_country_flag = f{level} }} add_prestige = 2 }} else = {{ add_prestige = 3 }}\n"
+		));
+	}
+	source.push_str("}\n");
+	let path = "common/scripted_effects/test.txt";
+	let file = parse_at(path, &source);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let tree = super::merge::normalize_clausewitz_file(&file, policies).expect("normalize");
+	assert_eq!(
+		tree.nodes()
+			.filter(|(_, node)| node.kind.starts_with("clausewitz.control_flow.chain:"))
+			.count(),
+		depth
+	);
 }
 
 #[test]

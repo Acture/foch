@@ -41,6 +41,7 @@ where
 	let started = Instant::now();
 	let value = f();
 	let elapsed_ms = started.elapsed().as_millis() as u64;
+	crate::merge::timing::record_stage(&format!("check {stage}"), started);
 	let summary = summarize(&value);
 	if summary.is_empty() {
 		tracing::info!(target: CHECK_PROGRESS_TARGET, elapsed_ms, "check {stage}: done");
@@ -135,16 +136,21 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		}
 	};
 
-	let base_semantic =
-		resolved
-			.installed_base_snapshot
-			.as_ref()
-			.map(|installed| GameBaseSemanticSnapshot {
-				index: installed.snapshot.to_semantic_index(),
-				parsed_files: installed.snapshot.parsed_files,
-				parse_error_count: installed.snapshot.parse_error_count,
-				parse_stats: installed.snapshot.parse_stats.clone(),
-			});
+	let base_semantic = run_progress_stage(
+		"base semantic index",
+		|| {
+			resolved
+				.installed_base_snapshot
+				.as_ref()
+				.map(|installed| GameBaseSemanticSnapshot {
+					index: installed.snapshot.to_semantic_index(),
+					parsed_files: installed.snapshot.parsed_files,
+					parse_error_count: installed.snapshot.parse_error_count,
+					parse_stats: installed.snapshot.parse_stats.clone(),
+				})
+		},
+		|_| String::new(),
+	);
 	let mod_parsed_files_count: usize = resolved
 		.mod_snapshots
 		.iter()
@@ -164,7 +170,11 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		.fold(ParseFamilyStats::default(), |acc, snapshot| {
 			sum_parse_family_stats(acc, snapshot.parse_stats.clone())
 		});
-	let mod_semantic_index = merge_mod_snapshots(&resolved.mod_snapshots);
+	let mod_semantic_index = run_progress_stage(
+		"mod semantic indexes",
+		|| merge_mod_snapshots(&resolved.mod_snapshots),
+		|_| String::new(),
+	);
 	let parsed_files_count = mod_parsed_files_count
 		+ base_semantic
 			.as_ref()
@@ -180,7 +190,11 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 	let semantic_index = run_progress_stage(
 		"merge semantic indexes",
 		|| match base_semantic {
-			Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
+			Some(snapshot) => {
+				let mut index = snapshot.index;
+				index.append(mod_semantic_index);
+				index
+			}
 			None => mod_semantic_index,
 		},
 		|index| {
@@ -196,7 +210,11 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		.installed_base_snapshot
 		.as_ref()
 		.map(|installed| installed.snapshot.game_version.clone());
-	let vanilla_symbol_index = VanillaSymbolIndex::build(&resolved);
+	let vanilla_symbol_index = run_progress_stage(
+		"vanilla symbol index",
+		|| VanillaSymbolIndex::build(&resolved),
+		|_| String::new(),
+	);
 	let (mod_dag, _dag_diagnostics) = build_mod_dag(&resolved.mods);
 	let runtime_overlap_findings = if options.analysis_mode == AnalysisMode::Semantic {
 		let runtime_overlap = run_progress_stage(
@@ -284,18 +302,25 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 				.filter(|finding| finding.rule_id != "mergeable-overlap"),
 		);
 		result.findings.extend(runtime_overlap_findings);
-		result.findings.extend(check_dependency_misuse(&ctx));
-		result.findings.extend(
-			check_namespace_conflicts(&resolved.file_inventory, &mod_dag)
-				.into_iter()
-				.filter(|finding| {
-					!finding
-						.evidence
-						.as_deref()
-						.and_then(extract_namespace_key)
-						.is_some_and(|key| overlap_covered_names.contains(key))
-				}),
+		result.findings.extend(run_progress_stage(
+			"dependency misuse",
+			|| check_dependency_misuse(&ctx),
+			|findings| format!("findings={}", findings.len()),
+		));
+		let namespace_findings = run_progress_stage(
+			"namespace conflicts",
+			|| check_namespace_conflicts(&resolved.file_inventory, &mod_dag),
+			|findings| format!("findings={}", findings.len()),
 		);
+		result
+			.findings
+			.extend(namespace_findings.into_iter().filter(|finding| {
+				!finding
+					.evidence
+					.as_deref()
+					.and_then(extract_namespace_key)
+					.is_some_and(|key| overlap_covered_names.contains(key))
+			}));
 	} else {
 		// Basic mode: no overlap module runs, so the heuristic
 		// `duplicate-scripted-effect` still provides value for scripted-effect
@@ -318,16 +343,28 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		symbol_references: ctx.semantic_index.references.len(),
 		alias_usages: ctx.semantic_index.alias_usages.len(),
 	};
-	result.parse_issue_report = build_parse_issue_report(&ctx.semantic_index);
+	result.parse_issue_report = run_progress_stage(
+		"parse issue report",
+		|| build_parse_issue_report(&ctx.semantic_index),
+		|_| String::new(),
+	);
 
 	result.recompute_channels();
+	// The resolved input and semantic index hold every parsed document.
+	crate::platform::memory::release_in_background((
+		ctx,
+		resolved.mod_snapshots,
+		resolved.installed_base_snapshot,
+		resolved.file_inventory,
+		resolved.script_cache,
+	));
 	result
 }
 
 fn merge_mod_snapshots(snapshots: &[Option<LoadedModSnapshot>]) -> SemanticIndex {
 	let mut merged = SemanticIndex::default();
 	for snapshot in snapshots.iter().flatten() {
-		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
+		merged.append(snapshot.semantic_index.clone());
 	}
 	merged
 }
@@ -350,49 +387,6 @@ fn sum_family_parse_stats(lhs: FamilyParseStats, rhs: FamilyParseStats) -> Famil
 		parse_failed_documents: lhs.parse_failed_documents + rhs.parse_failed_documents,
 		parse_issue_count: lhs.parse_issue_count + rhs.parse_issue_count,
 	}
-}
-
-fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
-	let offset = base.scopes.len();
-	for scope in &mut overlay.scopes {
-		scope.id += offset;
-		if let Some(parent) = scope.parent {
-			scope.parent = Some(parent + offset);
-		}
-	}
-	for definition in &mut overlay.definitions {
-		definition.scope_id += offset;
-	}
-	for reference in &mut overlay.references {
-		reference.scope_id += offset;
-	}
-	for alias in &mut overlay.alias_usages {
-		alias.scope_id += offset;
-	}
-	for usage in &mut overlay.key_usages {
-		usage.scope_id += offset;
-	}
-	for assignment in &mut overlay.scalar_assignments {
-		assignment.scope_id += offset;
-	}
-
-	base.scopes.extend(overlay.scopes);
-	base.definitions.extend(overlay.definitions);
-	base.references.extend(overlay.references);
-	base.alias_usages.extend(overlay.alias_usages);
-	base.key_usages.extend(overlay.key_usages);
-	base.scalar_assignments.extend(overlay.scalar_assignments);
-	base.documents.extend(overlay.documents);
-	base.localisation_definitions
-		.extend(overlay.localisation_definitions);
-	base.localisation_duplicates
-		.extend(overlay.localisation_duplicates);
-	base.ui_definitions.extend(overlay.ui_definitions);
-	base.resource_references.extend(overlay.resource_references);
-	base.csv_rows.extend(overlay.csv_rows);
-	base.json_properties.extend(overlay.json_properties);
-	base.parse_issues.extend(overlay.parse_issues);
-	base
 }
 
 fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> {

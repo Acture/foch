@@ -9,16 +9,27 @@ repository root.
 
 | Layer | Current generation | Purpose |
 | --- | --- | --- |
-| `mods/` | `10.0.0` | Complete semantic snapshot and loadable-file inventory for an installed mod |
+| `mods/` | `13.0.0` | Complete semantic snapshot and loadable-file inventory for an installed mod |
 | `diffs/v6.0.0/` | `6.0.0` | Address-patch evaluation deltas for a target/mod/base identity |
 | `dag-base/v12.0.0/` | `12.0.0` | Address-patch evaluation DAG ancestors |
 | `cwt-rules/v0.11.0/` | `0.11.0` | Compiled CWT rule packs left by earlier builds; no longer written |
-| `parse/v11.0.0/` | `11.0.0` | Parser-mode and source-byte addressed parse result |
+| `parse/v15.0.0/` | `15.0.0` | Parser-mode and source-byte addressed parse result |
 
 There is no full merge-output or modset archive cache. A merge owns its frozen
 artifact tree in an analysis-scoped temporary directory until review and
 commit. Increasing
 `FOCH_CACHE_MAX_BYTES` cannot restore or relax that removed product shortcut.
+
+## Merge timing history
+
+Each `foch merge` appends one JSON line to `timings/merge-timings.jsonl` below
+the cache root. The line records the foch and analysis-rules versions, the
+input, the output directory, the exit status, every logged stage with its
+start offset and wall-clock time, and the CPU time the tree kernels spent per
+step summed across workers. Stages nest: a stage's interval contains the
+stages it ran. Timing stays out of the merged mod so identical inputs keep
+producing identical output bytes. The history is not a cache layer; cache
+maintenance does not read or trim it.
 
 ## Generations and lifecycle
 

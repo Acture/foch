@@ -236,11 +236,12 @@ fn compute_semantic_dag_merge_from_parsed(
 		base_observation.mode(),
 		handler,
 	);
-	let pipeline = execute_dag_pipeline(file_dag, contributors, root, &mut protocol)?;
-	let DagPipelineResult {
-		final_state: semantic,
-		..
-	} = pipeline;
+	let semantic = match execute_dag_pipeline(file_dag, contributors, root, &mut protocol) {
+		Ok(DagPipelineResult { final_state, .. }) => final_state,
+		// A step built on a conflicted tentative tree: those conflicts carry
+		// the unit, and resolving them lets the next analysis finish the DAG.
+		Err(error) => protocol.take_blocked_by_conflicts().ok_or(error)?,
+	};
 	let merged_statements = semantic.statements.clone();
 	let direct_definition_keys = compute_semantic_direct_definition_keys(&semantic.source_deltas)?;
 	let definition_provenance = compute_semantic_definition_provenance(&semantic)?;
@@ -1847,6 +1848,298 @@ mod tests {
 		assert!(result.semantic.unresolved_conflicts.is_empty());
 		assert!(emitted.contains("join = yes"), "{emitted}");
 		assert!(emitted.contains("right = yes"), "{emitted}");
+	}
+
+	/// Merges contributors of one missions file the file does not have in
+	/// vanilla: `(mod id, dependency names, source)` in precedence order, each
+	/// mod named after its upper-cased id.
+	fn compute_missions_dag(
+		contributors: &[(&str, &[&str], &str)],
+	) -> Result<SemanticDagMergeComputation, String> {
+		compute_family_dag("missions/test_missions.txt", None, contributors)
+	}
+
+	/// Merges contributors of `path` over an optional vanilla file, as
+	/// [`compute_missions_dag`] describes them.
+	fn compute_family_dag(
+		path: &str,
+		vanilla: Option<&str>,
+		contributors: &[(&str, &[&str], &str)],
+	) -> Result<SemanticDagMergeComputation, String> {
+		let game_path = crate::model::GamePath::new(path).expect("valid game path");
+		let descriptor = crate::game::eu4::content::eu4()
+			.classify_content_family(game_path)
+			.expect("content family");
+		let parsed = |mod_id: &str, source: &str| {
+			let game_path = crate::model::GamePathBuf::parse(path).expect("valid game path");
+			let parsed =
+				crate::game::eu4::script::parser::parse_clausewitz_content(&game_path, source);
+			assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+			ParsedScriptFile {
+				mod_id: mod_id.to_string(),
+				path: None,
+				relative_path: game_path,
+				content_family: None,
+				file_kind: descriptor.script_file_kind.clone(),
+				module_name: "test".to_string(),
+				ast: parsed.ast,
+				source: source.to_string(),
+				parse_issues: Vec::new(),
+				parse_cache_hit: false,
+			}
+		};
+		let names = contributors
+			.iter()
+			.map(|(mod_id, _, _)| mod_id.to_uppercase())
+			.collect::<Vec<_>>();
+		let mods = contributors
+			.iter()
+			.zip(&names)
+			.map(|((mod_id, deps, _), name)| mod_with(mod_id, name, deps.to_vec(), vec![]))
+			.collect::<Vec<_>>();
+		let file_contributors = contributors
+			.iter()
+			.enumerate()
+			.map(|(index, (mod_id, _, _))| file_contributor(mod_id, index + 1))
+			.collect::<Vec<_>>();
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			game_path,
+			&file_contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let inventory = contributors
+			.iter()
+			.map(|(mod_id, _, source)| (mid(mod_id), parsed(mod_id, source)))
+			.collect::<HashMap<_, _>>();
+		let vanilla = vanilla.map(|source| parsed("__game__", source));
+		let mut handler = DeferHandler;
+		compute_dag_merge_from_parsed(
+			None,
+			&file_dag,
+			vanilla.as_ref(),
+			&inventory,
+			&descriptor.merge_policies,
+			if vanilla.is_some() {
+				VanillaBaseMode::Required
+			} else {
+				VanillaBaseMode::KnownAbsent
+			},
+			&mut handler,
+		)
+	}
+
+	#[test]
+	fn a_child_of_an_intermediate_join_reads_the_join_before_output_simplification() {
+		// Output simplification rewrites a trigger `OR` that holds control flow,
+		// dropping the single-child `AND`. The child of the join must see the
+		// form the join's lineage describes, not the simplified output.
+		let mission = |icon: &str, prestige: u32| {
+			format!(
+				"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = HAB }} \
+				test_mission = {{ icon = {icon} required_missions = {{ }} \
+				trigger = {{ OR = {{ senior_union_with = BOH AND = {{ 266 = {{ owned_by = BOH }} }} \
+				BOH = {{ if = {{ limit = {{ ai = no }} }} has_regency = no }} }} }} \
+				effect = {{ add_prestige = {prestige} }} }} }}\n"
+			)
+		};
+
+		let result = compute_missions_dag(&[
+			("left", &[], &mission("a", 1)),
+			("right", &[], &mission("b", 1)),
+			("child", &["LEFT", "RIGHT"], &mission("b", 2)),
+		])
+		.expect("the child applies its delta to the joined parent");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(emitted.contains("add_prestige = 2"), "{emitted}");
+		assert!(emitted.contains("owned_by = BOH"), "{emitted}");
+	}
+
+	/// A mission whose effect holds a control-flow chain. Joining two copies
+	/// orders the `OR` in its first limit differently from how the rendered
+	/// join re-normalizes.
+	fn chain_mission(icon: &str) -> String {
+		format!(
+			"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = HAB }} 			test_mission = {{ icon = {icon} required_missions = {{ }} effect = {{ hidden_effect = {{ 			if = {{ limit = {{ OR = {{ has_country_flag = won AND = {{ is_emperor = yes hre_religion_locked = yes }} }} }} add_adm_power = 100 }} 			else_if = {{ limit = {{ is_emperor = yes hre_religion_treaty = yes }} add_adm_power = 50 }} 			else = {{ add_prestige = 20 }} }} }} }} }}
+"
+		)
+	}
+
+	#[test]
+	fn a_child_of_a_join_accepts_a_reordered_control_flow_rendering() {
+		let result = compute_missions_dag(&[
+			("left", &[], &chain_mission("a")),
+			("right", &[], &chain_mission("a")),
+			("child", &["LEFT", "RIGHT"], &chain_mission("b")),
+		])
+		.expect("the child rebases the join lineage onto the re-normalized chain");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(emitted.contains("icon = b"), "{emitted}");
+		assert!(emitted.contains("hre_religion_locked = yes"), "{emitted}");
+	}
+
+	#[test]
+	fn a_join_on_a_join_accepts_a_reordered_control_flow_rendering() {
+		let result = compute_missions_dag(&[
+			("left", &[], &chain_mission("a")),
+			("right", &[], &chain_mission("a")),
+			("first", &["LEFT", "RIGHT"], &chain_mission("b")),
+			("second", &["LEFT", "RIGHT"], &chain_mission("c")),
+		])
+		.expect("the final join rebases its intermediate base lineage");
+
+		assert!(!result.semantic.partition_lineage.is_empty());
+	}
+
+	#[test]
+	fn a_child_of_a_join_accepts_a_number_respelled_by_its_new_context() {
+		// Numeric canonicalization depends on the schema context. The chain is
+		// canonicalized positive-first, so the rendered join moves the trigger
+		// from under `NOT`, where it is untyped, to under `OR`, where it is.
+		let mission = |icon: &str| {
+			format!(
+				"test_series = {{ slot = 1 generic = no ai = yes potential = {{ tag = BYZ }} \
+				test_mission = {{ icon = {icon} required_missions = {{ }} effect = {{ \
+				if = {{ limit = {{ NOT = {{ patriarch_authority = 0.2 }} }} add_prestige = 10 }} \
+				else = {{ add_prestige = 5 }} }} }} }}\n"
+			)
+		};
+
+		let result = compute_missions_dag(&[
+			("left", &[], &mission("a")),
+			("right", &[], &mission("a")),
+			("child", &["LEFT", "RIGHT"], &mission("b")),
+		])
+		.expect("the child rebases the join lineage onto the respelled number");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(emitted.contains("icon = b"), "{emitted}");
+	}
+
+	/// Vanilla and two rewrites of one event option's control-flow chain: one
+	/// edits the guarded branch and adds an `else_if`, the other replaces the
+	/// branch's effect, which changes the chain's identity.
+	const CHAIN_REWRITE_VANILLA: &str = "country_event = { id = demo.1 option = { name = demo.a \
+		if = { limit = { has_country_flag = one } define_ruler = { dynasty = \"A\" change_adm = 1 } } \
+		else = { add_prestige = 1 } } }\n";
+	const CHAIN_REWRITE_EDIT: &str = "country_event = { id = demo.1 option = { name = demo.a \
+		if = { limit = { has_country_flag = one } define_ruler = { dynasty = \"B\" change_adm = 2 } } \
+		else_if = { limit = { has_country_flag = two } add_stability = 1 } \
+		else = { add_prestige = 1 } } }\n";
+	const CHAIN_REWRITE_REPLACE: &str = "country_event = { id = demo.1 option = { name = demo.a \
+		if = { limit = { has_country_flag = one } add_legitimacy = 5 } \
+		else = { add_prestige = 2 } } }\n";
+
+	#[test]
+	fn diverging_rewrites_of_one_control_flow_chain_need_review() {
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(CHAIN_REWRITE_VANILLA),
+			&[
+				("left", &[], CHAIN_REWRITE_EDIT),
+				("right", &[], CHAIN_REWRITE_REPLACE),
+			],
+		)
+		.expect("an unrenderable merged chain is a reviewable conflict");
+
+		assert!(
+			result
+				.semantic
+				.unresolved_conflicts
+				.iter()
+				.any(|conflict| conflict.reason.contains("cannot be rendered")),
+			"{:?}",
+			result.semantic.unresolved_conflicts
+		);
+	}
+
+	#[test]
+	fn a_child_overlay_supersedes_its_conflicted_parents() {
+		// A same-path file is a complete overlay: the child's content is final,
+		// whatever its two parents disagree about.
+		let child = "country_event = { id = demo.1 option = { name = demo.a \
+			if = { limit = { has_country_flag = one } add_legitimacy = 5 } \
+			else = { add_prestige = 3 } } }\n";
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(CHAIN_REWRITE_VANILLA),
+			&[
+				("left", &[], CHAIN_REWRITE_EDIT),
+				("right", &[], CHAIN_REWRITE_REPLACE),
+				("child", &["LEFT", "RIGHT"], child),
+			],
+		)
+		.expect("the child applies its delta to the conflicted join's tree");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit tree result");
+
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+		assert!(emitted.contains("add_prestige = 3"), "{emitted}");
+	}
+
+	#[test]
+	fn a_join_on_a_conflicted_join_reports_its_conflicts() {
+		let child = |prestige: u32| {
+			format!(
+				"country_event = {{ id = demo.1 option = {{ name = demo.a \
+				if = {{ limit = {{ has_country_flag = one }} add_legitimacy = 5 }} \
+				else = {{ add_prestige = {prestige} }} }} }}\n"
+			)
+		};
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(CHAIN_REWRITE_VANILLA),
+			&[
+				("left", &[], CHAIN_REWRITE_EDIT),
+				("right", &[], CHAIN_REWRITE_REPLACE),
+				("first", &["LEFT", "RIGHT"], &child(3)),
+				("second", &["LEFT", "RIGHT"], &child(4)),
+			],
+		);
+		let result = result.expect("a join on conflicted ancestors reports conflicts");
+
+		assert!(!result.semantic.unresolved_conflicts.is_empty());
+	}
+
+	#[test]
+	fn a_translated_else_and_a_changed_limit_merge_into_one_chain() {
+		// One mod translates both advisors, another changes the condition.
+		let chain = |limit: &str, name: &str| {
+			format!(
+				"country_event = {{ id = demo.1 option = {{ name = demo.a add_prestige = 1 \
+				if = {{ limit = {{ {limit} }} define_advisor = {{ type = philosopher culture = new name = \"{name}\" }} }} \
+				else = {{ define_advisor = {{ type = philosopher culture = old name = \"{name}\" }} }} }} }}\n"
+			)
+		};
+		let vanilla = chain("has_updated_culture = { culture = old }", "Ho");
+		let translated = chain("has_updated_culture = { culture = old }", "Hu");
+		let relimited = chain("has_global_flag = sinicized", "Ho");
+		let result = compute_family_dag(
+			"events/test.txt",
+			Some(&vanilla),
+			&[("left", &[], &translated), ("right", &[], &relimited)],
+		)
+		.expect("merge");
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit");
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+		assert_eq!(emitted.matches("if =").count(), 1, "{emitted}");
+		assert!(emitted.contains("has_global_flag = sinicized"), "{emitted}");
+		assert!(!emitted.contains("has_updated_culture"), "{emitted}");
+		assert_eq!(emitted.matches("name = \"Hu\"").count(), 2, "{emitted}");
 	}
 
 	#[test]

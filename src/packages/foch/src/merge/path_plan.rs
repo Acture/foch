@@ -599,39 +599,6 @@ fn validate_structural_snapshot(
 	Ok(())
 }
 
-pub(crate) fn prune_noop_script_contributors(input: &mut ResolvedInput, profile: &Eu4) {
-	let script_cache = &input.script_cache;
-	let mut emptied = Vec::new();
-	for (relative_path, contributors) in &mut input.file_inventory {
-		let descriptor = profile.classify_content_family(relative_path);
-		if descriptor.is_some_and(|descriptor| {
-			matches!(
-				descriptor.load_policy,
-				ContentLoadPolicy::DefinitionModule(_)
-			)
-		}) {
-			continue;
-		}
-		if !is_structural_merge_path(relative_path, descriptor) {
-			continue;
-		}
-		if contributors.len() < 2 {
-			continue;
-		}
-		contributors.retain(|contributor| {
-			contributor.is_base_game
-				|| contributor.is_synthetic_base
-				|| script_cache.is_noop_hint(&contributor.mod_id, relative_path) != Some(true)
-		});
-		if contributors.is_empty() {
-			emptied.push(relative_path.clone());
-		}
-	}
-	for relative_path in emptied {
-		input.file_inventory.remove(&relative_path);
-	}
-}
-
 /// The lowercased extension of the final component; `None` for a name with
 /// no `.` after its first character.
 fn lowercase_extension(path: &GamePath) -> Option<String> {

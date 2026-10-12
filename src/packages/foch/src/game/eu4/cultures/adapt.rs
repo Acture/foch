@@ -16,6 +16,7 @@ use crate::merge::dag::{IgnoreReplacePath, build_mod_dag};
 use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::path_plan::build_merge_plan_from_input;
 use crate::merge::planning::module_view::build_cross_file_module_views;
+use crate::merge::timing::stage;
 
 use crate::merge::transform::input::{
 	ReviewedInputPolicy, ReviewedInputs, SourceBinding, SourceRepair,
@@ -184,6 +185,7 @@ impl TransformAdapter for CultureAdapter {
 					.join(", ")
 			));
 		}
+		evidence.extend(std::mem::take(&mut culture.warnings));
 		Ok(vec![PreparedTransform {
 			id: "eu4.culture".into(),
 			identity,
@@ -207,6 +209,8 @@ struct CultureAdaptations {
 	correspondence: Option<CultureCorrespondence>,
 	paths: BTreeSet<GamePathBuf>,
 	findings: Vec<String>,
+	/// Group moves, reported without withholding anything.
+	warnings: Vec<String>,
 	overlays: Vec<ScriptTransform>,
 }
 
@@ -271,7 +275,7 @@ fn prepare_cultures(
 	if input.installed_base_snapshot.is_none() {
 		return Ok(CultureAdaptations::default());
 	}
-	let plan = build_merge_plan_from_input(input, true);
+	let plan = stage("culture: plan", || build_merge_plan_from_input(input, true));
 	let Some((entry, namespace)) = plan.paths.iter().find_map(|entry| {
 		entry
 			.target
@@ -286,16 +290,18 @@ fn prepare_cultures(
 		.classify_content_family(namespace.output_path())
 		.expect("planned culture family");
 	let (mod_dag, _) = build_mod_dag(&input.mods);
-	let Ok(views) = build_cross_file_module_views(
-		entry,
-		namespace,
-		input,
-		descriptor,
-		&mod_dag,
-		ignore_replace_path,
-		dep_overrides,
-		duplicate_definitions,
-	) else {
+	let Ok(views) = stage("culture: module views", || {
+		build_cross_file_module_views(
+			entry,
+			namespace,
+			input,
+			descriptor,
+			&mod_dag,
+			ignore_replace_path,
+			dep_overrides,
+			duplicate_definitions,
+		)
+	}) else {
 		// Existing module analysis reports malformed contributors with their source.
 		return Ok(CultureAdaptations::default());
 	};
@@ -322,26 +328,38 @@ fn prepare_cultures(
 	}
 	let reviewed =
 		super::dag::ReviewedCultureMappings::from_verified_entries(reviewed_entries, &views);
-	let correspondence = match reviewed.and_then(|reviewed| {
-		super::dag::culture_correspondence_for_dag(
-			&views.file_dag,
-			views.vanilla.as_ref(),
-			&views.contributors,
-			&descriptor.merge_policies,
-			&reviewed,
-		)
+	let correspondence = match stage("culture: correspondence", || {
+		reviewed.and_then(|reviewed| {
+			super::dag::culture_correspondence_for_dag(
+				&views.file_dag,
+				views.vanilla.as_ref(),
+				&views.contributors,
+				&descriptor.merge_policies,
+				&reviewed,
+			)
+		})
 	}) {
 		Ok(Some(correspondence)) => correspondence,
 		Ok(None) => return Ok(CultureAdaptations::default()),
 		Err(findings) => {
-			let identities = std::iter::once(&before)
-				.chain(&revisions)
-				.flat_map(|index| index.definitions.keys().map(|id| (id.clone(), id.clone())))
+			// Only a vanilla culture some view no longer defines can have been
+			// renamed or removed; references to every other culture are safe.
+			let identities = before
+				.definitions
+				.keys()
+				.filter(|id| {
+					revisions
+						.iter()
+						.any(|index| !index.definitions.contains_key(*id))
+				})
+				.map(|id| (id.clone(), id.clone()))
 				.collect();
-			let mut paths = indexed_reference_paths(input, &identities)
-				.into_iter()
-				.map(|(_, path)| path)
-				.collect::<BTreeSet<_>>();
+			let mut paths = stage("culture: withheld references", || {
+				indexed_reference_paths(input, &identities)
+			})
+			.into_iter()
+			.map(|(_, path)| path)
+			.collect::<BTreeSet<_>>();
 			paths.extend(entry.target.input_paths().iter().cloned());
 			return Ok(CultureAdaptations {
 				mapping: CultureRenameMap::default(),
@@ -355,16 +373,19 @@ fn prepare_cultures(
 		}
 	};
 	let mappings = correspondence.renames().clone();
-	let group_review = review_group_moves(
-		input,
-		&before,
-		&revisions,
-		&correspondence.group_moves,
-		reference_inventory_complete,
-	);
-	if mappings.is_empty() && group_review.findings.is_empty() {
+	let group_warnings =
+		group_move_warnings(input, &before, &revisions, &correspondence.group_moves);
+	// The culture unit carries the move notes; nothing else is affected.
+	let warned_paths = if group_warnings.is_empty() {
+		BTreeSet::new()
+	} else {
+		entry.target.input_paths().iter().cloned().collect()
+	};
+	if mappings.is_empty() {
 		return Ok(CultureAdaptations {
 			correspondence: Some(correspondence),
+			paths: warned_paths,
+			warnings: group_warnings,
 			..Default::default()
 		});
 	}
@@ -413,14 +434,11 @@ fn prepare_cultures(
 			});
 		}
 	};
-	let mut affected_identities = mappings.clone();
-	for id in group_review.identities {
-		affected_identities.entry(id.clone()).or_insert(id);
-	}
+	let affected_identities = mappings.clone();
 	let reference_paths = indexed_reference_paths(input, &affected_identities);
 	let mut adapted = Vec::new();
-	let mut paths = group_review.paths;
-	let mut findings = group_review.findings;
+	let mut paths = warned_paths;
+	let mut findings = Vec::new();
 	let parameter_review =
 		super::parameters::review_parameter_flows(input, &affected_identities).map_err(invalid)?;
 	paths.extend(parameter_review.paths);
@@ -491,7 +509,7 @@ fn prepare_cultures(
 			adapted.push(ScriptTransform::new(
 				parsed.clone(),
 				result.ast,
-				rendered.into_bytes(),
+				crate::game::eu4::text::encode_paradox_text(&rendered).into_owned(),
 			));
 			paths.insert(path.clone());
 		}
@@ -501,27 +519,20 @@ fn prepare_cultures(
 		correspondence: Some(correspondence),
 		paths,
 		findings,
+		warnings: group_warnings,
 		overlays: adapted,
 	})
 }
 
-#[derive(Default)]
-struct GroupMoveReview {
-	identities: BTreeSet<String>,
-	paths: BTreeSet<GamePathBuf>,
-	findings: Vec<String>,
-}
-
-fn review_group_moves(
+/// One note per culture moved between groups.
+fn group_move_warnings(
 	input: &ResolvedInput,
 	before: &CultureIndex,
 	revisions: &[CultureIndex],
 	moves: &[CultureGroupMove],
-	reference_inventory_complete: bool,
-) -> GroupMoveReview {
-	let mut review = GroupMoveReview::default();
+) -> Vec<String> {
+	let mut warnings = Vec::new();
 	for CultureGroupMove {
-		old,
 		new,
 		from,
 		to,
@@ -585,17 +596,20 @@ fn review_group_moves(
 				}
 			}
 		}
-		if inherited_change
-			|| !group_uses.is_empty()
-			|| input.requested_retained_paths.is_some()
-			|| !reference_inventory_complete
-		{
-			review.findings.push(format!("culture `{old}` -> `{new}` moves from group `{from}` to `{to}`; review changed inherited fields or culture-group predicates ({})", group_uses.iter().map(|path| path.as_str()).collect::<Vec<_>>().join(", ")));
-			review.identities.extend([old.clone(), new.clone()]);
-			review.paths.extend(group_uses);
-		}
+		// The game evaluates group predicates and inherited fields against
+		// the merged hierarchy, exactly as it would load the moving mod, so a
+		// move adapts nothing; it is reported, not withheld.
+		warnings.push(format!(
+			"culture `{new}` moves from group `{from}` to `{to}`{}; {} indexed file(s) test these groups and see the moved culture",
+			if inherited_change {
+				" and inherits the new group's fields"
+			} else {
+				""
+			},
+			group_uses.len()
+		));
 	}
-	review
+	warnings
 }
 
 fn group_metadata(fields: &[(String, AstValue)]) -> Vec<(String, String)> {

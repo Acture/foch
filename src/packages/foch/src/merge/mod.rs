@@ -23,6 +23,7 @@ pub(crate) mod resolution;
 mod review;
 pub(crate) mod semantic_fingerprint;
 pub(crate) mod structured;
+pub mod timing;
 pub(crate) mod transform;
 
 #[cfg(test)]

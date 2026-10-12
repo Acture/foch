@@ -4,7 +4,7 @@ use super::document::{
 };
 use super::{GamePathBuf, MaybeScope, ScopeSet};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(
 	Clone,
@@ -87,7 +87,7 @@ pub struct ScopeNode {
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
 	pub this_type: MaybeScope,
-	pub aliases: HashMap<String, MaybeScope>,
+	pub aliases: BTreeMap<String, MaybeScope>,
 	pub mod_id: String,
 	pub path: GamePathBuf,
 	pub span: SourceSpan,
@@ -249,6 +249,52 @@ pub struct SemanticIndex {
 	pub parse_issues: Vec<ParseIssue>,
 }
 
+impl SemanticIndex {
+	/// Append `other` after this index. Scope ids are positions in `scopes`,
+	/// so every id `other` holds moves past this index's scopes.
+	pub fn append(&mut self, mut other: Self) {
+		let offset = self.scopes.len();
+		for scope in &mut other.scopes {
+			scope.id += offset;
+			if let Some(parent) = scope.parent {
+				scope.parent = Some(parent + offset);
+			}
+		}
+		for definition in &mut other.definitions {
+			definition.scope_id += offset;
+		}
+		for reference in &mut other.references {
+			reference.scope_id += offset;
+		}
+		for alias in &mut other.alias_usages {
+			alias.scope_id += offset;
+		}
+		for usage in &mut other.key_usages {
+			usage.scope_id += offset;
+		}
+		for assignment in &mut other.scalar_assignments {
+			assignment.scope_id += offset;
+		}
+
+		self.scopes.extend(other.scopes);
+		self.definitions.extend(other.definitions);
+		self.references.extend(other.references);
+		self.alias_usages.extend(other.alias_usages);
+		self.key_usages.extend(other.key_usages);
+		self.scalar_assignments.extend(other.scalar_assignments);
+		self.documents.extend(other.documents);
+		self.localisation_definitions
+			.extend(other.localisation_definitions);
+		self.localisation_duplicates
+			.extend(other.localisation_duplicates);
+		self.ui_definitions.extend(other.ui_definitions);
+		self.resource_references.extend(other.resource_references);
+		self.csv_rows.extend(other.csv_rows);
+		self.json_properties.extend(other.json_properties);
+		self.parse_issues.extend(other.parse_issues);
+	}
+}
+
 /// Record kinds of a [`SemanticIndex`], in the order
 /// [`index_with_one_record_of_each_kind`] places them.
 #[cfg(test)]
@@ -287,7 +333,7 @@ pub fn index_with_one_record_of_each_kind(path: impl Fn(usize) -> GamePathBuf) -
 			kind: ScopeKind::File,
 			parent: None,
 			this_type: MaybeScope::Unknown,
-			aliases: HashMap::new(),
+			aliases: BTreeMap::new(),
 			mod_id: mod_id(),
 			path: path(1),
 			span: SourceSpan { line: 1, column: 1 },

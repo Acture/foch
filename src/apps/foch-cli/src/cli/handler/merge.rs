@@ -5,6 +5,9 @@ use foch::input::{
 	Config, CurrentEu4Input, InputRequest, InputSource, inspect_current_eu4_input,
 	resolve_product_input_manifest,
 };
+use foch::merge::timing::{
+	MergeTimingEntry, TimingRecording, append_merge_timing, merge_timing_history_path, stage,
+};
 use foch::merge::{
 	AnalyzedMerge, CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
 	MERGE_REVIEW_SCHEMA, MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition,
@@ -26,18 +29,53 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
+	let recording = TimingRecording::begin();
+	let result = run_merge(merge_args, config);
+	let timing = recording.finish();
+	let status = match &result {
+		Ok(code) => format!("exit {code}"),
+		Err(_) => "error".to_string(),
+	};
+	let input = merge_args.playset_path.as_ref().map_or_else(
+		|| "current EU4 playset".to_string(),
+		|path| path.display().to_string(),
+	);
+	let history = merge_timing_history_path();
+	let entry = MergeTimingEntry {
+		foch_version: env!("CARGO_PKG_VERSION"),
+		analysis_rules_version: foch::game::eu4::base::version::analysis_rules_version(),
+		input: &input,
+		out_dir: &merge_args.out.display().to_string(),
+		status: &status,
+		timing: &timing,
+	};
+	match append_merge_timing(&history, &entry) {
+		Ok(()) => eprintln!(
+			"[merge] timing: total_ms={} recorded in {}",
+			timing.total_ms,
+			history.display()
+		),
+		Err(error) => eprintln!("[foch] could not record merge timing: {error}"),
+	}
+	result
+}
+
+fn run_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	let paradox_data_path = config.paradox_data_path.clone();
 	// Refuse a review path before the analysis it would follow.
 	if let Some(path) = &merge_args.review_json {
 		check_review_json_target(path, &merge_args.out)?;
 	}
-	let PreparedMerge { request, options } = prepare_merge(merge_args, config, None)?;
-	let analyzed = analyze_merge(
-		request,
-		options,
-		&NoopProgressObserver,
-		&CancellationToken::new(),
-	)?;
+	let PreparedMerge { request, options } =
+		stage("prepare_merge", || prepare_merge(merge_args, config, None))?;
+	let analyzed = stage("analyze", || {
+		analyze_merge(
+			request,
+			options,
+			&NoopProgressObserver,
+			&CancellationToken::new(),
+		)
+	})?;
 	report_and_commit(merge_args, analyzed, paradox_data_path)
 }
 
@@ -117,10 +155,10 @@ fn report_and_commit(
 	paradox_data_path: Option<PathBuf>,
 ) -> HandlerResult {
 	let analysis = analyzed.analysis();
-	println!(
-		"{}",
+	let review = stage("render_review", || {
 		render_merge_review_text(&analyzed, merge_args.review_all)
-	);
+	});
+	println!("{review}");
 	if let Some(path) = &merge_args.review_json {
 		write_review_json(&analyzed, path, &merge_args.out)?;
 	}
@@ -141,7 +179,7 @@ fn report_and_commit(
 		}
 		None => CommitAuthorization::EmptyTargetOnly,
 	};
-	let execution = analyzed.commit(authorization)?;
+	let execution = stage("commit", || analyzed.commit(authorization))?;
 	println!("{}", render_merge_report_text(&execution.report));
 	if let Some(tip) = render_unresolved_conflict_tip(&execution.report, merge_args.out.as_path()) {
 		eprintln!("{tip}");

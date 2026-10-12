@@ -2410,7 +2410,7 @@ mod tests {
 				kind: ScopeKind::File,
 				parent: None,
 				this_type: MaybeScope::Known(base_scope::country()),
-				aliases: HashMap::new(),
+				aliases: std::collections::BTreeMap::new(),
 				mod_id: "mod:test".to_string(),
 				path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
 					.expect("valid game path"),
@@ -2422,7 +2422,7 @@ mod tests {
 				kind: ScopeKind::Block,
 				parent: Some(0),
 				this_type: MaybeScope::Known(base_scope::country()),
-				aliases: HashMap::new(),
+				aliases: std::collections::BTreeMap::new(),
 				mod_id: "mod:test".to_string(),
 				path: crate::model::GamePathBuf::parse("common/holy_orders/orders.txt")
 					.expect("valid game path"),
