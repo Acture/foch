@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::error::CwtLoadError;
-use super::query::{CompiledRulePack, CwtQuery, PACK_FORMAT_VERSION};
+use super::query::{CompiledRulePack, CwtQuery};
 use super::source::{CwtSchemaId, SchemaPack, cwt_schema_id_from_dir};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,8 +86,8 @@ pub(crate) fn load_cwt_from_dir(
 }
 
 fn open_compiled_rule_cache_generation(cache_dir: &Path) -> PathBuf {
-	let namespace = crate::platform::cache_store::cache_version_namespace(PACK_FORMAT_VERSION)
-		.expect("compiled CWT pack version is valid SemVer");
+	let namespace = crate::platform::cache_store::cache_version_namespace(crate::DATA_VERSION)
+		.expect("data version is valid SemVer");
 	let generation = cache_dir.join(namespace);
 	let _ = fs::create_dir_all(&generation);
 	generation

@@ -1,0 +1,12 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+# Each rule covers what the game's own files write and the vendored rules
+# reject; the comment above it names a vanilla file that relies on it.
+
+country_history = {
+	subtype[not_nat_pir_reb] = {
+		# A country starts with one reform per tier: history/countries/
+		# ABI - Abihka.txt adds three.
+		## cardinality = 0..inf
+		add_government_reform = <government_reform>
+	}
+}

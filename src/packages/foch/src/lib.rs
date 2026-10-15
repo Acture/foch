@@ -1,5 +1,9 @@
 //! Foch's EU4 project, playset, analysis, and merge library.
 
+mod data_version;
+
+pub use data_version::DATA_VERSION;
+
 pub mod check;
 pub mod game;
 pub mod graph;

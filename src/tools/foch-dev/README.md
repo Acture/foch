@@ -22,7 +22,9 @@ uv run --locked --project src/tools/foch-dev python -m foch_dev release unpublis
 checkout search upward from that directory; `--repo /path/to/foch` selects one
 explicitly. This works for an installed wheel and for source archives without
 Git metadata or private notes. `schema-hash --schema-root /path/to/config`
-also works without a checkout.
+also works without a checkout; repeat `--schema-root` to hash several rule
+directories in the order the build compiles them (the vendored config, then
+`src/packages/foch/src/game/eu4/cwt_supplement`).
 
 For a maintainer-run diagnostic against installed mods:
 
@@ -59,7 +61,7 @@ into a directory outside the checkout. There a `[patch.crates-io]` config
 stands every unpacked crate but `foch-cli` in for its registry release; the
 re-lock may only change those entries. `cargo install --locked` then builds the
 release `foch` with the checkout's toolchain, and the installed binary must
-embed the `schema-hash` of the vendored rules, print `--help` and inspect a
+embed the `schema-hash` of the vendored and supplementary rules, print `--help` and inspect a
 minimal `foch.toml`. It compiles a release build, so it is a maintainer or
 release-job command, not a quick check. `--allow-dirty` packages uncommitted
 changes, `--offline` uses only the cargo registry cache, and `--work-dir`
@@ -139,7 +141,8 @@ Module boundaries:
 - `contracts`: Cargo binary/example, the published crates and their closure, CWT location,
   desktop dependency/source checks, and the name, repository and license that
   the PyPI, WinGet and crate metadata share.
-- `schema`: the `cwt_schema_id` digest, in the build script's file order.
+- `schema`: the `cwt_schema_id` digest of the vendored and supplementary rules,
+  in the build script's directory and file order.
 - `crates`: the out-of-tree crate packaging and install smoke.
 - `versions`: the release version and its per-channel spellings.
 - `binary`: the installed-binary identity checks every channel shares.

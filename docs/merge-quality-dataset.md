@@ -63,7 +63,7 @@ Both are read-only. Each case binds:
 - the product's ordered input attestation, including mod ID and precedence;
 - the exact `foch` artifact digest;
 - runner protocol `foch-cli-committable-merge-report-v6`;
-- scorer `2.1.0` and configuration;
+- scorer `2.2.0` and configuration;
 - production backend `gumtree-pcs-nway`;
 - scope `full_product_merge`; and
 - installed base-snapshot identity.

@@ -80,8 +80,9 @@ bytes may be reused across paths; a hit rebases the stored AST path to the
 requested file. Lua and Clausewitz modes never share entries.
 
 The product no longer writes the CWT cache. `build.rs` compiles the vendored
-schema and the binary embeds the pack; the `FOCH_CWTOOLS_SCHEMA_DIR`
-maintainer override is compiled fresh in every process, so an edit to the
+schema, then foch's supplementary rules in `src/packages/foch/src/game/eu4/cwt_supplement`,
+and the binary embeds the pack; the `FOCH_CWTOOLS_SCHEMA_DIR`
+maintainer override replaces both and is compiled fresh in every process, so an edit to the
 compiler cannot be masked by a pack an earlier build stored. `foch cache` still
 lists and cleans the `cwt-rules` entries earlier builds left. EU4
 interpretation remains in `src/packages/foch/src/game/eu4`; compiled CWT facts do not prove EU4

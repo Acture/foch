@@ -23,7 +23,7 @@ pub fn run() {
 mod tests {
 	#[test]
 	fn shared_product_dependencies_compile() {
-		let _: u32 = foch::game::eu4::base::snapshot::BASE_DATA_SCHEMA_VERSION;
+		let _: &str = foch::DATA_VERSION;
 		let _: foch::model::MergeReportStatus = foch::model::MergeReportStatus::Blocked;
 	}
 

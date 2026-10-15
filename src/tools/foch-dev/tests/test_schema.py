@@ -6,7 +6,13 @@ import unittest
 from pathlib import Path
 
 from foch_dev.repository import find_repository
-from foch_dev.schema import cwt_files, cwt_snapshot_hash
+from foch_dev.schema import (
+	SCHEMA_DIR,
+	SUPPLEMENT_DIR,
+	cwt_files,
+	cwt_snapshot_hash,
+	repository_schema_hash,
+)
 
 
 class SchemaTests(unittest.TestCase):
@@ -30,6 +36,44 @@ class SchemaTests(unittest.TestCase):
 			(root / "events").mkdir()
 			(root / "common/types.cwt").rename(root / "events/types.cwt")
 			self.assertNotEqual(cwt_snapshot_hash(root), before)
+
+	def test_directories_hash_in_order_with_a_boundary_between_them(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			first: Path = Path(directory, "first")
+			second: Path = Path(directory, "second")
+			first.mkdir()
+			second.mkdir()
+			(first / "a.cwt").write_bytes(b"types = { }\n")
+			(second / "b.cwt").write_bytes(b"enums = { }\n")
+			expected = hashlib.sha256(b"foch-cwt-schema-id/v2\n")
+			for part in (b"a.cwt", b"types = { }\n"):
+				expected.update(len(part).to_bytes(8, "little") + part)
+			expected.update(b"\xff" * 8)
+			for part in (b"b.cwt", b"enums = { }\n"):
+				expected.update(len(part).to_bytes(8, "little") + part)
+			self.assertEqual(cwt_snapshot_hash(first, second), expected.hexdigest())
+			self.assertNotEqual(
+				cwt_snapshot_hash(second, first), cwt_snapshot_hash(first, second)
+			)
+
+	def test_repository_digest_covers_the_vendored_and_supplementary_rules(
+		self,
+	) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			root: Path = Path(directory)
+			for schema_dir, content in (
+				(SCHEMA_DIR, "types = { }\n"),
+				(SUPPLEMENT_DIR, "enums = { }\n"),
+			):
+				(root / schema_dir).mkdir(parents=True)
+				(root / schema_dir / "rules.cwt").write_text(content)
+			self.assertEqual(
+				repository_schema_hash(root),
+				cwt_snapshot_hash(root / SCHEMA_DIR, root / SUPPLEMENT_DIR),
+			)
+			self.assertNotEqual(
+				repository_schema_hash(root), cwt_snapshot_hash(root / SCHEMA_DIR)
+			)
 
 	def test_file_order_matches_the_rust_schema_order(self) -> None:
 		with tempfile.TemporaryDirectory() as directory:

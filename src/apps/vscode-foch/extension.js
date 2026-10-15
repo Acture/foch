@@ -13,7 +13,8 @@ const RELOAD_REQUIRED_CONFIG_KEYS = [
 	'fochLsp.gamePath',
 	'fochLsp.modPaths',
 	'fochLsp.autoDetectMods',
-	'fochLsp.autoDetectModsMax'
+	'fochLsp.autoDetectModsMax',
+	'fochLsp.showGameDiagnostics'
 ];
 
 function normalizePath(p) {
@@ -399,7 +400,10 @@ async function activate(context) {
 
 	const clientOptions = {
 		documentSelector: buildDocumentSelector(),
-		outputChannel
+		outputChannel,
+		initializationOptions: {
+			showGameDiagnostics: cfg.get('showGameDiagnostics') === true
+		}
 	};
 
 	client = new LanguageClient(

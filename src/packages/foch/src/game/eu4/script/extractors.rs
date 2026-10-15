@@ -1061,7 +1061,7 @@ fn is_diplomacy_timeline_block(key: &str, value: &AstValue) -> bool {
 	matches!(value, AstValue::Block { .. }) && is_clausewitz_date_key(key)
 }
 
-fn is_clausewitz_date_key(key: &str) -> bool {
+pub(crate) fn is_clausewitz_date_key(key: &str) -> bool {
 	let mut parts = key.split('.');
 	let Some(year) = parts.next() else {
 		return false;

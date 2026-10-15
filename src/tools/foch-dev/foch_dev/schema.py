@@ -7,7 +7,15 @@ import os
 from pathlib import Path
 
 SCHEMA_DIR: Path = Path("src/packages/foch/vendor/cwtools-eu4-config")
-"""The CWT build input of the `foch` package, relative to the repository root."""
+"""The vendored CWT build input of the `foch` package, relative to the
+repository root."""
+
+SUPPLEMENT_DIR: Path = Path("src/packages/foch/src/game/eu4/cwt_supplement")
+"""foch's own CWT rules, compiled after `SCHEMA_DIR`, relative to the
+repository root."""
+
+SCHEMA_DIRS: tuple[Path, ...] = (SCHEMA_DIR, SUPPLEMENT_DIR)
+"""Every CWT build input, in the order the build script compiles them."""
 
 
 def raise_walk_error(error: OSError) -> None:
@@ -15,7 +23,11 @@ def raise_walk_error(error: OSError) -> None:
 
 
 SCHEMA_ID_DOMAIN: bytes = b"foch-cwt-schema-id/v2\n"
-"""Mirror of the domain tag `cwt_schema_id_from_dir` hashes first."""
+"""Mirror of the domain tag `cwt_schema_id_from_dirs` hashes first."""
+
+SCHEMA_DIRECTORY_BOUNDARY: bytes = (2**64 - 1).to_bytes(8, "little")
+"""Mirror of the marker `cwt_schema_id_from_dirs` hashes between two
+directories."""
 
 
 def schema_file_name(root: Path, path: Path) -> bytes:
@@ -53,14 +65,26 @@ def cwt_files(schema_root: Path) -> list[Path]:
 	return sorted(files, key=lambda path: schema_file_order_key(schema_root, path))
 
 
-def cwt_snapshot_hash(schema_root: Path) -> str:
-	"""Mirror `cwt_schema_id_from_dir`: after the domain tag, each file's name
-	and normalized content, both length-prefixed (u64 little-endian)."""
+def cwt_snapshot_hash(*schema_roots: Path) -> str:
+	"""Mirror `cwt_schema_id_from_dirs`: after the domain tag, each file's name
+	and normalized content, both length-prefixed (u64 little-endian), one
+	directory after another with a boundary between them."""
 	digest = hashlib.sha256(SCHEMA_ID_DOMAIN)
-	for path in cwt_files(schema_root):
-		name: bytes = schema_file_name(schema_root, path)
-		content: bytes = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-		for part in (name, content):
-			digest.update(len(part).to_bytes(8, "little"))
-			digest.update(part)
+	for index, schema_root in enumerate(schema_roots):
+		if index > 0:
+			digest.update(SCHEMA_DIRECTORY_BOUNDARY)
+		for path in cwt_files(schema_root):
+			name: bytes = schema_file_name(schema_root, path)
+			content: bytes = (
+				path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+			)
+			for part in (name, content):
+				digest.update(len(part).to_bytes(8, "little"))
+				digest.update(part)
 	return digest.hexdigest()
+
+
+def repository_schema_hash(base: Path) -> str:
+	"""The `cwt_schema_id` of the schema inputs below `base`, a repository
+	root."""
+	return cwt_snapshot_hash(*(base / directory for directory in SCHEMA_DIRS))

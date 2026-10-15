@@ -19,7 +19,7 @@ pub const INPUT_VERSION_SCHEMA_V2: &str = "2.0.0";
 pub const WORKSHOP_OBSERVATION_SCHEMA_V2: &str = "2.0.0";
 pub const MEASUREMENT_SCHEMA_V1: &str = "1.0.0";
 pub const MEASUREMENT_SCHEMA_V2: &str = "2.0.0";
-pub const SCORER_VERSION: &str = "2.1.0";
+pub const SCORER_VERSION: &str = "2.2.0";
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -42,6 +42,16 @@ The `0.1.0` preview is acceptable when the repository proves:
 - bundled, explicitly configured, and development server launch modes;
 - current-file parse diagnostics and cross-mod semantic findings;
 - CWT unknown-key/cardinality diagnostics only where schema context binds;
+- each schema problem labelled with what decided it: `cwtools` for a rule from
+  the vendored CWTools rules, `foch-cwtools` for foch's supplementary rules or
+  its refinement of how a rule applies (such as the notice for a block repeated
+  word for word), and `foch-detect` for foch's own finding of how the game
+  reads a file (decimals past the third at fields checked in game to drop
+  them, a capitalised `Yes`, tags the game assigns at runtime); parse errors
+  and cross-mod findings stay labelled `foch`;
+- problems the game's own files already have hidden by default, both in files
+  under the game root and when a mod file replaces a game file, with
+  `fochLsp.showGameDiagnostics` to show them;
 - schema-aware completion/hover for supported contexts;
 - navigation for scripted effects/triggers, event IDs, flag values, and
   localisation keys; and

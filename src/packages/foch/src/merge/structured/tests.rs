@@ -1042,9 +1042,9 @@ fn event_merge_amalgamates_independent_ordered_insertions() {
 		merge_event_files(&base, &left, &right, &event_policies()).expect("merge event files");
 
 	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
-	// `add_prestige` is a schema `float` (`alias[effect:add_prestige]`), so the
-	// merged output carries it in the engine's own representation; `CFixedPoint`
-	// holds thousandths. `add_stability` is an `int` and keeps its spelling.
+	// `add_prestige` is a schema `float` (`alias[effect:add_prestige]`); every
+	// input spells it `1`, so the merged output does too. `add_stability` is
+	// an `int` and keeps its spelling.
 	assert_eq!(
 		emit(outcome.resolved_ast().expect("conflict-free AST")),
 		"namespace = demo\n\
@@ -1056,7 +1056,7 @@ fn event_merge_amalgamates_independent_ordered_insertions() {
 		\t}\n\
 		\toption = {\n\
 		\t\tname = demo.accept\n\
-		\t\tadd_prestige = 1.000\n\
+		\t\tadd_prestige = 1\n\
 		\t}\n\
 		\toption = {\n\
 		\t\tname = demo.reject\n\
@@ -2448,11 +2448,12 @@ fn canonicalization_does_not_change_the_verdict_on_reordered_quoted_scalars() {
 	);
 }
 
-/// P-695: EU4 reads a script number through a reader coarser than text
-/// comparison, so the same value can be written several ways. Numbers are
-/// canonicalized before the merge looks at them, so these pin the product
-/// verdict: a spelling difference is not a conflict, a value difference still
-/// is, and the schema decides which is which.
+/// P-695: the same value can be written several ways, such as `0.5` and
+/// `0.50`. Schema-typed numbers are compared by their exact decimal value
+/// before the merge looks at them, so these pin the product verdict: a
+/// spelling difference is not a conflict, a value difference still is (down to
+/// a fourth decimal), the schema decides which is which, and the agreed value
+/// is written with the most decimals any input used for it at that place.
 mod game_value_equivalence {
 	use std::fs;
 
@@ -2516,9 +2517,6 @@ mod game_value_equivalence {
 			["0.50", "0.5"],
 			["1", "1.0"],
 			["0.500", "0.5"],
-			// The reader keeps three decimals and truncates, so a fourth
-			// decimal never reaches the game at all.
-			["0.1234", "0.1239"],
 		] {
 			let outcome = merge_with(
 				Some(&schema),
@@ -2537,26 +2535,38 @@ mod game_value_equivalence {
 	}
 
 	#[test]
-	fn the_output_is_written_in_the_engines_own_representation() {
+	fn the_agreed_value_keeps_the_longest_spelling_used_for_it() {
 		let schema = schema();
-		let outcome = merge_with(
-			Some(&schema),
-			&MergePolicies::default(),
-			"upkeep",
-			"0.1",
-			["0.5", "0.50"],
-		);
+		for (values, written) in [
+			(["0.5", "0.50"], "upkeep = 0.50\n"),
+			(["0.500", "0.5"], "upkeep = 0.500\n"),
+			(["0.5", "0.5"], "upkeep = 0.5\n"),
+		] {
+			let outcome = merge_with(
+				Some(&schema),
+				&MergePolicies::default(),
+				"upkeep",
+				"0.1",
+				values,
+			);
 
-		let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
-		// `CFixedPoint` holds thousandths, so three decimals is the value the
-		// game keeps rather than a formatting preference.
-		assert!(output.contains("upkeep = 0.500"), "{output}");
+			let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+			assert!(output.contains(written), "{values:?}: {output}");
+		}
 	}
 
 	#[test]
 	fn a_real_value_difference_is_still_a_conflict() {
 		let schema = schema();
-		for values in [["0.5", "0.6"], ["0.001", "0.002"], ["0.5", "-0.5"]] {
+		for values in [
+			["0.5", "0.6"],
+			["0.001", "0.002"],
+			["0.5", "-0.5"],
+			// Whether the game keeps a fourth decimal differs from field to
+			// field, so the merge does not assume it is dropped.
+			["0.1234", "0.1239"],
+			["0.0125", "0.012"],
+		] {
 			let outcome = merge_with(
 				Some(&schema),
 				&MergePolicies::default(),
@@ -2608,30 +2618,34 @@ mod game_value_equivalence {
 	}
 
 	#[test]
-	fn an_int_field_is_read_with_the_integer_reader() {
+	fn an_int_field_compares_its_exact_value_too() {
 		let schema = schema();
 		let agreeing = merge_with(
 			Some(&schema),
 			&MergePolicies::default(),
 			"slots",
 			"1",
-			["3", "3.4"],
+			["3", "3.0"],
 		);
 		assert!(
 			agreeing.conflicts().is_empty(),
-			"`GetInt` is `atoi`, so both are 3: {:?}",
+			"`3` and `3.0` are one value: {:?}",
 			agreeing.conflicts()
 		);
-		assert!(emit(agreeing.resolved_ast().expect("conflict-free AST")).contains("slots = 3\n"),);
-
-		let differing = merge_with(
-			Some(&schema),
-			&MergePolicies::default(),
-			"slots",
-			"1",
-			["3", "4"],
+		assert!(
+			emit(agreeing.resolved_ast().expect("conflict-free AST")).contains("slots = 3.0\n"),
 		);
-		assert!(!differing.conflicts().is_empty());
+
+		for values in [["3", "3.4"], ["3", "4"]] {
+			let differing = merge_with(
+				Some(&schema),
+				&MergePolicies::default(),
+				"slots",
+				"1",
+				values,
+			);
+			assert!(!differing.conflicts().is_empty(), "{values:?}");
+		}
 	}
 
 	#[test]
@@ -2663,10 +2677,20 @@ mod game_value_equivalence {
 			..MergePolicies::default()
 		};
 
-		// This is the whole property: once the text is canonical, a merge
-		// cannot tell `0.50` from `0.5`, so every policy behaves as if both
-		// mods had written the same thing — including a reducer, which then
-		// sums two equal contributions exactly as it would have anyway.
+		// This is the whole property: once numbers are compared by value, a
+		// merge cannot tell `0.50` from `0.5`, so every policy behaves as if
+		// both mods had written the same thing — including a reducer, which
+		// then sums two equal contributions exactly as it would have anyway.
+		// Only the trailing zeros written back may differ.
+		let value_of = |outcome: &crate::merge::structured::ClausewitzMergeOutcome| {
+			outcome.resolved_ast().map(|file| {
+				emit(&crate::merge::numeric::canonicalize_numeric_values(
+					file,
+					Some(schema.facts()),
+					&mut crate::merge::numeric::NumberSpellings::default(),
+				))
+			})
+		};
 		for policies in [&MergePolicies::default(), &summed] {
 			let spelled = merge_with(Some(&schema), policies, "upkeep", "0.1", ["0.5", "0.50"]);
 			let identical = merge_with(Some(&schema), policies, "upkeep", "0.1", ["0.5", "0.5"]);
@@ -2677,9 +2701,9 @@ mod game_value_equivalence {
 				"spelling must not change the verdict"
 			);
 			assert_eq!(
-				spelled.resolved_ast().map(emit),
-				identical.resolved_ast().map(emit),
-				"spelling must not change the output"
+				value_of(&spelled),
+				value_of(&identical),
+				"spelling must not change the merged value"
 			);
 		}
 	}

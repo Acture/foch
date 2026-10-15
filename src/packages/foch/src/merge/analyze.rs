@@ -868,7 +868,8 @@ fn load_merge_policy(
 			)),
 			message: err.to_string(),
 		})?;
-	let emit_options = EmitOptions::with_indent(config.emit_indent());
+	let emit_options = EmitOptions::with_indent(config.emit_indent())
+		.with_unread_decimals_dropped(config.emit_drops_unread_decimals());
 	let frozen_external_files = freeze_external_resolution_files(&resolution_map)?;
 	Ok(LoadedMergePolicy {
 		transform_project: config,

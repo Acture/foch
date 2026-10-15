@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use crate::game::schema::cache::{CwtLoadStatus, load_cwt_from_dir};
 use crate::game::schema::compile::{CwtSchemaGraph, SchemaRootId};
 use crate::game::schema::query::{
-	CompiledRuleCondition, CompiledRulePack, CompiledRuleValue, CompiledSeverity,
-	CompiledTypeKeyFilter, CwtQuery, RuleContext, SchemaBinding,
+	CompiledAliasCategory, CompiledRuleCondition, CompiledRuleOrigin, CompiledRulePack,
+	CompiledRuleValue, CompiledSeverity, CompiledTypeKeyFilter, CwtQuery, RuleContext,
+	SchemaBinding,
 };
 use crate::game::schema::rule_path::SchemaDirectory;
 use crate::game::schema::syntax::ParadoxTree;
@@ -233,6 +234,64 @@ fn compiled_binary_pack_roundtrips_conditional_rule_fields() {
 	assert_eq!(
 		visible_only.conditions,
 		vec![CompiledRuleCondition::SubtypeInactive("hidden".to_string())]
+	);
+}
+
+/// A subtype group's first field keeps its own `##` attributes, at the top of
+/// a rule body and nested in a block.
+#[test]
+fn subtype_group_first_field_keeps_its_attributes() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+			subtype[hidden] = {
+				hidden = yes
+			}
+		}
+	}
+
+	event = {
+		subtype[hidden] = {
+			## cardinality = 0..1
+			hidden_only = bool
+		}
+		option = {
+			subtype[hidden] = {
+				## severity = info
+				nested_only = bool
+			}
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::new(CompiledRulePack::from_graph(&graph));
+	let event = engine
+		.bind_root(game_path("events/example.txt"))
+		.expect("bind event root");
+	let hidden_only = event
+		.rules
+		.iter()
+		.find(|field| field.key == "hidden_only")
+		.expect("hidden-only conditional field");
+	assert_eq!(hidden_only.attributes.cardinality, Some((0, Some(1))));
+
+	let option = event
+		.rules
+		.iter()
+		.find(|field| field.key == "option")
+		.expect("option block field");
+	let CompiledRuleValue::Block(option_rules) = &option.value else {
+		panic!("option is a block: {:?}", option.value);
+	};
+	let nested_only = option_rules
+		.iter()
+		.find(|field| field.key == "nested_only")
+		.expect("nested conditional field");
+	assert_eq!(
+		nested_only.attributes.severity,
+		Some(CompiledSeverity::Info)
 	);
 }
 
@@ -742,6 +801,11 @@ fn compiled_engine_matches_scope_hierarchy_metadata() {
 	assert!(engine.scope_matches("unknown", "unknown"));
 	assert!(!engine.scope_matches("country", "unknown"));
 	assert!(!engine.scope_matches("unknown", "country"));
+	assert!(engine.scope_matches("any", "country"));
+	assert!(engine.scope_matches("province", "any"));
+	assert!(engine.is_unlisted_scope("unknown"));
+	assert!(!engine.is_unlisted_scope("country"));
+	assert!(!engine.is_unlisted_scope("any"));
 }
 
 #[test]
@@ -825,12 +889,9 @@ fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 		load_cwt_from_dir(&root, Some(cache.path())).expect("compile fixture schema into cache");
 	assert_eq!(first.status, CwtLoadStatus::CompiledFromSource);
 	assert!(first.cache_path.as_ref().is_some_and(|path| path.is_file()));
-	assert!(
-		first
-			.cache_path
-			.as_ref()
-			.is_some_and(|path| { path.starts_with(cache.path().join("v0.12.0")) })
-	);
+	assert!(first.cache_path.as_ref().is_some_and(|path| {
+		path.starts_with(cache.path().join(format!("v{}", crate::DATA_VERSION)))
+	}));
 	assert!(obsolete_generation.exists());
 	assert!(legacy_flat_entry.exists());
 	assert!(first.timings.cache_read.is_some());
@@ -855,7 +916,10 @@ fn compiled_vendor_pack_preserves_cwtools_alias_binding() {
 	let root = vendor_schema_dir();
 	let graph = CwtSchemaGraph::from_directory(&root).expect("load CWTools schema graph");
 	let engine = CwtQuery::from_graph(&graph);
-	assert_eq!(engine.alias_count(), graph.aliases.len());
+	assert_eq!(
+		engine.alias_count(),
+		graph.aliases.values().map(Vec::len).sum::<usize>()
+	);
 	assert!(engine.alias_count() > 2_000);
 
 	let context = engine
@@ -880,6 +944,80 @@ fn compiled_vendor_pack_preserves_cwtools_alias_binding() {
 	let decoded = CompiledRulePack::from_bytes(&bytes).expect("decode vendor compiled pack");
 	let roundtripped = CwtQuery::new(decoded);
 	assert_eq!(roundtripped.alias_count(), engine.alias_count());
+}
+
+/// An alias the schema defines several times keeps every definition, in
+/// schema order; binding still resolves to the last one.
+#[test]
+fn compiled_vendor_pack_keeps_every_alias_overload() {
+	let graph = CwtSchemaGraph::from_directory(&vendor_schema_dir()).expect("load CWTools schema");
+	let engine = CwtQuery::from_graph(&graph);
+	let values = engine
+		.alias_overloads(CompiledAliasCategory::Trigger, "stability")
+		.map(|alias| alias.value.clone())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		values,
+		["int[-3..3]", "scope[country]", "enum[country_tags]"]
+			.map(|value| CompiledRuleValue::Marker(value.to_string()))
+	);
+	assert_eq!(
+		engine
+			.alias(CompiledAliasCategory::Trigger, "stability")
+			.map(|alias| &alias.value),
+		values.last()
+	);
+
+	let context = engine
+		.bind_context(
+			game_path("events/example.txt"),
+			&["country_event", "trigger"],
+		)
+		.expect("bind event trigger context");
+	assert_eq!(engine.bind_field_matches(context, "stability").len(), 1);
+	let overloads = engine.bind_field_overloads(context, "stability", |_| true);
+	assert_eq!(overloads.len(), 3);
+	assert_eq!(
+		overloads.first().map(|field_match| field_match.value()),
+		values.last()
+	);
+}
+
+/// The schema's `modifiers` section declares most modifiers only by name and
+/// scope. Each becomes a `float` modifier the editor accepts, unless an
+/// explicit `alias[modifier:...]` already defines it; binding never sees them.
+#[test]
+fn compiled_vendor_pack_declares_section_modifiers() {
+	let graph = CwtSchemaGraph::from_directory(&vendor_schema_dir()).expect("load CWTools schema");
+	assert!(!graph.types.contains_key(&SchemaRootId::new("modifiers")));
+	let engine = CwtQuery::from_graph(&graph);
+
+	let global_unrest = engine
+		.declared_modifier("global_unrest")
+		.expect("declared modifier");
+	assert_eq!(global_unrest.category, CompiledAliasCategory::Modifier);
+	assert_eq!(
+		global_unrest.value,
+		CompiledRuleValue::Marker("float".to_string())
+	);
+	assert_eq!(global_unrest.attributes.scope, ["country"]);
+	assert_eq!(
+		engine
+			.declared_modifier("local_unrest")
+			.map(|modifier| modifier.attributes.scope.as_slice()),
+		Some(["province".to_string()].as_slice())
+	);
+	assert!(
+		engine
+			.alias(CompiledAliasCategory::Modifier, "global_unrest")
+			.is_none()
+	);
+	assert!(engine.declared_modifier("has_banners").is_none());
+	assert!(
+		engine
+			.alias(CompiledAliasCategory::Modifier, "has_banners")
+			.is_some()
+	);
 }
 
 #[test]
@@ -1024,71 +1162,88 @@ fn a_complex_enum_rule_path_that_is_not_a_game_path_fails_to_compile_naming_the_
 	}
 }
 
-/// A top-level block without a `type[...]` header reads the files below the
-/// directory holding its schema file. The directory keeps the case the
-/// schema tree spells and matches files ignoring ASCII case, as rule paths
-/// do.
+/// A top-level block only gives rules to the type a `type[...]` header
+/// declares: on its own it reads no file, wherever its schema file sits. The
+/// vendored config's undeclared `power_projection` block in `common/` must
+/// not claim every file there no declared type reads.
 #[test]
-fn a_headerless_type_reads_the_directory_of_its_schema_file() {
+fn a_rule_block_without_a_type_declaration_reads_no_file() {
 	let root = tempfile::tempdir().expect("create schema dir");
-	let events = root.path().join("Events");
-	fs::create_dir(&events).expect("create schema subdir");
-	fs::write(events.join("foo.cwt"), "foo = { x = bool }\n").expect("write schema");
+	let common = root.path().join("common");
+	fs::create_dir(&common).expect("create schema subdir");
+	fs::write(common.join("foo.cwt"), "foo = { x = bool }\n").expect("write schema");
+	fs::write(root.path().join("bar.cwt"), "bar = { x = bool }\n").expect("write schema");
 
 	let graph = CwtSchemaGraph::from_directory(root.path()).expect("compile schema");
-	assert_eq!(
-		graph.types[&SchemaRootId::new("foo")].path,
-		Some(SchemaDirectory::Directory(game_path("Events").to_owned()))
-	);
+	for name in ["foo", "bar"] {
+		assert_eq!(graph.types[&SchemaRootId::new(name)].path, None, "{name}");
+	}
 	let engine = CwtQuery::from_graph(&graph);
-	assert_eq!(
-		engine
-			.bind_root(game_path("events/a.txt"))
-			.map(|root| root.name.as_str()),
-		Some("foo")
-	);
-	assert!(engine.bind_root(game_path("common/a.txt")).is_none());
-}
-
-/// The same block in a schema file at the schema root names the game root,
-/// which holds every file and so, as a rule directory, matches none.
-#[test]
-fn a_headerless_type_in_a_root_level_schema_file_binds_no_file() {
-	let root = tempfile::tempdir().expect("create schema dir");
-	fs::write(root.path().join("foo.cwt"), "foo = { x = bool }\n").expect("write schema");
-
-	let graph = CwtSchemaGraph::from_directory(root.path()).expect("compile schema");
-	assert_eq!(
-		graph.types[&SchemaRootId::new("foo")].path,
-		Some(SchemaDirectory::GameRoot)
-	);
-	let engine = CwtQuery::from_graph(&graph);
-	for file in ["foo.txt", "events/a.txt"] {
+	for file in [
+		"common/alerts.txt",
+		"common/units/a.txt",
+		"bar.txt",
+		"events/a.txt",
+	] {
 		assert!(engine.bind_root(game_path(file)).is_none(), "{file}");
 	}
 }
 
-/// A schema directory whose name a host would split (a literal backslash on
-/// Unix) is not a game directory, so the headerless type it would name fails
-/// to compile, naming the type and the schema file.
-#[cfg(unix)]
+/// The first directory a schema compiles from writes CWTools' rules; every
+/// rule a later directory adds — to an existing type, nested in a block, as a
+/// new type or as an alias — is that extension's.
 #[test]
-fn a_headerless_type_in_a_directory_that_is_not_a_game_path_fails_to_compile() {
-	let root = tempfile::tempdir().expect("create schema dir");
-	let directory = root.path().join(r"a\b");
-	fs::create_dir(&directory).expect("create schema subdir");
-	let file = directory.join("foo.cwt");
-	fs::write(&file, "foo = { x = bool }\n").expect("write schema");
+fn compiled_rules_record_which_rule_files_wrote_them() {
+	let base = tempfile::tempdir().expect("create base schema dir");
+	fs::write(
+		base.path().join("base.cwt"),
+		"types = {\n\ttype[sample] = { path = \"game/common/samples\" }\n}\nsample = {\n\trank = int\n}\nalias[effect:base_effect] = int\n",
+	)
+	.expect("write base schema");
+	let extension = tempfile::tempdir().expect("create extension schema dir");
+	fs::write(
+		extension.path().join("extension.cwt"),
+		"types = {\n\ttype[extra] = { path = \"game/common/extras\" }\n}\nsample = {\n\tbonus = { factor = float }\n}\nextra = {\n\tsize = int\n}\nalias[effect:extension_effect] = int\n",
+	)
+	.expect("write extension schema");
 
-	let error = CwtSchemaGraph::from_directory(root.path())
-		.expect_err("a literal backslash is not a game directory");
-	let message = error.to_string();
-	for expected in [
-		file.display().to_string(),
-		"`foo` declares an invalid schema directory".to_string(),
-		"contains '\\\\'".to_string(),
+	let graph =
+		CwtSchemaGraph::from_directories(&[base.path(), extension.path()]).expect("compile schema");
+	let engine = CwtQuery::from_graph(&graph);
+	let sample = engine
+		.bind_root(game_path("common/samples/a.txt"))
+		.expect("bind sample root");
+	assert_eq!(sample.origin, CompiledRuleOrigin::Base);
+	let rank = engine
+		.bind_field(RuleContext::RootType(sample), "rank")
+		.expect("bind rank");
+	assert_eq!(rank.origin, CompiledRuleOrigin::Base);
+	let bonus = engine
+		.bind_field(RuleContext::RootType(sample), "bonus")
+		.expect("bind bonus");
+	assert_eq!(bonus.origin, CompiledRuleOrigin::Extension);
+	let factor = engine
+		.bind_field(RuleContext::RuleField(bonus), "factor")
+		.expect("bind factor");
+	assert_eq!(factor.origin, CompiledRuleOrigin::Extension);
+
+	let extra = engine
+		.bind_root(game_path("common/extras/a.txt"))
+		.expect("bind extra root");
+	assert_eq!(extra.origin, CompiledRuleOrigin::Extension);
+	let size = engine
+		.bind_field(RuleContext::RootType(extra), "size")
+		.expect("bind size");
+	assert_eq!(size.origin, CompiledRuleOrigin::Extension);
+
+	for (name, origin) in [
+		("base_effect", CompiledRuleOrigin::Base),
+		("extension_effect", CompiledRuleOrigin::Extension),
 	] {
-		assert!(message.contains(&expected), "{expected}: {message}");
+		let alias = engine
+			.alias(CompiledAliasCategory::Effect, name)
+			.unwrap_or_else(|| panic!("alias {name}"));
+		assert_eq!(alias.origin, origin, "{name}");
 	}
 }
 

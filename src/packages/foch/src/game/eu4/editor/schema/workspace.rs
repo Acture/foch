@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
+use super::interpret::schema_definition_names;
 use crate::game::eu4::script::parser::{
 	AstStatement, AstValue, ScriptSyntax, parse_clausewitz_statements,
 };
@@ -23,6 +24,16 @@ impl<'a> SchemaDocument<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct SchemaWorkspace {
 	pub(super) complex_enums: HashMap<String, Vec<String>>,
+	/// The names each schema type's workspace definitions take.
+	pub(super) definitions: HashMap<String, BTreeSet<String>>,
+}
+
+impl SchemaWorkspace {
+	pub(super) fn defines(&self, type_name: &str, name: &str) -> bool {
+		self.definitions
+			.get(type_name)
+			.is_some_and(|names| names.contains(name))
+	}
 }
 
 struct ParsedSchemaDocument<'a> {
@@ -63,7 +74,19 @@ fn build_dynamic_schema_values(
 			complex_enums.insert(complex_enum.name.clone(), values.into_iter().collect());
 		}
 	}
-	SchemaWorkspace { complex_enums }
+	let mut definitions = HashMap::<String, BTreeSet<String>>::new();
+	for file in files {
+		for root in engine.matching_roots(file.path) {
+			definitions
+				.entry(root.name.clone())
+				.or_default()
+				.extend(schema_definition_names(root, &file.statements, file.path));
+		}
+	}
+	SchemaWorkspace {
+		complex_enums,
+		definitions,
+	}
 }
 
 fn collect_complex_enum_file_values(

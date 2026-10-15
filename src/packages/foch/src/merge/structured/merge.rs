@@ -19,6 +19,7 @@ use crate::model::{GamePath, ScopeKind};
 
 use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body};
 use crate::merge::model::{InputRewrite, SemanticPartitionId};
+use crate::merge::numeric::NumberSpellings;
 
 use super::ast_adapter::{
 	AstAdapterError, denormalize_ast, normalize_ast, normalize_ast_with_findings,
@@ -255,10 +256,13 @@ pub(super) fn merge_clausewitz_files_with_context(
 	);
 	let started = Instant::now();
 	let mut scope_cache = HashMap::new();
-	let base = canonicalize_for_merge(base, policies, schema, &mut scope_cache);
+	let mut spellings = NumberSpellings::default();
+	let base = canonicalize_for_merge(base, policies, schema, &mut scope_cache, &mut spellings);
 	let revisions = revisions
 		.iter()
-		.map(|revision| canonicalize_for_merge(revision, policies, schema, &mut scope_cache))
+		.map(|revision| {
+			canonicalize_for_merge(revision, policies, schema, &mut scope_cache, &mut spellings)
+		})
 		.collect::<Vec<_>>();
 	let (base, base_trivia) = detach_trivia(&base);
 	let detached_revisions = revisions.iter().map(detach_trivia).collect::<Vec<_>>();
@@ -313,7 +317,13 @@ pub(super) fn merge_clausewitz_files_with_context(
 			.zip(resolved_chains.iter().flatten()),
 	) {
 		if **original != *read {
-			let original = canonicalize_for_merge(original, policies, schema, &mut scope_cache);
+			let original = canonicalize_for_merge(
+				original,
+				policies,
+				schema,
+				&mut scope_cache,
+				&mut spellings,
+			);
 			let (original, _) = detach_trivia(&original);
 			let (original, _) = normalize_ast_with_findings(&original, &policy)?;
 			input_rewrites.insert(*revision, input_rewrite(tree, original));
@@ -392,6 +402,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 	if reduce_event_fallbacks {
 		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
 	}
+	spellings.restore(&mut tentative_ast.statements);
 	charge(KernelStep::JoinFinish, started);
 	Ok(ClausewitzMergeOutcome {
 		tentative_ast,
@@ -428,7 +439,13 @@ pub fn canonicalize_clausewitz_file(
 ) -> Result<AstFile, AstAdapterError> {
 	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
-	let canonical = canonicalize_for_merge(file, policies, Some(rule_engine()), &mut scope_cache);
+	let canonical = canonicalize_for_merge(
+		file,
+		policies,
+		Some(rule_engine()),
+		&mut scope_cache,
+		&mut NumberSpellings::default(),
+	);
 	let (semantic, trivia) = detach_trivia(&canonical);
 	let tree = normalize_ast(&semantic, &policy)?;
 	let mut canonical = denormalize_ast(file.path.clone(), &tree)?;
@@ -444,8 +461,20 @@ pub(crate) fn clausewitz_files_semantically_equivalent(
 ) -> Result<bool, AstAdapterError> {
 	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
-	let left = canonicalize_for_merge(left, policies, Some(rule_engine()), &mut scope_cache);
-	let right = canonicalize_for_merge(right, policies, Some(rule_engine()), &mut scope_cache);
+	let left = canonicalize_for_merge(
+		left,
+		policies,
+		Some(rule_engine()),
+		&mut scope_cache,
+		&mut NumberSpellings::default(),
+	);
+	let right = canonicalize_for_merge(
+		right,
+		policies,
+		Some(rule_engine()),
+		&mut scope_cache,
+		&mut NumberSpellings::default(),
+	);
 	let (left, _) = detach_trivia(&left);
 	let (right, _) = detach_trivia(&right);
 	let left = normalize_ast(&left, &policy)?;
@@ -478,17 +507,21 @@ pub(crate) fn clausewitz_statements_semantically_equivalent(
 	)
 }
 
+#[cfg(test)]
 pub(crate) fn normalize_clausewitz_file(
 	file: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<NormalizedTree, AstAdapterError> {
-	normalize_clausewitz_file_with_context(file, policies, None)
+	normalize_clausewitz_file_with_context(file, policies, None, &mut NumberSpellings::default())
 }
 
+/// Normalize `file` as the merge does, and note in `spellings` how its
+/// numbers were written.
 pub(super) fn normalize_clausewitz_file_with_context(
 	file: &AstFile,
 	policies: &MergePolicies,
 	entity_transform: Option<&dyn EntityTransform>,
+	spellings: &mut NumberSpellings,
 ) -> Result<NormalizedTree, AstAdapterError> {
 	let entity_transform = entity_transform.filter(|transform| transform.applies_to(&file.path));
 	if let Some(transform) = entity_transform {
@@ -497,7 +530,13 @@ pub(super) fn normalize_clausewitz_file_with_context(
 			.map_err(AstAdapterError::InvalidTree)?;
 	}
 	let mut scope_cache = HashMap::new();
-	let canonical = canonicalize_for_merge(file, policies, Some(rule_engine()), &mut scope_cache);
+	let canonical = canonicalize_for_merge(
+		file,
+		policies,
+		Some(rule_engine()),
+		&mut scope_cache,
+		spellings,
+	);
 	let (semantic, _) = detach_trivia(&canonical);
 	let policy = entity_transform.map_or_else(
 		|| ContentFamilyMergePolicy::new(policies),
@@ -506,7 +545,8 @@ pub(super) fn normalize_clausewitz_file_with_context(
 	normalize_ast(&semantic, &policy)
 }
 
-/// Bring a file to the form every identity in the merge is derived from.
+/// Bring a file to the form every identity in the merge is derived from, and
+/// note in `spellings` how its numbers were written.
 ///
 /// Numbers first: `canonicalize_boolean_or_definitions` deduplicates disjuncts
 /// by exact scalar text, so two that differ only in how one number is spelled
@@ -516,8 +556,9 @@ fn canonicalize_for_merge(
 	policies: &MergePolicies,
 	schema: Option<&CwtQuery>,
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
+	spellings: &mut NumberSpellings,
 ) -> AstFile {
-	let mut file = crate::merge::numeric::canonicalize_numeric_values(file, schema);
+	let mut file = crate::merge::numeric::canonicalize_numeric_values(file, schema, spellings);
 	canonicalize_multiline_strings(&mut file.statements);
 	canonicalize_boolean_or_definitions(&file, policies, scope_cache)
 }

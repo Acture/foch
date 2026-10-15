@@ -149,36 +149,50 @@ Prefer exact files or conflict IDs over broad policies. See the
 
 ## How numbers are written
 
-EU4 reads a script number far more coarsely than a text comparison does. The
-script surface reaches `CToken::ReadValue(CFixedPoint&)`, which takes the
-integer part and at most **three** fraction digits, truncated rather than
-rounded, and scales by 1000; `CToken::GetInt` is plain `atoi`. So `0.5`, `0.50`
-and `0.500` are one value to the game, and `0.1234` and `0.1239` are both
-`0.123`.
+Two mods often write one value differently: `0.5`, `0.50` and `0.500` are the
+same number. Where the CWT schema states that a field holds a number, foch
+compares its exact decimal value, so a spelling difference is never reported
+as a conflict. A real difference still is, down to the last digit: `0.0125`
+and `0.012` are two values, and so are `3` and `3.4`, because how many decimals
+the game keeps differs from field to field.
 
-Foch therefore writes numbers in that representation — a `float` field with
-three decimals, an `int` field as the integer the game reads:
+The merged value is written with the most decimals any mod used for it at the
+same place, meaning the same field in the same definition:
 
 ```text
-land_morale = 0.50     ->  land_morale = 0.500
-add_prestige = 1       ->  add_prestige = 1.000
-slots = 3.4            ->  slots = 3
+mod A: land_morale = 0.5
+mod B: land_morale = 0.50   ->  land_morale = 0.50
 ```
 
-The point is not tidiness. Two mods writing one value in two spellings used to
-be reported as a content conflict for you to adjudicate, and there was nothing
-to adjudicate. Canonicalizing before the merge makes the spelling invisible to
-every part of it at once.
+Where the schema is silent, a number is compared and written exactly as it
+is, rather than asserting a meaning from how a token happens to look. EU4's
+schema coverage is partial, so a good deal of real content is left untouched.
 
-This applies **only where the CWT schema states the field's type**, because
-which reader the game uses is a property of the field, not of the text. Where
-the schema is silent the number is left exactly as written, rather than
-asserting a meaning from how a token happens to look. EU4's schema coverage is
-partial, so a good deal of real content is left untouched.
+### Digits the game does not read
 
-Source mods are never modified — this affects the separate merged mod foch
-writes. The rule is pinned to the engine build it was read from; a patch that
-changes a reader invalidates the equivalences, not just their precision.
+Some fields were checked in game (1.37.5) and found to keep only three
+decimals and drop the rest, for example the `discipline` modifier, the
+`add_prestige` effect, the `army_tradition` trigger, and the `value` of
+`set_variable` and `check_variable`. Others, such as the
+`add_army_professionalism` effect and the `army_professionalism` trigger, keep
+a fourth. In a file foch merges, the checked three-decimal fields lose the
+digits the game would discard anyway:
+
+```text
+discipline = 0.0125   ->  discipline = 0.012
+```
+
+Fields nobody has checked keep every digit, and a file with only one source,
+such as a new file from a single mod, is copied as it is. To keep every digit
+everywhere, set in `foch.toml`:
+
+```toml
+[emit]
+drop_unread_decimals = false
+```
+
+Source mods are never modified; this affects only the separate merged mod
+foch writes.
 
 ## CLI surface
 
@@ -250,9 +264,11 @@ bun run --cwd src/apps/vscode-foch smoke
 ```
 
 EU4 CWT schemas are vendored at `src/packages/foch/vendor/cwtools-eu4-config`. The build
-compiles that directory into a rule pack embedded in the binary, so the
+compiles that directory, followed by foch's supplementary rules in
+`src/packages/foch/src/game/eu4/cwt_supplement` (content the game ships that the
+vendored rules do not yet describe), into a rule pack embedded in the binary, so the
 submodule must be checked out to build at all; `foch --version` names the
-embedded pack's `cwt-schema` identity. Refreshing that submodule and its
+embedded pack's `cwt-schema` identity, which covers both. Refreshing that submodule and its
 recorded snapshot hash is an explicit maintenance operation, not part of a
 normal build.
 

@@ -30,11 +30,15 @@ none substitutes for product merge evidence.
   schemas are useful evidence, but they do not by themselves prove runtime
   load or merge semantics.
 - The CWT schema decides output bytes (numeric canonicalization reads its
-  field types), so `src/packages/foch/build.rs` compiles `src/packages/foch/vendor/cwtools-eu4-config` into a rule
-  pack the binary embeds, and its `cwt_schema_id` enters
+  field types), so `src/packages/foch/build.rs` compiles `src/packages/foch/vendor/cwtools-eu4-config`,
+  then foch's supplementary rules in `src/packages/foch/src/game/eu4/cwt_supplement`, into a rule
+  pack the binary embeds, and its `cwt_schema_id` (covering both) enters
   `analysis_rules_version`, the mod-snapshot cache key, `foch --version` and
-  the merge-quality scorer identity. `FOCH_CWTOOLS_SCHEMA_DIR` is a
-  parser-maintainer override that compiles another directory, uncached, in
+  the merge-quality scorer identity. A supplementary rule only adds what the
+  vendored config lacks for content the game ships; a wrong reading of a
+  vendored rule is fixed in the interpreter, not patched over with a rule.
+  `FOCH_CWTOOLS_SCHEMA_DIR` is a
+  parser-maintainer override that compiles another directory in place of both, uncached, in
   every process; it changes output bytes, fails loudly when the directory does
   not load, and merge-quality product runners refuse to start under it. It
   also changes `analysis_rules_version`, so pair it with its own
@@ -152,6 +156,7 @@ the legacy object store part of the current product path.
 - `src/tools/eu4-analysis` — PyGhidra analysis and builtin catalog generation
 - `src/tools/foch-dev` — internal Python package for repository contracts and diagnostics
 - `src/packages/foch/vendor/cwtools-eu4-config` — external build input, compiled into the binary
+- `src/packages/foch/src/game/eu4/cwt_supplement` — foch's supplementary CWT rules, compiled after the vendored config
 
 A release publishes `foch-cli` to crates.io with every workspace crate it
 builds from. `foch_dev check` derives that set from `cargo metadata`, requires

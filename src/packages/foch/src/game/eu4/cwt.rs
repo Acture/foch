@@ -16,14 +16,16 @@ use crate::model::{GamePath, ScopeKind, ScopeType, base_scope};
 
 pub mod merge;
 
-/// The rule pack `build.rs` compiled from the package's `vendor/cwtools-eu4-config`.
+/// The rule pack `build.rs` compiled from the package's `vendor/cwtools-eu4-config`
+/// and, after it, the supplementary rules in `src/game/eu4/cwt_supplement`.
 static EMBEDDED_RULE_PACK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cwt-rules.pack"));
 
 /// `cwt_schema_id` of the rule pack compiled into this binary.
 pub const EMBEDDED_CWT_SCHEMA_ID: &str = env!("FOCH_CWT_SCHEMA_ID");
 
 /// Maintainer override: compile the schema from this directory instead of
-/// using the embedded pack. It changes output bytes, so a directory that does
+/// using the embedded pack. The directory replaces both the vendored rules and
+/// the supplement. It changes output bytes, so a directory that does
 /// not load is a fatal error rather than a quiet fallback. It is compiled in
 /// every process and never cached, so an edit to the compiler shows at once.
 pub const CWT_SCHEMA_OVERRIDE_ENV: &str = "FOCH_CWTOOLS_SCHEMA_DIR";
@@ -1070,31 +1072,41 @@ mod tests {
 	use crate::game::schema::CwtLoadStatus;
 	use crate::game::schema::query::CompiledRulePack;
 	use crate::game::schema::source::cwt_files;
-	use crate::game::schema::source::{SchemaPack, cwt_schema_id_from_dir, normalize_line_endings};
+	use crate::game::schema::source::{
+		SchemaPack, cwt_schema_id_from_dir, cwt_schema_id_from_dirs, normalize_line_endings,
+	};
 	use crate::model::{GamePath, ScopeKind, ScopeRegistry, base_scope};
 
-	fn vendored_schema_dir() -> PathBuf {
-		Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")
+	/// The directories `build.rs` compiles, in its order.
+	fn embedded_schema_dirs() -> [PathBuf; 2] {
+		let package = Path::new(env!("CARGO_MANIFEST_DIR"));
+		[
+			package.join("vendor/cwtools-eu4-config"),
+			package.join("src/game/eu4/cwt_supplement"),
+		]
 	}
 
 	#[test]
-	fn default_schema_is_the_embedded_pack_of_the_vendored_config() {
+	fn default_schema_is_the_embedded_pack_of_the_vendored_config_and_supplement() {
 		let schema = load_schema(None);
-		let vendored_id =
-			cwt_schema_id_from_dir(&vendored_schema_dir()).expect("hash vendored CWT");
+		let [vendor, supplement] = embedded_schema_dirs();
+		let embedded_id =
+			cwt_schema_id_from_dirs(&[&vendor, &supplement]).expect("hash embedded CWT");
 
 		assert_eq!(schema.cache_status(), CwtLoadStatus::Embedded);
-		assert_eq!(schema.source_id(), &vendored_id);
+		assert_eq!(schema.source_id(), &embedded_id);
 		assert_eq!(schema.source_id().to_hex(), EMBEDDED_CWT_SCHEMA_ID);
 		assert!(schema.facts().root_count() > 0);
 		assert!(schema.facts().alias_count() > 0);
 	}
 
 	#[test]
-	fn compiling_the_vendored_config_reproduces_the_embedded_bytes() {
+	fn compiling_the_vendored_config_and_supplement_reproduces_the_embedded_bytes() {
 		// build.rs compiled the embedded pack in another process, so equality
 		// also proves the encoding does not depend on per-process hash seeds.
-		let pack = SchemaPack::load_from_dir(&vendored_schema_dir()).expect("compile vendored CWT");
+		let [vendor, supplement] = embedded_schema_dirs();
+		let pack =
+			SchemaPack::load_from_dirs(&[&vendor, &supplement]).expect("compile embedded CWT");
 		let bytes = CompiledRulePack::from_schema_pack(&pack)
 			.to_bytes()
 			.expect("encode compiled CWT");
@@ -1104,29 +1116,32 @@ mod tests {
 
 	#[test]
 	fn a_crlf_checkout_compiles_to_the_embedded_bytes() {
-		// Windows checkouts convert the submodule's line endings; its binaries
+		// Windows checkouts convert the rules' line endings; their binaries
 		// must embed the same pack the same `cwt_schema_id` names elsewhere.
-		let vendored = vendored_schema_dir();
-		let crlf = tempfile::tempdir().expect("create CRLF schema copy");
-		for source in cwt_files(&vendored).expect("list vendored CWT") {
-			let target = crlf
-				.path()
-				.join(source.strip_prefix(&vendored).expect("vendored path"));
-			let text = std::fs::read(&source).expect("read vendored CWT");
-			let lf = normalize_line_endings(&text);
-			let mut converted = Vec::with_capacity(lf.len() * 11 / 10);
-			for &byte in lf.iter() {
-				if byte == b'\n' {
-					converted.push(b'\r');
+		let copies = embedded_schema_dirs().map(|source_root| {
+			let crlf = tempfile::tempdir().expect("create CRLF schema copy");
+			for source in cwt_files(&source_root).expect("list embedded CWT") {
+				let target = crlf
+					.path()
+					.join(source.strip_prefix(&source_root).expect("embedded path"));
+				let text = std::fs::read(&source).expect("read embedded CWT");
+				let lf = normalize_line_endings(&text);
+				let mut converted = Vec::with_capacity(lf.len() * 11 / 10);
+				for &byte in lf.iter() {
+					if byte == b'\n' {
+						converted.push(b'\r');
+					}
+					converted.push(byte);
 				}
-				converted.push(byte);
+				std::fs::create_dir_all(target.parent().expect("CWT parent"))
+					.expect("create CWT parent");
+				std::fs::write(target, converted).expect("write CRLF CWT");
 			}
-			std::fs::create_dir_all(target.parent().expect("CWT parent"))
-				.expect("create CWT parent");
-			std::fs::write(target, converted).expect("write CRLF CWT");
-		}
+			crlf
+		});
 
-		let pack = SchemaPack::load_from_dir(crlf.path()).expect("compile CRLF CWT");
+		let pack = SchemaPack::load_from_dirs(&[copies[0].path(), copies[1].path()])
+			.expect("compile CRLF CWT");
 		let bytes = CompiledRulePack::from_schema_pack(&pack)
 			.to_bytes()
 			.expect("encode compiled CWT");

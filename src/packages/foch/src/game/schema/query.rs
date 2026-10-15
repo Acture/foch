@@ -6,15 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use super::compile::{
 	AliasCategory, CwtAlias, CwtComplexEnum, CwtFieldAttributes, CwtLink, CwtRuleCondition,
-	CwtRuleField, CwtRuleValue, CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype,
+	CwtRuleField, CwtRuleOrigin, CwtRuleValue, CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype,
 	SchemaRootDefinition, SchemaRootId, SchemaRootKeyFilter,
 };
 use super::error::CwtLoadError;
 use super::rule_path::SchemaDirectory;
 use super::source::SchemaPack;
+use crate::DATA_VERSION;
 use crate::model::{GamePath, GamePathBuf};
-
-pub const PACK_FORMAT_VERSION: &str = "0.12.0";
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CwtNodeId(pub String);
@@ -39,6 +38,10 @@ pub struct CompiledRulePack {
 	pub source_id: Option<String>,
 	pub roots: Vec<CompiledRoot>,
 	pub aliases: Vec<CompiledAlias>,
+	/// Modifiers the schema's `modifiers` section declares and no
+	/// `alias[modifier:...]` defines, as `float` modifier aliases scoped to
+	/// their declared scope. Binding does not resolve to them.
+	pub declared_modifiers: Vec<CompiledAlias>,
 	pub enums: Vec<CompiledStringSet>,
 	pub value_sets: Vec<CompiledStringSet>,
 	pub complex_enums: Vec<CompiledComplexEnum>,
@@ -59,8 +62,10 @@ impl CompiledRulePack {
 		let mut aliases = graph
 			.aliases
 			.values()
+			.flatten()
 			.map(CompiledAlias::from_alias)
 			.collect::<Vec<_>>();
+		// Stable, so each name's overloads keep their schema order.
 		aliases.sort_by(|left, right| {
 			left.category
 				.as_str()
@@ -68,11 +73,23 @@ impl CompiledRulePack {
 				.then_with(|| left.name.cmp(&right.name))
 		});
 
+		let declared_modifiers = graph
+			.modifiers
+			.iter()
+			.filter(|(name, _)| {
+				!graph
+					.aliases
+					.contains_key(&(AliasCategory::Modifier, (*name).clone()))
+			})
+			.map(|(name, scope)| CompiledAlias::declared_modifier(name, scope))
+			.collect();
+
 		Self {
-			format_version: PACK_FORMAT_VERSION.to_string(),
+			format_version: DATA_VERSION.to_string(),
 			source_id: None,
 			roots,
 			aliases,
+			declared_modifiers,
 			enums: sorted_string_sets(&graph.enums),
 			value_sets: sorted_string_sets(&graph.value_sets),
 			complex_enums: sorted_complex_enums(&graph.complex_enums),
@@ -98,10 +115,10 @@ impl CompiledRulePack {
 		let pack: Self = bincode::deserialize(bytes).map_err(|error| CwtLoadError::Codec {
 			message: error.to_string(),
 		})?;
-		if pack.format_version != PACK_FORMAT_VERSION {
+		if pack.format_version != DATA_VERSION {
 			return Err(CwtLoadError::Codec {
 				message: format!(
-					"compiled pack format `{}` is not supported by `{PACK_FORMAT_VERSION}`",
+					"compiled pack format `{}` is not supported by `{DATA_VERSION}`",
 					pack.format_version
 				),
 			});
@@ -124,6 +141,7 @@ pub struct CompiledRoot {
 	pub skip_root_keys: Vec<String>,
 	pub subtypes: Vec<CompiledSubtype>,
 	pub rules: Vec<CompiledRuleField>,
+	pub origin: CompiledRuleOrigin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -218,6 +236,7 @@ impl CompiledRoot {
 				.iter()
 				.map(CompiledRuleField::from_rule_field)
 				.collect(),
+			origin: CompiledRuleOrigin::from_schema(definition.origin),
 		}
 	}
 }
@@ -252,6 +271,7 @@ impl CompiledSubtype {
 pub enum CompiledTypeKeyFilter {
 	Exact(Vec<String>),
 	Exclude(Vec<String>),
+	Prefix(String),
 }
 
 impl CompiledTypeKeyFilter {
@@ -259,20 +279,22 @@ impl CompiledTypeKeyFilter {
 		match filter {
 			SchemaRootKeyFilter::Exact(values) => Self::Exact(values.clone()),
 			SchemaRootKeyFilter::Exclude(values) => Self::Exclude(values.clone()),
+			SchemaRootKeyFilter::Prefix(prefix) => Self::Prefix(prefix.clone()),
 		}
 	}
 
-	fn matches(&self, key: &str) -> bool {
+	pub fn matches(&self, key: &str) -> bool {
 		match self {
 			Self::Exact(values) => values.iter().any(|value| value == key),
 			Self::Exclude(values) => values.iter().all(|value| value != key),
+			Self::Prefix(prefix) => key.starts_with(prefix.as_str()),
 		}
 	}
 
 	fn primary_label(&self) -> Option<&str> {
 		match self {
 			Self::Exact(values) => values.first().map(String::as_str),
-			Self::Exclude(_) => None,
+			Self::Exclude(_) | Self::Prefix(_) => None,
 		}
 	}
 }
@@ -284,9 +306,24 @@ pub struct CompiledAlias {
 	pub attributes: CompiledFieldAttributes,
 	pub value: CompiledRuleValue,
 	pub rules: Vec<CompiledRuleField>,
+	pub origin: CompiledRuleOrigin,
 }
 
 impl CompiledAlias {
+	fn declared_modifier(name: &str, scope: &str) -> Self {
+		Self {
+			category: CompiledAliasCategory::Modifier,
+			name: name.to_string(),
+			attributes: CompiledFieldAttributes::from_attributes(&CwtFieldAttributes {
+				scope: vec![scope.to_string()],
+				..CwtFieldAttributes::default()
+			}),
+			value: CompiledRuleValue::Marker("float".to_string()),
+			rules: Vec::new(),
+			origin: CompiledRuleOrigin::Base,
+		}
+	}
+
 	fn from_alias(alias: &CwtAlias) -> Self {
 		Self {
 			category: CompiledAliasCategory::from_schema(&alias.category),
@@ -298,6 +335,7 @@ impl CompiledAlias {
 				.iter()
 				.map(CompiledRuleField::from_rule_field)
 				.collect(),
+			origin: CompiledRuleOrigin::from_schema(alias.origin),
 		}
 	}
 }
@@ -397,6 +435,7 @@ pub struct CompiledRuleField {
 	pub value: CompiledRuleValue,
 	pub attributes: CompiledFieldAttributes,
 	pub conditions: Vec<CompiledRuleCondition>,
+	pub origin: CompiledRuleOrigin,
 }
 
 impl CompiledRuleField {
@@ -410,6 +449,32 @@ impl CompiledRuleField {
 				.iter()
 				.map(CompiledRuleCondition::from_schema)
 				.collect(),
+			origin: CompiledRuleOrigin::from_schema(field.origin),
+		}
+	}
+
+	/// Whether two fields state the same rule, whichever rule files hold them.
+	pub fn states_same_rule(&self, other: &Self) -> bool {
+		self.key == other.key
+			&& self.attributes == other.attributes
+			&& self.conditions == other.conditions
+			&& self.value.states_same_rule(&other.value)
+	}
+}
+
+/// Which rule files a rule was written in: the schema's first directory (the
+/// vendored CWTools config) or a later one extending it (foch's supplement).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum CompiledRuleOrigin {
+	Base,
+	Extension,
+}
+
+impl CompiledRuleOrigin {
+	fn from_schema(origin: CwtRuleOrigin) -> Self {
+		match origin {
+			CwtRuleOrigin::Base => Self::Base,
+			CwtRuleOrigin::Extension => Self::Extension,
 		}
 	}
 }
@@ -447,6 +512,22 @@ impl CompiledRuleValue {
 					.collect(),
 			),
 			CwtRuleValue::Marker(value) => Self::Marker(value.clone()),
+		}
+	}
+
+	/// Whether two values state the same rule, whichever rule files hold them.
+	pub fn states_same_rule(&self, other: &Self) -> bool {
+		match (self, other) {
+			(Self::Scalar(left), Self::Scalar(right))
+			| (Self::Marker(left), Self::Marker(right)) => left == right,
+			(Self::Block(left), Self::Block(right)) => {
+				left.len() == right.len()
+					&& left
+						.iter()
+						.zip(right)
+						.all(|(left, right)| left.states_same_rule(right))
+			}
+			_ => false,
 		}
 	}
 }
@@ -507,12 +588,38 @@ impl CwtQuery {
 			.map(|index| &self.pack.roots[*index])
 	}
 
+	/// The overload of an alias that binding resolves to: its last definition
+	/// in the schema.
 	pub fn alias(&self, category: CompiledAliasCategory, name: &str) -> Option<&CompiledAlias> {
+		self.alias_overloads(category, name).next_back()
+	}
+
+	/// Every definition of an alias, in schema order.
+	pub fn alias_overloads(
+		&self,
+		category: CompiledAliasCategory,
+		name: &str,
+	) -> impl DoubleEndedIterator<Item = &CompiledAlias> {
 		self.index
 			.aliases
 			.get(&category)
 			.and_then(|aliases| aliases.get(name))
+			.into_iter()
+			.flatten()
 			.map(|index| &self.pack.aliases[*index])
+	}
+
+	/// A modifier only the schema's `modifiers` section declares, as a
+	/// `float` modifier alias. Binding does not resolve to it.
+	pub fn declared_modifier(&self, name: &str) -> Option<&CompiledAlias> {
+		self.index
+			.declared_modifiers
+			.get(name)
+			.map(|index| &self.pack.declared_modifiers[*index])
+	}
+
+	pub fn declared_modifiers(&self) -> &[CompiledAlias] {
+		self.pack.declared_modifiers.as_slice()
 	}
 
 	pub fn enum_values(&self, name: &str) -> Option<&[String]> {
@@ -552,7 +659,7 @@ impl CwtQuery {
 	}
 
 	pub fn scope_matches(&self, required_scope: &str, active_scope: &str) -> bool {
-		if required_scope == active_scope {
+		if required_scope == active_scope || required_scope == "any" || active_scope == "any" {
 			return true;
 		}
 		let Some(required_index) = self.index.scope_labels.get(required_scope).copied() else {
@@ -562,6 +669,14 @@ impl CwtQuery {
 			return false;
 		};
 		self.scope_index_matches(required_index, active_index)
+	}
+
+	/// Whether the schema lists scopes and `label` is none of them or their
+	/// aliases.
+	pub fn is_unlisted_scope(&self, label: &str) -> bool {
+		label != "any"
+			&& !self.index.scope_labels.is_empty()
+			&& !self.index.scope_labels.contains_key(label)
 	}
 
 	pub fn scope_values(&self, required_scope: &str) -> Vec<String> {
@@ -599,6 +714,14 @@ impl CwtQuery {
 				reason: "ambiguous-root-type",
 			},
 		}
+	}
+
+	/// Every root type whose path matches `file_path` most specifically.
+	pub fn matching_roots(&self, file_path: &GamePath) -> Vec<&CompiledRoot> {
+		self.matching_root_indices(file_path)
+			.into_iter()
+			.map(|index| &self.pack.roots[index])
+			.collect()
 	}
 
 	pub fn bind_chain(&self, file_path: &GamePath, ast_path: &[&str]) -> SchemaBinding {
@@ -669,7 +792,7 @@ impl CwtQuery {
 			return matches;
 		}
 		for rules in &rule_sets {
-			match self.match_dynamic_key_rules(rules, key) {
+			match self.match_dynamic_key_rules(rules, key, &every_field) {
 				Some(RuleMatch::Field(field)) => return vec![field],
 				Some(RuleMatch::Dynamic { .. }) => return Vec::new(),
 				_ => {}
@@ -691,6 +814,29 @@ impl CwtQuery {
 		parent: RuleContext<'p>,
 		key: &str,
 	) -> Vec<CompiledBindFieldMatch<'p>> {
+		self.bind_field_matches_with(parent, key, AliasOverloads::Bound, &every_field)
+	}
+
+	/// Like `bind_field_matches`, but only the rule fields `admits` keeps take
+	/// part, so a named field that does not apply (one written for another
+	/// subtype) cannot hide an alias that does; and an alias key yields every
+	/// overload of the alias, starting with the one binding resolves to.
+	pub fn bind_field_overloads<'p>(
+		&'p self,
+		parent: RuleContext<'p>,
+		key: &str,
+		admits: impl Fn(&CompiledRuleField) -> bool,
+	) -> Vec<CompiledBindFieldMatch<'p>> {
+		self.bind_field_matches_with(parent, key, AliasOverloads::Every, &admits)
+	}
+
+	fn bind_field_matches_with<'p>(
+		&'p self,
+		parent: RuleContext<'p>,
+		key: &str,
+		overloads: AliasOverloads,
+		admits: &dyn Fn(&CompiledRuleField) -> bool,
+	) -> Vec<CompiledBindFieldMatch<'p>> {
 		let Some(rule_sets) = parent_rule_sets(parent) else {
 			return Vec::new();
 		};
@@ -699,7 +845,7 @@ impl CwtQuery {
 			field_matches.extend(
 				rules
 					.iter()
-					.filter(|field| field.key == key)
+					.filter(|field| field.key == key && admits(field))
 					.map(CompiledBindFieldMatch::Field),
 			);
 		}
@@ -707,13 +853,17 @@ impl CwtQuery {
 			return field_matches;
 		}
 		for rules in &rule_sets {
-			field_matches.extend(self.match_alias_rule_fields(rules, key));
+			field_matches.extend(
+				self.match_alias_rule_fields(rules, key, overloads)
+					.into_iter()
+					.filter(|field_match| admits(field_match.field())),
+			);
 		}
 		if !field_matches.is_empty() {
 			return field_matches;
 		}
 		for rules in &rule_sets {
-			match self.match_dynamic_key_rules(rules, key) {
+			match self.match_dynamic_key_rules(rules, key, admits) {
 				Some(RuleMatch::Field(field)) => {
 					return vec![CompiledBindFieldMatch::Field(field)];
 				}
@@ -1019,7 +1169,7 @@ impl CwtQuery {
 			}
 		}
 		for rules in rule_sets {
-			if let Some(dynamic_match) = self.match_dynamic_key_rules(rules, key) {
+			if let Some(dynamic_match) = self.match_dynamic_key_rules(rules, key, &every_field) {
 				return Some(dynamic_match);
 			}
 		}
@@ -1043,7 +1193,7 @@ impl CwtQuery {
 		rules: &'p [CompiledRuleField],
 		key: &str,
 	) -> Option<RuleMatch<'p>> {
-		let matches = self.match_alias_rule_fields(rules, key);
+		let matches = self.match_alias_rule_fields(rules, key, AliasOverloads::Bound);
 		match matches.as_slice() {
 			[] => None,
 			[CompiledBindFieldMatch::Alias { wildcard, alias }] => {
@@ -1059,6 +1209,7 @@ impl CwtQuery {
 		&'p self,
 		rules: &'p [CompiledRuleField],
 		key: &str,
+		overloads: AliasOverloads,
 	) -> Vec<CompiledBindFieldMatch<'p>> {
 		let mut matches = Vec::new();
 		for field in rules {
@@ -1069,18 +1220,20 @@ impl CwtQuery {
 				continue;
 			}
 			let category = CompiledAliasCategory::from_name(payload);
-			let Some(alias_index) = self
-				.index
-				.aliases
-				.get(&category)
-				.and_then(|aliases| aliases.get(key))
-			else {
-				continue;
-			};
-			matches.push(CompiledBindFieldMatch::Alias {
+			let mut definitions = self.alias_overloads(category.clone(), key);
+			let to_match = |alias| CompiledBindFieldMatch::Alias {
 				wildcard: field,
-				alias: &self.pack.aliases[*alias_index],
-			});
+				alias,
+			};
+			match overloads {
+				AliasOverloads::Bound => matches.extend(definitions.next_back().map(to_match)),
+				AliasOverloads::Every => {
+					matches.extend(definitions.rev().map(to_match));
+					if category == CompiledAliasCategory::Modifier {
+						matches.extend(self.declared_modifier(key).map(to_match));
+					}
+				}
+			}
 		}
 		matches
 	}
@@ -1089,13 +1242,14 @@ impl CwtQuery {
 		&'p self,
 		rules: &'p [CompiledRuleField],
 		key: &str,
+		admits: &dyn Fn(&CompiledRuleField) -> bool,
 	) -> Option<RuleMatch<'p>> {
 		if is_dynamic_key_marker(key) {
 			return None;
 		}
 		let matches = rules
 			.iter()
-			.filter(|field| self.dynamic_key_rule_matches(&field.key, key))
+			.filter(|field| admits(field) && self.dynamic_key_rule_matches(&field.key, key))
 			.collect::<Vec<_>>();
 		match matches.as_slice() {
 			[] => None,
@@ -1141,6 +1295,15 @@ impl CwtQuery {
 			_ => Some(Err("ambiguous-subtype")),
 		}
 	}
+}
+
+/// Which definitions of an overloaded alias a key match yields.
+#[derive(Clone, Copy, Debug)]
+enum AliasOverloads {
+	/// The one binding resolves to.
+	Bound,
+	/// All of them, the one binding resolves to first.
+	Every,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1190,11 +1353,20 @@ impl<'p> CompiledBindFieldMatch<'p> {
 			Self::Alias { alias, .. } => &alias.value,
 		}
 	}
+
+	/// The rule files of the rule that types this match, as `value()` reads it.
+	pub fn origin(&self) -> CompiledRuleOrigin {
+		match self {
+			Self::Field(field) => field.origin,
+			Self::Alias { alias, .. } => alias.origin,
+		}
+	}
 }
 
 struct RuntimeRuleIndex {
 	roots: HashMap<String, usize>,
-	aliases: HashMap<CompiledAliasCategory, HashMap<String, usize>>,
+	aliases: HashMap<CompiledAliasCategory, HashMap<String, Vec<usize>>>,
+	declared_modifiers: HashMap<String, usize>,
 	enums: HashMap<String, usize>,
 	value_sets: HashMap<String, usize>,
 	complex_enums: HashMap<String, usize>,
@@ -1210,13 +1382,21 @@ impl RuntimeRuleIndex {
 			.enumerate()
 			.map(|(index, root)| (root.name.clone(), index))
 			.collect();
-		let mut aliases = HashMap::<CompiledAliasCategory, HashMap<String, usize>>::new();
+		let mut aliases = HashMap::<CompiledAliasCategory, HashMap<String, Vec<usize>>>::new();
 		for (index, alias) in pack.aliases.iter().enumerate() {
 			aliases
 				.entry(alias.category.clone())
 				.or_default()
-				.insert(alias.name.clone(), index);
+				.entry(alias.name.clone())
+				.or_default()
+				.push(index);
 		}
+		let declared_modifiers = pack
+			.declared_modifiers
+			.iter()
+			.enumerate()
+			.map(|(index, modifier)| (modifier.name.clone(), index))
+			.collect();
 		let enums = pack
 			.enums
 			.iter()
@@ -1251,6 +1431,7 @@ impl RuntimeRuleIndex {
 		Self {
 			roots,
 			aliases,
+			declared_modifiers,
 			enums,
 			value_sets,
 			complex_enums,
@@ -1320,6 +1501,10 @@ fn choose_best_binding(attempts: Vec<BindAttempt>, max_consumed: usize) -> Schem
 			reason: "ambiguous-binding",
 		}
 	}
+}
+
+fn every_field(_: &CompiledRuleField) -> bool {
+	true
 }
 
 fn parent_rule_sets(parent: RuleContext<'_>) -> Option<Vec<&[CompiledRuleField]>> {

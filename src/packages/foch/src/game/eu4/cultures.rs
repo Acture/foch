@@ -539,9 +539,9 @@ fn is_literal_identity(value: &str) -> bool {
 		)
 }
 
-// The compiled CWT currently retains the last overload of an alias. These
-// aliases have a literal <culture> overload in effects.cwt / triggers.cwt,
-// even where the retained overload is a country/province scope reference.
+// Binding resolves an alias to its last overload. These aliases have a
+// literal <culture> overload in effects.cwt / triggers.cwt, even where the
+// bound overload is a country/province scope reference.
 fn is_culture_alias(key: &str, category: &CompiledAliasCategory) -> bool {
 	match category {
 		CompiledAliasCategory::Trigger => matches!(

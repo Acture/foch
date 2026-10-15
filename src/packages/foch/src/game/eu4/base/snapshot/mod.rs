@@ -5,6 +5,7 @@ mod parsed_scripts;
 pub(crate) use coverage::{CoverageClass, build_coverage_report};
 pub(crate) use coverage::{document_family_name, write_coverage_report};
 
+use crate::DATA_VERSION;
 use crate::game::eu4::Eu4;
 use crate::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
 use crate::game::eu4::base::analysis_rules_version;
@@ -46,15 +47,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
-// Bump when any serialized snapshot section or its outer envelope becomes
-// wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 19;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
 pub const INSTALLED_COVERAGE_FILE_NAME: &str = "coverage.json";
 pub const INSTALLED_VOCABULARY_MANIFEST_FILE_NAME: &str = "vocabulary-manifest.json";
-const SNAPSHOT_WIRE_FORMAT_VERSION: &str = "2.0.0";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,7 +62,6 @@ pub enum BaseDataSource {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstalledBaseDataMetadata {
-	pub schema_version: u32,
 	#[serde(default)]
 	pub snapshot_format_version: String,
 	pub game: String,
@@ -85,7 +81,6 @@ pub struct InstalledBaseDataMetadata {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstalledBaseDataEntry {
-	pub schema_version: u32,
 	pub snapshot_format_version: String,
 	pub game: String,
 	pub game_version: String,
@@ -111,7 +106,6 @@ pub struct ReleaseDataAsset {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReleaseDataManifest {
-	pub schema_version: u32,
 	#[serde(default)]
 	pub snapshot_format_version: String,
 	pub cli_tag: String,
@@ -525,7 +519,6 @@ impl BaseBuildObserver {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BaseAnalysisSnapshot {
-	pub schema_version: u32,
 	pub game: String,
 	pub game_version: String,
 	pub analysis_rules_version: String,
@@ -577,7 +570,6 @@ impl BaseAnalysisSnapshot {
 		parsed_scripts: Vec<u8>,
 	) -> Self {
 		Self {
-			schema_version: BASE_DATA_SCHEMA_VERSION,
 			game: game.key().to_string(),
 			game_version: game_version.to_string(),
 			analysis_rules_version: analysis_rules_version().to_string(),
@@ -1167,7 +1159,6 @@ pub struct BaseJsonProperty {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SnapshotWireBundle {
 	format_version: String,
-	schema_version: u32,
 	game: String,
 	game_version: String,
 	sections: Vec<SnapshotWireSection>,
@@ -1197,7 +1188,6 @@ enum SnapshotWireSectionName {
 	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 struct SnapshotMetadataSection {
-	schema_version: u32,
 	game: String,
 	game_version: String,
 	analysis_rules_version: String,
@@ -1538,7 +1528,7 @@ fn validate_installed_base_metadata(
 	game_version: &str,
 	metadata: &InstalledBaseDataMetadata,
 ) -> Result<(), String> {
-	if metadata.snapshot_format_version != SNAPSHOT_WIRE_FORMAT_VERSION {
+	if metadata.snapshot_format_version != DATA_VERSION {
 		let found = if metadata.snapshot_format_version.is_empty() {
 			"<missing>"
 		} else {
@@ -1547,20 +1537,7 @@ fn validate_installed_base_metadata(
 		return Err(stale_installed_base_data_message(
 			game_key,
 			game_version,
-			&format!(
-				"base data snapshot format mismatch: expected {}, found {found}",
-				SNAPSHOT_WIRE_FORMAT_VERSION
-			),
-		));
-	}
-	if metadata.schema_version != BASE_DATA_SCHEMA_VERSION {
-		return Err(stale_installed_base_data_message(
-			game_key,
-			game_version,
-			&format!(
-				"base data schema mismatch: expected {}, found {}",
-				BASE_DATA_SCHEMA_VERSION, metadata.schema_version
-			),
+			&format!("base data snapshot format mismatch: expected {DATA_VERSION}, found {found}"),
 		));
 	}
 	if metadata.analysis_rules_version != analysis_rules_version() {
@@ -2028,16 +2005,6 @@ fn validate_loaded_base_snapshot(
 	game_version: &str,
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<(), String> {
-	if snapshot.schema_version != BASE_DATA_SCHEMA_VERSION {
-		return Err(stale_installed_base_data_message(
-			game_key,
-			game_version,
-			&format!(
-				"base data snapshot schema mismatch: expected {}, found {}",
-				BASE_DATA_SCHEMA_VERSION, snapshot.schema_version
-			),
-		));
-	}
 	if snapshot.game != game_key || snapshot.game_version != game_version {
 		return Err(format!(
 			"base data content does not match request: requested {game_key}@{game_version}, found {}@{}",
@@ -2118,7 +2085,6 @@ pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String>
 					)
 				})?;
 			entries.push(InstalledBaseDataEntry {
-				schema_version: metadata.schema_version,
 				snapshot_format_version: metadata.snapshot_format_version,
 				game: metadata.game,
 				game_version: metadata.game_version,
@@ -2357,8 +2323,7 @@ pub fn write_release_artifacts(
 	})?;
 
 	let manifest = ReleaseDataManifest {
-		schema_version: BASE_DATA_SCHEMA_VERSION,
-		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
+		snapshot_format_version: DATA_VERSION.to_string(),
 		cli_tag: release_tag.to_string(),
 		assets: vec![ReleaseDataAsset {
 			game: snapshot.game.clone(),
@@ -2389,9 +2354,6 @@ pub fn write_release_artifacts(
 	})
 }
 
-/// Schema version of the vocabulary-manifest sidecar.
-pub const VOCABULARY_MANIFEST_VERSION: u32 = 1;
-
 /// One entry in the base-game vocabulary manifest: a defined symbol identified
 /// by kind, name, and originating module.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2407,7 +2369,7 @@ pub struct VocabularyManifestEntry {
 /// induced-symbol-spec counterpart to the CWT declared spec.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VocabularyManifest {
-	pub manifest_version: u32,
+	pub manifest_version: String,
 	pub game: String,
 	pub game_version: String,
 	pub analysis_rules_version: String,
@@ -2438,7 +2400,7 @@ fn sorted_vocabulary_entries(snapshot: &BaseAnalysisSnapshot) -> Vec<VocabularyM
 /// Build the deterministic vocabulary manifest for a base snapshot.
 pub fn build_vocabulary_manifest(snapshot: &BaseAnalysisSnapshot) -> VocabularyManifest {
 	VocabularyManifest {
-		manifest_version: VOCABULARY_MANIFEST_VERSION,
+		manifest_version: DATA_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: snapshot.analysis_rules_version.clone(),
@@ -2489,8 +2451,7 @@ pub fn write_snapshot_bundle(
 	let vocabulary_manifest_sha256 =
 		write_vocabulary_manifest(&vocabulary_manifest_path, snapshot)?;
 	let metadata = InstalledBaseDataMetadata {
-		schema_version: snapshot.schema_version,
-		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
+		snapshot_format_version: DATA_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: snapshot.analysis_rules_version.clone(),
@@ -2547,16 +2508,10 @@ pub fn install_snapshot_from_release(
 		.map_err(|err| format!("failed to download release manifest {manifest_url}: {err}"))?
 		.json::<ReleaseDataManifest>()
 		.map_err(|err| format!("failed to parse release manifest {manifest_url}: {err}"))?;
-	if manifest.schema_version != BASE_DATA_SCHEMA_VERSION {
+	if manifest.snapshot_format_version != DATA_VERSION {
 		return Err(format!(
-			"release manifest schema mismatch: expected {}, found {}",
-			BASE_DATA_SCHEMA_VERSION, manifest.schema_version
-		));
-	}
-	if manifest.snapshot_format_version != SNAPSHOT_WIRE_FORMAT_VERSION {
-		return Err(format!(
-			"release manifest snapshot format mismatch: expected {}, found {}",
-			SNAPSHOT_WIRE_FORMAT_VERSION, manifest.snapshot_format_version
+			"release manifest snapshot format mismatch: expected {DATA_VERSION}, found {}",
+			manifest.snapshot_format_version
 		));
 	}
 
@@ -2616,8 +2571,7 @@ fn install_encoded_snapshot(
 ) -> Result<InstalledBaseSnapshot, String> {
 	let verified = verify_encoded_snapshot(encoded_snapshot, expected)?;
 	let metadata = InstalledBaseDataMetadata {
-		schema_version: verified.snapshot.schema_version,
-		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
+		snapshot_format_version: DATA_VERSION.to_string(),
 		game: verified.snapshot.game.clone(),
 		game_version: verified.snapshot.game_version.clone(),
 		analysis_rules_version: verified.snapshot.analysis_rules_version.clone(),
@@ -2722,8 +2676,7 @@ fn validate_install_metadata(
 	metadata: &InstalledBaseDataMetadata,
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<(), String> {
-	if metadata.snapshot_format_version != SNAPSHOT_WIRE_FORMAT_VERSION
-		|| metadata.schema_version != snapshot.schema_version
+	if metadata.snapshot_format_version != DATA_VERSION
 		|| metadata.game != snapshot.game
 		|| metadata.game_version != snapshot.game_version
 		|| metadata.analysis_rules_version != snapshot.analysis_rules_version
@@ -2787,8 +2740,7 @@ fn encode_snapshot_to_bytes(
 		parsed_scripts_res?,
 	];
 	let bundle = SnapshotWireBundle {
-		format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
-		schema_version: snapshot.schema_version,
+		format_version: DATA_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		sections: section_results
@@ -2831,16 +2783,10 @@ fn decode_inventory_paths(paths: Vec<String>) -> Result<Vec<GamePathBuf>, String
 fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, String> {
 	let bundle: SnapshotWireBundle = bincode::deserialize(bytes)
 		.map_err(|err| format!("failed to parse base data snapshot bundle: {err}"))?;
-	if bundle.format_version != SNAPSHOT_WIRE_FORMAT_VERSION {
+	if bundle.format_version != DATA_VERSION {
 		return Err(format!(
-			"base data bundle version mismatch: expected {}, found {}",
-			SNAPSHOT_WIRE_FORMAT_VERSION, bundle.format_version
-		));
-	}
-	if bundle.schema_version != BASE_DATA_SCHEMA_VERSION {
-		return Err(format!(
-			"base data snapshot schema mismatch: expected {}, found {}",
-			BASE_DATA_SCHEMA_VERSION, bundle.schema_version
+			"base data bundle version mismatch: expected {DATA_VERSION}, found {}",
+			bundle.format_version
 		));
 	}
 	let mut metadata = None;
@@ -2898,7 +2844,6 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 		.ok_or_else(|| "base data snapshot is missing parsed_scripts section".to_string())?;
 
 	Ok(BaseAnalysisSnapshot {
-		schema_version: metadata.schema_version,
 		game: metadata.game,
 		game_version: metadata.game_version,
 		analysis_rules_version: metadata.analysis_rules_version,
@@ -3043,7 +2988,6 @@ fn resolve_installed_snapshot_path(install_dir: &Path) -> Option<PathBuf> {
 
 fn encode_metadata_section(snapshot: &BaseAnalysisSnapshot) -> Result<SectionEncodeResult, String> {
 	let section = SnapshotMetadataSection {
-		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: snapshot.analysis_rules_version.clone(),

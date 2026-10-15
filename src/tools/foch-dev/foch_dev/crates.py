@@ -38,7 +38,7 @@ from .contracts import (
 	verify_publishable_closure,
 )
 from .repository import find_repository
-from .schema import SCHEMA_DIR, cwt_snapshot_hash
+from .schema import SCHEMA_DIR, SCHEMA_DIRS, cwt_snapshot_hash, repository_schema_hash
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -346,12 +346,20 @@ def smoke(repo_root: Path, work: Path, options: CrateSmokeOptions) -> None:
 		for name in sorted({*published, *EXTERNALLY_RELEASED_PACKAGES})
 	}
 	LOGGER.info("packaging %s", ", ".join(versions))
-	schema_root: Path = repo_root / SCHEMA_DIR
-	schema_in_crate: Path = schema_root.resolve().relative_to(
-		Path(packages[SCHEMA_PACKAGE]["manifest_path"]).parent.resolve()
+	package_root: Path = Path(
+		packages[SCHEMA_PACKAGE]["manifest_path"]
+	).parent.resolve()
+	schema_dirs_in_crate: tuple[Path, ...] = tuple(
+		(repo_root / directory).resolve().relative_to(package_root)
+		for directory in SCHEMA_DIRS
 	)
-	schema_id: str = cwt_snapshot_hash(schema_root)
-	LOGGER.info("repository cwt-schema %s (%s)", schema_id, SCHEMA_DIR.as_posix())
+	schema_in_crate: Path = schema_dirs_in_crate[0]
+	schema_id: str = repository_schema_hash(repo_root)
+	LOGGER.info(
+		"repository cwt-schema %s (%s)",
+		schema_id,
+		", ".join(directory.as_posix() for directory in SCHEMA_DIRS),
+	)
 
 	archives: dict[str, Path] = package_crates(
 		repo_root, work / "package", versions, options
@@ -364,11 +372,13 @@ def smoke(repo_root: Path, work: Path, options: CrateSmokeOptions) -> None:
 		root: str = f"{name}-{versions[name]}"
 		verify_crate(archive, root, layouts.get(name))
 		crates[name] = unpack_crate(archive, work / "crates", root)
-	packaged_id: str = cwt_snapshot_hash(crates[SCHEMA_PACKAGE] / schema_in_crate)
+	packaged_id: str = cwt_snapshot_hash(
+		*(crates[SCHEMA_PACKAGE] / directory for directory in schema_dirs_in_crate)
+	)
 	if packaged_id != schema_id:
 		raise ValueError(
 			f"the packaged {SCHEMA_PACKAGE} crate carries cwt-schema {packaged_id}, "
-			f"but the repository's vendored rules hash to {schema_id}"
+			f"but the repository's rules hash to {schema_id}"
 		)
 
 	binary: Path = install_cli(crates, work, repository_toolchain(repo_root), options)

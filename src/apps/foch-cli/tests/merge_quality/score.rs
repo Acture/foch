@@ -3581,9 +3581,10 @@ mod classify_tests {
 		}
 	}
 
-	/// P-695: foch writes a schema-typed float in EU4's own representation, so
-	/// text similarity has to compare that representation on both sides or a
-	/// human patch's spelling reads as a difference from the tool's.
+	/// P-695: one value can be spelled several ways, and foch and a human patch
+	/// need not pick the same one, so text similarity compares the value on
+	/// both sides or a human patch's spelling reads as a difference from the
+	/// tool's.
 	#[test]
 	fn text_similarity_ignores_how_a_number_is_spelled() {
 		let (foch, human, _) = make_dirs();
@@ -3614,6 +3615,27 @@ mod classify_tests {
 			similarity, 1.0,
 			"one value written two ways is not a textual difference"
 		);
+	}
+
+	/// foch leaves out a fourth decimal where the game was seen to ignore it,
+	/// so a human patch that kept it says the same thing to the game.
+	#[test]
+	fn text_similarity_ignores_a_decimal_the_game_does_not_read() {
+		let (foch, human, _) = make_dirs();
+		let rel = "common/static_modifiers/example.txt";
+		write_file(foch.path(), rel, "shared = {\n\tdiscipline = 0.012\n}\n");
+		write_file(human.path(), rel, "shared = {\n\tdiscipline = 0.0125\n}\n");
+
+		let mut cache = ScoreCache::new();
+		let similarity = cache
+			.rounded_similarity(
+				gp(rel),
+				&gp(rel).to_path(foch.path()),
+				&gp(rel).to_path(human.path()),
+			)
+			.expect("both files exist");
+
+		assert_eq!(similarity, 1.0, "the game holds 0.012 either way");
 	}
 
 	/// The schema binds numeric canonicalization by game path, so the cache

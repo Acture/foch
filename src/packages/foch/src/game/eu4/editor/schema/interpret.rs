@@ -1,20 +1,43 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
+use crate::game::eu4::coercion::{alias_reads_three_decimals, alias_value_reads_three_decimals};
 use crate::game::eu4::editor::position::{byte_offset, range_from_span};
+use crate::game::eu4::script::is_clausewitz_date_key;
 use crate::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, ScriptSyntax, SpanRange, parse_clausewitz_statements,
+	unquoted_scalar,
 };
 use crate::game::schema::query::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
-	CompiledLink, CompiledRoot, CompiledRuleCondition, CompiledRuleField, CompiledRuleValue,
-	CompiledSeverity, CwtQuery, RuleContext, SchemaScalarType, parse_schema_marker,
+	CompiledLink, CompiledRoot, CompiledRuleCondition, CompiledRuleField, CompiledRuleOrigin,
+	CompiledRuleValue, CompiledSeverity, CompiledSubtype, CwtQuery, RuleContext, SchemaScalarType,
+	parse_schema_marker,
 };
+use crate::merge::semantic_fingerprint::value_fingerprint;
 use crate::model::{GamePath, LocalisationDefinition, Severity};
 
 use super::{
 	EditorPosition, EditorRange, SchemaCompletion, SchemaCompletionKind, SchemaDiagnostic,
 	SchemaHover, SchemaWorkspace,
 };
+
+/// The source of a diagnostic a vendored CWTools rule decides, crediting those
+/// rules.
+const CWTOOLS_SOURCE: &str = "cwtools";
+/// The source of a diagnostic foch's extension of those rules decides: a rule
+/// from foch's supplement, or foch's own refinement of how a rule applies.
+const FOCH_CWTOOLS_SOURCE: &str = "foch-cwtools";
+/// The source of a diagnostic from foch's own finding of how the game reads a
+/// file, independent of any rule.
+const FOCH_DETECT_SOURCE: &str = "foch-detect";
+
+fn rule_source(origin: CompiledRuleOrigin) -> &'static str {
+	match origin {
+		CompiledRuleOrigin::Base => CWTOOLS_SOURCE,
+		CompiledRuleOrigin::Extension => FOCH_CWTOOLS_SOURCE,
+	}
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct KeyPathTarget {
@@ -33,20 +56,16 @@ pub(super) fn schema_hover(
 	let offset = byte_offset(text, position)?;
 	let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(file_path), text);
 	let target = find_hover_target(&parsed.statements, text, offset, &[])?;
+	let document = schema_document_at_position(engine, file_path, &parsed.statements, position);
 	let parent_path = target
 		.parent_path
 		.iter()
 		.map(String::as_str)
 		.collect::<Vec<_>>();
-	let parent_context = schema_bind_context(
-		engine,
-		dynamic_values,
-		file_path,
-		&parsed.statements,
-		&parent_path,
-	)?;
+	let parent_context =
+		schema_bind_context(engine, dynamic_values, file_path, document, &parent_path)?;
 	let active_subtypes =
-		schema_active_subtypes_for_path(engine, file_path, &parsed.statements, &parent_path);
+		schema_active_subtypes_for_path(engine, file_path, document, &parent_path);
 	let field_match = schema_bind_field_match(
 		engine,
 		dynamic_values,
@@ -327,22 +346,13 @@ pub(super) fn schema_completion_candidates_with_index(
 	let parsed = parse_clausewitz_statements(ScriptSyntax::for_game_path(file_path), text);
 	let parent_path = find_completion_parent_path(&parsed.statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = schema_bind_context(
-		engine,
-		dynamic_values,
-		file_path,
-		&parsed.statements,
-		&parent_path,
-	)?;
-	let active_scopes = schema_active_scopes_for_path(
-		engine,
-		dynamic_values,
-		file_path,
-		&parsed.statements,
-		&parent_path,
-	);
+	let document = schema_document_at_position(engine, file_path, &parsed.statements, position);
+	let parent_context =
+		schema_bind_context(engine, dynamic_values, file_path, document, &parent_path)?;
+	let active_scopes =
+		schema_active_scopes_for_path(engine, dynamic_values, file_path, document, &parent_path);
 	let active_subtypes =
-		schema_active_subtypes_for_path(engine, file_path, &parsed.statements, &parent_path);
+		schema_active_subtypes_for_path(engine, file_path, document, &parent_path);
 	let mut candidates = Vec::new();
 	for field in completion_rule_fields(parent_context)
 		.into_iter()
@@ -375,6 +385,7 @@ fn schema_value_completion_candidates(
 	let key = current_assignment_key(&upto)?;
 	let parent_path = find_completion_parent_path(statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
+	let statements = schema_document_at_position(engine, file_path, statements, position);
 	let parent_context =
 		schema_bind_context(engine, dynamic_values, file_path, statements, &parent_path)?;
 	let active_subtypes =
@@ -506,16 +517,24 @@ fn schema_completion_entries_for_field(
 			.collect();
 	}
 	let category = CompiledAliasCategory::from_name(payload);
+	let declared_modifiers = if category == CompiledAliasCategory::Modifier {
+		engine.declared_modifiers()
+	} else {
+		&[]
+	};
 	let mut candidates = engine
 		.aliases()
 		.iter()
 		.filter(|alias| alias.category == category)
+		.chain(declared_modifiers)
 		.filter(|alias| schema_alias_scope_matches(engine, alias, active_scopes))
 		.flat_map(|alias| {
 			schema_completion_entries_for_alias(engine, dynamic_values, field, alias, prefix_lower)
 		})
 		.collect::<Vec<_>>();
 	candidates.sort_by(|left, right| left.label.cmp(&right.label));
+	// An alias defined once per scope offers its name once.
+	candidates.dedup_by(|right, left| right.label == left.label);
 	candidates
 }
 
@@ -596,52 +615,130 @@ fn schema_active_scopes_for_path(
 	path: &[&str],
 ) -> Vec<String> {
 	let mut active_scopes = Vec::new();
+	let mut parent_context = None;
 	for index in 0..=path.len() {
-		if let Some(context) = schema_bind_context(
+		let context = schema_bind_context(
 			engine,
 			dynamic_values,
 			file_path,
 			document_statements,
 			&path[..index],
-		) {
-			let scopes = schema_context_own_active_scopes(context);
+		);
+		if let Some(context) = context {
+			let scopes = schema_context_own_active_scopes(engine, context);
 			if !scopes.is_empty() {
 				active_scopes = scopes;
 			}
 		}
-		if let Some(component) = path.get(index)
-			&& let Some(output_scope) = schema_link_output_scope(engine, component, &active_scopes)
-		{
-			active_scopes = vec![output_scope.to_string()];
+		if let (Some(RuleContext::AliasRules(_)), Some(parent), Some(key)) = (
+			context,
+			parent_context,
+			index
+				.checked_sub(1)
+				.and_then(|parent_len| path.get(parent_len)),
+		) {
+			let active_subtypes = schema_active_subtypes_for_path(
+				engine,
+				file_path,
+				document_statements,
+				&path[..index - 1],
+			);
+			if let Some(CompiledBindFieldMatch::Alias { alias, .. }) =
+				schema_bind_block_field_match(engine, dynamic_values, parent, key, &active_subtypes)
+			{
+				let scopes = schema_alias_pushed_scopes(engine, &alias.attributes);
+				if !scopes.is_empty() {
+					active_scopes = scopes;
+				}
+			}
 		}
+		if let Some(component) = path.get(index) {
+			active_scopes = schema_active_scopes_after_key(engine, component, active_scopes);
+		}
+		parent_context = context;
 	}
 	active_scopes
 }
 
-fn schema_context_own_active_scopes(context: RuleContext<'_>) -> Vec<String> {
+/// An alias's own `scope` names where it may be used; only `push_scope` and
+/// `replace_scope` describe the scope its body runs in.
+fn schema_alias_pushed_scopes(
+	engine: &CwtQuery,
+	attributes: &CompiledFieldAttributes,
+) -> Vec<String> {
+	attributes
+		.push_scope
+		.as_ref()
+		.or_else(|| attributes.replace_scope.get("this"))
+		.map(|scope| schema_listed_scope(engine, scope))
+		.into_iter()
+		.collect()
+}
+
+/// CWTools reads a scope name its scope list lacks as any scope, and the rule
+/// files write a few (`push_scope = { root = province this = province }`,
+/// `scope = { trade_node capital_scope }`).
+fn schema_listed_scope(engine: &CwtQuery, scope: &str) -> String {
+	if engine.is_unlisted_scope(scope) {
+		"any".to_string()
+	} else {
+		scope.to_string()
+	}
+}
+
+fn schema_active_scopes_after_key(
+	engine: &CwtQuery,
+	key: &str,
+	active_scopes: Vec<String>,
+) -> Vec<String> {
+	if is_schema_keyword(SCHEMA_UNTRACKED_SCOPE_KEYWORDS, key) || is_schema_event_target(key) {
+		return Vec::new();
+	}
+	match schema_link_output_scope(engine, key, &active_scopes) {
+		Some(output_scope) => vec![output_scope.to_string()],
+		None => active_scopes,
+	}
+}
+
+fn schema_context_own_active_scopes(engine: &CwtQuery, context: RuleContext<'_>) -> Vec<String> {
+	let root_scopes = |root: &CompiledRoot| {
+		root.push_scope
+			.iter()
+			.map(|scope| schema_listed_scope(engine, scope))
+			.collect::<Vec<_>>()
+	};
 	match context {
-		RuleContext::RootType(root) => root.push_scope.iter().cloned().collect(),
+		RuleContext::RootType(root) => root_scopes(root),
 		RuleContext::Subtype(root, subtype) => {
-			let scopes = schema_active_scopes_from_attributes(&subtype.attributes);
+			let scopes = schema_active_scopes_from_attributes(engine, &subtype.attributes);
 			if scopes.is_empty() {
-				root.push_scope.iter().cloned().collect()
+				root_scopes(root)
 			} else {
 				scopes
 			}
 		}
-		RuleContext::RuleField(field) => schema_active_scopes_from_attributes(&field.attributes),
+		RuleContext::RuleField(field) => {
+			schema_active_scopes_from_attributes(engine, &field.attributes)
+		}
 		RuleContext::AliasRules(_) => Vec::new(),
 	}
 }
 
-fn schema_active_scopes_from_attributes(attributes: &CompiledFieldAttributes) -> Vec<String> {
+fn schema_active_scopes_from_attributes(
+	engine: &CwtQuery,
+	attributes: &CompiledFieldAttributes,
+) -> Vec<String> {
 	if let Some(push_scope) = attributes.push_scope.as_ref() {
-		return vec![push_scope.clone()];
+		return vec![schema_listed_scope(engine, push_scope)];
 	}
 	if let Some(this_scope) = attributes.replace_scope.get("this") {
-		return vec![this_scope.clone()];
+		return vec![schema_listed_scope(engine, this_scope)];
 	}
-	attributes.scope.clone()
+	attributes
+		.scope
+		.iter()
+		.map(|scope| schema_listed_scope(engine, scope))
+		.collect()
 }
 
 fn schema_link_output_scope<'a>(
@@ -649,7 +746,7 @@ fn schema_link_output_scope<'a>(
 	key: &str,
 	active_scopes: &[String],
 ) -> Option<&'a str> {
-	let link = engine.link(key)?;
+	let link = schema_scope_link(engine, key)?;
 	if !schema_link_accepts_active_scope(engine, link, active_scopes) {
 		return None;
 	}
@@ -676,7 +773,15 @@ fn schema_alias_scope_matches(
 	alias: &CompiledAlias,
 	active_scopes: &[String],
 ) -> bool {
-	if active_scopes.is_empty() || alias.attributes.scope.is_empty() {
+	if active_scopes.is_empty()
+		|| alias.attributes.scope.is_empty()
+		|| alias
+			.attributes
+			.scope
+			.iter()
+			.any(|scope| engine.is_unlisted_scope(scope))
+		|| is_schema_declared_modifier(engine, alias)
+	{
 		return true;
 	}
 	alias.attributes.scope.iter().any(|scope| {
@@ -686,6 +791,17 @@ fn schema_alias_scope_matches(
 	})
 }
 
+/// The scope the schema's `modifiers` list gives a modifier is its category,
+/// not where it may be written: CWTools checks these modifiers in any scope,
+/// and vanilla writes country modifiers in province blocks (a trade good's
+/// `province = { land_forcelimit = 0.5 }`).
+fn is_schema_declared_modifier(engine: &CwtQuery, alias: &CompiledAlias) -> bool {
+	alias.category == CompiledAliasCategory::Modifier
+		&& engine
+			.declared_modifier(&alias.name)
+			.is_some_and(|declared| std::ptr::eq(declared, alias))
+}
+
 fn schema_bind_context<'p>(
 	engine: &'p CwtQuery,
 	dynamic_values: Option<&SchemaWorkspace>,
@@ -693,11 +809,24 @@ fn schema_bind_context<'p>(
 	document_statements: &[AstStatement],
 	path: &[&str],
 ) -> Option<RuleContext<'p>> {
-	if let Some(context) = engine.bind_context(file_path, path) {
-		return Some(context);
+	let root = schema_root_owning_path(engine, file_path, path);
+	if schema_path_is_above_definitions(root, path) {
+		return None;
 	}
-	for prefix_len in (0..path.len()).rev() {
-		let Some(mut context) = engine.bind_context(file_path, &path[..prefix_len]) else {
+	// Anchor at the shallowest level the binder resolves (the definition), then
+	// walk the rest here so each nested key honours subtype conditions, block
+	// forms and date keys, which the binder does not.
+	for prefix_len in 0..=path.len() {
+		if schema_path_is_above_definitions(root, &path[..prefix_len]) {
+			continue;
+		}
+		let Some(mut context) = schema_engine_bind_context(
+			engine,
+			dynamic_values,
+			file_path,
+			document_statements,
+			&path[..prefix_len],
+		) else {
 			continue;
 		};
 		let mut resolved_path = path[..prefix_len]
@@ -713,9 +842,13 @@ fn schema_bind_context<'p>(
 				document_statements,
 				&resolved_refs,
 			);
-			let Some(field_match) =
-				schema_bind_field_match(engine, dynamic_values, context, segment, &active_subtypes)
-			else {
+			let Some(field_match) = schema_bind_block_field_match(
+				engine,
+				dynamic_values,
+				context,
+				segment,
+				&active_subtypes,
+			) else {
 				resolved_all = false;
 				break;
 			};
@@ -727,6 +860,155 @@ fn schema_bind_context<'p>(
 		}
 	}
 	None
+}
+
+/// The type the definition `path` runs through. A file several types share
+/// (EU4 `dlc_metadata/dlc_info`: `categories` and `dlcs`) belongs, below its
+/// top, to the one type whose `skip_root_key` wrappers the path follows.
+fn schema_root_owning_path<'p>(
+	engine: &'p CwtQuery,
+	file_path: &GamePath,
+	path: &[&str],
+) -> Option<&'p CompiledRoot> {
+	if let Some(root) = engine.bind_root(file_path) {
+		return Some(root);
+	}
+	if path.is_empty() {
+		return None;
+	}
+	let mut roots = engine.matching_roots(file_path).into_iter().filter(|root| {
+		!root.type_per_file
+			&& root
+				.skip_root_keys
+				.iter()
+				.zip(path)
+				.all(|(skip_key, key)| skip_key == "any" || skip_key == key)
+	});
+	let root = roots.next()?;
+	roots.next().is_none().then_some(root)
+}
+
+/// The schema binder answers the file root and every `skip_root_key` wrapper
+/// with the definition body itself, but keys at those levels name definitions
+/// or wrappers, not body fields.
+fn schema_path_is_above_definitions(root: Option<&CompiledRoot>, path: &[&str]) -> bool {
+	let Some(root) = root else {
+		return false;
+	};
+	!root.type_per_file
+		&& path.len() <= root.skip_root_keys.len()
+		&& root
+			.skip_root_keys
+			.iter()
+			.zip(path)
+			.all(|(skip_key, key)| skip_key == "any" || skip_key == key)
+}
+
+/// A type declared without body rules (EU4 `mission`) only names definitions;
+/// whatever contains them describes their bodies. A field bound on the path to
+/// a block must be a block form of its key.
+fn schema_context_describes_body(context: RuleContext<'_>) -> bool {
+	match context {
+		RuleContext::RootType(_) | RuleContext::Subtype(..) => {
+			!completion_rule_fields(context).is_empty()
+		}
+		RuleContext::RuleField(field) => matches!(field.value, CompiledRuleValue::Block(_)),
+		RuleContext::AliasRules(_) => true,
+	}
+}
+
+/// A top-level key names a definition even when a body rule shares the name:
+/// the binder reads `simple_dynamic_effect = { ... }` in a scripted effects
+/// file as a call of that effect, which the schema lists, not as its
+/// definition.
+fn schema_definition_named_like_body_field<'p>(
+	engine: &'p CwtQuery,
+	file_path: &GamePath,
+	path: &[&str],
+	context: RuleContext<'_>,
+) -> Option<&'p CompiledRoot> {
+	if matches!(context, RuleContext::RootType(_) | RuleContext::Subtype(..)) {
+		return None;
+	}
+	let root = engine.bind_root(file_path)?;
+	let (key, wrappers) = path.split_last()?;
+	(!root.type_per_file
+		&& wrappers.len() == root.skip_root_keys.len()
+		&& root
+			.type_key_filter
+			.as_ref()
+			.is_none_or(|filter| filter.matches(key)))
+	.then_some(root)
+}
+
+fn schema_engine_bind_context<'p>(
+	engine: &'p CwtQuery,
+	dynamic_values: Option<&SchemaWorkspace>,
+	file_path: &GamePath,
+	document_statements: &[AstStatement],
+	path: &[&str],
+) -> Option<RuleContext<'p>> {
+	// The binder reads a date key as an ordinary key; the editor resolves dates
+	// to `date_field` segment by segment.
+	if path.iter().any(|segment| is_clausewitz_date_key(segment)) {
+		return None;
+	}
+	let Some(context) = engine.bind_context(file_path, path) else {
+		return schema_shared_folder_definition_context(engine, file_path, path);
+	};
+	if let Some(root) = schema_definition_named_like_body_field(engine, file_path, path, context) {
+		return Some(RuleContext::RootType(root));
+	}
+	if schema_context_describes_body(context) {
+		return Some(context);
+	}
+	let (RuleContext::RootType(root) | RuleContext::Subtype(root, _)) = context else {
+		return None;
+	};
+	let (_, parent_path) = path.split_last()?;
+	let parent = schema_bind_context(
+		engine,
+		dynamic_values,
+		file_path,
+		document_statements,
+		parent_path,
+	)?;
+	let active_subtypes =
+		schema_active_subtypes_for_path(engine, file_path, document_statements, parent_path);
+	let type_key = format!("<{}>", root.name);
+	completion_rule_fields(parent)
+		.into_iter()
+		.filter(|field| schema_conditions_match(&field.conditions, &active_subtypes))
+		.find(|field| field.key == type_key)
+		.map(RuleContext::RuleField)
+}
+
+/// When several types share a folder (EU4 `missions`), the binder cannot pick
+/// one for a top-level key. Only one of them declares definitions with a body
+/// at the top of the file, so that key names one of its definitions.
+fn schema_shared_folder_definition_context<'p>(
+	engine: &'p CwtQuery,
+	file_path: &GamePath,
+	path: &[&str],
+) -> Option<RuleContext<'p>> {
+	if path.len() != 1 {
+		return None;
+	}
+	let key = path[0];
+	let mut roots = engine.matching_roots(file_path).into_iter().filter(|root| {
+		!root.type_per_file
+			&& root.skip_root_keys.is_empty()
+			&& root
+				.type_key_filter
+				.as_ref()
+				.is_none_or(|filter| filter.matches(key))
+			&& schema_context_describes_body(RuleContext::RootType(root))
+	});
+	let root = roots.next()?;
+	roots
+		.next()
+		.is_none()
+		.then_some(RuleContext::RootType(root))
 }
 
 fn schema_child_context_for_field_match<'p>(
@@ -747,32 +1029,241 @@ fn schema_bind_field_match<'p>(
 	key: &str,
 	active_subtypes: &HashSet<String>,
 ) -> Option<CompiledBindFieldMatch<'p>> {
-	let static_match = engine
-		.bind_field_matches(parent, key)
+	schema_bind_field_alternatives(engine, dynamic_values, parent, key, active_subtypes)
 		.into_iter()
-		.find(|field_match| {
-			schema_conditions_match(&field_match.field().conditions, active_subtypes)
-		});
-	static_match
-		.or_else(|| {
-			schema_dynamic_alias_field_match(engine, dynamic_values, parent, key, active_subtypes)
-		})
-		.or_else(|| {
-			schema_dynamic_key_field_match(engine, dynamic_values, parent, key, active_subtypes)
-		})
+		.next()
 }
 
-fn schema_dynamic_alias_field_match<'p>(
+/// The schema can list one key several times with different values (EU4
+/// event `desc` is a localisation key or a conditional block). Every form
+/// whose subtype conditions hold is an alternative for that key.
+fn schema_bind_field_alternatives<'p>(
+	engine: &'p CwtQuery,
+	dynamic_values: Option<&SchemaWorkspace>,
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Vec<CompiledBindFieldMatch<'p>> {
+	if is_clausewitz_date_key(key) {
+		let date_matches =
+			schema_conditioned_field_matches(engine, parent, "date_field", active_subtypes);
+		if !date_matches.is_empty() {
+			return date_matches;
+		}
+	}
+	// The game reads script keys without regard to case, and the rule files
+	// spell some keys as the game files do not (`Regions` for `regions`). A
+	// key the block names in another case is that key, before any form a
+	// key of any name could take.
+	let rule_fields = completion_rule_fields(parent);
+	if !rule_fields.iter().any(|field| field.key == key) {
+		let mut folded_rule_keys = rule_fields
+			.iter()
+			.map(|field| field.key.as_str())
+			.filter(|rule_key| rule_key.eq_ignore_ascii_case(key))
+			.collect::<Vec<_>>();
+		folded_rule_keys.sort_unstable();
+		folded_rule_keys.dedup();
+		let folded_matches = folded_rule_keys
+			.into_iter()
+			.flat_map(|rule_key| {
+				schema_conditioned_field_matches(engine, parent, rule_key, active_subtypes)
+			})
+			.collect::<Vec<_>>();
+		if !folded_matches.is_empty() {
+			return folded_matches;
+		}
+	}
+	let static_matches = schema_conditioned_field_matches(engine, parent, key, active_subtypes);
+	if !static_matches.is_empty() {
+		// A named key also fits a rule written as its type (`trigger_switch`
+		// lists `advisor_events_adm = { ... }` beside `scalar = { ... }`);
+		// the statement's contents choose, the named form on a tie.
+		let mut matches = static_matches;
+		matches.extend(schema_primitive_key_field_matches(
+			parent,
+			key,
+			active_subtypes,
+		));
+		return matches;
+	}
+	// The game reads script keys without regard to case (`ADM` for `adm`).
+	let lower_key = key.to_ascii_lowercase();
+	if lower_key != key {
+		let folded_matches =
+			schema_conditioned_field_matches(engine, parent, &lower_key, active_subtypes);
+		if !folded_matches.is_empty() {
+			return folded_matches;
+		}
+	}
+	let dynamic_alias_matches =
+		schema_dynamic_alias_field_matches(engine, dynamic_values, parent, key, active_subtypes);
+	if !dynamic_alias_matches.is_empty() {
+		return dynamic_alias_matches;
+	}
+	schema_dynamic_key_field_matches(engine, dynamic_values, parent, key, active_subtypes)
+		.or_else(|| {
+			schema_scope_field_match(engine, parent, key, active_subtypes)
+				.map(|field_match| vec![field_match])
+		})
+		.unwrap_or_else(|| schema_primitive_key_field_matches(parent, key, active_subtypes))
+}
+
+/// Rule keys written as a type (`scalar`, `int`, `int[1..10]`) accept any key
+/// of that type, such as the numbered entries of `random_events`.
+fn schema_primitive_key_field_matches<'p>(
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Vec<CompiledBindFieldMatch<'p>> {
+	let key_scalar = if key.parse::<f64>().is_ok() {
+		ScalarValue::Number(key.to_string())
+	} else {
+		ScalarValue::Identifier(key.to_string())
+	};
+	completion_rule_fields(parent)
+		.into_iter()
+		.filter(|field| schema_conditions_match(&field.conditions, active_subtypes))
+		.filter(|field| schema_primitive_key_matches(&field.key, &key_scalar))
+		.map(CompiledBindFieldMatch::Field)
+		.collect()
+}
+
+fn schema_primitive_key_matches(rule_key: &str, key: &ScalarValue) -> bool {
+	let rule_value = CompiledRuleValue::Scalar(rule_key.to_string());
+	if let Some(scalar_type) = SchemaScalarType::from_rule_value(&rule_value) {
+		return schema_scalar_type_matches(scalar_type, key);
+	}
+	rule_key != "date_field" && SCHEMA_ANY_SCALAR_TYPES.contains(&rule_key)
+}
+
+fn schema_conditioned_field_matches<'p>(
+	engine: &'p CwtQuery,
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Vec<CompiledBindFieldMatch<'p>> {
+	engine.bind_field_overloads(parent, key, |field| {
+		schema_conditions_match(&field.conditions, active_subtypes)
+	})
+}
+
+/// A key on a path to a block names the form of that key that is a block.
+fn schema_bind_block_field_match<'p>(
 	engine: &'p CwtQuery,
 	dynamic_values: Option<&SchemaWorkspace>,
 	parent: RuleContext<'p>,
 	key: &str,
 	active_subtypes: &HashSet<String>,
 ) -> Option<CompiledBindFieldMatch<'p>> {
-	if is_schema_dynamic_key_marker(key) {
+	let alternatives =
+		schema_bind_field_alternatives(engine, dynamic_values, parent, key, active_subtypes);
+	alternatives
+		.iter()
+		.copied()
+		.find(|field_match| schema_value_shape(field_match.value()) == SchemaValueShape::Block)
+		.or_else(|| alternatives.first().copied())
+}
+
+/// CWTools' EU4 one-to-one scopes: scope switches and logical blocks that the
+/// schema accepts through its `scope_field` alias instead of a named alias.
+const SCHEMA_SCOPE_FIELD_KEYWORDS: &[&str] = &[
+	"THIS",
+	"ROOT",
+	"FROM",
+	"PREV",
+	"PREV_PREV",
+	"AND",
+	"OR",
+	"NOR",
+	"NOT",
+	"hidden_effect",
+	"hidden_trigger",
+];
+
+/// Scope switches whose target scope is not tracked here.
+const SCHEMA_UNTRACKED_SCOPE_KEYWORDS: &[&str] = &["ROOT", "FROM", "PREV", "PREV_PREV"];
+
+fn schema_scope_field_match<'p>(
+	engine: &'p CwtQuery,
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Option<CompiledBindFieldMatch<'p>> {
+	if !is_schema_scope_field_key(engine, key) {
 		return None;
 	}
-	let matches = completion_rule_fields(parent)
+	completion_rule_fields(parent)
+		.into_iter()
+		.filter(|field| schema_conditions_match(&field.conditions, active_subtypes))
+		.find_map(|field| {
+			let (head, category) = parse_schema_marker(&field.key)?;
+			if head != "alias_name" {
+				return None;
+			}
+			let alias = engine.alias(CompiledAliasCategory::from_name(category), "scope_field")?;
+			Some(CompiledBindFieldMatch::Alias {
+				wildcard: field,
+				alias,
+			})
+		})
+}
+
+fn is_schema_scope_field_key(engine: &CwtQuery, key: &str) -> bool {
+	is_schema_keyword(SCHEMA_SCOPE_FIELD_KEYWORDS, key)
+		|| is_schema_event_target(key)
+		|| schema_scope_link(engine, key).is_some()
+}
+
+/// One-to-one scope keywords that name a scope when used as a value.
+const SCHEMA_SCOPE_VALUE_KEYWORDS: &[&str] = &["THIS", "ROOT", "FROM", "PREV", "PREV_PREV"];
+
+fn is_schema_event_target(text: &str) -> bool {
+	text.strip_prefix("event_target:")
+		.is_some_and(|name| !name.is_empty())
+}
+
+/// A value naming a scope through a keyword, a saved event target or a scope
+/// link. Keywords and event targets have no tracked scope; a link must lead to
+/// the required one.
+fn schema_scope_reference_matches(engine: &CwtQuery, required_scope: &str, text: &str) -> bool {
+	if is_schema_keyword(SCHEMA_SCOPE_VALUE_KEYWORDS, text) || is_schema_event_target(text) {
+		return true;
+	}
+	schema_scope_link(engine, text).is_some_and(|link| {
+		link.output_scope
+			.as_deref()
+			.is_none_or(|output_scope| engine.scope_matches(required_scope, output_scope))
+	})
+}
+
+fn is_schema_keyword(keywords: &[&str], key: &str) -> bool {
+	keywords
+		.iter()
+		.any(|keyword| keyword.eq_ignore_ascii_case(key))
+}
+
+fn schema_scope_link<'a>(engine: &'a CwtQuery, key: &str) -> Option<&'a CompiledLink> {
+	engine
+		.link(key)
+		.or_else(|| engine.link(&key.to_ascii_lowercase()))
+}
+
+/// The dynamically named aliases (`<scripted_effect>`) that `key` names, the
+/// one binding resolves to first. A key can name several: a trade node is
+/// named by its location, so `45 = { ... }` is a province or a trade node,
+/// and the statement's contents choose between them.
+fn schema_dynamic_alias_field_matches<'p>(
+	engine: &'p CwtQuery,
+	dynamic_values: Option<&SchemaWorkspace>,
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Vec<CompiledBindFieldMatch<'p>> {
+	if is_schema_dynamic_key_marker(key) {
+		return Vec::new();
+	}
+	let mut matches = completion_rule_fields(parent)
 		.into_iter()
 		.filter(|field| schema_conditions_match(&field.conditions, active_subtypes))
 		.filter_map(|field| {
@@ -793,47 +1284,53 @@ fn schema_dynamic_alias_field_match<'p>(
 				})
 		})
 		.collect::<Vec<_>>();
-	match matches.as_slice() {
-		[alias_match] => Some(*alias_match),
-		_ => None,
-	}
+	matches.reverse();
+	matches
 }
 
-fn schema_dynamic_key_field_match<'p>(
+/// The rule fields whose key, written as a marker, accepts `key`. Several
+/// forms of one marker key (`<province_id>` as a name or a block of names)
+/// are alternatives; fields of different markers leave the key ambiguous.
+fn schema_dynamic_key_field_matches<'p>(
 	engine: &'p CwtQuery,
 	dynamic_values: Option<&SchemaWorkspace>,
 	parent: RuleContext<'p>,
 	key: &str,
 	active_subtypes: &HashSet<String>,
-) -> Option<CompiledBindFieldMatch<'p>> {
+) -> Option<Vec<CompiledBindFieldMatch<'p>>> {
 	if is_schema_dynamic_key_marker(key) {
 		return None;
 	}
 	let matches = completion_rule_fields(parent)
 		.into_iter()
 		.filter(|field| schema_conditions_match(&field.conditions, active_subtypes))
-		.filter(|field| schema_dynamic_key_field_matches(engine, dynamic_values, field, key))
+		.filter(|field| schema_dynamic_key_field_accepts(engine, dynamic_values, field, key))
 		.collect::<Vec<_>>();
-	match matches.as_slice() {
-		[field] => Some(CompiledBindFieldMatch::Field(field)),
-		_ => None,
-	}
+	let first = matches.first()?;
+	matches.iter().all(|field| field.key == first.key).then(|| {
+		matches
+			.into_iter()
+			.map(CompiledBindFieldMatch::Field)
+			.collect()
+	})
 }
 
-fn schema_dynamic_key_field_matches(
+fn schema_dynamic_key_field_accepts(
 	engine: &CwtQuery,
 	dynamic_values: Option<&SchemaWorkspace>,
 	field: &CompiledRuleField,
 	key: &str,
 ) -> bool {
 	let Some((head, name)) = parse_schema_marker(&field.key) else {
-		return false;
+		return SchemaDefinitionKeyTemplate::parse(&field.key).is_some_and(|template| {
+			dynamic_values.is_some_and(|workspace| template.accepts(workspace, key))
+		});
 	};
 	if head == "alias_name" {
 		return false;
 	}
 	schema_allowed_values_for_marker(engine, dynamic_values, head, name)
-		.is_some_and(|values| values.values.iter().any(|value| value == key))
+		.is_some_and(|values| schema_allowed_values_contain(&values, key))
 }
 
 fn schema_dynamic_alias_matches(
@@ -842,8 +1339,114 @@ fn schema_dynamic_alias_matches(
 	alias: &CompiledAlias,
 	key: &str,
 ) -> bool {
+	if alias.name == SCHEMA_SCRIPT_PARAMETER_KEY_ENUM {
+		return is_script_parameter_key(key);
+	}
+	if let Some(template) = SchemaDefinitionKeyTemplate::parse(&alias.name) {
+		return dynamic_values.is_some_and(|workspace| template.accepts(workspace, key));
+	}
 	schema_dynamic_alias_values(engine, dynamic_values, alias)
-		.is_some_and(|values| values.values.iter().any(|value| value == key))
+		.is_some_and(|values| schema_allowed_values_contain(&values, key))
+}
+
+/// The scope a scripted effect or trigger receives as a parameter
+/// (`$province$ = { ... }`). CWTools fills this enum from the parameters it
+/// finds; the rule files do not list it.
+const SCHEMA_SCRIPT_PARAMETER_KEY_ENUM: &str = "enum[scripted_effect_params_dollar]";
+
+fn is_script_parameter_key(key: &str) -> bool {
+	key.len() > 2 && key.starts_with('$') && key.ends_with('$')
+}
+
+/// Text holding a `$parameter$` is only known once a call substitutes it.
+fn contains_script_parameter(text: &str) -> bool {
+	text.contains('$')
+}
+
+/// `[[name] ... ]` keeps its body only when a call passes `name` (`[[!name]`
+/// only when it does not). The parser reads the markers as bare words, so an
+/// opener written against the first key (`[[name]key = value`) arrives as part
+/// of that key; the key the body assigns is the text after it.
+fn schema_key_after_conditional_opener(key: &str, range: EditorRange) -> (&str, EditorRange) {
+	let mut rest = key;
+	while let Some(after) = rest
+		.strip_prefix("[[")
+		.and_then(|tail| tail.split_once(']'))
+		.filter(|(name, after)| {
+			let name = name.strip_prefix('!').unwrap_or(name);
+			!name.is_empty()
+				&& name
+					.bytes()
+					.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+				&& !after.is_empty()
+		})
+		.map(|(_, after)| after)
+	{
+		rest = after;
+	}
+	let mut range = range;
+	range.start.character += (key.len() - rest.len()) as u32;
+	(rest, range)
+}
+
+/// The value of the last assignment in `[[name] ... ]`, when the closing `]`
+/// touches it (`[[name] key = value]`), without that `]`.
+fn schema_value_before_conditional_closer(value: &AstValue) -> Cow<'_, AstValue> {
+	let AstValue::Scalar {
+		value: ScalarValue::Identifier(text),
+		span,
+	} = value
+	else {
+		return Cow::Borrowed(value);
+	};
+	let trimmed = text.trim_end_matches(']');
+	if trimmed.len() == text.len() || trimmed.is_empty() || trimmed.contains('[') {
+		return Cow::Borrowed(value);
+	}
+	let mut span = span.clone();
+	span.end.column -= text.len() - trimmed.len();
+	span.end.offset -= text.len() - trimmed.len();
+	Cow::Owned(AstValue::Scalar {
+		value: unquoted_scalar(trimmed),
+		span,
+	})
+}
+
+/// A key written as a type (`<scripted_effect>`), alone or between fixed text
+/// (`monthly_<government_mechanic_power>`), stands for the name of any
+/// workspace definition of that type in that place. A subtype qualifier
+/// (`<area.used>`) does not narrow it here.
+struct SchemaDefinitionKeyTemplate<'a> {
+	prefix: &'a str,
+	type_name: &'a str,
+	suffix: &'a str,
+}
+
+impl SchemaDefinitionKeyTemplate<'_> {
+	fn parse(key: &str) -> Option<SchemaDefinitionKeyTemplate<'_>> {
+		if key.chars().any(char::is_whitespace) {
+			return None;
+		}
+		let open = key.find('<')?;
+		let close = open + key[open..].find('>')?;
+		let (prefix, inner, suffix) = (&key[..open], &key[open + 1..close], &key[close + 1..]);
+		if inner.is_empty() || suffix.contains(['<', '>']) {
+			return None;
+		}
+		Some(SchemaDefinitionKeyTemplate {
+			prefix,
+			type_name: inner
+				.split_once('.')
+				.map_or(inner, |(type_name, _)| type_name),
+			suffix,
+		})
+	}
+
+	fn accepts(&self, workspace: &SchemaWorkspace, key: &str) -> bool {
+		key.strip_prefix(self.prefix)
+			.and_then(|rest| rest.strip_suffix(self.suffix))
+			.is_some_and(|name| !name.is_empty() && workspace.defines(self.type_name, name))
+	}
 }
 
 fn schema_conditions_match(
@@ -868,68 +1471,244 @@ fn schema_active_subtypes_for_path(
 	{
 		active.insert(subtype.name.clone());
 	}
-	let Some(root) = engine.bind_root(file_path) else {
+	let Some(root) = schema_definition_root(engine, file_path, path) else {
 		return active;
 	};
-	let Some(root_statements) = schema_root_block_statements(statements, path) else {
+	let root_statements = if root.type_per_file {
+		Some(statements)
+	} else {
+		schema_root_block_statements(root, statements, path)
+	};
+	let Some(root_statements) = root_statements else {
 		return active;
 	};
+	let definition_key = schema_definition_key(root, file_path, path);
 	for subtype in &root.subtypes {
-		if !subtype.rules.is_empty()
-			&& schema_rule_fields_match_ast(&subtype.rules, root_statements)
-		{
+		if schema_subtype_matches_body(engine, subtype, definition_key, root_statements) {
 			active.insert(subtype.name.clone());
 		}
 	}
 	active
 }
 
+/// The type of the definition `path` runs through: the file's type, the one
+/// whose wrappers the path follows, or, in a folder several types share, the
+/// one its top-level key names.
+fn schema_definition_root<'p>(
+	engine: &'p CwtQuery,
+	file_path: &GamePath,
+	path: &[&str],
+) -> Option<&'p CompiledRoot> {
+	if let Some(root) = schema_root_owning_path(engine, file_path, path) {
+		return Some(root);
+	}
+	let root_key = path.first()?;
+	match schema_shared_folder_definition_context(engine, file_path, &[*root_key])? {
+		RuleContext::RootType(root) => Some(root),
+		_ => None,
+	}
+}
+
+/// The body of the definition `path` runs through, below any `skip_root_key`
+/// wrappers. Callers narrow the document to the definition being read, so the
+/// first statement with each key is that definition.
 fn schema_root_block_statements<'a>(
+	root: &CompiledRoot,
 	statements: &'a [AstStatement],
 	path: &[&str],
 ) -> Option<&'a [AstStatement]> {
-	let Some(root_key) = path.first() else {
-		return Some(statements);
-	};
-	statements.iter().find_map(|statement| {
-		let AstStatement::Assignment { key, value, .. } = statement else {
-			return None;
-		};
-		if key != root_key {
-			return None;
-		}
-		let AstValue::Block { items, .. } = value else {
-			return None;
-		};
-		Some(items.as_slice())
-	})
+	let mut current = statements;
+	for segment in path.iter().take(root.skip_root_keys.len() + 1) {
+		current = current.iter().find_map(|statement| {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				return None;
+			};
+			if key != segment {
+				return None;
+			}
+			let AstValue::Block { items, .. } = value else {
+				return None;
+			};
+			Some(items.as_slice())
+		})?;
+	}
+	Some(current)
 }
 
-fn schema_rule_fields_match_ast(rules: &[CompiledRuleField], statements: &[AstStatement]) -> bool {
+/// Definitions that share a key (every `country_event`) are told apart by
+/// position: lookups read the definition holding the statement being checked
+/// rather than the first one with that key. A per-file type reads the file.
+fn schema_definition_document<'a>(
+	engine: &CwtQuery,
+	file_path: &GamePath,
+	statements: &'a [AstStatement],
+	top: &'a AstStatement,
+) -> &'a [AstStatement] {
+	if engine
+		.bind_root(file_path)
+		.is_some_and(|root| root.type_per_file)
+	{
+		return statements;
+	}
+	std::slice::from_ref(top)
+}
+
+fn schema_document_at_position<'a>(
+	engine: &CwtQuery,
+	file_path: &GamePath,
+	statements: &'a [AstStatement],
+	position: EditorPosition,
+) -> &'a [AstStatement] {
+	statements
+		.iter()
+		.find(|statement| span_contains_position(statement_span(statement), position))
+		.map_or(statements, |top| {
+			schema_definition_document(engine, file_path, statements, top)
+		})
+}
+
+/// The name of the definition `path` runs through: a per-file type's file
+/// name, otherwise the key below its `skip_root_key` wrappers.
+fn schema_definition_key<'k>(
+	root: &CompiledRoot,
+	file_path: &'k GamePath,
+	path: &[&'k str],
+) -> Option<&'k str> {
+	if root.type_per_file {
+		return file_path.file_stem();
+	}
+	path.get(root.skip_root_keys.len()).copied()
+}
+
+/// Whether a subtype selects a definition body. A subtype's `type_key_filter`
+/// reads the definition's name (`defaults_reform`; a per-file type's file
+/// name, EU4 `history/diplomacy/hre.txt`); every subtype rule must hold for
+/// the body.
+fn schema_subtype_matches_body(
+	engine: &CwtQuery,
+	subtype: &CompiledSubtype,
+	definition_key: Option<&str>,
+	statements: &[AstStatement],
+) -> bool {
+	if let (Some(filter), Some(definition_key)) = (&subtype.type_key_filter, definition_key) {
+		return filter.matches(definition_key)
+			&& (subtype.rules.is_empty()
+				|| schema_rule_fields_match_ast(engine, &subtype.rules, statements));
+	}
+	!subtype.rules.is_empty() && schema_rule_fields_match_ast(engine, &subtype.rules, statements)
+}
+
+/// Each rule holds when some statement matches it. A rule capped at `0..0`
+/// holds when none does; an optional rule (`0..1`) also holds when no
+/// statement has its key, as CWTools validates a subtype's fields.
+fn schema_rule_fields_match_ast(
+	engine: &CwtQuery,
+	rules: &[CompiledRuleField],
+	statements: &[AstStatement],
+) -> bool {
 	rules.iter().all(|rule| {
-		statements
+		let present = statements
 			.iter()
-			.any(|statement| schema_rule_field_matches_ast(rule, statement))
+			.any(|statement| schema_rule_field_matches_ast(engine, rule, statement));
+		match rule.attributes.cardinality {
+			Some((_, Some(0))) => !present,
+			Some((0, _)) => {
+				present
+					|| !statements.iter().any(|statement| {
+						matches!(
+							statement,
+							AstStatement::Assignment { key, .. } if schema_rule_key_matches_ast(&rule.key, key)
+						)
+					})
+			}
+			_ => present,
+		}
 	})
 }
 
-fn schema_rule_field_matches_ast(rule: &CompiledRuleField, statement: &AstStatement) -> bool {
+fn schema_rule_field_matches_ast(
+	engine: &CwtQuery,
+	rule: &CompiledRuleField,
+	statement: &AstStatement,
+) -> bool {
 	let AstStatement::Assignment { key, value, .. } = statement else {
 		return false;
 	};
-	key == &rule.key && schema_rule_value_matches_ast(&rule.value, value)
+	schema_rule_key_matches_ast(&rule.key, key)
+		&& schema_rule_value_matches_ast(engine, &rule.value, value)
 }
 
-fn schema_rule_value_matches_ast(rule_value: &CompiledRuleValue, ast_value: &AstValue) -> bool {
+/// A rule key names a key literally or by its type (`date_field`, `scalar`).
+fn schema_rule_key_matches_ast(rule_key: &str, key: &str) -> bool {
+	if rule_key == key {
+		return true;
+	}
+	if rule_key == "date_field" {
+		return is_clausewitz_date_key(key);
+	}
+	let key_scalar = if key.parse::<f64>().is_ok() {
+		ScalarValue::Number(key.to_string())
+	} else {
+		ScalarValue::Identifier(key.to_string())
+	};
+	schema_primitive_key_matches(rule_key, &key_scalar)
+}
+
+fn schema_rule_value_matches_ast(
+	engine: &CwtQuery,
+	rule_value: &CompiledRuleValue,
+	ast_value: &AstValue,
+) -> bool {
 	match (rule_value, ast_value) {
 		(
 			CompiledRuleValue::Scalar(expected) | CompiledRuleValue::Marker(expected),
 			AstValue::Scalar { value, .. },
-		) => value.as_text() == *expected,
+		) => schema_rule_value_accepts_scalar(engine, rule_value, expected, value),
 		(CompiledRuleValue::Block(rules), AstValue::Block { items, .. }) => {
-			rules.is_empty() || schema_rule_fields_match_ast(rules, items)
+			rules.is_empty() || schema_rule_fields_match_ast(engine, rules, items)
 		}
 		_ => false,
+	}
+}
+
+/// CWT type words that accept any scalar text when only presence matters.
+const SCHEMA_ANY_SCALAR_TYPES: &[&str] = &[
+	"scalar",
+	"localisation",
+	"localisation_synced",
+	"localisation_inline",
+	"localization",
+	"filepath",
+	"date_field",
+	"percentage_field",
+	"variable_field",
+	"int_variable_field",
+	"value_field",
+	"int_value_field",
+];
+
+/// Whether a scalar fits a rule value written as a type (`scalar`, `int`,
+/// `enum[...]`) or, when the rule names no type, equals it literally. Kinds
+/// this check cannot resolve (definition references, scopes) are accepted.
+fn schema_rule_value_accepts_scalar(
+	engine: &CwtQuery,
+	rule_value: &CompiledRuleValue,
+	expected: &str,
+	scalar: &ScalarValue,
+) -> bool {
+	if let Some(scalar_type) = SchemaScalarType::from_rule_value(rule_value) {
+		return schema_scalar_type_matches(scalar_type, scalar);
+	}
+	if SCHEMA_ANY_SCALAR_TYPES.contains(&expected) || is_schema_angle_dynamic_key_marker(expected) {
+		return true;
+	}
+	let text = scalar.as_text();
+	match parse_schema_marker(expected) {
+		Some(("enum", name)) => engine
+			.enum_values(name)
+			.is_none_or(|values| values.iter().any(|value| value == &text)),
+		Some(_) => true,
+		None => text == expected,
 	}
 }
 
@@ -1001,9 +1780,7 @@ const SCHEMA_SHAPE_CODE: &str = "V006";
 /// where a block does.
 ///
 /// Only the shape is counted. Other diagnostics are not reliable enough to
-/// choose between readings of a broken file: a definition's own key is
-/// reported as unknown at the top level, and keys inside some alias bodies,
-/// such as a scripted trigger's, are too.
+/// choose between readings of a broken file.
 pub(crate) fn schema_shape_violations(file_path: &GamePath, statements: &[AstStatement]) -> usize {
 	schema_diagnostics_for_ast_with_index(
 		crate::game::eu4::cwt::rule_engine(),
@@ -1029,9 +1806,48 @@ fn schema_diagnostics_for_ast_with_index(
 		file_path,
 		document_statements: statements,
 	};
-	collect_schema_diagnostics(&context, statements, &[], None, &mut diagnostics);
+	collect_schema_diagnostics(
+		&context,
+		None,
+		None,
+		statements,
+		&[],
+		None,
+		&mut diagnostics,
+	);
+	diagnostics.extend(schema_reserved_country_tag_diagnostics(
+		file_path, statements,
+	));
 	sort_and_dedup_diagnostics(&mut diagnostics);
 	diagnostics
+}
+
+/// A country defined under a tag the game hands out at runtime collides with
+/// the country the game later creates under it.
+fn schema_reserved_country_tag_diagnostics(
+	file_path: &GamePath,
+	statements: &[AstStatement],
+) -> Vec<SchemaDiagnostic> {
+	if !file_path.is_inside(&["common", "country_tags"], str::eq) {
+		return Vec::new();
+	}
+	statements
+		.iter()
+		.filter_map(|statement| {
+			let AstStatement::Assignment { key, key_span, .. } = statement else {
+				return None;
+			};
+			is_dynamic_country_tag(key).then(|| SchemaDiagnostic {
+				range: editor_range_from_span(key_span),
+				severity: Some(Severity::Warning),
+				code: Some("V010".to_string()),
+				source: Some(FOCH_DETECT_SOURCE.to_string()),
+				message: format!(
+					"tag `{key}` is one the game assigns to countries it creates at runtime; a country defined under it conflicts with them"
+				),
+			})
+		})
+		.collect()
 }
 
 pub(super) fn schema_localisation_diagnostics_for_text(
@@ -1057,7 +1873,7 @@ fn schema_localisation_diagnostics_for_ast(
 	let mut diagnostics = schema_localisation_references_for_ast(engine, file_path, statements)
 		.into_iter()
 		.filter(|reference| !defined_keys.contains(reference.key.as_str()))
-		.map(|reference| schema_missing_localisation_diagnostic(reference.range, &reference.key))
+		.map(|reference| schema_missing_localisation_diagnostic(&reference))
 		.collect::<Vec<_>>();
 	sort_and_dedup_diagnostics(&mut diagnostics);
 	diagnostics
@@ -1067,6 +1883,8 @@ fn schema_localisation_diagnostics_for_ast(
 struct SchemaLocalisationReference {
 	key: String,
 	range: EditorRange,
+	/// The rule files of the type's `localisation` rule that asks for it.
+	origin: CompiledRuleOrigin,
 }
 
 #[derive(Clone, Debug)]
@@ -1107,12 +1925,17 @@ fn schema_localisation_references_for_ast(
 					references.push(SchemaLocalisationReference {
 						key,
 						range: instance.identity_range,
+						origin: rule.origin,
 					});
 				}
 				continue;
 			}
 			if let Some((key, range)) = scalar_assignment_in_statements(instance.items, pattern) {
-				references.push(SchemaLocalisationReference { key, range });
+				references.push(SchemaLocalisationReference {
+					key,
+					range,
+					origin: rule.origin,
+				});
 			}
 		}
 	}
@@ -1130,6 +1953,30 @@ fn schema_rule_scalar_pattern(value: &CompiledRuleValue) -> Option<&str> {
 		CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => Some(value),
 		CompiledRuleValue::Block(_) => None,
 	}
+}
+
+/// The names of the definitions of `root` that a file declares.
+pub(super) fn schema_definition_names(
+	root: &CompiledRoot,
+	statements: &[AstStatement],
+	file_path: &GamePath,
+) -> Vec<String> {
+	if root.type_per_file {
+		return file_path
+			.file_stem()
+			.map(str::to_string)
+			.into_iter()
+			.collect();
+	}
+	schema_root_instances(root, statements, file_path)
+		.into_iter()
+		.filter(|instance| {
+			root.type_key_filter
+				.as_ref()
+				.is_none_or(|filter| instance.path.last().is_some_and(|key| filter.matches(key)))
+		})
+		.map(|instance| instance.identity)
+		.collect()
 }
 
 fn schema_root_instances<'a>(
@@ -1250,24 +2097,28 @@ fn schema_active_subtypes_for_instance(
 	if let Some(RuleContext::Subtype(_, subtype)) = engine.bind_context(file_path, path) {
 		active.insert(subtype.name.clone());
 	}
+	let definition_key = schema_definition_key(root, file_path, path);
 	for subtype in &root.subtypes {
-		if !subtype.rules.is_empty() && schema_rule_fields_match_ast(&subtype.rules, statements) {
+		if schema_subtype_matches_body(engine, subtype, definition_key, statements) {
 			active.insert(subtype.name.clone());
 		}
 	}
 	active
 }
 
-fn schema_missing_localisation_diagnostic(range: EditorRange, key: &str) -> SchemaDiagnostic {
+fn schema_missing_localisation_diagnostic(
+	reference: &SchemaLocalisationReference,
+) -> SchemaDiagnostic {
 	SchemaDiagnostic {
-		range,
+		range: reference.range,
 		severity: Some(Severity::Warning),
 		code: Some("missing-localisation".to_string()),
-		source: Some("foch".to_string()),
-		message: format!("localisation key not found: {key}"),
+		source: Some(rule_source(reference.origin).to_string()),
+		message: format!("localisation key not found: {}", reference.key),
 	}
 }
 
+#[derive(Clone, Copy)]
 struct SchemaDiagnosticContext<'a> {
 	engine: &'a CwtQuery,
 	dynamic_values: Option<&'a SchemaWorkspace>,
@@ -1275,36 +2126,164 @@ struct SchemaDiagnosticContext<'a> {
 	document_statements: &'a [AstStatement],
 }
 
-fn collect_schema_diagnostics(
+/// Checks a statement against the form of its key that fits it: for a block
+/// the block form that rejects the fewest of its statements, and for a scalar
+/// the first form that accepts the value. Among forms that fit equally, one
+/// allowed in the current scope wins (an alias can be defined once per
+/// scope). When none fits, the first form of the right shape (or the first
+/// form) reports.
+fn schema_select_field_alternative<'p>(
+	context: &SchemaDiagnosticContext<'p>,
+	alternatives: &[CompiledBindFieldMatch<'p>],
+	value: &AstValue,
+	active_subtypes: &HashSet<String>,
+	active_scopes: &[String],
+) -> Option<CompiledBindFieldMatch<'p>> {
+	let actual = SchemaValueShape::from_ast_value(value);
+	let out_of_scope = |field_match: &CompiledBindFieldMatch<'p>| {
+		field_match
+			.alias()
+			.is_some_and(|alias| !schema_alias_scope_matches(context.engine, alias, active_scopes))
+	};
+	let mut same_shape = alternatives
+		.iter()
+		.copied()
+		.filter(|field_match| schema_value_shape(field_match.value()) == actual)
+		.collect::<Vec<_>>();
+	same_shape.sort_by_key(out_of_scope);
+	let first_same_shape = same_shape.first().copied();
+	let accepted = match value {
+		AstValue::Scalar { value: scalar, .. } => same_shape.into_iter().find(|field_match| {
+			schema_field_match_accepts_scalar(
+				context.engine,
+				context.dynamic_values,
+				field_match,
+				scalar,
+			)
+		}),
+		AstValue::Block { items, .. } => same_shape.into_iter().min_by_key(|field_match| {
+			schema_block_mismatch_count(
+				context,
+				schema_child_context_for_field_match(*field_match),
+				items,
+				active_subtypes,
+			)
+		}),
+	};
+	accepted
+		.or(first_same_shape)
+		.or_else(|| alternatives.first().copied())
+}
+
+/// How many of a block's statements a candidate form rejects: keys it lacks,
+/// and values no form of their key accepts.
+fn schema_block_mismatch_count(
 	context: &SchemaDiagnosticContext<'_>,
+	rule_context: RuleContext<'_>,
+	statements: &[AstStatement],
+	active_subtypes: &HashSet<String>,
+) -> usize {
+	statements
+		.iter()
+		.filter(|statement| {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				return false;
+			};
+			let alternatives = schema_bind_field_alternatives(
+				context.engine,
+				context.dynamic_values,
+				rule_context,
+				key,
+				active_subtypes,
+			);
+			let actual = SchemaValueShape::from_ast_value(value);
+			!alternatives.iter().any(|field_match| {
+				schema_value_shape(field_match.value()) == actual
+					&& match value {
+						AstValue::Scalar { value: scalar, .. } => {
+							schema_field_match_accepts_scalar(
+								context.engine,
+								context.dynamic_values,
+								field_match,
+								scalar,
+							)
+						}
+						AstValue::Block { .. } => true,
+					}
+			})
+		})
+		.count()
+}
+
+/// The rule form a parent chose for a block when its key has several block
+/// forms, with the scope that block runs in; the path cannot tell them apart.
+#[derive(Clone)]
+struct SchemaBlockHint<'a> {
+	context: RuleContext<'a>,
+	scopes: Vec<String>,
+}
+
+impl<'a> SchemaBlockHint<'a> {
+	/// Mirrors `schema_active_scopes_for_path` for one step from the parent.
+	fn for_child(
+		engine: &CwtQuery,
+		field_match: CompiledBindFieldMatch<'a>,
+		key: &str,
+		parent_scopes: &[String],
+	) -> Self {
+		let context = schema_child_context_for_field_match(field_match);
+		let mut scopes = schema_active_scopes_after_key(engine, key, parent_scopes.to_vec());
+		let own = schema_context_own_active_scopes(engine, context);
+		if !own.is_empty() {
+			scopes = own;
+		}
+		if let CompiledBindFieldMatch::Alias { alias, .. } = field_match {
+			let pushed = schema_alias_pushed_scopes(engine, &alias.attributes);
+			if !pushed.is_empty() {
+				scopes = pushed;
+			}
+		}
+		Self { context, scopes }
+	}
+}
+
+fn collect_schema_diagnostics<'a>(
+	context: &SchemaDiagnosticContext<'a>,
+	hint: Option<&SchemaBlockHint<'a>>,
+	parent_alias: Option<&'a CompiledAlias>,
 	statements: &[AstStatement],
 	parent_path: &[String],
 	parent_range: Option<EditorRange>,
 	diagnostics: &mut Vec<SchemaDiagnostic>,
 ) {
 	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = schema_bind_context(
-		context.engine,
-		context.dynamic_values,
-		context.file_path,
-		context.document_statements,
-		&context_path,
-	);
+	let parent_context = hint.map(|hint| hint.context).or_else(|| {
+		schema_bind_context(
+			context.engine,
+			context.dynamic_values,
+			context.file_path,
+			context.document_statements,
+			&context_path,
+		)
+	});
 	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
-	let active_scopes = schema_active_scopes_for_path(
-		context.engine,
-		context.dynamic_values,
-		context.file_path,
-		context.document_statements,
-		&context_path,
-	);
+	let active_scopes = match hint {
+		Some(hint) => hint.scopes.clone(),
+		None => schema_active_scopes_for_path(
+			context.engine,
+			context.dynamic_values,
+			context.file_path,
+			context.document_statements,
+			&context_path,
+		),
+	};
 	let active_subtypes = schema_active_subtypes_for_path(
 		context.engine,
 		context.file_path,
 		context.document_statements,
 		&context_path,
 	);
-	let mut cardinality_ranges = HashMap::<String, (u32, Severity, Vec<EditorRange>)>::new();
+	let mut cardinality_bounds = HashMap::<String, SchemaCardinalityBound>::new();
 	let mut present_key_counts = HashMap::<String, u32>::new();
 	for statement in statements {
 		match statement {
@@ -1314,18 +2293,50 @@ fn collect_schema_diagnostics(
 				value,
 				..
 			} => {
-				let key_range = editor_range_from_span(key_span);
-				let field_match = parent_context.and_then(|rule_context| {
-					schema_bind_field_match(
-						context.engine,
-						context.dynamic_values,
-						rule_context,
-						key,
-						&active_subtypes,
-					)
+				let (key, key_range) =
+					schema_key_after_conditional_opener(key, editor_range_from_span(key_span));
+				let value = schema_value_before_conditional_closer(value);
+				let value = value.as_ref();
+				let alternatives = parent_context
+					.map(|rule_context| {
+						schema_bind_field_alternatives(
+							context.engine,
+							context.dynamic_values,
+							rule_context,
+							key,
+							&active_subtypes,
+						)
+					})
+					.unwrap_or_default();
+				let field_match = schema_select_field_alternative(
+					context,
+					&alternatives,
+					value,
+					&active_subtypes,
+					&active_scopes,
+				)
+				// A key holding a `$parameter$` is known only once a call
+				// substitutes it; its one checkable form is the scope a
+				// parameter opens (`$province$ = { ... }`).
+				.filter(|_| {
+					!contains_script_parameter(key) || matches!(value, AstValue::Block { .. })
 				});
-				if parent_context.is_some() && field_match.is_none() && !skip_unknown {
-					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
+				let block_form_count = alternatives
+					.iter()
+					.filter(|field_match| {
+						schema_value_shape(field_match.value()) == SchemaValueShape::Block
+					})
+					.count();
+				if let Some(rule_context) = parent_context
+					&& field_match.is_none()
+					&& !skip_unknown
+					&& !contains_script_parameter(key)
+				{
+					diagnostics.push(schema_unknown_key_diagnostic(
+						key_range,
+						key,
+						schema_context_origin(rule_context),
+					));
 				}
 				if let Some(field_match) = field_match
 					&& let Some(diagnostic) = schema_alias_scope_diagnostic(
@@ -1347,7 +2358,7 @@ fn collect_schema_diagnostics(
 					&& let AstValue::Scalar {
 						value: scalar,
 						span,
-					} = value
+					} = value && !contains_script_parameter(&scalar.as_text())
 				{
 					if let Some(diagnostic) = schema_invalid_value_diagnostic(
 						context.engine,
@@ -1364,9 +2375,13 @@ fn collect_schema_diagnostics(
 					{
 						diagnostics.push(diagnostic);
 					}
-					if let Some(diagnostic) =
-						schema_value_coercion_diagnostic(&field_match, key, scalar, span)
-					{
+					if let Some(diagnostic) = schema_value_coercion_diagnostic(
+						&field_match,
+						parent_alias,
+						key,
+						scalar,
+						span,
+					) {
 						diagnostics.push(diagnostic);
 					}
 				}
@@ -1376,18 +2391,35 @@ fn collect_schema_diagnostics(
 						.or_default() += 1;
 				}
 				if let Some(field_match) = field_match
-					&& let Some(upper_bound) = schema_cardinality_upper(&field_match)
+					&& let Some((upper_bound, origin)) =
+						schema_restated_cardinality_upper(&field_match, &alternatives)
 				{
 					let severity =
 						schema_match_diagnostic_severity(&field_match, Severity::Warning);
-					let entry = cardinality_ranges
-						.entry(key.clone())
-						.or_insert_with(|| (upper_bound, severity, Vec::new()));
-					if upper_bound > entry.0 {
-						entry.0 = upper_bound;
-						entry.1 = severity;
+					let bound = cardinality_bounds
+						.entry(key.to_string())
+						.or_insert_with(|| SchemaCardinalityBound {
+							upper_bound,
+							severity,
+							origin,
+							occurrences: Vec::new(),
+						});
+					if upper_bound > bound.upper_bound {
+						bound.upper_bound = upper_bound;
+						bound.severity = severity;
+						bound.origin = origin;
 					}
-					entry.2.push(key_range);
+					bound.occurrences.push((
+						key_range,
+						match value {
+							AstValue::Scalar { value: scalar, .. } => {
+								SchemaRepeatValue::Scalar(scalar.as_text())
+							}
+							AstValue::Block { .. } => {
+								SchemaRepeatValue::Block(value_fingerprint(value))
+							}
+						},
+					));
 				}
 				if let AstValue::Block {
 					items,
@@ -1395,9 +2427,37 @@ fn collect_schema_diagnostics(
 				} = value
 				{
 					let mut child_path = parent_path.to_vec();
-					child_path.push(key.clone());
+					child_path.push(key.to_string());
+					let child_context = if parent_path.is_empty() {
+						SchemaDiagnosticContext {
+							document_statements: schema_definition_document(
+								context.engine,
+								context.file_path,
+								context.document_statements,
+								statement,
+							),
+							..*context
+						}
+					} else {
+						*context
+					};
+					let child_hint = field_match
+						.filter(|_| block_form_count > 1 || hint.is_some())
+						.filter(|field_match| {
+							schema_value_shape(field_match.value()) == SchemaValueShape::Block
+						})
+						.map(|field_match| {
+							SchemaBlockHint::for_child(
+								context.engine,
+								field_match,
+								key,
+								&active_scopes,
+							)
+						});
 					collect_schema_diagnostics(
-						context,
+						&child_context,
+						child_hint.as_ref(),
+						field_match.and_then(|field_match| field_match.alias()),
 						items,
 						&child_path,
 						Some(editor_range_from_span(block_span)),
@@ -1413,6 +2473,8 @@ fn collect_schema_diagnostics(
 				..
 			} => collect_schema_diagnostics(
 				context,
+				hint,
+				parent_alias,
 				items,
 				parent_path,
 				Some(editor_range_from_span(block_span)),
@@ -1421,21 +2483,45 @@ fn collect_schema_diagnostics(
 			AstStatement::Item { .. } | AstStatement::Comment { .. } => {}
 		}
 	}
-	for (key, (upper_bound, severity, ranges)) in cardinality_ranges {
-		if ranges.len() <= upper_bound as usize {
-			continue;
-		}
-		for range in ranges.into_iter().skip(upper_bound as usize) {
-			diagnostics.push(schema_cardinality_diagnostic(
-				range,
-				&key,
-				upper_bound,
-				severity,
-			));
+	for (key, bound) in cardinality_bounds {
+		// Only a new value counts against the bound. Restating a value the
+		// field already holds leaves what the game reads unchanged, unless the
+		// value is a block the game may run a second time.
+		let mut seen_values = HashSet::new();
+		let mut counted = 0_usize;
+		for (index, (range, repeat_value)) in bound.occurrences.into_iter().enumerate() {
+			let is_block = matches!(repeat_value, SchemaRepeatValue::Block(_));
+			if !seen_values.insert(repeat_value) {
+				if is_block && index >= bound.upper_bound as usize {
+					diagnostics.push(schema_repeated_block_diagnostic(
+						range,
+						&key,
+						bound.upper_bound,
+					));
+				}
+				continue;
+			}
+			counted += 1;
+			if counted > bound.upper_bound as usize {
+				diagnostics.push(schema_cardinality_diagnostic(
+					range,
+					&key,
+					bound.upper_bound,
+					bound.severity,
+					bound.origin,
+				));
+			}
 		}
 	}
+	// A file with nothing in it is a deliberate blank — the way a mod removes
+	// a file it overrides — so nothing is required of it.
+	let blank_file = parent_path.is_empty()
+		&& statements
+			.iter()
+			.all(|statement| matches!(statement, AstStatement::Comment { .. }));
 	if let Some(parent_context) = parent_context
 		&& !skip_unknown
+		&& !blank_file
 	{
 		let range = schema_context_diagnostic_range(parent_range, statements);
 		for (field, minimum) in schema_required_fields(parent_context, &active_subtypes) {
@@ -1447,15 +2533,80 @@ fn collect_schema_diagnostics(
 				let severity =
 					schema_attributes_diagnostic_severity(&field.attributes, Severity::Error);
 				diagnostics.push(schema_required_key_diagnostic(
-					range, &field.key, minimum, severity,
+					range,
+					&field.key,
+					minimum,
+					severity,
+					field.origin,
 				));
 			}
 		}
 	}
 }
 
+/// What one occurrence of a bounded key holds, compared to tell a
+/// restatement from a new value. A block is compared by content, ignoring
+/// layout and comments.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum SchemaRepeatValue {
+	Scalar(String),
+	Block(String),
+}
+
+/// How often a key may repeat in one block, which rule files say so, and
+/// where the block writes it.
+struct SchemaCardinalityBound {
+	upper_bound: u32,
+	severity: Severity,
+	origin: CompiledRuleOrigin,
+	occurrences: Vec<(EditorRange, SchemaRepeatValue)>,
+}
+
+/// Which rule files decide what a context allows. Each rule an extension adds
+/// to a type allows one more key; the type itself is its first definition's.
+fn schema_context_origin(context: RuleContext<'_>) -> CompiledRuleOrigin {
+	match context {
+		RuleContext::RootType(root) | RuleContext::Subtype(root, _) => root.origin,
+		RuleContext::RuleField(field) => field.origin,
+		// One alias definition writes all of its rules.
+		RuleContext::AliasRules(rules) => rules
+			.first()
+			.map_or(CompiledRuleOrigin::Base, |rule| rule.origin),
+	}
+}
+
+/// The most times a key may repeat. As in CWTools, a key matched through an
+/// alias wildcard is not bounded: EU4 events write `## cardinality = 0..1`
+/// on an option's effect wildcard, yet an option runs any number of effects.
 fn schema_cardinality_upper(field_match: &CompiledBindFieldMatch<'_>) -> Option<u32> {
+	if field_match.alias().is_some() {
+		return None;
+	}
 	schema_match_cardinality(field_match).and_then(|(_, upper_bound)| upper_bound)
+}
+
+/// The most times a key may repeat when the schema states its rule more than
+/// once (Foch's supplementary rules restate a vendor rule to raise its bound):
+/// the loosest of the rules with the same key and value, with the rule files
+/// that set it. A bound the vendored rules already give stays theirs.
+fn schema_restated_cardinality_upper(
+	field_match: &CompiledBindFieldMatch<'_>,
+	alternatives: &[CompiledBindFieldMatch<'_>],
+) -> Option<(u32, CompiledRuleOrigin)> {
+	let mut bound = (schema_cardinality_upper(field_match)?, field_match.origin());
+	for alternative in alternatives {
+		if alternative.field().key == field_match.field().key
+			&& alternative.value().states_same_rule(field_match.value())
+		{
+			let upper_bound = schema_cardinality_upper(alternative)?;
+			if upper_bound > bound.0
+				|| (upper_bound == bound.0 && alternative.origin() == CompiledRuleOrigin::Base)
+			{
+				bound = (upper_bound, alternative.origin());
+			}
+		}
+	}
+	Some(bound)
 }
 
 fn schema_match_cardinality(
@@ -1552,10 +2703,14 @@ fn schema_context_diagnostic_range(
 }
 
 fn ast_statement_range(statement: &AstStatement) -> EditorRange {
+	editor_range_from_span(statement_span(statement))
+}
+
+fn statement_span(statement: &AstStatement) -> &SpanRange {
 	match statement {
 		AstStatement::Assignment { span, .. }
 		| AstStatement::Item { span, .. }
-		| AstStatement::Comment { span, .. } => editor_range_from_span(span),
+		| AstStatement::Comment { span, .. } => span,
 	}
 }
 
@@ -1582,7 +2737,7 @@ fn schema_invalid_value_diagnostic(
 ) -> Option<SchemaDiagnostic> {
 	let values = schema_allowed_values(engine, dynamic_values, field_match.value())?;
 	let text = scalar.as_text();
-	if values.values.iter().any(|value| value == &text) {
+	if schema_allowed_values_accept(engine, &values, &text) {
 		return None;
 	}
 	Some(SchemaDiagnostic {
@@ -1592,7 +2747,7 @@ fn schema_invalid_value_diagnostic(
 			Severity::Error,
 		)),
 		code: Some("V003".to_string()),
-		source: Some("foch".to_string()),
+		source: Some(rule_source(field_match.origin()).to_string()),
 		message: format!(
 			"value `{text}` for `{key}` is not in schema {} `{}` (allowed: {})",
 			values.kind.label(),
@@ -1600,6 +2755,81 @@ fn schema_invalid_value_diagnostic(
 			format_allowed_values(&values.values)
 		),
 	})
+}
+
+fn schema_allowed_values_accept(
+	engine: &CwtQuery,
+	values: &SchemaAllowedValues<'_>,
+	text: &str,
+) -> bool {
+	schema_allowed_values_contain(values, text)
+		|| (values.kind == SchemaAllowedValueKind::Scope
+			&& schema_scope_reference_matches(engine, values.name, text))
+}
+
+/// Values compare without regard to case, as CWTools compares them against
+/// enums and definitions (vanilla writes `type = adm` for `ADM`), and word by
+/// word, as the rule files and the game indent a quoted effect differently.
+fn schema_allowed_values_contain(values: &SchemaAllowedValues<'_>, text: &str) -> bool {
+	values
+		.values
+		.iter()
+		.any(|value| schema_allowed_value_matches(value, text))
+		|| (values.kind == SchemaAllowedValueKind::ComplexEnum
+			&& values.name == "country_tags"
+			&& is_dynamic_country_tag(text))
+}
+
+fn schema_allowed_value_matches(value: &str, text: &str) -> bool {
+	let mut value_words = value.split_ascii_whitespace();
+	let mut text_words = text.split_ascii_whitespace();
+	loop {
+		match (value_words.next(), text_words.next()) {
+			(None, None) => return true,
+			(Some(value_word), Some(text_word)) if value_word.eq_ignore_ascii_case(text_word) => {}
+			_ => return false,
+		}
+	}
+}
+
+/// Tags the game assigns at runtime to countries no file defines: colonial
+/// nations `C00`–`C74`, custom nations `D00`–`D74`, estate disaster
+/// countries `E00`–`E49`, federations `F00`–`F19`, client states
+/// `K00`–`K99`, observers `O00`–`O09`, spectators `S00`–`S09` and trading
+/// cities `T00`–`T74` (EU4 wiki, Countries).
+fn is_dynamic_country_tag(text: &str) -> bool {
+	let [prefix, tens @ b'0'..=b'9', ones @ b'0'..=b'9'] = text.as_bytes() else {
+		return false;
+	};
+	let count = match prefix {
+		b'C' | b'D' | b'T' => 75,
+		b'E' => 50,
+		b'F' => 20,
+		b'K' => 100,
+		b'O' | b'S' => 10,
+		_ => return false,
+	};
+	u32::from(tens - b'0') * 10 + u32::from(ones - b'0') < count
+}
+
+/// Whether a rule form accepts a scalar: the type it names, and the values
+/// it lists when it lists them. The two diagnostics above report each half.
+fn schema_field_match_accepts_scalar(
+	engine: &CwtQuery,
+	dynamic_values: Option<&SchemaWorkspace>,
+	field_match: &CompiledBindFieldMatch<'_>,
+	scalar: &ScalarValue,
+) -> bool {
+	if contains_script_parameter(&scalar.as_text()) {
+		return true;
+	}
+	if let Some(expected) = SchemaScalarType::from_rule_value(field_match.value())
+		&& !schema_scalar_type_matches(expected, scalar)
+	{
+		return false;
+	}
+	schema_allowed_values(engine, dynamic_values, field_match.value())
+		.is_none_or(|values| schema_allowed_values_accept(engine, &values, &scalar.as_text()))
 }
 
 fn schema_scalar_type_diagnostic(
@@ -1619,7 +2849,7 @@ fn schema_scalar_type_diagnostic(
 			Severity::Error,
 		)),
 		code: Some("V005".to_string()),
-		source: Some("foch".to_string()),
+		source: Some(rule_source(field_match.origin()).to_string()),
 		message: format!(
 			"value `{}` for `{key}` does not match schema type `{}`",
 			scalar.as_text(),
@@ -1628,56 +2858,29 @@ fn schema_scalar_type_diagnostic(
 	})
 }
 
-/// Warn where the game's own coercion silently changes the written value.
+/// Report where the game's own coercion silently changes the written value.
+/// Extra decimals are a notice; a boolean the game reads as false is an error.
 ///
-/// A field's meaning comes from the accessor its consumer calls, and two of
-/// those discard what the file says. Script numbers reach `CFixedPoint`, whose
-/// `CToken::ReadValue` copies at most three fraction digits into a `"000"`
-/// buffer and scales the integer part by 1000 — three decimals, truncated, not
-/// rounded. `CToken::GetFloat` does the same through `StringToFixedPoint`. The
-/// game's finer reader, `GetFloat64` at 1/32768, has two callers and neither is
-/// a script path, so it does not apply here. `CToken::GetBool` is a
-/// case-sensitive comparison against `yes`, so only that spelling is true.
+/// How many decimals the game keeps is a property of the field, not of its
+/// declared type: most fields checked in game drop every digit past the third,
+/// truncating rather than rounding, but `add_army_professionalism` keeps a
+/// fourth, and `change_innovativeness` is declared a whole number yet keeps
+/// three. So the notice is given only where the field was checked (see
+/// `crate::game::eu4::coercion`), by its own alias or, for `value`, by the
+/// alias of the block around it. `CToken::GetBool` is a case-sensitive
+/// comparison against `yes`, so only that spelling is true.
 fn schema_value_coercion_diagnostic(
 	field_match: &CompiledBindFieldMatch<'_>,
+	parent_alias: Option<&CompiledAlias>,
 	key: &str,
 	scalar: &ScalarValue,
 	span: &SpanRange,
 ) -> Option<SchemaDiagnostic> {
 	let (code, severity, message) = match (
-		SchemaScalarType::from_rule_value(field_match.value())?,
+		SchemaScalarType::from_rule_value(field_match.value()),
 		scalar,
 	) {
-		(SchemaScalarType::Float { .. }, ScalarValue::Number(text)) => {
-			let (integer, fraction) = text.split_once('.')?;
-			let (kept, discarded) = fraction.split_at_checked(3)?;
-			// Three decimals exactly is what the game keeps, so there is
-			// nothing to report.
-			if discarded.is_empty() {
-				return None;
-			}
-			if discarded.bytes().any(|byte| byte != b'0') {
-				// The file says one number and the game reads another.
-				(
-					"V008",
-					schema_match_diagnostic_severity(field_match, Severity::Error),
-					format!(
-						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}` and discards `{discarded}`"
-					),
-				)
-			} else {
-				// Nothing is lost, but the written precision is still not
-				// the precision the game keeps.
-				(
-					"V008",
-					schema_match_diagnostic_severity(field_match, Severity::Warning),
-					format!(
-						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}`, so the trailing `{discarded}` is not the extra precision it looks like"
-					),
-				)
-			}
-		}
-		(SchemaScalarType::Bool, ScalarValue::Identifier(text))
+		(Some(SchemaScalarType::Bool), ScalarValue::Identifier(text))
 			if text.eq_ignore_ascii_case("yes") || text.eq_ignore_ascii_case("no") =>
 		{
 			(
@@ -1688,15 +2891,49 @@ fn schema_value_coercion_diagnostic(
 				),
 			)
 		}
+		(_, scalar) if schema_field_reads_three_decimals(field_match, parent_alias, key) => {
+			let text = schema_scalar_number_text(scalar)?;
+			let (integer, fraction) = text.split_once('.')?;
+			let (kept, discarded) = fraction.split_at_checked(3)?;
+			if discarded.is_empty() {
+				return None;
+			}
+			// A notice, not a fault: vanilla itself writes `0.0025`, and the
+			// map tools write `0.300000`, whose dropped zeros change nothing.
+			let message = if discarded.bytes().all(|byte| byte == b'0') {
+				format!(
+					"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}`; the dropped digits are zeros, so the value is unchanged"
+				)
+			} else {
+				format!(
+					"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}` and discards `{discarded}`"
+				)
+			};
+			("V008", Severity::Info, message)
+		}
 		_ => return None,
 	};
 	Some(SchemaDiagnostic {
 		range: editor_range_from_span(span),
 		severity: Some(severity),
 		code: Some(code.to_string()),
-		source: Some("foch".to_string()),
+		source: Some(FOCH_DETECT_SOURCE.to_string()),
 		message,
 	})
+}
+
+/// Whether the game was seen to read this field at three decimals.
+fn schema_field_reads_three_decimals(
+	field_match: &CompiledBindFieldMatch<'_>,
+	parent_alias: Option<&CompiledAlias>,
+	key: &str,
+) -> bool {
+	field_match
+		.alias()
+		.is_some_and(|alias| alias_reads_three_decimals(&alias.category, &alias.name))
+		|| key == "value"
+			&& parent_alias
+				.is_some_and(|alias| alias_value_reads_three_decimals(&alias.category, &alias.name))
 }
 
 fn schema_value_shape_diagnostic(
@@ -1716,7 +2953,7 @@ fn schema_value_shape_diagnostic(
 			Severity::Error,
 		)),
 		code: Some(SCHEMA_SHAPE_CODE.to_string()),
-		source: Some("foch".to_string()),
+		source: Some(rule_source(field_match.origin()).to_string()),
 		message: format!(
 			"value for `{key}` is a schema {}, but this assignment uses a {}",
 			expected.label(),
@@ -1743,7 +2980,7 @@ fn schema_alias_scope_diagnostic(
 			Severity::Error,
 		)),
 		code: Some("V007".to_string()),
-		source: Some("foch".to_string()),
+		source: Some(rule_source(alias.origin).to_string()),
 		message: format!(
 			"alias `{key}` is scoped to {}, but current schema scope is {}",
 			format_scope_values(&alias.attributes.scope),
@@ -1761,19 +2998,39 @@ fn schema_alias_scope_diagnostic(
 /// as `123`.
 fn schema_scalar_type_matches(scalar_type: SchemaScalarType, scalar: &ScalarValue) -> bool {
 	match scalar_type {
-		SchemaScalarType::Int { range } => match scalar {
-			ScalarValue::Number(value) => value
+		SchemaScalarType::Int { range } => schema_scalar_number_text(scalar).is_some_and(|value| {
+			value
 				.parse::<i64>()
-				.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
-			_ => false,
-		},
-		SchemaScalarType::Float { range } => match scalar {
-			ScalarValue::Number(value) => value
-				.parse::<f64>()
-				.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
-			_ => false,
-		},
+				.is_ok_and(|number| range.is_none_or(|range| range.contains(number)))
+		}),
+		SchemaScalarType::Float { range } => {
+			schema_scalar_number_text(scalar).is_some_and(|value| {
+				value
+					.parse::<f64>()
+					.is_ok_and(|number| range.is_none_or(|range| range.contains(number)))
+			})
+		}
 		SchemaScalarType::Bool => matches!(scalar, ScalarValue::Bool(_)),
+	}
+}
+
+/// The numeral a scalar spells. The tokenizer keeps `+0.5` as a name, but
+/// the game's numeric readers and CWTools both read a leading `+` as a sign.
+/// The game's lexer strips quotes and keeps only a flag for writing the token
+/// back, and its numeric readers read the text, so `"7300"` is `7300`.
+fn schema_scalar_number_text(scalar: &ScalarValue) -> Option<&str> {
+	match scalar {
+		ScalarValue::Number(value) => Some(value),
+		ScalarValue::String(value) if matches!(unquoted_scalar(value), ScalarValue::Number(_)) => {
+			Some(value)
+		}
+		ScalarValue::Identifier(value) | ScalarValue::String(value) => {
+			value.strip_prefix('+').filter(|unsigned| {
+				!unsigned.starts_with('-')
+					&& matches!(unquoted_scalar(unsigned), ScalarValue::Number(_))
+			})
+		}
+		_ => None,
 	}
 }
 
@@ -1925,12 +3182,16 @@ fn format_allowed_values(values: &[String]) -> String {
 	formatted.join(", ")
 }
 
-fn schema_unknown_key_diagnostic(range: EditorRange, key: &str) -> SchemaDiagnostic {
+fn schema_unknown_key_diagnostic(
+	range: EditorRange,
+	key: &str,
+	origin: CompiledRuleOrigin,
+) -> SchemaDiagnostic {
 	SchemaDiagnostic {
 		range,
 		severity: Some(Severity::Warning),
 		code: Some("V001".to_string()),
-		source: Some("foch".to_string()),
+		source: Some(rule_source(origin).to_string()),
 		message: format!("schema does not allow key `{key}` in this context"),
 	}
 }
@@ -1940,13 +3201,33 @@ fn schema_cardinality_diagnostic(
 	key: &str,
 	upper_bound: u32,
 	severity: Severity,
+	origin: CompiledRuleOrigin,
 ) -> SchemaDiagnostic {
 	SchemaDiagnostic {
 		range,
 		severity: Some(severity),
 		code: Some("V002".to_string()),
-		source: Some("foch".to_string()),
+		source: Some(rule_source(origin).to_string()),
 		message: format!("key `{key}` exceeds schema cardinality upper bound of {upper_bound}"),
+	}
+}
+
+/// A notice, not a fault: whether the game reads such a block once or runs it
+/// again (a `chance` factor applied twice) is not verified per key. CWTools
+/// counts the copy like any other repeat; telling it apart is foch's.
+fn schema_repeated_block_diagnostic(
+	range: EditorRange,
+	key: &str,
+	upper_bound: u32,
+) -> SchemaDiagnostic {
+	SchemaDiagnostic {
+		range,
+		severity: Some(Severity::Info),
+		code: Some("V002".to_string()),
+		source: Some(FOCH_CWTOOLS_SOURCE.to_string()),
+		message: format!(
+			"key `{key}` repeats an identical block beyond the schema cardinality upper bound of {upper_bound}; if the game reads every copy, this block takes effect again"
+		),
 	}
 }
 
@@ -1955,12 +3236,13 @@ fn schema_required_key_diagnostic(
 	key: &str,
 	minimum: u32,
 	severity: Severity,
+	origin: CompiledRuleOrigin,
 ) -> SchemaDiagnostic {
 	SchemaDiagnostic {
 		range,
 		severity: Some(severity),
 		code: Some("V004".to_string()),
-		source: Some("foch".to_string()),
+		source: Some(rule_source(origin).to_string()),
 		message: format!("schema requires key `{key}` at least {minimum} time(s) in this context"),
 	}
 }

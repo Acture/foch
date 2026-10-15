@@ -402,21 +402,7 @@ impl<'a> Lexer<'a> {
 			}
 			b'-' | b'0'..=b'9' => {
 				let text_start = self.index;
-				let digit_leading = byte.is_ascii_digit();
 				self.advance_byte();
-				if !digit_leading
-					&& !self
-						.peek_byte()
-						.is_some_and(|next| next.is_ascii_digit() || next == b'.')
-				{
-					return Token {
-						kind: TokenKind::Number("-".to_string()),
-						span: SpanRange {
-							start: start.clone(),
-							end: self.current_span(),
-						},
-					};
-				}
 				while let Some(next) = self.peek_byte() {
 					if is_token_delimiter(next)
 						|| (self.lua_mode && next == b',')
@@ -587,6 +573,20 @@ fn is_token_delimiter(byte: u8) -> bool {
 		byte,
 		b' ' | b'\t' | b'\r' | b'\n' | b'=' | b'{' | b'}' | b'#'
 	)
+}
+
+/// The scalar the tokenizer makes of this unquoted text.
+pub(crate) fn unquoted_scalar(text: &str) -> ScalarValue {
+	let number_leading = text
+		.bytes()
+		.next()
+		.is_some_and(|byte| byte == b'-' || byte.is_ascii_digit());
+	match text {
+		_ if number_leading && is_number_token(text) => ScalarValue::Number(text.to_string()),
+		"yes" => ScalarValue::Bool(true),
+		"no" => ScalarValue::Bool(false),
+		_ => ScalarValue::Identifier(text.to_string()),
+	}
 }
 
 fn is_number_token(text: &str) -> bool {
@@ -1776,6 +1776,53 @@ next_effect = { add_prestige = 1 }
 	}
 
 	#[test]
+	fn a_minus_before_a_parameter_stays_part_of_the_value() {
+		let source = "add_piety = -$amount$\nadd_karma = -$amount$ lone = -\n";
+		let parsed =
+			parse_clausewitz_content(game_path("common/scripted_effects/test.txt"), source);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+		let values = parsed
+			.ast
+			.statements
+			.iter()
+			.map(|statement| {
+				let AstStatement::Assignment {
+					key,
+					value: AstValue::Scalar { value, .. },
+					..
+				} = statement
+				else {
+					panic!("expected scalar assignment, got {statement:?}");
+				};
+				(key.as_str(), value.clone())
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(
+			values,
+			[
+				(
+					"add_piety",
+					ScalarValue::Identifier("-$amount$".to_string())
+				),
+				(
+					"add_karma",
+					ScalarValue::Identifier("-$amount$".to_string())
+				),
+				("lone", ScalarValue::Number("-".to_string())),
+			]
+		);
+
+		let emitted =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&parsed.ast.statements)
+				.expect("emit statements");
+		assert!(
+			emitted.starts_with("add_piety = -$amount$\nadd_karma = -$amount$\n"),
+			"{emitted}"
+		);
+	}
+
+	#[test]
 	fn lua_mode_comma_separates_numeric_scalars_and_preserves_exponents() {
 		let parsed = parse_clausewitz_content(
 			game_path("defines.lua"),
@@ -1968,7 +2015,7 @@ next_effect = { add_prestige = 1 }
 	}
 
 	#[test]
-	fn non_lua_mode_treats_double_dash_as_numbers() {
+	fn non_lua_mode_reads_double_dash_as_a_value() {
 		let parsed = parse_clausewitz_content(game_path("test.txt"), "-- foo\n");
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert!(parsed.ast.statements.len() >= 2);
@@ -1983,11 +2030,11 @@ next_effect = { add_prestige = 1 }
 			statement,
 			AstStatement::Item {
 				value: AstValue::Scalar {
-					value: ScalarValue::Number(number),
+					value: ScalarValue::Identifier(text),
 					..
 				},
 				..
-			} if number.as_str() == "-"
+			} if text.as_str() == "--"
 		)));
 	}
 
@@ -2007,11 +2054,11 @@ next_effect = { add_prestige = 1 }
 			statement,
 			AstStatement::Item {
 				value: AstValue::Scalar {
-					value: ScalarValue::Number(number),
+					value: ScalarValue::Identifier(text),
 					..
 				},
 				..
-			} if number.as_str() == "-"
+			} if text.as_str() == "--"
 		)));
 	}
 }

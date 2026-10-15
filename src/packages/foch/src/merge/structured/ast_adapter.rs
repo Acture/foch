@@ -468,6 +468,30 @@ pub(super) fn denormalize_statement(
 	}
 }
 
+/// The keys of the assignments whose blocks hold statement `id`, outermost
+/// first, as they read in the file.
+///
+/// `None` when a list item or any other node lies between the statement and
+/// the file, since such a statement has no plain chain of keys.
+pub(super) fn enclosing_assignment_keys(tree: &NormalizedTree, id: NodeId) -> Option<Vec<String>> {
+	let mut keys = Vec::new();
+	let mut current = tree.node(id).ok()?.parent;
+	while let Some(ancestor) = current {
+		if ancestor == tree.root() {
+			keys.reverse();
+			return Some(keys);
+		}
+		let node = tree.node(ancestor).ok()?;
+		if is_assignment_node(node) {
+			keys.push(node.value.clone()?);
+		} else if !is_block_kind(&node.kind) {
+			return None;
+		}
+		current = node.parent;
+	}
+	None
+}
+
 pub(crate) fn top_level_assignment_key(
 	tree: &NormalizedTree,
 	mut id: NodeId,

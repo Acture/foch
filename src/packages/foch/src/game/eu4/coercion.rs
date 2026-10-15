@@ -1,8 +1,10 @@
 //! How EU4 coerces script text into the value a field's consumer reads.
 //!
-//! The game's readers are much coarser than text comparison, so two mods can
-//! write one field differently and mean the same thing. Modelling the readers
-//! lets the merge distinguish that from a real disagreement.
+//! The merge compares numbers by their exact decimal value and never by what
+//! a reader keeps, because which reader applies differs from field to field.
+//! This module records the one reader the binary shows and the fields an
+//! in-game check tied to it, so the final write can drop digits the game was
+//! seen to ignore and leave everything else as the mods wrote it.
 //!
 //! Evidence, read out of the unstripped 1.37.5 binary, which ships with full
 //! C++ symbols. The reasoning and the call-site census are in
@@ -21,9 +23,16 @@
 //! * The game's finer reader, `CToken::GetFloat64` at 1/32768, has two callers
 //!   — `CCountry::ReadMember` and an `fpml` overload — and neither is a script
 //!   path, so it does not apply to file content.
+//! * The binary does not say which fields reach which reader, and in game they
+//!   differ: the `add_army_professionalism` effect and the
+//!   `army_professionalism` trigger keep a fourth decimal that `add_prestige`
+//!   drops. So a field counts as three-decimal only once an in-game check has
+//!   shown it, and the list below holds exactly those.
 //!
 //! This is pinned to that engine build. A future patch that changes a reader
-//! invalidates the equivalences below, not just their precision.
+//! invalidates the list below, not just its precision.
+
+use crate::game::schema::query::CompiledAliasCategory;
 
 /// The number of fraction digits `CToken::ReadValue` keeps.
 const KEPT_FRACTION_DIGITS: usize = 3;
@@ -79,48 +88,84 @@ pub fn script_fixed_point(text: &str) -> Option<ScriptFixedPoint> {
 	}))
 }
 
-/// Reads `text` the way `CToken::GetInt` does: `atoi` over the integer prefix.
+/// Effects whose number was seen, in game, to lose every digit past the third.
 ///
-/// Abstains on the same unmodelled shapes as [`script_fixed_point`], for the
-/// same reason.
-pub fn script_int(text: &str) -> Option<i64> {
-	let (negative, digits) = split_sign(text)?;
-	let integer_length = digits
-		.find(|character: char| !character.is_ascii_digit())
-		.unwrap_or(digits.len());
-	let (integer, rest) = digits.split_at(integer_length);
-	// `atoi` stops at the first non-digit, so a fraction is discarded rather
-	// than rounded. Anything else trailing is text this model has not checked.
-	if !rest.is_empty() && !is_decimal_fraction(rest) {
-		return None;
-	}
-	if integer.is_empty() {
-		return None;
-	}
-	let magnitude = integer.parse::<i64>().ok()?;
-	Some(if negative { -magnitude } else { magnitude })
+/// Each was checked on 1.37.5 by applying a value with a fourth decimal and
+/// reading back what the game held. `change_innovativeness` is typed `int` in
+/// the schema but read three decimals in game, so the list goes by name, not
+/// by type.
+const THREE_DECIMAL_EFFECTS: &[&str] = &[
+	"add_army_tradition",
+	"add_navy_tradition",
+	"add_mercantilism",
+	"add_legitimacy",
+	"add_war_exhaustion",
+	"add_inflation",
+	"add_corruption",
+	"change_innovativeness",
+	"add_prestige",
+	"add_local_autonomy",
+	"add_prosperity",
+];
+
+/// Triggers whose threshold was seen to compare at three decimals.
+const THREE_DECIMAL_TRIGGERS: &[&str] = &["army_tradition", "prestige", "mercantilism"];
+
+/// Modifiers whose total was seen to keep three decimals.
+const THREE_DECIMAL_MODIFIERS: &[&str] = &[
+	"yearly_army_professionalism",
+	"discipline",
+	"drill_gain_modifier",
+	"global_trade_goods_size_modifier",
+	"harsh_treatment_cost",
+];
+
+/// Effects whose `value = ...` field was seen to keep three decimals.
+const THREE_DECIMAL_VALUE_EFFECTS: &[&str] = &["set_variable", "change_variable"];
+
+/// Triggers whose `value = ...` field was seen to compare at three decimals.
+const THREE_DECIMAL_VALUE_TRIGGERS: &[&str] = &["check_variable", "has_global_modifier_value"];
+
+/// Whether the game was seen to read the number bound to this schema alias
+/// at three decimals.
+///
+/// The category matters: `prestige` is a trigger that was checked and a
+/// modifier that was not.
+pub fn alias_reads_three_decimals(category: &CompiledAliasCategory, name: &str) -> bool {
+	let checked = match category {
+		CompiledAliasCategory::Effect => THREE_DECIMAL_EFFECTS,
+		CompiledAliasCategory::Trigger => THREE_DECIMAL_TRIGGERS,
+		CompiledAliasCategory::Modifier => THREE_DECIMAL_MODIFIERS,
+		CompiledAliasCategory::Link | CompiledAliasCategory::Other(_) => return false,
+	};
+	checked.contains(&name)
 }
 
-/// The spelling EU4's own representation implies for a `float` field.
+/// Whether the game was seen to read the `value` field inside the block this
+/// schema alias binds at three decimals.
 ///
-/// `CFixedPoint` holds thousandths, so three decimals is not a style choice —
-/// it is the value the engine keeps, written out. `0.5` becomes `0.500` and
-/// `0.1239` becomes `0.123`, and two spellings of one value become one string.
-pub fn canonical_float_text(text: &str) -> Option<String> {
-	let ScriptFixedPoint(thousandths) = script_fixed_point(text)?;
-	let sign = if thousandths < 0 { "-" } else { "" };
-	let magnitude = thousandths.unsigned_abs();
-	Some(format!(
-		"{sign}{}.{:03}",
-		magnitude / FIXED_POINT_SCALE.unsigned_abs(),
-		magnitude % FIXED_POINT_SCALE.unsigned_abs()
-	))
+/// The schema types that `value` as a number, a variable name or a keyword at
+/// once, so it is found by the block around it rather than by its own type.
+pub fn alias_value_reads_three_decimals(category: &CompiledAliasCategory, name: &str) -> bool {
+	let checked = match category {
+		CompiledAliasCategory::Effect => THREE_DECIMAL_VALUE_EFFECTS,
+		CompiledAliasCategory::Trigger => THREE_DECIMAL_VALUE_TRIGGERS,
+		_ => return false,
+	};
+	checked.contains(&name)
 }
 
-/// The spelling `CToken::GetInt` implies for an `int` field: the integer it
-/// reads, with any fraction the game discards already dropped.
-pub fn canonical_int_text(text: &str) -> Option<String> {
-	Some(script_int(text)?.to_string())
+/// `text` without the fraction digits past the third, or `None` when there are
+/// none to drop.
+///
+/// Only for a field the game reads at three decimals, where this is the value
+/// the game already holds. Everything else about the spelling stays as
+/// written.
+pub fn drop_unread_fraction_digits(text: &str) -> Option<String> {
+	script_fixed_point(text)?;
+	let (integer, fraction) = text.split_once('.')?;
+	(fraction.len() > KEPT_FRACTION_DIGITS)
+		.then(|| format!("{integer}.{}", &fraction[..KEPT_FRACTION_DIGITS]))
 }
 
 fn split_sign(text: &str) -> Option<(bool, &str)> {
@@ -138,10 +183,6 @@ fn split_sign(text: &str) -> Option<(bool, &str)> {
 
 fn is_ascii_digits(text: &str) -> bool {
 	text.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-fn is_decimal_fraction(text: &str) -> bool {
-	text.strip_prefix('.').is_some_and(is_ascii_digits)
 }
 
 #[cfg(test)]
@@ -207,98 +248,100 @@ mod tests {
 	}
 
 	#[test]
-	fn the_int_reader_takes_the_integer_prefix() {
-		assert_eq!(script_int("123"), Some(123));
-		assert_eq!(script_int("0123"), Some(123));
-		assert_eq!(script_int("123.9"), Some(123));
-		assert_eq!(script_int("-4.9"), Some(-4));
-		assert_eq!(script_int("+7"), Some(7));
+	fn digits_past_the_third_are_dropped_and_nothing_else_moves() {
+		assert_eq!(
+			drop_unread_fraction_digits("0.0125").as_deref(),
+			Some("0.012")
+		);
+		assert_eq!(
+			drop_unread_fraction_digits("0.1239").as_deref(),
+			Some("0.123")
+		);
+		assert_eq!(
+			drop_unread_fraction_digits("-0.0125").as_deref(),
+			Some("-0.012")
+		);
+		assert_eq!(
+			drop_unread_fraction_digits("1.0000").as_deref(),
+			Some("1.000")
+		);
+		assert_eq!(
+			drop_unread_fraction_digits("+.12345").as_deref(),
+			Some("+.123")
+		);
 	}
 
 	#[test]
-	fn the_int_reader_abstains_where_the_model_was_not_checked() {
-		assert_eq!(script_int("123abc"), None);
-		assert_eq!(script_int("abc"), None);
-		assert_eq!(script_int(""), None);
-		assert_eq!(script_int("1444.11.11"), None);
-	}
-
-	#[test]
-	fn the_canonical_float_spelling_is_the_engine_representation() {
-		assert_eq!(canonical_float_text("0.5").as_deref(), Some("0.500"));
-		assert_eq!(canonical_float_text("0.50").as_deref(), Some("0.500"));
-		assert_eq!(canonical_float_text("0.500").as_deref(), Some("0.500"));
-		assert_eq!(canonical_float_text("1").as_deref(), Some("1.000"));
-		assert_eq!(canonical_float_text("0.1239").as_deref(), Some("0.123"));
-		assert_eq!(canonical_float_text(".5").as_deref(), Some("0.500"));
-		assert_eq!(canonical_float_text("007").as_deref(), Some("7.000"));
-		assert_eq!(canonical_float_text("0").as_deref(), Some("0.000"));
-	}
-
-	#[test]
-	fn the_canonical_float_spelling_keeps_the_sign_and_truncates_toward_zero() {
-		assert_eq!(canonical_float_text("-0.1239").as_deref(), Some("-0.123"));
-		assert_eq!(canonical_float_text("-1.5").as_deref(), Some("-1.500"));
-		assert_eq!(canonical_float_text("-0.0001").as_deref(), Some("0.000"));
-	}
-
-	#[test]
-	fn the_canonical_int_spelling_drops_what_the_reader_discards() {
-		assert_eq!(canonical_int_text("3").as_deref(), Some("3"));
-		assert_eq!(canonical_int_text("3.4").as_deref(), Some("3"));
-		assert_eq!(canonical_int_text("007").as_deref(), Some("7"));
-		assert_eq!(canonical_int_text("-4.9").as_deref(), Some("-4"));
-	}
-
-	#[test]
-	fn a_canonical_spelling_is_its_own_canonical_spelling() {
-		// The transform runs on every input, including output it produced
-		// earlier, so it has to be idempotent or a second pass would drift.
-		for text in ["0.5", "0.50", "1", "0.1239", "-1.5", "007", "3.4"] {
-			let once = canonical_float_text(text).expect("canonical float");
-			assert_eq!(canonical_float_text(&once).as_deref(), Some(once.as_str()));
-			let once = canonical_int_text(text).expect("canonical int");
-			assert_eq!(canonical_int_text(&once).as_deref(), Some(once.as_str()));
+	fn a_number_the_game_reads_whole_is_left_alone() {
+		for text in [
+			"0.5",
+			"0.50",
+			"0.125",
+			"1",
+			"-3",
+			"yes",
+			"1e-3",
+			"1444.11.11",
+		] {
+			assert_eq!(drop_unread_fraction_digits(text), None, "{text}");
 		}
 	}
 
 	#[test]
-	fn texts_the_game_reads_alike_get_one_spelling() {
-		for (left, right) in [("0.5", "0.50"), ("1", "1.0"), ("0.1234", "0.1239")] {
-			assert_eq!(canonical_float_text(left), canonical_float_text(right));
+	fn dropping_is_what_the_reader_already_does() {
+		for text in ["0.0125", "0.1239", "-0.0125", "1.0000", "7.12345"] {
+			let dropped = drop_unread_fraction_digits(text).expect("digits to drop");
+			assert_eq!(
+				script_fixed_point(&dropped),
+				script_fixed_point(text),
+				"{text}"
+			);
 		}
-		assert_ne!(canonical_float_text("0.5"), canonical_float_text("0.6"));
 	}
 
 	#[test]
-	fn fixed_point_equality_is_never_coarser_than_int_equality() {
-		// The merge may resolve a field's reader to either one. Folding under
-		// the fixed-point model must therefore never claim an equality the
-		// integer reader would reject, or a wrong field type could hide a real
-		// difference. Equal thousandths imply an equal integer part.
-		const TEXTS: &[&str] = &[
-			"0", "0.0", "0.5", "0.50", "0.6", "1", "1.0", "1.000", "1.5", "2", "-1", "-1.0",
-			"-1.5", "10", "007", ".5", "0.1234", "0.1239", "0.9999",
-		];
-		for left in TEXTS {
-			for right in TEXTS {
-				let (Some(left_fixed), Some(right_fixed)) =
-					(script_fixed_point(left), script_fixed_point(right))
-				else {
-					continue;
-				};
-				if left_fixed != right_fixed {
-					continue;
-				}
-				let (Some(left_int), Some(right_int)) = (script_int(left), script_int(right))
-				else {
-					continue;
-				};
-				assert_eq!(
-					left_int, right_int,
-					"`{left}` and `{right}` are one fixed-point value but two integers"
-				);
-			}
-		}
+	fn only_the_checked_fields_count_as_three_decimal() {
+		assert!(alias_reads_three_decimals(
+			&CompiledAliasCategory::Effect,
+			"add_prestige"
+		));
+		assert!(alias_reads_three_decimals(
+			&CompiledAliasCategory::Modifier,
+			"discipline"
+		));
+		assert!(alias_reads_three_decimals(
+			&CompiledAliasCategory::Trigger,
+			"prestige"
+		));
+		// Checked in game and found to keep the fourth decimal.
+		assert!(!alias_reads_three_decimals(
+			&CompiledAliasCategory::Effect,
+			"add_army_professionalism"
+		));
+		assert!(!alias_reads_three_decimals(
+			&CompiledAliasCategory::Trigger,
+			"army_professionalism"
+		));
+		// One name, two fields: the modifier was never checked.
+		assert!(!alias_reads_three_decimals(
+			&CompiledAliasCategory::Modifier,
+			"prestige"
+		));
+	}
+
+	#[test]
+	fn a_value_field_is_found_by_the_block_around_it() {
+		assert!(alias_value_reads_three_decimals(
+			&CompiledAliasCategory::Effect,
+			"set_variable"
+		));
+		assert!(alias_value_reads_three_decimals(
+			&CompiledAliasCategory::Trigger,
+			"has_global_modifier_value"
+		));
+		assert!(!alias_value_reads_three_decimals(
+			&CompiledAliasCategory::Effect,
+			"add_prestige"
+		));
 	}
 }

@@ -66,11 +66,11 @@ toml.workspace = true
 [features]
 # Opt-in build flag for parser/semantic-index dev tools.
 # `cargo install --path src/apps/foch-cli` (the default user path) installs only
-# `foch`; pass `--features dev-tools` to build the `parse_stats` and
-# `symbol_dump` examples, which are debugging utilities for parser and
-# semantic-index maintainers (raw-directory inputs, ad-hoc arg parsing, no
-# playset/config plumbing). Examples cannot pollute the user-facing
-# `~/.cargo/bin/` namespace.
+# `foch`; pass `--features dev-tools` to build the `parse_stats`,
+# `symbol_dump` and `schema_survey` examples, which are debugging utilities for
+# parser, semantic-index and schema-checker maintainers (raw-directory inputs,
+# ad-hoc arg parsing, no playset/config plumbing). Examples cannot pollute the
+# user-facing `~/.cargo/bin/` namespace.
 dev-tools = []
 
 [[bin]]
@@ -85,4 +85,9 @@ required-features = ["dev-tools"]
 [[example]]
 name = "symbol_dump"
 path = "examples/symbol_dump.rs"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "schema_survey"
+path = "examples/schema_survey.rs"
 required-features = ["dev-tools"]
