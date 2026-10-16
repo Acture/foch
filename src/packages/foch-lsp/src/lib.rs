@@ -85,6 +85,9 @@ struct WorkspaceSnapshot {
 	session: Option<WorkspaceSession>,
 	/// Diagnostics by the physical file they belong to.
 	diagnostics_by_path: HashMap<PathBuf, Vec<Diagnostic>>,
+	/// Cross-file findings are valid only for the text the scan analyzed.
+	semantic_diagnostics_by_path: HashMap<PathBuf, Vec<Diagnostic>>,
+	source_hashes: HashMap<PathBuf, blake3::Hash>,
 	/// Diagnostics of the game's own files by game path: what a mod file
 	/// replacing one of them inherits rather than introduces. The scan fills
 	/// it for the files it reads; [`game_file_diagnostics`] adds the rest.
@@ -250,6 +253,17 @@ impl Backend {
 			let Some(uri) = Url::from_file_path(path).ok() else {
 				continue;
 			};
+			let open_text = self
+				.state
+				.read()
+				.await
+				.docs
+				.get(&uri)
+				.and_then(|doc| doc.text.clone());
+			if let Some(text) = open_text {
+				self.publish_document_diagnostics(&uri, &text).await;
+				continue;
+			}
 			let diagnostics = visible_diagnostics(
 				path,
 				snapshot
@@ -282,12 +296,20 @@ impl Backend {
 			Ok(path) => path,
 			Err(_) => return,
 		};
-		let (snapshot, targets, show_game_diagnostics) = {
+		let (snapshot, targets, show_game_diagnostics, version) = {
 			let state = self.state.read().await;
+			let Some(document) = state
+				.docs
+				.get(uri)
+				.filter(|doc| doc.text.as_deref() == Some(text))
+			else {
+				return;
+			};
 			(
 				state.workspace.clone(),
 				state.targets.clone(),
 				state.show_game_diagnostics,
+				document.version,
 			)
 		};
 		let schema = self.schema.read().await.clone();
@@ -301,8 +323,18 @@ impl Backend {
 				game_file_diagnostics(relative_path, snapshot, &targets, schema.as_ref())
 			},
 		);
+		if !self
+			.state
+			.read()
+			.await
+			.docs
+			.get(uri)
+			.is_some_and(|doc| doc.version == version && doc.text.as_deref() == Some(text))
+		{
+			return;
+		}
 		self.client
-			.publish_diagnostics(uri.clone(), diagnostics, None)
+			.publish_diagnostics(uri.clone(), diagnostics, Some(version))
 			.await;
 	}
 }
@@ -411,8 +443,8 @@ fn read_game_file_diagnostics(
 	Vec::new()
 }
 
-/// Every diagnostic an open document has: what the workspace scan found for
-/// its file, its parse issues, and the schema's findings for its game path.
+/// Parse, annotation and schema diagnostics use the current buffer. Cross-file
+/// findings remain valid only while it matches the text the workspace scanned.
 /// [`visible_diagnostics`] chooses which of them the client is shown.
 fn document_diagnostics(
 	path: &Path,
@@ -422,7 +454,8 @@ fn document_diagnostics(
 	schema: Option<&EditorSchema>,
 ) -> Vec<Diagnostic> {
 	let mut diagnostics = snapshot
-		.and_then(|snapshot| snapshot.diagnostics_by_path.get(path).cloned())
+		.filter(|snapshot| snapshot.source_hashes.get(path) == Some(&blake3::hash(text.as_bytes())))
+		.and_then(|snapshot| snapshot.semantic_diagnostics_by_path.get(path).cloned())
 		.unwrap_or_default();
 	// Schema features need the document's game path. A document under a
 	// scan root whose name has none is told so instead of silently
@@ -1227,7 +1260,9 @@ fn build_workspace_snapshot_with_schema(
 			schema.workspace(&documents)
 		})
 		.unwrap_or_default();
-	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &files, &findings);
+	let semantic_diagnostics_by_path = build_semantic_diagnostics(&files, &findings);
+	let mut diagnostics_by_path = semantic_diagnostics_by_path.clone();
+	let mut source_hashes = HashMap::new();
 	for (file, error) in &unportable {
 		diagnostics_by_path
 			.entry(file.clone())
@@ -1238,7 +1273,25 @@ fn build_workspace_snapshot_with_schema(
 		let Some(physical) = file.path.as_deref() else {
 			continue;
 		};
-		let diagnostics = annotation_diagnostics_for_text(&file.source);
+		// A failed disk read has no source to re-parse. Keep that I/O failure
+		// visible; an empty, successfully read script has no parse issues.
+		if file.source.is_empty() && !file.parse_issues.is_empty() {
+			diagnostics_by_path
+				.entry(physical.to_path_buf())
+				.or_default()
+				.extend(file.parse_issues.iter().map(|issue| Diagnostic {
+					range: lsp_range(issue.line, issue.column),
+					severity: Some(DiagnosticSeverity::ERROR),
+					code: Some(NumberOrString::String("read_failure".into())),
+					source: Some("foch".into()),
+					message: issue.message.clone(),
+					..Diagnostic::default()
+				}));
+			continue;
+		}
+		source_hashes.insert(physical.to_path_buf(), blake3::hash(file.source.as_bytes()));
+		let diagnostics =
+			parse_diagnostics_for_text(physical, Some(&file.relative_path), &file.source);
 		if !diagnostics.is_empty() {
 			diagnostics_by_path
 				.entry(physical.to_path_buf())
@@ -1299,32 +1352,19 @@ fn build_workspace_snapshot_with_schema(
 		candidates,
 		schema_workspace,
 		diagnostics_by_path,
+		semantic_diagnostics_by_path,
+		source_hashes,
 		game_diagnostics: Arc::new(Mutex::new(game_diagnostics)),
 		warnings,
 		session: Some(session),
 	}
 }
 
-fn build_workspace_diagnostics(
-	index: &SemanticIndex,
+fn build_semantic_diagnostics(
 	files: &WorkspaceFiles,
 	findings: &[Finding],
 ) -> HashMap<PathBuf, Vec<Diagnostic>> {
 	let mut diagnostics_by_path = HashMap::<PathBuf, Vec<Diagnostic>>::new();
-
-	for issue in &index.parse_issues {
-		let Some(path) = files.get(&issue.mod_id, &issue.path) else {
-			continue;
-		};
-		diagnostics_by_path
-			.entry(path.to_path_buf())
-			.or_default()
-			.push(parse_issue_to_diagnostic(
-				issue.line,
-				issue.column,
-				&issue.message,
-			));
-	}
 
 	for finding in findings {
 		let Some(relative_path) = finding.path.as_ref() else {
@@ -1708,17 +1748,6 @@ fn editor_range(text: &str, start: usize, end: usize) -> Option<Range> {
 		start: position_at(text, start)?,
 		end: position_at(text, end)?,
 	}))
-}
-
-fn parse_issue_to_diagnostic(line: usize, column: usize, message: &str) -> Diagnostic {
-	Diagnostic {
-		range: lsp_range(line, column),
-		severity: Some(DiagnosticSeverity::ERROR),
-		code: Some(NumberOrString::String("PARSE".to_string())),
-		source: Some("foch".to_string()),
-		message: message.to_string(),
-		..Diagnostic::default()
-	}
 }
 
 fn finding_to_diagnostic(finding: &Finding) -> Diagnostic {
@@ -3010,6 +3039,84 @@ mod tests {
 			.count();
 		let _ = &path;
 		assert_eq!(annotation_diagnostics, 1);
+	}
+
+	#[test]
+	fn unsaved_syntax_repair_clears_scanned_errors_without_duplicate_parse_findings() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("common/scripted_triggers/a.txt");
+		fs::create_dir_all(path.parent().unwrap()).unwrap();
+		let broken = "a = { always = yes }\n}\n";
+		fs::write(&path, broken).unwrap();
+		let targets = [ScanTarget {
+			path: tmp.path().to_path_buf(),
+			role: TargetRole::Mod,
+		}];
+		let snapshot = build_workspace_snapshot(&targets);
+		let scanned = snapshot.diagnostics_by_path.get(&path).unwrap();
+		assert_eq!(scanned.len(), 1, "{scanned:?}");
+		assert_eq!(
+			scanned[0].code,
+			Some(NumberOrString::String("unmatched_closing_brace".into()))
+		);
+		let opened = document_diagnostics(&path, broken, Some(&snapshot), &targets, None);
+		assert_eq!(opened, *scanned);
+		let repaired = document_diagnostics(
+			&path,
+			"a = { always = yes }\n",
+			Some(&snapshot),
+			&targets,
+			None,
+		);
+		assert!(repaired.is_empty(), "{repaired:?}");
+		assert_eq!(fs::read_to_string(path).unwrap(), broken);
+	}
+
+	#[test]
+	fn unsaved_edits_discard_old_schema_annotation_and_semantic_findings() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("events/a.txt");
+		fs::create_dir_all(path.parent().unwrap()).unwrap();
+		let broken = format!(
+			"#test(time=1444.11.11, tag=sweden)\n{}",
+			fs::read_to_string(lsp_fixture_dir().join("events/diagnostics.txt")).unwrap()
+		);
+		fs::write(&path, &broken).unwrap();
+		let targets = [ScanTarget {
+			path: tmp.path().to_path_buf(),
+			role: TargetRole::Mod,
+		}];
+		let schema = load_lsp_schema();
+		let snapshot = build_workspace_snapshot_with_schema(&targets, Some(schema.clone()));
+		let opened = document_diagnostics(&path, &broken, Some(&snapshot), &targets, Some(&schema));
+		assert!(
+			opened
+				.iter()
+				.any(|diagnostic| diagnostic.source.as_deref() == Some("foch-annotation")),
+			"{opened:?}"
+		);
+		assert!(
+			opened
+				.iter()
+				.any(|diagnostic| diagnostic.code == Some(NumberOrString::String("V001".into()))),
+			"{opened:?}"
+		);
+		let semantic = snapshot.semantic_diagnostics_by_path.get(&path).unwrap();
+		assert!(!semantic.is_empty());
+		assert!(
+			semantic
+				.iter()
+				.all(|diagnostic| opened.contains(diagnostic))
+		);
+		let edited = document_diagnostics(
+			&path,
+			"namespace = sample\n",
+			Some(&snapshot),
+			&targets,
+			Some(&schema),
+		);
+		assert!(edited.is_empty(), "{edited:?}");
 	}
 
 	#[test]

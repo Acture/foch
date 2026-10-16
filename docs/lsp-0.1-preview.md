@@ -1,6 +1,6 @@
 # LSP 0.1 Preview
 
-Last updated: 2026-08-25
+Last updated: 2026-10-16
 
 This page defines the independently versioned VS Code/LSP preview. The editor
 can be useful before Foch's automatic merge quality is proven across arbitrary
@@ -55,7 +55,9 @@ The `0.1.0` preview is acceptable when the repository proves:
 - schema-aware completion/hover for supported contexts;
 - navigation for scripted effects/triggers, event IDs, flag values, and
   localisation keys; and
-- a missing-localisation quick fix limited to the current mod root.
+- a missing-localisation quick fix limited to the current mod root;
+- syntax repair code actions, with preferred fixes only for unambiguous repairs
+  and explicit review for uncertain repairs.
 
 Current gates:
 
@@ -70,7 +72,7 @@ bun run --cwd src/apps/vscode-foch package:vsix
 
 - rename or formatting
 - semantic tokens
-- broad write actions beyond the localisation stub
+- broad write actions beyond localisation stubs and proposed syntax repairs
 - non-EU4 game support
 - automatic-merge reliability for arbitrary modlists
 - feature-count parity with another Paradox editor extension
@@ -78,10 +80,10 @@ bun run --cwd src/apps/vscode-foch package:vsix
 
 ## Merge-aware evolution
 
-Future editor actions may explain which mod contributes a definition, why a
-review unit is withheld, or which narrow resolution would apply. They should
-consume stable root-library analysis/review data rather than scrape CLI text or
-invent an editor-only precedence model.
+Hover can show recorded contributors for unchanged generated definitions;
+editing the generated text invalidates that provenance. Broader merge-review
+actions should consume stable root-library analysis/review data rather than
+scrape CLI text or invent an editor-only precedence model.
 
 The old phrase “show the merge plan for this file” now means “show the analyzed
 review outcome for this file.” There is no separate merge-plan command in the
@@ -113,7 +115,7 @@ or parse-only demo must not be presented as supported game behavior.
 
 Useful source references:
 
-- `src/apps/foch-cli/src/lsp.rs` — server capabilities and tests
+- `src/packages/foch-lsp/src/lib.rs` — server capabilities and tests
 - `src/packages/foch/src/game/schema` — reusable CWT syntax/query machinery
 - `src/packages/foch/src/game/eu4/editor` — concrete EU4 schema interpretation
 - `src/apps/vscode-foch/extension.js` — client wiring and commands
