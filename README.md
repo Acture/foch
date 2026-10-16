@@ -45,10 +45,11 @@ and the stable execution contract in [the architecture](docs/architecture.md).
 ## Install
 
 Download the [latest release](https://github.com/Acture/foch/releases/latest),
-or install through Homebrew, Cargo or uv. Published `0.0.1` installations
-passed the [public-channel checks](https://github.com/Acture/foch/actions/runs/38871995081).
-The `0.0.2` development tree includes newer merge and editor fixes; see
-[project status](./docs/project-status.md) for its verification and release state.
+or install `0.0.2` through Homebrew, Cargo or uv. See the
+[public-channel installation checks](https://github.com/Acture/foch/actions/runs/38882638105)
+and [project status](./docs/project-status.md) for verification results and
+merge-quality limits. The [known issues](docs/known-issues.md) include a rustls
+dependency advisory in this release.
 
 Every channel installs the same `foch` program, including `foch lsp`, for
 Linux x64, macOS arm64 and Windows x64:

@@ -2,6 +2,16 @@
 
 These are user-visible alpha limitations and practical workarounds. They are not release blockers unless a specific workflow depends on them.
 
+## Rustls advisory in 0.0.2
+
+The `0.0.2` CLI includes rustls `0.23.40`, affected by the moderate
+[GHSA-2mjx-qc3c-rqvc](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)
+TLS 1.3 handshake-boundary issue. Upstream states that handshake authentication
+remains intact, but messages at the wrong encryption level can be accepted.
+Network operations use this dependency; offline merge processing does not use
+TLS. The fix is in rustls `0.23.45` and is not included in this release.
+The dependency upgrade is tracked separately for a subsequent release.
+
 ## EU4 is the only supported game
 
 foch currently implements one concrete game: Europa Universalis IV. CK3,

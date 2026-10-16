@@ -2,7 +2,7 @@
 
 ## Project Background
 
-Foch is an unreleased, EU4-only mod analysis and merge tool. It consumes an
+Foch is an alpha, EU4-only mod analysis and merge tool. It consumes an
 ordered playset, models the parts of Europa Universalis IV's loader semantics
 that the project has verified, preserves compatible contributions from the
 source mods, and produces a separate deterministic merged mod. Genuine

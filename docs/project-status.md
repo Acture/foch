@@ -1,7 +1,7 @@
 # Project Status
 
-Checkpoint: 2026-10-16. Candidate `0.0.2` is based on `bd6b7b2` with a
-fix for stale LSP diagnostics. Linear owns active work and blockers; this page
+Checkpoint: 2026-10-16. Release `v0.0.2` is tagged at `6ac4b28`, including the
+stale LSP diagnostics fix `6d48fbe`. Linear owns active work and blockers; this page
 records implementation and measured evidence.
 
 ## Product state
@@ -107,17 +107,31 @@ launch EU4 or establish in-game playability. See the
 
 ## Distribution
 
-`0.0.1` is published through GitHub, Cargo, PyPI/uv and Homebrew. Its
-[post-publication installation run](https://github.com/Acture/foch/actions/runs/38871995081)
-passed Cargo and uv on all three supported platforms and Homebrew on macOS and
-Linux. WinGet is not in the community source; local-manifest smoke does not
+[`0.0.2`](https://github.com/Acture/foch/releases/tag/v0.0.2) is published through
+GitHub, Cargo, PyPI/uv and Homebrew. The
+[release workflow](https://github.com/Acture/foch/actions/runs/38880713227)
+and [cross-platform CI](https://github.com/Acture/foch/actions/runs/38880714159)
+passed. All six crates were published separately with Cargo after the GitHub
+release; the workflow's crates.io job was intentionally disabled.
+The [public installation run](https://github.com/Acture/foch/actions/runs/38882638105)
+passed Cargo and uv on all three targets and Homebrew on macOS and Linux.
+WinGet is not in the community source; local-manifest smoke does not
 make `winget install Acture.Foch` available.
 
-`0.0.2` is being verified for release. An alpha release establishes an
-installable artifact; it does not imply an accepted Workshop cohort. CLI targets
+SteamCMD acknowledged a successful update of the existing
+[Workshop introduction](https://steamcommunity.com/sharedfiles/filedetails/?id=3820682490)
+to the `0.0.2` download links. Public-page and API readback timed out, so the
+rendered description has not been independently rechecked after this update.
+
+An alpha release establishes an installable artifact; it does not imply an
+accepted Workshop cohort. CLI targets
 are `linux-x64`, `darwin-arm64` and `win32-x64`. Every channel must report the
 release version and its embedded CWT identity. Releases include no EU4 base
 data; build it from an installed game.
+
+The release includes the moderate rustls dependency advisory documented in
+[known issues](known-issues.md); the dependency update is tracked for a later
+release. Offline merge checks do not establish network-library security.
 
 Follow the [release runbook](RELEASE_CHECKLIST.md). The VS Code preview remains
 independently versioned at `0.1.0`; its bundled server follows the CLI release.
