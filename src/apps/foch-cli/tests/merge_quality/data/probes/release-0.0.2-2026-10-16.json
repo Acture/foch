@@ -1,0 +1,146 @@
+{
+  "schema": "foch-release-probe-v1",
+  "date": "2026-10-16",
+  "candidate": "v0.0.2",
+  "source_basis": "bd6b7b2f3235e84bf36b0f8cf61419f995c41b39",
+  "lsp_fix_commit": "6d48fbe8ff5920a91cd41270d7aa2b981b8cb034",
+  "binary_sha256": "de622e211fad63f2583cf72c47239364776a7f509eda86ff420b3d24baac2de7",
+  "cwt_schema_id": "10cc20bad331f6e321e4d6cdfb8268576b50f4c6a3ec0a0818b5f07c3cf19595",
+  "environment": {
+    "platform": "darwin-arm64",
+    "game_version": "v1.37.5.0",
+    "merge_workers": 2,
+    "isolated_data_cache_config": true,
+    "workshop_acf_unchanged_during_final_run": true
+  },
+  "quality_gates": {
+    "workspace_tests_passed": 2367,
+    "workspace_tests_ignored": 22,
+    "workspace_tests_failed": 0,
+    "strict_clippy": true,
+    "rustfmt": true,
+    "maintenance": true,
+    "grammar": true,
+    "vscode_smoke": true,
+    "vsix_package": true,
+    "release_preflight_checks_passed": 20
+  },
+  "editor_schema_survey": {
+    "checked_files": 8158,
+    "findings": {
+      "V002": 8,
+      "V007": 13,
+      "V008": 11
+    },
+    "precision_and_recall_measured": false
+  },
+  "lsp_protocol": {
+    "passed": true,
+    "embedded_schema": true,
+    "checks": [
+      "initialize",
+      "syntax_diagnostic",
+      "preferred_repair_exact_edit",
+      "unsaved_edit_clears_diagnostics",
+      "workspace_rescan_preserves_unsaved_diagnostics",
+      "document_symbols",
+      "shutdown",
+      "source_unchanged"
+    ]
+  },
+  "merges": [
+    {
+      "ordered_workshop_ids": [
+        "3609019235",
+        "3609590723"
+      ],
+      "elapsed_seconds": 10.40,
+      "report": {
+        "status": "ready",
+        "generated_file_count": 2,
+        "copied_file_count": 22,
+        "manual_conflict_count": 0,
+        "unsupported_input_count": 0,
+        "engine_failure_count": 0,
+        "validation": {
+          "fatal_errors": 0,
+          "strict_findings": 702,
+          "advisory_findings": 156,
+          "parse_errors": 0,
+          "unresolved_references": 702,
+          "missing_localisation": 143
+        },
+        "execution": {
+          "schema": "2.0.0",
+          "backend": "gumtree-pcs-nway",
+          "scope": "full_product_merge",
+          "base_snapshot": {
+            "mode": "resolved",
+            "identity": "sha256:a8e89128c45a262f82223d351ae1ea0e2978d9b7262596564d436b32e2bf00ea"
+          }
+        }
+      },
+      "independent_script_parse": {
+        "files": 4,
+        "diagnostics": 0
+      },
+      "source_tree_and_copy_audit": {
+        "byte_identical_copied_files": 22,
+        "differences": [],
+        "matched_source_definitions": 59,
+        "method": "ordered parsed definition trees, ignoring comments and spans and equating numeric spellings"
+      }
+    },
+    {
+      "ordered_workshop_ids": [
+        "2976470733",
+        "1999055990",
+        "2164202838",
+        "2411504869"
+      ],
+      "elapsed_seconds": 112.04,
+      "report": {
+        "status": "partial_success",
+        "generated_file_count": 6680,
+        "copied_file_count": 3317,
+        "manual_conflict_count": 2,
+        "unsupported_input_count": 0,
+        "engine_failure_count": 0,
+        "validation": {
+          "fatal_errors": 0,
+          "strict_findings": 1204,
+          "advisory_findings": 9083,
+          "parse_errors": 0,
+          "unresolved_references": 1359,
+          "missing_localisation": 822
+        },
+        "execution": {
+          "schema": "2.0.0",
+          "backend": "gumtree-pcs-nway",
+          "scope": "full_product_merge",
+          "base_snapshot": {
+            "mode": "resolved",
+            "identity": "sha256:a8e89128c45a262f82223d351ae1ea0e2978d9b7262596564d436b32e2bf00ea"
+          }
+        }
+      },
+      "independent_script_parse": {
+        "files": 6837,
+        "diagnostics": 0
+      },
+      "withheld_modules": [
+        "common/cultures",
+        "common/disasters"
+      ],
+      "omitted_unavailable_workshop_id": "3715230404"
+    }
+  ],
+  "limits": {
+    "full_workshop_acceptance": false,
+    "ingame_playability": false,
+    "irony_comparison": false,
+    "static_findings_adjudicated": false,
+    "larger_case_semantic_accuracy_scored": false
+  },
+  "local_artifact_root": "target/manual-merges/release-0.0.2-20261016"
+}

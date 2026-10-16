@@ -17,12 +17,12 @@ of https://github.com/Acture/foch.
 GNU Affero General Public License v3.0 only (AGPL-3.0-only)
 
 Used by:
-- foch-cli 0.0.1 (https://github.com/Acture/foch)
-- foch 0.0.1 (https://github.com/Acture/foch)
-- foch-annotation 0.0.1 (https://github.com/Acture/foch)
-- foch-lsp 0.0.1 (https://github.com/Acture/foch)
-- foch-runner 0.0.1 (https://github.com/Acture/foch)
-- foch-test 0.0.1 (https://github.com/Acture/foch)
+- foch-cli 0.0.2 (https://github.com/Acture/foch)
+- foch 0.0.2 (https://github.com/Acture/foch)
+- foch-annotation 0.0.2 (https://github.com/Acture/foch)
+- foch-lsp 0.0.2 (https://github.com/Acture/foch)
+- foch-runner 0.0.2 (https://github.com/Acture/foch)
+- foch-test 0.0.2 (https://github.com/Acture/foch)
 - tree-sitter-paradox 0.3.0 (https://github.com/acture/tree-sitter-paradox.git)
 
 GNU AFFERO GENERAL PUBLIC LICENSE
@@ -1286,7 +1286,7 @@ insights.
 GNU General Public License v3.0 only (GPL-3.0-only)
 
 Used by:
-- foch 0.0.1 (https://github.com/Acture/foch)
+- foch 0.0.2 (https://github.com/Acture/foch)
 
 GNU GENERAL PUBLIC LICENSE
 Version 3, 29 June 2007
@@ -4804,7 +4804,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- foch 0.0.1 (https://github.com/Acture/foch)
+- foch 0.0.2 (https://github.com/Acture/foch)
 
 MIT License
 

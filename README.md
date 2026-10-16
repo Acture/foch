@@ -5,7 +5,7 @@ an ordered Europa Universalis IV playset, preserves contributions whose loader
 semantics are understood, and surfaces genuine ambiguity instead of silently
 discarding one mod's work.
 
-> **Unreleased alpha (`0.0.1`), EU4 only.** The implementation passes its
+> **Alpha development (`0.0.2`), EU4 only.** The implementation passes its
 > focused fixture gates, but the current product has no accepted complete
 > 14-case Workshop cohort. Do not treat it as a reliable one-click merger for
 > arbitrary modlists yet.
@@ -44,17 +44,18 @@ and the stable execution contract in [the architecture](docs/architecture.md).
 
 ## Install
 
-> **Not available yet.** No channel below has published Foch. Each becomes
-> usable only once the first release has been installed and verified from it,
-> which [the project status](./docs/project-status.md#distribution) records.
-> Until then, build from source as described in the next section.
+Download the [latest release](https://github.com/Acture/foch/releases/latest),
+or install through Homebrew, Cargo or uv. Published `0.0.1` installations
+passed the [public-channel checks](https://github.com/Acture/foch/actions/runs/38871995081).
+The `0.0.2` development tree includes newer merge and editor fixes; see
+[project status](./docs/project-status.md) for its verification and release state.
 
 Every channel installs the same `foch` program, including `foch lsp`, for
 Linux x64, macOS arm64 and Windows x64:
 
-| Channel | Command, once released |
+| Channel | Command |
 | --- | --- |
-| WinGet (Windows x64) | `winget install --id Acture.Foch -e` |
+| WinGet (Windows x64) | Not yet available from the community source |
 | Homebrew (macOS arm64, Linux x64) | `brew install acture/ac/foch` |
 | crates.io | `cargo install foch-cli --locked` |
 | PyPI through uv | `uvx foch <command>` to run it once, or `uv tool install foch` |
@@ -73,7 +74,7 @@ property of any install channel; see the [current boundary](#current-boundary).
 
 ## Build and try it
 
-Building from source is the current way to run Foch:
+To build the current development version from source:
 
 ```fish
 git clone https://github.com/Acture/foch.git
@@ -245,10 +246,10 @@ the checkout; `python -m foch_dev crate-smoke` packages them with the pinned
 grammar and installs `foch` from those crates outside the repository. A
 release publishes `foch-cli` to crates.io with every workspace crate it builds
 from (`foch`, `foch-annotation`, `foch-lsp`, `foch-runner` and `foch-test`),
-against `tree-sitter-paradox` released from its own repository; none is
-published yet. Release source archives include both build submodules.
+against `tree-sitter-paradox` released from its own repository. Release source
+archives include both build submodules.
 
-The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
+The Rust product is versioned at `0.0.2`, the VS Code extension at `0.1.0`, and
 `tree-sitter-paradox` at `0.3.0`. Cache and report schema generations are
 versioned independently.
 

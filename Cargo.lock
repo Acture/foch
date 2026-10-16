@@ -1336,7 +1336,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foch"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bincode",
  "blake3",
@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "foch-annotation"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "foch",
  "jomini",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "foch-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "blake3",
  "clap",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "foch-desktop"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "foch",
  "serde",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "foch-eu4-host"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cc",
  "foch",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "foch-lsp"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "blake3",
  "foch",
@@ -1467,11 +1467,11 @@ dependencies = [
 
 [[package]]
 name = "foch-plugin-abi"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "foch-runner"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "foch",
  "foch-test",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "foch-test"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "foch",
  "foch-annotation",

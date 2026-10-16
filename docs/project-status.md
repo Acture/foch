@@ -1,85 +1,99 @@
 # Project Status
 
-Last verified: 2026-10-07, source layout `f73eab9` and documentation follow-up
-`2fc9387`; the Distribution section states its own checks. This page records
-the current product state; it is not a development log. Active work,
-dependencies and blockers live in the Linear Foch project.
+Checkpoint: 2026-10-16. Candidate `0.0.2` is based on `bd6b7b2` with a
+fix for stale LSP diagnostics. Linear owns active work and blockers; this page
+records implementation and measured evidence.
 
 ## Product state
 
-Foch is an unreleased, EU4-only alpha at `0.0.1`. It analyzes an ordered playset,
-preserves compatible mod contributions under verified content-family semantics,
-and reports ambiguity for review. It is not a verified one-click merger for
-arbitrary modlists.
+Foch is an EU4-only alpha. It analyzes an ordered playset, preserves compatible
+contributions under verified content-family semantics, and reports ambiguity
+for review. It is not a verified one-click merger for arbitrary modlists.
 
-- `foch merge` freezes the complete analysis and review before confirmation.
-  Commit validates the frozen inputs and installs safe files or complete
-  definition modules; unsafe units may be withheld with `partial_success`.
-- Playset order and declared dependencies are semantic inputs. Source mods and
-  the game installation remain read-only. Paired Workshop ACF records provide
-  installed version identity.
-- The CWT rule pack is compiled from the public vendor submodule into the
-  executable; `foch --version` reports its schema identity.
-- The CLI includes `foch lsp`. The Tauri application links the main Rust library
-  directly and provides input inspection and merge-review browsing. Desktop
-  commit/export and a durable `MergeSession` are not implemented.
-- Editor and desktop provenance views expose adopted merge sources. Their
-  existence does not establish packaged desktop readiness or in-game behavior.
-- The P-736 branch carries validated `GamePath` / `GamePathBuf` identities
-  through input, semantic, provenance and cache boundaries; native paths remain
-  at physical I/O. Its rebased sources follow the current workspace layout.
-- Content-family transforms run before structural merge on frozen inputs and
-  bind the source bytes they read. The culture adapter adapts renamed culture
-  identities and applies manifest-reviewed renames and repairs. Generated
-  outputs commit or are withheld as one group with their audited inputs.
-- `[gui] mode = "decisions"` migrates each mod's scripted custom GUI actions
-  into one player-only main decision per mod (panel options, province searches
-  with 32 multiplayer player numbers, rebound text and manifest overrides) and
-  hides the migrated buttons; `window` and `mixed` are not implemented.
-  The output has not been validated in game.
-- `common/on_actions` (additive since patch 1.36) and `common/estates` (mods
-  extend estates from their own files) stay per path instead of one definition
-  module, so the game combines them as it would for the source mods.
-- The test-framework worktree, rebased on `95f8554`, implements inline
-  `#test(...)` annotations with `#skip`/`#ignore`/`#xfail`/`#mark`, a built-in
-  runner that launches the real game, and CLI/LSP annotation help, split into
-  `foch-annotation`, `foch-test`, `foch-lsp` and `foch-runner`. Unreleased. The
-  built-in runner, AI-off and per-clause checks are verified end-to-end against
-  real EU4 1.37.5 on native Windows; the real user directory is kept
-  content-identical by backup and restore. Shared sessions, arbitrary start
-  dates and hosted CI (Linux + Wine) are unverified; `tests/` blocks are not
-  collected by the CLI yet. See [runtime tests](foch-runtime-tests.md) and the
-  [framework design](foch-test-framework-design.md); verification detail and
-  the dropped isolation investigation are in the private notes. MTTH/natural-
-  trigger testing remains recorded product design only.
+| Module | Implemented behavior | Evidence boundary |
+| --- | --- | --- |
+| Merge | Freeze inputs, review conflicts, commit safe files or complete definition modules to a separate mod | Bounded cases below; no current accepted full cohort or in-game result |
+| Input and paths | Ordered playsets, dependency precedence, validated game-relative paths, paired Workshop ACF identities | Source mods and game files are read-only during merge |
+| Parser and schema | Embedded CWT rules, syntax repair or isolation, family-aware structural analysis and numeric output | CWT coverage alone does not establish loader semantics |
+| LSP | Diagnostics, completion, hover, navigation, symbols, localisation stubs, syntax repair suggestions and generated-definition provenance | EU4 preview; cross-file findings refresh on save and are withheld for a file whose text differs from its scan |
+| Desktop | Direct library integration, input inspection and merge-review browsing | Commit/export and a durable merge session are not implemented; the CLI workflow does not distribute desktop |
+| GUI migration | `decisions` mode migrates scripted GUI actions to player decisions | `window` and `mixed` are not implemented; generated gameplay has not been checked in game |
+| Runtime tests | Inline annotations and a built-in game runner | Previous native Windows EU4 1.37.5 checks cover isolated per-clause runs; shared sessions, arbitrary dates and hosted Wine CI remain unverified |
+| Native plugins | Package/selection management, runtime staging and a Windows host | Previous Windows startup checks cover Unicode and Menu plugins; the host is unpublished; menu/save behavior, Chinese input/rendering and desktop integration remain unverified |
 
-- The OSS-400 worktree connects `foch plugin` package/selection management to
-  runtime staging, launch and actual JSONL status through the unpublished
-  Windows x64 `foch-eu4-host` DLL. Verified 2026-10-11: 39 host/ABI tests cover
-  management-to-host execution, pre-CRT initialization, and all 17 VERSION
-  exports by name/ordinal. On real EU4 1.37.5, official Unicode 0.1.14 reports
-  `active` and reaches the main menu/country selection; Menu 0.1.4-experimental
-  reports `active` alone and together with Unicode. These are local startup
-  compatibility results. Menu/combined ran on an inactive desktop that could
-  not create a Direct3D device. Chinese input/rendering, menu return/save reload
-  and the desktop plugin page remain unverified or unimplemented. Original
-  executable/proxy/plugin64/font and guarded user-profile files are unchanged.
-  See the [deployment commands and wire format](../src/packages/foch-eu4-host/README.md).
+The source includes recent lineage, control-flow, culture, empty-override,
+source-ordering and byte-preservation fixes. `common/on_actions` and
+`common/estates` stay per-path where the game combines contributions.
+Transforms bind their input bytes and commit or withhold complete output groups.
+`foch --version` reports the embedded CWT identity; rebuild base data when its
+analysis identity no longer matches.
 
 See [merge design](merge-design.md), [architecture](architecture.md),
-[cache behavior](cache-architecture.md) and [known issues](known-issues.md)
-for the current contracts and limits.
+[known issues](known-issues.md), [LSP preview](lsp-0.1-preview.md),
+[runtime tests](foch-runtime-tests.md) and the
+[plugin host](../src/packages/foch-eu4-host/README.md).
+
+## Current local quality checks
+
+The 2026-10-16 checks use macOS arm64, EU4 `v1.37.5.0`, the embedded schema,
+and two merge workers. Base data, caches and outputs are isolated under
+`target/manual-merges/release-0.0.2-20261016/`.
+
+The final candidate completed these real merges after the LSP fix:
+
+| Ordered Workshop input | Result | Elapsed | Output |
+| --- | --- | --- | --- |
+| `3609019235`, `3609590723` (Ricefarmer Government and Culture & Society) | `ready`; no conflicts, unsupported input or engine failures | 10.40 s | 2 generated files, 22 copied files |
+| `2976470733`, `1999055990`, `2164202838`, `2411504869` (Chinese localisation, supplement, Europa Expanded and its localisation) | `partial_success`; 2 conflict units, no unsupported input or engine failures | 112.04 s | 6,680 generated files, 3,317 copied files |
+
+Both outputs re-parsed with zero parse errors and zero fatal errors. The larger
+input withholds complete culture and disaster modules: culture identity
+correspondence and competing `war_of_the_roses` changes require review.
+Item `3715230404` is unavailable locally, so this is not a reproduction of the
+earlier five-mod result. Timings are local observations, not an Irony comparison.
+
+An independent tree comparison found all 59 source idea/policy definitions from
+the two Ricefarmer packs unchanged in the result, ignoring comments, source
+positions and equivalent numeric spellings. All 22 copied files were byte
+identical to their selected sources. A separate parser pass checked all 6,841
+output scripts/interface files across the two cases with no diagnostics.
+
+Static validation is not clean: the two-pack output reports 702 unresolved
+references and 143 missing-localisation findings; the larger output reports
+1,359 and 822 respectively. These have not been adjudicated as newly introduced
+merge defects. Successful execution and `safe` classification do not establish
+semantic accuracy.
+
+The editor schema survey checked 8,158 installed game scripts and emitted 32
+diagnostics: 13 scope findings (`V007`), 8 cardinality/repetition findings
+(`V002`) and 11 decimal-precision notices (`V008`). This measures diagnostic
+volume, not precision or recall. The base build parsed 8,986 documents without
+parse failures and installed an isolated matching snapshot.
+
+An independent stdio probe found that an unsaved syntax repair cleared the
+buffer warning but retained the disk scan's old error. The candidate fixes this
+by recomputing document diagnostics from current text, binding cross-file
+findings to scanned content, and preserving open buffers on workspace refresh.
+Focused regressions and a release-binary protocol probe cover repairs and
+subsequent rescans without modifying the source file.
+
+The final candidate passed Rust formatting, strict workspace Clippy and all
+2,367 workspace tests (22 explicitly ignored), repository maintenance checks,
+grammar tests, VS Code smoke and VSIX packaging. Release preflight passed all
+20 checks. See the [compact probe record](../src/apps/foch-cli/tests/merge_quality/data/probes/release-0.0.2-2026-10-16.json)
+for artifact identity, inputs and limits. These checks do not launch EU4.
 
 ## Product acceptance
 
-The fixed Workshop gate contains 14 cases and 26 unique items. No complete
-cohort for the current product has been accepted. Installed local availability
-must not shrink that denominator.
+The fixed Workshop gate contains **14 cases and 26 unique items**. No complete
+cohort for the current product has been accepted. Local availability must not
+shrink that denominator. The bounded probes above do not replace it.
 
-The latest recorded acceptance attempt timed out in the cold-cache preview,
-before the case-scoring phase started. A bounded retry after delta indexing
-still timed out with `map/positions.txt` in flight. This remains an acceptance
-blocker; fixture success and cache improvements do not establish cohort quality.
+Committed complete measurements belong to an earlier executable. Historical
+reference-input audits raise reference-eligibility questions; their
+`drops_content` counts must not be read as confirmed lost source contributions.
+The earlier Irony investigation established no comparative correctness, speed
+or usability result.
 
 The maintainer runs the long gate manually:
 
@@ -88,115 +102,33 @@ cargo acceptance
 ```
 
 Acceptance re-parses and semantically scores generated output. It does not
-launch EU4 or establish in-game playability. Follow the
-[acceptance contract](merge-quality-dataset.md) before interpreting results.
+launch EU4 or establish in-game playability. See the
+[acceptance contract](merge-quality-dataset.md).
 
 ## Distribution
 
-No channel has published a Foch release. The supported binary targets are
-`linux-x64` (glibc 2.28), `darwin-arm64` (macOS 11) and `win32-x64`. Every
-channel must install a `foch` whose `--version` prints `foch-cli <version>` and
-the `cwt-schema` id embedded at the release tag. Installation results are not
-merge-quality results. An alpha release does not wait for an accepted cohort
-(decided 2026-10-09); its notes state that installing is not merge readiness
-and link Product acceptance.
+`0.0.1` is published through GitHub, Cargo, PyPI/uv and Homebrew. Its
+[post-publication installation run](https://github.com/Acture/foch/actions/runs/38871995081)
+passed Cargo and uv on all three supported platforms and Homebrew on macOS and
+Linux. WinGet is not in the community source; local-manifest smoke does not
+make `winget install Acture.Foch` available.
 
-Implemented: maturin bin wheels for PyPI project `foch`, release archives made
-from them, the publishable crates (`foch-cli` and the workspace crates it
-builds from: `foch`, `foch-annotation`, `foch-lsp`, `foch-runner`,
-`foch-test`), WinGet manifests for `Acture.Foch`, the `dist.yml`, `release.yml`
-and `verify-install.yml` workflows, and `THIRD-PARTY-LICENSES.txt`, the license
-texts of every crate linked into `foch`, which the wheels and archives carry.
+`0.0.2` is being verified for release. An alpha release establishes an
+installable artifact; it does not imply an accepted Workshop cohort. CLI targets
+are `linux-x64`, `darwin-arm64` and `win32-x64`. Every channel must report the
+release version and its embedded CWT identity. Releases include no EU4 base
+data; build it from an installed game.
 
-Checked on darwin-arm64 on 2026-10-10, on the OSS-343 change set after
-merging master `b97bb19` (tree-sitter-paradox gitlink at its `v0.3.0` tag):
-the foch-dev gates and `foch_dev check`, actionlint, Rust formatting, strict
-Clippy and the workspace test build; `crate-smoke` packaged the six crates and
-`tree-sitter-paradox` 0.3.0 and installed `foch` from them outside the
-checkout. The merge made `foch-cli` depend on `foch-annotation`, `foch-lsp`,
-`foch-runner` and `foch-test`, so a release publishes all six, and brought the
-v2 CWT schema id, which also binds file names. The install reported
-`foch-cli 0.0.1` and
-`cwt-schema db9ba69682f2b2f924eee1f13cfefde8bfe3d3e8f3552883d0b0a2aefea3b16b (embedded)`.
-`tree-sitter-paradox` 0.3.0 is on crates.io (published 2026-10-10 from its
-`v0.3.0` tag) and `foch` 0.1.0 was yanked on 2026-10-08, so
-`release preflight --tag v0.0.1` passes all 15 checks, noting that five of the
-six crates do not exist on crates.io yet. `cargo publish --dry-run --locked`
-for the six crates packaged and verified each against the crates.io grammar.
-
-GitHub CI on [PR #74](https://github.com/Acture/foch/pull/74) at `7256b0e`
-ran `dist.yml` on hosted runners: wheels and archives for `linux-x64`
-(manylinux_2_28), `darwin-arm64` and `win32-x64`, each installed through uvx
-and uv tool; the out-of-tree install from the six packaged crates; the
-third-party license check; and the WinGet smoke with winget v1.29.380, which
-passed `winget validate` and installed, upgraded and uninstalled `Acture.Foch`
-from local manifests. Every install reported the identity above.
-
-Never run: `release.yml` and `verify-install.yml`, so no GitHub release,
-registry upload, release-mode WinGet install or post-publication install has
-happened.
-
-The Homebrew tap already offers an unverified `--HEAD` source build of
-`master`. It fails from the merge of this source layout until its formula
-lists the moved `src/packages/foch/vendor/cwtools-eu4-config` submodule.
-
-Configured: the `crates-io` and `pypi` environments with the maintainer as
-required reviewer, `PYPI_PUBLISH`, the PyPI pending publisher for `foch`
-(`release.yml`, environment `pypi`) and the `HOMEBREW_TAP_TOKEN` secret.
-
-Pending maintainer actions, in the [release runbook](RELEASE_CHECKLIST.md):
-
-- merge this layout together with the tap's HEAD formula submodule path
-  (branch `fix/foch-cwt-submodule-path` in `Acture/homebrew-ac`, OSS-302);
-- tag `v0.0.1` and approve the `pypi` environment when `release.yml` asks;
-- the first, token-based crates.io publish, which creates five crates
-  (`foch-cli`, `foch-annotation`, `foch-lsp`, `foch-runner`, `foch-test`), then
-  their trusted publishers and `CRATES_IO_PUBLISH`;
-- the WinGet community pull request from `Acture/winget-pkgs`.
-
-Channel results from `verify-install.yml`: none yet.
-
-## Development verification
-
-The recorded source-layout checkpoint passed Rust formatting, strict workspace
-Clippy and the full workspace test suite, as well as the independent fuzz check,
-grammar tests, desktop frontend checks/build, VS Code smoke and PyGhidra unit
-tests. The documentation follow-up passed the standard commit and push gates;
-GitHub CI at `2fc9387` also passed.
-
-A complete source copy without `.git` or private notes successfully installed
-the CLI with the same embedded CWT identity. A fresh clone retrieved both public
-build submodules at their recorded revisions and resolved all Cargo packages.
-These are development checks, not a Workshop acceptance result.
-
-The 2026-10-07 built-in-runner work passed the full `cargo test --workspace`
-suite, strict Clippy and rustfmt, and the repository contracts; the built-in
-runner was verified against real EU4 1.37.5 on native Windows (`check`
-isolation). These are development checks, not a hosted CI or Workshop
-acceptance result. Verification detail and the 2026-10-02 protocol-v1
-checkpoint are recorded in the private notes.
-
-A bounded real `foch merge` of Europa Expanded (2164202838) and Religions and
-Cultures Expanded (3342969370) on 2026-10-09, with `[gui] mode = "decisions"`
-and an isolated parse cache, reported `partial_success` with no review units:
-one `unsupported_input` (EE's stray `}`, OSS-359) and one `engine_failure` (EE
-places `quebecois` in a second culture group, OSS-384). It wrote the GUI
-decisions. This is a development check, not an acceptance result or in-game
-validation.
+Follow the [release runbook](RELEASE_CHECKLIST.md). The VS Code preview remains
+independently versioned at `0.1.0`; its bundled server follows the CLI release.
 
 ## Evidence and maintenance
 
-Current source, immutable measurements and raw evidence belong in this code
-repository. The CLI harness owns its
-[measurement data](../src/apps/foch-cli/tests/merge_quality/data/); compact probe
-artifacts live in its `probes/` directory. JSONL measurement streams are
-append-only and resumable per case. Do not stage, truncate, restore or rewrite
-dirty records without first establishing their identity and the user's decision.
+Raw evidence belongs beside its producing code or harness. The CLI harness owns
+the [measurement data](../src/apps/foch-cli/tests/merge_quality/data/).
+JSONL streams are append-only and resumable. Never stage, truncate or rewrite
+pre-existing dirty records without identifying them and obtaining the user's
+decision. Local audit files and documentation were preserved during this pull.
 
-`docs/` contains current public guidance. Private research, past verification
-reports and superseded status logs belong in the notes repository; public builds
-and documentation do not require access to it.
-
-Before selecting work, inspect Git and local input state, then check Linear.
-Update this page when a verified current product fact changes. Keep experiment
-history in notes and execution status in Linear.
+`docs/` holds current public guidance. Private research and superseded
+development history belong in `notes/`; public builds do not require it.
