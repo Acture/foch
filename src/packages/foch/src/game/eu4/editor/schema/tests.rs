@@ -2862,6 +2862,21 @@ fn diagnostics_accept_the_influence_modifier_of_each_faction() {
 		"{diagnostics:?}"
 	);
 }
+/// The game reads every top-level `chance` block of a ruler personality, as
+/// vanilla's `charismatic_negotiator_personality` relies on; the vendored rules
+/// allow one.
+#[test]
+fn diagnostics_accept_every_chance_block_of_a_ruler_personality() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/ruler_personalities/00_core.txt");
+	let text = "sample_personality = {\n\tallow = { }\n\tchance = {\n\t\tmodifier = {\n\t\t\tfactor = 2\n\t\t\thas_country_flag = a\n\t\t}\n\t}\n\tchance = {\n\t\tmodifier = {\n\t\t\tfactor = 3\n\t\t\thas_country_flag = b\n\t\t}\n\t}\n\tdiplomatic_reputation = 1\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		diagnostics_with_code(&diagnostics, "V002").is_empty(),
+		"{diagnostics:?}"
+	);
+}
+
 /// A province nobody owns at the start can still be a country's core; the
 /// vendored rules only allow `add_core` beside an `owner`.
 #[test]

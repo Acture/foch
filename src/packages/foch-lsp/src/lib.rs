@@ -113,12 +113,20 @@ struct EnvScanTarget {
 }
 
 /// What the client may pass as `initializationOptions`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct InitializationOptions {
-	/// Show the problems the game's own files already have, which are hidden
-	/// by default; see [`visible_diagnostics`].
+	/// Show the problems the game's own files already have. On by default;
+	/// `false` hides them, see [`visible_diagnostics`].
 	show_game_diagnostics: bool,
+}
+
+impl Default for InitializationOptions {
+	fn default() -> Self {
+		Self {
+			show_game_diagnostics: true,
+		}
+	}
 }
 
 #[derive(Default)]
@@ -175,6 +183,7 @@ impl Backend {
 	fn new(client: Client) -> Self {
 		let state = ServerState {
 			static_candidates: build_static_candidates(),
+			show_game_diagnostics: InitializationOptions::default().show_game_diagnostics,
 			..ServerState::default()
 		};
 		Self {
@@ -4249,8 +4258,9 @@ path = "local-mod"
 				.expect("options")
 				.show_game_diagnostics
 		};
+		assert!(read(serde_json::json!({})));
 		assert!(read(serde_json::json!({ "showGameDiagnostics": true })));
-		assert!(!read(serde_json::json!({})));
+		assert!(!read(serde_json::json!({ "showGameDiagnostics": false })));
 	}
 
 	#[test]

@@ -49,9 +49,9 @@ The `0.1.0` preview is acceptable when the repository proves:
   reads a file (decimals past the third at fields checked in game to drop
   them, a capitalised `Yes`, tags the game assigns at runtime); parse errors
   and cross-mod findings stay labelled `foch`;
-- problems the game's own files already have hidden by default, both in files
-  under the game root and when a mod file replaces a game file, with
-  `fochLsp.showGameDiagnostics` to show them;
+- problems the game's own files already have shown by default, with
+  `fochLsp.showGameDiagnostics` set to `false` to hide them, both in files
+  under the game root and when a mod file replaces a game file;
 - schema-aware completion/hover for supported contexts;
 - navigation for scripted effects/triggers, event IDs, flag values, and
   localisation keys; and

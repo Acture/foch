@@ -720,7 +720,7 @@ mod tests {
 	fn digits_are_dropped_only_where_the_game_was_seen_to_ignore_them() {
 		let output = drop_unread(
 			"common/event_modifiers/test.txt",
-			"sample = {\n\tdiscipline = 0.0125\n\tyearly_army_professionalism = 0.0125\n\tglobal_unrest = 0.0125\n}\n",
+			"sample = {\n\tdiscipline = 0.0125\n\tyearly_army_professionalism = 0.0125\n\tmonthly_piety = -0.0025\n\tglobal_manpower_modifier = 0.0125\n}\n",
 		);
 
 		assert!(output.contains("discipline = 0.012\n"), "{output}");
@@ -728,8 +728,13 @@ mod tests {
 			output.contains("yearly_army_professionalism = 0.012\n"),
 			"{output}"
 		);
+		// A negative value loses its digits toward zero, as the game reads it.
+		assert!(output.contains("monthly_piety = -0.002\n"), "{output}");
 		// Never checked in game, so its digits stay.
-		assert!(output.contains("global_unrest = 0.0125\n"), "{output}");
+		assert!(
+			output.contains("global_manpower_modifier = 0.0125\n"),
+			"{output}"
+		);
 	}
 
 	#[test]

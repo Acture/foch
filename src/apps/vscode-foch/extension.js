@@ -402,7 +402,7 @@ async function activate(context) {
 		documentSelector: buildDocumentSelector(),
 		outputChannel,
 		initializationOptions: {
-			showGameDiagnostics: cfg.get('showGameDiagnostics') === true
+			showGameDiagnostics: cfg.get('showGameDiagnostics') !== false
 		}
 	};
 

@@ -100,8 +100,8 @@
 				},
 				"fochLsp.showGameDiagnostics": {
 					"type": "boolean",
-					"default": false,
-					"description": "Show problems that the game's own files already have. Off by default: files under the game directory show no diagnostics, and a mod file that replaces a game file does not repeat the problems that game file already has."
+					"default": true,
+					"description": "Show problems that the game's own files already have. Turn off to hide them: files under the game directory then show no diagnostics, and a mod file that replaces a game file does not repeat the problems that game file already has."
 				}
 			}
 		}

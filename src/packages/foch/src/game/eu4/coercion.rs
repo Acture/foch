@@ -106,18 +106,49 @@ const THREE_DECIMAL_EFFECTS: &[&str] = &[
 	"add_prestige",
 	"add_local_autonomy",
 	"add_prosperity",
+	"add_reform_desire",
+	"add_years_of_income",
 ];
 
 /// Triggers whose threshold was seen to compare at three decimals.
 const THREE_DECIMAL_TRIGGERS: &[&str] = &["army_tradition", "prestige", "mercantilism"];
 
 /// Modifiers whose total was seen to keep three decimals.
+///
+/// Each was applied forty times at `0.0025` and at `-0.0025`, as a country
+/// modifier and, for the `local_` ones, also as a province modifier: every
+/// copy was read as `0.002` or `-0.002`, so a negative value also loses its
+/// digits toward zero. These are the modifiers the game and the installed
+/// Workshop mods write with a fourth decimal.
 const THREE_DECIMAL_MODIFIERS: &[&str] = &[
-	"yearly_army_professionalism",
+	"army_tradition_decay",
+	"development_cost",
 	"discipline",
 	"drill_gain_modifier",
+	"global_institution_spread",
+	"global_tax_modifier",
 	"global_trade_goods_size_modifier",
+	"global_unrest",
 	"harsh_treatment_cost",
+	"land_forcelimit_modifier",
+	"land_morale",
+	"local_autonomy",
+	"local_build_cost",
+	"local_defensiveness",
+	"local_development_cost",
+	"local_manpower_modifier",
+	"local_production_efficiency",
+	"monthly_piety",
+	"monthly_piety_accelerator",
+	"naval_forcelimit_modifier",
+	"naval_morale",
+	"prestige",
+	"prestige_decay",
+	"province_trade_power_modifier",
+	"trade_value_modifier",
+	"yearly_army_professionalism",
+	"yearly_corruption",
+	"yearly_patriarch_authority",
 ];
 
 /// Effects whose `value = ...` field was seen to keep three decimals.
@@ -322,10 +353,14 @@ mod tests {
 			&CompiledAliasCategory::Trigger,
 			"army_professionalism"
 		));
-		// One name, two fields: the modifier was never checked.
-		assert!(!alias_reads_three_decimals(
+		assert!(alias_reads_three_decimals(
 			&CompiledAliasCategory::Modifier,
 			"prestige"
+		));
+		// Never checked in game.
+		assert!(!alias_reads_three_decimals(
+			&CompiledAliasCategory::Modifier,
+			"global_manpower_modifier"
 		));
 	}
 

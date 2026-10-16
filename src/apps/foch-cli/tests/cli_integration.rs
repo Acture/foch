@@ -2277,17 +2277,21 @@ fn target_temp_dir() -> TempDir {
 }
 
 fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
+	let generation = format!("v{}", foch::DATA_VERSION);
 	let fixture = CacheLayerFixture {
 		mods: root.join("mods").join("mods-entry.rkyv"),
-		diffs: root.join("diffs").join("v6.0.0").join("diffs-entry.bin"),
+		diffs: root.join("diffs").join(&generation).join("diffs-entry.bin"),
 		dag_base: root
 			.join("dag-base")
-			.join("v12.0.0")
+			.join(&generation)
 			.join("dag-base-entry.bin"),
-		cwt_rules: root.join("cwt-rules").join("v0.14.0").join("cwt-entry.bin"),
+		cwt_rules: root
+			.join("cwt-rules")
+			.join(&generation)
+			.join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
-			.join("v0.0.21")
+			.join(&generation)
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.bin"),
