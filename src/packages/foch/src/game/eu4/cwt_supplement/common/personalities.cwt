@@ -1,0 +1,16 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+# Each rule covers what the game's own files write and the vendored rules
+# reject; the comment above it names a vanilla file that relies on it.
+
+ruler_personality = {
+	# The game reads every top-level chance block: common/ruler_personalities/
+	# 00_core.txt gives charismatic_negotiator_personality two. In game
+	# (1.37.5) a personality whose first block weighs nothing was still
+	# chosen for the weight of its second, and the other way round, while a
+	# single block that weighs nothing was never chosen.
+	## cardinality = 0..inf
+	## replace_scope = { root = country this = country }
+	chance = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+}

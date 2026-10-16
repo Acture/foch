@@ -31,7 +31,7 @@ impl Fixture {
 		fs::write(
 			schema_dir.join("effects.cwt"),
 			r#"
-			types = { type[effect] = { path = "game/common/scripted_effects" } }
+			types = { type[effect] = { path = "game/common/scripted_effects" type_per_file = yes } }
 			effect = { shared = { add_prestige = scalar } }
 		"#,
 		)

@@ -2,6 +2,7 @@ use super::parser::{
 	AstStatement, ParseResult, ParsedStatements, ScriptSyntax, parse_unrecovered_statements,
 	recover_clausewitz_statements,
 };
+use crate::DATA_VERSION;
 use crate::game::eu4::editor::schema::schema_shape_violations;
 use crate::model::GamePath;
 use crate::platform::cache_store::{
@@ -16,11 +17,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// v13 was allocated to path-free entries; v14 also invalidates entries whose
-// diagnostics predate unmatched-brace and unclosed-block detection. v17
-// entries hold the parse as written; repair runs after the cache. v20 drops
-// text decoded by guessing a CJK codepage instead of windows-1252.
-const PARSE_CACHE_VERSION: &str = "20.0.0";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const OBSOLETE_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 
@@ -121,7 +117,7 @@ fn parse_statements_cached(syntax: ScriptSyntax, bytes: &[u8]) -> (ParsedStateme
 	let content = crate::game::eu4::text::decode_paradox_bytes(bytes);
 	let parsed = parse_unrecovered_statements(syntax, &content);
 	let entry = ParseCacheEntry {
-		version: PARSE_CACHE_VERSION.to_string(),
+		version: DATA_VERSION.to_string(),
 		content_key,
 		result: parsed.clone(),
 	};
@@ -131,7 +127,7 @@ fn parse_statements_cached(syntax: ScriptSyntax, bytes: &[u8]) -> (ParsedStateme
 }
 
 fn active_cache_namespace() -> String {
-	cache_version_namespace(PARSE_CACHE_VERSION).expect("parse cache version is valid SemVer")
+	cache_version_namespace(DATA_VERSION).expect("data version is valid SemVer")
 }
 
 fn parse_content_key(syntax: ScriptSyntax, bytes: &[u8]) -> String {
@@ -154,7 +150,7 @@ fn parser_mode(syntax: ScriptSyntax) -> &'static [u8] {
 fn load_cache_hit(path: &Path, content_key: &str) -> Option<ParsedStatements> {
 	let raw = fs::read(path).ok()?;
 	let entry = bincode::deserialize::<ParseCacheEntry>(&raw).ok()?;
-	if entry.version != PARSE_CACHE_VERSION || entry.content_key != content_key {
+	if entry.version != DATA_VERSION || entry.content_key != content_key {
 		return None;
 	}
 	Some(entry.result)
@@ -651,7 +647,7 @@ mod tests {
 		let raw = fs::read(parser_cache_file(ScriptSyntax::Clausewitz, bytes))
 			.expect("read stored entry");
 		let entry = bincode::deserialize::<ParseCacheEntry>(&raw).expect("decode stored entry");
-		assert_eq!(entry.version, PARSE_CACHE_VERSION);
+		assert_eq!(entry.version, DATA_VERSION);
 		let (fresh, _) = parse_clausewitz_bytes_cached(path, bytes);
 		assert_eq!(entry.result.statements, fresh.ast.statements);
 		assert!(

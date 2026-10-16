@@ -48,6 +48,15 @@ impl AliasCategory {
 	}
 }
 
+/// Which rule files a rule was written in: the first directory a schema is
+/// compiled from, or a later one that extends it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CwtRuleOrigin {
+	#[default]
+	Base,
+	Extension,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CwtAlias {
 	pub category: AliasCategory,
@@ -55,6 +64,7 @@ pub struct CwtAlias {
 	pub attributes: CwtFieldAttributes,
 	pub value: CwtRuleValue,
 	pub rules: Vec<CwtRuleField>,
+	pub origin: CwtRuleOrigin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +86,8 @@ pub enum CwtSeverity {
 pub enum SchemaRootKeyFilter {
 	Exact(Vec<String>),
 	Exclude(Vec<String>),
+	/// `## starts_with = prefix`: keys beginning with the prefix.
+	Prefix(String),
 }
 
 impl SchemaRootKeyFilter {
@@ -83,13 +95,14 @@ impl SchemaRootKeyFilter {
 		match self {
 			Self::Exact(values) => values.iter().any(|value| value == key),
 			Self::Exclude(values) => values.iter().all(|value| value != key),
+			Self::Prefix(prefix) => key.starts_with(prefix.as_str()),
 		}
 	}
 
 	pub fn primary_label(&self) -> Option<&str> {
 		match self {
 			Self::Exact(values) => values.first().map(String::as_str),
-			Self::Exclude(_) => None,
+			Self::Exclude(_) | Self::Prefix(_) => None,
 		}
 	}
 }
@@ -111,6 +124,7 @@ pub struct CwtRuleField {
 	pub value: CwtRuleValue,
 	pub attributes: CwtFieldAttributes,
 	pub conditions: Vec<CwtRuleCondition>,
+	pub origin: CwtRuleOrigin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,10 +154,12 @@ pub struct SchemaRootDefinition {
 	pub skip_root_keys: Vec<String>,
 	pub subtypes: Vec<CwtSubtype>,
 	pub rules: Vec<CwtRuleField>,
+	/// The rule files that first defined this type; later ones may extend it.
+	pub origin: CwtRuleOrigin,
 }
 
 impl SchemaRootDefinition {
-	fn new(name: SchemaRootId) -> Self {
+	fn new(name: SchemaRootId, origin: CwtRuleOrigin) -> Self {
 		Self {
 			name,
 			path: None,
@@ -157,6 +173,7 @@ impl SchemaRootDefinition {
 			skip_root_keys: Vec::new(),
 			subtypes: Vec::new(),
 			rules: Vec::new(),
+			origin,
 		}
 	}
 }
@@ -187,13 +204,20 @@ pub struct CwtLink {
 #[derive(Clone, Debug, Default)]
 pub struct CwtSchemaGraph {
 	pub types: HashMap<SchemaRootId, SchemaRootDefinition>,
-	pub aliases: HashMap<(AliasCategory, String), CwtAlias>,
+	/// Every definition of each alias, in schema order: the schema overloads
+	/// one name with several value forms (`stability = 3` or `= ROOT`).
+	pub aliases: HashMap<(AliasCategory, String), Vec<CwtAlias>>,
 	pub enums: HashMap<String, Vec<String>>,
 	pub value_sets: HashMap<String, Vec<String>>,
 	pub complex_enums: HashMap<String, CwtComplexEnum>,
 	pub links: HashMap<String, CwtLink>,
+	/// The `modifiers` section: each modifier the game defines, with the
+	/// scope it applies in. CWTools accepts these as `float` modifier aliases.
+	pub modifiers: BTreeMap<String, String>,
 	pub scopes: Vec<String>,
 	scope_definitions: Vec<CwtScope>,
+	/// Whose rules the files being ingested hold.
+	ingest_origin: CwtRuleOrigin,
 }
 
 impl CwtSchemaGraph {
@@ -202,16 +226,30 @@ impl CwtSchemaGraph {
 	}
 
 	pub(crate) fn from_directory(dir: &Path) -> Result<Self, CwtLoadError> {
+		Self::from_directories(&[dir])
+	}
+
+	/// Compiles the files of each directory in turn into one graph, so a later
+	/// directory's rules extend the earlier ones'. Each rule records whether
+	/// the first directory or an extension wrote it.
+	pub(crate) fn from_directories(dirs: &[&Path]) -> Result<Self, CwtLoadError> {
 		let mut graph = Self::default();
-		for path in cwt_files(dir)? {
-			let bytes = std::fs::read(&path).map_err(|source| CwtLoadError::Io {
-				path: path.clone(),
-				source,
-			})?;
-			let tree = ParadoxTree::parse(&normalize_line_endings(&bytes))?;
-			graph
-				.ingest_tree(path.strip_prefix(dir).ok(), &tree)
-				.map_err(|error| error.in_file(&path))?;
+		for (index, dir) in dirs.iter().enumerate() {
+			graph.ingest_origin = if index == 0 {
+				CwtRuleOrigin::Base
+			} else {
+				CwtRuleOrigin::Extension
+			};
+			for path in cwt_files(dir)? {
+				let bytes = std::fs::read(&path).map_err(|source| CwtLoadError::Io {
+					path: path.clone(),
+					source,
+				})?;
+				let tree = ParadoxTree::parse(&normalize_line_endings(&bytes))?;
+				graph
+					.ingest_tree(&tree)
+					.map_err(|error| error.in_file(&path))?;
+			}
 		}
 		graph.finalize_scopes();
 		Ok(graph)
@@ -219,7 +257,7 @@ impl CwtSchemaGraph {
 
 	pub(crate) fn try_from_paradox_tree(tree: &ParadoxTree) -> Result<Self, CwtLoadError> {
 		let mut graph = Self::default();
-		graph.ingest_tree(None, tree)?;
+		graph.ingest_tree(tree)?;
 		graph.finalize_scopes();
 		Ok(graph)
 	}
@@ -228,11 +266,7 @@ impl CwtSchemaGraph {
 		&self.scope_definitions
 	}
 
-	fn ingest_tree(
-		&mut self,
-		relative: Option<&Path>,
-		tree: &ParadoxTree,
-	) -> Result<(), CwtLoadError> {
+	fn ingest_tree(&mut self, tree: &ParadoxTree) -> Result<(), CwtLoadError> {
 		let nodes = tree.nodes()?;
 		let mut pending_doc_comments = Vec::new();
 		for node in &nodes {
@@ -246,7 +280,6 @@ impl CwtSchemaGraph {
 				ParadoxNode::Assignment { key, value, .. } => {
 					let key = key.as_text();
 					self.ingest_top_level_assignment(
-						relative,
 						key.as_ref(),
 						value,
 						std::mem::take(&mut pending_doc_comments),
@@ -260,7 +293,6 @@ impl CwtSchemaGraph {
 
 	fn ingest_top_level_assignment(
 		&mut self,
-		relative: Option<&Path>,
 		key: &str,
 		value: &ParadoxNode<'_>,
 		doc_comments: Vec<String>,
@@ -295,6 +327,12 @@ impl CwtSchemaGraph {
 			}
 			return Ok(());
 		}
+		if key == "modifiers" {
+			if let Some(items) = block_items(value) {
+				self.ingest_modifiers_block(items);
+			}
+			return Ok(());
+		}
 		if let Some(marker) = ParsedMarker::parse(key) {
 			match marker.head {
 				"alias" | "alias_name" => {
@@ -312,7 +350,7 @@ impl CwtSchemaGraph {
 			return Ok(());
 		}
 		if let Some(items) = block_items(value) {
-			self.merge_type_body(SchemaRootId::new(key), items, relative)?;
+			self.merge_type_body(SchemaRootId::new(key), items)?;
 		}
 		Ok(())
 	}
@@ -361,7 +399,8 @@ impl CwtSchemaGraph {
 			match marker.head {
 				"enum" => insert_enumeration(&mut self.enums, marker.payload, value),
 				"complex_enum" => {
-					if let Some(complex_enum) = parse_complex_enum(marker.payload, value)? {
+					if let Some(mut complex_enum) = parse_complex_enum(marker.payload, value)? {
+						set_rule_origin(&mut complex_enum.name_rules, self.ingest_origin);
 						self.complex_enums
 							.insert(marker.payload.to_string(), complex_enum);
 					}
@@ -398,52 +437,51 @@ impl CwtSchemaGraph {
 		}
 	}
 
+	fn ingest_modifiers_block(&mut self, items: &[ParadoxNode<'_>]) {
+		for item in items {
+			let Some((name, value)) = assignment_parts(item) else {
+				continue;
+			};
+			let Some(scope) = scalar_text(value) else {
+				continue;
+			};
+			self.modifiers.insert(name, scope);
+		}
+	}
+
 	fn merge_type_header(
 		&mut self,
 		name: &str,
 		value: &ParadoxNode<'_>,
 		type_key_filter: Option<SchemaRootKeyFilter>,
 	) -> Result<(), CwtLoadError> {
+		let origin = self.ingest_origin;
 		let entry = self
 			.types
 			.entry(SchemaRootId::new(name))
-			.or_insert_with_key(|name| SchemaRootDefinition::new(name.clone()));
+			.or_insert_with_key(|name| SchemaRootDefinition::new(name.clone(), origin));
 		if let Some(type_key_filter) = type_key_filter {
 			entry.type_key_filter = Some(type_key_filter);
 		}
 		let Some(items) = block_items(value) else {
 			return Ok(());
 		};
-		merge_type_items(entry, items, true)
+		merge_type_items(entry, items, true, origin)
 	}
 
-	/// A top-level block names a type whose files, until a `type[...]` header
-	/// declares a `path`, are the ones below the directory holding the schema
-	/// file, read as a game directory.
+	/// A top-level block gives its rules to the type a `type[...]` header
+	/// declares; on its own it reads no file, as in CWTools.
 	fn merge_type_body(
 		&mut self,
 		name: SchemaRootId,
 		items: &[ParadoxNode<'_>],
-		relative: Option<&Path>,
 	) -> Result<(), CwtLoadError> {
+		let origin = self.ingest_origin;
 		let entry = self
 			.types
 			.entry(name)
-			.or_insert_with_key(|name| SchemaRootDefinition::new(name.clone()));
-		if entry.path.is_none()
-			&& let Some(directory) = relative.and_then(Path::parent)
-		{
-			entry.path = Some(if directory.as_os_str().is_empty() {
-				SchemaDirectory::GameRoot
-			} else {
-				GamePathBuf::from_native_relative(directory)
-					.map(SchemaDirectory::Directory)
-					.map_err(|error| {
-						invalid_rule_path(entry.name.as_str(), "schema directory", error)
-					})?
-			});
-		}
-		merge_type_items(entry, items, false)
+			.or_insert_with_key(|name| SchemaRootDefinition::new(name.clone(), origin));
+		merge_type_items(entry, items, false, origin)
 	}
 
 	fn insert_alias(
@@ -459,16 +497,21 @@ impl CwtSchemaGraph {
 				(category, name)
 			});
 		let category = AliasCategory::from_name(category_name);
-		self.aliases.insert(
-			(category.clone(), alias_name.to_string()),
-			CwtAlias {
+		let mut rules = block_to_rules(value);
+		set_rule_origin(&mut rules, self.ingest_origin);
+		let mut value = node_to_rule_value(value);
+		set_value_origin(&mut value, self.ingest_origin);
+		self.aliases
+			.entry((category.clone(), alias_name.to_string()))
+			.or_default()
+			.push(CwtAlias {
 				category,
 				name: alias_name.to_string(),
 				attributes,
-				value: node_to_rule_value(value),
-				rules: block_to_rules(value),
-			},
-		);
+				value,
+				rules,
+				origin: self.ingest_origin,
+			});
 	}
 
 	fn ingest_scopes_block(&mut self, items: &[ParadoxNode<'_>]) {
@@ -532,6 +575,7 @@ fn merge_type_items(
 	entry: &mut SchemaRootDefinition,
 	items: &[ParadoxNode<'_>],
 	header_fields: bool,
+	origin: CwtRuleOrigin,
 ) -> Result<(), CwtLoadError> {
 	let mut pending_doc_comments = Vec::new();
 	for item in items {
@@ -563,7 +607,9 @@ fn merge_type_items(
 						}
 						"name_field" => entry.name_field = scalar_text(child_value),
 						"localisation" | "localization" => {
-							entry.localisation.extend(block_to_rules(child_value));
+							let mut rules = block_to_rules(child_value);
+							set_rule_origin(&mut rules, origin);
+							entry.localisation.extend(rules);
 						}
 						"push_scope" => entry.push_scope = scalar_text(child_value),
 						"type_per_file" => {
@@ -597,18 +643,23 @@ fn merge_type_items(
 					&& marker.head == "subtype"
 				{
 					let subtype_attributes = parse_subtype_attributes(&pending_doc_comments);
+					let mut rules = block_to_rules(child_value);
+					set_rule_origin(&mut rules, origin);
 					entry.subtypes.push(CwtSubtype {
 						name: marker.payload.to_string(),
 						type_key_filter: parse_type_key_filter(&pending_doc_comments),
 						attributes: subtype_attributes,
-						rules: block_to_rules(child_value),
+						rules,
 					});
 				} else {
 					let mut fields = statement_to_rule_fields(item);
-					if let Some(field) = fields.first_mut() {
+					if !is_subtype_group(item)
+						&& let Some(field) = fields.first_mut()
+					{
 						field.attributes =
 							parse_field_attributes(std::mem::take(&mut pending_doc_comments));
 					}
+					set_rule_origin(&mut fields, origin);
 					entry.rules.extend(fields);
 				}
 				pending_doc_comments.clear();
@@ -645,6 +696,20 @@ fn rule_field(key: String, value: CwtRuleValue) -> CwtRuleField {
 		value,
 		attributes: CwtFieldAttributes::default(),
 		conditions: Vec::new(),
+		origin: CwtRuleOrigin::Base,
+	}
+}
+
+fn set_rule_origin(fields: &mut [CwtRuleField], origin: CwtRuleOrigin) {
+	for field in fields {
+		field.origin = origin;
+		set_value_origin(&mut field.value, origin);
+	}
+}
+
+fn set_value_origin(value: &mut CwtRuleValue, origin: CwtRuleOrigin) {
+	if let CwtRuleValue::Block(fields) = value {
+		set_rule_origin(fields, origin);
 	}
 }
 
@@ -664,7 +729,9 @@ fn block_to_rules(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
 			ParadoxNode::Comment { .. } => pending_doc_comments.clear(),
 			_ => {
 				let mut fields = statement_to_rule_fields(item);
-				if let Some(field) = fields.first_mut() {
+				if !is_subtype_group(item)
+					&& let Some(field) = fields.first_mut()
+				{
 					field.attributes =
 						parse_field_attributes(std::mem::take(&mut pending_doc_comments));
 				}
@@ -674,6 +741,18 @@ fn block_to_rules(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
 		}
 	}
 	rules
+}
+
+/// A `subtype[...]` group's fields carry their own `##` attributes; nothing
+/// above the group belongs to its first field.
+fn is_subtype_group(node: &ParadoxNode<'_>) -> bool {
+	match node {
+		ParadoxNode::Assignment { key, .. } => {
+			parse_rule_subtype_condition(key.as_text().as_ref()).is_some()
+		}
+		ParadoxNode::Item { value, .. } => is_subtype_group(value),
+		_ => false,
+	}
 }
 
 fn statement_to_rule_fields(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
@@ -801,16 +880,32 @@ fn parse_subtype_attributes(comments: &[String]) -> CwtFieldAttributes {
 	parse_field_attributes(
 		comments
 			.iter()
-			.filter(|comment| !comment.trim().starts_with("type_key_filter"))
+			.filter(|comment| {
+				let text = comment.trim();
+				!text.starts_with("type_key_filter") && !text.starts_with("starts_with")
+			})
 			.cloned()
 			.collect(),
 	)
 }
 
+/// A type's or subtype's key filter: `## type_key_filter`, or, without one,
+/// `## starts_with`. Vendor rules never state both.
 fn parse_type_key_filter(comments: &[String]) -> Option<SchemaRootKeyFilter> {
 	let mut filter = None;
+	let mut prefix = None;
 	for comment in comments {
 		let text = comment.trim();
+		if let Some(value) = text
+			.strip_prefix("starts_with")
+			.map(str::trim_start)
+			.and_then(|rest| rest.strip_prefix('='))
+			.map(str::trim)
+			.filter(|value| !value.is_empty())
+		{
+			prefix = Some(value.to_string());
+			continue;
+		}
 		let Some((operator, raw_value)) = text
 			.strip_prefix("type_key_filter")
 			.map(str::trim_start)
@@ -834,7 +929,7 @@ fn parse_type_key_filter(comments: &[String]) -> Option<SchemaRootKeyFilter> {
 			_ => unreachable!("type_key_filter parser only emits known operators"),
 		});
 	}
-	filter
+	filter.or_else(|| prefix.map(SchemaRootKeyFilter::Prefix))
 }
 
 fn parse_type_key_filter_values(value: &str) -> Vec<String> {

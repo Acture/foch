@@ -1,3 +1,4 @@
+use crate::DATA_VERSION;
 use crate::model::{
 	AliasUsage, AsGamePathText, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf,
 	GamePathError, Isolation, JsonProperty, KeyUsage, LocalisationDefinition,
@@ -19,9 +20,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
-/// Bump when the mod-level cached payload becomes wire-incompatible or parser /
-/// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_SNAPSHOT_CACHE_VERSION: &str = "17.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const MOD_SNAPSHOT_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
 const MOD_SNAPSHOT_CACHE_HEADER_BYTES: usize = MOD_SNAPSHOT_CACHE_MAGIC.len() + size_of::<u64>();
@@ -324,12 +322,7 @@ impl ModSnapshotCache {
 		analysis_identity: &str,
 		game_key: &str,
 	) -> Option<CachedModData> {
-		self.lookup_with_cache_version(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			mod_hash,
-			analysis_identity,
-			game_key,
-		)
+		self.lookup_with_cache_version(DATA_VERSION, mod_hash, analysis_identity, game_key)
 	}
 
 	pub(crate) fn store_owned(
@@ -343,7 +336,7 @@ impl ModSnapshotCache {
 		Result<ModSnapshotCacheEntryProfile, CacheError>,
 	) {
 		self.store_owned_with_cache_version(
-			MOD_SNAPSHOT_CACHE_VERSION,
+			DATA_VERSION,
 			mod_hash,
 			analysis_identity,
 			game_key,
@@ -360,7 +353,7 @@ impl ModSnapshotCache {
 		data: &CachedModData,
 	) -> Result<(), CacheError> {
 		let (_, result) = self.store_owned_with_cache_version(
-			MOD_SNAPSHOT_CACHE_VERSION,
+			DATA_VERSION,
 			mod_hash,
 			analysis_identity,
 			game_key,
@@ -375,12 +368,7 @@ impl ModSnapshotCache {
 		analysis_identity: &str,
 		game_key: &str,
 	) -> Option<ModSnapshotCacheEntryProfile> {
-		let path = self.cache_file(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			mod_hash,
-			analysis_identity,
-			game_key,
-		);
+		let path = self.cache_file(DATA_VERSION, mod_hash, analysis_identity, game_key);
 		let compressed_bytes = fs::metadata(&path).ok()?.len();
 		let mut header = [0_u8; MOD_SNAPSHOT_CACHE_HEADER_BYTES];
 		fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
@@ -392,12 +380,7 @@ impl ModSnapshotCache {
 	}
 
 	pub(crate) fn touch_entry(&self, mod_hash: &str, analysis_identity: &str, game_key: &str) {
-		touch_cache_file(&self.cache_file(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			mod_hash,
-			analysis_identity,
-			game_key,
-		));
+		touch_cache_file(&self.cache_file(DATA_VERSION, mod_hash, analysis_identity, game_key));
 	}
 
 	fn lookup_with_cache_version(
@@ -1340,7 +1323,7 @@ mod tests {
 			.expect("entry profile");
 		assert!(profile.compressed_bytes > MOD_SNAPSHOT_CACHE_HEADER_BYTES as u64);
 		assert!(profile.uncompressed_bytes > 0);
-		let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, "abc123", "0.1.0", "eu4 1.37.4");
+		let path = cache.cache_file(DATA_VERSION, "abc123", "0.1.0", "eu4 1.37.4");
 		let raw = fs::read(path).expect("read envelope");
 		assert_eq!(
 			&raw[..MOD_SNAPSHOT_CACHE_MAGIC.len()],
@@ -1478,9 +1461,9 @@ mod tests {
 		];
 
 		for (case, paths, reason, named) in invalid_cases {
-			let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, case, "0.1.0", "eu4 1.37.4");
+			let path = cache.cache_file(DATA_VERSION, case, "0.1.0", "eu4 1.37.4");
 			let (mut payload, _) = StoredCachedModData::from_cached_mod_data_owned(
-				MOD_SNAPSHOT_CACHE_VERSION,
+				DATA_VERSION,
 				case,
 				"0.1.0",
 				"eu4 1.37.4",
@@ -1540,7 +1523,7 @@ mod tests {
 				document_input_identities: vec![None],
 			};
 			StoredCachedModData::from_cached_mod_data_owned(
-				MOD_SNAPSHOT_CACHE_VERSION,
+				DATA_VERSION,
 				case,
 				"0.1.0",
 				"eu4 1.37.4",
@@ -1569,7 +1552,7 @@ mod tests {
 			let mut bytes = MOD_SNAPSHOT_CACHE_MAGIC.to_vec();
 			bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
 			bytes.extend(encoder.finish().expect("finish payload"));
-			let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, &case, "0.1.0", "eu4 1.37.4");
+			let path = cache.cache_file(DATA_VERSION, &case, "0.1.0", "eu4 1.37.4");
 			fs::write(&path, bytes).expect("write entry");
 
 			let error = decode_payload_from_file(&path)
@@ -1598,7 +1581,7 @@ mod tests {
 		cache
 			.store("corrupt", "0.1.0", "eu4 1.37.4", &data)
 			.expect("store cache");
-		let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, "corrupt", "0.1.0", "eu4 1.37.4");
+		let path = cache.cache_file(DATA_VERSION, "corrupt", "0.1.0", "eu4 1.37.4");
 		let original = fs::read(&path).expect("read cache entry");
 
 		let mut corrupted = original.clone();
@@ -1640,7 +1623,7 @@ mod tests {
 		cache
 			.store("touch", "0.1.0", "eu4 1.37.4", &data)
 			.expect("store cache");
-		let path = cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, "touch", "0.1.0", "eu4 1.37.4");
+		let path = cache.cache_file(DATA_VERSION, "touch", "0.1.0", "eu4 1.37.4");
 		let old_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
 		filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(old_time))
 			.expect("age cache entry");
@@ -1668,8 +1651,7 @@ mod tests {
 		let flat_entry =
 			tmp.path()
 				.join(cache_filename("2.0.0", "old-flat", "0.1.0", "eu4 1.37.4"));
-		let current =
-			cache.cache_file(MOD_SNAPSHOT_CACHE_VERSION, "current", "0.1.0", "eu4 1.37.4");
+		let current = cache.cache_file(DATA_VERSION, "current", "0.1.0", "eu4 1.37.4");
 		let unrelated = tmp.path().join("owner.txt");
 		let temporary_entry = current.with_extension("rkyv.123.456.tmp");
 		fs::write(&old_generation_entry, "old generation").expect("write old generation entry");

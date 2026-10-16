@@ -39,7 +39,6 @@ pub struct RootCoverageEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BaseCoverageReport {
-	pub schema_version: u32,
 	pub game: String,
 	pub game_version: String,
 	pub analysis_rules_version: String,
@@ -183,7 +182,6 @@ pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageRep
 		.collect();
 
 	BaseCoverageReport {
-		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: snapshot.analysis_rules_version.clone(),

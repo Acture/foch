@@ -10,7 +10,7 @@ from pathlib import Path
 from . import compare, crates, dist, release, smoke, versions, winget
 from .contracts import verify_repository
 from .repository import find_repository
-from .schema import SCHEMA_DIR, cwt_snapshot_hash
+from .schema import cwt_snapshot_hash, repository_schema_hash
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,7 +20,12 @@ def main(argv: list[str] | None = None) -> int:
 	contracts.add_argument("--repo", type=Path)
 	schema = commands.add_parser("schema-hash", help="Print the normalized CWT digest")
 	schema.add_argument("--repo", type=Path)
-	schema.add_argument("--schema-root", type=Path)
+	schema.add_argument(
+		"--schema-root",
+		type=Path,
+		action="append",
+		help="Hash these rule directories, in order, instead of the checkout's",
+	)
 	smoke.add_arguments(
 		commands.add_parser("smoke", help="Run and summarize a diagnostic check")
 	)
@@ -59,8 +64,10 @@ def main(argv: list[str] | None = None) -> int:
 			verify_repository(find_repository(args.repo))
 			return 0
 		if args.command == "schema-hash":
-			root: Path = args.schema_root or find_repository(args.repo) / SCHEMA_DIR
-			print(cwt_snapshot_hash(root))
+			if args.schema_root:
+				print(cwt_snapshot_hash(*args.schema_root))
+			else:
+				print(repository_schema_hash(find_repository(args.repo)))
 			return 0
 		if args.command == "crate-smoke":
 			return crates.run(

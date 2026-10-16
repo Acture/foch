@@ -1,0 +1,15 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+
+# Every faction in common/factions/ has an influence modifier:
+# common/static_modifiers/00_static_modifiers.txt sets mr_traders_influence
+# and soyurghals_amount_check_influence.
+## scope = country
+alias[modifier:<faction>_influence] = float
+
+# The vendored rules type these two as whole numbers, but the game writes
+# them with decimals: common/event_modifiers/01_mission_modifiers.txt sets
+# institution_growth = 1.2, and common/naval_doctrines/00_naval_doctrines.txt
+# sets movement_speed_in_fleet_modifier = 0.5.
+alias[modifier:institution_growth] = float
+## scope = country
+alias[modifier:movement_speed_in_fleet_modifier] = float

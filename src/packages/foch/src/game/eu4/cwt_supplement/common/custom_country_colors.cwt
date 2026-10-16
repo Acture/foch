@@ -1,0 +1,9 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+
+types = {
+	# The vendored rules look for the flag palette in common/countries/; the
+	# game reads common/custom_country_colors/00_custom_country_colors.txt.
+	type[custom_country_colors] = {
+		path = "game/common/custom_country_colors"
+	}
+}

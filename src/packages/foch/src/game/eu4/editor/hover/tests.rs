@@ -261,7 +261,7 @@ fn provenance_hover_recovers_schema_path_from_the_output_root() {
 	fs::write(
 		schema_dir.path().join("effects.cwt"),
 		r#"
-		types = { type[effect] = { path = "game/common/scripted_effects" } }
+		types = { type[effect] = { path = "game/common/scripted_effects" type_per_file = yes } }
 		effect = { shared = { add_prestige = scalar } }
 	"#,
 	)
@@ -287,7 +287,7 @@ fn provenance_hover_keeps_schema_on_hits_and_broken_sidecars() {
 	fs::write(
 		schema_dir.path().join("effects.cwt"),
 		r#"
-		types = { type[effect] = { path = "game/common/scripted_effects" } }
+		types = { type[effect] = { path = "game/common/scripted_effects" type_per_file = yes } }
 		effect = { shared = { add_prestige = scalar } }
 	"#,
 	)
@@ -337,7 +337,7 @@ fn provenance_hover_keeps_caller_schema_beneath_unrelated_metadata() {
 	let schema_dir = TempDir::new().unwrap();
 	fs::write(
 		schema_dir.path().join("effects.cwt"),
-		r#"types = { type[effect] = { path = "game/common/scripted_effects" } }
+		r#"types = { type[effect] = { path = "game/common/scripted_effects" type_per_file = yes } }
 		effect = { shared = { add_prestige = scalar } }"#,
 	)
 	.unwrap();

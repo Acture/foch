@@ -373,7 +373,7 @@ where
 	tooltip_output
 		.localisation
 		.extend(gui_tooltip_output.localisation);
-	let (merged_statements, provenance_localisation) = if context.provenance {
+	let (mut merged_statements, provenance_localisation) = if context.provenance {
 		(
 			inject_provenance_comments(
 				tooltip_output.statements,
@@ -385,6 +385,13 @@ where
 	} else {
 		(tooltip_output.statements, tooltip_output.localisation)
 	};
+	if context.emit_options.drops_unread_decimals() {
+		crate::merge::numeric::drop_unread_decimals(
+			target_path,
+			&mut merged_statements,
+			crate::game::eu4::cwt::rule_engine(),
+		);
+	}
 	let emit_options = context.emit_options.clone();
 	let rendered = emit_clausewitz_statements_with_options(&merged_statements, &emit_options)?;
 	let (handler_resolutions, external_file_resolutions, keep_existing_paths) =

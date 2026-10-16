@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 from .dist import DISTRIBUTION
-from .schema import SCHEMA_DIR
+from .schema import SCHEMA_DIR, SUPPLEMENT_DIR
 from .winget import LICENSE_EXPRESSION
 from .winget import REPOSITORY_URL as WINGET_REPOSITORY_URL
 
@@ -55,6 +55,7 @@ EXPECTED_BINARIES: tuple[tuple[str, str], ...] = (
 )
 EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 	(INSTALLED_CRATE, "parse_stats", ("dev-tools",)),
+	(INSTALLED_CRATE, "schema_survey", ("dev-tools",)),
 	(INSTALLED_CRATE, "symbol_dump", ("dev-tools",)),
 )
 # Workspace members released from their own repository, resolved from the
@@ -63,9 +64,12 @@ EXTERNALLY_RELEASED_PACKAGES: frozenset[str] = frozenset({"tree-sitter-paradox"}
 # Dependency kinds a registry build of a published crate resolves.
 CLOSURE_DEPENDENCY_KINDS: frozenset[str | None] = frozenset({None, "build"})
 SCHEMA_PACKAGE: str = "foch"
-BUILD_SCHEMA_DIR: re.Pattern[str] = re.compile(
-	r'\bconst\s+SCHEMA_DIR\s*:\s*&\s*str\s*=\s*"([^"]+)"\s*;'
-)
+BUILD_SCHEMA_INPUTS: dict[str, Path] = {
+	"SCHEMA_DIR": SCHEMA_DIR,
+	"SUPPLEMENT_DIR": SUPPLEMENT_DIR,
+}
+"""The constant `build.rs` names each CWT input by, and where foch_dev hashes
+that input."""
 FOCH_DEV_PYPROJECT: Path = Path("src/tools/foch-dev/pyproject.toml")
 LIBRARY_MANIFEST: Path = Path("src/packages/foch/Cargo.toml")
 REQUIRES_PYTHON_FLOOR: re.Pattern[str] = re.compile(r">=\s*([0-9]+\.[0-9]+)")
@@ -504,7 +508,7 @@ def source_violations(desktop_root: Path) -> list[str]:
 				for label, pattern in patterns:
 					for match in pattern.finditer(scanned_source):
 						line = scanned_source.count("\n", 0, match.start()) + 1
-						relative = path.relative_to(desktop_root)
+						relative = path.relative_to(desktop_root).as_posix()
 						violations.append(f"{relative}:{line}: {label}")
 	return sorted(set(violations))
 
@@ -636,7 +640,7 @@ def verify_publishable_closure(packages: list[CargoPackage]) -> None:
 
 
 def verify_schema_in_package(repo_root: Path, packages: list[CargoPackage]) -> None:
-	"""The CWT input `build.rs` compiles must ship inside the `foch` crate."""
+	"""Every CWT input `build.rs` compiles must ship inside the `foch` crate."""
 	package = next(
 		(package for package in packages if package["name"] == SCHEMA_PACKAGE),
 		None,
@@ -648,22 +652,25 @@ def verify_schema_in_package(repo_root: Path, packages: list[CargoPackage]) -> N
 	source = mask_source(
 		build_script.read_text(encoding="utf-8"), "rust", mask_literals=False
 	)
-	match = BUILD_SCHEMA_DIR.search(source)
-	if match is None:
-		raise ValueError(f"{build_script} must name its CWT input as SCHEMA_DIR")
-	schema_dir = (package_root / match.group(1)).resolve()
-	if not schema_dir.is_relative_to(package_root):
-		raise ValueError(
-			f"{build_script} compiles {schema_dir}, outside the {SCHEMA_PACKAGE} "
-			f"package {package_root}; its crate would not carry the schema"
+	for constant, foch_dev_dir in BUILD_SCHEMA_INPUTS.items():
+		match = re.search(
+			rf'\bconst\s+{constant}\s*:\s*&\s*str\s*=\s*"([^"]+)"\s*;', source
 		)
-	expected = (repo_root / SCHEMA_DIR).resolve()
-	if schema_dir != expected:
-		raise ValueError(
-			f"{build_script} compiles {schema_dir}, but foch_dev hashes {expected}"
-		)
-	if not schema_dir.is_dir():
-		raise ValueError(f"CWT schema directory is missing: {schema_dir}")
+		if match is None:
+			raise ValueError(f"{build_script} must name a CWT input as {constant}")
+		schema_dir = (package_root / match.group(1)).resolve()
+		if not schema_dir.is_relative_to(package_root):
+			raise ValueError(
+				f"{build_script} compiles {schema_dir}, outside the {SCHEMA_PACKAGE} "
+				f"package {package_root}; its crate would not carry the schema"
+			)
+		expected = (repo_root / foch_dev_dir).resolve()
+		if schema_dir != expected:
+			raise ValueError(
+				f"{build_script} compiles {schema_dir}, but foch_dev hashes {expected}"
+			)
+		if not schema_dir.is_dir():
+			raise ValueError(f"CWT schema directory is missing: {schema_dir}")
 
 
 def toml_value(path: Path, *keys: str) -> object:

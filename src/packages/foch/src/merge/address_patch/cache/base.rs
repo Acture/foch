@@ -5,6 +5,7 @@
 //! file; this avoids shared index rewrites while allowing independent
 //! invalidation per file and upstream dependency set.
 
+use crate::DATA_VERSION;
 use crate::game::eu4::script::parser::AstStatement;
 use crate::model::GamePath;
 use crate::platform::cache_store::CacheError;
@@ -14,8 +15,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Bump when the cached DAG-base payload or synthesis behavior changes.
-pub const DAG_BASE_CACHE_VERSION: &str = "12.0.0";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;
 
@@ -45,11 +44,11 @@ struct StoredDagBase {
 
 impl DagBaseCache {
 	pub fn open(cache_dir: &Path) -> Self {
-		let root = generation_dir(cache_dir, DAG_BASE_CACHE_VERSION);
-		if let Err(error) = ensure_generation(cache_dir, DAG_BASE_CACHE_VERSION) {
+		let root = generation_dir(cache_dir, DATA_VERSION);
+		if let Err(error) = ensure_generation(cache_dir, DATA_VERSION) {
 			tracing::warn!(
 				cache_dir = %cache_dir.display(),
-				cache_version = DAG_BASE_CACHE_VERSION,
+				cache_version = DATA_VERSION,
 				%error,
 				"failed to create current DAG-base cache generation"
 			);
@@ -87,7 +86,7 @@ impl DagBaseCache {
 	) -> Result<(), CacheError> {
 		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
 		let payload = StoredDagBase {
-			cache_version: DAG_BASE_CACHE_VERSION.to_string(),
+			cache_version: DATA_VERSION.to_string(),
 			deps_hash: deps_hash.to_string(),
 			file_path: file_path.as_str().to_string(),
 			foch_version: foch_version.to_string(),
@@ -111,7 +110,7 @@ impl DagBaseCache {
 		let path = self.cache_file(deps_hash, file_path, foch_version, game_version);
 		let raw = fs::read(path).ok()?;
 		let stored = bincode::deserialize::<StoredDagBase>(&raw).ok()?;
-		if stored.cache_version != DAG_BASE_CACHE_VERSION
+		if stored.cache_version != DATA_VERSION
 			|| stored.deps_hash != deps_hash
 			|| stored.file_path != file_path.as_str()
 			|| stored.foch_version != foch_version
@@ -130,7 +129,7 @@ impl DagBaseCache {
 		game_version: &str,
 	) -> PathBuf {
 		self.root.join(cache_filename(
-			DAG_BASE_CACHE_VERSION,
+			DATA_VERSION,
 			deps_hash,
 			file_path,
 			foch_version,
@@ -365,7 +364,7 @@ mod tests {
 	#[test]
 	fn dag_base_cache_filename_encodes_cache_version() {
 		let current = cache_filename(
-			DAG_BASE_CACHE_VERSION,
+			DATA_VERSION,
 			"deps-a",
 			game_path("common/foo.txt"),
 			"0.1.0",
@@ -380,7 +379,7 @@ mod tests {
 		);
 
 		assert_ne!(current, bumped);
-		assert!(current.contains(&format!("__cv{}__", DAG_BASE_CACHE_VERSION)));
+		assert!(current.contains(&format!("__cv{}__", DATA_VERSION)));
 		assert!(current.contains("__v0.1.0__"));
 		assert!(current.contains("__geu4_1.37__"));
 	}
@@ -421,7 +420,7 @@ mod tests {
 			)
 			.expect("store current generation entry");
 
-		let current_generation = layer_root.join(format!("v{DAG_BASE_CACHE_VERSION}"));
+		let current_generation = layer_root.join(format!("v{DATA_VERSION}"));
 		assert_eq!(cache.root, current_generation);
 		let old_generation = layer_root.join("v11.0.0");
 		fs::create_dir_all(&old_generation).expect("create old generation");

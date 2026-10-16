@@ -49,6 +49,10 @@ pub struct Project {
 pub struct EmitConfig {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub indent: Option<String>,
+	/// `false` keeps every fraction digit the merge produced, including the
+	/// ones the game was seen to ignore.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub drop_unread_decimals: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -695,6 +699,15 @@ impl Project {
 			.unwrap_or(DEFAULT_EMIT_INDENT)
 	}
 
+	/// Whether merged files drop the fraction digits the game was seen to
+	/// ignore. On unless `[emit] drop_unread_decimals = false`.
+	pub fn emit_drops_unread_decimals(&self) -> bool {
+		self.emit
+			.as_ref()
+			.and_then(|emit| emit.drop_unread_decimals)
+			.unwrap_or(true)
+	}
+
 	pub fn load(playset_root: &Path) -> Self {
 		Self::try_load(playset_root).unwrap_or_default()
 	}
@@ -879,9 +892,26 @@ indent = "  "
 			config.emit,
 			Some(EmitConfig {
 				indent: Some("  ".to_string()),
+				drop_unread_decimals: None,
 			})
 		);
 		assert_eq!(config.emit_indent(), "  ");
+		assert!(config.emit_drops_unread_decimals());
+	}
+
+	#[test]
+	fn unread_decimals_are_dropped_unless_the_project_keeps_them() {
+		assert!(Project::default().emit_drops_unread_decimals());
+		let config = Project::from_toml_str(
+			r#"
+[emit]
+drop_unread_decimals = false
+"#,
+		)
+		.expect("parse config");
+
+		assert!(!config.emit_drops_unread_decimals());
+		assert_eq!(config.emit_indent(), DEFAULT_EMIT_INDENT);
 	}
 
 	#[test]

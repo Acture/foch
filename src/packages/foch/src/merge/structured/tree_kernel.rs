@@ -24,13 +24,14 @@ use crate::merge::model::{
 	SemanticMergeComputation, SemanticMergeConflict, SemanticMergeFacts, SemanticMergeSource,
 	SemanticPartitionId, SemanticPartitionLineage, VanillaBaseMode,
 };
+use crate::merge::numeric::NumberSpellings;
 use crate::merge::planning::dag::{FileDag, ModId};
 use crate::merge::planning::dag_join::DagJoinScope;
 use crate::merge::planning::dag_pipeline::{
 	DagJoinProtocol, DagJoinRequest, DagJoinRevision, EffectiveNodeProtocol, EffectiveNodeRequest,
 };
 
-use super::ast_adapter::denormalize_statement;
+use super::ast_adapter::{denormalize_statement, enclosing_assignment_keys};
 use super::definition_module::DefinitionModuleIndex;
 use super::observer::TreeSourceObserver;
 use super::trivia::detach_trivia;
@@ -129,11 +130,23 @@ impl TreePartitionIndex<'_> {
 		partition: &SemanticPartitionId,
 		policies: &MergePolicies,
 	) -> Result<crate::merge::kernel::NormalizedTree, super::AstAdapterError> {
+		self.normalize_noting_spellings(partition, policies, &mut NumberSpellings::default())
+	}
+
+	/// [`Self::normalize`], noting in `spellings` how the partition's numbers
+	/// were written.
+	fn normalize_noting_spellings(
+		&self,
+		partition: &SemanticPartitionId,
+		policies: &MergePolicies,
+		spellings: &mut NumberSpellings,
+	) -> Result<crate::merge::kernel::NormalizedTree, super::AstAdapterError> {
 		let SemanticPartitionId::Definition(key) = partition else {
 			return super::merge::normalize_clausewitz_file_with_context(
 				self.file,
 				policies,
 				self.entity_transform,
+				spellings,
 			);
 		};
 		let index = self.definitions.as_ref().ok_or_else(|| {
@@ -144,7 +157,7 @@ impl TreePartitionIndex<'_> {
 		let definition = index.select(key);
 		// Comments must be removed before Boolean-OR canonicalization, as in the join.
 		let (semantic, _) = detach_trivia(&definition);
-		super::normalize_clausewitz_file(&semantic, policies)
+		super::merge::normalize_clausewitz_file_with_context(&semantic, policies, None, spellings)
 	}
 }
 
@@ -487,8 +500,11 @@ struct TreeConflictResolution {
 	full_view_build_count: usize,
 }
 
+/// One input's normalized partition, and how that input wrote its numbers so
+/// a conflict prompt shows each value as its own file spells it.
 struct SemanticCandidateIndex {
 	tree: NormalizedTree,
+	spellings: NumberSpellings,
 }
 
 impl SemanticCandidateIndex {
@@ -497,10 +513,11 @@ impl SemanticCandidateIndex {
 		partition: &SemanticPartitionId,
 		policies: &MergePolicies,
 	) -> Result<Self, String> {
+		let mut spellings = NumberSpellings::default();
 		let tree = file
-			.normalize(partition, policies)
+			.normalize_noting_spellings(partition, policies, &mut spellings)
 			.map_err(|error| format!("failed to normalize conflict candidate: {error}"))?;
-		Ok(Self { tree })
+		Ok(Self { tree, spellings })
 	}
 
 	fn statement(
@@ -518,9 +535,13 @@ impl SemanticCandidateIndex {
 				|| node.kind == "clausewitz.assignment.entity")
 				&& node.policy_path.starts_with(semantic_path)
 			{
-				return denormalize_statement(&self.tree, node_id)
-					.map(Some)
-					.map_err(|error| format!("failed to render conflict candidate: {error}"));
+				let mut statement = denormalize_statement(&self.tree, node_id)
+					.map_err(|error| format!("failed to render conflict candidate: {error}"))?;
+				if let Some(chain) = enclosing_assignment_keys(&self.tree, node_id) {
+					self.spellings
+						.restore_within(&chain, std::slice::from_mut(&mut statement));
+				}
+				return Ok(Some(statement));
 			}
 			current = node.parent;
 		}

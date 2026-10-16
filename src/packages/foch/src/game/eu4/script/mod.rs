@@ -7,6 +7,7 @@ pub mod parse_cache;
 pub mod parser;
 
 pub use self::emit::emit_native_statements;
+pub(crate) use self::extractors::is_clausewitz_date_key;
 
 use self::localisation::collect_localisation_definitions_from_root;
 use self::parser::{AstFile, AstStatement, AstValue, ParseResult, SpanRange, read_failure};

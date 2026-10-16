@@ -548,7 +548,7 @@ fn ensure_base(
 	let current = if dir.join(snapshot::INSTALLED_METADATA_FILE_NAME).is_file() {
 		let metadata: InstalledBaseDataMetadata =
 			serde_json::from_slice(&fs::read(dir.join(snapshot::INSTALLED_METADATA_FILE_NAME))?)?;
-		metadata.schema_version == snapshot::BASE_DATA_SCHEMA_VERSION
+		metadata.snapshot_format_version == foch::DATA_VERSION
 			&& metadata.analysis_rules_version == foch::game::eu4::base::analysis_rules_version()
 			&& dir.join(snapshot::INSTALLED_SNAPSHOT_FILE_NAME).is_file()
 	} else {

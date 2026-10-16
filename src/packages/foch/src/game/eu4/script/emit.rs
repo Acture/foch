@@ -5,17 +5,30 @@ use crate::project::DEFAULT_EMIT_INDENT;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EmitOptions {
 	indent: String,
+	drop_unread_decimals: bool,
 }
 
 impl EmitOptions {
 	pub(crate) fn with_indent(indent: impl Into<String>) -> Self {
 		Self {
 			indent: indent.into(),
+			drop_unread_decimals: true,
 		}
 	}
 
 	pub(crate) fn indent(&self) -> &str {
 		&self.indent
+	}
+
+	/// Whether a merged file loses the fraction digits the game was seen to
+	/// ignore before it is written.
+	pub(crate) fn drops_unread_decimals(&self) -> bool {
+		self.drop_unread_decimals
+	}
+
+	pub(crate) fn with_unread_decimals_dropped(mut self, drop: bool) -> Self {
+		self.drop_unread_decimals = drop;
+		self
 	}
 }
 

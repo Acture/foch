@@ -1,0 +1,13 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+
+event = {
+	subtype[triggered] = {
+		# The game's own triggered-only events keep a one-day
+		# mean_time_to_happen: events/FlavorGBR.txt gives flavor_gbr.102
+		# mean_time_to_happen = { days = 1 }.
+		## cardinality = 0..1
+		mean_time_to_happen = {
+			days = 1
+		}
+	}
+}

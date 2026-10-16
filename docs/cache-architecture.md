@@ -7,13 +7,19 @@ repository root.
 
 ## Layers
 
-| Layer | Current generation | Purpose |
-| --- | --- | --- |
-| `mods/` | `13.0.0` | Complete semantic snapshot and loadable-file inventory for an installed mod |
-| `diffs/v6.0.0/` | `6.0.0` | Address-patch evaluation deltas for a target/mod/base identity |
-| `dag-base/v12.0.0/` | `12.0.0` | Address-patch evaluation DAG ancestors |
-| `cwt-rules/v0.11.0/` | `0.11.0` | Compiled CWT rule packs left by earlier builds; no longer written |
-| `parse/v15.0.0/` | `15.0.0` | Parser-mode and source-byte addressed parse result |
+| Layer | Purpose |
+| --- | --- |
+| `mods/` | Complete semantic snapshot and loadable-file inventory for an installed mod |
+| `diffs/v<DATA_VERSION>/` | Address-patch evaluation deltas for a target/mod/base identity |
+| `dag-base/v<DATA_VERSION>/` | Address-patch evaluation DAG ancestors |
+| `cwt-rules/v<DATA_VERSION>/` | Compiled CWT rule packs left by earlier builds; no longer written |
+| `parse/v<DATA_VERSION>/` | Parser-mode and source-byte addressed parse result |
+
+Every layer, the installed base data and `analysis_rules_version` share one
+generation, `DATA_VERSION` in `src/packages/foch/src/data_version.rs`. It is a
+`0.0.N` pre-release version raised by one, at most once per pull request, when
+a change makes any stored data unreadable or stale; every cache then rebuilds
+together. The mod-snapshot layer records it in each entry's file name.
 
 There is no full merge-output or modset archive cache. A merge owns its frozen
 artifact tree in an analysis-scoped temporary directory until review and
@@ -80,8 +86,9 @@ bytes may be reused across paths; a hit rebases the stored AST path to the
 requested file. Lua and Clausewitz modes never share entries.
 
 The product no longer writes the CWT cache. `build.rs` compiles the vendored
-schema and the binary embeds the pack; the `FOCH_CWTOOLS_SCHEMA_DIR`
-maintainer override is compiled fresh in every process, so an edit to the
+schema, then foch's supplementary rules in `src/packages/foch/src/game/eu4/cwt_supplement`,
+and the binary embeds the pack; the `FOCH_CWTOOLS_SCHEMA_DIR`
+maintainer override replaces both and is compiled fresh in every process, so an edit to the
 compiler cannot be masked by a pack an earlier build stored. `foch cache` still
 lists and cleans the `cwt-rules` entries earlier builds left. EU4
 interpretation remains in `src/packages/foch/src/game/eu4`; compiled CWT facts do not prove EU4

@@ -11,7 +11,8 @@ configures the workspace. All maintained code lives below `src/`; the Rust domai
 model and orchestration remain one primary package at `src/packages/foch`.
 Its integration tests, independent cargo-fuzz package and build script live
 alongside its `src/`. External CWT rules are its `vendor/cwtools-eu4-config`
-submodule; the build script compiles them into the binary, so the packaged
+submodule; the build script compiles them, followed by foch's supplementary
+rules in `src/game/eu4/cwt_supplement`, into the binary, so the packaged
 crate builds without the rest of the workspace. Source releases contain the
 entire workspace and its public submodules, without private notes.
 

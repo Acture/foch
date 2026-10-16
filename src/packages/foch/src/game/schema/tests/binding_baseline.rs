@@ -226,7 +226,13 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 			),
 		]
 		.into_iter()
-		.filter_map(|(category, name)| graph.aliases.get(&(category, name.to_string())))
+		.flat_map(|(category, name)| {
+			graph
+				.aliases
+				.get(&(category, name.to_string()))
+				.into_iter()
+				.flatten()
+		})
 		.map(alias_baseline)
 		.collect(),
 		selected_bindings: vec![
@@ -274,6 +280,7 @@ fn sorted_alias_baselines(graph: &CwtSchemaGraph) -> Vec<AliasBaseline> {
 	let mut aliases = graph
 		.aliases
 		.values()
+		.flatten()
 		.map(alias_baseline)
 		.collect::<Vec<_>>();
 	aliases.sort_by(|lhs, rhs| {

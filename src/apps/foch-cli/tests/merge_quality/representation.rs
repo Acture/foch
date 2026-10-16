@@ -1,11 +1,12 @@
 //! The one place that decides what "the same content" means for scoring.
 //!
-//! foch writes a schema-typed number in EU4's own representation — a `float`
-//! field with three decimals, an `int` field as the integer `atoi` reads —
-//! because the game's reader cannot tell `0.5` from `0.50`. A human
-//! compatibility patch writes whatever its author typed. Comparing the two
-//! without bringing both to that representation counts the tool's own output
-//! as a divergence.
+//! foch compares a schema-typed number by its exact value, so `0.5` and
+//! `0.50` are one value, and writes the agreed value with the most decimals
+//! any mod used for it. Before writing, it also leaves out digits past the
+//! third where the game was seen to ignore them. A human compatibility patch
+//! writes whatever its author typed. Comparing the two without bringing both
+//! to one form — unread digits dropped, then the shortest exact spelling —
+//! counts the tool's own output as a divergence.
 //!
 //! Everything this harness compares goes through here. That is not tidiness:
 //! the canonicalization was first added at each comparison site separately,
@@ -30,7 +31,7 @@ use foch::merge::numeric::{
 };
 use foch::model::GamePath;
 
-/// Parse a file into the representation foch writes.
+/// Parse a file into the form scoring compares.
 ///
 /// `rel` is a semantic input, not a label. The schema binds a root type by
 /// matching a game path prefix such as `common/static_modifiers`, so callers
@@ -42,7 +43,7 @@ pub fn parse(rel: &GamePath, path: &Path) -> Option<AstFile> {
 	parse_text(rel, &text)
 }
 
-/// Parse in-memory source into the representation foch writes.
+/// Parse in-memory source into the form scoring compares.
 pub fn parse_text(rel: &GamePath, source: &str) -> Option<AstFile> {
 	let parsed = parse_clausewitz_content(rel, source);
 	parsed
@@ -52,7 +53,7 @@ pub fn parse_text(rel: &GamePath, source: &str) -> Option<AstFile> {
 }
 
 /// Bring an already-composed tree — a layered module view, say — into the same
-/// representation.
+/// form.
 ///
 /// Composing a module picks whole definitions by key and never compares a
 /// value, so canonicalizing the result is the same answer as canonicalizing
@@ -61,7 +62,7 @@ pub fn compose(rel: &GamePath, ast: &AstFile) -> AstFile {
 	canonicalize_numeric_values_with_active_schema(rel, ast)
 }
 
-/// Read a file's text in the representation foch writes, leaving every other
+/// Read a file's text in the form scoring compares, leaving every other
 /// byte where it was.
 ///
 /// Re-emitting a parsed file would bring the numbers into line and reformat

@@ -1,0 +1,23 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+
+province_history = {
+	subtype[!owned] = {
+		# A province nobody owns at the start can still be a country's core:
+		# history/provinces/1138 - Kumasi.txt gives ASH a core there.
+		## cardinality = 0..inf
+		add_core = enum[country_tags]
+	}
+
+	subtype[owned] = {
+		# The game keeps natives on provinces a country owns at the start,
+		# mostly native and tribal countries': history/provinces/
+		# 1034 - Kamchatka.txt gives KMC's province native_size = 50,
+		# native_ferocity = 2 and native_hostileness = 5.
+		## cardinality = 0..1
+		native_size = scalar
+		## cardinality = 0..1
+		native_ferocity = scalar
+		## cardinality = 0..1
+		native_hostileness = scalar
+	}
+}

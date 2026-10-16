@@ -17,7 +17,7 @@ from foch_dev.contracts import (
 	verify_publishable_closure,
 	verify_schema_in_package,
 )
-from foch_dev.schema import SCHEMA_DIR
+from foch_dev.schema import SCHEMA_DIR, SUPPLEMENT_DIR
 
 
 def cargo_dependency(
@@ -286,11 +286,19 @@ class PublishableClosureTests(unittest.TestCase):
 
 
 class SchemaLocationTests(unittest.TestCase):
-	def schema_package(self, repo_root: Path, schema_dir: str) -> list[CargoPackage]:
+	def schema_package(
+		self,
+		repo_root: Path,
+		schema_dir: str,
+		supplement: str
+		| None = 'const SUPPLEMENT_DIR: &str = "src/game/eu4/cwt_supplement";\n',
+	) -> list[CargoPackage]:
 		package_root = repo_root / "src/packages/foch"
 		(repo_root / SCHEMA_DIR).mkdir(parents=True)
+		(repo_root / SUPPLEMENT_DIR).mkdir(parents=True)
 		(package_root / "build.rs").write_text(
-			f'// const SCHEMA_DIR: &str = "elsewhere";\nconst SCHEMA_DIR: &str = "{schema_dir}";\n',
+			f'// const SCHEMA_DIR: &str = "elsewhere";\nconst SCHEMA_DIR: &str = "{schema_dir}";\n'
+			+ (supplement or ""),
 			encoding="utf-8",
 		)
 		package = cargo_package("foch", "src/packages/foch")
@@ -311,6 +319,25 @@ class SchemaLocationTests(unittest.TestCase):
 				repo_root, "../../../vendor/cwtools-eu4-config"
 			)
 			with self.assertRaisesRegex(ValueError, "would not carry the schema"):
+				verify_schema_in_package(repo_root, packages)
+
+	def test_requires_the_supplementary_rules_foch_dev_hashes(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			repo_root = Path(directory)
+			packages = self.schema_package(
+				repo_root, "vendor/cwtools-eu4-config", supplement=None
+			)
+			with self.assertRaisesRegex(ValueError, "as SUPPLEMENT_DIR"):
+				verify_schema_in_package(repo_root, packages)
+		with tempfile.TemporaryDirectory() as directory:
+			repo_root = Path(directory)
+			(repo_root / "src/packages/foch/src/rules").mkdir(parents=True)
+			packages = self.schema_package(
+				repo_root,
+				"vendor/cwtools-eu4-config",
+				supplement='const SUPPLEMENT_DIR: &str = "src/rules";\n',
+			)
+			with self.assertRaisesRegex(ValueError, "but foch_dev hashes"):
 				verify_schema_in_package(repo_root, packages)
 
 

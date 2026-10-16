@@ -57,7 +57,7 @@ from .binary import (
 	verify_foch,
 )
 from .repository import find_repository
-from .schema import SCHEMA_DIR, cwt_snapshot_hash
+from .schema import SCHEMA_DIR, repository_schema_hash
 from .versions import pep440_version, releasable_version, workspace_version
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -565,9 +565,7 @@ def expected_identity(args: argparse.Namespace) -> FochIdentity:
 		return find_repository(args.repo)
 
 	version: str = args.expect_version or workspace_version(checkout())
-	schema_id: str = args.expect_cwt_schema_id or cwt_snapshot_hash(
-		checkout() / SCHEMA_DIR
-	)
+	schema_id: str = args.expect_cwt_schema_id or repository_schema_hash(checkout())
 	return FochIdentity(releasable_version(version), schema_id)
 
 

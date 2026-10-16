@@ -59,7 +59,8 @@ for (const key of [
 	'fochLsp.gamePath',
 	'fochLsp.modPaths',
 	'fochLsp.autoDetectMods',
-	'fochLsp.autoDetectModsMax'
+	'fochLsp.autoDetectModsMax',
+	'fochLsp.showGameDiagnostics'
 ]) {
 	assert(configProperties[key], `package.json missing configuration key: ${key}`);
 }

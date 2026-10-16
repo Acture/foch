@@ -17,7 +17,7 @@ The release boundary and CWTools comparison are tracked in [`docs/lsp-0.1-previe
 | --- | --- |
 | Language mode | `EU4 Script` association for Paradox script files |
 | Syntax highlighting | TextMate grammar for Paradox assignments, blocks, `#` comments, Lua `--` line comments, and level-0 `--[[ ... ]]` block comments, so `common/defines/*.lua` highlights correctly |
-| Diagnostics | current-file parse diagnostics, workspace semantic findings, and CWT schema warnings for unknown keys/cardinality |
+| Diagnostics | current-file parse diagnostics, workspace semantic findings, and CWT schema warnings for unknown keys/cardinality; each problem names what decided it, `cwtools` for a vendored CWTools rule, `foch-cwtools` for foch's supplementary rules or its refinement of a rule, `foch-detect` for foch's own reading of how the game loads a file, and `foch` for parse errors and cross-mod findings; problems the game's own files already have can be hidden with `fochLsp.showGameDiagnostics` |
 | Completion | CWT schema-aware keys/aliases, builtin trigger/effect names, and workspace symbols: event ids, scripted effects, decisions, and flag values |
 | Hover | CWT schema hover for supported EU4 script contexts, including type, description, scope, and cardinality when available |
 | Navigation | goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys |
@@ -44,6 +44,7 @@ The extension launches the bundled `foch` binary with the `lsp` subcommand.
   `cargo run --quiet --bin foch -- lsp` (development checkout only).
 - If `fochLsp.projectManifest` points at a `foch.toml`, the server resolves game and mod roots from that manifest instead of raw `gamePath` / `modPaths` targets.
 - If no manifest, configured root, or auto-detected mod root exists, the extension stays idle instead of treating an arbitrary workspace folder as a mod root. Configure `fochLsp.modPaths` for loose fixture folders without `descriptor.mod`.
+- Problems the game's own files already have are shown by default. Set `fochLsp.showGameDiagnostics` to `false` to hide them: files under the game directory then show no diagnostics, and a mod file that replaces a game file does not repeat the problems that game file already has.
 - Changes to `fochLsp.*` settings require a window reload; the extension prompts for this when relevant settings change.
 
 The fallback keeps local development simple; bundled binaries are the intended runtime model for release builds.
@@ -138,7 +139,8 @@ Example settings for local development:
     "/path/to/foch/tests/corpus/control_military_access"
   ],
   "fochLsp.autoDetectMods": true,
-  "fochLsp.autoDetectModsMax": 300
+  "fochLsp.autoDetectModsMax": 300,
+  "fochLsp.showGameDiagnostics": true
 }
 ```
 

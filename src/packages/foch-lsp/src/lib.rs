@@ -35,7 +35,7 @@ use foch_annotation::source::RelPath;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::{self, Result};
@@ -85,6 +85,10 @@ struct WorkspaceSnapshot {
 	session: Option<WorkspaceSession>,
 	/// Diagnostics by the physical file they belong to.
 	diagnostics_by_path: HashMap<PathBuf, Vec<Diagnostic>>,
+	/// Diagnostics of the game's own files by game path: what a mod file
+	/// replacing one of them inherits rather than introduces. The scan fills
+	/// it for the files it reads; [`game_file_diagnostics`] adds the rest.
+	game_diagnostics: Arc<Mutex<HashMap<GamePathBuf, Vec<Diagnostic>>>>,
 	/// What the scan could not index, for the client's log.
 	warnings: Vec<String>,
 }
@@ -108,10 +112,28 @@ struct EnvScanTarget {
 	role: TargetRole,
 }
 
+/// What the client may pass as `initializationOptions`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct InitializationOptions {
+	/// Show the problems the game's own files already have. On by default;
+	/// `false` hides them, see [`visible_diagnostics`].
+	show_game_diagnostics: bool,
+}
+
+impl Default for InitializationOptions {
+	fn default() -> Self {
+		Self {
+			show_game_diagnostics: true,
+		}
+	}
+}
+
 #[derive(Default)]
 struct ServerState {
 	docs: HashMap<Url, OpenDocument>,
 	targets: Vec<ScanTarget>,
+	show_game_diagnostics: bool,
 	static_candidates: Vec<CompletionCandidate>,
 	workspace: Option<Arc<WorkspaceSnapshot>>,
 }
@@ -161,6 +183,7 @@ impl Backend {
 	fn new(client: Client) -> Self {
 		let state = ServerState {
 			static_candidates: build_static_candidates(),
+			show_game_diagnostics: InitializationOptions::default().show_game_diagnostics,
 			..ServerState::default()
 		};
 		Self {
@@ -214,6 +237,10 @@ impl Backend {
 	}
 
 	async fn publish_workspace_diagnostics(&self, snapshot: &WorkspaceSnapshot) {
+		let (targets, show_game_diagnostics) = {
+			let state = self.state.read().await;
+			(state.targets.clone(), state.show_game_diagnostics)
+		};
 		let file_paths = snapshot
 			.session
 			.as_ref()
@@ -223,11 +250,27 @@ impl Backend {
 			let Some(uri) = Url::from_file_path(path).ok() else {
 				continue;
 			};
-			let diagnostics = snapshot
-				.diagnostics_by_path
-				.get(path)
-				.cloned()
-				.unwrap_or_default();
+			let diagnostics = visible_diagnostics(
+				path,
+				snapshot
+					.diagnostics_by_path
+					.get(path)
+					.cloned()
+					.unwrap_or_default(),
+				&targets,
+				show_game_diagnostics,
+				// The scan reads the same folders under every root, so it
+				// read the game's file at a scanned mod file's path, if any.
+				|relative_path| {
+					snapshot
+						.game_diagnostics
+						.lock()
+						.unwrap_or_else(PoisonError::into_inner)
+						.get(relative_path)
+						.cloned()
+						.unwrap_or_default()
+				},
+			);
 			self.client
 				.publish_diagnostics(uri, diagnostics, None)
 				.await;
@@ -239,21 +282,138 @@ impl Backend {
 			Ok(path) => path,
 			Err(_) => return,
 		};
-		let (snapshot, targets) = {
+		let (snapshot, targets, show_game_diagnostics) = {
 			let state = self.state.read().await;
-			(state.workspace.clone(), state.targets.clone())
+			(
+				state.workspace.clone(),
+				state.targets.clone(),
+				state.show_game_diagnostics,
+			)
 		};
 		let schema = self.schema.read().await.clone();
-		let diagnostics =
-			document_diagnostics(&path, text, snapshot.as_deref(), &targets, schema.as_ref());
+		let snapshot = snapshot.as_deref();
+		let diagnostics = visible_diagnostics(
+			&path,
+			document_diagnostics(&path, text, snapshot, &targets, schema.as_ref()),
+			&targets,
+			show_game_diagnostics,
+			|relative_path| {
+				game_file_diagnostics(relative_path, snapshot, &targets, schema.as_ref())
+			},
+		);
 		self.client
 			.publish_diagnostics(uri.clone(), diagnostics, None)
 			.await;
 	}
 }
 
-/// Every diagnostic an open document gets: what the workspace scan found for
+/// What the client is shown of the `diagnostics` of the physical file
+/// `path`. Unless asked to show them, the problems the game's own files
+/// already have are left out, since a modder cannot fix them: everything in
+/// a file under a game root, and in a mod file the problems
+/// `game_file_diagnostics` reports for the game's file at the same game
+/// path. Those match by what they say rather than where, as a mod's copy of
+/// a game file moves its lines, and each problem of the game's file accounts
+/// for one in the mod's, so a repeat the mod adds is still shown.
+fn visible_diagnostics(
+	path: &Path,
+	mut diagnostics: Vec<Diagnostic>,
+	targets: &[ScanTarget],
+	show_game_diagnostics: bool,
+	game_file_diagnostics: impl FnOnce(&GamePath) -> Vec<Diagnostic>,
+) -> Vec<Diagnostic> {
+	if show_game_diagnostics || diagnostics.is_empty() {
+		return diagnostics;
+	}
+	let relative_path = match match_scan_target(targets, path) {
+		Some((target, _)) if target.role == TargetRole::Game => return Vec::new(),
+		Some((_, Ok(relative_path))) => relative_path,
+		Some((_, Err(_))) | None => return diagnostics,
+	};
+	let inherited = game_file_diagnostics(&relative_path);
+	let mut inherited = inherited.iter().collect::<Vec<_>>();
+	diagnostics.retain(|diagnostic| {
+		match inherited
+			.iter()
+			.position(|game| same_problem(game, diagnostic))
+		{
+			Some(index) => {
+				inherited.swap_remove(index);
+				false
+			}
+			None => true,
+		}
+	});
+	diagnostics
+}
+
+fn same_problem(lhs: &Diagnostic, rhs: &Diagnostic) -> bool {
+	lhs.code == rhs.code
+		&& lhs.severity == rhs.severity
+		&& lhs.source == rhs.source
+		&& lhs.message == rhs.message
+}
+
+/// The diagnostics a document of the game's own file at `relative_path`
+/// would have, or none when no game root has that file. The snapshot keeps
+/// them, so a mod document re-checked on every edit reads the game's file
+/// once per scan.
+fn game_file_diagnostics(
+	relative_path: &GamePath,
+	snapshot: Option<&WorkspaceSnapshot>,
+	targets: &[ScanTarget],
+	schema: Option<&EditorSchema>,
+) -> Vec<Diagnostic> {
+	let Some(snapshot) = snapshot else {
+		return read_game_file_diagnostics(relative_path, None, targets, schema);
+	};
+	if let Some(found) = snapshot
+		.game_diagnostics
+		.lock()
+		.unwrap_or_else(PoisonError::into_inner)
+		.get(relative_path)
+	{
+		return found.clone();
+	}
+	let read = read_game_file_diagnostics(relative_path, Some(snapshot), targets, schema);
+	snapshot
+		.game_diagnostics
+		.lock()
+		.unwrap_or_else(PoisonError::into_inner)
+		.insert(relative_path.to_owned(), read.clone());
+	read
+}
+
+fn read_game_file_diagnostics(
+	relative_path: &GamePath,
+	snapshot: Option<&WorkspaceSnapshot>,
+	targets: &[ScanTarget],
+	schema: Option<&EditorSchema>,
+) -> Vec<Diagnostic> {
+	for (ordinal, target) in targets.iter().enumerate() {
+		if target.role != TargetRole::Game {
+			continue;
+		}
+		let physical = relative_path.to_path(&target.path);
+		// A mod root nested in the game root owns the files under it.
+		let owned = match_scan_target(targets, &physical)
+			.is_some_and(|(owner, _)| std::ptr::eq(owner, target));
+		if !owned || !physical.is_file() {
+			continue;
+		}
+		let file = parse_script_file(
+			&scan_target_mod_id(ordinal, target),
+			&target.path,
+			relative_path,
+		);
+		return document_diagnostics(&physical, &file.source, snapshot, targets, schema);
+	}
+	Vec::new()
+}
+
+/// Every diagnostic an open document has: what the workspace scan found for
 /// its file, its parse issues, and the schema's findings for its game path.
+/// [`visible_diagnostics`] chooses which of them the client is shown.
 fn document_diagnostics(
 	path: &Path,
 	text: &str,
@@ -304,6 +464,21 @@ fn document_diagnostics(
 impl LanguageServer for Backend {
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
 		let targets = resolve_scan_targets(&params);
+		let options = match params.initialization_options.clone() {
+			Some(value) => match serde_json::from_value::<InitializationOptions>(value) {
+				Ok(options) => options,
+				Err(err) => {
+					self.client
+						.log_message(
+							MessageType::WARNING,
+							format!("foch lsp ignored unreadable initializationOptions: {err}"),
+						)
+						.await;
+					InitializationOptions::default()
+				}
+			},
+			None => InitializationOptions::default(),
+		};
 		let started = Instant::now();
 		let load_result = tokio::task::spawn_blocking(EditorSchema::active).await;
 		let elapsed = started.elapsed();
@@ -343,6 +518,7 @@ impl LanguageServer for Backend {
 		{
 			let mut state = self.state.write().await;
 			state.targets = targets;
+			state.show_game_diagnostics = options.show_game_diagnostics;
 		}
 		*self.schema.write().await = Some(schema);
 
@@ -1105,6 +1281,17 @@ fn build_workspace_snapshot_with_schema(
 			sort_and_dedup_diagnostics(diagnostics);
 		}
 	}
+	let mut game_diagnostics = HashMap::<GamePathBuf, Vec<Diagnostic>>::new();
+	for (physical, diagnostics) in &diagnostics_by_path {
+		if let Some((target, Ok(relative_path))) = match_scan_target(roots, physical)
+			&& target.role == TargetRole::Game
+		{
+			game_diagnostics
+				.entry(relative_path)
+				.or_default()
+				.extend(diagnostics.iter().cloned());
+		}
+	}
 
 	let session = WorkspaceSession::from_analysis(index, file_paths, files, findings);
 
@@ -1112,6 +1299,7 @@ fn build_workspace_snapshot_with_schema(
 		candidates,
 		schema_workspace,
 		diagnostics_by_path,
+		game_diagnostics: Arc::new(Mutex::new(game_diagnostics)),
 		warnings,
 		session: Some(session),
 	}
@@ -2684,15 +2872,16 @@ mod hover_tests;
 #[cfg(test)]
 mod tests {
 	use super::{
-		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
-		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
-		dedup_scan_targets, detect_completion_context, document_diagnostics, document_hover,
-		document_symbols, extract_completion_prefix, localisation_stub_code_actions,
-		match_scan_target, parse_diagnostics_for_text, parse_scan_targets_json,
-		resolve_definition_locations, resolve_reference_locations,
-		scan_targets_from_project_manifest_path, schema_completion_candidate,
-		schema_completion_candidates_with_index, schema_diagnostic, schema_hover_view,
-		select_completion_candidates, syntax_fix_code_actions, workspace_symbols,
+		CandidateSource, CompletionCandidate, CompletionContext, InitializationOptions, ScanTarget,
+		TargetRole, assignment_key_on_line, build_workspace_snapshot,
+		build_workspace_snapshot_with_schema, dedup_scan_targets, detect_completion_context,
+		document_diagnostics, document_hover, document_symbols, extract_completion_prefix,
+		game_file_diagnostics, localisation_stub_code_actions, match_scan_target,
+		parse_diagnostics_for_text, parse_scan_targets_json, resolve_definition_locations,
+		resolve_reference_locations, scan_targets_from_project_manifest_path,
+		schema_completion_candidate, schema_completion_candidates_with_index, schema_diagnostic,
+		schema_hover_view, select_completion_candidates, syntax_fix_code_actions,
+		visible_diagnostics, workspace_symbols,
 	};
 	use foch::game::eu4::editor::schema::{
 		EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
@@ -2902,7 +3091,7 @@ mod tests {
 			},
 			severity: Some(Severity::Warning),
 			code: Some("V007".to_string()),
-			source: Some("cwt".to_string()),
+			source: Some("cwtools".to_string()),
 			message: "scope mismatch".to_string(),
 		});
 		assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::WARNING));
@@ -2910,7 +3099,7 @@ mod tests {
 			diagnostic.code,
 			Some(NumberOrString::String("V007".to_string()))
 		);
-		assert_eq!(diagnostic.source.as_deref(), Some("cwt"));
+		assert_eq!(diagnostic.source.as_deref(), Some("cwtools"));
 		assert_eq!(diagnostic.message, "scope mismatch");
 		assert_eq!(diagnostic.range.start.line, 7);
 		assert_eq!(diagnostic.range.end.character, 8);
@@ -3878,6 +4067,200 @@ path = "local-mod"
 			);
 		}
 		assert!(snapshot.warnings.is_empty(), "{:?}", snapshot.warnings);
+	}
+
+	/// The game's own files are read-only input, so by default they show
+	/// nothing, and a mod file replacing one shows only the problems it adds:
+	/// the game file's problems match by what they say, not where, one each.
+	#[test]
+	fn problems_the_game_files_already_have_are_hidden_unless_asked() {
+		init_scopes();
+		let engine = load_inline_lsp_schema(
+			r#"
+			types = {
+				type[sample] = { path = "game/common/samples" }
+			}
+			sample = {
+				## cardinality = 0..1
+				rank = int
+			}
+			"#,
+		);
+		let tmp = TempDir::new().expect("temp dir");
+		let game = tmp.path().join("game");
+		let local = tmp.path().join("mod");
+		let relative = Path::new("common").join("samples").join("sample.txt");
+		let game_file = game.join(&relative);
+		let mod_file = local.join(&relative);
+		for file in [&game_file, &mod_file] {
+			fs::create_dir_all(file.parent().expect("parent")).expect("create samples");
+		}
+		fs::write(&game_file, "sample = {\n\tmystery = yes\n}\n").expect("write game file");
+		fs::write(
+			&mod_file,
+			"# moved down\n\nsample = {\n\tmystery = yes\n\tmystery = yes\n\tother = yes\n}\n",
+		)
+		.expect("write mod file");
+		let targets = [
+			ScanTarget {
+				path: game.clone(),
+				role: TargetRole::Game,
+			},
+			ScanTarget {
+				path: local.clone(),
+				role: TargetRole::Mod,
+			},
+		];
+		let snapshot = build_workspace_snapshot_with_schema(&targets, Some(engine.clone()));
+		let shown = |path: &Path, show_game_diagnostics: bool| {
+			let text = fs::read_to_string(path).expect("read sample");
+			visible_diagnostics(
+				path,
+				super::document_diagnostics(path, &text, Some(&snapshot), &targets, Some(&engine)),
+				&targets,
+				show_game_diagnostics,
+				|relative_path| {
+					game_file_diagnostics(relative_path, Some(&snapshot), &targets, Some(&engine))
+				},
+			)
+			.into_iter()
+			.filter(|diagnostic| diagnostic.code == Some(NumberOrString::String("V001".into())))
+			.map(|diagnostic| (diagnostic.range.start.line, diagnostic.message))
+			.collect::<Vec<_>>()
+		};
+
+		assert_eq!(
+			shown(&game_file, true).len(),
+			1,
+			"{:?}",
+			shown(&game_file, true)
+		);
+		assert!(shown(&game_file, false).is_empty());
+		let all = shown(&mod_file, true);
+		assert_eq!(all.len(), 3, "{all:?}");
+		let added = shown(&mod_file, false);
+		assert_eq!(added.len(), 2, "{added:?}");
+		assert!(
+			added.iter().any(|(_, message)| message.contains("`other`")),
+			"{added:?}"
+		);
+		assert_eq!(
+			added
+				.iter()
+				.filter(|(_, message)| message.contains("`mystery`"))
+				.count(),
+			1,
+			"the repeat the mod adds is still shown: {added:?}"
+		);
+	}
+
+	/// The workspace scan reads the game's file for every mod file it reads,
+	/// so a mod's unchanged copy of a game file shows none of its problems.
+	#[test]
+	fn a_scanned_mod_copy_of_a_game_file_shows_none_of_its_problems() {
+		init_scopes();
+		let engine = load_lsp_schema();
+		let text = fs::read_to_string(lsp_fixture_dir().join("events").join("diagnostics.txt"))
+			.expect("read schema-violating fixture");
+		let tmp = TempDir::new().expect("temp dir");
+		let game = tmp.path().join("game");
+		let local = tmp.path().join("mod");
+		for root in [&game, &local] {
+			fs::create_dir_all(root.join("events")).expect("create events");
+			fs::write(root.join("events").join("diagnostics.txt"), &text).expect("write event");
+		}
+		let targets = [
+			ScanTarget {
+				path: game,
+				role: TargetRole::Game,
+			},
+			ScanTarget {
+				path: local.clone(),
+				role: TargetRole::Mod,
+			},
+		];
+		let snapshot = build_workspace_snapshot_with_schema(&targets, Some(engine));
+		let mod_file = local.join("events").join("diagnostics.txt");
+		let scanned = snapshot
+			.diagnostics_by_path
+			.get(&mod_file)
+			.cloned()
+			.expect("the scan checks the mod's copy");
+		assert!(
+			scanned.iter().any(|diagnostic| {
+				diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+			}),
+			"{scanned:?}"
+		);
+		let shown = visible_diagnostics(&mod_file, scanned, &targets, false, |relative_path| {
+			snapshot
+				.game_diagnostics
+				.lock()
+				.expect("unpoisoned")
+				.get(relative_path)
+				.cloned()
+				.unwrap_or_default()
+		});
+		// What the mod's copy does to the game's definitions is the mod's
+		// own, so only the copied schema problems go.
+		let schema_problems = shown
+			.iter()
+			.filter(|diagnostic| {
+				matches!(&diagnostic.code, Some(NumberOrString::String(code)) if code.starts_with('V'))
+			})
+			.collect::<Vec<_>>();
+		assert!(schema_problems.is_empty(), "{shown:?}");
+		assert!(
+			shown
+				.iter()
+				.all(|diagnostic| diagnostic.message.contains("__lsp_mod__")),
+			"{shown:?}"
+		);
+	}
+
+	#[test]
+	fn only_files_under_a_game_root_are_the_games_own() {
+		let targets = [
+			ScanTarget {
+				path: PathBuf::from("/game"),
+				role: TargetRole::Game,
+			},
+			ScanTarget {
+				path: PathBuf::from("/game/mod"),
+				role: TargetRole::Mod,
+			},
+		];
+		let problem = vec![Diagnostic {
+			message: "problem".to_string(),
+			..Diagnostic::default()
+		}];
+		let shown = |path: &str, show_game_diagnostics: bool| {
+			visible_diagnostics(
+				Path::new(path),
+				problem.clone(),
+				&targets,
+				show_game_diagnostics,
+				|_| problem.clone(),
+			)
+			.len()
+		};
+		assert_eq!(shown("/game/events/a.txt", false), 0);
+		assert_eq!(shown("/game/events/a.txt", true), 1);
+		assert_eq!(shown("/game/mod/events/a.txt", false), 0);
+		assert_eq!(shown("/game/mod/events/a.txt", true), 1);
+		assert_eq!(shown("/elsewhere/events/a.txt", false), 1);
+	}
+
+	#[test]
+	fn initialization_options_ask_for_the_game_files_problems() {
+		let read = |value| {
+			serde_json::from_value::<InitializationOptions>(value)
+				.expect("options")
+				.show_game_diagnostics
+		};
+		assert!(read(serde_json::json!({})));
+		assert!(read(serde_json::json!({ "showGameDiagnostics": true })));
+		assert!(!read(serde_json::json!({ "showGameDiagnostics": false })));
 	}
 
 	#[test]

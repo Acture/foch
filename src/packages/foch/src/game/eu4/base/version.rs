@@ -1,19 +1,19 @@
 use super::builtin::builtin_catalog_hash;
+use crate::DATA_VERSION;
 use crate::game::eu4::active_cwt_schema_id;
 use crate::game::eu4::analysis::param_contracts::registered_param_contracts_hash;
 use std::sync::OnceLock;
 
-pub const ANALYSIS_RULES_VERSION: u32 = 34;
-
 static ANALYSIS_RULES_ID: OnceLock<String> = OnceLock::new();
 
 /// Identity of every rule set semantic analysis reads. Scope classification
-/// comes from the active CWT schema, so the schema identity is part of it.
+/// comes from the active CWT schema, so the schema identity is part of it; a
+/// change to the analysis itself raises `DATA_VERSION`.
 pub fn analysis_rules_version() -> &'static str {
 	ANALYSIS_RULES_ID.get_or_init(|| {
 		format!(
 			"rules-v{}-catalog-{}-contracts-{}-cwt-{}",
-			ANALYSIS_RULES_VERSION,
+			DATA_VERSION,
 			builtin_catalog_hash(),
 			registered_param_contracts_hash(),
 			&active_cwt_schema_id()[..16]
@@ -24,8 +24,17 @@ pub fn analysis_rules_version() -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::analysis_rules_version;
+	use crate::DATA_VERSION;
 	use crate::game::eu4::active_cwt_schema_id;
 	use crate::game::eu4::analysis::param_contracts::registered_param_contracts_hash;
+
+	#[test]
+	fn analysis_rules_version_tracks_the_data_version() {
+		assert!(
+			analysis_rules_version().starts_with(&format!("rules-v{DATA_VERSION}-")),
+			"analysis rules version should invalidate caches when the data version changes"
+		);
+	}
 
 	#[test]
 	fn analysis_rules_version_tracks_param_contract_registry() {

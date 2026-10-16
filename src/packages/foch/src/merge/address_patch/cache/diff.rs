@@ -5,6 +5,7 @@
 //! `(target_path, mod_hash, vanilla_hash)` key, to avoid rewriting a shared
 //! per-mod index and to keep failed writes isolated.
 
+use crate::DATA_VERSION;
 use crate::merge::patch::ClausewitzPatch;
 use crate::model::GamePath;
 use crate::platform::cache_store::CacheError;
@@ -14,8 +15,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Bump when the cached patch payload or diff behavior becomes incompatible.
-pub const MOD_DIFF_CACHE_VERSION: &str = "6.0.0";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;
 
@@ -46,11 +45,11 @@ struct StoredModDiff {
 
 impl ModDiffCache {
 	pub fn open(cache_dir: &Path) -> Self {
-		let root = generation_dir(cache_dir, MOD_DIFF_CACHE_VERSION);
-		if let Err(error) = ensure_generation(cache_dir, MOD_DIFF_CACHE_VERSION) {
+		let root = generation_dir(cache_dir, DATA_VERSION);
+		if let Err(error) = ensure_generation(cache_dir, DATA_VERSION) {
 			tracing::warn!(
 				cache_dir = %cache_dir.display(),
-				cache_version = MOD_DIFF_CACHE_VERSION,
+				cache_version = DATA_VERSION,
 				%error,
 				"failed to create current mod-diff cache generation"
 			);
@@ -96,7 +95,7 @@ impl ModDiffCache {
 	) -> Result<(), CacheError> {
 		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
 		let payload = StoredModDiff {
-			cache_version: MOD_DIFF_CACHE_VERSION.to_string(),
+			cache_version: DATA_VERSION.to_string(),
 			target_path: target_path.as_str().to_string(),
 			mod_hash: mod_hash.to_string(),
 			vanilla_hash: vanilla_hash.to_string(),
@@ -134,7 +133,7 @@ impl ModDiffCache {
 		);
 		let raw = fs::read(path).ok()?;
 		let stored = bincode::deserialize::<StoredModDiff>(&raw).ok()?;
-		if stored.cache_version != MOD_DIFF_CACHE_VERSION
+		if stored.cache_version != DATA_VERSION
 			|| stored.target_path != target_path.as_str()
 			|| stored.mod_hash != mod_hash
 			|| stored.vanilla_hash != vanilla_hash
@@ -155,7 +154,7 @@ impl ModDiffCache {
 		game_version: &str,
 	) -> PathBuf {
 		self.root.join(cache_filename(
-			MOD_DIFF_CACHE_VERSION,
+			DATA_VERSION,
 			target_path,
 			mod_hash,
 			vanilla_hash,
@@ -477,7 +476,7 @@ mod tests {
 	#[test]
 	fn mod_diff_cache_filename_encodes_cache_version() {
 		let current = cache_filename(
-			MOD_DIFF_CACHE_VERSION,
+			DATA_VERSION,
 			game_path("common/foo.txt"),
 			"mod-a",
 			"vanilla-a",
@@ -494,7 +493,7 @@ mod tests {
 		);
 
 		assert_ne!(current, bumped);
-		assert!(current.contains(&format!("__cv{}__", MOD_DIFF_CACHE_VERSION)));
+		assert!(current.contains(&format!("__cv{}__", DATA_VERSION)));
 		assert!(current.contains("__v0.1.0__"));
 		assert!(current.contains("__geu4_1.37__"));
 	}
@@ -546,7 +545,7 @@ mod tests {
 			)
 			.expect("store current generation entry");
 
-		let current_generation = layer_root.join(format!("v{MOD_DIFF_CACHE_VERSION}"));
+		let current_generation = layer_root.join(format!("v{DATA_VERSION}"));
 		assert_eq!(cache.root, current_generation);
 		let old_generation = layer_root.join("v5.0.0");
 		fs::create_dir_all(&old_generation).expect("create old generation");

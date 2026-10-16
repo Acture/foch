@@ -47,8 +47,15 @@ pub struct SchemaPack {
 
 impl SchemaPack {
 	pub(crate) fn load_from_dir(root: &Path) -> Result<Self, CwtLoadError> {
-		let id = cwt_schema_id_from_dir(root)?;
-		Self::load_from_dir_with_id(root, id)
+		Self::load_from_dirs(&[root])
+	}
+
+	/// One schema compiled from several directories, each read after the one
+	/// before it, so a later directory adds to the rules of an earlier one.
+	pub(crate) fn load_from_dirs(roots: &[&Path]) -> Result<Self, CwtLoadError> {
+		let id = cwt_schema_id_from_dirs(roots)?;
+		let graph = Arc::new(CwtSchemaGraph::from_directories(roots)?);
+		Ok(Self { id, graph })
 	}
 
 	pub(crate) fn load_from_dir_with_id(
@@ -60,27 +67,42 @@ impl SchemaPack {
 	}
 }
 
-/// The identity of the schema below `root`. Compilation reads where each
-/// rule lives (a `type` without `path` defaults to its file's directory) and
-/// lets a later file override an earlier one, so the id binds every file's
-/// name below `root` and its content, each length-prefixed so neither a
-/// moved file nor bytes shifted across a file boundary keep the old id.
-/// Names are joined with `/` in their exact case; content has its line
+/// Separates the files of one directory from the next in a schema id. No
+/// file name is this long, so it cannot be read as a name's length prefix.
+const SCHEMA_DIRECTORY_BOUNDARY: u64 = u64::MAX;
+
+/// The identity of the schema below `root`. Compilation reads the files in
+/// name order and lets a later file override an earlier one, so the id binds
+/// every file's name below `root` and its content, each length-prefixed so
+/// neither a moved file nor bytes shifted across a file boundary keep the old
+/// id. Names are joined with `/` in their exact case; content has its line
 /// endings normalized.
 pub fn cwt_schema_id_from_dir(root: &Path) -> Result<CwtSchemaId, CwtLoadError> {
+	cwt_schema_id_from_dirs(&[root])
+}
+
+/// The identity of a schema compiled from `roots` in order: the files of
+/// each directory as [`cwt_schema_id_from_dir`] binds them, with a boundary
+/// between directories. A single directory keeps its own id.
+pub fn cwt_schema_id_from_dirs(roots: &[&Path]) -> Result<CwtSchemaId, CwtLoadError> {
 	let mut hasher = Sha256::new();
 	hasher.update(b"foch-cwt-schema-id/v2\n");
-	for path in cwt_files(root)? {
-		let bytes = std::fs::read(&path).map_err(|source| CwtLoadError::Io {
-			path: path.clone(),
-			source,
-		})?;
-		let name = schema_file_name(root, &path);
-		let content = normalize_line_endings(&bytes);
-		hasher.update((name.len() as u64).to_le_bytes());
-		hasher.update(&name);
-		hasher.update((content.len() as u64).to_le_bytes());
-		hasher.update(&content);
+	for (index, root) in roots.iter().enumerate() {
+		if index > 0 {
+			hasher.update(SCHEMA_DIRECTORY_BOUNDARY.to_le_bytes());
+		}
+		for path in cwt_files(root)? {
+			let bytes = std::fs::read(&path).map_err(|source| CwtLoadError::Io {
+				path: path.clone(),
+				source,
+			})?;
+			let name = schema_file_name(root, &path);
+			let content = normalize_line_endings(&bytes);
+			hasher.update((name.len() as u64).to_le_bytes());
+			hasher.update(&name);
+			hasher.update((content.len() as u64).to_le_bytes());
+			hasher.update(&content);
+		}
 	}
 	Ok(CwtSchemaId(hasher.finalize().into()))
 }
@@ -169,7 +191,7 @@ mod tests {
 	use std::fs;
 	use std::path::Path;
 
-	use super::{CwtSchemaId, cwt_files, cwt_schema_id_from_dir};
+	use super::{CwtSchemaId, cwt_files, cwt_schema_id_from_dir, cwt_schema_id_from_dirs};
 	use crate::game::schema::error::CwtLoadError;
 
 	fn relative_names(root: &Path) -> Vec<String> {
@@ -238,10 +260,10 @@ mod tests {
 		assert_eq!(CwtSchemaId::from_hex(&"zz".repeat(32)), None);
 	}
 
-	/// A `type` without `path` defaults to its file's directory, so moving a
-	/// file changes the compiled schema and must change its id. So must
-	/// moving bytes from one file into the next, which keeps their
-	/// concatenation but changes which file overrides which.
+	/// A file's name decides when it is compiled, and so which file overrides
+	/// which: renaming or moving a file must change the id. So must moving
+	/// bytes from one file into the next, which keeps their concatenation but
+	/// changes which file overrides which.
 	#[test]
 	fn schema_id_binds_file_names_and_boundaries() {
 		let id_of = |files: &[(&str, &str)]| {
@@ -261,6 +283,34 @@ mod tests {
 		assert_ne!(
 			id_of(&[("a.cwt", "types = { }\n"), ("b.cwt", "enums = { }\n")]),
 			id_of(&[("a.cwt", "types = { }\nenums = { }\n"), ("b.cwt", "")])
+		);
+	}
+
+	/// Each directory is compiled after the one before it, so which directory
+	/// holds a file, and their order, are part of the id. A single directory
+	/// keeps the id it has on its own.
+	#[test]
+	fn schema_id_binds_each_directory_and_their_order() {
+		let directory = |files: &[(&str, &str)]| {
+			let root = tempfile::tempdir().unwrap();
+			for (relative, content) in files {
+				fs::write(root.path().join(relative), content).unwrap();
+			}
+			root
+		};
+		let vendor = directory(&[("a.cwt", "types = { }\n"), ("b.cwt", "enums = { }\n")]);
+		let first = directory(&[("a.cwt", "types = { }\n")]);
+		let second = directory(&[("b.cwt", "enums = { }\n")]);
+		let id = |roots: &[&Path]| cwt_schema_id_from_dirs(roots).unwrap();
+
+		assert_eq!(
+			id(&[vendor.path()]),
+			cwt_schema_id_from_dir(vendor.path()).unwrap()
+		);
+		assert_ne!(id(&[first.path(), second.path()]), id(&[vendor.path()]));
+		assert_ne!(
+			id(&[first.path(), second.path()]),
+			id(&[second.path(), first.path()])
 		);
 	}
 
