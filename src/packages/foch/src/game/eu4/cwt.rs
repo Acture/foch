@@ -2,7 +2,6 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use super::base::builtin::is_builtin_effect;
 use super::content::ScriptFileKind;
 use crate::game::schema::CwtSchema;
 #[cfg(test)]
@@ -441,8 +440,12 @@ pub(crate) fn schema_path_container_scope_kind(
 		})?
 	};
 	if let Some(field_match) = engine.bind_field_match(parent, key) {
+		// An effect or trigger names what its key does, not what its block
+		// holds: `form_federation_nation = { post_effect = { ... } }` takes
+		// parameters, and only `post_effect` holds effects.
 		if let Some(alias) = field_match.alias()
-			&& let Some(kind) = cwt_alias_category_scope_kind(engine, &alias.category)
+			&& let Some(kind) = cwt_container_block_scope_kind(engine, &alias.rules)
+				.or_else(|| cwt_alias_category_scope_kind(engine, &alias.category))
 		{
 			return Some(kind);
 		}
@@ -798,9 +801,6 @@ fn cwt_container_block_scope_kind(
 			Some(ScopeKind::Block) => has_block = true,
 			_ => {}
 		}
-		if is_effect_like_child_key(&child.key) {
-			has_effect = true;
-		}
 	}
 	if has_effect {
 		Some(ScopeKind::Effect)
@@ -882,23 +882,6 @@ fn cwt_alias_category_scope_kind(
 
 fn is_event_like_reference(value: &str) -> bool {
 	value.starts_with("<event.") && value.ends_with('>')
-}
-
-fn is_effect_like_child_key(key: &str) -> bool {
-	matches!(
-		key,
-		"effect"
-			| "removed_effect"
-			| "hidden_effect"
-			| "immediate"
-			| "after" | "on_add"
-			| "on_remove"
-			| "on_start"
-			| "on_end"
-			| "on_monthly"
-	) || key.starts_with("on_")
-		|| key.ends_with("_effect")
-		|| is_builtin_effect(key)
 }
 
 /// Hand-maintained fallbacks for cwtools-eu4-config schema gaps.

@@ -3900,11 +3900,14 @@ ai_acceptance = {
 			"{name} should not produce unresolved-call-target"
 		);
 	}
-	for name in ["missing_effect", "missing_inner_effect"] {
-		assert!(diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
-		}));
-	}
+	assert!(diagnostics.strict.iter().any(|finding| {
+		finding.rule_id == "unresolved-call-target" && finding.message.contains("missing_effect")
+	}));
+	// `add_entry` is a data block of named fields, so an unknown key in it is
+	// not a call; the schema check reports it as an unknown key.
+	assert!(!index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect && reference.name == "missing_inner_effect"
+	}));
 }
 
 #[test]
@@ -8095,5 +8098,64 @@ fn the_schema_rules_out_a_repair_that_gives_a_value_the_wrong_shape() {
 			.all(|diagnostic| diagnostic.repair.is_none()),
 		"{:?}",
 		unchecked.diagnostics
+	);
+}
+
+#[test]
+fn schema_declared_data_keys_are_not_scripted_effect_calls() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	let files = [
+		(
+			"common/tradenodes/00_tradenodes.txt",
+			"lubeck = {\n\tlocation = 45\n\toutgoing = {\n\t\tname = \"baltic_sea\"\n\t\tpath = { 1 2 }\n\t\tcontrol = { 1.0 2.0 }\n\t}\n\tmembers = { 45 }\n}\n",
+		),
+		(
+			"map/ambient_object.txt",
+			"type = {\n\ttype = \"eagle\"\n\tuse_animation = yes\n\tobject = {\n\t\tname = \"Eagle_Alps\"\n\t\thidden_on_start = no\n\t\tposition = { 1.0 2.0 3.0 }\n\t\trotation = { 0.0 45.0 0.0 }\n\t}\n}\n",
+		),
+		(
+			"common/government_mechanics/00_test.txt",
+			"test_mechanic = {\n\tpowers = {\n\t\ttest_adm_power = {\n\t\t\tmax = 100\n\t\t\tmonarch_power = ADM\n\t\t\tbase_monthly_growth = 1\n\t\t}\n\t}\n}\n",
+		),
+		(
+			"common/federation_advancements/00_test.txt",
+			"test_advancement = {\n\teffect = {\n\t\tform_federation_nation = {\n\t\t\tpost_effect = {\n\t\t\t\tmissing_test_effect = { amount = 1 }\n\t\t\t}\n\t\t}\n\t}\n}\n",
+		),
+	];
+	let parsed = files
+		.iter()
+		.map(|(relative, text)| {
+			let path = mod_root.join(relative);
+			fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
+			fs::write(&path, text).expect("write file");
+			parse_script_file("1001", &mod_root, &path).expect("parsed script")
+		})
+		.collect::<Vec<_>>();
+
+	let index = build_semantic_index(&parsed);
+	let effect_calls = index
+		.references
+		.iter()
+		.filter(|reference| reference.kind == SymbolKind::ScriptedEffect)
+		.map(|reference| reference.name.as_str())
+		.collect::<Vec<_>>();
+	for name in [
+		"path",
+		"control",
+		"members",
+		"rotation",
+		"position",
+		"test_adm_power",
+		"post_effect",
+	] {
+		assert!(
+			!effect_calls.contains(&name),
+			"{name} is a declared field, not a scripted effect call: {effect_calls:?}"
+		);
+	}
+	assert!(
+		effect_calls.contains(&"missing_test_effect"),
+		"a call inside an effect parameter block is still a call: {effect_calls:?}"
 	);
 }
