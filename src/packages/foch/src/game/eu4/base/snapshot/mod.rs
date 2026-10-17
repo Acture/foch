@@ -1262,6 +1262,11 @@ pub fn base_game_mod_id(game_key: &str) -> String {
 	format!("{BASE_GAME_MOD_ID_PREFIX}{game_key}")
 }
 
+/// Whether `mod_id` names the game installation rather than a mod.
+pub fn is_base_game_mod_id(mod_id: &str) -> bool {
+	mod_id.starts_with(BASE_GAME_MOD_ID_PREFIX)
+}
+
 pub fn resolve_game_root(config: &Config, game: &Eu4) -> Option<PathBuf> {
 	let mut candidates = Vec::new();
 	if let Some(path) = config.game_path.get(game.key()) {
