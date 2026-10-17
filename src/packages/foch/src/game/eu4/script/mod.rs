@@ -29,6 +29,7 @@ use super::cwt::{
 	schema_path_container_scope_kind,
 };
 pub use super::cwt::{iterator_scope_type, scope_changer_target_type, special_block_scope_kind};
+use crate::game::eu4::editor::schema::schema_definitions;
 use crate::game::schema::query::CwtQuery;
 use crate::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, GamePath, GamePathBuf, KeyUsage,
@@ -289,6 +290,9 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 				});
 				index.parse_issues.extend(file.parse_issues.clone());
 				build_file_index(file, &map_groups, cwt_rule_engine, &mut index);
+				index
+					.resource_references
+					.extend(schema_key_definitions(file, super::cwt::rule_engine()));
 				let cultures =
 					super::cultures::collect_culture_references(&file.ast, &file.relative_path);
 				index
@@ -329,6 +333,41 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 	infer_definition_dynamic_alias_masks_from_references(&mut index);
 	apply_registered_param_contracts(&mut index);
 	index
+}
+
+/// Key name for a definition whose name the schema makes a trigger key.
+pub(crate) const TRIGGER_KEY_DEFINITION: &str = "trigger_key_definition";
+/// Key name for a definition whose name the schema makes an effect key.
+pub(crate) const EFFECT_KEY_DEFINITION: &str = "effect_key_definition";
+
+/// The definitions in `file` whose names are trigger or effect keys, such as
+/// `tin = 1` for a trade good a mod adds. Each file records its own, so the
+/// game's names come with the base snapshot and a mod's with that mod.
+fn schema_key_definitions(file: &ParsedScriptFile, engine: &CwtQuery) -> Vec<ResourceReference> {
+	let mut references = Vec::new();
+	for root in engine.matching_roots(&file.relative_path) {
+		let (trigger, effect) = super::cwt::schema_type_names_are_keys(&root.name);
+		let keys = [
+			trigger.then_some(TRIGGER_KEY_DEFINITION),
+			effect.then_some(EFFECT_KEY_DEFINITION),
+		];
+		if keys.iter().all(Option::is_none) {
+			continue;
+		}
+		for (name, range) in schema_definitions(root, &file.ast.statements, &file.relative_path) {
+			for key in keys.into_iter().flatten() {
+				references.push(ResourceReference {
+					key: key.to_owned(),
+					value: name.clone(),
+					mod_id: file.mod_id.clone(),
+					path: file.relative_path.clone(),
+					line: range.start.line as usize + 1,
+					column: range.start.character as usize + 1,
+				});
+			}
+		}
+	}
+	references
 }
 
 /// Resolve the semantic role of a concrete script block in the active EU4 CWT schema.
@@ -1167,7 +1206,7 @@ fn is_scripted_effect_call_candidate(
 	if is_template_param_placeholder_key(key) || key.contains('$') || key.contains('[') {
 		return false;
 	}
-	if key.parse::<u32>().is_ok() {
+	if key.parse::<u32>().is_ok() || is_random_list_weight(index, scope_id, key) {
 		return false;
 	}
 	if is_dynamic_scope_reference_key(key) {
@@ -1240,7 +1279,7 @@ fn is_scripted_trigger_call_candidate(
 	if is_template_param_placeholder_key(key) || key.contains('$') || key.contains('[') {
 		return false;
 	}
-	if key.parse::<u32>().is_ok() {
+	if key.parse::<u32>().is_ok() || is_random_list_weight(index, scope_id, key) {
 		return false;
 	}
 	if is_dynamic_scope_reference_key(key) {
@@ -1371,8 +1410,10 @@ fn effect_context_scope_semantics(
 			base_scope::country(),
 		));
 	}
-	if let Some(selector) = numeric_effect_context_semantics(key) {
-		return Some(selector);
+	if is_province_id_selector(key) {
+		return Some(EffectContextScopeSemantics::ScopeChanger(
+			base_scope::province(),
+		));
 	}
 	if is_country_tag_selector(key) {
 		return Some(EffectContextScopeSemantics::ScopeChanger(
@@ -1506,7 +1547,8 @@ fn create_child_scope(
 			| "on_start"
 			| "on_end"
 			| "on_monthly"
-	) {
+	) || is_random_list_weight(index, parent_scope_id, key)
+	{
 		kind = ScopeKind::Effect;
 	} else if let Some(semantics) = effect_context_semantics {
 		match semantics {
@@ -1524,59 +1566,14 @@ fn create_child_scope(
 				aliases.insert("THIS".to_string(), target.into());
 			}
 		}
-	} else if is_province_id_selector(key) && scope_kind(index, parent_scope_id) != ScopeKind::File
-	{
-		kind = ScopeKind::AliasBlock;
-		this_type = base_scope::province().into();
-		aliases.insert("THIS".to_string(), base_scope::province().into());
-	} else if is_map_group_scope_key(ctx, key, parent_scope_id, index) {
-		kind = ScopeKind::Loop;
-		this_type = base_scope::province().into();
-		aliases.insert("THIS".to_string(), base_scope::province().into());
 	} else if is_builtin_special_block(key) {
 		kind = special_block_scope_kind(key);
-	} else if is_builtin_iterator(key) {
-		kind = ScopeKind::Loop;
-		this_type = iterator_scope_type(key)
-			.map(MaybeScope::from)
-			.unwrap_or(this_type);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if is_builtin_scope_changer(key) {
-		kind = ScopeKind::AliasBlock;
-		this_type = scope_changer_target_type(key)
-			.map(MaybeScope::from)
-			.unwrap_or(this_type);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key == "every_owned_province" {
-		kind = ScopeKind::Loop;
-		this_type = base_scope::province().into();
-		aliases.insert("THIS".to_string(), base_scope::province().into());
-	} else if key.eq_ignore_ascii_case("ROOT") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("ROOT").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key.eq_ignore_ascii_case("THIS") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("THIS").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key.eq_ignore_ascii_case("FROM") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("FROM").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key.eq_ignore_ascii_case("PREV") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("PREV").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if is_dynamic_scope_reference_key(key) {
-		// `event_target:X = { ... }` switches the inner this scope to a
-		// dynamically saved target whose type is not statically known. Mark
-		// it Unknown so scope-sensitive advisories (e.g. scope-type-mismatch) skip the
-		// inner block instead of inheriting the parent's province/country
-		// type, which produces false positives in vanilla idioms like
-		// `event_target:foo = { country_event = { ... } }`.
-		kind = ScopeKind::AliasBlock;
-		this_type = MaybeScope::Unknown;
-		aliases.insert("THIS".to_string(), MaybeScope::Unknown);
+	} else if let Some((switch_kind, target)) =
+		scope_switch(ctx, index, parent_scope_id, key, &aliases)
+	{
+		kind = switch_kind;
+		this_type = target;
+		aliases.insert("THIS".to_string(), target);
 	} else if let Some(event_this_type) = event_scope_type(key) {
 		kind = ScopeKind::Event;
 		this_type = event_this_type.into();
@@ -1722,15 +1719,75 @@ fn is_template_param_placeholder_key(key: &str) -> bool {
 	extract_template_param_name(key).is_some()
 }
 
-fn numeric_effect_context_semantics(key: &str) -> Option<EffectContextScopeSemantics> {
-	let value = key.parse::<u32>().ok()?;
-	if value <= 100 {
-		Some(EffectContextScopeSemantics::EffectContainer)
-	} else {
-		Some(EffectContextScopeSemantics::ScopeChanger(
-			base_scope::province(),
-		))
+/// The scope a block keyed `key` switches to, and whether it loops over it.
+/// Only script switches scope: a file's top-level keys name definitions, so
+/// `EMPEROR = { ... }` in the message types is a message, not the emperor.
+fn scope_switch(
+	ctx: &BuildContext<'_>,
+	index: &SemanticIndex,
+	parent_scope_id: usize,
+	key: &str,
+	aliases: &BTreeMap<String, MaybeScope>,
+) -> Option<(ScopeKind, MaybeScope)> {
+	if scope_kind(index, parent_scope_id) == ScopeKind::File {
+		return None;
 	}
+	let this_type = scope_this_type(index, parent_scope_id);
+	if is_province_scope_key(index, parent_scope_id, key) {
+		return Some((ScopeKind::AliasBlock, base_scope::province().into()));
+	}
+	if is_map_group_scope_key(ctx, key, parent_scope_id, index) || key == "every_owned_province" {
+		return Some((ScopeKind::Loop, base_scope::province().into()));
+	}
+	if is_builtin_iterator(key) {
+		let target = iterator_scope_type(key).map_or(this_type, MaybeScope::from);
+		return Some((ScopeKind::Loop, target));
+	}
+	if is_builtin_scope_changer(key) {
+		let target = scope_changer_target_type(key).map_or(this_type, MaybeScope::from);
+		return Some((ScopeKind::AliasBlock, target));
+	}
+	if let Some(alias) = ["ROOT", "THIS", "FROM", "PREV"]
+		.into_iter()
+		.find(|alias| key.eq_ignore_ascii_case(alias))
+	{
+		let target = aliases.get(alias).copied().unwrap_or(MaybeScope::Unknown);
+		return Some((ScopeKind::AliasBlock, target));
+	}
+	if is_dynamic_scope_reference_key(key) {
+		// `event_target:X = { ... }` switches to a saved target whose type
+		// is not statically known. It is Unknown so scope-sensitive
+		// advisories skip the block instead of inheriting the parent's
+		// type, which misfires on idioms like
+		// `event_target:foo = { country_event = { ... } }`.
+		return Some((ScopeKind::AliasBlock, MaybeScope::Unknown));
+	}
+	None
+}
+
+/// Whether a block keyed `key` under `parent_scope_id` switches to a
+/// province. Where triggers and effects are written a number names one;
+/// elsewhere it is data, such as the `0 = { ... }` options of an imperial
+/// incident.
+fn is_province_scope_key(index: &SemanticIndex, parent_scope_id: usize, key: &str) -> bool {
+	matches!(
+		scope_kind(index, parent_scope_id),
+		ScopeKind::Trigger
+			| ScopeKind::Effect
+			| ScopeKind::ScriptedEffect
+			| ScopeKind::Loop
+			| ScopeKind::AliasBlock
+	) && is_province_id_selector(key)
+}
+
+/// Whether `key` is the weight of a `random_list` branch. Any number is a
+/// weight there, while a number anywhere else in script names a province.
+fn is_random_list_weight(index: &SemanticIndex, scope_id: usize, key: &str) -> bool {
+	key.parse::<f64>().is_ok()
+		&& index
+			.scopes
+			.get(scope_id)
+			.is_some_and(|scope| scope.key.eq_ignore_ascii_case("random_list"))
 }
 
 struct ScopeArgs<'a> {

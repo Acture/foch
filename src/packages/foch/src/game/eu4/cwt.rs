@@ -1026,7 +1026,55 @@ pub fn is_province_id_text(value: &str) -> bool {
 }
 
 pub fn is_province_id_selector(key: &str) -> bool {
-	key.parse::<u32>().map(|value| value > 100).unwrap_or(false)
+	is_province_id_text(key)
+}
+
+/// Whether the schema declares `key` itself as a trigger.
+pub(crate) fn is_schema_trigger(key: &str) -> bool {
+	rule_engine()
+		.alias(CompiledAliasCategory::Trigger, &key.to_ascii_lowercase())
+		.is_some()
+}
+
+/// Whether the schema declares `key` itself as an effect.
+pub(crate) fn is_schema_effect(key: &str) -> bool {
+	rule_engine()
+		.alias(CompiledAliasCategory::Effect, &key.to_ascii_lowercase())
+		.is_some()
+}
+
+/// What the names of a schema type's definitions are in script, as
+/// `(trigger, effect)`. The schema declares `alias[trigger:<trade_good>] =
+/// int`, so the name of every trade good, the game's or a mod's, is a
+/// trigger.
+pub(crate) fn schema_type_names_are_keys(type_name: &str) -> (bool, bool) {
+	static KEY_TYPES: OnceLock<std::collections::HashMap<String, (bool, bool)>> = OnceLock::new();
+	KEY_TYPES
+		.get_or_init(|| {
+			let mut types = std::collections::HashMap::<String, (bool, bool)>::new();
+			for alias in rule_engine().aliases() {
+				let Some(type_name) = alias
+					.name
+					.strip_prefix('<')
+					.and_then(|name| name.strip_suffix('>'))
+				else {
+					continue;
+				};
+				// `<area.used>` names the areas of one subtype; any area's
+				// name is taken.
+				let type_name = type_name.split('.').next().unwrap_or(type_name);
+				let entry = types.entry(type_name.to_string()).or_default();
+				match alias.category {
+					CompiledAliasCategory::Trigger => entry.0 = true,
+					CompiledAliasCategory::Effect => entry.1 = true,
+					_ => {}
+				}
+			}
+			types
+		})
+		.get(type_name)
+		.copied()
+		.unwrap_or_default()
 }
 
 pub fn is_dynamic_scope_reference_key(key: &str) -> bool {

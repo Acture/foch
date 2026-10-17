@@ -8159,3 +8159,165 @@ fn schema_declared_data_keys_are_not_scripted_effect_calls() {
 		"a call inside an effect parameter block is still a call: {effect_calls:?}"
 	);
 }
+
+#[test]
+fn random_list_weights_are_not_calls_and_numbers_elsewhere_are_provinces() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	let path = mod_root
+		.join("common")
+		.join("scripted_effects")
+		.join("00_test.txt");
+	fs::create_dir_all(path.parent().expect("parent")).expect("create scripted effects");
+	fs::write(
+		&path,
+		r#"
+test_tooltip_effect = {
+	tooltip = {
+		random_list = {
+			10 = { add_prestige = 1 }
+			0.5 = { add_prestige = 2 }
+		}
+	}
+}
+test_weighted_effect = {
+	random_list = {
+		1 = { add_prestige = 1 }
+		0.95 = { missing_weighted_effect = { FLAG = TEST } }
+		150 = { add_prestige = 2 }
+	}
+	1 = { add_core = ROOT }
+}
+"#,
+	)
+	.expect("write scripted effect");
+
+	let parsed = [parse_script_file("1001", &mod_root, &path).expect("parsed")];
+	let index = build_semantic_index(&parsed);
+	for name in ["0.95", "0.5", "1", "10", "150"] {
+		assert!(
+			!index.references.iter().any(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+			}),
+			"{name} should not be recorded as a scripted effect reference"
+		);
+	}
+	// A weight's branch holds effects.
+	assert!(index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect && reference.name == "missing_weighted_effect"
+	}));
+	// Outside `random_list`, a number names a province, however small.
+	assert!(
+		index.scopes.iter().any(|scope| {
+			scope.key == "1"
+				&& scope.kind == ScopeKind::AliasBlock
+				&& index.scopes[scope.parent.expect("parent")].key == "test_weighted_effect"
+		}),
+		"province 1 should be a scope change"
+	);
+	// However deep, a weight is not a province.
+	assert!(
+		!index.scopes.iter().any(|scope| {
+			matches!(scope.key.as_str(), "10" | "150" | "0.5" | "0.95")
+				&& scope.kind != ScopeKind::Effect
+		}),
+		"random_list weights should hold effects"
+	);
+}
+
+#[test]
+fn definition_names_the_schema_makes_triggers_resolve_across_mods() {
+	let tmp = TempDir::new().expect("temp dir");
+	let goods_root = tmp.path().join("goods");
+	let goods_path = goods_root
+		.join("common")
+		.join("tradegoods")
+		.join("00_goods.txt");
+	fs::create_dir_all(goods_path.parent().expect("parent")).expect("create tradegoods");
+	fs::write(&goods_path, "tin = {\n\tcolor = { 0.5 0.5 0.5 }\n}\n").expect("write goods");
+	let subjects_path = goods_root
+		.join("common")
+		.join("subject_types")
+		.join("00_subjects.txt");
+	fs::create_dir_all(subjects_path.parent().expect("parent")).expect("create subject types");
+	fs::write(
+		&subjects_path,
+		"test_crown_colony = {\n\tcount = test_crown_colony\n}\n",
+	)
+	.expect("write subject types");
+
+	let events_root = tmp.path().join("events");
+	let events_path = events_root.join("events").join("test.txt");
+	fs::create_dir_all(events_path.parent().expect("parent")).expect("create events");
+	fs::write(
+		&events_path,
+		r#"
+namespace = test
+country_event = {
+	id = test.1
+	trigger = {
+		tin = 1
+		test_crown_colony = 1
+		any_federation_members = { always = yes }
+		missing_test_trigger = 1
+		every_province = { always = yes }
+	}
+}
+"#,
+	)
+	.expect("write events");
+
+	// Each mod indexes on its own; the check appends their indexes.
+	let mut index = build_semantic_index(&[
+		parse_script_file("1001", &goods_root, &goods_path).expect("parsed goods"),
+		parse_script_file("1001", &goods_root, &subjects_path).expect("parsed subjects"),
+	]);
+	index.append(build_semantic_index(&[parse_script_file(
+		"1002",
+		&events_root,
+		&events_path,
+	)
+	.expect("parsed events")]));
+
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	let unresolved = |name: &str| {
+		diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "unresolved-call-target"
+				&& finding.message.ends_with(&format!(" {name}"))
+		})
+	};
+	for name in ["tin", "test_crown_colony", "any_federation_members"] {
+		assert!(!unresolved(name), "{name} should resolve");
+	}
+	assert!(unresolved("missing_test_trigger"));
+	// An effect is not a trigger.
+	assert!(unresolved("every_province"));
+}
+
+#[test]
+fn top_level_keys_named_like_scope_switches_are_definitions() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	let path = mod_root.join("interface").join("messagetypes.txt");
+	fs::create_dir_all(path.parent().expect("parent")).expect("create interface");
+	fs::write(
+		&path,
+		"EMPEROR=\n{\n\toption=yes\n\tto_me=\n\t{\n\t\tlog=yes\n\t}\n}\n",
+	)
+	.expect("write message types");
+
+	let parsed = [parse_script_file("1001", &mod_root, &path).expect("parsed")];
+	let index = build_semantic_index(&parsed);
+	assert!(
+		!index
+			.references
+			.iter()
+			.any(|reference| reference.name == "to_me"),
+		"to_me should not be recorded as a call"
+	);
+}

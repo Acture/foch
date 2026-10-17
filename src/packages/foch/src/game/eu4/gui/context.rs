@@ -261,7 +261,7 @@ impl<'a> ContextWalk<'a> {
 		parent: &str,
 	) {
 		let lower = key.to_ascii_lowercase();
-		let weighted_option = parent == "random_list" && key.chars().all(|c| c.is_ascii_digit());
+		let weighted_option = parent == "random_list" && key.parse::<f64>().is_ok();
 		if SAME_SCOPE_CONTAINERS.contains(&lower.as_str()) || weighted_option {
 			self.commands(items, stack, path, &lower);
 			return;

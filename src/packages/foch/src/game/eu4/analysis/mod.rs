@@ -5,12 +5,14 @@ pub mod rules;
 use self::param_contracts::evaluate_param_contract;
 use super::base::VanillaSymbolIndex;
 use super::content::eu4;
+use super::cwt::{is_schema_effect, is_schema_trigger};
 use super::scope::{should_flag_duplicates, should_flag_unresolved};
 use super::script::{
-	build_inferred_callable_scope_map, collect_inferred_callable_masks,
-	effective_alias_scope_mask_with_overrides, effective_scope_mask_with_overrides,
-	resolve_cross_kind_reference_targets, resolve_event_reference_targets,
-	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
+	EFFECT_KEY_DEFINITION, TRIGGER_KEY_DEFINITION, build_inferred_callable_scope_map,
+	collect_inferred_callable_masks, effective_alias_scope_mask_with_overrides,
+	effective_scope_mask_with_overrides, resolve_cross_kind_reference_targets,
+	resolve_event_reference_targets, resolve_scripted_effect_reference_targets,
+	resolve_scripted_trigger_reference_targets,
 };
 use crate::model::{
 	AnalysisMode, Finding, FindingChannel, GamePath, GamePathBuf, ScopeSet, SemanticDiagnostics,
@@ -236,20 +238,18 @@ fn check_unresolved_call_targets(
 ) -> Vec<Finding> {
 	let mut seen = HashSet::new();
 	let mut findings = Vec::new();
-	// Some EU4 trigger keys are not scripted_triggers but the *names* of
-	// content definitions whose presence implicitly creates a trigger key
-	// (e.g. an advisor type name `idea_var_advisor_5 = 2` tests "country
-	// has hired an advisor of that type with skill ≥ 2"). These are routed
-	// to the analyzer as ScriptedTrigger references because they sit on
-	// the LHS of a scalar assignment in trigger context, but they will
-	// never resolve to a scripted_trigger definition. Build a set of such
-	// "implicit trigger key" names from the resource-reference index so
-	// the resolver can tolerate them. Names are stored lowercased to
-	// match the case-insensitive lookup convention used elsewhere.
-	let mut implicit_trigger_names: HashSet<String> = HashSet::new();
+	// The names of some definitions are trigger or effect keys themselves:
+	// the schema makes every trade good a trigger (`tin = 1`), every advisor
+	// type one (`treasurer = 2`). Each file's index records the names it
+	// defines, mods' included, stored lowercased to match the engine's
+	// case-insensitive keys.
+	let mut definition_trigger_keys: HashSet<String> = HashSet::new();
+	let mut definition_effect_keys: HashSet<String> = HashSet::new();
 	for resource in &index.resource_references {
-		if resource.key == "advisor_type_definition" {
-			implicit_trigger_names.insert(resource.value.to_ascii_lowercase());
+		if resource.key == TRIGGER_KEY_DEFINITION {
+			definition_trigger_keys.insert(resource.value.to_ascii_lowercase());
+		} else if resource.key == EFFECT_KEY_DEFINITION {
+			definition_effect_keys.insert(resource.value.to_ascii_lowercase());
 		}
 	}
 	for reference in &index.references {
@@ -271,7 +271,9 @@ fn check_unresolved_call_targets(
 		}
 		match reference.kind {
 			SymbolKind::ScriptedEffect => {
-				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
+				if !resolve_scripted_effect_reference_targets(index, reference).is_empty()
+					|| definition_effect_keys.contains(&reference.name.to_ascii_lowercase())
+				{
 					continue;
 				}
 				// Cross-kind: effect reference might resolve to a trigger def
@@ -299,15 +301,21 @@ fn check_unresolved_call_targets(
 				{
 					continue;
 				}
-				// Implicit trigger keys: advisor-type names act as trigger
-				// keys at runtime ("country has advisor of type X with
-				// skill ≥ N"). They never appear as scripted_trigger
-				// definitions.
-				if implicit_trigger_names.contains(&reference.name.to_ascii_lowercase()) {
+				if definition_trigger_keys.contains(&reference.name.to_ascii_lowercase()) {
 					continue;
 				}
 			}
 			_ => {}
+		}
+		// The schema declares the engine's triggers and effects the
+		// built-in catalog may lack, such as `any_federation_members`.
+		let schema_declared = match reference.kind {
+			SymbolKind::ScriptedTrigger => is_schema_trigger(&reference.name),
+			SymbolKind::ScriptedEffect => is_schema_effect(&reference.name),
+			_ => false,
+		};
+		if schema_declared {
+			continue;
 		}
 
 		let dedup_key = (

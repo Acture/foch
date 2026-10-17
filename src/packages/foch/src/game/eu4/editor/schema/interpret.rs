@@ -1961,10 +1961,23 @@ pub(super) fn schema_definition_names(
 	statements: &[AstStatement],
 	file_path: &GamePath,
 ) -> Vec<String> {
+	schema_definitions(root, statements, file_path)
+		.into_iter()
+		.map(|(name, _)| name)
+		.collect()
+}
+
+/// The definitions of `root` that a file declares: each name, and where it
+/// is written.
+pub(crate) fn schema_definitions(
+	root: &CompiledRoot,
+	statements: &[AstStatement],
+	file_path: &GamePath,
+) -> Vec<(String, EditorRange)> {
 	if root.type_per_file {
 		return file_path
 			.file_stem()
-			.map(str::to_string)
+			.map(|stem| (stem.to_string(), EditorRange::default()))
 			.into_iter()
 			.collect();
 	}
@@ -1975,7 +1988,7 @@ pub(super) fn schema_definition_names(
 				.as_ref()
 				.is_none_or(|filter| instance.path.last().is_some_and(|key| filter.matches(key)))
 		})
-		.map(|instance| instance.identity)
+		.map(|instance| (instance.identity, instance.identity_range))
 		.collect()
 }
 
