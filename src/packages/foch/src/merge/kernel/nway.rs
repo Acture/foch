@@ -174,7 +174,14 @@ impl NWayCorrespondence {
 						&base_matchings[classes.0],
 						&base_matchings[classes.1],
 					);
-					matcher.match_trees_with_seed(left.tree, right.tree, Some(&seed))
+					let mut matching =
+						matcher.match_trees_with_seed(left.tree, right.tree, Some(&seed));
+					separate_divergent_additions(
+						&mut matching,
+						(left.tree, &base_matchings[classes.0]),
+						(right.tree, &base_matchings[classes.1]),
+					);
+					matching
 				});
 				matchings.insert((left.id, right.id), matching.clone());
 			}
@@ -1268,6 +1275,66 @@ fn build_class_facts(
 			)
 		})
 		.collect()
+}
+
+/// The anchor namespace of a statement the schema lets a block repeat, such
+/// as a trigger in an `OR` or an effect in an effect block.
+pub const REPEATABLE_STATEMENT: &str = "clausewitz.statement.key";
+
+/// The anchor namespace of a block of conditions the game reads together,
+/// holding no effects.
+pub const CONDITION_BLOCK: &str = "clausewitz.block.conditions";
+
+/// Two revisions that each add a repeatable statement the base lacks add two
+/// statements, unless they add the same one: two mods that extend an `OR`
+/// with an alternative of their own keep both alternatives. Matching would
+/// pair the two by their shared key, so such pairs, with everything under
+/// them, are dropped. A statement the base has is matched as before, so a
+/// change to it is still a change.
+fn separate_divergent_additions(
+	matching: &mut Matching,
+	(left, left_base): (&NormalizedTree, &Matching),
+	(right, right_base): (&NormalizedTree, &Matching),
+) {
+	let is_addition =
+		|tree: &NormalizedTree, base: &Matching, node: crate::merge::kernel::NodeId| {
+			base.get_from_right(node).is_none()
+				&& tree.node(node).is_ok_and(|node| {
+					node.anchor
+						.as_ref()
+						.is_some_and(|anchor| anchor.namespace == REPEATABLE_STATEMENT)
+				})
+		};
+	let separated = matching
+		.records()
+		.filter(|record| {
+			is_addition(left, left_base, record.left)
+				&& is_addition(right, right_base, record.right)
+				&& left.node(record.left).map(|node| node.subtree_hash)
+					!= right.node(record.right).map(|node| node.subtree_hash)
+		})
+		.map(|record| (record.left, record.right))
+		.collect::<Vec<_>>();
+	if separated.is_empty() {
+		return;
+	}
+	let (separated_left, separated_right): (BTreeSet<_>, BTreeSet<_>) =
+		separated.into_iter().unzip();
+	let under = |tree: &NormalizedTree,
+	             separated: &BTreeSet<crate::merge::kernel::NodeId>,
+	             node: crate::merge::kernel::NodeId| {
+		let mut current = Some(node);
+		while let Some(id) = current {
+			if separated.contains(&id) {
+				return true;
+			}
+			current = tree.node(id).ok().and_then(|node| node.parent);
+		}
+		false
+	};
+	matching.retain(|record| {
+		!under(left, &separated_left, record.left) && !under(right, &separated_right, record.right)
+	});
 }
 
 /// Whether two trees are equal, checking the root's subtree hash first.

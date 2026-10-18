@@ -94,6 +94,7 @@ pub(crate) fn normalize_ast_with_findings(
 	file: &AstFile,
 	policy: &impl ClausewitzTreePolicy,
 ) -> Result<(NormalizedTree, Vec<String>), AstAdapterError> {
+	policy.prepare(file);
 	let mut findings = Vec::new();
 	let children = normalize_statements(
 		&file.statements,
@@ -239,7 +240,21 @@ fn normalize_statement_with_item_anchor(
 			let mut node = branch(
 				&kind,
 				Some(key.clone()),
-				entity.or_else(|| policy.assignment_anchor(parent_assignment_key, key, value)),
+				entity
+					.or_else(|| policy.schema_identity(value))
+					.or_else(|| policy.assignment_anchor(parent_assignment_key, key, value))
+					.map(|mut anchor| {
+						// A statement the block may repeat is named by its key
+						// as any other, but marked so that two different ones
+						// added by two revisions stay two.
+						if anchor.namespace == "clausewitz.assignment.key"
+							&& policy.is_repeatable_statement(value)
+						{
+							anchor.namespace =
+								crate::merge::kernel::REPEATABLE_STATEMENT.to_string();
+						}
+						anchor
+					}),
 				ChildOrder::Ordered,
 				ChildCardinality::ExactlyOne,
 				vec![child],
@@ -385,7 +400,9 @@ fn normalize_value_at(
 		AstValue::Block { items, .. } => branch(
 			&block_kind(assignment_key),
 			None,
-			None,
+			policy
+				.is_condition_block(value)
+				.then(|| SemanticKey::parent_scoped(crate::merge::kernel::CONDITION_BLOCK, "")),
 			policy.block_child_order(assignment_key),
 			ChildCardinality::Many,
 			normalize_statements(

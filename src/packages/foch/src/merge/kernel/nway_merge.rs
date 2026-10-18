@@ -732,10 +732,14 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 		self.sources_preorder.push(selection.sources);
 		self.syntheses_preorder
 			.push(selection.scalar_synthesis.clone());
-		let children = child_classes
-			.into_iter()
-			.map(|child| self.build(child))
-			.collect();
+		let children = if is_condition_conjunction(&selected_node) {
+			self.build_conditions(child_classes)
+		} else {
+			child_classes
+				.into_iter()
+				.map(|child| self.build(child))
+				.collect()
+		};
 		self.visiting.remove(&class);
 		TreeNode {
 			kind: selected_node.kind,
@@ -748,6 +752,99 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 			child_order: selected_node.child_order,
 			child_cardinality: selected_node.child_cardinality,
 			children,
+		}
+	}
+
+	/// The children of a block of conditions the game requires together.
+	/// One kind of condition that several revisions each added, such as
+	/// `tag = FRA` and `tag = ENG`, holds the alternatives each mod meant, so
+	/// those additions go in one `OR` rather than being required together.
+	/// Conditions of different kinds are each required, as written.
+	fn build_conditions(&mut self, child_classes: Vec<ClassId>) -> Vec<TreeNode> {
+		let mut by_kind = BTreeMap::<String, Vec<ClassId>>::new();
+		for child in &child_classes {
+			if let Some(kind) = self.addition_kind(*child) {
+				by_kind.entry(kind).or_default().push(*child);
+			}
+		}
+		let alternatives = by_kind
+			.into_values()
+			.filter(|group| self.added_by_several_revisions(group))
+			.collect::<Vec<_>>();
+		let group_of =
+			|class: ClassId| alternatives.iter().position(|group| group.contains(&class));
+		let mut children = Vec::with_capacity(child_classes.len());
+		for child in &child_classes {
+			match group_of(*child) {
+				None => children.push(self.build(*child)),
+				Some(index) if alternatives[index][0] == *child => {
+					let group = alternatives[index].clone();
+					children.push(self.build_alternatives(&group));
+				}
+				Some(_) => {}
+			}
+		}
+		children
+	}
+
+	/// The kind of an added condition: one the base lacks.
+	fn addition_kind(&self, class: ClassId) -> Option<String> {
+		if self
+			.correspondence
+			.classes
+			.class(class)
+			.get(RevisionId::BASE)
+			.is_some()
+		{
+			return None;
+		}
+		let selected = self.selections.get(&class)?.selected?;
+		Some(self.node(selected).kind.clone())
+	}
+
+	/// Whether additions come from two or more revisions, none adding two:
+	/// one revision's own conditions of a kind are required together.
+	fn added_by_several_revisions(&self, group: &[ClassId]) -> bool {
+		if group.len() < 2 {
+			return false;
+		}
+		let mut seen = BTreeSet::new();
+		for class in group {
+			for revision in self.correspondence.classes.class(*class).members.keys() {
+				if !seen.insert(*revision) {
+					return false;
+				}
+			}
+		}
+		seen.len() >= 2
+	}
+
+	fn build_alternatives(&mut self, group: &[ClassId]) -> TreeNode {
+		// The `OR` is the merge's own: no input wrote it.
+		for _ in 0..2 {
+			self.sources_preorder.push(SourceSet::default());
+			self.syntheses_preorder.push(None);
+		}
+		let alternatives = group.iter().map(|class| self.build(*class)).collect();
+		TreeNode {
+			kind: "clausewitz.assignment:OR".to_string(),
+			value: Some("OR".to_string()),
+			anchor: Some(crate::merge::kernel::SemanticKey::parent_scoped(
+				crate::merge::kernel::REPEATABLE_STATEMENT,
+				"OR",
+			)),
+			signature: None,
+			child_order: ChildOrder::Ordered,
+			child_cardinality: ChildCardinality::ExactlyOne,
+			children: vec![TreeNode {
+				kind: "clausewitz.block:OR".to_string(),
+				value: None,
+				anchor: None,
+				signature: None,
+				child_order: ChildOrder::Commutative,
+				child_cardinality: ChildCardinality::Many,
+				children: alternatives,
+			}],
 		}
 	}
 
@@ -1120,6 +1217,18 @@ fn tree_for_revision<'tree>(
 
 fn nanos(duration: Duration) -> u64 {
 	u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// A block of conditions the game requires together: not an `OR`, whose
+/// conditions are alternatives already, nor a `NOT`.
+fn is_condition_conjunction(node: &NormalizedNode) -> bool {
+	node.anchor
+		.as_ref()
+		.is_some_and(|anchor| anchor.namespace == crate::merge::kernel::CONDITION_BLOCK)
+		&& !matches!(
+			node.kind.as_str(),
+			"clausewitz.block:OR" | "clausewitz.block:NOT" | "clausewitz.block:NOR"
+		)
 }
 
 #[cfg(test)]

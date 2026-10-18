@@ -7,6 +7,7 @@ mod policy;
 mod tree_kernel;
 mod trigger_cases;
 mod trivia;
+mod weights;
 #[cfg(test)]
 mod work;
 

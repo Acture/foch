@@ -248,10 +248,12 @@ pub(super) fn merge_clausewitz_files_with_context(
 				.map_err(AstAdapterError::InvalidTree)?;
 		}
 	}
-	let policy = entity_transform.map_or_else(
-		|| ContentFamilyMergePolicy::new(policies),
-		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
-	);
+	let policy = entity_transform
+		.map_or_else(
+			|| ContentFamilyMergePolicy::new(policies),
+			|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
+		)
+		.reading(schema);
 	let started = Instant::now();
 	let mut scope_cache = HashMap::new();
 	let mut spellings = NumberSpellings::default();
@@ -457,7 +459,7 @@ pub(crate) fn clausewitz_files_semantically_equivalent(
 	right: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<bool, AstAdapterError> {
-	let policy = ContentFamilyMergePolicy::new(policies);
+	let policy = ContentFamilyMergePolicy::new(policies).reading(Some(rule_engine()));
 	let mut scope_cache = HashMap::new();
 	let left = canonicalize_for_merge(
 		left,
@@ -536,10 +538,12 @@ pub(super) fn normalize_clausewitz_file_with_context(
 		spellings,
 	);
 	let (semantic, _) = detach_trivia(&canonical);
-	let policy = entity_transform.map_or_else(
-		|| ContentFamilyMergePolicy::new(policies),
-		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
-	);
+	let policy = entity_transform
+		.map_or_else(
+			|| ContentFamilyMergePolicy::new(policies),
+			|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
+		)
+		.reading(Some(rule_engine()));
 	normalize_ast(&semantic, &policy)
 }
 

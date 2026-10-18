@@ -3,6 +3,7 @@ use crate::game::eu4::content::{
 	OneSidedRemovalPolicy, ScalarMergePolicy,
 };
 use crate::game::eu4::script::parser::{AstStatement, AstValue};
+use crate::game::schema::CwtQuery;
 use crate::merge::kernel::{
 	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
 	RevisionId, SemanticKey,
@@ -45,6 +46,28 @@ pub(crate) trait ClausewitzTreePolicy {
 		left == right
 	}
 
+	/// Read `file` before it is normalized, for the identities the schema
+	/// gives its blocks.
+	fn prepare(&self, _file: &crate::game::eu4::script::parser::AstFile) {}
+
+	/// An identity the schema gives the block whose value is `value`, such as
+	/// a weight block's conditions.
+	fn schema_identity(&self, _value: &AstValue) -> Option<SemanticKey> {
+		None
+	}
+
+	/// Whether the schema lets the block holding the statement whose value is
+	/// `value` repeat it, as a trigger or an effect, rather than hold it once.
+	fn is_repeatable_statement(&self, _value: &AstValue) -> bool {
+		false
+	}
+
+	/// Whether the schema reads the block `value` as conditions read
+	/// together, holding no effects.
+	fn is_condition_block(&self, _value: &AstValue) -> bool {
+		false
+	}
+
 	fn block_child_order(&self, _assignment_key: Option<&str>) -> ChildOrder {
 		match _assignment_key {
 			Some("OR") => ChildOrder::Commutative,
@@ -57,6 +80,17 @@ pub(crate) trait ClausewitzTreePolicy {
 pub(crate) struct ContentFamilyMergePolicy<'a> {
 	policies: &'a MergePolicies,
 	entity_transform: Option<&'a dyn EntityTransform>,
+	/// The schema that gives blocks identities, if any.
+	schema: Option<SchemaReading<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct SchemaReading<'a>(&'a CwtQuery);
+
+impl std::fmt::Debug for SchemaReading<'_> {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter.write_str("SchemaReading")
+	}
 }
 
 impl<'a> ContentFamilyMergePolicy<'a> {
@@ -64,7 +98,15 @@ impl<'a> ContentFamilyMergePolicy<'a> {
 		Self {
 			policies,
 			entity_transform: None,
+			schema: None,
 		}
+	}
+
+	/// Read blocks with `schema`, for the identities it gives them. Without
+	/// a schema no block has one.
+	pub(crate) fn reading(mut self, schema: Option<&'a CwtQuery>) -> Self {
+		self.schema = schema.map(SchemaReading);
+		self
 	}
 
 	pub(crate) const fn with_transform(
@@ -74,11 +116,31 @@ impl<'a> ContentFamilyMergePolicy<'a> {
 		Self {
 			policies,
 			entity_transform: Some(entity_transform),
+			schema: None,
 		}
 	}
 }
 
 impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
+	fn prepare(&self, file: &crate::game::eu4::script::parser::AstFile) {
+		if let Some(SchemaReading(schema)) = self.schema {
+			super::weights::prepare(schema, file);
+		}
+	}
+
+	fn schema_identity(&self, value: &AstValue) -> Option<SemanticKey> {
+		self.schema?;
+		super::weights::identity(value)
+	}
+
+	fn is_repeatable_statement(&self, value: &AstValue) -> bool {
+		self.schema.is_some() && super::weights::is_repeatable(value)
+	}
+
+	fn is_condition_block(&self, value: &AstValue) -> bool {
+		self.schema.is_some() && super::weights::is_condition_block(value)
+	}
+
 	fn entity_identity(
 		&self,
 		ancestors: &[String],

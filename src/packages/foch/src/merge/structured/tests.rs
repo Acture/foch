@@ -2234,7 +2234,7 @@ fn eu4_subject_types_key_modifier_overlord_entries_by_modifier() {
 }
 
 #[test]
-fn eu4_subject_types_still_conflict_on_same_modifier_subject_identity() {
+fn eu4_subject_types_offer_one_subjects_differing_triggers_as_alternatives() {
 	let path = "common/subject_types/zzz_foch_subject_types.txt";
 	let base = parse_at(path, "");
 	let subject_type = |flag: &str| {
@@ -2259,14 +2259,18 @@ fn eu4_subject_types_still_conflict_on_same_modifier_subject_identity() {
 	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
 		.expect("merge same-identity subject modifier entries");
 
-	assert!(outcome.resolved_ast().is_none());
+	// Both mods add one kind of condition to one entry: the alternatives each
+	// meant, so either holds.
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let merged = emit(outcome.resolved_ast().expect("merged without conflicts"))
+		.split_whitespace()
+		.collect::<Vec<_>>()
+		.join(" ");
 	assert!(
-		outcome
-			.conflicts()
-			.iter()
-			.any(|conflict| conflict.kind == ConflictKind::InsertInsert),
-		"{:?}",
-		outcome.conflicts()
+		merged.contains(
+			"trigger = { OR = { overlord = { has_country_flag = ee_flag } overlord = { has_country_flag = ice_flag } } }"
+		),
+		"{merged}"
 	);
 }
 
@@ -3220,6 +3224,49 @@ fn a_replaced_trigger_chain_merges_branch_by_branch() {
 }
 
 #[test]
+fn weight_modifiers_are_told_apart_by_their_conditions() {
+	let path = "common/ideas/test.txt";
+	let group = |modifiers: &str| {
+		parse_at(
+			path,
+			&format!(
+				"test_ideas = {{\n\tstart = {{ tax_income = 1 }}\n\tbonus = {{ tax_income = 1 }}\n\tai_will_do = {{\n\t\tfactor = 1\n{modifiers}\t}}\n}}\n"
+			),
+		)
+	};
+	// Each modifier is as similar to the changed one as to its sibling, so
+	// only the conditions tell which one the factor change belongs to.
+	let base = group(
+		"\t\tmodifier = { factor = 2 is_at_war = yes }\n\t\tmodifier = { factor = 2 is_bankrupt = yes }\n",
+	);
+	let changed = group(
+		"\t\tmodifier = { factor = 3 is_at_war = yes }\n\t\tmodifier = { factor = 2 is_bankrupt = yes }\n",
+	);
+	let added = group(
+		"\t\tmodifier = { factor = 2 is_at_war = yes }\n\t\tmodifier = { factor = 2 is_bankrupt = yes }\n\t\tmodifier = { factor = 4 num_of_cities = 5 }\n",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+
+	let outcome = merge_clausewitz_files_n_way(&base, &[&changed, &added], policies)
+		.expect("merge idea groups");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let merged = emit(outcome.resolved_ast().expect("merged without conflicts"));
+	let merged = merged.split_whitespace().collect::<Vec<_>>().join(" ");
+	for modifier in [
+		"modifier = { factor = 3 is_at_war = yes }",
+		"modifier = { factor = 2 is_bankrupt = yes }",
+		"modifier = { factor = 4 num_of_cities = 5 }",
+	] {
+		assert!(merged.contains(modifier), "missing {modifier} in {merged}");
+	}
+	assert!(!merged.contains("factor = 2 is_at_war"), "{merged}");
+}
+
+#[test]
 fn a_sum_counts_only_the_revisions_that_change_the_value() {
 	let path = "common/ideas/test.txt";
 	let base = parse_at(
@@ -3250,4 +3297,73 @@ fn a_sum_counts_only_the_revisions_that_change_the_value() {
 			.contains("start = { tax_income = 2 }"),
 		"an unchanged revision must not add the base value again: {merged}"
 	);
+}
+
+fn merged_trigger(base: &str, revisions: &[&str]) -> String {
+	let path = "common/ideas/test.txt";
+	let make = |or: &str| {
+		parse_at(
+			path,
+			&format!("test_ideas = {{ start = {{ tax_income = 1 }} bonus = {{ tax_income = 1 }} trigger = {{ OR = {{ {or} }} }} }}
+"),
+		)
+	};
+	let base = make(base);
+	let revisions = revisions.iter().map(|or| make(or)).collect::<Vec<_>>();
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &revisions.iter().collect::<Vec<_>>(), policies)
+			.expect("merge idea groups");
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	emit(outcome.resolved_ast().expect("merged without conflicts"))
+		.split_whitespace()
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+#[test]
+fn two_mods_extending_an_or_keep_both_alternatives() {
+	let merged = merged_trigger(
+		"tag = FRA",
+		&[
+			"tag = FRA owner = { has_country_flag = flag_a }",
+			"tag = FRA owner = { has_country_flag = flag_b }",
+		],
+	);
+	assert!(
+		merged.contains("owner = { has_country_flag = flag_a }"),
+		"{merged}"
+	);
+	assert!(
+		merged.contains("owner = { has_country_flag = flag_b }"),
+		"{merged}"
+	);
+}
+
+#[test]
+fn two_mods_adding_the_same_alternative_keep_one() {
+	let merged = merged_trigger(
+		"tag = FRA",
+		&[
+			"tag = FRA owner = { has_country_flag = flag_a }",
+			"tag = FRA owner = { has_country_flag = flag_a }",
+		],
+	);
+	assert_eq!(merged.matches("flag_a").count(), 1, "{merged}");
+}
+
+#[test]
+fn a_changed_alternative_is_still_a_change() {
+	let merged = merged_trigger(
+		"tag = FRA owner = { has_country_flag = flag_x }",
+		&[
+			"tag = FRA owner = { has_country_flag = flag_a }",
+			"tag = FRA owner = { has_country_flag = flag_x }",
+		],
+	);
+	assert!(merged.contains("flag_a"), "{merged}");
+	assert!(!merged.contains("flag_x"), "{merged}");
 }

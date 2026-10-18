@@ -162,6 +162,16 @@ impl Matching {
 		&self.ambiguous.entries
 	}
 
+	/// Keep only the pairs `keep` accepts.
+	pub(crate) fn retain(&mut self, mut keep: impl FnMut(&MatchRecord) -> bool) {
+		self.by_left.retain(|_, record| keep(record));
+		self.by_right = self
+			.by_left
+			.values()
+			.map(|record| (record.right, record.left))
+			.collect();
+	}
+
 	#[cfg(test)]
 	pub fn len(&self) -> usize {
 		self.by_left.len()
