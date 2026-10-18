@@ -387,12 +387,31 @@ impl GuardAtoms {
 		scopes: &[String],
 	) -> Result<Formula, AstAdapterError> {
 		let mut result = Formula::true_value();
-		for statement in items
+		let statements = items
 			.iter()
 			.filter(|statement| !matches!(statement, AstStatement::Comment { .. }))
-		{
-			let formula = self.formula_for_statement(statement, scopes)?;
+			.collect::<Vec<_>>();
+		let mut index = 0;
+		while index < statements.len() {
+			// A chain holds as one condition: its `else` means nothing apart
+			// from the `if` before it.
+			let end = chain_end(&statements, index);
+			let formula = if end > index + 1 {
+				let chain = AstStatement::Assignment {
+					key: "AND".to_string(),
+					key_span: synthetic_span(),
+					value: AstValue::Block {
+						items: statements[index..end].iter().copied().cloned().collect(),
+						span: synthetic_span(),
+					},
+					span: synthetic_span(),
+				};
+				self.atom_formula(scopes, &chain)
+			} else {
+				self.formula_for_statement(statements[index], scopes)?
+			};
 			result = result.and(&formula, &mut self.work)?;
+			index = end.max(index + 1);
 		}
 		Ok(result)
 	}
@@ -773,6 +792,21 @@ pub(super) fn branch_key(statement: &AstStatement) -> Option<&str> {
 		return None;
 	};
 	matches!(key.as_str(), "if" | "else_if" | "else").then_some(key)
+}
+
+/// Where the chain starting at `start` ends, or `start` when none does.
+fn chain_end(statements: &[&AstStatement], start: usize) -> usize {
+	if !starts_chain(statements[start]) {
+		return start;
+	}
+	let mut end = start + 1;
+	while statements
+		.get(end)
+		.is_some_and(|statement| matches!(branch_key(statement), Some("else_if" | "else")))
+	{
+		end += 1;
+	}
+	end
 }
 
 pub(super) fn starts_chain(statement: &AstStatement) -> bool {

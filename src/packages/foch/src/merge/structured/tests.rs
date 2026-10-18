@@ -3553,6 +3553,28 @@ fn a_tooltip_two_mods_add_differently_shows_both() {
 }
 
 #[test]
+fn a_chain_in_a_condition_stays_together() {
+	let path = "common/new_diplomatic_actions/actions.txt";
+	let text = "action = {\n\ton_accept = {\n\t\tif = {\n\t\t\tlimit = {\n\t\t\t\tis_at_war = no\n\t\t\t\tif = {\n\t\t\t\t\tlimit = { always = yes }\n\t\t\t\t\talliance_with = FROM\n\t\t\t\t}\n\t\t\t\telse = {\n\t\t\t\t\tFROM = { NOT = { liberty_desire = 50 } }\n\t\t\t\t}\n\t\t\t}\n\t\t\tcreate_subject = { subject = FROM }\n\t\t}\n\t}\n}\n";
+	let base = parse_at(path, "");
+	let added = parse_at(path, text);
+	let other = parse_at(path, "");
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&added, &other], &MergePolicies::default()).unwrap();
+
+	assert!(
+		outcome.conflicts().is_empty(),
+		"{:?}
+{}",
+		outcome.conflicts(),
+		emit(outcome.tentative_ast())
+	);
+	let output = emit(outcome.resolved_ast().expect("one mod's chain merges"));
+	assert!(!output.contains("OR"), "{output}");
+}
+
+#[test]
 fn two_mods_appending_guarded_branches_keep_both() {
 	let path = "common/scripted_effects/preview.txt";
 	let branch = |key: &str| {
