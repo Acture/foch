@@ -4,6 +4,7 @@ use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use crate::merge::kernel::{
 	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, SemanticKey, TreeNode,
 };
+use crate::merge::progress;
 
 use super::ast_adapter::{
 	AstAdapterError, COMMENT_KIND, assignment_key, block_node, branch,
@@ -723,7 +724,15 @@ fn normalize_chain_semantic(
 
 	let mut coverage = Formula::false_value();
 	let mut cases_by_effect: BTreeMap<String, Case> = BTreeMap::new();
-	for raw in raw_cases {
+	let case_count = raw_cases.len();
+	for (case_index, raw) in raw_cases.into_iter().enumerate() {
+		progress::detail(|| {
+			format!(
+				"control-flow chain guard {}/{case_count} coverage_terms={}",
+				case_index + 1,
+				coverage.terms.len()
+			)
+		});
 		let contains_default = raw.contains_default;
 		let effective_guard = match &raw.guard {
 			Some(guard) => guard.and(&coverage.not()?)?,

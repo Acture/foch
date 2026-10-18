@@ -8,6 +8,7 @@ use crate::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
+use crate::merge::progress;
 use crate::merge::timing::{KernelStep, charge};
 use crate::merge::transform::tree::EntityTransform;
 use crate::model::{GamePath, HandlerResolutionRecord};
@@ -1447,6 +1448,12 @@ impl EffectiveNodeProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			path: request.source.ast.path.clone(),
 			statements: request.parent.statements.clone(),
 		};
+		progress::stage(|| {
+			format!(
+				"observe mod={} precedence={}",
+				request.mod_id.0, request.precedence
+			)
+		});
 		let source_ast = with_isolated_definitions_unchanged(request.source, &parent.statements);
 		let observation = self
 			.source_observer
@@ -1553,6 +1560,13 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			},
 			revisions,
 		);
+		progress::stage(|| {
+			format!(
+				"join {} revisions={}",
+				self.kernel.join_protocol_name(),
+				merge_revisions.len()
+			)
+		});
 		let probe = self.kernel.merge_tentative(&input).map_err(|error| {
 			format!(
 				"{} join protocol failed for {}: {error}",
@@ -1560,6 +1574,7 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				request.file_dag.file_path(),
 			)
 		})?;
+		progress::stage(|| format!("join resolve conflicts={}", probe.conflicts.len()));
 		let started = Instant::now();
 		let mut record_builder =
 			ConflictRecordBuilder::new(&input, self.kernel.policies, self.partition_adapter);
@@ -1586,6 +1601,7 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			DagJoinScope::Intermediate => outcome.lineage_statements,
 			DagJoinScope::Final => outcome.statements,
 		};
+		progress::stage(|| format!("join lineage partitions={}", outcome.merge_facts.len()));
 		for facts in outcome.merge_facts {
 			let started = Instant::now();
 			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)

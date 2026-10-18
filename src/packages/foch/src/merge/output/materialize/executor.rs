@@ -10,12 +10,13 @@ use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::merge::analyze::CancellationToken;
 use crate::merge::error::MergeError;
+use crate::merge::progress::{self, UnitProgress};
 
 /// Stack size for threads that parse, merge and emit Clausewitz scripts. The
 /// recursive-descent parser and emitter need the same headroom as the CLI's
@@ -93,6 +94,7 @@ enum WorkerEvent<T> {
 		index: usize,
 		worker: usize,
 		started: Instant,
+		progress: Arc<UnitProgress>,
 	},
 	Finished {
 		index: usize,
@@ -289,15 +291,19 @@ fn run_worker<T: Send>(
 			continue;
 		}
 		let started: Instant = Instant::now();
+		let unit_progress: Arc<UnitProgress> = Arc::default();
 		let announced: bool = events
 			.send(WorkerEvent::Started {
 				index,
 				worker,
 				started,
+				progress: Arc::clone(&unit_progress),
 			})
 			.is_ok();
-		let analysis: Option<thread::Result<T>> =
-			announced.then(|| catch_unwind(AssertUnwindSafe(|| analyze(index))));
+		let analysis: Option<thread::Result<T>> = announced.then(|| {
+			let _unit = progress::attach(Some(unit_progress));
+			catch_unwind(AssertUnwindSafe(|| analyze(index)))
+		});
 		control.pause.leave();
 		let Some(analysis) = analysis else {
 			return;
@@ -345,7 +351,7 @@ fn coordinate<T: Send>(
 	// The estimate of the unit waiting for memory, so it is taken only once.
 	let mut waiting_estimate: Option<(usize, u64)> = None;
 	let mut finished: BTreeMap<usize, thread::Result<T>> = BTreeMap::new();
-	let mut in_flight: BTreeMap<usize, (usize, Instant)> = BTreeMap::new();
+	let mut in_flight: BTreeMap<usize, (usize, Instant, Arc<UnitProgress>)> = BTreeMap::new();
 	let mut last_slow_report: Instant = Instant::now();
 	while next_apply < schedule.count {
 		// Checked before every unit is applied, as the serial loop does.
@@ -402,8 +408,9 @@ fn coordinate<T: Send>(
 				index,
 				worker,
 				started,
+				progress,
 			}) => {
-				in_flight.insert(index, (worker, started));
+				in_flight.insert(index, (worker, started, progress));
 			}
 			Ok(WorkerEvent::Finished {
 				index,
@@ -440,28 +447,36 @@ fn coordinate<T: Send>(
 /// whether anything was reported.
 fn report_slow_units(
 	schedule: &UnitSchedule<'_>,
-	in_flight: &BTreeMap<usize, (usize, Instant)>,
+	in_flight: &BTreeMap<usize, (usize, Instant, Arc<UnitProgress>)>,
 	applied: usize,
 	analyzed_ahead: usize,
 ) -> bool {
-	let mut slow: Vec<(usize, usize, Duration)> = in_flight
+	let mut slow: Vec<(usize, usize, Duration, &UnitProgress)> = in_flight
 		.iter()
-		.map(|(&index, &(worker, started))| (index, worker, started.elapsed()))
-		.filter(|&(_, _, running)| running >= SLOW_UNIT)
+		.map(|(&index, (worker, started, progress))| {
+			(index, *worker, started.elapsed(), progress.as_ref())
+		})
+		.filter(|&(_, _, running, _)| running >= SLOW_UNIT)
 		.collect();
 	if slow.is_empty() {
 		return false;
 	}
-	slow.sort_by_key(|&(_, _, running)| std::cmp::Reverse(running));
+	slow.sort_by_key(|&(_, _, running, _)| std::cmp::Reverse(running));
 	let detail: Vec<String> = slow
 		.iter()
 		.take(4)
-		.map(|&(index, worker, running)| {
+		.map(|&(index, worker, running, progress)| {
+			let at: String = progress.describe();
 			format!(
-				"{} on {} for {:.1}s",
+				"{} on {} for {:.1}s{}",
 				(schedule.label)(index),
 				worker_name(worker),
-				running.as_secs_f64()
+				running.as_secs_f64(),
+				if at.is_empty() {
+					String::new()
+				} else {
+					format!(" [{at}]")
+				}
 			)
 		})
 		.collect();

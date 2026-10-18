@@ -19,6 +19,7 @@ pub(crate) mod output;
 mod patch_real_mods;
 pub(crate) mod path_plan;
 pub(crate) mod planning;
+pub(crate) mod progress;
 pub(crate) mod resolution;
 mod review;
 pub(crate) mod semantic_fingerprint;

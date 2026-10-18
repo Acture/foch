@@ -6,6 +6,7 @@ use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::content::OneSidedRemovalPolicy;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
 use crate::merge::kernel::{ConflictResolution, StructuralConflict};
+use crate::merge::progress;
 
 use crate::merge::model::SemanticPartitionId;
 
@@ -186,6 +187,7 @@ fn merge_clausewitz_definition_module_n_way_inner(
 			statements.extend(base_group.statements);
 		} else {
 			active_definitions += 1;
+			let _item = progress::item(|| format!("definition {key} ({}/{total})", index + 1));
 			let revision_group_refs = revision_groups.iter().collect::<Vec<_>>();
 			let partition_resolutions = resolutions_by_definition
 				.get(key)
