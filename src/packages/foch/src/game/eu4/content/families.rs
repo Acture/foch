@@ -71,8 +71,14 @@ fn file_identity_common_directories() -> [&'static GamePath; 2] {
 ///   works if the game combines same-named estates. How it combines the other
 ///   fields is unverified; folding them into one definition would read a
 ///   partial estate as deleting the rest.
-fn combined_across_files() -> [&'static GamePath; 2] {
-	["common/on_actions", "common/estates"].map(table_game_path)
+/// - `common/religions`: mods add a religion or a group field to a base
+///   religion group from their own file with a partial `christian = { ... }`
+///   (four installed Workshop mods do: Converted Religions, both Christian
+///   Schools and ERO, each naming one religion or field), which only works
+///   if the game combines same-named groups. Folding them into one
+///   definition read each as deleting every other religion of the group.
+fn combined_across_files() -> [&'static GamePath; 3] {
+	["common/on_actions", "common/estates", "common/religions"].map(table_game_path)
 }
 
 fn enable_common_definition_modules(families: &mut [ContentFamilyDescriptor]) {
@@ -1458,7 +1464,7 @@ mod tests {
 		let profile = eu4();
 		for path in [
 			"common/institutions/00_Core.txt",
-			"common/religions/00_religion.txt",
+			"common/ideas/00_basic_ideas.txt",
 			"common/scripted_effects/example.txt",
 		] {
 			let descriptor = profile
@@ -1479,6 +1485,16 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn religion_groups_merge_file_by_file() {
+		// A mod adds a religion to a base group from a file of its own, so the
+		// game combines same-named groups and every file keeps its path.
+		let descriptor = eu4()
+			.classify_content_family(game_path("common/religions/01_converted_religions.txt"))
+			.expect("religions descriptor");
+
+		assert_eq!(descriptor.load_policy, ContentLoadPolicy::PerPath);
+	}
 	#[test]
 	fn buildings_preserve_one_sided_children_when_the_definition_survives() {
 		let descriptor = eu4()
