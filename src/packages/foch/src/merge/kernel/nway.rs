@@ -596,7 +596,9 @@ fn assign_nway_children(
 						.iter()
 						.map(Vec::as_slice)
 						.collect::<Vec<_>>();
-					match merge_orders(parent, &base_sequence, &revision_refs) {
+					match merge_orders(parent, &base_sequence, &revision_refs).or_else(|cycle| {
+						order_by_load_order(parent, &base_sequence, &revision_refs).ok_or(cycle)
+					}) {
 						Ok(children) => children,
 						Err(cycle) => {
 							let parent_class = correspondence.classes.class(parent);
@@ -881,6 +883,42 @@ fn commutative_nway_children(
 		)
 	});
 	children
+}
+
+/// Where mods order one set of children in ways that contradict each other,
+/// the order of the mods loaded later stands, as a value the game reads from
+/// the mod it loads last would; an earlier mod's children it alone has keep
+/// their place beside the children it wrote them next to.
+fn order_by_load_order(
+	parent: ClassId,
+	base: &[ClassId],
+	revisions: &[&[ClassId]],
+) -> Option<Vec<ClassId>> {
+	let (kept, mut order) = (1..revisions.len()).find_map(|skip| {
+		merge_orders(parent, base, &revisions[skip..])
+			.ok()
+			.map(|order| (skip, order))
+	})?;
+	for sequence in revisions[..kept].iter().rev() {
+		for (index, class) in sequence.iter().enumerate() {
+			if order.contains(class) {
+				continue;
+			}
+			let position = sequence[..index]
+				.iter()
+				.rev()
+				.find_map(|before| order.iter().position(|placed| placed == before))
+				.map(|position| position + 1)
+				.or_else(|| {
+					sequence[index + 1..]
+						.iter()
+						.find_map(|after| order.iter().position(|placed| placed == after))
+				})
+				.unwrap_or(order.len());
+			order.insert(position, *class);
+		}
+	}
+	Some(order)
 }
 
 fn fallback_nway_order(base: &[ClassId], revisions: &[Vec<ClassId>]) -> Vec<ClassId> {

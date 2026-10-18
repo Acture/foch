@@ -1612,7 +1612,7 @@ mod tests {
 	use crate::game::eu4::script::parser::{
 		AstFile, AstStatement, AstValue, parse_clausewitz_content,
 	};
-	use crate::merge::kernel::{ConflictKind, SemanticKeyMatchMode, SemanticKeyScope};
+	use crate::merge::kernel::{SemanticKeyMatchMode, SemanticKeyScope};
 
 	use crate::game::eu4::script::emit::emit_clausewitz_statements;
 
@@ -2171,7 +2171,7 @@ mod tests {
 	}
 
 	#[test]
-	fn withholds_precedence_cycles_as_typed_ordering_conflicts() {
+	fn contradicting_precedence_takes_the_order_of_the_mod_loaded_last() {
 		let source = |order: [&str; 3]| {
 			parse(&format!(
 				"coal = {{ trigger = {{\n\
@@ -2190,17 +2190,19 @@ mod tests {
 		let right = source(["1", "3", "2"]);
 
 		let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
-			.expect("ordering conflict remains a valid tentative merge");
+			.expect("contradicting orders merge");
 
-		assert!(outcome.resolved_ast().is_none());
-		assert!(
-			outcome
-				.conflicts()
-				.iter()
-				.any(|conflict| conflict.kind == ConflictKind::Ordering),
-			"{:?}",
-			outcome.conflicts()
-		);
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		let output = emit(outcome.resolved_ast().expect("the later order stands"));
+		let flags = ["1", "3", "2"].map(|flag| {
+			output
+				.find(&format!(
+					"has_country_flag = {flag}
+"
+				))
+				.unwrap_or_else(|| panic!("every branch survives: {output}"))
+		});
+		assert!(flags[0] < flags[1] && flags[1] < flags[2], "{output}");
 	}
 
 	#[test]

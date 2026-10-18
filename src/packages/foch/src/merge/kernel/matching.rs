@@ -502,15 +502,16 @@ fn match_soft_signatures(
 				let Some(right_nodes) = right_groups.get(&key) else {
 					continue;
 				};
-				if let ([left_node], [right_node]) = (left_nodes.as_slice(), right_nodes.as_slice())
-					&& compatible_at(left, right, matching, *left_node, *right_node)
-				{
-					changed |= matching.insert(MatchRecord {
-						left: *left_node,
-						right: *right_node,
-						kind: MatchKind::SoftSignature,
-						score: 900_000,
-					});
+				// Several alike pair in the order they are written.
+				for (left_node, right_node) in left_nodes.iter().zip(right_nodes) {
+					if compatible_at(left, right, matching, *left_node, *right_node) {
+						changed |= matching.insert(MatchRecord {
+							left: *left_node,
+							right: *right_node,
+							kind: MatchKind::SoftSignature,
+							score: 900_000,
+						});
+					}
 				}
 			}
 		}
@@ -543,12 +544,36 @@ fn record_unresolved_soft_signature_ambiguities(
 			let Some(right_nodes) = right_groups.get(&key) else {
 				continue;
 			};
-			for left_node in left_nodes {
-				matching.record_ambiguity(AmbiguousMatch {
-					left: left_node,
-					candidates: right_nodes.clone(),
-					score: 900_000,
-				});
+			// Several still alike pair in the order written, as the game reads
+			// them. One alone against one is no tie: the matcher declined the
+			// pair on its evidence, and position adds none.
+			let tied = left_nodes.len() > 1 || right_nodes.len() > 1;
+			for (index, left_node) in left_nodes.iter().enumerate() {
+				match right_nodes.get(index) {
+					Some(right_node)
+						if tied
+							&& compatible_at_including_ordered(
+								left,
+								right,
+								matching,
+								*left_node,
+								*right_node,
+							) =>
+					{
+						matching.insert(MatchRecord {
+							left: *left_node,
+							right: *right_node,
+							kind: MatchKind::SoftSignature,
+							score: 900_000,
+						});
+					}
+					Some(_) => matching.record_ambiguity(AmbiguousMatch {
+						left: *left_node,
+						candidates: right_nodes.clone(),
+						score: 900_000,
+					}),
+					None => {}
+				}
 			}
 		}
 	}
@@ -1465,7 +1490,7 @@ fn match_repeated_parent_scoped_siblings(
 				score: proposal.score,
 			});
 		}
-		if !changed {
+		if !changed && !match_tied_siblings_by_position(left, right, matching, threshold) {
 			break;
 		}
 		match_required_slots(left, right, matching, work);
@@ -1473,6 +1498,77 @@ fn match_repeated_parent_scoped_siblings(
 	}
 
 	record_unresolved_repeated_sibling_ambiguities(left, right, matching, threshold);
+}
+
+/// Repeated siblings that score alike against each other pair in the order
+/// they are written: the first left one with the first right one it scores
+/// best against, and so on, as the game reads them in that order. Returns
+/// whether any pair was added.
+fn match_tied_siblings_by_position(
+	left: &NormalizedTree,
+	right: &NormalizedTree,
+	matching: &mut Matching,
+	threshold: u32,
+) -> bool {
+	let parents = matching.records().copied().collect::<Vec<_>>();
+	let mut pairs = Vec::new();
+	for parent in parents {
+		let left_groups = unmatched_parent_anchor_groups(
+			left,
+			&left.node(parent.left).unwrap().children,
+			matching,
+			true,
+		);
+		let right_groups = unmatched_parent_anchor_groups(
+			right,
+			&right.node(parent.right).unwrap().children,
+			matching,
+			false,
+		);
+		for (key, left_nodes) in &left_groups.free {
+			let Some(right_nodes) = right_groups.free.get(key) else {
+				continue;
+			};
+			if !(left_groups.repeats(key) || right_groups.repeats(key)) {
+				continue;
+			}
+			let candidates = repeated_sibling_candidates(
+				left,
+				right,
+				matching,
+				left_nodes,
+				right_nodes,
+				threshold,
+			);
+			let mut taken = BTreeSet::new();
+			for left_node in left_nodes {
+				let Some(best) = candidates.left.get(left_node) else {
+					continue;
+				};
+				let Some(right_node) = best.peers.iter().find(|peer| {
+					!taken.contains(*peer)
+						&& candidates
+							.right
+							.get(*peer)
+							.is_some_and(|reverse| reverse.score == best.score)
+				}) else {
+					continue;
+				};
+				taken.insert(*right_node);
+				pairs.push(MatchRecord {
+					left: *left_node,
+					right: *right_node,
+					kind: MatchKind::DescendantSimilarity,
+					score: best.score,
+				});
+			}
+		}
+	}
+	let mut changed = false;
+	for pair in pairs {
+		changed |= matching.insert(pair);
+	}
+	changed
 }
 
 fn repeated_sibling_candidates(
@@ -2887,7 +2983,7 @@ mod tests {
 	}
 
 	#[test]
-	fn ambiguous_repeated_parent_scoped_siblings_do_not_fall_back_to_position() {
+	fn tied_repeated_parent_scoped_siblings_pair_by_position() {
 		let repeated = |value: &str| {
 			block("entry", vec![scalar("shared"), scalar(value)])
 				.with_parent_scoped_anchor("entry.kind", "modifier")
@@ -2903,9 +2999,10 @@ mod tests {
 
 		let matching = TreeMatcher::default().match_trees(&left, &right);
 
-		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
-		assert_eq!(matching.get_from_left(NodeId::new(4)), None);
-		assert_eq!(matching.ambiguities().len(), 2);
+		// Each scores alike against both: they pair in the order written.
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert_eq!(matching.get_from_left(NodeId::new(4)), Some(NodeId::new(4)));
+		assert!(matching.ambiguities().is_empty());
 	}
 
 	#[test]
@@ -3073,7 +3170,7 @@ mod tests {
 	}
 
 	#[test]
-	fn duplicate_soft_signatures_are_reported_as_ambiguous() {
+	fn duplicate_soft_signatures_pair_by_position() {
 		let left = NormalizedTree::from_root(block(
 			"root",
 			vec![block("chain", vec![scalar("left")]).with_signature("guard:a")],
@@ -3090,12 +3187,13 @@ mod tests {
 
 		let matching = TreeMatcher::default().match_trees(&left, &right);
 
-		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
-		assert_eq!(matching.ambiguities().len(), 1);
+		// The first pairs with the first; the second is an addition.
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert!(matching.ambiguities().is_empty());
 	}
 
 	#[test]
-	fn competing_left_soft_signatures_are_reported_as_ambiguous() {
+	fn competing_left_soft_signatures_pair_by_position() {
 		let left = NormalizedTree::from_root(block(
 			"root",
 			vec![
@@ -3112,9 +3210,10 @@ mod tests {
 
 		let matching = TreeMatcher::default().match_trees(&left, &right);
 
-		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		// The first pairs with the first; the second is a deletion.
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
 		assert_eq!(matching.get_from_left(NodeId::new(3)), None);
-		assert_eq!(matching.ambiguities().len(), 2);
+		assert!(matching.ambiguities().is_empty());
 	}
 
 	#[test]
