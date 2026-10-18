@@ -3367,3 +3367,52 @@ fn a_changed_alternative_is_still_a_change() {
 	assert!(merged.contains("flag_a"), "{merged}");
 	assert!(!merged.contains("flag_x"), "{merged}");
 }
+
+fn merged_idea_trigger(revisions: &[&str]) -> String {
+	let path = "common/ideas/test.txt";
+	let make = |extra: &str| {
+		parse_at(
+			path,
+			&format!("test_ideas = {{ start = {{ tax_income = 1 }} bonus = {{ tax_income = 1 }} trigger = {{ is_at_war = no {extra} }} }}
+"),
+		)
+	};
+	let base = make("");
+	let revisions = revisions
+		.iter()
+		.map(|extra| make(extra))
+		.collect::<Vec<_>>();
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &revisions.iter().collect::<Vec<_>>(), policies)
+			.expect("merge idea groups");
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	emit(outcome.resolved_ast().expect("merged without conflicts"))
+		.split_whitespace()
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+#[test]
+fn conditions_of_one_kind_two_mods_add_become_alternatives() {
+	let merged = merged_idea_trigger(&["tag = FRA", "tag = ENG"]);
+	assert!(
+		merged.contains("trigger = { is_at_war = no OR = { tag = FRA tag = ENG } }"),
+		"{merged}"
+	);
+}
+
+#[test]
+fn conditions_two_mods_add_become_alternatives_whatever_their_kind() {
+	// A trigger is there to fire: each mod's addition is one way it may.
+	let merged = merged_idea_trigger(&["NOT = { has_country_flag = used }", "prestige = 10"]);
+	assert!(
+		merged.contains(
+			"trigger = { is_at_war = no OR = { NOT = { has_country_flag = used } prestige = 10 } }"
+		),
+		"{merged}"
+	);
+}

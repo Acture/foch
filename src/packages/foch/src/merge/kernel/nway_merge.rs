@@ -756,95 +756,88 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 	}
 
 	/// The children of a block of conditions the game requires together.
-	/// One kind of condition that several revisions each added, such as
-	/// `tag = FRA` and `tag = ENG`, holds the alternatives each mod meant, so
-	/// those additions go in one `OR` rather than being required together.
-	/// Conditions of different kinds are each required, as written.
+	/// A condition is there to hold, so what several mods each added to it
+	/// are ways it may hold: each mod's additions become one alternative of
+	/// an `OR`, and what every one of them added stays required outside it.
+	/// An addition only some of the mods share, which the `OR` would need
+	/// twice, keeps every addition required instead.
 	fn build_conditions(&mut self, child_classes: Vec<ClassId>) -> Vec<TreeNode> {
-		let mut by_kind = BTreeMap::<String, Vec<ClassId>>::new();
-		for child in &child_classes {
-			if let Some(kind) = self.addition_kind(*child) {
-				by_kind.entry(kind).or_default().push(*child);
-			}
-		}
-		let alternatives = by_kind
-			.into_values()
-			.filter(|group| self.added_by_several_revisions(group))
+		let additions = child_classes
+			.iter()
+			.filter_map(|class| Some((*class, self.adding_revisions(*class)?)))
 			.collect::<Vec<_>>();
-		let group_of =
-			|class: ClassId| alternatives.iter().position(|group| group.contains(&class));
+		let adders = additions
+			.iter()
+			.flat_map(|(_, revisions)| revisions.iter().copied())
+			.collect::<BTreeSet<_>>();
+		let mut by_revision = BTreeMap::<RevisionId, Vec<ClassId>>::new();
+		for (class, revisions) in &additions {
+			if *revisions == adders {
+				continue;
+			}
+			let [revision] = revisions.iter().copied().collect::<Vec<_>>()[..] else {
+				return self.build_each(child_classes);
+			};
+			by_revision.entry(revision).or_default().push(*class);
+		}
+		// Each mod adding something of its own, or nothing beyond the shared
+		// additions, which would make the `OR` hold whatever the rest say.
+		if by_revision.len() < 2 || by_revision.len() < adders.len() {
+			return self.build_each(child_classes);
+		}
+		let alternatives = by_revision.into_values().collect::<Vec<_>>();
+		let first = alternatives.iter().flatten().copied().min_by_key(|class| {
+			child_classes
+				.iter()
+				.position(|child| child == class)
+				.unwrap_or(usize::MAX)
+		});
 		let mut children = Vec::with_capacity(child_classes.len());
 		for child in &child_classes {
-			match group_of(*child) {
-				None => children.push(self.build(*child)),
-				Some(index) if alternatives[index][0] == *child => {
-					let group = alternatives[index].clone();
-					children.push(self.build_alternatives(&group));
-				}
-				Some(_) => {}
+			if Some(*child) == first {
+				children.push(self.build_alternatives(&alternatives));
+			} else if !alternatives.iter().flatten().any(|class| class == child) {
+				children.push(self.build(*child));
 			}
 		}
 		children
 	}
 
-	/// The kind of an added condition: one the base lacks.
-	fn addition_kind(&self, class: ClassId) -> Option<String> {
-		if self
-			.correspondence
-			.classes
-			.class(class)
-			.get(RevisionId::BASE)
-			.is_some()
-		{
-			return None;
-		}
-		let selected = self.selections.get(&class)?.selected?;
-		Some(self.node(selected).kind.clone())
+	fn build_each(&mut self, child_classes: Vec<ClassId>) -> Vec<TreeNode> {
+		child_classes
+			.into_iter()
+			.map(|child| self.build(child))
+			.collect()
 	}
 
-	/// Whether additions come from two or more revisions, none adding two:
-	/// one revision's own conditions of a kind are required together.
-	fn added_by_several_revisions(&self, group: &[ClassId]) -> bool {
-		if group.len() < 2 {
-			return false;
-		}
-		let mut seen = BTreeSet::new();
-		for class in group {
-			for revision in self.correspondence.classes.class(*class).members.keys() {
-				if !seen.insert(*revision) {
-					return false;
+	/// The revisions that added a condition the base lacks.
+	fn adding_revisions(&self, class: ClassId) -> Option<BTreeSet<RevisionId>> {
+		let members = &self.correspondence.classes.class(class).members;
+		(!members.contains_key(&RevisionId::BASE)).then(|| members.keys().copied().collect())
+	}
+
+	fn build_alternatives(&mut self, alternatives: &[Vec<ClassId>]) -> TreeNode {
+		// The `OR` and `AND`s are the merge's own: no input wrote them.
+		self.push_synthetic();
+		let alternatives = alternatives
+			.iter()
+			.map(|classes| match classes.as_slice() {
+				[only] => self.build(*only),
+				classes => {
+					self.push_synthetic();
+					let conditions = classes.iter().map(|class| self.build(*class)).collect();
+					synthetic_block("AND", ChildOrder::Ordered, conditions)
 				}
-			}
-		}
-		seen.len() >= 2
+			})
+			.collect();
+		synthetic_block("OR", ChildOrder::Commutative, alternatives)
 	}
 
-	fn build_alternatives(&mut self, group: &[ClassId]) -> TreeNode {
-		// The `OR` is the merge's own: no input wrote it.
+	/// Record an assignment and its block that no input wrote.
+	fn push_synthetic(&mut self) {
 		for _ in 0..2 {
 			self.sources_preorder.push(SourceSet::default());
 			self.syntheses_preorder.push(None);
-		}
-		let alternatives = group.iter().map(|class| self.build(*class)).collect();
-		TreeNode {
-			kind: "clausewitz.assignment:OR".to_string(),
-			value: Some("OR".to_string()),
-			anchor: Some(crate::merge::kernel::SemanticKey::parent_scoped(
-				crate::merge::kernel::REPEATABLE_STATEMENT,
-				"OR",
-			)),
-			signature: None,
-			child_order: ChildOrder::Ordered,
-			child_cardinality: ChildCardinality::ExactlyOne,
-			children: vec![TreeNode {
-				kind: "clausewitz.block:OR".to_string(),
-				value: None,
-				anchor: None,
-				signature: None,
-				child_order: ChildOrder::Commutative,
-				child_cardinality: ChildCardinality::Many,
-				children: alternatives,
-			}],
 		}
 	}
 
@@ -1229,6 +1222,30 @@ fn is_condition_conjunction(node: &NormalizedNode) -> bool {
 			node.kind.as_str(),
 			"clausewitz.block:OR" | "clausewitz.block:NOT" | "clausewitz.block:NOR"
 		)
+}
+
+/// `key = { children }` that the merge writes itself.
+fn synthetic_block(key: &str, order: ChildOrder, children: Vec<TreeNode>) -> TreeNode {
+	TreeNode {
+		kind: format!("clausewitz.assignment:{key}"),
+		value: Some(key.to_string()),
+		anchor: Some(crate::merge::kernel::SemanticKey::parent_scoped(
+			crate::merge::kernel::REPEATABLE_STATEMENT,
+			key,
+		)),
+		signature: None,
+		child_order: ChildOrder::Ordered,
+		child_cardinality: ChildCardinality::ExactlyOne,
+		children: vec![TreeNode {
+			kind: format!("clausewitz.block:{key}"),
+			value: None,
+			anchor: None,
+			signature: None,
+			child_order: order,
+			child_cardinality: ChildCardinality::Many,
+			children,
+		}],
+	}
 }
 
 #[cfg(test)]
