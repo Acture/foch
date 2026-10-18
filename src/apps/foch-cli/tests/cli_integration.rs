@@ -3382,7 +3382,7 @@ fn merge_command_ignore_dep_drops_declared_edge_and_reports_override() {
 }
 
 #[test]
-fn merge_command_skips_unresolved_dag_conflict_by_default() {
+fn merge_command_skips_unresolved_dag_conflict_in_strict_mode() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -3402,6 +3402,7 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--strict",
 			"--confirm",
 		],
 		tmp.path(),
@@ -3445,6 +3446,7 @@ fn merge_review_json_is_written_without_committing() {
 			"--out",
 			path_text(&out_dir),
 			"--no-game-base",
+			"--strict",
 			"--non-interactive",
 			"--review-json",
 			path_text(&review_path),
@@ -3615,6 +3617,7 @@ fn merge_command_force_writes_placeholder_only_for_genuine_user_choice() {
 			out_str.as_str(),
 			"--force",
 			"--no-game-base",
+			"--strict",
 			"--confirm",
 		],
 		tmp.path(),
@@ -3689,6 +3692,7 @@ fn merge_command_cli_prompt_selects_simple_prompt_handler() {
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--strict",
 			"--cli-prompt",
 			"--confirm",
 		],
@@ -3709,7 +3713,7 @@ fn merge_command_cli_prompt_selects_simple_prompt_handler() {
 }
 
 #[test]
-fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
+fn merge_command_strict_unresolved_conflict_prints_resolution_tip_to_stderr() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -3729,6 +3733,7 @@ fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--strict",
 			"--confirm",
 		],
 		tmp.path(),

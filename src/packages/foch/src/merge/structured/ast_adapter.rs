@@ -579,6 +579,23 @@ fn is_statement_node(node: &NormalizedNode) -> bool {
 	is_assignment_node(node) || node.kind == ITEM_KIND
 }
 
+/// Whether a node holds the one value of an assignment, or is an assignment
+/// holding one value: the place a mod can only set one way.
+pub(super) fn is_single_value(tree: &NormalizedTree, id: NodeId) -> bool {
+	let Ok(node) = tree.node(id) else {
+		return false;
+	};
+	let is_scalar = |node: &NormalizedNode| node.kind.starts_with("clausewitz.scalar.");
+	if is_scalar(node) {
+		return node
+			.parent
+			.and_then(|parent| tree.node(parent).ok())
+			.is_some_and(|parent| is_assignment_node(parent) && parent.children.len() == 1);
+	}
+	is_assignment_node(node)
+		&& matches!(node.children.as_slice(), [child] if tree.node(*child).is_ok_and(is_scalar))
+}
+
 fn is_assignment_node(node: &NormalizedNode) -> bool {
 	node.kind.starts_with(ASSIGNMENT_KIND_PREFIX) || node.kind == ENTITY_ASSIGNMENT_KIND
 }

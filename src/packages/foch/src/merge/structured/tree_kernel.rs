@@ -32,7 +32,7 @@ use crate::merge::planning::dag_pipeline::{
 	DagJoinProtocol, DagJoinRequest, DagJoinRevision, EffectiveNodeProtocol, EffectiveNodeRequest,
 };
 
-use super::ast_adapter::{denormalize_statement, enclosing_assignment_keys};
+use super::ast_adapter::{denormalize_statement, enclosing_assignment_keys, is_single_value};
 use super::definition_module::DefinitionModuleIndex;
 use super::observer::TreeSourceObserver;
 use super::trivia::detach_trivia;
@@ -1388,70 +1388,137 @@ fn normalized_tree_is_empty_root(tree: &NormalizedTree) -> Result<bool, String> 
 	Ok(tree.len() == 1 && root.children.is_empty())
 }
 
-/// The definitions of one join that fall back to the version of the revision
-/// loaded last, and the conflicts decided for a change over a deletion.
+/// The default choices of one join: one value mods set differently takes
+/// the version of the mod loaded last, and the rest keep the kernel's result.
 #[derive(Default)]
-struct LoadOrderFallback {
-	definitions: BTreeSet<String>,
-	/// Each fallen-back definition's winning revision and mod, found when
-	/// building states.
-	winners: BTreeMap<String, (usize, String)>,
-	/// This pass's change-over-deletion picks, with their definitions.
-	picks: BTreeMap<ConflictNodeId, String>,
+struct DefaultChoices {
+	/// This pass's picks.
+	picks: BTreeSet<ConflictNodeId>,
+	/// Picks that could not stand beside another pick, or did not resolve
+	/// their conflict: they keep the kernel's tentative choice.
+	tentative: BTreeSet<ConflictNodeId>,
 }
 
-impl LoadOrderFallback {
-	/// Whole-file joins have no definitions to fall back one at a time.
-	fn applies(&self, base: &TreeDagState) -> bool {
-		!base
-			.partition_lineage
-			.contains_key(&SemanticPartitionId::File)
-	}
-
-	/// Add the definitions of conflicts nothing decided, other than deletions
-	/// a change can override. Returns whether any was new.
-	fn add_unresolved(
+impl DefaultChoices {
+	/// Decide each remaining conflict at its own place: a delete-modify for
+	/// the change loaded last, since the change is a feature a mod adds and
+	/// the deletion only removes it; one value mods set differently for the
+	/// version loaded last, as the game would load it; and any other by
+	/// keeping the kernel's result, which holds every mod's content.
+	fn pick_by_load_order(
 		&mut self,
 		conflicts: &[StructuralConflict],
-		handled: &BTreeMap<ConflictNodeId, ()>,
-	) -> bool {
-		let mut added = false;
-		for conflict in conflicts {
-			if handled.contains_key(&conflict.id) || change_over_deletion(conflict).is_some() {
-				continue;
-			}
-			if let Some(key) = conflict_definition(conflict) {
-				added |= self.definitions.insert(key);
-			}
-		}
-		added
-	}
-
-	/// Decide each remaining delete-modify conflict for the change loaded
-	/// last: the change is a feature a mod adds, the deletion only removes it.
-	fn pick_changes_over_deletions(
-		&mut self,
-		conflicts: &[StructuralConflict],
+		facts: &[SemanticMergeFacts],
 		resolution: &mut TreeConflictResolution,
 		revisions: &[DagJoinRevision<'_, TreeDagState>],
 		path: &GamePath,
-	) {
-		self.picks.clear();
+	) -> bool {
+		let mut picked = false;
+		let precedence = |revision: RevisionId| {
+			usize::from(revision.get())
+				.checked_sub(1)
+				.and_then(|index| revisions.get(index))
+				.map(|revision| revision.precedence)
+		};
+		// Picks within one definition agree on one mod where they can: two
+		// conflicts over one part, decided for different mods, would select
+		// incompatible versions of it.
+		let mut preferred = BTreeMap::<String, (usize, RevisionId)>::new();
 		for conflict in conflicts {
-			if resolution.handled_conflicts.contains_key(&conflict.id) {
-				continue;
-			}
-			let Some(changes) = change_over_deletion(conflict) else {
+			let Some(DefaultChoice::LoadOrder(changes)) = default_choice(conflict, facts) else {
 				continue;
 			};
+			let key = conflict_definition(conflict).unwrap_or_default();
+			for (_, revision) in changes {
+				let Some(order) = precedence(revision) else {
+					continue;
+				};
+				let entry = preferred.entry(key.clone()).or_insert((order, revision));
+				if order > entry.0 {
+					*entry = (order, revision);
+				}
+			}
+		}
+		// Outer parts first: a part picked whole decides what is inside it, and
+		// a pick inside for another mod would select an incompatible version.
+		let mut ordered = conflicts.iter().collect::<Vec<_>>();
+		ordered.sort_by_key(|conflict| conflict.semantic_path.len());
+		let mut picked_paths = Vec::<&[String]>::new();
+		for conflict in ordered {
+			if self.tentative.contains(&conflict.id) {
+				resolution.handled_conflicts.insert(conflict.id, ());
+				resolution
+					.handler_resolutions
+					.push(HandlerResolutionRecord {
+						path: path.to_owned(),
+						action: "kernel_tentative".to_string(),
+						source: None,
+						rationale: Some(format!(
+							"kept the merge's own choice at `{}`, which no single version could replace: {}",
+							conflict.semantic_path.join("/"),
+							conflict.detail,
+						)),
+					});
+				continue;
+			}
+			if resolution.handled_conflicts.contains_key(&conflict.id)
+				|| picked_paths.iter().any(|path| {
+					!path.is_empty()
+						&& conflict.semantic_path.len() > path.len()
+						&& conflict.semantic_path.starts_with(path)
+				}) {
+				continue;
+			}
+			let changes = match default_choice(conflict, facts) {
+				Some(DefaultChoice::LoadOrder(changes)) => changes,
+				Some(DefaultChoice::ChangeOverDeletion) => {
+					resolution.handled_conflicts.insert(conflict.id, ());
+					resolution
+						.handler_resolutions
+						.push(HandlerResolutionRecord {
+							path: path.to_owned(),
+							action: "change_over_deletion".to_string(),
+							source: None,
+							rationale: Some(format!(
+								"kept every change made at `{}` that another mod deleted",
+								conflict.semantic_path.join("/"),
+							)),
+						});
+					continue;
+				}
+				Some(DefaultChoice::KeepEvery) => {
+					resolution.handled_conflicts.insert(conflict.id, ());
+					resolution
+						.handler_resolutions
+						.push(HandlerResolutionRecord {
+							path: path.to_owned(),
+							action: "kept_every_version".to_string(),
+							source: None,
+							rationale: Some(format!(
+								"kept what every mod wrote at `{}`: {}",
+								conflict.semantic_path.join("/"),
+								conflict.detail,
+							)),
+						});
+					continue;
+				}
+				None => continue,
+			};
+			let favored = preferred
+				.get(&conflict_definition(conflict).unwrap_or_default())
+				.map(|(_, revision)| *revision);
 			let Some((selected, revision)) = changes
 				.into_iter()
 				.filter_map(|(selected, revision)| {
+					let order = precedence(revision)?;
+					Some((selected, revision, order))
+				})
+				.max_by_key(|(_, revision, order)| (Some(*revision) == favored, *order))
+				.and_then(|(selected, revision, _)| {
 					revisions
 						.get(usize::from(revision.get()).checked_sub(1)?)
 						.map(|revision| (selected, revision))
 				})
-				.max_by_key(|(_, revision)| revision.precedence)
 			else {
 				continue;
 			};
@@ -1464,219 +1531,134 @@ impl LoadOrderFallback {
 				.handler_resolutions
 				.push(HandlerResolutionRecord {
 					path: path.to_owned(),
-					action: "change_over_deletion".to_string(),
+					action: "load_order_pick".to_string(),
 					source: Some(revision.mod_id.0.clone()),
 					rationale: Some(format!(
-						"kept the change `{}` made at `{}` that another mod deleted",
+						"`{}` loads last among the mods that set `{}` differently",
 						revision.mod_id.0,
 						conflict.semantic_path.join("/"),
 					)),
 				});
-			self.picks.insert(
-				conflict.id,
-				conflict_definition(conflict).unwrap_or_default(),
-			);
+			self.picks.insert(conflict.id);
+			picked_paths.push(&conflict.semantic_path);
+			picked = true;
 		}
+		picked
 	}
 
-	/// A replay this pass's picks broke falls back the definitions it names,
-	/// or every picked one. Returns whether there is anything to retry with.
-	fn fall_back_from_picks(&mut self, error: &str) -> bool {
+	/// The picks a replay rejected keep the kernel's tentative choice: those
+	/// the error names, or every pick of the pass when it names none. Returns
+	/// whether there is anything to retry with.
+	fn keep_tentative_for_rejected_picks(&mut self, error: &str) -> bool {
 		let named = self
 			.picks
 			.iter()
-			.filter(|(id, _)| error.contains(&id.to_string()))
-			.map(|(_, key)| key.clone())
+			.filter(|id| error.contains(&id.to_string()))
+			.copied()
 			.collect::<Vec<_>>();
-		let keys = if named.is_empty() {
-			self.picks.values().cloned().collect()
+		let rejected = if named.is_empty() {
+			self.picks.iter().copied().collect()
 		} else {
 			named
 		};
-		let before = self.definitions.len();
-		self.definitions
-			.extend(keys.into_iter().filter(|key| !key.is_empty()));
-		self.definitions.len() > before
+		let before = self.tentative.len();
+		self.tentative.extend(rejected);
+		self.tentative.len() > before
 	}
 
-	/// Picks the replay left unresolved fall back their definitions.
-	fn fall_back_from_unresolved_picks(
+	/// Picks the replay left unresolved keep the kernel's tentative choice.
+	/// Returns whether any did.
+	fn keep_tentative_for_unresolved_picks(
 		&mut self,
 		conflicts: &[StructuralConflict],
 		resolutions: &TreeConflictResolutions,
 	) -> bool {
-		let before = self.definitions.len();
-		for conflict in conflicts {
-			if resolutions.contains_key(&conflict.id)
-				&& let Some(key) = self.picks.get(&conflict.id)
-				&& !key.is_empty()
-			{
-				self.definitions.insert(key.clone());
-			}
-		}
-		self.definitions.len() > before
-	}
-
-	/// The revisions' states with each fallen-back definition left as the
-	/// base has it in every revision but the one loaded last that changes it.
-	fn states(
-		&mut self,
-		base: &TreeDagState,
-		revisions: &[DagJoinRevision<'_, TreeDagState>],
-		adjusted: Option<&[TreeDagState]>,
-	) -> Option<Vec<TreeDagState>> {
-		if self.definitions.is_empty() {
-			return None;
-		}
-		let mut states = revisions
-			.iter()
-			.enumerate()
-			.map(|(index, revision)| {
-				adjusted.map_or_else(|| revision.state.clone(), |states| states[index].clone())
-			})
-			.collect::<Vec<_>>();
-		self.winners.clear();
-		for key in &self.definitions {
-			let base_group = definition_group(&base.statements, key);
-			let Some(winner) = states
+		let before = self.tentative.len();
+		self.tentative.extend(
+			conflicts
 				.iter()
-				.enumerate()
-				.filter(|(_, state)| {
-					!super::definition_module::statements_content_equal(
-						&definition_group(&state.statements, key),
-						&base_group,
-					)
+				.filter(|conflict| {
+					resolutions.contains_key(&conflict.id) && self.picks.contains(&conflict.id)
 				})
-				.max_by_key(|(index, _)| revisions[*index].precedence)
-				.map(|(index, _)| index)
-			else {
-				continue;
-			};
-			self.winners
-				.insert(key.clone(), (winner, revisions[winner].mod_id.0.clone()));
-			let partition = SemanticPartitionId::Definition(key.clone());
-			for (index, state) in states.iter_mut().enumerate() {
-				if index == winner {
-					continue;
-				}
-				let position = state
-					.statements
-					.iter()
-					.position(|statement| is_definition(statement, key));
-				state
-					.statements
-					.retain(|statement| !is_definition(statement, key));
-				let position = position.unwrap_or(state.statements.len());
-				state
-					.statements
-					.splice(position..position, base_group.iter().cloned());
-				match base.partition_lineage.get(&partition) {
-					Some(lineage) => {
-						state
-							.partition_lineage
-							.insert(partition.clone(), lineage.clone());
-					}
-					None => {
-						state.partition_lineage.remove(&partition);
-					}
-				}
-			}
-		}
-		Some(states)
-	}
-
-	/// Fallen-back definitions the kernel still cannot merge from their one
-	/// changed version, such as control flow it cannot represent: their
-	/// conflicts are dropped and the definitions are copied as written.
-	fn take_verbatim(&self, conflicts: &mut Vec<StructuralConflict>) -> BTreeSet<String> {
-		let mut verbatim = BTreeSet::new();
-		conflicts.retain(|conflict| match conflict_definition(conflict) {
-			Some(key) if self.winners.contains_key(&key) => {
-				verbatim.insert(key);
-				false
-			}
-			_ => true,
-		});
-		verbatim
-	}
-
-	/// Replace a definition in the joined state with the winning revision's
-	/// own, lineage and all: the output is that revision's, so its lineage is.
-	fn copy_verbatim(
-		&self,
-		key: &str,
-		revisions: &[DagJoinRevision<'_, TreeDagState>],
-		state: &mut TreeDagState,
-	) {
-		let Some((winner, _)) = self.winners.get(key) else {
-			return;
-		};
-		let winner = revisions[*winner].state;
-		let position = state
-			.statements
-			.iter()
-			.position(|statement| is_definition(statement, key));
-		state
-			.statements
-			.retain(|statement| !is_definition(statement, key));
-		let position = position.unwrap_or(state.statements.len());
-		state.statements.splice(
-			position..position,
-			definition_group(&winner.statements, key),
+				.map(|conflict| conflict.id),
 		);
-		let partition = SemanticPartitionId::Definition(key.to_string());
-		match winner.partition_lineage.get(&partition) {
-			Some(lineage) => {
-				state
-					.partition_lineage
-					.insert(partition.clone(), lineage.clone());
-			}
-			None => {
-				state.partition_lineage.remove(&partition);
-			}
-		}
-		state
-			.merge_facts
-			.retain(|facts| facts.partition != partition);
-	}
-
-	fn record(&self, path: &GamePath, records: &mut Vec<HandlerResolutionRecord>) {
-		for (key, (_, winner)) in &self.winners {
-			records.push(HandlerResolutionRecord {
-				path: path.to_owned(),
-				action: "load_order_default".to_string(),
-				source: Some(winner.clone()),
-				rationale: Some(format!(
-					"definition `{key}` has changes no choice reconciles; kept the version of `{winner}`, which loads last, as the game would without merging"
-				)),
-			});
-		}
+		self.tentative.len() > before
 	}
 }
 
 /// The definition a definition-module conflict is in.
 fn conflict_definition(conflict: &StructuralConflict) -> Option<String> {
+	// The module names the definition in the detail; the path names an
+	// entity, `custom_button:name`, where definitions repeat one key.
 	conflict
-		.semantic_path
-		.first()
-		.filter(|key| !key.is_empty())
-		.cloned()
+		.detail
+		.strip_prefix("definition `")
+		.and_then(|rest| rest.split_once("`: "))
+		.map(|(key, _)| key.to_string())
 		.or_else(|| {
 			conflict
-				.detail
-				.strip_prefix("definition `")?
-				.split_once("`: ")
-				.map(|(key, _)| key.to_string())
+				.semantic_path
+				.first()
+				.filter(|key| !key.is_empty())
+				.cloned()
 		})
 }
 
-/// The changed survivors a delete-modify conflict can be decided for, with
-/// their revisions.
-fn change_over_deletion(conflict: &StructuralConflict) -> Option<Vec<(SourceNodeRef, RevisionId)>> {
-	if conflict.kind != ConflictKind::DeleteModify {
-		return None;
+/// How a conflict no choice resolved is decided by default.
+enum DefaultChoice {
+	/// A change another mod's deletion would remove: the kernel keeps the
+	/// changed part, with every mod's changes inside it.
+	ChangeOverDeletion,
+	/// One value mods set differently: the game keeps the version of the mod
+	/// it loads last, and so does the merge, at that one place.
+	LoadOrder(Vec<(SourceNodeRef, RevisionId)>),
+	/// The kernel's result already holds every mod's content, and only how
+	/// it pairs or orders them is uncertain.
+	KeepEvery,
+}
+
+fn default_choice(
+	conflict: &StructuralConflict,
+	facts: &[SemanticMergeFacts],
+) -> Option<DefaultChoice> {
+	if conflict.kind == ConflictKind::DeleteModify {
+		return Some(DefaultChoice::ChangeOverDeletion);
 	}
-	let changes = conflict
+	let changed_differently = match conflict.kind {
+		ConflictKind::ValueSlot | ConflictKind::InsertInsert => true,
+		ConflictKind::Policy => conflict.detail.ends_with(" differently"),
+		ConflictKind::AmbiguousMatch | ConflictKind::Ordering => {
+			return Some(DefaultChoice::KeepEvery);
+		}
+		_ => return None,
+	};
+	if changed_differently
+		&& let Some(changes) = changed_versions(conflict)
+		&& changes
+			.iter()
+			.all(|(candidate, _)| is_single_value_candidate(candidate, facts))
+	{
+		return Some(DefaultChoice::LoadOrder(changes));
+	}
+	changed_differently.then_some(DefaultChoice::KeepEvery)
+}
+
+/// Whether a candidate is a value its assignment holds alone.
+fn is_single_value_candidate(candidate: &SourceNodeRef, facts: &[SemanticMergeFacts]) -> bool {
+	let SourceNodeRef::Node { input, node } = candidate else {
+		return false;
+	};
+	facts
+		.iter()
+		.filter_map(|facts| facts.revision_trees.get(&input.revision))
+		.find(|tree| MergeInputId::from_tree(input.revision, tree).root_hash == input.root_hash)
+		.is_some_and(|tree| is_single_value(tree, *node))
+}
+
+/// The versions mods wrote of what a conflict is about, with their
+/// revisions.
+fn changed_versions(conflict: &StructuralConflict) -> Option<Vec<(SourceNodeRef, RevisionId)>> {
+	let versions = conflict
 		.candidates
 		.iter()
 		.filter_map(|candidate| match candidate {
@@ -1686,19 +1668,7 @@ fn change_over_deletion(conflict: &StructuralConflict) -> Option<Vec<(SourceNode
 			_ => None,
 		})
 		.collect::<Vec<_>>();
-	(!changes.is_empty()).then_some(changes)
-}
-
-fn is_definition(statement: &AstStatement, key: &str) -> bool {
-	matches!(statement, AstStatement::Assignment { key: found, .. } if found == key)
-}
-
-fn definition_group(statements: &[AstStatement], key: &str) -> Vec<AstStatement> {
-	statements
-		.iter()
-		.filter(|statement| is_definition(statement, key))
-		.cloned()
-		.collect()
+	(!versions.is_empty()).then_some(versions)
 }
 
 pub(crate) struct TreeDagProtocol<'a> {
@@ -1831,11 +1801,10 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				},
 			));
 		}
-		// Conflicts no choice resolves fall back, definition by definition, to
-		// the version the game would load unmerged, and the join runs again
-		// with those revisions; each pass only adds definitions, so it ends.
-		let mut fallback = LoadOrderFallback::default();
-		loop {
+		// A pick the kernel cannot replay keeps its tentative choice, and the
+		// join runs again; each pass only adds such picks, so it ends.
+		let mut choices = DefaultChoices::default();
+		'pass: loop {
 			let path = request.file_dag.file_path().to_owned();
 			let adjusted_states = if self.kernel.join.supports_sparse_reset_layers()
 				&& request.file_dag.has_replace_path_owner()
@@ -1850,8 +1819,6 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			} else {
 				None
 			};
-			let fallback_states =
-				fallback.states(request.base, &request.revisions, adjusted_states.as_deref());
 			let merge_revisions = request
 				.revisions
 				.iter()
@@ -1859,14 +1826,9 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				.map(|(index, revision)| DagJoinRevision {
 					mod_id: revision.mod_id,
 					precedence: revision.precedence,
-					state: fallback_states.as_ref().map_or_else(
-						|| {
-							adjusted_states
-								.as_ref()
-								.map_or(revision.state, |states| &states[index])
-						},
-						|states| &states[index],
-					),
+					state: adjusted_states
+						.as_ref()
+						.map_or(revision.state, |states| &states[index]),
 				})
 				.collect::<Vec<_>>();
 			let mut state = merge_tree_metadata(request.base, &merge_revisions);
@@ -1909,10 +1871,12 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			let mut resolution =
 				resolve_tree_conflicts(&mut record_builder, &probe.conflicts, self.handler)?;
 			charge(KernelStep::JoinResolve, started);
-			let defaulting = self.load_order_default && fallback.applies(request.base);
+			let defaulting = self.load_order_default;
 			if defaulting {
-				fallback.pick_changes_over_deletions(
+				choices.picks.clear();
+				choices.pick_by_load_order(
 					&probe.conflicts,
+					&probe.merge_facts,
 					&mut resolution,
 					&merge_revisions,
 					&input.base.path,
@@ -1926,7 +1890,11 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 					.merge_tentative_with_resolutions(&input, &resolution.resolutions)
 				{
 					Ok(outcome) => outcome,
-					Err(error) if defaulting && fallback.fall_back_from_picks(&error) => continue,
+					Err(error)
+						if defaulting && choices.keep_tentative_for_rejected_picks(&error) =>
+					{
+						continue 'pass;
+					}
 					Err(error) => {
 						return Err(format!(
 							"{} join protocol failed while replaying exact conflict selections for {}: {error}",
@@ -1936,18 +1904,43 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 					}
 				}
 			};
+			// Picks can bring conflicts the probe did not have to light, which
+			// are decided the same way.
+			let mut rounds = 0;
+			while defaulting
+				&& rounds < 32
+				&& choices.pick_by_load_order(
+					&outcome.conflicts,
+					&outcome.merge_facts,
+					&mut resolution,
+					&merge_revisions,
+					&input.base.path,
+				) {
+				rounds += 1;
+				outcome = match self
+					.kernel
+					.merge_tentative_with_resolutions(&input, &resolution.resolutions)
+				{
+					Ok(outcome) => outcome,
+					Err(error) if choices.keep_tentative_for_rejected_picks(&error) => {
+						continue 'pass;
+					}
+					Err(error) => {
+						return Err(format!(
+							"{} join protocol failed while replaying exact conflict selections for {}: {error}",
+							self.kernel.join_protocol_name(),
+							request.file_dag.file_path(),
+						));
+					}
+				};
+			}
 			if defaulting
-				&& (fallback
-					.fall_back_from_unresolved_picks(&outcome.conflicts, &resolution.resolutions)
-					|| fallback.add_unresolved(&outcome.conflicts, &resolution.handled_conflicts))
-			{
+				&& choices.keep_tentative_for_unresolved_picks(
+					&outcome.conflicts,
+					&resolution.resolutions,
+				) {
 				continue;
 			}
-			let verbatim = if defaulting {
-				fallback.take_verbatim(&mut outcome.conflicts)
-			} else {
-				BTreeSet::new()
-			};
 			state.statements = match request.plan.scope() {
 				// Only further merging reads an intermediate join. Its children and
 				// later joins re-normalize these statements and compare them with
@@ -1967,9 +1960,6 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				if !state.merge_facts.contains(&facts) {
 					state.merge_facts.push(facts);
 				}
-			}
-			for key in &verbatim {
-				fallback.copy_verbatim(key, &merge_revisions, &mut state);
 			}
 			for conflict in &outcome.conflicts {
 				if resolution.resolutions.contains_key(&conflict.id) {
@@ -2022,7 +2012,6 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			for directive in resolution.output_directives {
 				state.push_output_directive(directive);
 			}
-			fallback.record(&input.base.path, &mut state.handler_resolutions);
 			return Ok(state);
 		}
 	}
