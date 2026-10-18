@@ -34,8 +34,8 @@ use crate::merge::structured::{
 };
 
 use super::super::super::conflict_handler::{
-	ChainHandler, ConflictHandler, DeferHandler, DepImpliesResolutionHandler, LookupHandler,
-	PriorityBoostResolutionHandler, PromptOutcomeKind, prompt_survivors_and_persist,
+	ChainHandler, ConflictHandler, DepImpliesResolutionHandler, LoadOrderDefaultHandler,
+	LookupHandler, PriorityBoostResolutionHandler, PromptOutcomeKind, prompt_survivors_and_persist,
 };
 use super::super::super::error::{MergeError, MergeErrorSubject};
 use crate::merge::planning::dag_input::DagMergeInputRequest;
@@ -602,7 +602,9 @@ fn automatic_conflict_handler<'a>(
 					context.mod_dag,
 					context.dep_overrides,
 				),
-				second: DeferHandler,
+				second: LoadOrderDefaultHandler {
+					enabled: context.load_order_default,
+				},
 			},
 		},
 	}

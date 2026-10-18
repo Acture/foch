@@ -5,8 +5,8 @@ use std::time::Instant;
 use crate::game::eu4::content::MergePolicies;
 use crate::game::eu4::script::parser::{AstFile, AstStatement};
 use crate::merge::kernel::{
-	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
-	SourceNodeRef, StructuralConflict,
+	ConflictKind, ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree,
+	RevisionId, SourceNodeRef, StructuralConflict,
 };
 use crate::merge::progress;
 use crate::merge::timing::{KernelStep, charge};
@@ -1388,6 +1388,319 @@ fn normalized_tree_is_empty_root(tree: &NormalizedTree) -> Result<bool, String> 
 	Ok(tree.len() == 1 && root.children.is_empty())
 }
 
+/// The definitions of one join that fall back to the version of the revision
+/// loaded last, and the conflicts decided for a change over a deletion.
+#[derive(Default)]
+struct LoadOrderFallback {
+	definitions: BTreeSet<String>,
+	/// Each fallen-back definition's winning revision and mod, found when
+	/// building states.
+	winners: BTreeMap<String, (usize, String)>,
+	/// This pass's change-over-deletion picks, with their definitions.
+	picks: BTreeMap<ConflictNodeId, String>,
+}
+
+impl LoadOrderFallback {
+	/// Whole-file joins have no definitions to fall back one at a time.
+	fn applies(&self, base: &TreeDagState) -> bool {
+		!base
+			.partition_lineage
+			.contains_key(&SemanticPartitionId::File)
+	}
+
+	/// Add the definitions of conflicts nothing decided, other than deletions
+	/// a change can override. Returns whether any was new.
+	fn add_unresolved(
+		&mut self,
+		conflicts: &[StructuralConflict],
+		handled: &BTreeMap<ConflictNodeId, ()>,
+	) -> bool {
+		let mut added = false;
+		for conflict in conflicts {
+			if handled.contains_key(&conflict.id) || change_over_deletion(conflict).is_some() {
+				continue;
+			}
+			if let Some(key) = conflict_definition(conflict) {
+				added |= self.definitions.insert(key);
+			}
+		}
+		added
+	}
+
+	/// Decide each remaining delete-modify conflict for the change loaded
+	/// last: the change is a feature a mod adds, the deletion only removes it.
+	fn pick_changes_over_deletions(
+		&mut self,
+		conflicts: &[StructuralConflict],
+		resolution: &mut TreeConflictResolution,
+		revisions: &[DagJoinRevision<'_, TreeDagState>],
+		path: &GamePath,
+	) {
+		self.picks.clear();
+		for conflict in conflicts {
+			if resolution.handled_conflicts.contains_key(&conflict.id) {
+				continue;
+			}
+			let Some(changes) = change_over_deletion(conflict) else {
+				continue;
+			};
+			let Some((selected, revision)) = changes
+				.into_iter()
+				.filter_map(|(selected, revision)| {
+					revisions
+						.get(usize::from(revision.get()).checked_sub(1)?)
+						.map(|revision| (selected, revision))
+				})
+				.max_by_key(|(_, revision)| revision.precedence)
+			else {
+				continue;
+			};
+			let Ok(exact) = ConflictResolution::new(conflict.clone(), selected) else {
+				continue;
+			};
+			resolution.resolutions.insert(conflict.id, exact);
+			resolution.handled_conflicts.insert(conflict.id, ());
+			resolution
+				.handler_resolutions
+				.push(HandlerResolutionRecord {
+					path: path.to_owned(),
+					action: "change_over_deletion".to_string(),
+					source: Some(revision.mod_id.0.clone()),
+					rationale: Some(format!(
+						"kept the change `{}` made at `{}` that another mod deleted",
+						revision.mod_id.0,
+						conflict.semantic_path.join("/"),
+					)),
+				});
+			self.picks.insert(
+				conflict.id,
+				conflict_definition(conflict).unwrap_or_default(),
+			);
+		}
+	}
+
+	/// A replay this pass's picks broke falls back the definitions it names,
+	/// or every picked one. Returns whether there is anything to retry with.
+	fn fall_back_from_picks(&mut self, error: &str) -> bool {
+		let named = self
+			.picks
+			.iter()
+			.filter(|(id, _)| error.contains(&id.to_string()))
+			.map(|(_, key)| key.clone())
+			.collect::<Vec<_>>();
+		let keys = if named.is_empty() {
+			self.picks.values().cloned().collect()
+		} else {
+			named
+		};
+		let before = self.definitions.len();
+		self.definitions
+			.extend(keys.into_iter().filter(|key| !key.is_empty()));
+		self.definitions.len() > before
+	}
+
+	/// Picks the replay left unresolved fall back their definitions.
+	fn fall_back_from_unresolved_picks(
+		&mut self,
+		conflicts: &[StructuralConflict],
+		resolutions: &TreeConflictResolutions,
+	) -> bool {
+		let before = self.definitions.len();
+		for conflict in conflicts {
+			if resolutions.contains_key(&conflict.id)
+				&& let Some(key) = self.picks.get(&conflict.id)
+				&& !key.is_empty()
+			{
+				self.definitions.insert(key.clone());
+			}
+		}
+		self.definitions.len() > before
+	}
+
+	/// The revisions' states with each fallen-back definition left as the
+	/// base has it in every revision but the one loaded last that changes it.
+	fn states(
+		&mut self,
+		base: &TreeDagState,
+		revisions: &[DagJoinRevision<'_, TreeDagState>],
+		adjusted: Option<&[TreeDagState]>,
+	) -> Option<Vec<TreeDagState>> {
+		if self.definitions.is_empty() {
+			return None;
+		}
+		let mut states = revisions
+			.iter()
+			.enumerate()
+			.map(|(index, revision)| {
+				adjusted.map_or_else(|| revision.state.clone(), |states| states[index].clone())
+			})
+			.collect::<Vec<_>>();
+		self.winners.clear();
+		for key in &self.definitions {
+			let base_group = definition_group(&base.statements, key);
+			let Some(winner) = states
+				.iter()
+				.enumerate()
+				.filter(|(_, state)| {
+					!super::definition_module::statements_content_equal(
+						&definition_group(&state.statements, key),
+						&base_group,
+					)
+				})
+				.max_by_key(|(index, _)| revisions[*index].precedence)
+				.map(|(index, _)| index)
+			else {
+				continue;
+			};
+			self.winners
+				.insert(key.clone(), (winner, revisions[winner].mod_id.0.clone()));
+			let partition = SemanticPartitionId::Definition(key.clone());
+			for (index, state) in states.iter_mut().enumerate() {
+				if index == winner {
+					continue;
+				}
+				let position = state
+					.statements
+					.iter()
+					.position(|statement| is_definition(statement, key));
+				state
+					.statements
+					.retain(|statement| !is_definition(statement, key));
+				let position = position.unwrap_or(state.statements.len());
+				state
+					.statements
+					.splice(position..position, base_group.iter().cloned());
+				match base.partition_lineage.get(&partition) {
+					Some(lineage) => {
+						state
+							.partition_lineage
+							.insert(partition.clone(), lineage.clone());
+					}
+					None => {
+						state.partition_lineage.remove(&partition);
+					}
+				}
+			}
+		}
+		Some(states)
+	}
+
+	/// Fallen-back definitions the kernel still cannot merge from their one
+	/// changed version, such as control flow it cannot represent: their
+	/// conflicts are dropped and the definitions are copied as written.
+	fn take_verbatim(&self, conflicts: &mut Vec<StructuralConflict>) -> BTreeSet<String> {
+		let mut verbatim = BTreeSet::new();
+		conflicts.retain(|conflict| match conflict_definition(conflict) {
+			Some(key) if self.winners.contains_key(&key) => {
+				verbatim.insert(key);
+				false
+			}
+			_ => true,
+		});
+		verbatim
+	}
+
+	/// Replace a definition in the joined state with the winning revision's
+	/// own, lineage and all: the output is that revision's, so its lineage is.
+	fn copy_verbatim(
+		&self,
+		key: &str,
+		revisions: &[DagJoinRevision<'_, TreeDagState>],
+		state: &mut TreeDagState,
+	) {
+		let Some((winner, _)) = self.winners.get(key) else {
+			return;
+		};
+		let winner = revisions[*winner].state;
+		let position = state
+			.statements
+			.iter()
+			.position(|statement| is_definition(statement, key));
+		state
+			.statements
+			.retain(|statement| !is_definition(statement, key));
+		let position = position.unwrap_or(state.statements.len());
+		state.statements.splice(
+			position..position,
+			definition_group(&winner.statements, key),
+		);
+		let partition = SemanticPartitionId::Definition(key.to_string());
+		match winner.partition_lineage.get(&partition) {
+			Some(lineage) => {
+				state
+					.partition_lineage
+					.insert(partition.clone(), lineage.clone());
+			}
+			None => {
+				state.partition_lineage.remove(&partition);
+			}
+		}
+		state
+			.merge_facts
+			.retain(|facts| facts.partition != partition);
+	}
+
+	fn record(&self, path: &GamePath, records: &mut Vec<HandlerResolutionRecord>) {
+		for (key, (_, winner)) in &self.winners {
+			records.push(HandlerResolutionRecord {
+				path: path.to_owned(),
+				action: "load_order_default".to_string(),
+				source: Some(winner.clone()),
+				rationale: Some(format!(
+					"definition `{key}` has changes no choice reconciles; kept the version of `{winner}`, which loads last, as the game would without merging"
+				)),
+			});
+		}
+	}
+}
+
+/// The definition a definition-module conflict is in.
+fn conflict_definition(conflict: &StructuralConflict) -> Option<String> {
+	conflict
+		.semantic_path
+		.first()
+		.filter(|key| !key.is_empty())
+		.cloned()
+		.or_else(|| {
+			conflict
+				.detail
+				.strip_prefix("definition `")?
+				.split_once("`: ")
+				.map(|(key, _)| key.to_string())
+		})
+}
+
+/// The changed survivors a delete-modify conflict can be decided for, with
+/// their revisions.
+fn change_over_deletion(conflict: &StructuralConflict) -> Option<Vec<(SourceNodeRef, RevisionId)>> {
+	if conflict.kind != ConflictKind::DeleteModify {
+		return None;
+	}
+	let changes = conflict
+		.candidates
+		.iter()
+		.filter_map(|candidate| match candidate {
+			SourceNodeRef::Node { input, .. } if input.revision != RevisionId::BASE => {
+				Some((*candidate, input.revision))
+			}
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	(!changes.is_empty()).then_some(changes)
+}
+
+fn is_definition(statement: &AstStatement, key: &str) -> bool {
+	matches!(statement, AstStatement::Assignment { key: found, .. } if found == key)
+}
+
+fn definition_group(statements: &[AstStatement], key: &str) -> Vec<AstStatement> {
+	statements
+		.iter()
+		.filter(|statement| is_definition(statement, key))
+		.cloned()
+		.collect()
+}
+
 pub(crate) struct TreeDagProtocol<'a> {
 	kernel: TreeMergeKernel<'a>,
 	partition_adapter: &'a dyn TreePartitionAdapter,
@@ -1395,6 +1708,8 @@ pub(crate) struct TreeDagProtocol<'a> {
 	has_vanilla_base: bool,
 	vanilla_base_mode: VanillaBaseMode,
 	handler: &'a mut dyn ConflictHandler,
+	/// Whether conflicts no choice resolves take the version loaded last.
+	load_order_default: bool,
 	/// The first state with unresolved conflicts that a later step failed to
 	/// build on. Its tree is only a tentative preview of those conflicts, so
 	/// they, not the failure, are what the unit reports.
@@ -1416,6 +1731,7 @@ impl<'a> TreeDagProtocol<'a> {
 			source_observer: TreeSourceObserver::new(partition_adapter, policies),
 			has_vanilla_base,
 			vanilla_base_mode,
+			load_order_default: handler.defers_to_load_order(),
 			handler,
 			blocked_by_conflicts: None,
 		}
@@ -1515,157 +1831,200 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				},
 			));
 		}
-		let path = request.file_dag.file_path().to_owned();
-		let adjusted_states = if self.kernel.join.supports_sparse_reset_layers()
-			&& request.file_dag.has_replace_path_owner()
-		{
-			neutralize_sparse_reset_definition_absence(
-				request.file_dag,
-				request.base,
-				&request.revisions,
-				self.partition_adapter,
-				self.kernel.policies,
-			)?
-		} else {
-			None
-		};
-		let merge_revisions = request
-			.revisions
-			.iter()
-			.enumerate()
-			.map(|(index, revision)| DagJoinRevision {
-				mod_id: revision.mod_id,
-				precedence: revision.precedence,
-				state: adjusted_states
-					.as_ref()
-					.map_or(revision.state, |states| &states[index]),
-			})
-			.collect::<Vec<_>>();
-		let mut state = merge_tree_metadata(request.base, &merge_revisions);
-		let revisions = merge_revisions
-			.iter()
-			.map(|revision| KernelRevision {
-				source_id: revision.mod_id.0.clone(),
-				precedence: revision.precedence,
-				ast: AstFile {
-					path: path.clone(),
-					statements: revision.state.statements.clone(),
+		// Conflicts no choice resolves fall back, definition by definition, to
+		// the version the game would load unmerged, and the join runs again
+		// with those revisions; each pass only adds definitions, so it ends.
+		let mut fallback = LoadOrderFallback::default();
+		loop {
+			let path = request.file_dag.file_path().to_owned();
+			let adjusted_states = if self.kernel.join.supports_sparse_reset_layers()
+				&& request.file_dag.has_replace_path_owner()
+			{
+				neutralize_sparse_reset_definition_absence(
+					request.file_dag,
+					request.base,
+					&request.revisions,
+					self.partition_adapter,
+					self.kernel.policies,
+				)?
+			} else {
+				None
+			};
+			let fallback_states =
+				fallback.states(request.base, &request.revisions, adjusted_states.as_deref());
+			let merge_revisions = request
+				.revisions
+				.iter()
+				.enumerate()
+				.map(|(index, revision)| DagJoinRevision {
+					mod_id: revision.mod_id,
+					precedence: revision.precedence,
+					state: fallback_states.as_ref().map_or_else(
+						|| {
+							adjusted_states
+								.as_ref()
+								.map_or(revision.state, |states| &states[index])
+						},
+						|states| &states[index],
+					),
+				})
+				.collect::<Vec<_>>();
+			let mut state = merge_tree_metadata(request.base, &merge_revisions);
+			let revisions = merge_revisions
+				.iter()
+				.map(|revision| KernelRevision {
+					source_id: revision.mod_id.0.clone(),
+					precedence: revision.precedence,
+					ast: AstFile {
+						path: path.clone(),
+						statements: revision.state.statements.clone(),
+					},
+				})
+				.collect();
+			let input = KernelMergeInput::new(
+				AstFile {
+					path,
+					statements: request.base.statements.clone(),
 				},
-			})
-			.collect();
-		let input = KernelMergeInput::new(
-			AstFile {
-				path,
-				statements: request.base.statements.clone(),
-			},
-			revisions,
-		);
-		progress::stage(|| {
-			format!(
-				"join {} revisions={}",
-				self.kernel.join_protocol_name(),
-				merge_revisions.len()
-			)
-		});
-		let probe = self.kernel.merge_tentative(&input).map_err(|error| {
-			format!(
-				"{} join protocol failed for {}: {error}",
-				self.kernel.join_protocol_name(),
-				request.file_dag.file_path(),
-			)
-		})?;
-		progress::stage(|| format!("join resolve conflicts={}", probe.conflicts.len()));
-		let started = Instant::now();
-		let mut record_builder =
-			ConflictRecordBuilder::new(&input, self.kernel.policies, self.partition_adapter);
-		let mut resolution =
-			resolve_tree_conflicts(&mut record_builder, &probe.conflicts, self.handler)?;
-		charge(KernelStep::JoinResolve, started);
-		let outcome = if resolution.resolutions.is_empty() {
-			probe
-		} else {
-			self.kernel
-				.merge_tentative_with_resolutions(&input, &resolution.resolutions)
-				.map_err(|error| {
-					format!(
-						"{} join protocol failed while replaying exact conflict selections for {}: {error}",
-						self.kernel.join_protocol_name(),
-						request.file_dag.file_path(),
-					)
-				})?
-		};
-		state.statements = match request.plan.scope() {
-			// Only further merging reads an intermediate join. Its children and
-			// later joins re-normalize these statements and compare them with
-			// the join's lineage, which output simplification would not match.
-			DagJoinScope::Intermediate => outcome.lineage_statements,
-			DagJoinScope::Final => outcome.statements,
-		};
-		progress::stage(|| format!("join lineage partitions={}", outcome.merge_facts.len()));
-		for facts in outcome.merge_facts {
+				revisions,
+			);
+			progress::stage(|| {
+				format!(
+					"join {} revisions={}",
+					self.kernel.join_protocol_name(),
+					merge_revisions.len()
+				)
+			});
+			let probe = self.kernel.merge_tentative(&input).map_err(|error| {
+				format!(
+					"{} join protocol failed for {}: {error}",
+					self.kernel.join_protocol_name(),
+					request.file_dag.file_path(),
+				)
+			})?;
+			progress::stage(|| format!("join resolve conflicts={}", probe.conflicts.len()));
 			let started = Instant::now();
-			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)
-				.inspect_err(|_| self.record_blocked(&state))?;
-			charge(KernelStep::JoinLineage, started);
+			let mut record_builder =
+				ConflictRecordBuilder::new(&input, self.kernel.policies, self.partition_adapter);
+			let mut resolution =
+				resolve_tree_conflicts(&mut record_builder, &probe.conflicts, self.handler)?;
+			charge(KernelStep::JoinResolve, started);
+			let defaulting = self.load_order_default && fallback.applies(request.base);
+			if defaulting {
+				fallback.pick_changes_over_deletions(
+					&probe.conflicts,
+					&mut resolution,
+					&merge_revisions,
+					&input.base.path,
+				);
+			}
+			let mut outcome = if resolution.resolutions.is_empty() {
+				probe
+			} else {
+				match self
+					.kernel
+					.merge_tentative_with_resolutions(&input, &resolution.resolutions)
+				{
+					Ok(outcome) => outcome,
+					Err(error) if defaulting && fallback.fall_back_from_picks(&error) => continue,
+					Err(error) => {
+						return Err(format!(
+							"{} join protocol failed while replaying exact conflict selections for {}: {error}",
+							self.kernel.join_protocol_name(),
+							request.file_dag.file_path(),
+						));
+					}
+				}
+			};
+			if defaulting
+				&& (fallback
+					.fall_back_from_unresolved_picks(&outcome.conflicts, &resolution.resolutions)
+					|| fallback.add_unresolved(&outcome.conflicts, &resolution.handled_conflicts))
+			{
+				continue;
+			}
+			let verbatim = if defaulting {
+				fallback.take_verbatim(&mut outcome.conflicts)
+			} else {
+				BTreeSet::new()
+			};
+			state.statements = match request.plan.scope() {
+				// Only further merging reads an intermediate join. Its children and
+				// later joins re-normalize these statements and compare them with
+				// the join's lineage, which output simplification would not match.
+				DagJoinScope::Intermediate => outcome.lineage_statements,
+				DagJoinScope::Final => outcome.statements,
+			};
+			progress::stage(|| format!("join lineage partitions={}", outcome.merge_facts.len()));
+			for facts in outcome.merge_facts {
+				let started = Instant::now();
+				let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)
+					.inspect_err(|_| self.record_blocked(&state))?;
+				charge(KernelStep::JoinLineage, started);
+				state
+					.partition_lineage
+					.insert(facts.partition.clone(), lineage);
+				if !state.merge_facts.contains(&facts) {
+					state.merge_facts.push(facts);
+				}
+			}
+			for key in &verbatim {
+				fallback.copy_verbatim(key, &merge_revisions, &mut state);
+			}
+			for conflict in &outcome.conflicts {
+				if resolution.resolutions.contains_key(&conflict.id) {
+					return Err(format!(
+						"exact source selection did not resolve {} at {}",
+						conflict.kind,
+						conflict.semantic_path.join("/"),
+					));
+				}
+			}
+			let replayed_conflict_ids = outcome
+				.conflicts
+				.iter()
+				.map(|conflict| conflict.id)
+				.collect::<BTreeSet<_>>();
+			state.unresolved_conflicts.retain(|record| {
+				!resolution
+					.handled_conflicts
+					.contains_key(&record.conflict.id)
+					&& !replayed_conflict_ids.contains(&record.conflict.id)
+			});
+			let existing_unresolved_ids = state
+				.unresolved_conflicts
+				.iter()
+				.map(|conflict| conflict.conflict.id)
+				.collect::<BTreeSet<_>>();
+			let reusable_records = std::mem::take(&mut resolution.unresolved_conflicts);
 			state
-				.partition_lineage
-				.insert(facts.partition.clone(), lineage);
-			if !state.merge_facts.contains(&facts) {
-				state.merge_facts.push(facts);
+				.unresolved_conflicts
+				.extend(collect_unresolved_conflict_records(
+					&mut record_builder,
+					&outcome.conflicts,
+					&resolution.handled_conflicts,
+					reusable_records,
+					&existing_unresolved_ids,
+				)?);
+			state
+				.handler_resolutions
+				.extend(resolution.handler_resolutions);
+			for conflict_id in resolution.resolved_conflict_ids {
+				if !state.resolved_conflict_ids.contains(&conflict_id) {
+					state.resolved_conflict_ids.push(conflict_id);
+				}
 			}
-		}
-		for conflict in &outcome.conflicts {
-			if resolution.resolutions.contains_key(&conflict.id) {
-				return Err(format!(
-					"exact source selection did not resolve {} at {}",
-					conflict.kind,
-					conflict.semantic_path.join("/"),
-				));
+			for exact in resolution.resolutions.into_values() {
+				if !state.conflict_resolutions.contains(&exact) {
+					state.conflict_resolutions.push(exact);
+				}
 			}
-		}
-		let replayed_conflict_ids = outcome
-			.conflicts
-			.iter()
-			.map(|conflict| conflict.id)
-			.collect::<BTreeSet<_>>();
-		state.unresolved_conflicts.retain(|record| {
-			!resolution
-				.handled_conflicts
-				.contains_key(&record.conflict.id)
-				&& !replayed_conflict_ids.contains(&record.conflict.id)
-		});
-		let existing_unresolved_ids = state
-			.unresolved_conflicts
-			.iter()
-			.map(|conflict| conflict.conflict.id)
-			.collect::<BTreeSet<_>>();
-		let reusable_records = std::mem::take(&mut resolution.unresolved_conflicts);
-		state
-			.unresolved_conflicts
-			.extend(collect_unresolved_conflict_records(
-				&mut record_builder,
-				&outcome.conflicts,
-				&resolution.handled_conflicts,
-				reusable_records,
-				&existing_unresolved_ids,
-			)?);
-		state
-			.handler_resolutions
-			.extend(resolution.handler_resolutions);
-		for conflict_id in resolution.resolved_conflict_ids {
-			if !state.resolved_conflict_ids.contains(&conflict_id) {
-				state.resolved_conflict_ids.push(conflict_id);
+			for directive in resolution.output_directives {
+				state.push_output_directive(directive);
 			}
+			fallback.record(&input.base.path, &mut state.handler_resolutions);
+			return Ok(state);
 		}
-		for exact in resolution.resolutions.into_values() {
-			if !state.conflict_resolutions.contains(&exact) {
-				state.conflict_resolutions.push(exact);
-			}
-		}
-		for directive in resolution.output_directives {
-			state.push_output_directive(directive);
-		}
-		Ok(state)
 	}
 }
 

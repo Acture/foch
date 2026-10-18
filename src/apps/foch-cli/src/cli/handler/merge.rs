@@ -131,6 +131,7 @@ pub fn prepare_merge(
 			include_base: merge_args.include_base,
 			gui_scroll_merge: merge_args.gui_scroll_merge,
 			force: merge_args.force,
+			strict: merge_args.strict,
 			ignore_replace_path: merge_args.ignore_replace_path,
 			dep_overrides,
 			resolution_config_path: merge_args.config.clone().or_else(|| match &source {

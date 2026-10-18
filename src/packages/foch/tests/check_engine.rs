@@ -162,6 +162,7 @@ fn run_merge_plan_no_base(request: InputRequest) -> MergePlanResult {
 			include_base: false,
 			gui_scroll_merge: false,
 			force: false,
+			strict: true,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_config_path: None,

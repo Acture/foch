@@ -80,6 +80,7 @@ fn static_modifiers_preserve_contributions_through_analyze_and_commit() {
 					include_base: false,
 					gui_scroll_merge: false,
 					force: false,
+					strict: true,
 					ignore_replace_path: false,
 					dep_overrides: Vec::new(),
 					resolution_config_path: None,

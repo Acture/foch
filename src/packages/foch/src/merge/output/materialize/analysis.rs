@@ -51,6 +51,7 @@ pub(super) struct UnitAnalysisContext<'a> {
 	pub(super) emit_options: &'a EmitOptions,
 	pub(super) include_game_base: bool,
 	pub(super) gui_scroll_merge: bool,
+	pub(super) load_order_default: bool,
 	pub(super) provenance: bool,
 }
 
@@ -271,6 +272,7 @@ fn analyze_file(
 		descriptor,
 		merge_key_source,
 		gui_scroll_merge: context.gui_scroll_merge,
+		load_order_default: context.load_order_default,
 		mod_dag: context.mod_dag,
 		ignore_replace_path: context.ignore_replace_path,
 		dep_overrides: context.dep_overrides,
@@ -374,6 +376,7 @@ fn analyze_module_namespace(
 		descriptor,
 		merge_key_source,
 		gui_scroll_merge: context.gui_scroll_merge,
+		load_order_default: context.load_order_default,
 		mod_dag: context.mod_dag,
 		ignore_replace_path: context.ignore_replace_path,
 		dep_overrides: context.dep_overrides,

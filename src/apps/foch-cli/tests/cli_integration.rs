@@ -40,6 +40,8 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 					out.to_str().unwrap(),
 					"--non-interactive",
 					"--provenance",
+					// The disagreement is left for review, not decided by load order.
+					"--strict",
 				],
 				scratch.path(),
 			);
@@ -54,6 +56,7 @@ fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() 
 					"--non-interactive",
 					"--confirm",
 					"--provenance",
+					"--strict",
 				],
 				scratch.path(),
 			);
@@ -4512,6 +4515,8 @@ fn commit_merge_with_jobs(scratch: &Path, manifest: &Path, jobs: &str) -> (PathB
 			"--confirm",
 			"--non-interactive",
 			"--provenance",
+			// Deferred units are among the kinds the comparison must reach.
+			"--strict",
 			"--jobs",
 			jobs,
 		],

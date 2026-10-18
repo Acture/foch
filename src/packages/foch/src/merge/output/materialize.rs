@@ -77,6 +77,9 @@ pub(crate) struct MergeMaterializeOptions {
 	pub include_base: bool,
 	pub gui_scroll_merge: bool,
 	pub force: bool,
+	/// Whether conflicts nothing resolves keep a change over a deletion and
+	/// otherwise what the game loads last, instead of waiting for review.
+	pub load_order_default: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
 	pub resolution_map: crate::project::ResolutionMap,
@@ -122,6 +125,7 @@ impl Default for MergeMaterializeOptions {
 			include_base: false,
 			gui_scroll_merge: false,
 			force: false,
+			load_order_default: false,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_map: crate::project::ResolutionMap::default(),
@@ -423,6 +427,7 @@ pub(crate) fn materialize_with_adaptations(
 		emit_options: &emit_options,
 		include_game_base: options.include_game_base,
 		gui_scroll_merge: options.gui_scroll_merge,
+		load_order_default: options.load_order_default,
 		provenance: options.provenance,
 		transforms: adaptations,
 	};
@@ -2930,6 +2935,7 @@ pub(crate) struct StructuralMergeContext<'a> {
 	descriptor: &'a ContentFamilyDescriptor,
 	merge_key_source: MergeKeySource,
 	gui_scroll_merge: bool,
+	load_order_default: bool,
 	mod_dag: &'a ModDag,
 	ignore_replace_path: &'a IgnoreReplacePath,
 	dep_overrides: &'a [DepOverride],
@@ -4324,6 +4330,7 @@ mod tests {
 			include_base: false,
 			gui_scroll_merge: false,
 			force,
+			load_order_default: false,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_map: crate::project::ResolutionMap::default(),

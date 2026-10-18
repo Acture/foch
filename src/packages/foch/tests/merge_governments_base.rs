@@ -171,6 +171,7 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 			include_base: false,
 			gui_scroll_merge: false,
 			force: false,
+			strict: true,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_config_path: None,

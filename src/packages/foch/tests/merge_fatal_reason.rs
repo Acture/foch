@@ -71,6 +71,7 @@ fn fatal_merge_surfaces_resolve_error_reason() {
 		include_base: false,
 		gui_scroll_merge: false,
 		force: false,
+		strict: true,
 		ignore_replace_path: false,
 		dep_overrides: Vec::new(),
 		resolution_config_path: None,
