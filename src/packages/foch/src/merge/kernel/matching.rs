@@ -351,6 +351,11 @@ impl TreeMatcher {
 			self.config.max_recovery_size,
 			&mut work,
 		);
+		// A move is a change from the base; two revisions are only compared
+		// through it.
+		if seed.is_none() {
+			match_moved_chains(left, right, &mut matching);
+		}
 		record_unresolved_soft_signature_ambiguities(left, right, &mut matching);
 
 		if let Some(seed) = seed {
@@ -521,6 +526,30 @@ fn match_soft_signatures(
 	}
 }
 
+/// What a subtree does: its features without its `limit`s, the conditions
+/// it runs under, and with every quoted text left blank. A quoted value is a
+/// name, a dynasty or a person or a text shown, which a translation renames
+/// without changing what the script does.
+fn effect_features(
+	tree: &NormalizedTree,
+	root: NodeId,
+) -> BTreeMap<(String, Option<String>), usize> {
+	let mut features = BTreeMap::new();
+	let mut stack = vec![root];
+	while let Some(id) = stack.pop() {
+		let node = tree.node(id).unwrap();
+		if node.kind == "clausewitz.assignment:limit" {
+			continue;
+		}
+		let value = (node.kind != "clausewitz.scalar.string")
+			.then(|| node.value.clone())
+			.flatten();
+		*features.entry((node.kind.clone(), value)).or_default() += 1;
+		stack.extend(node.children.iter().copied());
+	}
+	features
+}
+
 fn record_unresolved_soft_signature_ambiguities(
 	left: &NormalizedTree,
 	right: &NormalizedTree,
@@ -546,10 +575,30 @@ fn record_unresolved_soft_signature_ambiguities(
 			};
 			// Several still alike pair in the order written, as the game reads
 			// them. One alone against one is no tie: the matcher declined the
-			// pair on its evidence, and position adds none.
+			// pair on its evidence, and position adds none, unless the two do
+			// the same under parents already paired: what one mod changed is
+			// then a condition or a name.
 			let tied = left_nodes.len() > 1 || right_nodes.len() > 1;
 			for (index, left_node) in left_nodes.iter().enumerate() {
+				let identical = |right_node: &NodeId| {
+					left.node(*left_node).unwrap().subtree_hash
+						== right.node(*right_node).unwrap().subtree_hash
+						|| effect_features(left, *left_node) == effect_features(right, *right_node)
+				};
 				match right_nodes.get(index) {
+					Some(right_node)
+						if !tied
+							&& identical(right_node)
+							&& compatible_at_including_ordered(
+								left,
+								right,
+								matching,
+								*left_node,
+								*right_node,
+							) =>
+					{
+						match_isomorphic_subtree(left, right, matching, *left_node, *right_node);
+					}
 					Some(right_node)
 						if tied
 							&& compatible_at_including_ordered(
@@ -1879,6 +1928,63 @@ fn match_exact_subtrees(
 	}
 }
 
+/// A control-flow chain one side wrote word for word under another parent
+/// was moved: what is left unmatched pairs with the one identical chain the
+/// other side left unmatched, wherever it stands. A chain written more than
+/// once on either side stays unpaired, since nothing tells which copy moved.
+fn match_moved_chains(left: &NormalizedTree, right: &NormalizedTree, matching: &mut Matching) {
+	let wholly_unmatched = |tree: &NormalizedTree, root: NodeId, left_side: bool| {
+		let mut pending = vec![root];
+		while let Some(id) = pending.pop() {
+			let matched = if left_side {
+				matching.is_left_matched(id)
+			} else {
+				matching.is_right_matched(id)
+			};
+			if matched {
+				return false;
+			}
+			pending.extend(tree.node(id).unwrap().children.iter().copied());
+		}
+		true
+	};
+	let unmatched_chains = |tree: &NormalizedTree, left_side: bool| {
+		let mut by_hash = BTreeMap::<SubtreeHash, Vec<NodeId>>::new();
+		for (id, node) in tree.nodes() {
+			if node.kind.starts_with("clausewitz.control_flow.chain:")
+				&& wholly_unmatched(tree, id, left_side)
+			{
+				by_hash.entry(node.subtree_hash).or_default().push(id);
+			}
+		}
+		by_hash
+	};
+	let left_chains = unmatched_chains(left, true);
+	let right_chains = unmatched_chains(right, false);
+	for (hash, left_ids) in &left_chains {
+		let ([left_id], Some([right_id])) = (
+			left_ids.as_slice(),
+			right_chains.get(hash).map(Vec::as_slice),
+		) else {
+			continue;
+		};
+		if compatible(left.node(*left_id).unwrap(), right.node(*right_id).unwrap()) {
+			match_isomorphic_subtree(left, right, matching, *left_id, *right_id);
+		}
+	}
+	// A chain found moved is no longer in doubt.
+	for ambiguity in &mut matching.ambiguous.entries {
+		ambiguity
+			.candidates
+			.retain(|candidate| !matching.by_right.contains_key(candidate));
+	}
+	let by_left = &matching.by_left;
+	matching.ambiguous.entries.retain(|ambiguity| {
+		!ambiguity.candidates.is_empty() && !by_left.contains_key(&ambiguity.left)
+	});
+	matching.ambiguous.rebuild_indexes();
+}
+
 fn child_of_unmatched_required_parent(
 	tree: &NormalizedTree,
 	id: NodeId,
@@ -2770,6 +2876,52 @@ mod tests {
 
 		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
 		assert_eq!(matching.get_from_right(NodeId::new(1)), None);
+	}
+
+	#[test]
+	fn a_single_signature_renamed_by_a_translation_pairs() {
+		let item = |signature: &str, name: &str| {
+			block(
+				"chain",
+				vec![
+					scalar("government"),
+					TreeNode::leaf("clausewitz.scalar.string", name),
+				],
+			)
+			.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+			.with_signature(signature)
+		};
+		let left =
+			NormalizedTree::from_root(block("root", vec![item("guard", "Timurid")])).unwrap();
+		let right =
+			NormalizedTree::from_root(block("root", vec![item("guard", "帖木儿")])).unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn a_single_signature_with_an_edited_condition_pairs() {
+		let item = |condition: &str| {
+			block(
+				"chain",
+				vec![
+					block("clausewitz.assignment:limit", vec![scalar(condition)]),
+					scalar("add_prestige"),
+				],
+			)
+			.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+			.with_signature("guard")
+		};
+		let left = NormalizedTree::from_root(block("root", vec![item("tag")])).unwrap();
+		let right = NormalizedTree::from_root(block("root", vec![item("is_or_was_tag")])).unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert!(matching.ambiguities().is_empty());
 	}
 
 	#[test]

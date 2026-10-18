@@ -3646,3 +3646,46 @@ fn the_same_condition_two_mods_add_appears_once() {
 	let output = emit(outcome.resolved_ast().expect("one addition"));
 	assert_eq!(output.matches("tag = ENG").count(), 1, "{output}");
 }
+
+#[test]
+fn an_edit_follows_a_chain_another_mod_moved() {
+	let path = "decisions/spain.txt";
+	let inherit = |other: &str, condition: &str| {
+		format!(
+			"\t\t\tif = {{ limit = {{ {condition} {other} = {{ ai = yes }} }} inherit = {other} }}\n"
+		)
+	};
+	let decision = |body: &str| {
+		format!(
+			"country_decisions = {{\n\tspain = {{\n\t\teffect = {{\n\t\t\tremove_non_electors_emperors_from_empire_effect = yes\n{body}\t\t\tchange_tag = SPA\n\t\t}}\n\t}}\n}}\n"
+		)
+	};
+	let both = |condition: &dyn Fn(&str) -> String| {
+		format!(
+			"{}{}",
+			inherit("ARA", &condition("CAS")),
+			inherit("CAS", &condition("ARA"))
+		)
+	};
+	let tag = |tag: &str| format!("tag = {tag}");
+	let was = |tag: &str| format!("is_or_was_tag = {{ tag = {tag} }}");
+	let base = parse_at(path, &decision(&both(&tag)));
+	let moved = parse_at(
+		path,
+		&decision(&format!(
+			"\t\t\tif = {{ limit = {{ senior_union_with = NAV }} inherit = NAV }}\n\t\t\tif = {{ limit = {{ has_country_flag = joanna }} inherit = POR }}\n\t\t\telse = {{\n{}\t\t\t}}\n",
+			both(&tag)
+		)),
+	);
+	let edited = parse_at(path, &decision(&both(&was)));
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&moved, &edited], &MergePolicies::default()).unwrap();
+
+	let output = emit(outcome.tentative_ast());
+	assert_eq!(output.matches("inherit = ARA").count(), 1, "{output}");
+	assert_eq!(output.matches("inherit = CAS").count(), 1, "{output}");
+	assert_eq!(output.matches("is_or_was_tag").count(), 2, "{output}");
+	let else_at = output.find("else =").expect("the move keeps its else");
+	assert!(output.find("inherit = ARA").unwrap() > else_at, "{output}");
+}
