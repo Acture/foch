@@ -56,8 +56,12 @@ fn eu4_governments_module_policy() -> DefinitionModulePolicy {
 
 /// Common directories whose definitions are keyed by file name rather than
 /// shared across the directory, so each file stays its own merge unit.
-fn file_identity_common_directories() -> [&'static GamePath; 2] {
-	["common/countries", "common/units"].map(table_game_path)
+///
+/// - `common/province_names`: each file names the provinces for the culture
+///   or tag in its file name, so `318 = { ... }` in two files names one
+///   province for two cultures.
+fn file_identity_common_directories() -> [&'static GamePath; 3] {
+	["common/countries", "common/units", "common/province_names"].map(table_game_path)
 }
 
 /// Directories whose same-named definitions the game combines across files
@@ -1495,6 +1499,17 @@ mod tests {
 
 		assert_eq!(descriptor.load_policy, ContentLoadPolicy::PerPath);
 	}
+
+	#[test]
+	fn province_names_merge_file_by_file() {
+		// Each file names provinces for the culture or tag it is named after.
+		let descriptor = eu4()
+			.classify_content_family(game_path("common/province_names/aramaic_culture_group.txt"))
+			.expect("province names descriptor");
+
+		assert_eq!(descriptor.load_policy, ContentLoadPolicy::PerPath);
+	}
+
 	#[test]
 	fn buildings_preserve_one_sided_children_when_the_definition_survives() {
 		let descriptor = eu4()
@@ -2052,7 +2067,7 @@ mod tests {
 		assert!(!families.is_empty());
 		assert_eq!(
 			file_identity_common_directories().map(GamePath::as_str),
-			["common/countries", "common/units"]
+			["common/countries", "common/units", "common/province_names"]
 		);
 		for descriptor in families {
 			let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
