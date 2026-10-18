@@ -585,6 +585,7 @@ fn assign_nway_children(
 					commutative_nway_children(
 						base,
 						revisions,
+						correspondence,
 						&base_sequence,
 						&revision_sequences,
 						plan,
@@ -828,9 +829,10 @@ fn class_child_sequence(
 fn commutative_nway_children(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
+	correspondence: &NWayCorrespondence,
 	base_sequence: &[ClassId],
 	revision_sequences: &[Vec<ClassId>],
-	plan: &NWaySelectionPlan,
+	plan: &mut NWaySelectionPlan,
 ) -> Vec<ClassId> {
 	let mut children = base_sequence
 		.iter()
@@ -839,6 +841,31 @@ fn commutative_nway_children(
 		.collect::<BTreeSet<_>>()
 		.into_iter()
 		.collect::<Vec<_>>();
+	// Mods that each add the same thing to an unordered block add it once:
+	// a second copy says nothing the first does not.
+	let mut added = BTreeSet::new();
+	children.retain(|class| {
+		if correspondence
+			.classes
+			.class(*class)
+			.get(RevisionId::BASE)
+			.is_some()
+		{
+			return true;
+		}
+		let selected = plan.classes[class]
+			.selected
+			.expect("commutative child is live");
+		let hash = tree_for_revision(base, revisions, selected.revision)
+			.node(selected.node)
+			.unwrap()
+			.subtree_hash;
+		if added.insert(hash) {
+			return true;
+		}
+		plan.policy_excluded.insert(*class);
+		false
+	});
 	children.sort_by_key(|class| {
 		let selected = plan.classes[class]
 			.selected

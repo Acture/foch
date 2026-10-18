@@ -2068,26 +2068,28 @@ mod tests {
 	}
 
 	#[test]
-	fn preserves_duplicate_guards_but_withholds_commit() {
+	fn writes_duplicate_guards_its_inputs_wrote() {
 		let source = parse(
-			"coal = { trigger = {\n\
-			\tif = { limit = { has_country_flag = repeated } add_prestige = 1 }\n\
-			\telse_if = { limit = { has_country_flag = repeated } add_stability = 1 }\n\
-			\telse = { add_legitimacy = 1 }\n\
-			} }\n",
+			"coal = { trigger = {
+				if = { limit = { has_country_flag = repeated } add_prestige = 1 }
+				else_if = { limit = { has_country_flag = repeated } add_stability = 1 }
+				else = { add_legitimacy = 1 }
+			} }
+",
 		);
 
 		let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
 			.expect("duplicate guards remain inspectable");
 
-		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
-		assert!(outcome.resolved_ast().is_none());
-		assert!(outcome.conflicts().iter().any(|conflict| {
-			conflict.kind == ConflictKind::Policy
-				&& conflict
-					.detail
-					.contains("duplicate Clausewitz control-flow guard")
-		}));
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		assert_eq!(
+			emit(
+				outcome
+					.resolved_ast()
+					.expect("the inputs' own spelling commits")
+			),
+			emit(&source)
+		);
 	}
 
 	#[test]

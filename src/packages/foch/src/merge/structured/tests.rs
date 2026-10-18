@@ -719,29 +719,24 @@ fn structured_preserve_policy_still_honors_two_sided_deletion() {
 }
 
 #[test]
-fn structured_merge_preserves_orphan_control_flow_but_withholds_commit() {
+fn structured_merge_writes_orphan_control_flow_its_inputs_wrote() {
 	let source = parse(
-		"scripted_effect = {\n\
-		\telse_if = { limit = { always = yes } add_prestige = 1 }\n\
-		}\n",
+		"scripted_effect = {
+			else_if = { limit = { always = yes } add_prestige = 1 }
+		}
+",
 	);
 
 	let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
 		.expect("retain orphan control flow as structured AST");
 
-	assert!(outcome.resolved_ast().is_none());
-	assert!(
-		outcome.conflicts().iter().any(|conflict| {
-			conflict.kind == ConflictKind::Policy
-				&& conflict
-					.detail
-					.contains("control-flow finding(s) require review")
-				&& conflict.detail.contains("else_if")
-		}),
-		"{:?}",
-		outcome.conflicts()
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("the inputs' own spelling commits"),
 	);
-	assert!(emit(outcome.tentative_ast()).contains("else_if ="));
+	assert!(output.contains("else_if ="), "{output}");
 }
 
 #[test]
@@ -3606,4 +3601,48 @@ fn two_mods_appending_guarded_branches_keep_both() {
 	let output = emit(outcome.resolved_ast().expect("both branches merge"));
 	assert!(output.contains("key = BUR"), "{output}");
 	assert!(output.contains("key = IRE"), "{output}");
+}
+
+#[test]
+fn a_condition_an_input_repeats_merges_as_written() {
+	let path = "missions/test_missions.txt";
+	let chain = "if = { limit = { tag = FRA } is_year = 1500 } else = { is_year = 1600 }";
+	let mission = |extra: &str| {
+		format!(
+			"branch = {{\n\tm = {{\n\t\ttrigger = {{\n\t\t\tOR = {{\n\t\t\t\t{chain}\n\t\t\t\t{chain}\n\t\t\t}}\n\t\t}}\n\t\ticon = {extra}\n\t}}\n}}\n"
+		)
+	};
+	let base = parse_at(path, &mission("a"));
+	let left = parse_at(path, &mission("b"));
+	let right = parse_at(path, &mission("a"));
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("the input's own repetition merges"),
+	);
+	assert!(output.contains("icon = b"), "{output}");
+}
+
+#[test]
+fn the_same_condition_two_mods_add_appears_once() {
+	let path = "common/policies/00_adm.txt";
+	let base = parse_at(
+		path,
+		"p = {\n\tpotential = {\n\t\tOR = { tag = FRA }\n\t}\n}\n",
+	);
+	let added = "p = {\n\tpotential = {\n\t\tOR = { tag = FRA tag = ENG }\n\t}\n}\n";
+	let left = parse_at(path, added);
+	let right = parse_at(path, added);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("one addition"));
+	assert_eq!(output.matches("tag = ENG").count(), 1, "{output}");
 }

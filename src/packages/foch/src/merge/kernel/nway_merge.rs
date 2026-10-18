@@ -883,8 +883,11 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 			let Some(signature) = self.node(selected).signature.clone() else {
 				continue;
 			};
+			// A copy an input already wrote twice is what the game loads from
+			// that input, not one the merge made.
 			if let Some(previous) = signatures.insert(signature.clone(), *child)
 				&& previous != *child
+				&& !self.written_together(previous, *child)
 			{
 				self.conflicts.push(class_conflict(
 					ConflictKind::DuplicateSignature,
@@ -897,6 +900,13 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 				));
 			}
 		}
+	}
+
+	/// Whether one input holds both classes.
+	fn written_together(&self, left: ClassId, right: ClassId) -> bool {
+		let left = &self.correspondence.classes.class(left).members;
+		let right = &self.correspondence.classes.class(right).members;
+		left.keys().any(|revision| right.contains_key(revision))
 	}
 
 	fn record_unreachable(&mut self) {
