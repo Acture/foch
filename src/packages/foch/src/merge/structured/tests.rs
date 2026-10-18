@@ -3218,3 +3218,36 @@ fn a_replaced_trigger_chain_merges_branch_by_branch() {
 	assert_eq!(outcome.conflicts().len(), 1, "{:?}", outcome.conflicts());
 	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
 }
+
+#[test]
+fn a_sum_counts_only_the_revisions_that_change_the_value() {
+	let path = "common/ideas/test.txt";
+	let base = parse_at(
+		path,
+		"test_ideas = { start = { tax_income = 1 } bonus = { tax_income = 1 } }
+",
+	);
+	let changed = parse_at(
+		path,
+		"test_ideas = { start = { tax_income = 2 } bonus = { tax_income = 1 } }
+",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+
+	let outcome = merge_clausewitz_files_n_way(&base, &[&changed, &base], policies)
+		.expect("merge idea groups");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let merged = emit(outcome.resolved_ast().expect("merged without conflicts"));
+	assert!(
+		merged
+			.split_whitespace()
+			.collect::<Vec<_>>()
+			.join(" ")
+			.contains("start = { tax_income = 2 }"),
+		"an unchanged revision must not add the base value again: {merged}"
+	);
+}

@@ -331,22 +331,29 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		{
 			return PolicyDecision::Unresolved;
 		}
-		let values = || {
+		// A bound such as `Max` weighs an unchanged copy, since keeping the
+		// stronger value is the rule. A sum must not: the copy of a revision
+		// that left the value as the base has it would count the base again.
+		let values = |reducer: ScalarMergePolicy| {
 			context
 				.contributors
 				.iter()
+				.filter(|view| {
+					reducer != ScalarMergePolicy::Sum
+						|| changed.iter().any(|changed| changed.source == view.source)
+				})
 				.map(|view| view.node.value.as_deref())
 				.collect::<Option<Vec<_>>>()
 		};
 		if let Some(rule) = self
 			.policies
 			.scalar_reducer_rule_for_path(&first.policy_path)
-			&& let Some(values) = values()
+			&& let Some(values) = values(rule.reducer)
 			&& let Some(output) = rule.reducer.reduce_numeric_values(values)
 		{
 			return PolicyDecision::SynthesizeScalar(output);
 		}
-		if let Some(values) = values()
+		if let Some(values) = values(self.policies.scalar)
 			&& let Some(output) = self.policies.scalar.reduce_numeric_values(values)
 		{
 			return PolicyDecision::SynthesizeScalar(output);
