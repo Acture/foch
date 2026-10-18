@@ -7,14 +7,14 @@
 use std::collections::BTreeMap;
 
 use super::host::HostRoot;
-use crate::game::eu4::base::builtin::{
-	is_builtin_effect, is_builtin_iterator, is_builtin_scope_changer, is_builtin_trigger,
-};
-use crate::game::eu4::cwt::{is_country_tag_selector, is_province_id_selector};
+use crate::game::eu4::cwt::{Eu4Dialect, rule_engine};
 use crate::game::eu4::derived_localisation::Rebinding;
 use crate::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, SpanRange, parse_clausewitz_content,
 };
+use crate::game::schema::bind::{BoundContext, SchemaBinder, StatementBinding};
+use crate::game::schema::query::{CompiledAliasCategory, CompiledBindFieldMatch};
+use crate::model::GamePath;
 
 /// The object a scope denotes when the feature runs.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,8 +29,6 @@ pub enum Binding {
 		link: String,
 	},
 	EventTarget(String),
-	/// A country tag or province id written in the script.
-	Literal(String),
 	Unknown(String),
 }
 
@@ -127,42 +125,36 @@ fn top_level_bodies(sources: &[ScriptSource]) -> BTreeMap<String, Vec<String>> {
 	bodies
 }
 
-/// Blocks that evaluate their children in the enclosing scope.
-const SAME_SCOPE_CONTAINERS: &[&str] = &[
-	"and",
-	"or",
-	"not",
-	"nor",
-	"nand",
-	"if",
-	"else_if",
-	"else",
-	"limit",
-	"hidden_effect",
-	"hidden_trigger",
-	"custom_trigger_tooltip",
-	"random",
-	"random_list",
-	"while",
-	// Shows its effects in the tooltip without running them.
-	"tooltip",
-];
+/// Binds the triggers and effects the walk reads, so that what a key does is
+/// what the schema says of it where it is written.
+fn script_binder() -> SchemaBinder<'static> {
+	SchemaBinder::new(rule_engine(), &Eu4Dialect, None, script_block_path())
+}
 
-/// Iterators the builtin catalog lacks; the semantic index builder in
-/// `script/mod.rs` recognizes the same keys explicitly.
-const EFFECT_ITERATORS: &[&str] = &[
-	"every_owned_province",
-	"every_country",
-	"every_subject_country",
-	"every_known_country",
-	"every_province",
-	"random_country",
-	"random_owned_province",
-	"random_province",
-];
+/// A path no rules own: the walk reads blocks of triggers and effects with
+/// no file around them.
+fn script_block_path() -> &'static GamePath {
+	GamePath::new("script_block.txt").expect("valid game path")
+}
+
+/// The keys a stage's blocks hold: effects, or triggers.
+fn stage_category(stage: Stage) -> CompiledAliasCategory {
+	match stage {
+		Stage::Effect => CompiledAliasCategory::Effect,
+		Stage::Potential | Stage::Trigger => CompiledAliasCategory::Trigger,
+	}
+}
+
+fn script_category(kind: ScriptKind) -> CompiledAliasCategory {
+	match kind {
+		ScriptKind::Effect => CompiledAliasCategory::Effect,
+		ScriptKind::Trigger => CompiledAliasCategory::Trigger,
+	}
+}
 
 pub(super) struct ContextWalk<'a> {
 	definitions: &'a ScriptDefinitions,
+	binder: SchemaBinder<'static>,
 	root: Binding,
 	stage: Stage,
 	call_stack: Vec<String>,
@@ -175,6 +167,7 @@ impl<'a> ContextWalk<'a> {
 	pub(super) fn new(definitions: &'a ScriptDefinitions, root: Binding) -> Self {
 		Self {
 			definitions,
+			binder: script_binder(),
 			root,
 			stage: Stage::Effect,
 			call_stack: Vec::new(),
@@ -189,15 +182,18 @@ impl<'a> ContextWalk<'a> {
 		self.stage = stage;
 		let mut stack = vec![self.root.clone()];
 		let mut path = vec![origin.to_owned()];
-		self.commands(statements, &mut stack, &mut path, "");
+		let Some(bound) = self.binder.alias_block(&stage_category(stage), statements) else {
+			return;
+		};
+		self.commands(statements, &bound, &mut stack, &mut path);
 	}
 
-	fn commands(
+	fn commands<'s>(
 		&mut self,
-		statements: &[AstStatement],
+		statements: &'s [AstStatement],
+		bound: &BoundContext<'s, AstStatement>,
 		stack: &mut Vec<Binding>,
 		path: &mut Vec<String>,
-		parent: &str,
 	) {
 		for statement in statements {
 			let AstStatement::Assignment { key, value, .. } = statement else {
@@ -206,12 +202,14 @@ impl<'a> ContextWalk<'a> {
 			};
 			path.push(key.clone());
 			self.flag_parameters(key, path);
+			let binding = self.binder.bind(bound, key, value);
 			match value {
 				AstValue::Scalar { value, .. } => {
-					self.command_scalar(key, value, stack, path, parent)
+					self.command_scalar(key, value, &binding, stack, path)
 				}
 				AstValue::Block { items, .. } => {
-					self.command_block(key, items, stack, path, parent)
+					let child = self.binder.child(bound, statement, key, &binding);
+					self.command_block(key, items, &binding, &child, stack, path)
 				}
 			}
 			path.pop();
@@ -222,12 +220,14 @@ impl<'a> ContextWalk<'a> {
 		&mut self,
 		key: &str,
 		value: &ScalarValue,
+		binding: &StatementBinding<'_>,
 		stack: &mut Vec<Binding>,
 		path: &mut Vec<String>,
-		parent: &str,
 	) {
 		let text = value.as_text();
-		if is_block_argument(parent, key) {
+		// A field of the block, such as a tooltip's localisation key or an
+		// iterator's `type = all`, configures it rather than runs.
+		if matches!(binding.matched, Some(CompiledBindFieldMatch::Field(_))) {
 			self.reference(&text, stack, path);
 			return;
 		}
@@ -243,8 +243,7 @@ impl<'a> ContextWalk<'a> {
 		}
 		// A link with a scalar value, such as `controller = FROM`, compares
 		// the linked object instead of switching to it.
-		let comparison = is_builtin_scope_changer(key);
-		if !is_builtin_trigger(key) && !is_builtin_effect(key) && !comparison {
+		if binding.matched.is_none() {
 			self.unresolved
 				.push(format!("unknown command `{key}` at {}", path.join(" > ")));
 			return;
@@ -252,18 +251,20 @@ impl<'a> ContextWalk<'a> {
 		self.reference(&text, stack, path);
 	}
 
-	fn command_block(
+	fn command_block<'s>(
 		&mut self,
 		key: &str,
-		items: &[AstStatement],
+		items: &'s [AstStatement],
+		binding: &StatementBinding<'_>,
+		child: &BoundContext<'s, AstStatement>,
 		stack: &mut Vec<Binding>,
 		path: &mut Vec<String>,
-		parent: &str,
 	) {
-		let lower = key.to_ascii_lowercase();
-		let weighted_option = parent == "random_list" && key.parse::<f64>().is_ok();
-		if SAME_SCOPE_CONTAINERS.contains(&lower.as_str()) || weighted_option {
-			self.commands(items, stack, path, &lower);
+		let switches = self.binder.switches_scope(key, binding);
+		// A block of the triggers or effects of its parent, such as `limit`,
+		// `if`, `AND` or a `random_list` branch, runs in the enclosing scope.
+		if binding.matched.is_some() && !switches && child.admits(&stage_category(self.stage)) {
+			self.commands(items, child, stack, path);
 			return;
 		}
 		if let Some((kind, bodies)) = self.definitions.find(self.stage, key) {
@@ -271,14 +272,14 @@ impl<'a> ContextWalk<'a> {
 			self.call(kind, key, bodies, params, stack, path);
 			return;
 		}
-		if let Some(binding) = self.switch(key, stack, path) {
-			self.record(path, key.to_owned(), binding.clone());
-			stack.push(binding);
-			self.commands(items, stack, path, &lower);
+		if let Some(target) = self.switch(key, switches, stack, path) {
+			self.record(path, key.to_owned(), target.clone());
+			stack.push(target);
+			self.commands(items, child, stack, path);
 			stack.pop();
 			return;
 		}
-		if is_builtin_trigger(key) || is_builtin_effect(key) {
+		if binding.matched.is_some() {
 			self.arguments(items, stack, path);
 			return;
 		}
@@ -286,24 +287,23 @@ impl<'a> ContextWalk<'a> {
 			.push(format!("unknown block `{key}` at {}", path.join(" > ")));
 	}
 
-	/// The object a scope-switching block key denotes, if it is one.
-	fn switch(&mut self, key: &str, stack: &[Binding], path: &[String]) -> Option<Binding> {
-		if let Some(binding) = self.alias(key, stack, path) {
-			return Some(binding);
+	/// The object a scope-switching block key denotes, if it is one. A key no
+	/// rule names may name a scope itself (a country tag, an area), but which
+	/// set holds it is not known here, so it stays unresolved.
+	fn switch(
+		&mut self,
+		key: &str,
+		switches: bool,
+		stack: &[Binding],
+		path: &[String],
+	) -> Option<Binding> {
+		if let Some(target) = self.alias(key, stack, path) {
+			return Some(target);
 		}
-		if is_builtin_iterator(key)
-			|| is_builtin_scope_changer(key)
-			|| EFFECT_ITERATORS.contains(&key)
-		{
-			return Some(Binding::Link {
-				from: Box::new(current(stack)),
-				link: key.to_owned(),
-			});
-		}
-		if is_country_tag_selector(key) || is_province_id_selector(key) {
-			return Some(Binding::Literal(key.to_owned()));
-		}
-		None
+		switches.then(|| Binding::Link {
+			from: Box::new(current(stack)),
+			link: key.to_owned(),
+		})
 	}
 
 	/// `ROOT`, `FROM`, `THIS`, `PREV` and `event_target:` references.
@@ -427,7 +427,9 @@ impl<'a> ContextWalk<'a> {
 		};
 		// A scripted trigger or effect runs in its caller's scope.
 		self.call_stack.push(name.to_owned());
-		self.commands(&body, stack, path, "");
+		if let Some(bound) = self.binder.alias_block(&script_category(kind), &body) {
+			self.commands(&body, &bound, stack, path);
+		}
 		self.call_stack.pop();
 	}
 
@@ -468,20 +470,6 @@ fn current(stack: &[Binding]) -> Binding {
 		.last()
 		.cloned()
 		.unwrap_or_else(|| Binding::Unknown("THIS".into()))
-}
-
-/// Scalar keys that configure their enclosing block rather than run as
-/// commands: a tooltip's localisation key, or an iterator's `type = all`.
-fn is_block_argument(parent: &str, key: &str) -> bool {
-	match key {
-		"tooltip" => parent == "custom_trigger_tooltip",
-		"type" => {
-			is_builtin_iterator(parent)
-				|| is_builtin_scope_changer(parent)
-				|| EFFECT_ITERATORS.contains(&parent)
-		}
-		_ => false,
-	}
 }
 
 /// Keep `[[name] ... ]` only when `name` is passed and `[[!name] ... ]` only
@@ -820,13 +808,17 @@ impl Rewrite<'_> {
 		stage: Stage,
 		statements: &[AstStatement],
 	) -> Option<Vec<AstStatement>> {
-		self.relative_at(stage, statements, 0)
+		let binder = script_binder();
+		let bound = binder.alias_block(&stage_category(stage), statements)?;
+		self.relative_at(&binder, stage, statements, &bound, 0)
 	}
 
-	fn relative_at(
+	fn relative_at<'s>(
 		&self,
+		binder: &SchemaBinder<'_>,
 		stage: Stage,
-		statements: &[AstStatement],
+		statements: &'s [AstStatement],
+		bound: &BoundContext<'s, AstStatement>,
 		depth: usize,
 	) -> Option<Vec<AstStatement>> {
 		let target = |depth: usize| match depth {
@@ -849,7 +841,8 @@ impl Rewrite<'_> {
 			if let Some(body) = self.expansion(stage, key, value, 0)
 				&& self.mentions(stage, &body, 0)
 			{
-				let body = self.relative_at(stage, &body, depth)?;
+				let body_bound = binder.alias_block(&stage_category(stage), &body)?;
+				let body = self.relative_at(binder, stage, &body, &body_bound, depth)?;
 				let negated =
 					matches!(value, AstValue::Scalar { value, .. } if value.as_text() == "no");
 				if negated {
@@ -867,12 +860,14 @@ impl Rewrite<'_> {
 				}
 				continue;
 			}
+			let binding = binder.bind(bound, key, value);
 			// `ROOT = { ... }` with no scope entered is the candidate itself.
 			if depth == 0
 				&& key.eq_ignore_ascii_case("ROOT")
 				&& let AstValue::Block { items, .. } = value
 			{
-				output.extend(self.relative_at(stage, items, depth)?);
+				let child = binder.child(bound, statement, key, &binding);
+				output.extend(self.relative_at(binder, stage, items, &child, depth)?);
 				continue;
 			}
 			let new_key = match key.to_ascii_uppercase().as_str() {
@@ -895,13 +890,14 @@ impl Rewrite<'_> {
 					span: span.clone(),
 				},
 				AstValue::Block { items, span } => {
-					let inner = if switches_scope(key) {
-						depth + 1
-					} else {
-						depth
-					};
+					// A key no rule names, where triggers are written, names a
+					// scope itself (a country tag, a province).
+					let switches =
+						binder.switches_scope(key, &binding) || binding.matched.is_none();
+					let inner = if switches { depth + 1 } else { depth };
+					let child = binder.child(bound, statement, key, &binding);
 					AstValue::Block {
-						items: self.relative_at(stage, items, inner)?,
+						items: self.relative_at(binder, stage, items, &child, inner)?,
 						span: span.clone(),
 					}
 				}
@@ -915,19 +911,6 @@ impl Rewrite<'_> {
 		}
 		Some(output)
 	}
-}
-
-/// Whether a block key enters another scope, as [`ContextWalk`] models it.
-fn switches_scope(key: &str) -> bool {
-	matches!(
-		key.to_ascii_uppercase().as_str(),
-		"ROOT" | "FROM" | "THIS" | "PREV"
-	) || key.starts_with("event_target:")
-		|| is_builtin_iterator(key)
-		|| is_builtin_scope_changer(key)
-		|| EFFECT_ITERATORS.contains(&key)
-		|| is_country_tag_selector(key)
-		|| is_province_id_selector(key)
 }
 
 fn span_start() -> crate::game::eu4::script::parser::Span {

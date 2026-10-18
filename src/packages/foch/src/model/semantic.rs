@@ -56,12 +56,9 @@ impl SymbolKind {
 pub enum ScopeKind {
 	File,
 	Event,
-	Decision,
 	ScriptedEffect,
 	Trigger,
 	Effect,
-	Loop,
-	AliasBlock,
 	Block,
 }
 
@@ -95,6 +92,10 @@ pub struct ScopeNode {
 	/// Empty for file-level scopes.
 	#[serde(default)]
 	pub key: String,
+	/// Whether the block runs in its parent's scope, so that its scope is
+	/// whatever its parent's turns out to be.
+	#[serde(default)]
+	pub inherits_this: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,8 +131,6 @@ pub struct SymbolDefinition {
 	#[serde(default)]
 	pub optional_params: Vec<String>,
 	#[serde(default)]
-	pub param_contract: Option<ParamContract>,
-	#[serde(default)]
 	pub scope_param_names: Vec<String>,
 }
 
@@ -151,40 +150,6 @@ pub struct ParamBinding {
 	pub value: String,
 }
 
-#[derive(
-	Clone,
-	Debug,
-	Eq,
-	PartialEq,
-	Serialize,
-	Deserialize,
-	rkyv::Archive,
-	rkyv::Serialize,
-	rkyv::Deserialize,
-)]
-pub struct ConditionalParamRule {
-	pub when_present: String,
-	pub requires_any_of: Vec<String>,
-}
-
-#[derive(
-	Clone,
-	Debug,
-	Eq,
-	PartialEq,
-	Serialize,
-	Deserialize,
-	rkyv::Archive,
-	rkyv::Serialize,
-	rkyv::Deserialize,
-)]
-pub struct ParamContract {
-	pub required_all: Vec<String>,
-	pub optional: Vec<String>,
-	pub one_of_groups: Vec<Vec<String>>,
-	pub conditional_required: Vec<ConditionalParamRule>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SymbolReference {
 	pub kind: SymbolKind,
@@ -197,6 +162,11 @@ pub struct SymbolReference {
 	pub scope_id: usize,
 	pub provided_params: Vec<String>,
 	pub param_bindings: Vec<ParamBinding>,
+	/// The key binds as an effect or trigger the schema declares under the
+	/// name of a scripted definition (EU4's rule files declare some of the
+	/// game's scripted effects that way); it calls the definition, and its
+	/// parameters are the schema's to check.
+	pub schema_alias: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -338,6 +308,7 @@ pub fn index_with_one_record_of_each_kind(path: impl Fn(usize) -> GamePathBuf) -
 			path: path(1),
 			span: SourceSpan { line: 1, column: 1 },
 			key: String::new(),
+			inherits_this: false,
 		}],
 		definitions: vec![SymbolDefinition {
 			kind: SymbolKind::ScriptedEffect,
@@ -356,7 +327,6 @@ pub fn index_with_one_record_of_each_kind(path: impl Fn(usize) -> GamePathBuf) -
 			inferred_root_mask: ScopeSet::default(),
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
-			param_contract: None,
 			scope_param_names: Vec::new(),
 		}],
 		references: vec![SymbolReference {
@@ -370,6 +340,7 @@ pub fn index_with_one_record_of_each_kind(path: impl Fn(usize) -> GamePathBuf) -
 			scope_id: 0,
 			provided_params: Vec::new(),
 			param_bindings: Vec::new(),
+			schema_alias: false,
 		}],
 		alias_usages: vec![AliasUsage {
 			alias: "ROOT".to_string(),

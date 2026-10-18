@@ -9,6 +9,7 @@ use crate::game::eu4::analysis::rules::{
 use crate::game::eu4::analysis::{AnalyzeOptions, analyze_visibility_with_vanilla_index};
 use crate::game::eu4::base::vanilla_index::{VanillaSymbolIndex, VanillaSymbolSource};
 use crate::game::eu4::content::eu4;
+use crate::game::eu4::script::{link_schema_declared_calls, refine_named_scope_switches};
 use crate::input::request::{CheckOptions, InputRequest};
 use crate::input::{
 	InputResolveErrorKind, LoadedModSnapshot, ResolvedInput, ResolvedInputContributor,
@@ -189,13 +190,22 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 		});
 	let semantic_index = run_progress_stage(
 		"merge semantic indexes",
-		|| match base_semantic {
-			Some(snapshot) => {
-				let mut index = snapshot.index;
-				index.append(mod_semantic_index);
-				index
-			}
-			None => mod_semantic_index,
+		|| {
+			let mut index = match base_semantic {
+				Some(snapshot) => {
+					let mut index = snapshot.index;
+					index.append(mod_semantic_index);
+					index
+				}
+				None => mod_semantic_index,
+			};
+			// A mod calls the game's scripted effects the schema declares
+			// under their names; each part was linked to its own only.
+			link_schema_declared_calls(&mut index);
+			// A mod switches to the game's tags and areas, and the game to
+			// the provinces a mod adds.
+			refine_named_scope_switches(&mut index);
+			index
 		},
 		|index| {
 			format!(

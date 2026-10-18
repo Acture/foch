@@ -229,7 +229,16 @@ impl CompiledRoot {
 			subtypes: definition
 				.subtypes
 				.iter()
-				.map(CompiledSubtype::from_subtype)
+				.map(|subtype| {
+					CompiledSubtype::from_subtype(
+						subtype,
+						definition
+							.subtype_group_attributes
+							.iter()
+							.filter(|(name, _)| *name == subtype.name)
+							.map(|(_, attributes)| attributes),
+					)
+				})
 				.collect(),
 			rules: definition
 				.rules
@@ -250,10 +259,27 @@ pub struct CompiledSubtype {
 }
 
 impl CompiledSubtype {
-	fn from_subtype(subtype: &CwtSubtype) -> Self {
+	/// A subtype, with the scopes its type's body declares above the group of
+	/// rules it selects where its own declaration names none.
+	fn from_subtype<'g>(
+		subtype: &CwtSubtype,
+		group_attributes: impl Iterator<Item = &'g CwtFieldAttributes>,
+	) -> Self {
+		let mut attributes = subtype.attributes.clone();
+		for group in group_attributes {
+			if attributes.push_scope.is_none() {
+				attributes.push_scope.clone_from(&group.push_scope);
+			}
+			if attributes.replace_scope.is_empty() {
+				attributes.replace_scope.clone_from(&group.replace_scope);
+			}
+			if attributes.scope.is_empty() {
+				attributes.scope.clone_from(&group.scope);
+			}
+		}
 		Self {
 			name: subtype.name.clone(),
-			attributes: CompiledFieldAttributes::from_attributes(&subtype.attributes),
+			attributes: CompiledFieldAttributes::from_attributes(&attributes),
 			type_key_filter: subtype
 				.type_key_filter
 				.as_ref()
@@ -609,6 +635,20 @@ impl CwtQuery {
 			.map(|index| &self.pack.aliases[*index])
 	}
 
+	/// The aliases of `category` whose names stand for a set of names
+	/// (`<scripted_effect>`, `enum[country_tags]`), in schema order.
+	pub fn dynamic_aliases<'s>(
+		&'s self,
+		category: &CompiledAliasCategory,
+	) -> impl Iterator<Item = &'s CompiledAlias> + use<'s> {
+		self.index
+			.dynamic_aliases
+			.get(category)
+			.into_iter()
+			.flatten()
+			.map(|index| &self.pack.aliases[*index])
+	}
+
 	/// A modifier only the schema's `modifiers` section declares, as a
 	/// `float` modifier alias. Binding does not resolve to it.
 	pub fn declared_modifier(&self, name: &str) -> Option<&CompiledAlias> {
@@ -725,10 +765,32 @@ impl CwtQuery {
 	}
 
 	pub fn bind_chain(&self, file_path: &GamePath, ast_path: &[&str]) -> SchemaBinding {
+		self.bind_chain_among(file_path, &self.matching_root_indices(file_path), ast_path)
+	}
+
+	/// The root types whose paths match `file_path` most specifically, by
+	/// their place in the pack, for the `_among` lookups.
+	pub fn matching_root_ids(&self, file_path: &GamePath) -> Vec<usize> {
+		self.matching_root_indices(file_path)
+	}
+
+	/// [`Self::bind_chain`] for a file whose matching root types are known.
+	pub fn bind_chain_among(
+		&self,
+		file_path: &GamePath,
+		root_ids: &[usize],
+		ast_path: &[&str],
+	) -> SchemaBinding {
 		if ast_path.is_empty() {
-			return self.root_binding(file_path);
+			return match root_ids {
+				[] => unbound_root(file_path),
+				[index] => bound_node(&self.pack.roots[*index], Vec::new()),
+				_ => SchemaBinding::Dynamic {
+					reason: "ambiguous-root-type",
+				},
+			};
 		}
-		let matches = self.matching_root_indices(file_path);
+		let matches = root_ids.to_vec();
 		if matches.is_empty() {
 			return unbound_root(file_path);
 		}
@@ -753,11 +815,21 @@ impl CwtQuery {
 		file_path: &GamePath,
 		ast_path: &[&str],
 	) -> Option<RuleContext<'p>> {
-		let target = self.bind_chain(file_path, ast_path);
+		self.bind_context_among(file_path, &self.matching_root_indices(file_path), ast_path)
+	}
+
+	/// [`Self::bind_context`] for a file whose matching root types are known.
+	pub fn bind_context_among<'p>(
+		&'p self,
+		file_path: &GamePath,
+		root_ids: &[usize],
+		ast_path: &[&str],
+	) -> Option<RuleContext<'p>> {
+		let target = self.bind_chain_among(file_path, root_ids, ast_path);
 		if !matches!(&target, SchemaBinding::Bound { .. }) {
 			return None;
 		}
-		for index in self.matching_root_indices(file_path) {
+		for &index in root_ids {
 			let root = &self.pack.roots[index];
 			let Some((context, binding)) = self.bind_context_from_root(root, ast_path) else {
 				continue;
@@ -1366,6 +1438,7 @@ impl<'p> CompiledBindFieldMatch<'p> {
 struct RuntimeRuleIndex {
 	roots: HashMap<String, usize>,
 	aliases: HashMap<CompiledAliasCategory, HashMap<String, Vec<usize>>>,
+	dynamic_aliases: HashMap<CompiledAliasCategory, Vec<usize>>,
 	declared_modifiers: HashMap<String, usize>,
 	enums: HashMap<String, usize>,
 	value_sets: HashMap<String, usize>,
@@ -1383,6 +1456,7 @@ impl RuntimeRuleIndex {
 			.map(|(index, root)| (root.name.clone(), index))
 			.collect();
 		let mut aliases = HashMap::<CompiledAliasCategory, HashMap<String, Vec<usize>>>::new();
+		let mut dynamic_aliases = HashMap::<CompiledAliasCategory, Vec<usize>>::new();
 		for (index, alias) in pack.aliases.iter().enumerate() {
 			aliases
 				.entry(alias.category.clone())
@@ -1390,6 +1464,12 @@ impl RuntimeRuleIndex {
 				.entry(alias.name.clone())
 				.or_default()
 				.push(index);
+			if names_a_set(&alias.name) {
+				dynamic_aliases
+					.entry(alias.category.clone())
+					.or_default()
+					.push(index);
+			}
 		}
 		let declared_modifiers = pack
 			.declared_modifiers
@@ -1431,6 +1511,7 @@ impl RuntimeRuleIndex {
 		Self {
 			roots,
 			aliases,
+			dynamic_aliases,
 			declared_modifiers,
 			enums,
 			value_sets,
@@ -1547,6 +1628,17 @@ fn unbound_root(file_path: &GamePath) -> SchemaBinding {
 
 fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
 	skip_key == "any" || skip_key == key
+}
+
+/// An alias name that stands for a set of names: a type, alone or between
+/// fixed text (`<scripted_effect>`), or an enum, value set or scope.
+fn names_a_set(name: &str) -> bool {
+	name.find('<')
+		.is_some_and(|open| name[open..].contains('>'))
+		|| matches!(
+			parse_marker(name),
+			Some(("enum" | "value" | "value_set" | "scope", _))
+		)
 }
 
 fn is_dynamic_key_marker(key: &str) -> bool {

@@ -300,7 +300,15 @@
         {
           "key": "color",
           "value": {
-            "fields": [],
+            "fields": [
+              {
+                "key": "",
+                "value": {
+                  "kind": "marker",
+                  "value": "int[0..255]"
+                }
+              }
+            ],
             "kind": "block"
           }
         }
@@ -1045,7 +1053,15 @@
               {
                 "key": "required_missions",
                 "value": {
-                  "fields": [],
+                  "fields": [
+                    {
+                      "key": "",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "<mission>"
+                      }
+                    }
+                  ],
                   "kind": "block"
                 }
               },

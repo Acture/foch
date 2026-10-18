@@ -1016,6 +1016,7 @@ fn revalidate_generated_output(
 			&result.findings,
 			Some(&[
 				"unresolved-call-target",
+				"call-in-wrong-position",
 				"missing-effect-parameter",
 				"unresolved-flag-reference",
 			]),

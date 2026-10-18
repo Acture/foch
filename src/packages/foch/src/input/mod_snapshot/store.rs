@@ -2,7 +2,7 @@ use crate::DATA_VERSION;
 use crate::model::{
 	AliasUsage, AsGamePathText, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf,
 	GamePathError, Isolation, JsonProperty, KeyUsage, LocalisationDefinition,
-	LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract, ParseIssue, ResourceReference,
+	LocalisationDuplicate, MaybeScope, ParamBinding, ParseIssue, ResourceReference,
 	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceRepair, SourceSpan,
 	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
@@ -148,6 +148,7 @@ struct StoredScopeNode {
 	path: GamePathBuf,
 	span: SourceSpan,
 	key: String,
+	inherits_this: bool,
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -169,7 +170,6 @@ struct StoredSymbolDefinition {
 	inferred_root_mask: ScopeSet,
 	required_params: Vec<String>,
 	optional_params: Vec<String>,
-	param_contract: Option<ParamContract>,
 	scope_param_names: Vec<String>,
 }
 
@@ -186,6 +186,7 @@ struct StoredSymbolReference {
 	scope_id: usize,
 	provided_params: Vec<String>,
 	param_bindings: Vec<ParamBinding>,
+	schema_alias: bool,
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -741,6 +742,7 @@ impl StoredScopeNode {
 			path: item.path,
 			span: item.span,
 			key: item.key,
+			inherits_this: item.inherits_this,
 		}
 	}
 
@@ -755,6 +757,7 @@ impl StoredScopeNode {
 			path: self.path,
 			span: self.span,
 			key: self.key,
+			inherits_this: self.inherits_this,
 		}
 	}
 }
@@ -778,7 +781,6 @@ impl StoredSymbolDefinition {
 			inferred_root_mask: item.inferred_root_mask,
 			required_params: item.required_params,
 			optional_params: item.optional_params,
-			param_contract: item.param_contract,
 			scope_param_names: item.scope_param_names,
 		}
 	}
@@ -801,7 +803,6 @@ impl StoredSymbolDefinition {
 			inferred_root_mask: self.inferred_root_mask,
 			required_params: self.required_params,
 			optional_params: self.optional_params,
-			param_contract: self.param_contract,
 			scope_param_names: self.scope_param_names,
 		}
 	}
@@ -820,6 +821,7 @@ impl StoredSymbolReference {
 			scope_id: item.scope_id,
 			provided_params: item.provided_params,
 			param_bindings: item.param_bindings,
+			schema_alias: item.schema_alias,
 		}
 	}
 
@@ -835,6 +837,7 @@ impl StoredSymbolReference {
 			scope_id: self.scope_id,
 			provided_params: self.provided_params,
 			param_bindings: self.param_bindings,
+			schema_alias: self.schema_alias,
 		}
 	}
 }

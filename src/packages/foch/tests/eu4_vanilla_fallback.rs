@@ -18,6 +18,7 @@ fn reference(kind: SymbolKind, name: &str) -> SymbolReference {
 		scope_id: 0,
 		provided_params: Vec::new(),
 		param_bindings: Vec::new(),
+		schema_alias: false,
 	}
 }
 
@@ -41,7 +42,6 @@ fn definition(kind: SymbolKind, name: &str, local_name: &str) -> SymbolDefinitio
 		inferred_root_mask: ScopeSet::EMPTY,
 		required_params: Vec::new(),
 		optional_params: Vec::new(),
-		param_contract: None,
 		scope_param_names: Vec::new(),
 	}
 }

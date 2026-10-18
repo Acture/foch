@@ -1425,12 +1425,9 @@ fn scope_kind_text(kind: ScopeKind) -> &'static str {
 	match kind {
 		ScopeKind::File => "file",
 		ScopeKind::Event => "event",
-		ScopeKind::Decision => "decision",
 		ScopeKind::ScriptedEffect => "scripted_effect",
 		ScopeKind::Trigger => "trigger",
 		ScopeKind::Effect => "effect",
-		ScopeKind::Loop => "loop",
-		ScopeKind::AliasBlock => "alias_block",
 		ScopeKind::Block => "block",
 	}
 }
@@ -2082,7 +2079,6 @@ mod tests {
 				inferred_root_mask: crate::model::ScopeSet::EMPTY,
 				required_params: Vec::new(),
 				optional_params: Vec::new(),
-				param_contract: None,
 				scope_param_names: Vec::new(),
 			});
 		state.scope_definition_map.insert(0, vec![0]);
@@ -2416,6 +2412,7 @@ mod tests {
 					.expect("valid game path"),
 				span: SourceSpan { line: 1, column: 1 },
 				key: String::new(),
+				inherits_this: false,
 			},
 			ScopeNode {
 				id: 1,
@@ -2428,6 +2425,7 @@ mod tests {
 					.expect("valid game path"),
 				span: SourceSpan { line: 2, column: 1 },
 				key: String::new(),
+				inherits_this: false,
 			},
 		];
 		RuntimeState {

@@ -237,6 +237,7 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				"events/common/new_diplomatic_actions",
 			)
 			.kind(ScriptFileKind::new("new_diplomatic_actions"))
+			.read_as("common/new_diplomatic_actions")
 			.module_name(ModuleNameRule::Tail {
 				fallback: "new_diplomatic_actions",
 			})
@@ -253,6 +254,7 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.build(),
 			ContentFamilyDescriptor::prefix("events/common/on_actions", "events/common/on_actions")
 				.kind(ScriptFileKind::new("on_actions"))
+				.read_as("common/on_actions")
 				.module_name(ModuleNameRule::Static("on_actions"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
@@ -260,6 +262,7 @@ pub(crate) fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.build(),
 			ContentFamilyDescriptor::prefix("events/decisions", "events/decisions")
 				.kind(ScriptFileKind::new("decisions"))
+				.read_as("decisions")
 				.module_name(ModuleNameRule::Static("decisions"))
 				.scope(scope(base_scope::country()))
 				// Cross-file dedup is safe because decision ids are global. Per-entry

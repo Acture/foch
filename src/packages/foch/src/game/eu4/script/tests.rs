@@ -72,301 +72,6 @@ fn full_army_tradition_switch_effect(name: &str) -> String {
 	)
 }
 
-fn fourth_wave_contract_definitions() -> &'static str {
-	r#"
-unlock_estate_privilege = {
-custom_tooltip = unlock_privilege_$estate_privilege$_tt
-hidden_effect = {
-	set_country_flag = unlocked_privilege_$estate_privilege$
-}
-[[modifier_tooltip]
-	custom_tooltip = unlock_estate_privilege_modifier_tooltip_tt
-	tooltip = {
-		add_country_modifier = {
-			name = $modifier_tooltip$
-			duration = -1
-			desc = UNTIL_PRIVILEGE_REVOKED
-		}
-	}
-]
-[[effect_tooltip]
-	custom_tooltip = unlock_estate_privilege_effect_tooltip_tt
-	tooltip = {
-		$effect_tooltip$
-	}
-]
-}
-
-HAB_change_habsburg_glory = {
-[[remove]
-	add_government_power = {
-		value = -$remove$
-	}
-]
-[[amount]
-	add_government_power = {
-		value = $amount$
-	}
-]
-}
-
-add_legitimacy_or_reform_progress = {
-[[amount]
-	tooltip = {
-		add_legitimacy_equivalent = { amount = $amount$ }
-	}
-]
-[[value]
-	tooltip = {
-		add_legitimacy_equivalent = { amount = $value$ }
-	}
-]
-}
-
-EE_change_variable = {
-[[add]
-	change_variable = {
-		which = $which$
-		value = $add$
-	}
-]
-[[subtract]
-	subtract_variable = {
-		which = $which$
-		value = $subtract$
-	}
-]
-[[divide]
-	divide_variable = {
-		which = $which$
-		value = $divide$
-	}
-]
-[[multiply]
-	multiply_variable = {
-		which = $which$
-		value = $multiply$
-	}
-]
-}
-
-build_as_many_as_possible = {
-[[upgrade_target]$pick_best_function$ = {
-	scope = every_owned_province
-	trigger = "$all_prior_trig$
-		can_build = $new_building$"
-}]
-[[construct_new]$pick_best_function$ = {
-	scope = every_owned_province
-	trigger = "can_build = $new_building$"
-}]
-event_target:highest_score_trade = {
-	add_building_construction = {
-		building = $new_building$
-		speed = $speed$
-		cost = $cost$
-	}
-}
-}
-
-give_claims = {
-[[province] custom_tooltip = $province$ ]
-[[id] custom_tooltip = $id$ ]
-[[area] custom_tooltip = $area$ ]
-[[region] custom_tooltip = $region$ ]
-}
-
-pick_best_tags = {
-[[scope] custom_tooltip = $scope$ ]
-custom_tooltip = $scale$
-custom_tooltip = $event_target_name$
-custom_tooltip = "$global_trigger$"
-[[1] custom_tooltip = "$1$" ]
-[[2] custom_tooltip = "$2$" ]
-[[3] custom_tooltip = "$3$" ]
-[[4] custom_tooltip = "$4$" ]
-[[5] custom_tooltip = "$5$" ]
-[[10] custom_tooltip = "$10$" ]
-}
-
-ME_add_years_of_trade_income = {
-[[years] add_years_of_trade_income = { years = $years$ } ]
-[[value] add_years_of_trade_income = { years = $value$ } ]
-[[amount] add_years_of_trade_income = { years = $amount$ } ]
-}
-
-ME_tim_add_spoils_of_war = {
-[[add]
-	add_government_power = {
-		value = $add$
-	}
-]
-[[remove]
-	add_government_power = {
-		value = -$remove$
-	}
-]
-}
-
-ME_add_power_projection = {
-[[amount]
-	add_power_projection = {
-		amount = $amount$
-	}
-]
-[[value]
-	add_power_projection = {
-		amount = $value$
-	}
-]
-}
-
-create_general_scaling_with_tradition_and_pips = {
-create_general_with_pips = {
-	tradition = 100
-	[[add_fire] add_fire = $add_fire$ ]
-	[[add_shock] add_shock = $add_shock$ ]
-	[[add_manuever] add_manuever = $add_manuever$ ]
-	[[add_siege] add_siege = $add_siege$ ]
-}
-}
-
-ME_automatic_colonization_effect_module = {
-any_province = {
-	OR = {
-		[[superregion]
-			superregion = $superregion$
-		]
-		[[region]
-			colonial_region = $region$
-		]
-	}
-}
-$target_region_effect$ = yes
-}
-
-country_event_with_insight = {
-country_event = {
-	id = $id$
-	[[days] days = $days$]
-	[[random] random = $random$]
-	[[tooltip] tooltip = $tooltip$]
-}
-custom_tooltip = EVENT_INSIGHT_INTRO
-custom_tooltip = $insight_tooltip$
-[[effect_tooltip] tooltip = { $effect_tooltip$ }]
-}
-
-define_and_hire_grand_vizier = {
-hire_advisor = {
-	type = $type$
-	[[skill] skill = $skill$]
-	[[culture] culture = $culture$]
-	[[religion] religion = $religion$]
-	[[female] female = $female$]
-	[[age] age = $age$]
-	[[max_age] max_age = $max_age$]
-	[[min_age] min_age = $min_age$]
-	[[location] location = $location$]
-}
-add_country_modifier = {
-	name = grand_vizier_$type$
-	duration = -1
-	desc = UNTIL_ADVISOR_REMOVAL
-}
-}
-
-ME_override_country_name = {
-[[country_name] override_country_name = $country_name$ ]
-[[name] override_country_name = $name$ ]
-[[country] override_country_name = $country$ ]
-[[value] override_country_name = $value$ ]
-[[string] override_country_name = $string$ ]
-hidden_effect = {
-	set_country_flag = ME_overrid_country_name
-}
-}
-
-persia_indian_hegemony_decision_march_effect = {
-$tag_1$ = {
-	custom_tooltip = persia_indian_hegemony_decision_march_$province$_tt_release_march
-}
-[[tag_2] $tag_2$ = { }]
-[[tag_3] $tag_3$ = { }]
-[[tag_4] $tag_4$ = { }]
-[[tag_5] $tag_5$ = { }]
-$trade_company_region$ = {
-	add_permanent_claim = event_target:persia_march_target
-}
-$province$ = {
-	owner = {
-		save_event_target_as = persia_march_target
-	}
-}
-}
-
-persia_indian_hegemony_decision_coup_effect = {
-$province$ = {
-	owner = {
-		save_event_target_as = persia_coup_target
-	}
-}
-$tag_1$ = {
-	custom_tooltip = persia_indian_hegemony_decision_coup_$province$_tt_independence
-}
-[[tag_2] $tag_2$ = { }]
-[[tag_3] $tag_3$ = { }]
-[[tag_4] $tag_4$ = { }]
-[[tag_5] $tag_5$ = { }]
-}
-"#
-}
-
-fn fourth_wave_missing_effect_parameter_messages(
-	call_rel_path: &[&str],
-	call_source: &str,
-) -> Vec<String> {
-	let tmp = TempDir::new().expect("temp dir");
-	let mod_root = tmp.path().join("mod");
-	let scripted_effects_dir = mod_root.join("common").join("scripted_effects");
-	fs::create_dir_all(&scripted_effects_dir).expect("create scripted effects");
-	fs::write(
-		scripted_effects_dir.join("fourth_wave_contracts.txt"),
-		fourth_wave_contract_definitions(),
-	)
-	.expect("write scripted effects");
-
-	let mut call_path = mod_root.clone();
-	for component in call_rel_path {
-		call_path = call_path.join(component);
-	}
-	let call_parent = call_path.parent().expect("call parent");
-	fs::create_dir_all(call_parent).expect("create call dir");
-	fs::write(&call_path, call_source).expect("write call source");
-
-	let parsed = [
-		parse_script_file(
-			"1013",
-			&mod_root,
-			&scripted_effects_dir.join("fourth_wave_contracts.txt"),
-		)
-		.expect("parsed scripted effects"),
-		parse_script_file("1013", &mod_root, &call_path).expect("parsed call source"),
-	];
-	let index = build_semantic_index(&parsed);
-	analyze_visibility(
-		&index,
-		&AnalyzeOptions {
-			mode: AnalysisMode::Semantic,
-		},
-	)
-	.strict
-	.into_iter()
-	.filter(|finding| finding.rule_id == "missing-effect-parameter")
-	.map(|finding| finding.message)
-	.collect()
-}
-
 #[test]
 fn interface_content_family_keys_gui_types_children_by_name() {
 	let descriptor = eu4()
@@ -3005,80 +2710,6 @@ immediate = {
 }
 
 #[test]
-fn create_child_scope_only_binds_cwt_path_in_fallback_branch() {
-	let tmp = TempDir::new().expect("temp dir");
-	let mod_root = tmp.path().join("mod");
-	fs::create_dir_all(mod_root.join("events")).expect("create events");
-	fs::write(
-		mod_root.join("events").join("path_binding.txt"),
-		r#"
-namespace = test
-country_event = {
-	id = test.1
-	trigger = {
-		if = { }
-		eLsE = { }
-		NOT = { }
-	}
-	immediate = {
-		every_country = { }
-		ROOT = { }
-		option = { }
-		iF = { }
-		mystery_container = { }
-	}
-}
-"#,
-	)
-	.expect("write event");
-
-	let parsed = parse_script_file(
-		"1000",
-		&mod_root,
-		&mod_root.join("events").join("path_binding.txt"),
-	)
-	.expect("parsed event");
-	let engine = crate::game::schema::query::CwtQuery::from_graph(
-		&crate::game::schema::compile::CwtSchemaGraph::default(),
-	);
-	let mut index = crate::model::SemanticIndex::default();
-	super::reset_create_child_scope_cwt_path_bindings();
-	super::build_file_index(
-		&parsed,
-		&super::MapGroupLookup::default(),
-		Some(&engine),
-		&mut index,
-	);
-
-	assert_eq!(
-		super::take_create_child_scope_cwt_path_bindings(),
-		1,
-		"only the unclassified container should reach CWT path binding"
-	);
-	for (key, expected_kind) in [
-		("country_event", ScopeKind::Event),
-		("trigger", ScopeKind::Trigger),
-		("if", ScopeKind::Trigger),
-		("eLsE", ScopeKind::Trigger),
-		("NOT", ScopeKind::Trigger),
-		("immediate", ScopeKind::Effect),
-		("every_country", ScopeKind::Loop),
-		("ROOT", ScopeKind::AliasBlock),
-		("option", ScopeKind::Effect),
-		("iF", ScopeKind::Effect),
-		("mystery_container", ScopeKind::Block),
-	] {
-		assert!(
-			index
-				.scopes
-				.iter()
-				.any(|scope| scope.key == key && scope.kind == expected_kind),
-			"{key} should retain {expected_kind:?} semantics"
-		);
-	}
-}
-
-#[test]
 fn achievements_builtin_blocks_do_not_become_scripted_effect_calls() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
@@ -3154,17 +2785,18 @@ provinces_to_highlight = {
 			"{name} should not be recorded as a scripted effect reference"
 		);
 	}
-	assert!(index.scopes.iter().any(|scope| {
-		scope.kind == ScopeKind::AliasBlock
-			&& scope.this_type == MaybeScope::Known(base_scope::province())
-	}));
-	assert!(
-		index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop
-				&& scope.this_type == MaybeScope::Known(base_scope::province()))
-	);
+	// A link and an iterator switch to the scopes the schema gives them,
+	// and keep the triggers they are written among.
+	for key in ["capital_scope", "all_core_province"] {
+		assert!(
+			index.scopes.iter().any(|scope| {
+				scope.key == key
+					&& scope.kind == ScopeKind::Trigger
+					&& scope.this_type == MaybeScope::Known(base_scope::province())
+			}),
+			"{key} should switch to a province among triggers"
+		);
+	}
 
 	let diagnostics = analyze_visibility(
 		&index,
@@ -3224,8 +2856,11 @@ fn common_data_file_roots_do_not_become_scripted_effect_calls() {
 	)
 	.expect("write ages");
 	fs::write(
-		mod_root.join("common").join("buildings").join("buildings.txt"),
-		"marketplace = { on_built = { owner = { add_prestige = 1 } FROM = { add_stability_cost_modifier = -0.1 } } }\n",
+		mod_root
+			.join("common")
+			.join("buildings")
+			.join("buildings.txt"),
+		"marketplace = { on_built = { owner = { add_prestige = 1 } FROM = { add_stability = 1 } } }\n",
 	)
 	.expect("write buildings");
 	fs::write(
@@ -3407,7 +3042,13 @@ trigger = {
 				finding.rule_id == "unresolved-call-target"
 					&& finding.path.as_ref().map(|p| p.as_str()) == Some(path)
 			}),
-			"{path} should not report top-level scripted effect fallback"
+			"{path} should not report top-level scripted effect fallback: {:?}",
+			diagnostics
+				.strict
+				.iter()
+				.filter(|finding| finding.rule_id == "unresolved-call-target")
+				.map(|finding| (&finding.path, finding.line, &finding.message))
+				.collect::<Vec<_>>()
 		);
 	}
 	for path in [
@@ -3633,21 +3274,40 @@ mos_rus_window_on_the_west = {
 		"potential_on_load",
 		"mos_rus_window_on_the_west",
 		"required_missions",
-		"baltic_region",
-		"finland_area",
 		"ai_weight",
 	] {
 		assert!(
-			!index.references.iter().any(|reference| {
-				reference.kind == SymbolKind::ScriptedEffect && reference.name == name
-			}),
-			"{name} should not be recorded as a scripted effect reference"
+			!index
+				.references
+				.iter()
+				.any(|reference| reference.name == name),
+			"{name} should not be recorded as a call"
 		);
 	}
-	assert!(index.scopes.iter().any(|scope| {
-		scope.kind == ScopeKind::Loop
-			&& scope.this_type == MaybeScope::Known(base_scope::province())
+	// An area and a region are names their definitions give; each key is
+	// checked against them where it is written.
+	assert!(index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedTrigger && reference.name == "baltic_region"
 	}));
+	assert!(index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect && reference.name == "finland_area"
+	}));
+	// The area's block runs in its provinces, as does what it holds.
+	let area = index
+		.scopes
+		.iter()
+		.find(|scope| scope.key == "finland_area" && scope.path.as_str() == "missions/missions.txt")
+		.expect("area block");
+	assert_eq!(area.this_type, MaybeScope::Known(base_scope::province()));
+	assert!(
+		index.scopes.iter().any(|scope| {
+			scope.parent == Some(area.id)
+				&& scope.this_type == MaybeScope::Known(base_scope::province())
+		}) || index
+			.key_usages
+			.iter()
+			.any(|usage| { usage.key == "add_prestige" && usage.scope_id == area.id })
+	);
 
 	let diagnostics = analyze_visibility(
 		&index,
@@ -4914,11 +4574,25 @@ fn effect_context_selectors_do_not_become_scripted_effect_calls() {
 	let mod_root = tmp.path().join("mod");
 	fs::create_dir_all(mod_root.join("events")).expect("create events");
 	fs::create_dir_all(mod_root.join("map")).expect("create map");
+	fs::create_dir_all(mod_root.join("common").join("country_tags")).expect("create tags");
 	fs::write(
 		mod_root.join("map").join("region.txt"),
 		"hudson_bay_region = { areas = { north_bay_area } }\n",
 	)
 	.expect("write region");
+	fs::write(
+		mod_root.join("map").join("positions.txt"),
+		"2022 = { position = { 1.0 2.0 } }\n",
+	)
+	.expect("write positions");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("country_tags")
+			.join("00_countries.txt"),
+		"HBC = \"countries/Hudson Bay Company.txt\"\n",
+	)
+	.expect("write tags");
 	fs::write(
 		mod_root.join("events").join("selectors.txt"),
 		r#"
@@ -4988,6 +4662,21 @@ immediate = {
 		parse_script_file(
 			"1007",
 			&mod_root,
+			&mod_root.join("map").join("positions.txt"),
+		)
+		.expect("parsed positions"),
+		parse_script_file(
+			"1007",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("country_tags")
+				.join("00_countries.txt"),
+		)
+		.expect("parsed tags"),
+		parse_script_file(
+			"1007",
+			&mod_root,
 			&mod_root.join("events").join("selectors.txt"),
 		)
 		.expect("parsed selectors"),
@@ -5005,9 +4694,6 @@ immediate = {
 		"while",
 		"IF",
 		"ELSE_IF",
-		"HBC",
-		"2022",
-		"hudson_bay_region",
 		"overlord",
 	] {
 		assert!(
@@ -5015,6 +4701,27 @@ immediate = {
 				reference.kind == SymbolKind::ScriptedEffect && reference.name == name
 			}),
 			"{name} should not be recorded as a scripted effect reference"
+		);
+	}
+	// A tag, a province and a region are names their definitions give; each
+	// key is checked against them, and switches to the scope its set does.
+	for (name, scope_type) in [
+		("HBC", base_scope::country()),
+		("2022", base_scope::province()),
+		("hudson_bay_region", base_scope::province()),
+	] {
+		assert!(
+			index.references.iter().any(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+			}),
+			"{name} should be checked against the names definitions give"
+		);
+		assert!(
+			index.scopes.iter().any(|scope| {
+				scope.key == name && scope.this_type == MaybeScope::Known(scope_type)
+			}),
+			"{name} should switch to {}",
+			scope_type.name()
 		);
 	}
 
@@ -5135,41 +4842,25 @@ while = {
 			"{name} should not be recorded as a scripted effect reference"
 		);
 	}
-	assert!(
-		index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Effect
-				&& scope.this_type == MaybeScope::Known(base_scope::province()))
-	);
-	assert!(
-		index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Effect
-				&& scope.this_type == MaybeScope::Known(base_scope::country()))
-	);
-	assert!(
-		index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::AliasBlock
-				&& scope.this_type == MaybeScope::Known(base_scope::country()))
-	);
-	assert!(
-		index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop
-				&& scope.this_type == MaybeScope::Known(base_scope::province()))
-	);
-	assert!(
-		index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop
-				&& scope.this_type == MaybeScope::Known(base_scope::country()))
-	);
+	// Each callback runs in the scope the schema gives it, and its blocks
+	// switch to the scopes theirs give them.
+	for (key, scope_type) in [
+		("on_adm_development", base_scope::province()),
+		("on_startup", base_scope::country()),
+		("owner", base_scope::country()),
+		("random_owned_province", base_scope::province()),
+		("every_subject_country", base_scope::country()),
+	] {
+		assert!(
+			index.scopes.iter().any(|scope| {
+				scope.key == key
+					&& scope.kind == ScopeKind::Effect
+					&& scope.this_type == MaybeScope::Known(scope_type)
+			}),
+			"{key} should hold effects in {}",
+			scope_type.name()
+		);
+	}
 
 	let diagnostics = analyze_visibility(
 		&index,
@@ -5208,125 +4899,6 @@ while = {
 					== Some("common/on_actions/callbacks.txt")
 				&& finding.message.contains(name)
 		}));
-	}
-}
-
-#[test]
-fn scripted_effect_param_contracts_reduce_missing_parameter_noise() {
-	let tmp = TempDir::new().expect("temp dir");
-	let mod_root = tmp.path().join("mod");
-	fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
-		.expect("create scripted effects");
-	fs::create_dir_all(mod_root.join("events")).expect("create events");
-	fs::write(
-		mod_root
-			.join("common")
-			.join("scripted_effects")
-			.join("contracts.txt"),
-		r#"
-ME_give_claims = {
-add_prestige = 1
-}
-add_prestige_or_monarch_power = {
-add_prestige = 1
-}
-country_event_with_option_insight = {
-add_stability = 1
-}
-create_or_add_center_of_trade_level = {
-add_base_production = 1
-}
-"#,
-	)
-	.expect("write scripted effects");
-	fs::write(
-		mod_root.join("events").join("contracts.txt"),
-		r#"
-namespace = test
-country_event = {
-id = test.1
-immediate = {
-	ME_give_claims = {
-		area = baltic_area
-	}
-	ME_give_claims = {
-		hidden_effect = {
-			region = finland_area
-		}
-	}
-	add_prestige_or_monarch_power = {
-		value = 10
-	}
-	country_event_with_option_insight = {
-		id = test.2
-		option_3 = some_option
-	}
-	create_or_add_center_of_trade_level = {
-		level = 2
-	}
-}
-}
-"#,
-	)
-	.expect("write events");
-
-	let parsed = [
-		parse_script_file(
-			"1010",
-			&mod_root,
-			&mod_root
-				.join("common")
-				.join("scripted_effects")
-				.join("contracts.txt"),
-		)
-		.expect("parsed scripted effects"),
-		parse_script_file(
-			"1010",
-			&mod_root,
-			&mod_root.join("events").join("contracts.txt"),
-		)
-		.expect("parsed events"),
-	];
-	let index = build_semantic_index(&parsed);
-	let diagnostics = analyze_visibility(
-		&index,
-		&AnalyzeOptions {
-			mode: AnalysisMode::Semantic,
-		},
-	);
-
-	assert!(
-		!diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "missing-effect-parameter"
-				&& finding.message.contains("missing area")
-		}),
-		"one-of contract should not expand into per-parameter missing messages"
-	);
-	assert_eq!(
-		diagnostics
-			.strict
-			.iter()
-			.filter(|finding| {
-				finding.rule_id == "missing-effect-parameter"
-					&& finding.message.contains(
-						"ME_give_claims requires at least one of: area|region|province|id",
-					)
-			})
-			.count(),
-		1,
-		"missing one-of params should aggregate into a single message"
-	);
-	for name in [
-		"add_prestige_or_monarch_power",
-		"country_event_with_option_insight",
-		"create_or_add_center_of_trade_level",
-	] {
-		assert!(
-			!diagnostics.strict.iter().any(|finding| {
-				finding.rule_id == "missing-effect-parameter" && finding.message.contains(name)
-			}),
-			"{name} should satisfy its explicit param contract"
-		);
 	}
 }
 
@@ -5700,560 +5272,6 @@ on_built = {
 }
 
 #[test]
-fn second_wave_param_contracts_and_named_param_collection_work() {
-	let tmp = TempDir::new().expect("temp dir");
-	let mod_root = tmp.path().join("mod");
-	fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
-		.expect("create scripted effects");
-	fs::create_dir_all(mod_root.join("events")).expect("create events");
-	fs::write(
-		mod_root
-			.join("common")
-			.join("scripted_effects")
-			.join("contracts.txt"),
-		r#"
-add_age_modifier = {
-add_country_modifier = {
-	name = $name$
-	duration = $duration$
-	desc = ME_until_the_end_of_$age$
-}
-else = { [[else] $else$ ] }
-}
-country_event_with_effect_insight = {
-country_event = {
-	id = $id$
-	[[days] days = $days$]
-	[[random] random = $random$]
-	[[tooltip] tooltip = $tooltip$]
-}
-tooltip = {
-	$effect$
-}
-}
-ME_distribute_development = {
-while = {
-	limit = { always = yes }
-	random_owned_province = {
-		[[limit] limit = { $limit$ }]
-		add_base_$type$ = 1
-	}
-}
-custom_tooltip = $type$_$amount$
-[[tooltip] custom_tooltip = $tooltip$ ]
-}
-pick_best_provinces = {
-pick_best_provinces_2 = {
-	scope = "$scope$"
-	scale = "$scale$"
-	event_target_name = "$event_target_name$"
-	global_trigger = "$global_trigger$"
-	1 = "$1$"
-	10 = "$10$"
-}
-}
-ME_overlord_effect = {
-overlord = {
-	$effect$
-}
-}
-create_general_with_pips = {
-create_general = {
-	tradition = $tradition$
-	[[add_fire] add_fire = $add_fire$ ]
-	[[culture] culture = $culture$ ]
-}
-}
-"#,
-	)
-	.expect("write scripted effects");
-	fs::write(
-		mod_root.join("events").join("contracts.txt"),
-		r#"
-namespace = test
-country_event = {
-id = test.1
-immediate = {
-	add_age_modifier = {
-		age = age_of_discovery
-		name = test_modifier
-		duration = 365
-	}
-	country_event_with_effect_insight = {
-		id = test.2
-		effect = { add_stability = 1 }
-	}
-	ME_distribute_development = {
-		type = production
-		amount = 5
-	}
-	pick_best_provinces = {
-		scale = base_tax
-		event_target_name = best_province
-		global_trigger = always
-		1 = always
-		10 = never
-		effect = { culture = ROOT }
-	}
-	ME_overlord_effect = {
-		effect = { add_prestige = 1 }
-	}
-	create_general_with_pips = {
-		tradition = 40
-	}
-}
-}
-"#,
-	)
-	.expect("write events");
-
-	let parsed = [
-		parse_script_file(
-			"1010",
-			&mod_root,
-			&mod_root
-				.join("common")
-				.join("scripted_effects")
-				.join("contracts.txt"),
-		)
-		.expect("parsed scripted effects"),
-		parse_script_file(
-			"1010",
-			&mod_root,
-			&mod_root.join("events").join("contracts.txt"),
-		)
-		.expect("parsed events"),
-	];
-	let index = build_semantic_index(&parsed);
-	let diagnostics = analyze_visibility(
-		&index,
-		&AnalyzeOptions {
-			mode: AnalysisMode::Semantic,
-		},
-	);
-	let contract_findings: Vec<String> = diagnostics
-		.strict
-		.iter()
-		.filter(|finding| finding.rule_id == "missing-effect-parameter")
-		.map(|finding| finding.message.clone())
-		.collect();
-	for snippet in [
-		"add_age_modifier missing else",
-		"country_event_with_effect_insight missing days",
-		"country_event_with_effect_insight missing tooltip",
-		"ME_distribute_development missing limit",
-		"ME_distribute_development missing tooltip",
-		"pick_best_provinces missing scope",
-		"create_general_with_pips missing add_fire",
-		"create_general_with_pips missing culture",
-	] {
-		assert!(
-			!contract_findings
-				.iter()
-				.any(|message| message.contains(snippet)),
-			"{snippet} should be optional"
-		);
-	}
-
-	let pick_best_reference = index
-		.references
-		.iter()
-		.find(|reference| {
-			reference.kind == SymbolKind::ScriptedEffect && reference.name == "pick_best_provinces"
-		})
-		.expect("pick_best_provinces reference");
-	for expected in ["scale", "event_target_name", "global_trigger", "1", "10"] {
-		assert!(
-			pick_best_reference
-				.provided_params
-				.iter()
-				.any(|item| item == expected),
-			"missing collected param {expected}"
-		);
-	}
-	assert!(
-		!pick_best_reference
-			.provided_params
-			.iter()
-			.any(|item| item == "culture"),
-		"nested keys should not be collected as provided params"
-	);
-}
-
-#[test]
-fn third_wave_estate_param_contracts_cover_common_wrappers() {
-	let tmp = TempDir::new().expect("temp dir");
-	let mod_root = tmp.path().join("mod");
-	fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
-		.expect("create scripted effects");
-	fs::create_dir_all(mod_root.join("events")).expect("create events");
-	fs::write(
-		mod_root
-			.join("common")
-			.join("scripted_effects")
-			.join("estate_contracts.txt"),
-		r#"
-take_estate_land_share_massive = {
-estate = $estate$
-amount = $amount$
-}
-add_estate_loyalty = {
-estate = $estate$
-short = $short$
-amount = $amount$
-}
-estate_loyalty = {
-estate = $estate$
-loyalty = $loyalty$
-}
-estate_influence = {
-estate = $estate$
-influence = $influence$
-}
-"#,
-	)
-	.expect("write scripted effects");
-	fs::write(
-		mod_root.join("events").join("estate_contracts.txt"),
-		r#"
-namespace = test
-country_event = {
-id = test.3
-immediate = {
-	take_estate_land_share_massive = {
-		estate = all
-	}
-	add_estate_loyalty = {
-		estate = all
-		short = yes
-	}
-	estate_loyalty = {
-		estate = all
-		loyalty = 50
-	}
-	estate_influence = {
-		estate = all
-		influence = 1
-	}
-}
-}
-"#,
-	)
-	.expect("write events");
-
-	let parsed = [
-		parse_script_file(
-			"1012",
-			&mod_root,
-			&mod_root
-				.join("common")
-				.join("scripted_effects")
-				.join("estate_contracts.txt"),
-		)
-		.expect("parsed scripted effects"),
-		parse_script_file(
-			"1012",
-			&mod_root,
-			&mod_root.join("events").join("estate_contracts.txt"),
-		)
-		.expect("parsed events"),
-	];
-	let index = build_semantic_index(&parsed);
-	let diagnostics = analyze_visibility(
-		&index,
-		&AnalyzeOptions {
-			mode: AnalysisMode::Semantic,
-		},
-	);
-
-	for name in [
-		"take_estate_land_share_massive",
-		"add_estate_loyalty",
-		"estate_loyalty",
-		"estate_influence",
-	] {
-		assert!(
-			!diagnostics.strict.iter().any(|finding| {
-				finding.rule_id == "missing-effect-parameter" && finding.message.contains(name)
-			}),
-			"{name} should not produce missing-effect-parameter"
-		);
-	}
-}
-
-#[test]
-fn fourth_wave_param_contracts_cover_real_corpus_hotspots() {
-	let missing_parameter_messages = fourth_wave_missing_effect_parameter_messages(
-		&["events", "fourth_wave_contracts.txt"],
-		r#"
-namespace = test
-country_event = {
-id = test.4
-immediate = {
-	unlock_estate_privilege = {
-		estate_privilege = estate_church_anti_heresy_act
-	}
-	HAB_change_habsburg_glory = {
-		remove = 20
-	}
-	HAB_change_habsburg_glory = {
-		amount = 15
-	}
-	add_legitimacy_or_reform_progress = {
-		amount = 25
-	}
-	add_legitimacy_or_reform_progress = {
-		value = 10
-	}
-	EE_change_variable = {
-		which = papal_authority_value
-		divide = 2
-	}
-	EE_change_variable = {
-		which = papal_authority_value
-		multiply = 3
-	}
-	ME_tim_add_spoils_of_war = {
-		add = 2
-	}
-	ME_tim_add_spoils_of_war = {
-		remove = 1
-	}
-	ME_add_power_projection = {
-		amount = 25
-	}
-	ME_add_power_projection = {
-		value = 10
-	}
-	create_general_scaling_with_tradition_and_pips = { }
-	create_general_scaling_with_tradition_and_pips = {
-		add_shock = 1
-		add_manuever = 1
-	}
-	ME_automatic_colonization_effect_module = {
-		target_region_effect = autonomous_colonist_region_north_africa_colonizing_effect
-		superregion = africa_superregion
-	}
-	ME_automatic_colonization_effect_module = {
-		target_region_effect = autonomous_colonist_region_mexico_colonizing_effect
-		region = colonial_mexico
-	}
-	country_event_with_insight = {
-		id = test.6
-		insight_tooltip = INSIGHT_JUST_TOOLTIP
-	}
-	country_event_with_insight = {
-		id = test.7
-		insight_tooltip = ENG_we_will_be_able_to_form
-		effect_tooltip = "
-			add_stability = 1
-		"
-	}
-	define_and_hire_grand_vizier = {
-		type = artist
-	}
-	define_and_hire_grand_vizier = {
-		type = inquisitor
-		age = 45
-		religion = catholic
-	}
-	ME_override_country_name = {
-		string = NED_united_provinces_name
-	}
-	ME_override_country_name = {
-		name = Ducal_PRU
-	}
-	persia_indian_hegemony_decision_march_effect = {
-		province = 563
-		tag_1 = BNG
-		tag_2 = TRT
-		tag_3 = MKP
-		trade_company_region = trade_company_east_india
-	}
-	persia_indian_hegemony_decision_coup_effect = {
-		province = 563
-		tag_1 = BNG
-		tag_2 = TRT
-		tag_3 = MKP
-	}
-	build_as_many_as_possible = {
-		new_building = naval_battery
-		upgrade_target = coastal_defence
-		pick_best_function = pick_best_navydef_province
-		cost = 1
-		speed = 1
-	}
-	give_claims = {
-		area = austria_area
-	}
-	give_claims = {
-		id = 134
-	}
-	pick_best_tags = {
-		scale = total_development
-		event_target_name = claim_target
-		global_trigger = "tag = HAB"
-	}
-	pick_best_tags = {
-		scope = every_country
-		scale = total_development
-		event_target_name = scoped_claim_target
-		global_trigger = "tag = HAB"
-		1 = yes
-		2 = yes
-	}
-	ME_add_years_of_trade_income = {
-		value = 1
-	}
-	ME_add_years_of_trade_income = {
-		years = 5
-	}
-}
-}
-"#,
-	);
-
-	for name in [
-		"unlock_estate_privilege",
-		"HAB_change_habsburg_glory",
-		"add_legitimacy_or_reform_progress",
-		"EE_change_variable",
-		"ME_tim_add_spoils_of_war",
-		"ME_add_power_projection",
-		"create_general_scaling_with_tradition_and_pips",
-		"ME_automatic_colonization_effect_module",
-		"country_event_with_insight",
-		"define_and_hire_grand_vizier",
-		"ME_override_country_name",
-		"persia_indian_hegemony_decision_march_effect",
-		"persia_indian_hegemony_decision_coup_effect",
-		"build_as_many_as_possible",
-		"give_claims",
-		"pick_best_tags",
-		"ME_add_years_of_trade_income",
-	] {
-		assert!(
-			!missing_parameter_messages
-				.iter()
-				.any(|message| message.contains(name)),
-			"{name} should not produce missing-effect-parameter: {missing_parameter_messages:?}"
-		);
-	}
-}
-
-#[test]
-fn fourth_wave_param_contracts_preserve_required_and_one_of_constraints() {
-	let missing_parameter_messages = fourth_wave_missing_effect_parameter_messages(
-		&["events", "fourth_wave_contract_failures.txt"],
-		r#"
-namespace = test
-country_event = {
-id = test.5
-immediate = {
-	unlock_estate_privilege = { }
-	HAB_change_habsburg_glory = { }
-	add_legitimacy_or_reform_progress = { }
-	EE_change_variable = {
-		which = papal_authority_value
-	}
-	EE_change_variable = {
-		add = 5
-	}
-	ME_tim_add_spoils_of_war = { }
-	ME_add_power_projection = { }
-	ME_automatic_colonization_effect_module = {
-		target_region_effect = autonomous_colonist_region_north_africa_colonizing_effect
-	}
-	ME_automatic_colonization_effect_module = {
-		region = colonial_mexico
-	}
-	country_event_with_insight = {
-		id = test.6
-	}
-	country_event_with_insight = {
-		insight_tooltip = INSIGHT_JUST_TOOLTIP
-	}
-	define_and_hire_grand_vizier = { }
-	ME_override_country_name = { }
-	persia_indian_hegemony_decision_march_effect = {
-		province = 563
-		trade_company_region = trade_company_east_india
-	}
-	persia_indian_hegemony_decision_march_effect = {
-		tag_1 = BNG
-		trade_company_region = trade_company_east_india
-	}
-	persia_indian_hegemony_decision_march_effect = {
-		province = 563
-		tag_1 = BNG
-	}
-	persia_indian_hegemony_decision_coup_effect = {
-		province = 563
-	}
-	persia_indian_hegemony_decision_coup_effect = {
-		tag_1 = BNG
-	}
-	build_as_many_as_possible = {
-		new_building = naval_battery
-		upgrade_target = coastal_defence
-		cost = 1
-		speed = 1
-	}
-	give_claims = { }
-	pick_best_tags = {
-		event_target_name = claim_target
-		global_trigger = "tag = HAB"
-	}
-	pick_best_tags = {
-		scale = total_development
-		global_trigger = "tag = HAB"
-	}
-	pick_best_tags = {
-		scale = total_development
-		event_target_name = claim_target
-	}
-	ME_add_years_of_trade_income = { }
-}
-}
-"#,
-	);
-
-	for snippet in [
-		"unlock_estate_privilege missing estate_privilege",
-		"HAB_change_habsburg_glory requires at least one of: amount|remove",
-		"add_legitimacy_or_reform_progress requires at least one of: amount|value",
-		"EE_change_variable requires at least one of: add|subtract|divide|multiply",
-		"EE_change_variable missing which",
-		"ME_tim_add_spoils_of_war requires at least one of: add|remove",
-		"ME_add_power_projection requires at least one of: amount|value",
-		"ME_automatic_colonization_effect_module requires at least one of: region|superregion",
-		"ME_automatic_colonization_effect_module missing target_region_effect",
-		"country_event_with_insight missing insight_tooltip",
-		"country_event_with_insight missing id",
-		"define_and_hire_grand_vizier missing type",
-		"ME_override_country_name requires at least one of: country_name|name|country|value|string",
-		"persia_indian_hegemony_decision_march_effect missing province",
-		"persia_indian_hegemony_decision_march_effect missing tag_1",
-		"persia_indian_hegemony_decision_march_effect missing trade_company_region",
-		"persia_indian_hegemony_decision_coup_effect missing province",
-		"persia_indian_hegemony_decision_coup_effect missing tag_1",
-		"build_as_many_as_possible missing pick_best_function",
-		"give_claims requires at least one of: area|region|province|id",
-		"pick_best_tags missing scale",
-		"pick_best_tags missing event_target_name",
-		"pick_best_tags missing global_trigger",
-		"ME_add_years_of_trade_income requires at least one of: years|value|amount",
-	] {
-		assert!(
-			missing_parameter_messages
-				.iter()
-				.any(|message| message.contains(snippet)),
-			"missing expected missing-effect-parameter snippet {snippet}: {missing_parameter_messages:?}"
-		);
-	}
-}
-
-#[test]
 fn for_control_flow_does_not_emit_unresolved_call_or_missing_parameter() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
@@ -6267,10 +5285,9 @@ id = test.1
 immediate = {
 	for = {
 		amount = 3
-		effect = {
-			missing_effect = { FLAG = TEST }
-		}
+		effect = "missing_effect = { FLAG = TEST }"
 	}
+	missing_effect = { FLAG = TEST }
 }
 }
 "#,
@@ -6826,6 +5843,7 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 		merge_key_source: None,
 		conflict_policy: ConflictPolicy::default(),
 		merge_policies: MergePolicies::default(),
+		schema_directory: None,
 	};
 	assert!(extractors::extractor_for(&descriptor).is_none());
 }
@@ -8194,26 +7212,35 @@ test_weighted_effect = {
 
 	let parsed = [parse_script_file("1001", &mod_root, &path).expect("parsed")];
 	let index = build_semantic_index(&parsed);
-	for name in ["0.95", "0.5", "1", "10", "150"] {
+	for name in ["0.95", "0.5", "10", "150"] {
 		assert!(
-			!index.references.iter().any(|reference| {
-				reference.kind == SymbolKind::ScriptedEffect && reference.name == name
-			}),
-			"{name} should not be recorded as a scripted effect reference"
+			!index
+				.references
+				.iter()
+				.any(|reference| reference.name == name),
+			"{name} should not be recorded as a call"
 		);
 	}
 	// A weight's branch holds effects.
 	assert!(index.references.iter().any(|reference| {
 		reference.kind == SymbolKind::ScriptedEffect && reference.name == "missing_weighted_effect"
 	}));
-	// Outside `random_list`, a number names a province, however small.
+	// Outside `random_list`, a number where effects are written names a
+	// province, however small; the weight `1` names none.
+	let ones = index
+		.references
+		.iter()
+		.filter(|reference| reference.name == "1")
+		.map(|reference| reference.line)
+		.collect::<Vec<_>>();
+	assert_eq!(ones, vec![16], "only the province 1 is checked as a name");
 	assert!(
 		index.scopes.iter().any(|scope| {
 			scope.key == "1"
-				&& scope.kind == ScopeKind::AliasBlock
+				&& scope.kind == ScopeKind::Effect
 				&& index.scopes[scope.parent.expect("parent")].key == "test_weighted_effect"
 		}),
-		"province 1 should be a scope change"
+		"province 1 should hold effects"
 	);
 	// However deep, a weight is not a province.
 	assert!(
@@ -8295,8 +7322,16 @@ country_event = {
 		assert!(!unresolved(name), "{name} should resolve");
 	}
 	assert!(unresolved("missing_test_trigger"));
-	// An effect is not a trigger.
-	assert!(unresolved("every_province"));
+	// An effect is not a trigger: it is reported for where it is written.
+	assert!(!unresolved("every_province"));
+	assert!(
+		diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "call-in-wrong-position"
+				&& finding.message == "`every_province` is an effect, written where triggers are"
+		}),
+		"{:?}",
+		diagnostics.strict
+	);
 }
 
 #[test]
@@ -8320,4 +7355,436 @@ fn top_level_keys_named_like_scope_switches_are_definitions() {
 			.any(|reference| reference.name == "to_me"),
 		"to_me should not be recorded as a call"
 	);
+}
+
+/// Writes `files` (game path, text) under a mod root and indexes them.
+fn index_texts(mod_id: &str, files: &[(&str, &str)]) -> (TempDir, crate::model::SemanticIndex) {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	let parsed = files
+		.iter()
+		.map(|(path, text)| {
+			let physical = game_path(path).to_path(&mod_root);
+			fs::create_dir_all(physical.parent().expect("parent")).expect("create dirs");
+			fs::write(&physical, text).expect("write script");
+			parse_script_file(mod_id, &mod_root, &physical).expect("parsed")
+		})
+		.collect::<Vec<_>>();
+	let index = build_semantic_index(&parsed);
+	(tmp, index)
+}
+
+fn strict_messages(index: &crate::model::SemanticIndex, rule: &str) -> Vec<String> {
+	analyze_visibility(
+		index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	)
+	.strict
+	.into_iter()
+	.filter(|finding| finding.rule_id == rule)
+	.map(|finding| finding.message)
+	.collect()
+}
+
+#[test]
+fn scalar_calls_are_calls_of_the_kind_their_position_holds() {
+	let (_tmp, index) = index_texts(
+		"1101",
+		&[
+			(
+				"common/scripted_effects/effects.txt",
+				"my_effect = { add_prestige = 1 }\n",
+			),
+			(
+				"common/scripted_triggers/triggers.txt",
+				"my_trigger = { always = yes }\n",
+			),
+			(
+				"events/calls.txt",
+				"namespace = calls\ncountry_event = {\n\tid = calls.1\n\ttrigger = {\n\t\tmy_trigger = yes\n\t\tmissing_trigger = yes\n\t}\n\timmediate = {\n\t\tmy_effect = yes\n\t\tmissing_effect = yes\n\t}\n}\n",
+			),
+		],
+	);
+	for (kind, name) in [
+		(SymbolKind::ScriptedTrigger, "my_trigger"),
+		(SymbolKind::ScriptedTrigger, "missing_trigger"),
+		(SymbolKind::ScriptedEffect, "my_effect"),
+		(SymbolKind::ScriptedEffect, "missing_effect"),
+	] {
+		assert!(
+			index
+				.references
+				.iter()
+				.any(|reference| reference.kind == kind && reference.name == name),
+			"{name} should be a {kind:?} call"
+		);
+	}
+	let unresolved = strict_messages(&index, "unresolved-call-target");
+	assert_eq!(
+		unresolved,
+		[
+			"unresolved call: scripted_trigger missing_trigger",
+			"unresolved call: scripted_effect missing_effect",
+		]
+	);
+}
+
+#[test]
+fn a_trigger_where_effects_go_and_the_reverse_are_reported() {
+	let (_tmp, index) = index_texts(
+		"1102",
+		&[(
+			"events/positions.txt",
+			"namespace = positions\ncountry_event = {\n\tid = positions.1\n\ttrigger = {\n\t\tadd_prestige = 10\n\t}\n\timmediate = {\n\t\thas_country_flag = seen\n\t}\n}\n",
+		)],
+	);
+	assert_eq!(
+		strict_messages(&index, "call-in-wrong-position"),
+		[
+			"`add_prestige` is an effect, written where triggers are",
+			"`has_country_flag` is a trigger, written where effects are",
+		]
+	);
+	assert!(strict_messages(&index, "unresolved-call-target").is_empty());
+}
+
+#[test]
+fn blocks_of_effects_and_triggers_hold_calls_whatever_their_key() {
+	let (_tmp, index) = index_texts(
+		"1103",
+		&[(
+			"events/bodies.txt",
+			"namespace = bodies\ncountry_event = {\n\tid = bodies.1\n\ttrigger = {\n\t\tcalc_true_if = {\n\t\t\tamount = 1\n\t\t\tmissing_counted_trigger = yes\n\t\t}\n\t}\n\timmediate = {\n\t\trandom = {\n\t\t\tchance = 50\n\t\t\tmissing_random_effect = yes\n\t\t}\n\t\tIF = {\n\t\t\tLimit = { or = { missing_case_trigger = yes } }\n\t\t\tmissing_case_effect = yes\n\t\t}\n\t}\n}\n",
+		)],
+	);
+	let unresolved = strict_messages(&index, "unresolved-call-target");
+	for name in [
+		"scripted_trigger missing_counted_trigger",
+		"scripted_effect missing_random_effect",
+		"scripted_trigger missing_case_trigger",
+		"scripted_effect missing_case_effect",
+	] {
+		assert!(
+			unresolved.contains(&format!("unresolved call: {name}")),
+			"{name}: {unresolved:?}"
+		);
+	}
+	assert_eq!(unresolved.len(), 4, "{unresolved:?}");
+}
+
+#[test]
+fn a_scripted_effect_the_schema_declares_is_called_where_the_symbol_table_defines_it() {
+	let effect = "country_event_with_effect_insight = {\n\tcountry_event = { id = $id$ }\n}\n";
+	let call = "namespace = insight\ncountry_event = {\n\tid = insight.1\n\timmediate = {\n\t\tcountry_event_with_effect_insight = {\n\t\t\tid = insight.2\n\t\t\teffect = \"add_prestige = 1\"\n\t\t}\n\t}\n}\n";
+	// Defined in the same files: the walk records the call with what it
+	// passes.
+	let (_tmp, local) = index_texts(
+		"1104",
+		&[
+			("common/scripted_effects/effects.txt", effect),
+			("events/insight.txt", call),
+		],
+	);
+	let reference = local
+		.references
+		.iter()
+		.find(|reference| reference.name == "country_event_with_effect_insight")
+		.expect("local call");
+	assert!(reference.schema_alias);
+	assert_eq!(reference.provided_params, ["effect", "id"]);
+
+	// Defined elsewhere: the symbol table links the call once the indexes
+	// are combined.
+	let (_base_tmp, mut combined) =
+		index_texts("1105", &[("common/scripted_effects/effects.txt", effect)]);
+	let (_mod_tmp, mod_index) = index_texts("1106", &[("events/insight.txt", call)]);
+	assert!(
+		!mod_index
+			.references
+			.iter()
+			.any(|reference| reference.name == "country_event_with_effect_insight")
+	);
+	combined.append(mod_index);
+	super::link_schema_declared_calls(&mut combined);
+	let linked = combined
+		.references
+		.iter()
+		.filter(|reference| reference.name == "country_event_with_effect_insight")
+		.collect::<Vec<_>>();
+	assert_eq!(linked.len(), 1);
+	assert!(linked[0].schema_alias && linked[0].mod_id == "1106");
+	assert!(strict_messages(&combined, "missing-effect-parameter").is_empty());
+	// Linking again adds nothing.
+	super::link_schema_declared_calls(&mut combined);
+	assert_eq!(
+		combined
+			.references
+			.iter()
+			.filter(|reference| reference.name == "country_event_with_effect_insight")
+			.count(),
+		1
+	);
+}
+
+#[test]
+fn links_and_iterators_switch_to_the_scopes_the_schema_pushes() {
+	let (_tmp, index) = index_texts(
+		"1107",
+		&[(
+			"events/scopes.txt",
+			"namespace = scopes\ncountry_event = {\n\tid = scopes.1\n\ttrigger = {\n\t\tany_owned_province = { is_capital = yes }\n\t}\n\timmediate = {\n\t\tcapital_scope = { add_base_tax = 1 }\n\t\toverlord = { add_prestige = 1 }\n\t}\n}\n",
+		)],
+	);
+	for (key, kind, scope_type) in [
+		(
+			"any_owned_province",
+			ScopeKind::Trigger,
+			base_scope::province(),
+		),
+		("capital_scope", ScopeKind::Effect, base_scope::province()),
+		("overlord", ScopeKind::Effect, base_scope::country()),
+	] {
+		assert!(
+			index.scopes.iter().any(|scope| {
+				scope.key == key
+					&& scope.kind == kind
+					&& scope.this_type == MaybeScope::Known(scope_type)
+			}),
+			"{key} should hold {kind:?} in {}",
+			scope_type.name()
+		);
+	}
+}
+
+#[test]
+fn data_fields_of_definitions_hold_no_calls() {
+	let (_tmp, index) = index_texts(
+		"1108",
+		&[(
+			"common/subject_types/subjects.txt",
+			"test_subject = {\n\tcan_fight = { independent_nations = yes }\n\tcan_rival = { independent_nations = yes }\n}\n",
+		)],
+	);
+	assert!(
+		index.references.is_empty(),
+		"{:?}",
+		index
+			.references
+			.iter()
+			.map(|reference| &reference.name)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn on_actions_callbacks_run_where_the_schema_says_with_from_its_actor() {
+	let (_tmp, index) = index_texts(
+		"1109",
+		&[(
+			"common/on_actions/callbacks.txt",
+			"on_province_owner_change = {\n\tadd_base_tax = 1\n\tFROM = { add_prestige = 1 }\n}\non_startup = {\n\tevents = { test.1 }\n\trandom_events = {\n\t\t1000 = 0\n\t\t100 = test.2\n\t}\n}\n",
+		)],
+	);
+	let callback = index
+		.scopes
+		.iter()
+		.find(|scope| scope.key == "on_province_owner_change")
+		.expect("callback scope");
+	assert_eq!(
+		callback.this_type,
+		MaybeScope::Known(base_scope::province())
+	);
+	let from = index
+		.scopes
+		.iter()
+		.find(|scope| scope.key == "FROM" && scope.parent == Some(callback.id))
+		.expect("FROM scope");
+	assert_eq!(from.this_type, MaybeScope::Known(base_scope::country()));
+
+	let mut events = index
+		.references
+		.iter()
+		.filter(|reference| reference.kind == SymbolKind::Event)
+		.map(|reference| reference.name.as_str())
+		.collect::<Vec<_>>();
+	events.sort_unstable();
+	assert_eq!(events, ["test.1", "test.2"], "a weight of 0 names no event");
+}
+
+#[test]
+fn a_tag_or_area_no_definition_gives_is_unresolved() {
+	let (_tmp, index) = index_texts(
+		"1110",
+		&[
+			(
+				"common/country_tags/tags.txt",
+				"TST = \"countries/Test.txt\"\n",
+			),
+			("map/area.txt", "test_area = { 1 2 }\n"),
+			(
+				"events/names.txt",
+				"namespace = names\ncountry_event = {\n\tid = names.1\n\timmediate = {\n\t\tTST = { add_prestige = 1 }\n\t\tNOT = { add_prestige = 1 }\n\t\ttest_area = { add_base_tax = 1 }\n\t\tXXX = { add_prestige = 1 }\n\t\ttypo_area = { add_base_tax = 1 }\n\t}\n}\n",
+			),
+		],
+	);
+	assert_eq!(
+		strict_messages(&index, "unresolved-call-target"),
+		[
+			"unresolved call: scripted_effect XXX",
+			"unresolved call: scripted_effect typo_area",
+		]
+	);
+}
+
+#[test]
+fn files_no_rules_own_record_no_calls() {
+	let (_tmp, index) = index_texts(
+		"1111",
+		&[(
+			"common/not_a_game_folder/x.txt",
+			"foo = { bar = yes baz = { qux = 1 } }\n",
+		)],
+	);
+	assert!(index.references.is_empty());
+	assert!(
+		index
+			.scopes
+			.iter()
+			.all(|scope| matches!(scope.kind, ScopeKind::File | ScopeKind::Block))
+	);
+}
+
+#[test]
+fn a_definition_s_parameters_come_from_its_body() {
+	let (_tmp, index) = index_texts(
+		"1112",
+		&[
+			(
+				"common/scripted_effects/effects.txt",
+				"my_effect = {\n\tadd_prestige = $amount$\n\t[[bonus] add_stability = $bonus$ ]\n\tadd_legitimacy = $legitimacy|10$\n}\n",
+			),
+			(
+				"events/params.txt",
+				"namespace = params\ncountry_event = {\n\tid = params.1\n\timmediate = {\n\t\tmy_effect = { amount = 1 }\n\t\tmy_effect = { bonus = 1 }\n\t}\n}\n",
+			),
+		],
+	);
+	assert_eq!(
+		strict_messages(&index, "missing-effect-parameter"),
+		["unbound parameter: my_effect missing amount"]
+	);
+}
+
+#[test]
+fn binding_walks_a_file_once_from_the_top() {
+	let branches = (0..200)
+		.map(|branch| {
+			format!(
+				"\tif = {{\n\t\tlimit = {{ has_country_flag = f{branch} }}\n\t\tadd_prestige = 1\n\t}}\n"
+			)
+		})
+		.collect::<String>();
+	let text = format!("long_effect = {{\n{branches}}}\n");
+	crate::game::schema::bind::take_path_bindings();
+	let (_tmp, index) = index_texts("1113", &[("common/scripted_effects/long.txt", &text)]);
+	let path_bindings = crate::game::schema::bind::take_path_bindings();
+	assert!(
+		path_bindings < 10,
+		"{path_bindings} path bindings for 600 blocks; the walk should bind each block from its parent"
+	);
+	assert_eq!(
+		index
+			.scopes
+			.iter()
+			.filter(|scope| scope.key == "limit" && scope.kind == ScopeKind::Trigger)
+			.count(),
+		200
+	);
+}
+
+#[test]
+fn the_symbol_table_answers_as_reading_every_definition_does() {
+	let (_tmp, mut index) = index_texts(
+		"1114",
+		&[
+			(
+				"common/scripted_effects/effects.txt",
+				"shared = { add_prestige = 1 }\nlocal_only = { add_prestige = 1 }\n",
+			),
+			(
+				"common/scripted_triggers/triggers.txt",
+				"shared = { always = yes }\n",
+			),
+			(
+				"events/events.txt",
+				"namespace = hre_event\ncountry_event = {\n\tid = hre_event.9073\n}\ncountry_event = {\n\tid = 12\n}\ncountry_event = {\n\tid = a.b.c\n}\n",
+			),
+		],
+	);
+	let (_other_tmp, other) = index_texts(
+		"1115",
+		&[(
+			"common/scripted_effects/more.txt",
+			"shared = { add_stability = 1 }\n",
+		)],
+	);
+	index.append(other);
+	let table = super::SymbolTable::new(&index);
+	let reference = |kind, name: &str, module: &str| crate::model::SymbolReference {
+		kind,
+		name: name.to_string(),
+		module: module.to_string(),
+		mod_id: "1114".to_string(),
+		path: GamePathBuf::parse("events/events.txt").expect("game path"),
+		line: 1,
+		column: 1,
+		scope_id: 0,
+		provided_params: Vec::new(),
+		param_bindings: Vec::new(),
+		schema_alias: false,
+	};
+	let modules = index
+		.definitions
+		.iter()
+		.map(|definition| definition.module.clone())
+		.collect::<std::collections::BTreeSet<_>>();
+	for module in modules.iter().map(String::as_str).chain(["elsewhere"]) {
+		for name in ["shared", "local_only", "missing"] {
+			for kind in [SymbolKind::ScriptedEffect, SymbolKind::ScriptedTrigger] {
+				let reference = reference(kind, name, module);
+				assert_eq!(
+					table.targets(&index, &reference),
+					super::resolve_symbol_reference_targets(&index, &reference),
+					"{kind:?} {name} in {module}"
+				);
+				for other_kind in [SymbolKind::ScriptedEffect, SymbolKind::ScriptedTrigger] {
+					assert_eq!(
+						table.of_kind(&index, &reference, other_kind),
+						super::resolve_cross_kind_reference_targets(&index, &reference, other_kind),
+						"{kind:?} {name} in {module} as {other_kind:?}"
+					);
+				}
+			}
+		}
+	}
+	for name in [
+		"hre_event.9073",
+		"9073",
+		"12",
+		"other.12",
+		"c",
+		"b.c",
+		"a.b.c",
+		"x.a.b.c",
+		"missing.1",
+	] {
+		let reference = reference(SymbolKind::Event, name, "events");
+		assert_eq!(
+			table.events(&reference),
+			super::resolve_event_reference_targets(&index, &reference),
+			"event {name}"
+		);
+	}
 }

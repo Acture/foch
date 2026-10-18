@@ -10,10 +10,9 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::game::eu4::content::ScriptFileKind;
 use crate::game::eu4::script::emit::emit_clausewitz_statements;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
-use crate::game::eu4::script::{classify_script_file, script_container_scope_kind};
+use crate::game::eu4::script::script_container_scope_kind;
 use crate::model::{GamePath, ScopeKind};
 
 use super::ast_adapter::{AstAdapterError, synthetic_span};
@@ -34,7 +33,6 @@ pub(super) fn resolve_replaced_trigger_chains(
 ) -> Result<Option<Vec<AstFile>>, AstAdapterError> {
 	let mut walk = Walk {
 		file_path: &base.path,
-		file_kind: classify_script_file(&base.path),
 		scope_cache: HashMap::new(),
 		revisions: revisions.iter().map(|file| Cow::Borrowed(*file)).collect(),
 		rewritten: false,
@@ -52,7 +50,6 @@ pub(super) fn resolve_replaced_trigger_chains(
 
 struct Walk<'a> {
 	file_path: &'a GamePath,
-	file_kind: ScriptFileKind,
 	scope_cache: HashMap<Vec<String>, Option<ScopeKind>>,
 	revisions: Vec<Cow<'a, AstFile>>,
 	rewritten: bool,
@@ -82,7 +79,7 @@ impl Walk<'_> {
 			path.push(key.clone());
 			let scope_kind = *self.scope_cache.entry(path.clone()).or_insert_with(|| {
 				let refs = path.iter().map(String::as_str).collect::<Vec<_>>();
-				script_container_scope_kind(self.file_kind.clone(), self.file_path, &refs)
+				script_container_scope_kind(self.file_path, &refs)
 			});
 			let context = script_context(parent_context, key, scope_kind);
 			if context == ScriptContext::Trigger {

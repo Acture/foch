@@ -1,21 +1,17 @@
-pub mod param_contracts;
 pub mod report;
 pub mod rules;
 
-use self::param_contracts::evaluate_param_contract;
 use super::base::VanillaSymbolIndex;
 use super::content::eu4;
 use super::cwt::{is_schema_effect, is_schema_trigger};
 use super::scope::{should_flag_duplicates, should_flag_unresolved};
 use super::script::{
-	EFFECT_KEY_DEFINITION, TRIGGER_KEY_DEFINITION, build_inferred_callable_scope_map,
-	collect_inferred_callable_masks, effective_alias_scope_mask_with_overrides,
-	effective_scope_mask_with_overrides, resolve_cross_kind_reference_targets,
-	resolve_event_reference_targets, resolve_scripted_effect_reference_targets,
-	resolve_scripted_trigger_reference_targets,
+	EFFECT_KEY_DEFINITION, LOCALISATION_REFERENCE, SymbolTable, TRIGGER_KEY_DEFINITION,
+	build_inferred_callable_scope_map, collect_inferred_callable_masks,
+	effective_alias_scope_mask_with_overrides, effective_scope_mask_with_overrides,
 };
 use crate::model::{
-	AnalysisMode, Finding, FindingChannel, GamePath, GamePathBuf, ScopeSet, SemanticDiagnostics,
+	AnalysisMode, Finding, FindingChannel, GamePathBuf, ScopeSet, SemanticDiagnostics,
 	SemanticIndex, Severity, SymbolKind, base_scope,
 };
 use std::collections::{HashMap, HashSet};
@@ -70,7 +66,7 @@ const ANALYSIS_CHECKS: &[AnalysisCheck] = &[
 		run: run_duplicate_definitions_check,
 	},
 	AnalysisCheck {
-		rule_ids: &["unresolved-call-target"],
+		rule_ids: &["unresolved-call-target", "call-in-wrong-position"],
 		run: run_unresolved_call_targets_check,
 	},
 	AnalysisCheck {
@@ -243,6 +239,7 @@ fn check_unresolved_call_targets(
 	// type one (`treasurer = 2`). Each file's index records the names it
 	// defines, mods' included, stored lowercased to match the engine's
 	// case-insensitive keys.
+	let table = SymbolTable::new(index);
 	let mut definition_trigger_keys: HashSet<String> = HashSet::new();
 	let mut definition_effect_keys: HashSet<String> = HashSet::new();
 	for resource in &index.resource_references {
@@ -264,57 +261,33 @@ fn check_unresolved_call_targets(
 		// any target the call is satisfied. Handling Event before the main
 		// match keeps the per-kind dispatch focused on the multi-step
 		// scripted-effect / scripted-trigger logic below.
-		if reference.kind == SymbolKind::Event
-			&& !resolve_event_reference_targets(index, reference).is_empty()
-		{
+		if reference.kind == SymbolKind::Event && !table.events(reference).is_empty() {
 			continue;
 		}
-		match reference.kind {
-			SymbolKind::ScriptedEffect => {
-				if !resolve_scripted_effect_reference_targets(index, reference).is_empty()
-					|| definition_effect_keys.contains(&reference.name.to_ascii_lowercase())
-				{
-					continue;
-				}
-				// Cross-kind: effect reference might resolve to a trigger def
-				if !resolve_cross_kind_reference_targets(
-					index,
-					reference,
-					SymbolKind::ScriptedTrigger,
-				)
-				.is_empty()
-				{
-					continue;
-				}
-			}
-			SymbolKind::ScriptedTrigger => {
-				if !resolve_scripted_trigger_reference_targets(index, reference).is_empty() {
-					continue;
-				}
-				// Cross-kind: trigger reference might resolve to an effect def
-				if !resolve_cross_kind_reference_targets(
-					index,
-					reference,
-					SymbolKind::ScriptedEffect,
-				)
-				.is_empty()
-				{
-					continue;
-				}
-				if definition_trigger_keys.contains(&reference.name.to_ascii_lowercase()) {
-					continue;
-				}
-			}
-			_ => {}
+		// A key the schema declares names the engine's effect or trigger,
+		// and a scripted definition of that name where the index holds one.
+		if reference.schema_alias {
+			continue;
 		}
-		// The schema declares the engine's triggers and effects the
-		// built-in catalog may lack, such as `any_federation_members`.
-		let schema_declared = match reference.kind {
-			SymbolKind::ScriptedTrigger => is_schema_trigger(&reference.name),
-			SymbolKind::ScriptedEffect => is_schema_effect(&reference.name),
-			_ => false,
+		let lower_name = reference.name.to_ascii_lowercase();
+		let is_effect = || {
+			!table
+				.of_kind(index, reference, SymbolKind::ScriptedEffect)
+				.is_empty() || definition_effect_keys.contains(&lower_name)
+				|| is_schema_effect(&reference.name)
 		};
-		if schema_declared {
+		let is_trigger = || {
+			!table
+				.of_kind(index, reference, SymbolKind::ScriptedTrigger)
+				.is_empty() || definition_trigger_keys.contains(&lower_name)
+				|| is_schema_trigger(&reference.name)
+		};
+		let (resolves, other_kind) = match reference.kind {
+			SymbolKind::ScriptedEffect => (is_effect(), is_trigger()),
+			SymbolKind::ScriptedTrigger => (is_trigger(), is_effect()),
+			_ => (false, false),
+		};
+		if resolves {
 			continue;
 		}
 
@@ -327,6 +300,30 @@ fn check_unresolved_call_targets(
 			reference.name.as_str(),
 		);
 		if !seen.insert(dedup_key) {
+			continue;
+		}
+
+		if other_kind {
+			let (wanted, found) = match reference.kind {
+				SymbolKind::ScriptedTrigger => ("triggers", "an effect"),
+				_ => ("effects", "a trigger"),
+			};
+			findings.push(Finding {
+				rule_id: "call-in-wrong-position".to_string(),
+				severity: Severity::Error,
+				channel: FindingChannel::Strict,
+				message: format!(
+					"`{}` is {found}, written where {wanted} are",
+					reference.name
+				),
+				mod_id: Some(reference.mod_id.clone()),
+				path: Some(reference.path.clone()),
+				source_file: None,
+				evidence: None,
+				line: Some(reference.line),
+				column: Some(reference.column),
+				confidence: Some(0.95),
+			});
 			continue;
 		}
 
@@ -437,14 +434,17 @@ fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Fi
 }
 
 fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
+	let table = SymbolTable::new(index);
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for reference in &index.references {
-		if reference.kind != SymbolKind::ScriptedEffect {
+		// The schema checks the parameters of a key it declares itself.
+		if reference.kind != SymbolKind::ScriptedEffect || reference.schema_alias {
 			continue;
 		}
-		let targets = resolve_scripted_effect_reference_targets(index, reference);
-		let Some(def_idx) = targets.first().copied() else {
+		// The definition loaded last is the one the game runs.
+		let targets = table.scripted(index, reference, SymbolKind::ScriptedEffect);
+		let Some(def_idx) = targets.last().copied() else {
 			continue;
 		};
 		let Some(def) = index.definitions.get(def_idx) else {
@@ -457,19 +457,14 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 			.map(String::as_str)
 			.collect();
 		let optional: HashSet<&str> = def.optional_params.iter().map(String::as_str).collect();
-		let missing_messages = if let Some(contract) = def.param_contract.as_ref() {
-			evaluate_param_contract(contract, &reference.name, &provided)
-		} else {
-			def.required_params
-				.iter()
-				.filter(|required| {
-					!provided.contains(required.as_str()) && !optional.contains(required.as_str())
-				})
-				.map(|required| {
-					format!("unbound parameter: {} missing {}", reference.name, required)
-				})
-				.collect()
-		};
+		let missing_messages = def
+			.required_params
+			.iter()
+			.filter(|required| {
+				!provided.contains(required.as_str()) && !optional.contains(required.as_str())
+			})
+			.map(|required| format!("unbound parameter: {} missing {}", reference.name, required))
+			.collect::<Vec<_>>();
 		for message in missing_messages {
 			let dedup_key = (
 				reference.mod_id.as_str(),
@@ -755,6 +750,7 @@ fn templated_pattern_is_specific(prefix: &str, suffix: &str) -> bool {
 }
 
 fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
+	let table = SymbolTable::new(index);
 	let mut defined_flags: HashSet<(String, String)> = HashSet::new();
 	for (kind, flag) in ENGINE_SET_FLAGS {
 		defined_flags.insert(((*kind).to_string(), (*flag).to_string()));
@@ -868,7 +864,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 		if bindings.is_empty() {
 			continue;
 		}
-		for target in resolve_scripted_effect_reference_targets(index, reference) {
+		for target in table.scripted(index, reference, SymbolKind::ScriptedEffect) {
 			let Some(templates) = templated_flag_defs.get(&target) else {
 				if let Some(ref_templates) = templated_flag_refs.get(&target) {
 					for template in ref_templates {
@@ -1029,22 +1025,13 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
-	for usage in &index.scalar_assignments {
-		if path_disables_localisation_reference_check(&usage.path) {
+	for usage in &index.resource_references {
+		if usage.key != LOCALISATION_REFERENCE {
 			continue;
 		}
 		let Some(key) = normalized_static_symbol(usage.value.as_str()) else {
 			continue;
 		};
-		if !is_localisation_reference_key(usage.key.as_str(), key.as_str()) {
-			continue;
-		}
-		if is_non_localisation_literal(key.as_str()) {
-			continue;
-		}
-		if usage.key == "name" && !is_localisation_name_scope(index, usage.scope_id) {
-			continue;
-		}
 		if defined_keys.contains(key.as_str()) {
 			continue;
 		}
@@ -1066,7 +1053,7 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
 			source_file: None,
-			evidence: Some(format!("reference field {} = {}", usage.key, key)),
+			evidence: None,
 			line: Some(usage.line),
 			column: Some(usage.column),
 			confidence: Some(0.68),
@@ -1253,66 +1240,6 @@ fn normalized_static_symbol(value: &str) -> Option<String> {
 	}
 }
 
-fn is_localisation_reference_key(key: &str, value: &str) -> bool {
-	match key {
-		"tooltip" | "custom_tooltip" | "localisation_key" | "title" | "desc" => true,
-		"name" => looks_like_localisation_name(value),
-		_ => false,
-	}
-}
-
-/// Files whose `name`/`tooltip`/`title`/`desc` fields are structural identifiers
-/// (GUI element names, sprite names, customizable_localization macro IDs, map names),
-/// not Clausewitz localisation key references.
-fn path_disables_localisation_reference_check(path: &GamePath) -> bool {
-	if path
-		.extension()
-		.is_some_and(|ext| ext.eq_ignore_ascii_case("gui") || ext.eq_ignore_ascii_case("gfx"))
-	{
-		return true;
-	}
-	if path.iter().next().is_some_and(|top| {
-		matches!(
-			top,
-			"interface" | "gfx" | "map" | "tweakergui_assets" | "customizable_localization"
-		)
-	}) {
-		return true;
-	}
-	path.is_inside(&["common", "custom_gui"], str::eq)
-}
-
-/// Values that pass `is_localisation_reference_key` but are not loc keys:
-/// numeric template indices (`localisation_key = 0`, `custom_tooltip = 4`)
-/// and boolean tooltip toggles (`tooltip = yes`).
-fn is_non_localisation_literal(value: &str) -> bool {
-	if matches!(value, "yes" | "no") {
-		return true;
-	}
-	!value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
-}
-
-/// `name = X` is only a localisation key reference inside event option blocks.
-/// Elsewhere (`monarch`, `heir`, `leader`, `define_advisor`, decision/modifier
-/// `name` fields, mission slot names, etc.) it is a character first name or
-/// a script identifier.
-fn is_localisation_name_scope(index: &SemanticIndex, scope_id: usize) -> bool {
-	index
-		.scopes
-		.get(scope_id)
-		.is_some_and(|scope| scope.key == "option")
-}
-
-fn looks_like_localisation_name(value: &str) -> bool {
-	value.contains('.')
-		|| value.chars().any(|ch| ch.is_ascii_uppercase())
-		|| value.ends_with("_title")
-		|| value.ends_with("_desc")
-		|| value.ends_with("_tt")
-		|| value.ends_with("_tooltip")
-		|| value.ends_with("_localization")
-}
-
 fn is_alias_visible(index: &SemanticIndex, mut scope_id: usize, alias: &str) -> bool {
 	loop {
 		let Some(scope) = index.scopes.get(scope_id) else {
@@ -1334,38 +1261,8 @@ fn symbol_kind_text(kind: SymbolKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-	use super::{ANALYSIS_CHECKS, path_disables_localisation_reference_check};
-	use crate::model::GamePath;
+	use super::ANALYSIS_CHECKS;
 	use std::collections::HashSet;
-
-	/// The verdicts the `split('/')`/`starts_with` text checks gave: the
-	/// extension compares ignoring ASCII case, directory names as spelled.
-	#[test]
-	fn localisation_reference_checks_skip_interface_and_map_content() {
-		for (path, disabled) in [
-			("interface/x.gui", true),
-			("common/x.GFX", true),
-			("interface", true),
-			("gfx/x.txt", true),
-			("map/x.txt", true),
-			("tweakergui_assets/x.txt", true),
-			("customizable_localization/x.txt", true),
-			("common/custom_gui/x.txt", true),
-			("common/custom_gui", false),
-			("common/Custom_Gui/x.txt", false),
-			("Map/x.txt", false),
-			("common/ideas/x.txt", false),
-			("events/x.txt", false),
-		] {
-			assert_eq!(
-				path_disables_localisation_reference_check(
-					GamePath::new(path).expect("valid game path")
-				),
-				disabled,
-				"{path}"
-			);
-		}
-	}
 
 	#[test]
 	fn analysis_checks_keep_explicit_order() {
@@ -1378,6 +1275,7 @@ mod tests {
 			[
 				"cross-mod-overshadow",
 				"unresolved-call-target",
+				"call-in-wrong-position",
 				"invisible-scope-alias",
 				"missing-effect-parameter",
 				"unknown-scope-type",

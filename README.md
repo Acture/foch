@@ -331,21 +331,19 @@ library at build time; ordinary merges do not require Python or Ghidra.
 Run the module's tests without Ghidra using
 `uv run --directory src/tools/eu4-analysis python -m unittest discover -s tests`.
 
-The same module's `builtins` command builds a candidate builtin symbol catalog
-from local CWT and wiki snapshots. It requires no Ghidra session. Supply explicit
-wiki files and an output destination; the CWT input defaults to the vendored
-snapshot. Relative arguments below are resolved from the tool directory:
+The same module's `builtins` command writes the builtin keyword catalog: the
+reserved, contextual and alias script keywords and the base scope names. It
+requires no Ghidra session and reads no external sources, since triggers,
+effects and scope changers come from the CWT schema. A relative `--output` is
+resolved from the tool directory:
 
 ```fish
 uv run --directory src/tools/eu4-analysis python -m eu4_analysis builtins \
-	--wiki-effects /path/to/effects.md --wiki-conditions /path/to/conditions.md \
-	--wiki-scope /path/to/scope.md --output /tmp/eu4_builtin_catalog.json
+	--output /tmp/eu4_builtin_catalog.json
 ```
 
-`--irony-readme` adds optional source context. Game scanning is opt-in through
-`--game-root`; `--max-game-files` bounds that scan. Review the candidate before
-replacing `src/packages/foch/src/game/eu4/base/data/eu4_builtin_catalog.json`.
-Generation does not download sources or modify installed game files.
+Review the candidate before replacing
+`src/packages/foch/src/game/eu4/base/data/eu4_builtin_catalog.json`.
 
 ## Repository maintenance tools
 

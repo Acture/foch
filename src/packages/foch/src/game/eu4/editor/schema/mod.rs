@@ -19,6 +19,7 @@ use crate::game::schema::{CwtLoadStatus, CwtSchema};
 use crate::model::{GamePath, LocalisationDefinition, Severity};
 
 pub(crate) use interpret::{schema_definitions, schema_shape_violations};
+pub(crate) use workspace::complex_enum_file_values;
 pub use workspace::{SchemaDocument, SchemaWorkspace};
 
 /// A zero-based source position suitable for editor protocols.

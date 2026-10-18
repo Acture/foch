@@ -1,12 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
-use crate::game::eu4::content::{
-	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
-};
+use crate::game::eu4::content::{BooleanMergePolicy, DivergentBlockPolicy, MergePolicies};
 use crate::game::eu4::cwt::rule_engine;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
-use crate::game::eu4::script::{classify_script_file, script_container_scope_kind};
+use crate::game::eu4::script::script_container_scope_kind;
 use crate::game::schema::query::CwtQuery;
 use crate::merge::kernel::{
 	ConflictKind, ConflictResolution, MergeOutcome, MergeRevision, NormalizedTree, RevisionId,
@@ -597,10 +595,8 @@ fn canonicalize_boolean_or_definitions(
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
 ) -> AstFile {
 	let mut file = file.clone();
-	let file_kind = classify_script_file(&file.path);
 	BooleanConditionTransformer {
 		file_path: &file.path,
-		file_kind: &file_kind,
 		policies,
 		transform: BooleanTransform::Canonicalize,
 		scope_cache,
@@ -614,10 +610,8 @@ fn simplify_boolean_or_definitions(
 	policies: &MergePolicies,
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
 ) {
-	let file_kind = classify_script_file(&file.path);
 	BooleanConditionTransformer {
 		file_path: &file.path,
-		file_kind: &file_kind,
 		policies,
 		transform: BooleanTransform::Simplify,
 		scope_cache,
@@ -640,7 +634,6 @@ enum BooleanTransform {
 
 struct BooleanConditionTransformer<'a> {
 	file_path: &'a GamePath,
-	file_kind: &'a ScriptFileKind,
 	policies: &'a MergePolicies,
 	transform: BooleanTransform,
 	scope_cache: &'a mut HashMap<Vec<String>, Option<ScopeKind>>,
@@ -666,11 +659,7 @@ impl BooleanConditionTransformer<'_> {
 			path.push(key.clone());
 			let scope_kind = *self.scope_cache.entry(path.clone()).or_insert_with(|| {
 				let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
-				script_container_scope_kind(
-					self.file_kind.clone(),
-					self.file_path,
-					path_refs.as_slice(),
-				)
+				script_container_scope_kind(self.file_path, path_refs.as_slice())
 			});
 			let context = script_context(parent_context, key, scope_kind);
 			let configured_definition = path.len() == 1
@@ -751,14 +740,7 @@ pub(super) fn script_context(
 		Some(ScopeKind::Effect | ScopeKind::ScriptedEffect | ScopeKind::Event) => {
 			ScriptContext::Effect
 		}
-		Some(
-			ScopeKind::File
-			| ScopeKind::Decision
-			| ScopeKind::Loop
-			| ScopeKind::AliasBlock
-			| ScopeKind::Block,
-		)
-		| None => parent,
+		Some(ScopeKind::File | ScopeKind::Block) | None => parent,
 	}
 }
 

@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod bind;
 pub(crate) mod cache;
 pub(crate) mod compile;
 pub(crate) mod error;
