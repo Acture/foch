@@ -137,22 +137,46 @@ impl NWayCorrespondence {
 
 		let matcher_started = Instant::now();
 		let matcher = TreeMatcher::default();
+		// Most revisions of a definition are the same tree: every mod that
+		// leaves it alone reads it as the base does. The matcher is a function
+		// of its trees and seed, so each distinct tree is matched once, and
+		// each pair of distinct trees once, instead of each pair of revisions.
+		let mut distinct = Vec::<&NormalizedTree>::new();
+		let tree_class = revisions
+			.iter()
+			.map(|revision| {
+				distinct
+					.iter()
+					.position(|tree| same_tree(tree, revision.tree))
+					.unwrap_or_else(|| {
+						distinct.push(revision.tree);
+						distinct.len() - 1
+					})
+			})
+			.collect::<Vec<_>>();
+		let base_matchings = distinct
+			.iter()
+			.map(|tree| matcher.match_trees(base, tree))
+			.collect::<Vec<_>>();
 		let mut matchings = BTreeMap::new();
-		for revision in revisions {
+		for (revision, &class) in revisions.iter().zip(&tree_class) {
 			matchings.insert(
 				(RevisionId::BASE, revision.id),
-				matcher.match_trees(base, revision.tree),
+				base_matchings[class].clone(),
 			);
 		}
+		let mut pair_matchings = BTreeMap::<(usize, usize), Matching>::new();
 		for (left_index, left) in revisions.iter().enumerate() {
-			for right in &revisions[left_index + 1..] {
-				let left_base = &matchings[&(RevisionId::BASE, left.id)];
-				let right_base = &matchings[&(RevisionId::BASE, right.id)];
-				let seed = Matching::compose_through_base(left_base, right_base);
-				matchings.insert(
-					(left.id, right.id),
-					matcher.match_trees_with_seed(left.tree, right.tree, Some(&seed)),
-				);
+			for (right_index, right) in revisions.iter().enumerate().skip(left_index + 1) {
+				let classes = (tree_class[left_index], tree_class[right_index]);
+				let matching = pair_matchings.entry(classes).or_insert_with(|| {
+					let seed = Matching::compose_through_base(
+						&base_matchings[classes.0],
+						&base_matchings[classes.1],
+					);
+					matcher.match_trees_with_seed(left.tree, right.tree, Some(&seed))
+				});
+				matchings.insert((left.id, right.id), matching.clone());
 			}
 		}
 		let matcher_ns = nanos(matcher_started.elapsed());
@@ -1244,6 +1268,13 @@ fn build_class_facts(
 			)
 		})
 		.collect()
+}
+
+/// Whether two trees are equal, checking the root's subtree hash first.
+fn same_tree(left: &NormalizedTree, right: &NormalizedTree) -> bool {
+	let root_hash =
+		|tree: &NormalizedTree| tree.node(tree.root()).ok().map(|root| root.subtree_hash);
+	root_hash(left) == root_hash(right) && left == right
 }
 
 fn nanos(duration: Duration) -> u64 {
