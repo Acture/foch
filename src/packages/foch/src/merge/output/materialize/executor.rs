@@ -6,7 +6,7 @@
 //! analyze, so the number of workers changes when a unit is analyzed, never
 //! what is written or in which order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -353,10 +353,30 @@ fn coordinate<T: Send>(
 	let mut finished: BTreeMap<usize, thread::Result<T>> = BTreeMap::new();
 	let mut in_flight: BTreeMap<usize, (usize, Instant, Arc<UnitProgress>)> = BTreeMap::new();
 	let mut last_slow_report: Instant = Instant::now();
+	// The largest units start first. Applied in plan order, a large unit late
+	// in the plan otherwise starts only when the window reaches it, and holds
+	// the window full while every other worker waits for it.
+	let mut dispatched_early: BTreeSet<usize> = BTreeSet::new();
+	for (index, estimate) in largest_units(schedule) {
+		if unfinished_bytes > 0
+			&& unfinished_bytes.saturating_add(estimate) > schedule.memory_budget
+		{
+			continue;
+		}
+		jobs.send(index).map_err(|_| workers_exited())?;
+		unfinished_estimates.insert(index, estimate);
+		unfinished_bytes = unfinished_bytes.saturating_add(estimate);
+		outstanding += 1;
+		dispatched_early.insert(index);
+	}
 	while next_apply < schedule.count {
 		// Checked before every unit is applied, as the serial loop does.
 		cancellation.check()?;
 		while next_dispatch < schedule.count && outstanding < window {
+			if dispatched_early.contains(&next_dispatch) {
+				next_dispatch += 1;
+				continue;
+			}
 			if !(schedule.runs_here)(next_dispatch) {
 				let estimate: u64 = match waiting_estimate {
 					Some((index, estimate)) if index == next_dispatch => estimate,
@@ -441,6 +461,18 @@ fn coordinate<T: Send>(
 		}
 	}
 	Ok(())
+}
+
+/// The worker-run units with the largest estimates, one per worker, largest
+/// first, with their estimates.
+fn largest_units(schedule: &UnitSchedule<'_>) -> Vec<(usize, u64)> {
+	let mut units = (0..schedule.count)
+		.filter(|&index| !(schedule.runs_here)(index))
+		.map(|index| (index, (schedule.estimate)(index)))
+		.collect::<Vec<_>>();
+	units.sort_by_key(|&(index, estimate)| (std::cmp::Reverse(estimate), index));
+	units.truncate(schedule.workers.get());
+	units
 }
 
 /// Print the units that have run for a long time, oldest first. Returns
@@ -981,13 +1013,13 @@ mod tests {
 		let gate: Gate = Gate::default();
 		let second_saw_first_finished: Mutex<Option<bool>> = Mutex::new(None);
 		let analyze = |index: usize| -> usize {
-			enter(&gate, index);
-			if index == 0 {
-				// Unit one would fit a worker at once, but not the budget.
+			let (started_before, _) = enter(&gate, index);
+			if started_before == 0 {
+				// The other unit would fit a worker at once, but not the budget.
 				thread::sleep(EXTRA_WORK_WINDOW);
 			} else {
 				*second_saw_first_finished.lock().unwrap() =
-					Some(gate.lock().finished.contains(&0));
+					Some(gate.lock().finished.contains(&(1 - index)));
 			}
 			exit(&gate, index);
 			index
@@ -1042,8 +1074,49 @@ mod tests {
 		let (started_before, running, started_after) =
 			large_unit.lock().unwrap().expect("the large unit ran");
 		assert_eq!(running, 0, "the large unit started beside another");
-		assert_eq!(started_before, 2);
-		assert_eq!(started_after, 3, "a unit started beside the large one");
+		assert_eq!(
+			started_after,
+			started_before + 1,
+			"a unit started beside the large one"
+		);
+		assert_eq!(applied, vec![0, 1, 2, 3, 4]);
+	}
+
+	#[test]
+	fn the_largest_units_start_first_and_apply_in_plan_order() {
+		let gate: Gate = Gate::default();
+		let analyze = |index: usize| -> usize {
+			enter(&gate, index);
+			if index >= 3 {
+				// Hold both workers until the two large units are running.
+				gate.wait_until(|progress| progress.started >= 2);
+			}
+			exit(&gate, index);
+			index
+		};
+		let estimates: [u64; 5] = [1, 1, 1, 50, 40];
+		let mut applied: Vec<usize> = Vec::new();
+		run_guarded(
+			&UnitSchedule {
+				estimate: &|index| estimates[index],
+				..schedule(5, 2)
+			},
+			&analyze,
+			&mut not_here,
+			&mut |index, _| {
+				applied.push(index);
+				Ok(())
+			},
+		)
+		.unwrap();
+		let progress = gate.lock();
+		assert!(!progress.timed_out);
+		let mut first = progress.threads[..2].to_vec();
+		first.sort();
+		assert_eq!(
+			first,
+			vec![Some("enter 3".to_string()), Some("enter 4".to_string())]
+		);
 		assert_eq!(applied, vec![0, 1, 2, 3, 4]);
 	}
 
