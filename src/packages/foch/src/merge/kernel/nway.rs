@@ -313,7 +313,13 @@ impl NWayCorrespondence {
 			&NWaySelectionOverrides::default(),
 			&mut plan,
 		);
-		assign_nway_children(base, revisions, self, &mut plan);
+		assign_nway_children(
+			base,
+			revisions,
+			self,
+			&crate::merge::kernel::ConservativeMergePolicy,
+			&mut plan,
+		);
 		plan
 	}
 
@@ -332,7 +338,7 @@ impl NWayCorrespondence {
 		apply_selection_overrides(&mut plan, overrides, self);
 		let policy_ns = nanos(policy_started.elapsed());
 		assign_nway_parents(base, revisions, self, overrides, &mut plan);
-		assign_nway_children(base, revisions, self, &mut plan);
+		assign_nway_children(base, revisions, self, policy, &mut plan);
 		(plan, policy_ns)
 	}
 
@@ -509,6 +515,7 @@ fn assign_nway_children(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
 	correspondence: &NWayCorrespondence,
+	policy: &dyn crate::merge::kernel::MergePolicy,
 	plan: &mut NWaySelectionPlan,
 ) {
 	let live_classes = plan
@@ -567,6 +574,7 @@ fn assign_nway_children(
 				ChildCardinality::ExactlyOne => required_slot_nway_child(
 					base,
 					revisions,
+					policy,
 					parent,
 					&base_sequence,
 					&revision_sequences,
@@ -639,6 +647,7 @@ fn assign_nway_children(
 fn required_slot_nway_child(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
+	policy: &dyn crate::merge::kernel::MergePolicy,
 	parent: ClassId,
 	base_sequence: &[ClassId],
 	revision_sequences: &[Vec<ClassId>],
@@ -692,6 +701,26 @@ fn required_slot_nway_child(
 		selection.parent = Some(parent);
 	}
 
+	if let Some(synthesis) = combined_slot_value(
+		base,
+		revisions,
+		policy,
+		selected_parent_node,
+		&candidates,
+		plan,
+	) {
+		for candidate in &candidates {
+			if *candidate != tentative {
+				plan.policy_excluded.insert(*candidate);
+			}
+		}
+		plan.classes
+			.get_mut(&tentative)
+			.expect("every required-slot child has a selection record")
+			.scalar_synthesis = Some(synthesis);
+		return vec![tentative];
+	}
+
 	let child_sources = candidates
 		.iter()
 		.copied()
@@ -733,6 +762,41 @@ fn required_slot_nway_child(
 	conflict.semantic_path = class_common_policy_path(base, revisions, parent_class);
 	plan.conflicts.push(conflict);
 	vec![tentative]
+}
+
+/// The value a policy combines the revisions' different values of one slot
+/// into, in load order.
+fn combined_slot_value(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	policy: &dyn crate::merge::kernel::MergePolicy,
+	parent: &NormalizedNode,
+	candidates: &BTreeSet<ClassId>,
+	plan: &NWaySelectionPlan,
+) -> Option<NWayScalarSynthesis> {
+	let mut values = candidates
+		.iter()
+		.map(|class| plan.classes[class].selected)
+		.collect::<Option<Vec<_>>>()?;
+	values.sort_by_key(|source| source.revision);
+	let nodes = values
+		.iter()
+		.map(|source| {
+			tree_for_revision(base, revisions, source.revision)
+				.node(source.node)
+				.unwrap()
+		})
+		.collect::<Vec<_>>();
+	let output = policy.combine_slot_values(parent, &nodes)?;
+	Some(NWayScalarSynthesis {
+		reducer_path: parent.policy_path.clone(),
+		inputs: values
+			.iter()
+			.zip(&nodes)
+			.map(|(source, node)| (source.revision, node.value.clone().unwrap_or_default()))
+			.collect(),
+		output,
+	})
 }
 
 fn class_child_sequence(

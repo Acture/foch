@@ -3498,6 +3498,61 @@ fn every_mods_added_condition_survives_in_a_trigger() {
 }
 
 #[test]
+fn a_tooltip_mods_set_differently_shows_every_version() {
+	let path = "common/custom_gui/buttons.txt";
+	let base = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = BASE_TT\n}\n",
+	);
+	let key = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = LEFT_TT\n}\n",
+	);
+	let text = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = \"written\"\n}\n",
+	);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&key, &text], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("tooltips combine"));
+	let combined = crate::merge::combined_text::keys_in(&output);
+	assert_eq!(combined.len(), 1, "{output}");
+	assert_eq!(
+		crate::merge::combined_text::versions(&combined[0]).unwrap(),
+		["LEFT_TT", "written"]
+	);
+}
+
+#[test]
+fn a_tooltip_two_mods_add_differently_shows_both() {
+	let path = "common/custom_gui/buttons.txt";
+	let base = parse_at(path, "custom_button = {\n\tname = b\n}\n");
+	let left = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = LEFT_TT\n}\n",
+	);
+	let right = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = RIGHT_TT\n}\n",
+	);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("tooltips combine"));
+	let combined = crate::merge::combined_text::keys_in(&output);
+	assert_eq!(combined.len(), 1, "{output}");
+	assert_eq!(
+		crate::merge::combined_text::versions(&combined[0]).unwrap(),
+		["LEFT_TT", "RIGHT_TT"]
+	);
+}
+
+#[test]
 fn two_mods_appending_guarded_branches_keep_both() {
 	let path = "common/scripted_effects/preview.txt";
 	let branch = |key: &str| {

@@ -590,6 +590,16 @@ pub(crate) fn materialize_with_adaptations(
 			&mut report,
 		);
 	}
+	if let Some(localisation_path) =
+		write_combined_text_localisation(&input, out_dir, &generated_paths)?
+	{
+		record_counted_generated_output(
+			&localisation_path,
+			&mut generated_paths,
+			&mut counted_generated_paths,
+			&mut report,
+		);
+	}
 	let mod_diff_cache_stats = crate::merge::address_patch::cache::mod_diff_cache_stats();
 	let dag_base_cache_stats = crate::merge::address_patch::cache::dag_base_cache_stats();
 	eprintln!(
@@ -1552,6 +1562,68 @@ fn derived_memory_budget() -> u64 {
 	};
 	let resident: u64 = crate::platform::memory::resident_bytes().unwrap_or(0);
 	(physical / 100 * MERGE_MEMORY_SHARE_PERCENT).saturating_sub(resident)
+}
+
+/// The text of every combined key the written scripts name, in each
+/// language, read from the playset's localisation as the game loads it.
+fn write_combined_text_localisation(
+	input: &ResolvedInput,
+	out_dir: &Path,
+	generated_paths: &BTreeSet<GamePathBuf>,
+) -> Result<Option<GamePathBuf>, MergeError> {
+	let mut keys = BTreeSet::new();
+	for path in generated_paths {
+		if !path.as_str().ends_with(".txt") {
+			continue;
+		}
+		let Ok(bytes) = fs::read(path.to_path(out_dir)) else {
+			continue;
+		};
+		keys.extend(crate::merge::combined_text::keys_in(
+			&String::from_utf8_lossy(&bytes),
+		));
+	}
+	if keys.is_empty() {
+		return Ok(None);
+	}
+	let mut files = Vec::new();
+	for (path, contributors) in &input.file_inventory {
+		if !(path.as_str().starts_with("localisation/") && path.as_str().ends_with(".yml")) {
+			continue;
+		}
+		for contributor in contributors {
+			let bytes = match input
+				.script_cache
+				.overlay_bytes(&contributor.mod_id, &contributor.relative_path)
+			{
+				Some(bytes) => bytes.to_vec(),
+				None => fs::read(contributor.absolute_path())?,
+			};
+			files.push((contributor.precedence, bytes));
+		}
+	}
+	// Highest precedence first: the first definition of a key wins.
+	files.sort_by_key(|(precedence, _)| std::cmp::Reverse(*precedence));
+	let mut texts = crate::game::eu4::derived_localisation::EffectiveLocalisation::default();
+	for (_, bytes) in &files {
+		texts.add_file(bytes);
+	}
+	let keys = keys.into_iter().collect::<Vec<_>>();
+	let bytes = crate::merge::combined_text::render_localisation(&keys, &texts);
+	let digest = blake3::hash(&bytes).to_hex();
+	let relative_path =
+		GamePathBuf::try_from(format!("localisation/foch_text_{}.yml", &digest[..16])).map_err(
+			|error| MergeError::Validation {
+				subject: None,
+				message: format!("combined text localisation has no game path: {error}"),
+			},
+		)?;
+	let target = relative_path.to_path(out_dir);
+	if let Some(parent) = target.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	fs::write(target, bytes)?;
+	Ok(Some(relative_path))
 }
 
 fn record_counted_generated_output(

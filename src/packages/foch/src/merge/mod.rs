@@ -6,6 +6,7 @@ pub(crate) mod analyze;
 mod architecture_tests;
 pub(crate) mod backend;
 pub(crate) mod boolean;
+pub(crate) mod combined_text;
 mod commit;
 pub(crate) mod error;
 pub(crate) mod gui;

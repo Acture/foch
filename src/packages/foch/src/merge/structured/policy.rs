@@ -406,6 +406,17 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		{
 			return PolicyDecision::Unresolved;
 		}
+		// Text the game shows reads every version where mods differ.
+		if first
+			.policy_path
+			.last()
+			.is_some_and(|field| crate::merge::combined_text::is_text_field(field))
+			&& changed.len() >= 2
+			&& let Some(output) = crate::merge::combined_text::combine(
+				changed.iter().filter_map(|view| view.node.value.as_deref()),
+			) {
+			return PolicyDecision::SynthesizeScalar(output);
+		}
 		// A bound such as `Max` weighs an unchanged copy, since keeping the
 		// stronger value is the rule. A sum must not: the copy of a revision
 		// that left the value as the base has it would count the base again.
@@ -438,6 +449,22 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		} else {
 			PolicyDecision::Unresolved
 		}
+	}
+
+	fn combine_slot_values(
+		&self,
+		parent: &crate::merge::kernel::NormalizedNode,
+		values: &[&crate::merge::kernel::NormalizedNode],
+	) -> Option<String> {
+		let field = parent.policy_path.last()?;
+		if !crate::merge::combined_text::is_text_field(field)
+			|| !values.iter().all(|value| is_scalar_node(value))
+		{
+			return None;
+		}
+		crate::merge::combined_text::combine(
+			values.iter().filter_map(|value| value.value.as_deref()),
+		)
 	}
 
 	fn permits_ancestor_closure(&self, node: &crate::merge::kernel::NormalizedNode) -> bool {
