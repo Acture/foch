@@ -68,6 +68,11 @@ pub(crate) trait ClausewitzTreePolicy {
 		false
 	}
 
+	/// How a file's top-level statements are ordered.
+	fn file_child_order(&self) -> ChildOrder {
+		ChildOrder::Ordered
+	}
+
 	fn block_child_order(&self, _assignment_key: Option<&str>) -> ChildOrder {
 		match _assignment_key {
 			Some("OR") => ChildOrder::Commutative,
@@ -122,6 +127,14 @@ impl<'a> ContentFamilyMergePolicy<'a> {
 }
 
 impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
+	fn file_child_order(&self) -> ChildOrder {
+		if self.policies.unordered_definitions {
+			ChildOrder::Commutative
+		} else {
+			ChildOrder::Ordered
+		}
+	}
+
 	fn prepare(&self, file: &crate::game::eu4::script::parser::AstFile) {
 		if let Some(SchemaReading(schema)) = self.schema {
 			super::weights::prepare(schema, file);

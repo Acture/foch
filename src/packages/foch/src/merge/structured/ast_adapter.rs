@@ -107,7 +107,7 @@ pub(crate) fn normalize_ast_with_findings(
 		FILE_KIND,
 		None,
 		None,
-		ChildOrder::Ordered,
+		policy.file_child_order(),
 		ChildCardinality::Many,
 		children,
 	))?;

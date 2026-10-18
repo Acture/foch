@@ -307,6 +307,12 @@ pub struct MergePolicies {
 	/// re-ship the field. Game-logic families keep edit-vs-remove as a conflict.
 	#[serde(default)]
 	pub edit_wins_over_remove: bool,
+	/// The top-level statements of a file are definitions read by their keys,
+	/// in no order, as in a definition module: repeated keyed entries such as
+	/// `custom_button = { name = ... }` written in another order by another
+	/// mod are not reordered.
+	#[serde(default)]
+	pub unordered_definitions: bool,
 }
 
 impl MergePolicies {
@@ -961,6 +967,7 @@ impl ContentFamilyDescriptor {
 				divergent_block_rules: &[],
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
+				unordered_definitions: false,
 			},
 			schema_directory: None,
 		}
@@ -1001,6 +1008,7 @@ impl ContentFamilyDescriptor {
 				divergent_block_rules: &[],
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
+				unordered_definitions: false,
 			},
 			schema_directory: None,
 		}

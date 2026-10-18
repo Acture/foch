@@ -567,7 +567,8 @@ fn run_semantic_definition_module_engine(
 	resolution_map: &crate::project::ResolutionMap,
 ) -> Result<SemanticDagMergeComputation, MergeError> {
 	let mut handler = automatic_conflict_handler(target_path, context, resolution_map);
-	let effective_policies = effective_merge_policies(context);
+	let mut effective_policies = effective_merge_policies(context);
+	effective_policies.unordered_definitions = true;
 	compute_dag_merge_from_parsed(
 		context.entity_transform,
 		&views.file_dag,
