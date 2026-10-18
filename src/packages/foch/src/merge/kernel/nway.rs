@@ -52,6 +52,9 @@ pub struct NWayClassFacts {
 	pub moved: SourceSet,
 	pub reordered: SourceSet,
 	pub deleted_by: Vec<RevisionId>,
+	/// Whether the class is kept for a change over a deletion that removed
+	/// it whole, so what is inside it merges as the base had it.
+	pub kept_over_deletion: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -374,15 +377,17 @@ impl NWayCorrespondence {
 					&mut plan.conflicts,
 				),
 			};
-			// A delete-modify keeps the modifying revision's whole subtree until it
-			// is resolved: its unmodified descendants were deleted only as part of
-			// the deleted ancestor, so deleting them alone would leave a partial node.
-			let subtree_selected = selected.is_some() && !facts.deleted_by.is_empty();
 			plan.classes.insert(
 				class.id,
 				NWayClassSelection {
 					selected,
-					subtree_selected,
+					// A delete-modify the merge cannot keep open keeps the
+					// modifying revision's whole subtree until it is resolved:
+					// deleting its unmodified descendants alone would leave a
+					// partial node.
+					subtree_selected: selected.is_some()
+						&& !facts.deleted_by.is_empty()
+						&& !facts.kept_over_deletion,
 					scalar_synthesis: None,
 					child_revision: None,
 					sources,
@@ -1228,7 +1233,7 @@ fn build_class_facts(
 			(revision, moved, reordered)
 		})
 		.collect::<Vec<_>>();
-	classes
+	let mut facts = classes
 		.classes()
 		.map(|class| {
 			let base_node = class.get(RevisionId::BASE);
@@ -1271,11 +1276,128 @@ fn build_class_facts(
 					moved,
 					reordered,
 					deleted_by,
+					kept_over_deletion: false,
 				},
 			)
 		})
-		.collect()
+		.collect::<BTreeMap<_, _>>();
+	keep_changes_inside_kept_deletions(base, revisions, classes, &mut facts);
+	facts
 }
+
+/// A part one mod deletes and another changes is kept for the change, and
+/// so is everything in it as the base had it: the deleting mod removed it
+/// only by removing the whole part, which no longer happens. What a changing
+/// mod deleted inside it stays deleted, and every mod's changes inside it
+/// merge as anywhere else. A mod that wrote another control-flow chain in
+/// the place of a chain replaced it instead: both chains would run, so the
+/// two versions stay a conflict.
+fn keep_changes_inside_kept_deletions(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	classes: &ClassMapping,
+	facts: &mut BTreeMap<ClassId, NWayClassFacts>,
+) {
+	// Each base node with the deletions it is kept over, and the revisions
+	// that replaced one of its ancestors, whose deletions inside stand.
+	let mut pending = vec![(
+		base.root(),
+		BTreeSet::<RevisionId>::new(),
+		BTreeSet::<RevisionId>::new(),
+	)];
+	while let Some((node, mut overridden, mut replaced)) = pending.pop() {
+		if let Some(class) = classes.class_for(RevisionNode::new(RevisionId::BASE, node))
+			&& let Some(facts) = facts.get_mut(&class)
+		{
+			facts
+				.deleted_by
+				.retain(|revision| !overridden.contains(revision));
+			let changed = !facts.subtree_changed.is_empty()
+				|| !facts.moved.is_empty()
+				|| !facts.reordered.is_empty();
+			if changed && !facts.deleted_by.is_empty() {
+				let replacing = facts
+					.deleted_by
+					.iter()
+					.copied()
+					.filter(|revision| {
+						replaced.contains(revision)
+							|| replaced_in(base, revisions, classes, node, *revision)
+					})
+					.collect::<Vec<_>>();
+				if replacing.is_empty() {
+					overridden.extend(facts.deleted_by.iter().copied());
+					facts.kept_over_deletion = true;
+				} else {
+					replaced.extend(replacing);
+				}
+			}
+		}
+		for child in &base.node(node).unwrap().children {
+			pending.push((*child, overridden.clone(), replaced.clone()));
+		}
+	}
+}
+
+/// Whether a revision that lacks a base control-flow chain wrote a new chain
+/// under the same parent.
+fn replaced_in(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	classes: &ClassMapping,
+	node: crate::merge::kernel::NodeId,
+	revision: RevisionId,
+) -> bool {
+	let base_node = base.node(node).unwrap();
+	let Some(parent) = base_node
+		.parent
+		.filter(|_| base_node.kind.starts_with(CONTROL_FLOW_CHAIN))
+	else {
+		return false;
+	};
+	let Some(tree) = revisions
+		.iter()
+		.find(|candidate| candidate.id == revision)
+		.map(|revision| revision.tree)
+	else {
+		return false;
+	};
+	let Some(parent_in_revision) = classes
+		.class_for(RevisionNode::new(RevisionId::BASE, parent))
+		.and_then(|class| classes.class(class).get(revision))
+	else {
+		return false;
+	};
+	// The new chain stands where the base one did: between the same
+	// neighbours. A chain added elsewhere beside an edited one is an addition.
+	let class_at =
+		|revision: RevisionId, siblings: &[crate::merge::kernel::NodeId], index: Option<usize>| {
+			index
+				.and_then(|index| siblings.get(index))
+				.and_then(|node| classes.class_for(RevisionNode::new(revision, *node)))
+		};
+	let base_siblings = &base.node(parent).unwrap().children;
+	let position = base_siblings
+		.iter()
+		.position(|sibling| *sibling == node)
+		.expect("a node is among its parent's children");
+	let before = class_at(RevisionId::BASE, base_siblings, position.checked_sub(1));
+	let after = class_at(RevisionId::BASE, base_siblings, Some(position + 1));
+	let siblings = &tree.node(parent_in_revision).unwrap().children;
+	siblings.iter().enumerate().any(|(index, child)| {
+		tree.node(*child)
+			.unwrap()
+			.kind
+			.starts_with(CONTROL_FLOW_CHAIN)
+			&& classes
+				.class_for(RevisionNode::new(revision, *child))
+				.is_some_and(|class| classes.class(class).get(RevisionId::BASE).is_none())
+			&& class_at(revision, siblings, index.checked_sub(1)) == before
+			&& class_at(revision, siblings, Some(index + 1)) == after
+	})
+}
+
+const CONTROL_FLOW_CHAIN: &str = "clausewitz.control_flow.chain:";
 
 /// The anchor namespace of a statement the schema lets a block repeat, such
 /// as a trigger in an `OR` or an effect in an effect block.
@@ -1300,9 +1422,12 @@ fn separate_divergent_additions(
 		|tree: &NormalizedTree, base: &Matching, node: crate::merge::kernel::NodeId| {
 			base.get_from_right(node).is_none()
 				&& tree.node(node).is_ok_and(|node| {
-					node.anchor
-						.as_ref()
-						.is_some_and(|anchor| anchor.namespace == REPEATABLE_STATEMENT)
+					// A control-flow chain is a statement a block repeats too.
+					node.kind.starts_with(CONTROL_FLOW_CHAIN)
+						|| node
+							.anchor
+							.as_ref()
+							.is_some_and(|anchor| anchor.namespace == REPEATABLE_STATEMENT)
 				})
 		};
 	let separated = matching

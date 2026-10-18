@@ -3608,20 +3608,21 @@ mod tests {
 			.position(|revision| revision.source_id == source_id)
 			.map(|index| RevisionId::new(u16::try_from(index + 1).unwrap()))
 			.expect("requested source belongs to input");
+		// A deletion is chosen where the deleted part is in conflict; what
+		// the other mods disagree on inside it goes with it.
 		probe
 			.conflicts
 			.iter()
-			.map(|conflict| {
+			.filter_map(|conflict| {
 				let selected = conflict
 					.candidates
 					.iter()
 					.copied()
-					.find(|candidate| candidate.input().revision == revision)
-					.expect("requested source is an exact conflict candidate");
-				(
+					.find(|candidate| candidate.input().revision == revision)?;
+				Some((
 					conflict.id,
 					conflict.select(selected).expect("valid exact selection"),
-				)
+				))
 			})
 			.collect()
 	}
