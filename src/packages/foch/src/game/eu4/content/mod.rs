@@ -318,6 +318,11 @@ pub struct MergePolicies {
 	/// ordering conflict. The load-order default turns this on.
 	#[serde(default)]
 	pub contradicting_orders_by_load_order: bool,
+	/// Where a definition reads as renamed to one of several new ones that
+	/// nothing else tells apart, take the one its file defines first rather
+	/// than hold the rename for review. The load-order default turns this on.
+	#[serde(default)]
+	pub ambiguous_renames_by_position: bool,
 }
 
 impl MergePolicies {
@@ -974,6 +979,7 @@ impl ContentFamilyDescriptor {
 				edit_wins_over_remove: false,
 				unordered_definitions: false,
 				contradicting_orders_by_load_order: false,
+				ambiguous_renames_by_position: false,
 			},
 			schema_directory: None,
 		}
@@ -1016,6 +1022,7 @@ impl ContentFamilyDescriptor {
 				edit_wins_over_remove: false,
 				unordered_definitions: false,
 				contradicting_orders_by_load_order: false,
+				ambiguous_renames_by_position: false,
 			},
 			schema_directory: None,
 		}

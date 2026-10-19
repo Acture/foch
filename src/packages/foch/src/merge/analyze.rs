@@ -481,6 +481,7 @@ fn analyze_merge_with_backend_and_observer(
 							.config
 							.extra_ignore_patterns
 							.is_empty(),
+						load_order_default: !options.strict,
 					},
 				)
 			})?

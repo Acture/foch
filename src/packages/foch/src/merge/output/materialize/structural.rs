@@ -614,6 +614,7 @@ fn automatic_conflict_handler<'a>(
 fn effective_merge_policies(context: &StructuralMergeContext<'_>) -> MergePolicies {
 	let mut policies = context.descriptor.merge_policies;
 	policies.contradicting_orders_by_load_order = context.load_order_default;
+	policies.ambiguous_renames_by_position = context.load_order_default;
 	if context.gui_scroll_merge && is_gui_container_family(context) {
 		policies.named_container = NamedContainerPolicy::ScrollStack;
 	}

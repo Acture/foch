@@ -109,6 +109,7 @@ impl CultureObservation<'_> {
 	fn correspondence(&self) -> Result<CultureCorrespondence, Vec<CultureFinding>> {
 		CultureCorrespondence::infer_observations(
 			&self.base,
+			self.policies.ambiguous_renames_by_position,
 			&self
 				.observations
 				.iter()
@@ -212,7 +213,16 @@ impl DagJoinProtocol<AstFile> for CultureObservation<'_> {
 				&[],
 			)
 		})?;
-		if !result.conflicts.is_empty() {
+		// The parent view only says which cultures exist. A conflict inside a
+		// group field or a culture's body cannot change that, and with the
+		// load-order default the product merge decides it; the kernel's
+		// tentative result stands for it here.
+		let defaults = self.policies.ambiguous_renames_by_position;
+		if result
+			.conflicts
+			.iter()
+			.any(|conflict| !defaults || conflict.semantic_path.len() < 3)
+		{
 			return Err("culture dependency parent has unresolved conflicts; identity correspondence requires review".into());
 		}
 		Ok(AstFile {

@@ -512,16 +512,31 @@ impl<'a> SchemaBinder<'a> {
 		if path.is_empty() {
 			return None;
 		}
-		let mut roots = self.roots.iter().copied().filter(|root| {
-			!root.type_per_file
-				&& root
-					.skip_root_keys
-					.iter()
-					.zip(path)
-					.all(|(skip_key, key)| skip_key == "any" || skip_key == key)
-		});
-		let root = roots.next()?;
-		roots.next().is_none().then_some(root)
+		let roots = self
+			.roots
+			.iter()
+			.copied()
+			.filter(|root| {
+				!root.type_per_file
+					&& root
+						.skip_root_keys
+						.iter()
+						.zip(path)
+						.all(|(skip_key, key)| skip_key == "any" || skip_key == key)
+			})
+			.collect::<Vec<_>>();
+		if let [root] = roots.as_slice() {
+			return Some(root);
+		}
+		// A key that names one type's definition may also be a wrapper
+		// another type skips (EU4 `government_reform` beside
+		// `states_general_faction`); the type whose definitions the path
+		// reaches owns it.
+		let mut reaching = roots
+			.into_iter()
+			.filter(|root| path.len() > root.skip_root_keys.len());
+		let root = reaching.next()?;
+		reaching.next().is_none().then_some(root)
 	}
 
 	/// A top-level key names a definition even when a body rule shares the
@@ -559,6 +574,16 @@ impl<'a> SchemaBinder<'a> {
 		}
 		let Some(context) = self.bind_context(path) else {
 			return self.shared_folder_definition_context(path);
+		};
+		// The engine may name a type for which the path is only a wrapper,
+		// where another type's definition is what the path names.
+		let context = match (context, self.root_owning_path(path)) {
+			(RuleContext::RootType(found) | RuleContext::Subtype(found, _), Some(owner))
+				if !std::ptr::eq(found, owner) =>
+			{
+				RuleContext::RootType(owner)
+			}
+			(context, _) => context,
 		};
 		if let Some(root) = self.definition_named_like_body_field(path, context) {
 			return Some(RuleContext::RootType(root));

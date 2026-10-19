@@ -30,6 +30,9 @@ pub(crate) struct TransformRequest<'a> {
 	pub emit_options: &'a EmitOptions,
 	pub duplicate_definitions: Option<DuplicateDefinitionPolicy>,
 	pub reference_inventory_complete: bool,
+	/// Whether conflicts nothing else decides take the per-place defaults,
+	/// as they do without `--strict`.
+	pub load_order_default: bool,
 }
 
 pub(crate) trait TransformAdapter: Sync {

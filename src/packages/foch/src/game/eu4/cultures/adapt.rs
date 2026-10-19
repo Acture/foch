@@ -2,17 +2,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::game::eu4::content::eu4;
+use crate::game::eu4::content::{MergePolicies, eu4};
 use crate::game::eu4::cultures::correspondence::{CultureCorrespondence, CultureGroupMove};
-use crate::game::eu4::cultures::{CultureIndex, CultureRenameMap, transform_cultures};
+use crate::game::eu4::cultures::{
+	CultureIndex, CultureRenameMap, DerivedNames, transform_cultures,
+	transform_cultures_with_arguments,
+};
 use crate::game::eu4::script::documents::classify_document_family;
-use crate::game::eu4::script::emit::{EmitOptions, emit_clausewitz_statements_with_options};
+use crate::game::eu4::script::emit::emit_clausewitz_statements_with_options;
 use crate::game::eu4::script::parser::{AstFile, AstValue};
 use crate::input::ResolvedInput;
 use crate::model::{DocumentFamily, GamePathBuf, reads_completely};
-use crate::project::DepOverride;
 
-use crate::merge::dag::{IgnoreReplacePath, build_mod_dag};
+use crate::merge::dag::build_mod_dag;
 use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::path_plan::build_merge_plan_from_input;
 use crate::merge::planning::module_view::build_cross_file_module_views;
@@ -124,15 +126,7 @@ impl TransformAdapter for CultureAdapter {
 				"reviewed culture mappings require an analyzed vanilla ancestor",
 			));
 		}
-		let mut culture = prepare_cultures(
-			input,
-			request.dep_overrides,
-			request.ignore_replace_path,
-			request.emit_options,
-			request.duplicate_definitions,
-			&config.renames,
-			request.reference_inventory_complete,
-		)?;
+		let mut culture = prepare_cultures(input, request)?;
 		if !config.renames.is_empty()
 			&& culture.correspondence.is_none()
 			&& culture.findings.is_empty()
@@ -265,13 +259,18 @@ impl OutputValidation for CultureAdaptations {
 
 fn prepare_cultures(
 	input: &mut ResolvedInput,
-	dep_overrides: &[DepOverride],
-	ignore_replace_path: &IgnoreReplacePath,
-	emit_options: &EmitOptions,
-	duplicate_definitions: Option<crate::game::eu4::content::DuplicateDefinitionPolicy>,
-	reviewed_entries: &[crate::project::CultureRenameEntry],
-	reference_inventory_complete: bool,
+	request: &TransformRequest<'_>,
 ) -> Result<CultureAdaptations, MergeError> {
+	let TransformRequest {
+		dep_overrides,
+		ignore_replace_path,
+		emit_options,
+		duplicate_definitions,
+		reference_inventory_complete,
+		load_order_default,
+		..
+	} = *request;
+	let reviewed_entries = request.project.cultures.renames.as_slice();
 	if input.installed_base_snapshot.is_none() {
 		return Ok(CultureAdaptations::default());
 	}
@@ -334,7 +333,10 @@ fn prepare_cultures(
 				&views.file_dag,
 				views.vanilla.as_ref(),
 				&views.contributors,
-				&descriptor.merge_policies,
+				&MergePolicies {
+					ambiguous_renames_by_position: load_order_default,
+					..descriptor.merge_policies
+				},
 				&reviewed,
 			)
 		})
@@ -373,8 +375,9 @@ fn prepare_cultures(
 		}
 	};
 	let mappings = correspondence.renames().clone();
-	let group_warnings =
+	let mut group_warnings =
 		group_move_warnings(input, &before, &revisions, &correspondence.group_moves);
+	group_warnings.extend(correspondence.chosen_renames.iter().cloned());
 	// The culture unit carries the move notes; nothing else is affected.
 	let warned_paths = if group_warnings.is_empty() {
 		BTreeSet::new()
@@ -440,9 +443,14 @@ fn prepare_cultures(
 	let mut paths = warned_paths;
 	let mut findings = Vec::new();
 	let parameter_review =
-		super::parameters::review_parameter_flows(input, &affected_identities).map_err(invalid)?;
+		super::parameters::review_parameter_flows(input, &affected_identities, load_order_default)
+			.map_err(invalid)?;
 	paths.extend(parameter_review.paths);
 	findings.extend(parameter_review.findings);
+	group_warnings.extend(parameter_review.notes);
+	let arguments = parameter_review.arguments;
+	let derived = parameter_review.derived;
+	let derived_paths = derived_name_paths(input, &derived);
 	if !findings.is_empty() {
 		paths.extend(reference_paths.iter().map(|(_, path)| path.clone()));
 	}
@@ -460,11 +468,22 @@ fn prepare_cultures(
 			continue;
 		}
 		for contributor in contributors.iter().filter(|item| !item.is_synthetic_base) {
-			if !reference_paths.contains(&(contributor.mod_id.clone(), path.clone())) {
+			let source = (contributor.mod_id.clone(), path.clone());
+			let source_arguments = arguments.get(&source);
+			if !reference_paths.contains(&source)
+				&& source_arguments.is_none()
+				&& !derived_paths.contains(&source)
+			{
 				continue;
 			}
 			let parsed = input.script_cache.load(contributor).map_err(invalid)?;
-			let result = transform_cultures(&parsed.ast, path, &mapping);
+			let result = transform_cultures_with_arguments(
+				&parsed.ast,
+				path,
+				&mapping,
+				source_arguments.unwrap_or(&BTreeSet::new()),
+				&derived,
+			);
 			if result
 				.references
 				.iter()
@@ -677,6 +696,48 @@ fn indexed_reference_paths(
 				{
 					paths.insert((contributor.mod_id.clone(), path.clone()));
 				}
+			}
+		}
+	}
+	paths
+}
+
+/// The files whose scalar assignments hold a name renamed with a culture, by
+/// mod. The transform renames only the fields of the name's value set.
+fn derived_name_paths(
+	input: &ResolvedInput,
+	derived: &DerivedNames,
+) -> BTreeSet<(String, GamePathBuf)> {
+	let names = derived
+		.values()
+		.flat_map(|names| names.keys())
+		.collect::<BTreeSet<_>>();
+	let holds =
+		|value: &str| names.contains(&value.split('@').next().unwrap_or_default().to_owned());
+	let mut paths = BTreeSet::new();
+	if names.is_empty() {
+		return paths;
+	}
+	for snapshot in input.mod_snapshots.iter().flatten() {
+		for assignment in &snapshot.semantic_index.scalar_assignments {
+			if holds(&assignment.value) {
+				paths.insert((assignment.mod_id.clone(), assignment.path.clone()));
+			}
+		}
+	}
+	if let Some(installed) = &input.installed_base_snapshot {
+		for assignment in &installed.snapshot.scalar_assignments {
+			if !holds(&assignment.value) {
+				continue;
+			}
+			for contributor in input
+				.file_inventory
+				.get(&assignment.path)
+				.into_iter()
+				.flatten()
+				.filter(|contributor| contributor.is_base_game)
+			{
+				paths.insert((contributor.mod_id.clone(), assignment.path.clone()));
 			}
 		}
 	}

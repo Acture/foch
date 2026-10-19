@@ -1,0 +1,22 @@
+# Deliberately malformed: two cultures open with `[` and `(` in place of `{`.
+germanic = {
+	graphical_culture = westerngfx
+	frankisch = {
+		primary = XXX
+	}
+	italienisch = [ #Germanic central and southern Italy
+		primary = XXX
+	}
+	wolgadeutsch = {
+		primary = XXX
+	}
+}
+altaic = {
+	graphical_culture = muslimgfx
+	khitan = (
+		primary = XXX
+	}
+	uyghur = {
+		primary = XXX
+	}
+}

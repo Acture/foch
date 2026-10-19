@@ -5,10 +5,14 @@ pub(crate) mod correspondence;
 pub(crate) mod dag;
 mod parameters;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::cwt::Eu4Dialect;
 use super::script::parser::{AstFile, AstStatement, AstValue, ScalarValue, SpanRange};
-use crate::game::schema::query::{CompiledAliasCategory, CompiledRuleValue, CwtQuery, RuleContext};
+use crate::game::schema::bind::{BoundContext, SchemaBinder};
+use crate::game::schema::query::{
+	CompiledAliasCategory, CompiledBindFieldMatch, CompiledRuleValue, CwtQuery, RuleContext,
+};
 use crate::model::{GamePath, GamePathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -450,7 +454,16 @@ pub(crate) fn collect_culture_references(
 ) -> CultureReferences {
 	let mut result = CultureReferences::default();
 	if !is_culture_document(relative_path) {
-		collect_references(&ast.statements, relative_path, &mut Vec::new(), &mut result);
+		// The index reads every file, so it keeps to the path reading; the
+		// merge selects the files a rename touches by their culture-named
+		// assignments too, and binds each of those in full.
+		collect_references(
+			&ast.statements,
+			relative_path,
+			&HashMap::new(),
+			&mut Vec::new(),
+			&mut result,
+		);
 	}
 	result
 }
@@ -468,6 +481,30 @@ pub(crate) fn transform_cultures(
 	ast: &AstFile,
 	relative_path: &GamePath,
 	mapping: &CultureRenameMap,
+) -> CultureTransform {
+	transform_cultures_with_arguments(
+		ast,
+		relative_path,
+		mapping,
+		&BTreeSet::new(),
+		&DerivedNames::new(),
+	)
+}
+
+/// Names a script composes from a culture parameter, such as the flag
+/// `$CULTURE$_released`, renamed with the culture: by value set, old name to
+/// new.
+pub(crate) type DerivedNames = BTreeMap<String, BTreeMap<String, String>>;
+
+/// As [`transform_cultures`], also reading the script call arguments that
+/// start at `arguments` as culture values, and renaming the `derived` names
+/// wherever a field of their value set holds them.
+pub(crate) fn transform_cultures_with_arguments(
+	ast: &AstFile,
+	relative_path: &GamePath,
+	mapping: &CultureRenameMap,
+	arguments: &BTreeSet<usize>,
+	derived: &DerivedNames,
 ) -> CultureTransform {
 	let mut result = CultureTransform {
 		ast: ast.clone(),
@@ -505,13 +542,28 @@ pub(crate) fn transform_cultures(
 			}
 		}
 	} else {
+		let mut kinds = culture_field_kinds(&ast.statements, relative_path);
+		for offset in arguments {
+			kinds.entry(*offset).or_default().culture_value = true;
+		}
 		transform_statements(
 			&mut statements,
 			relative_path,
+			&kinds,
 			&mut Vec::new(),
 			mapping,
 			&mut result,
 		);
+		if !derived.is_empty() {
+			let fields = value_set_fields(&ast.statements, relative_path);
+			rename_derived(
+				&mut statements,
+				relative_path,
+				&fields,
+				derived,
+				&mut result,
+			);
+		}
 	}
 	result.ast.statements = statements;
 	if is_culture_document(relative_path)
@@ -655,7 +707,7 @@ fn is_scope_selector(key: &str) -> bool {
 		})
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct CultureFieldKinds {
 	culture_key: bool,
 	group_key: bool,
@@ -663,16 +715,135 @@ struct CultureFieldKinds {
 	group_value: bool,
 }
 
-fn reference_kinds(
-	schema: &CwtQuery,
-	context: Option<RuleContext<'_>>,
-	key: &str,
-) -> CultureFieldKinds {
+/// What each key of a file refers to, by where the key starts: the schema
+/// binder reads each statement in its definition, subtypes and scopes
+/// included.
+fn culture_field_kinds(
+	statements: &[AstStatement],
+	path: &GamePath,
+) -> HashMap<usize, CultureFieldKinds> {
+	let mut kinds = HashMap::new();
+	bind_fields(statements, path, &mut |offset, alternatives, key| {
+		kinds.insert(offset, reference_kinds(alternatives, key));
+	});
+	kinds
+}
+
+/// The value sets each key's field holds, by where the key starts.
+pub(super) fn value_set_fields(
+	statements: &[AstStatement],
+	path: &GamePath,
+) -> HashMap<usize, BTreeSet<String>> {
+	let mut fields = HashMap::new();
+	bind_fields(statements, path, &mut |offset, alternatives, _| {
+		let sets = value_sets(alternatives);
+		if !sets.is_empty() {
+			fields.insert(offset, sets);
+		}
+	});
+	fields
+}
+
+/// The value sets a field's alternatives name, as `value[set]` or
+/// `value_set[set]`.
+pub(super) fn value_sets(alternatives: &[CompiledBindFieldMatch<'_>]) -> BTreeSet<String> {
+	alternatives
+		.iter()
+		.filter_map(|field| match field.value() {
+			CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => value
+				.strip_prefix("value_set[")
+				.or_else(|| value.strip_prefix("value["))
+				.and_then(|set| set.strip_suffix(']'))
+				.map(str::to_owned),
+			_ => None,
+		})
+		.collect()
+}
+
+/// Visits each assignment of a file with its binding, by where its key starts.
+fn bind_fields(
+	statements: &[AstStatement],
+	path: &GamePath,
+	visit: &mut dyn FnMut(usize, &[CompiledBindFieldMatch<'_>], &str),
+) {
+	let binder = SchemaBinder::new(super::cwt::rule_engine(), &Eu4Dialect, None, path);
+	bind_walk(&binder, statements, &binder.file(statements), visit);
+}
+
+fn bind_walk<'a>(
+	binder: &SchemaBinder<'a>,
+	statements: &'a [AstStatement],
+	bound: &BoundContext<'a, AstStatement>,
+	visit: &mut dyn FnMut(usize, &[CompiledBindFieldMatch<'_>], &str),
+) {
+	for statement in statements {
+		let AstStatement::Assignment {
+			key,
+			key_span,
+			value,
+			..
+		} = statement
+		else {
+			continue;
+		};
+		let binding = binder.bind(bound, key, value);
+		visit(key_span.start.offset, &binding.alternatives, key);
+		if let AstValue::Block { items, .. } = value {
+			let child = binder.child(bound, statement, key, &binding);
+			bind_walk(binder, items, &child, visit);
+		}
+	}
+}
+
+/// Renames the `derived` names held by a field of their value set, keeping a
+/// `@scope` suffix.
+fn rename_derived(
+	statements: &mut [AstStatement],
+	path: &GamePath,
+	fields: &HashMap<usize, BTreeSet<String>>,
+	derived: &DerivedNames,
+	result: &mut CultureTransform,
+) {
+	for statement in statements {
+		let AstStatement::Assignment {
+			key_span, value, ..
+		} = statement
+		else {
+			continue;
+		};
+		match value {
+			AstValue::Block { items, .. } => rename_derived(items, path, fields, derived, result),
+			AstValue::Scalar {
+				value: ScalarValue::Identifier(text) | ScalarValue::String(text),
+				span,
+			} => {
+				let Some(sets) = fields.get(&key_span.start.offset) else {
+					continue;
+				};
+				let (name, scope) = text.split_at(text.find('@').unwrap_or(text.len()));
+				let Some(new) = sets
+					.iter()
+					.find_map(|set| derived.get(set).and_then(|names| names.get(name)))
+				else {
+					continue;
+				};
+				let to = format!("{new}{scope}");
+				result.changes.push(CultureChange {
+					from: text.clone(),
+					to: to.clone(),
+					definition: false,
+					location: location(path, span),
+				});
+				*text = to;
+			}
+			AstValue::Scalar { .. } => {}
+		}
+	}
+}
+
+fn reference_kinds(alternatives: &[CompiledBindFieldMatch<'_>], key: &str) -> CultureFieldKinds {
 	let mut result = CultureFieldKinds::default();
-	let Some(context) = context else {
-		return result;
-	};
-	for field in schema.bind_field_matches(context, key) {
+	for field in alternatives {
 		result.culture_key |= field.field().key == "<culture>";
 		result.group_key |= field.field().key == "<culture_group>";
 		result.culture_value |= is_type(field.value(), "culture")
@@ -686,6 +857,32 @@ fn reference_kinds(
 			});
 	}
 	result
+}
+
+/// What a key refers to by either reading: its path through the schema,
+/// which follows dates and dynamic scope selectors, or the binder's reading
+/// of its definition, which follows subtypes.
+fn statement_kinds(
+	context: Option<RuleContext<'_>>,
+	field_kinds: &HashMap<usize, CultureFieldKinds>,
+	key: &str,
+	key_span: &SpanRange,
+) -> CultureFieldKinds {
+	let schema = super::cwt::rule_engine();
+	let alternatives = context
+		.map(|context| schema.bind_field_matches(context, key))
+		.unwrap_or_default();
+	let by_path = reference_kinds(&alternatives, key);
+	let bound = field_kinds
+		.get(&key_span.start.offset)
+		.copied()
+		.unwrap_or_default();
+	CultureFieldKinds {
+		culture_key: by_path.culture_key || bound.culture_key,
+		group_key: by_path.group_key || bound.group_key,
+		culture_value: by_path.culture_value || bound.culture_value,
+		group_value: by_path.group_value || bound.group_value,
+	}
 }
 
 fn literal_scalar(value: &ScalarValue) -> Option<&str> {
@@ -708,11 +905,11 @@ fn group_key_context(path: &GamePath, parents: &[String], kinds: &CultureFieldKi
 fn collect_references(
 	statements: &[AstStatement],
 	path: &GamePath,
+	field_kinds: &HashMap<usize, CultureFieldKinds>,
 	parents: &mut Vec<String>,
 	result: &mut CultureReferences,
 ) {
-	let schema = super::cwt::rule_engine();
-	let context = script_context(schema, path, parents);
+	let context = script_context(super::cwt::rule_engine(), path, parents);
 	for statement in statements {
 		let AstStatement::Assignment {
 			key,
@@ -723,7 +920,7 @@ fn collect_references(
 		else {
 			continue;
 		};
-		let kinds = reference_kinds(schema, context, key);
+		let kinds = statement_kinds(context, field_kinds, key, key_span);
 		if group_key_context(path, parents, &kinds) && is_literal_identity(key) {
 			result.group_references.push(CultureGroupReference {
 				group: key.clone(),
@@ -739,7 +936,7 @@ fn collect_references(
 		match value {
 			AstValue::Block { items, .. } => {
 				parents.push(key.clone());
-				collect_references(items, path, parents, result);
+				collect_references(items, path, field_kinds, parents, result);
 				parents.pop();
 			}
 			AstValue::Scalar { value, span } if kinds.culture_value || kinds.group_value => {
@@ -767,16 +964,16 @@ fn collect_references(
 fn transform_statements(
 	statements: &mut [AstStatement],
 	path: &GamePath,
+	field_kinds: &HashMap<usize, CultureFieldKinds>,
 	parents: &mut Vec<String>,
 	mapping: &CultureRenameMap,
 	result: &mut CultureTransform,
 ) {
-	let schema = super::cwt::rule_engine();
-	let context = script_context(schema, path, parents);
+	let context = script_context(super::cwt::rule_engine(), path, parents);
 	let has_key_rename = statements.iter().any(|statement| {
 		matches!(statement,
-		AstStatement::Assignment { key, .. } if mapping.mappings.contains_key(key)
-			&& reference_kinds(schema, context, key).culture_key)
+		AstStatement::Assignment { key, key_span, .. } if mapping.mappings.contains_key(key)
+			&& statement_kinds(context, field_kinds, key, key_span).culture_key)
 	});
 	let sibling_keys: BTreeSet<_> = if has_key_rename {
 		statements
@@ -799,7 +996,7 @@ fn transform_statements(
 		else {
 			continue;
 		};
-		let kinds = reference_kinds(schema, context, key);
+		let kinds = statement_kinds(context, field_kinds, key, key_span);
 		if group_key_context(path, parents, &kinds) && is_literal_identity(key) {
 			result.group_references.push(CultureGroupReference {
 				group: key.clone(),
@@ -837,7 +1034,7 @@ fn transform_statements(
 		match value {
 			AstValue::Block { items, .. } => {
 				parents.push(key.clone());
-				transform_statements(items, path, parents, mapping, result);
+				transform_statements(items, path, field_kinds, parents, mapping, result);
 				parents.pop();
 			}
 			AstValue::Scalar { value, span } => {
@@ -1239,6 +1436,26 @@ mod tests {
 			values(&result.ast.statements, "name"),
 			["old_culture", "old_culture", "old_culture"]
 		);
+	}
+
+	#[test]
+	fn adapts_triggers_a_subtype_of_the_definition_declares() {
+		// `nation_designer_trigger` is declared under `subtype[!default]`;
+		// `subtype[default]` applies only to `defaults_reform` and has an
+		// empty block of that name.
+		let path = &game_path("common/government_reforms/01_government_reforms_monarchies.txt");
+		let ast = parse(
+			path.as_str(),
+			r#"gothic_monarchy_reform = {
+				icon = gothic_monarchy_reform
+				potential = { primary_culture = old_culture }
+				nation_designer_trigger = { OR = { primary_culture = old_culture } }
+			}
+		"#,
+		);
+		let result = transform_cultures(&ast, path, &mapping());
+		assert!(result.findings.is_empty(), "{:?}", result.findings);
+		assert_eq!(result.changes.len(), 2);
 	}
 
 	#[test]
