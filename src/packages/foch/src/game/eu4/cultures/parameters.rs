@@ -315,7 +315,10 @@ fn collect_parameters(
 		let AstStatement::Assignment { key, value, .. } = statement else {
 			continue;
 		};
-		let kinds = reference_kinds(schema, context, key);
+		let alternatives = context
+			.map(|context| schema.bind_field_matches(context, key))
+			.unwrap_or_default();
+		let kinds = reference_kinds(&alternatives, key);
 		let mut uses = Vec::new();
 		if kinds.culture_key {
 			uses.push(key.clone());
