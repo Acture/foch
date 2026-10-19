@@ -1,12 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
-use crate::game::eu4::content::{
-	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
-};
+use crate::game::eu4::content::{BooleanMergePolicy, DivergentBlockPolicy, MergePolicies};
 use crate::game::eu4::cwt::rule_engine;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
-use crate::game::eu4::script::{classify_script_file, script_container_scope_kind};
+use crate::game::eu4::script::script_container_scope_kind;
 use crate::game::schema::query::CwtQuery;
 use crate::merge::kernel::{
 	ConflictKind, ConflictResolution, MergeOutcome, MergeRevision, NormalizedTree, RevisionId,
@@ -250,10 +248,12 @@ pub(super) fn merge_clausewitz_files_with_context(
 				.map_err(AstAdapterError::InvalidTree)?;
 		}
 	}
-	let policy = entity_transform.map_or_else(
-		|| ContentFamilyMergePolicy::new(policies),
-		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
-	);
+	let policy = entity_transform
+		.map_or_else(
+			|| ContentFamilyMergePolicy::new(policies),
+			|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
+		)
+		.reading(schema);
 	let started = Instant::now();
 	let mut scope_cache = HashMap::new();
 	let mut spellings = NumberSpellings::default();
@@ -274,26 +274,18 @@ pub(super) fn merge_clausewitz_files_with_context(
 		.iter()
 		.map(|(_, trivia)| trivia)
 		.collect::<Vec<_>>();
-	let mut control_flow_findings = super::control_flow::orphan_paths(&base.statements)
-		.into_iter()
-		.map(|path| format!("base:{path}"))
+	// A branch an input already left without its `if` is what the game
+	// loads from that input; only one the merge itself leaves alone is new.
+	let input_orphans = std::iter::once(&base)
+		.chain(revision_files.iter().copied())
+		.flat_map(|file| super::control_flow::orphan_paths(&file.statements))
+		.map(|path| unindexed_path(&path))
 		.collect::<BTreeSet<_>>();
-	for (index, revision) in revision_files.iter().enumerate() {
-		control_flow_findings.extend(
-			super::control_flow::orphan_paths(&revision.statements)
-				.into_iter()
-				.map(|path| format!("revision:{}:{path}", index + 1)),
-		);
-	}
+	let mut control_flow_findings = BTreeSet::new();
 	let merged_trivia = merge_trivia_n_way(&base_trivia, &revision_trivia);
 	charge(KernelStep::JoinCanonicalize, started);
 	let started = Instant::now();
-	let (base_tree, base_normalization_findings) = normalize_ast_with_findings(&base, &policy)?;
-	control_flow_findings.extend(
-		base_normalization_findings
-			.into_iter()
-			.map(|finding| format!("base:{finding}")),
-	);
+	let (base_tree, _) = normalize_ast_with_findings(&base, &policy)?;
 	let revision_trees = revision_files
 		.iter()
 		.enumerate()
@@ -301,12 +293,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 			let revision_id = RevisionId::new(u16::try_from(index + 1).map_err(|_| {
 				AstAdapterError::InvalidTree("too many N-way revisions".to_string())
 			})?);
-			let (tree, findings) = normalize_ast_with_findings(revision, &policy)?;
-			control_flow_findings.extend(
-				findings
-					.into_iter()
-					.map(|finding| format!("revision:{}:{finding}", index + 1)),
-			);
+			let (tree, _) = normalize_ast_with_findings(revision, &policy)?;
 			Ok((revision_id, tree))
 		})
 		.collect::<Result<Vec<_>, AstAdapterError>>()?;
@@ -375,6 +362,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 	control_flow_findings.extend(
 		super::control_flow::orphan_paths(&tentative_ast.statements)
 			.into_iter()
+			.filter(|path| !input_orphans.contains(&unindexed_path(path)))
 			.map(|path| format!("output:{path}")),
 	);
 	if !control_flow_findings.is_empty() {
@@ -459,7 +447,7 @@ pub(crate) fn clausewitz_files_semantically_equivalent(
 	right: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<bool, AstAdapterError> {
-	let policy = ContentFamilyMergePolicy::new(policies);
+	let policy = ContentFamilyMergePolicy::new(policies).reading(Some(rule_engine()));
 	let mut scope_cache = HashMap::new();
 	let left = canonicalize_for_merge(
 		left,
@@ -538,10 +526,12 @@ pub(super) fn normalize_clausewitz_file_with_context(
 		spellings,
 	);
 	let (semantic, _) = detach_trivia(&canonical);
-	let policy = entity_transform.map_or_else(
-		|| ContentFamilyMergePolicy::new(policies),
-		|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
-	);
+	let policy = entity_transform
+		.map_or_else(
+			|| ContentFamilyMergePolicy::new(policies),
+			|transform| ContentFamilyMergePolicy::with_transform(policies, transform),
+		)
+		.reading(Some(rule_engine()));
 	normalize_ast(&semantic, &policy)
 }
 
@@ -551,6 +541,22 @@ pub(super) fn normalize_clausewitz_file_with_context(
 /// Numbers first: `canonicalize_boolean_or_definitions` deduplicates disjuncts
 /// by exact scalar text, so two that differ only in how one number is spelled
 /// have to already read alike by then.
+/// A control-flow path without the occurrence numbers, which shift where the
+/// merge adds or drops a sibling of the same key.
+fn unindexed_path(path: &str) -> String {
+	let mut unindexed = String::with_capacity(path.len());
+	let mut skipping = false;
+	for character in path.chars() {
+		match character {
+			'[' => skipping = true,
+			']' => skipping = false,
+			_ if !skipping => unindexed.push(character),
+			_ => {}
+		}
+	}
+	unindexed
+}
+
 fn canonicalize_for_merge(
 	file: &AstFile,
 	policies: &MergePolicies,
@@ -597,10 +603,8 @@ fn canonicalize_boolean_or_definitions(
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
 ) -> AstFile {
 	let mut file = file.clone();
-	let file_kind = classify_script_file(&file.path);
 	BooleanConditionTransformer {
 		file_path: &file.path,
-		file_kind: &file_kind,
 		policies,
 		transform: BooleanTransform::Canonicalize,
 		scope_cache,
@@ -614,10 +618,8 @@ fn simplify_boolean_or_definitions(
 	policies: &MergePolicies,
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
 ) {
-	let file_kind = classify_script_file(&file.path);
 	BooleanConditionTransformer {
 		file_path: &file.path,
-		file_kind: &file_kind,
 		policies,
 		transform: BooleanTransform::Simplify,
 		scope_cache,
@@ -640,7 +642,6 @@ enum BooleanTransform {
 
 struct BooleanConditionTransformer<'a> {
 	file_path: &'a GamePath,
-	file_kind: &'a ScriptFileKind,
 	policies: &'a MergePolicies,
 	transform: BooleanTransform,
 	scope_cache: &'a mut HashMap<Vec<String>, Option<ScopeKind>>,
@@ -666,11 +667,7 @@ impl BooleanConditionTransformer<'_> {
 			path.push(key.clone());
 			let scope_kind = *self.scope_cache.entry(path.clone()).or_insert_with(|| {
 				let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
-				script_container_scope_kind(
-					self.file_kind.clone(),
-					self.file_path,
-					path_refs.as_slice(),
-				)
+				script_container_scope_kind(self.file_path, path_refs.as_slice())
 			});
 			let context = script_context(parent_context, key, scope_kind);
 			let configured_definition = path.len() == 1
@@ -751,14 +748,7 @@ pub(super) fn script_context(
 		Some(ScopeKind::Effect | ScopeKind::ScriptedEffect | ScopeKind::Event) => {
 			ScriptContext::Effect
 		}
-		Some(
-			ScopeKind::File
-			| ScopeKind::Decision
-			| ScopeKind::Loop
-			| ScopeKind::AliasBlock
-			| ScopeKind::Block,
-		)
-		| None => parent,
+		Some(ScopeKind::File | ScopeKind::Block) | None => parent,
 	}
 }
 

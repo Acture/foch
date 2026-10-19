@@ -23,7 +23,10 @@ pub(crate) fn combine_boolean_or_bodies(
 pub(crate) fn simplify_boolean_or_body(body: Vec<AstStatement>) -> Vec<AstStatement> {
 	let mut comments = Vec::new();
 	let mut disjuncts = unique_disjuncts(body_to_disjuncts(body, &mut comments), &mut comments);
-	if disjuncts.len() != 1 {
+	if disjuncts.len() > 1 {
+		return factor_common_conditions(comments, disjuncts);
+	}
+	if disjuncts.is_empty() {
 		return boolean_or_body(comments, disjuncts);
 	}
 
@@ -38,6 +41,62 @@ pub(crate) fn simplify_boolean_or_body(body: Vec<AstStatement>) -> Vec<AstStatem
 		other => body.push(other),
 	}
 	body
+}
+
+/// `OR = { AND = { c a } AND = { c b } }` as `c OR = { a b }`: the conditions
+/// every alternative requires are required outside the `OR`, which is the
+/// same predicate written as each mod's own part. Mods that each extend a
+/// predicate come out as its shared conditions and an `OR` of what each
+/// added; an alternative left with nothing of its own makes the `OR` hold.
+fn factor_common_conditions(
+	mut body: Vec<AstStatement>,
+	disjuncts: Vec<AstStatement>,
+) -> Vec<AstStatement> {
+	let conjunctions = disjuncts.iter().map(conjuncts).collect::<Vec<_>>();
+	let same = |left: &AstStatement, right: &AstStatement| {
+		ast_statements_equal_ignoring_comments(left, right, ScalarEquality::Exact)
+	};
+	let mut residues = conjunctions.clone();
+	let mut common = Vec::new();
+	for condition in &conjunctions[0] {
+		let positions = residues
+			.iter()
+			.map(|residue| residue.iter().position(|other| same(other, condition)))
+			.collect::<Option<Vec<_>>>();
+		if let Some(positions) = positions {
+			for (residue, position) in residues.iter_mut().zip(positions) {
+				residue.remove(position);
+			}
+			common.push(condition.clone());
+		}
+	}
+	if common.is_empty() {
+		return boolean_or_body(body, disjuncts);
+	}
+	body.extend(common);
+	if residues.iter().any(Vec::is_empty) {
+		return body;
+	}
+	let mut alternatives = Vec::<AstStatement>::new();
+	for residue in residues {
+		let alternative = match <[AstStatement; 1]>::try_from(residue) {
+			Ok([only]) => only,
+			Err(residue) => make_boolean_block("AND", residue),
+		};
+		if !alternatives.iter().any(|known| same(known, &alternative)) {
+			alternatives.push(alternative);
+		}
+	}
+	match <[AstStatement; 1]>::try_from(alternatives) {
+		Ok([only]) => body.extend(conjuncts(&only)),
+		Err(alternatives) => body.push(make_boolean_block("OR", alternatives)),
+	}
+	body
+}
+
+/// The conditions an alternative requires together.
+fn conjuncts(alternative: &AstStatement) -> Vec<AstStatement> {
+	boolean_block_body(alternative, "AND").unwrap_or_else(|| vec![alternative.clone()])
 }
 
 /// Re-emit a body from the comments lifted out of it and its disjuncts.

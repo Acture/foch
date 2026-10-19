@@ -153,7 +153,7 @@ the legacy object store part of the current product path.
 
 - `src/packages/tree-sitter-paradox` — grammar package
 - `src/apps/vscode-foch` — VS Code extension
-- `src/tools/eu4-analysis` — PyGhidra analysis and builtin catalog generation
+- `src/tools/eu4-analysis` — PyGhidra analysis and builtin keyword catalog generation
 - `src/tools/foch-dev` — internal Python package for repository contracts and diagnostics
 - `src/packages/foch/vendor/cwtools-eu4-config` — external build input, compiled into the binary
 - `src/packages/foch/src/game/eu4/cwt_supplement` — foch's supplementary CWT rules, compiled after the vendored config
@@ -188,9 +188,9 @@ repository root.
 Reusable maintenance logic belongs in `src/tools/foch-dev`, with typed APIs and
 `python -m foch_dev` subcommands. Keep root scripts limited to hooks and release
 orchestration; platform installer smoke belongs to the owning application.
-EU4 catalog generation is `python -m eu4_analysis builtins`, with explicit local
-source paths and opt-in game scanning. Neither tool belongs in the production
-Rust library or the Workshop acceptance harness. See the tool README for commands.
+EU4 builtin keyword catalog generation is `python -m eu4_analysis builtins`.
+Neither tool belongs in the production Rust library or the Workshop acceptance
+harness. See the tool README for commands.
 
 ## Build, Test, and Development Commands
 

@@ -719,29 +719,24 @@ fn structured_preserve_policy_still_honors_two_sided_deletion() {
 }
 
 #[test]
-fn structured_merge_preserves_orphan_control_flow_but_withholds_commit() {
+fn structured_merge_writes_orphan_control_flow_its_inputs_wrote() {
 	let source = parse(
-		"scripted_effect = {\n\
-		\telse_if = { limit = { always = yes } add_prestige = 1 }\n\
-		}\n",
+		"scripted_effect = {
+			else_if = { limit = { always = yes } add_prestige = 1 }
+		}
+",
 	);
 
 	let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
 		.expect("retain orphan control flow as structured AST");
 
-	assert!(outcome.resolved_ast().is_none());
-	assert!(
-		outcome.conflicts().iter().any(|conflict| {
-			conflict.kind == ConflictKind::Policy
-				&& conflict
-					.detail
-					.contains("control-flow finding(s) require review")
-				&& conflict.detail.contains("else_if")
-		}),
-		"{:?}",
-		outcome.conflicts()
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("the inputs' own spelling commits"),
 	);
-	assert!(emit(outcome.tentative_ast()).contains("else_if ="));
+	assert!(output.contains("else_if ="), "{output}");
 }
 
 #[test]
@@ -777,7 +772,7 @@ fn scalar_control_flow_named_assignment_remains_ordinary_data() {
 }
 
 #[test]
-fn structured_preserve_policy_does_not_hide_delete_modify_conflict() {
+fn structured_preserve_policy_keeps_a_change_over_its_deletion() {
 	let base = parse("building = { cost = 100 sailors = 1 }\n");
 	let left = parse("building = { cost = 100 }\n");
 	let right = parse("building = { cost = 100 sailors = 2 }\n");
@@ -785,14 +780,10 @@ fn structured_preserve_policy_does_not_hide_delete_modify_conflict() {
 	let outcome = merge_clausewitz_files(&base, &left, &right, &preserve_one_sided_policies())
 		.expect("merge delete against modification");
 
-	assert!(
-		outcome
-			.conflicts()
-			.iter()
-			.any(|conflict| conflict.kind == ConflictKind::DeleteModify),
-		"{:?}",
-		outcome.conflicts()
-	);
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("sailors = 2"), "{output}");
+	assert!(!output.contains("sailors = 1"), "{output}");
 }
 
 #[test]
@@ -2234,7 +2225,7 @@ fn eu4_subject_types_key_modifier_overlord_entries_by_modifier() {
 }
 
 #[test]
-fn eu4_subject_types_still_conflict_on_same_modifier_subject_identity() {
+fn eu4_subject_types_offer_one_subjects_differing_triggers_as_alternatives() {
 	let path = "common/subject_types/zzz_foch_subject_types.txt";
 	let base = parse_at(path, "");
 	let subject_type = |flag: &str| {
@@ -2259,14 +2250,18 @@ fn eu4_subject_types_still_conflict_on_same_modifier_subject_identity() {
 	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
 		.expect("merge same-identity subject modifier entries");
 
-	assert!(outcome.resolved_ast().is_none());
+	// Both mods add one kind of condition to one entry: the alternatives each
+	// meant, so either holds.
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let merged = emit(outcome.resolved_ast().expect("merged without conflicts"))
+		.split_whitespace()
+		.collect::<Vec<_>>()
+		.join(" ");
 	assert!(
-		outcome
-			.conflicts()
-			.iter()
-			.any(|conflict| conflict.kind == ConflictKind::InsertInsert),
-		"{:?}",
-		outcome.conflicts()
+		merged.contains(
+			"trigger = { OR = { overlord = { has_country_flag = ee_flag } overlord = { has_country_flag = ice_flag } } }"
+		),
+		"{merged}"
 	);
 }
 
@@ -3217,4 +3212,480 @@ fn a_replaced_trigger_chain_merges_branch_by_branch() {
 		merge_clausewitz_files_n_way(&base, &[&removed, &both_branches], &policies).unwrap();
 	assert_eq!(outcome.conflicts().len(), 1, "{:?}", outcome.conflicts());
 	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
+}
+
+#[test]
+fn weight_modifiers_are_told_apart_by_their_conditions() {
+	let path = "common/ideas/test.txt";
+	let group = |modifiers: &str| {
+		parse_at(
+			path,
+			&format!(
+				"test_ideas = {{\n\tstart = {{ tax_income = 1 }}\n\tbonus = {{ tax_income = 1 }}\n\tai_will_do = {{\n\t\tfactor = 1\n{modifiers}\t}}\n}}\n"
+			),
+		)
+	};
+	// Each modifier is as similar to the changed one as to its sibling, so
+	// only the conditions tell which one the factor change belongs to.
+	let base = group(
+		"\t\tmodifier = { factor = 2 is_at_war = yes }\n\t\tmodifier = { factor = 2 is_bankrupt = yes }\n",
+	);
+	let changed = group(
+		"\t\tmodifier = { factor = 3 is_at_war = yes }\n\t\tmodifier = { factor = 2 is_bankrupt = yes }\n",
+	);
+	let added = group(
+		"\t\tmodifier = { factor = 2 is_at_war = yes }\n\t\tmodifier = { factor = 2 is_bankrupt = yes }\n\t\tmodifier = { factor = 4 num_of_cities = 5 }\n",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+
+	let outcome = merge_clausewitz_files_n_way(&base, &[&changed, &added], policies)
+		.expect("merge idea groups");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let merged = emit(outcome.resolved_ast().expect("merged without conflicts"));
+	let merged = merged.split_whitespace().collect::<Vec<_>>().join(" ");
+	for modifier in [
+		"modifier = { factor = 3 is_at_war = yes }",
+		"modifier = { factor = 2 is_bankrupt = yes }",
+		"modifier = { factor = 4 num_of_cities = 5 }",
+	] {
+		assert!(merged.contains(modifier), "missing {modifier} in {merged}");
+	}
+	assert!(!merged.contains("factor = 2 is_at_war"), "{merged}");
+}
+
+#[test]
+fn a_sum_counts_only_the_revisions_that_change_the_value() {
+	let path = "common/ideas/test.txt";
+	let base = parse_at(
+		path,
+		"test_ideas = { start = { tax_income = 1 } bonus = { tax_income = 1 } }
+",
+	);
+	let changed = parse_at(
+		path,
+		"test_ideas = { start = { tax_income = 2 } bonus = { tax_income = 1 } }
+",
+	);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+
+	let outcome = merge_clausewitz_files_n_way(&base, &[&changed, &base], policies)
+		.expect("merge idea groups");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let merged = emit(outcome.resolved_ast().expect("merged without conflicts"));
+	assert!(
+		merged
+			.split_whitespace()
+			.collect::<Vec<_>>()
+			.join(" ")
+			.contains("start = { tax_income = 2 }"),
+		"an unchanged revision must not add the base value again: {merged}"
+	);
+}
+
+fn merged_trigger(base: &str, revisions: &[&str]) -> String {
+	let path = "common/ideas/test.txt";
+	let make = |or: &str| {
+		parse_at(
+			path,
+			&format!("test_ideas = {{ start = {{ tax_income = 1 }} bonus = {{ tax_income = 1 }} trigger = {{ OR = {{ {or} }} }} }}
+"),
+		)
+	};
+	let base = make(base);
+	let revisions = revisions.iter().map(|or| make(or)).collect::<Vec<_>>();
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &revisions.iter().collect::<Vec<_>>(), policies)
+			.expect("merge idea groups");
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	emit(outcome.resolved_ast().expect("merged without conflicts"))
+		.split_whitespace()
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+#[test]
+fn two_mods_extending_an_or_keep_both_alternatives() {
+	let merged = merged_trigger(
+		"tag = FRA",
+		&[
+			"tag = FRA owner = { has_country_flag = flag_a }",
+			"tag = FRA owner = { has_country_flag = flag_b }",
+		],
+	);
+	assert!(
+		merged.contains("owner = { has_country_flag = flag_a }"),
+		"{merged}"
+	);
+	assert!(
+		merged.contains("owner = { has_country_flag = flag_b }"),
+		"{merged}"
+	);
+}
+
+#[test]
+fn two_mods_adding_the_same_alternative_keep_one() {
+	let merged = merged_trigger(
+		"tag = FRA",
+		&[
+			"tag = FRA owner = { has_country_flag = flag_a }",
+			"tag = FRA owner = { has_country_flag = flag_a }",
+		],
+	);
+	assert_eq!(merged.matches("flag_a").count(), 1, "{merged}");
+}
+
+#[test]
+fn a_changed_alternative_is_still_a_change() {
+	let merged = merged_trigger(
+		"tag = FRA owner = { has_country_flag = flag_x }",
+		&[
+			"tag = FRA owner = { has_country_flag = flag_a }",
+			"tag = FRA owner = { has_country_flag = flag_x }",
+		],
+	);
+	assert!(merged.contains("flag_a"), "{merged}");
+	assert!(!merged.contains("flag_x"), "{merged}");
+}
+
+fn merged_idea_trigger(revisions: &[&str]) -> String {
+	let path = "common/ideas/test.txt";
+	let make = |extra: &str| {
+		parse_at(
+			path,
+			&format!("test_ideas = {{ start = {{ tax_income = 1 }} bonus = {{ tax_income = 1 }} trigger = {{ is_at_war = no {extra} }} }}
+"),
+		)
+	};
+	let base = make("");
+	let revisions = revisions
+		.iter()
+		.map(|extra| make(extra))
+		.collect::<Vec<_>>();
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &revisions.iter().collect::<Vec<_>>(), policies)
+			.expect("merge idea groups");
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	emit(outcome.resolved_ast().expect("merged without conflicts"))
+		.split_whitespace()
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+#[test]
+fn conditions_of_one_kind_two_mods_add_become_alternatives() {
+	let merged = merged_idea_trigger(&["tag = FRA", "tag = ENG"]);
+	assert!(
+		merged.contains("trigger = { is_at_war = no OR = { tag = FRA tag = ENG } }"),
+		"{merged}"
+	);
+}
+
+#[test]
+fn conditions_two_mods_add_become_alternatives_whatever_their_kind() {
+	// A trigger is there to fire: each mod's addition is one way it may.
+	let merged = merged_idea_trigger(&["NOT = { has_country_flag = used }", "prestige = 10"]);
+	assert!(
+		merged.contains(
+			"trigger = { is_at_war = no OR = { NOT = { has_country_flag = used } prestige = 10 } }"
+		),
+		"{merged}"
+	);
+}
+
+#[test]
+fn a_replaced_condition_survives_beside_unchanged_revisions() {
+	let path = "common/policies/00_dip.txt";
+	let base_text = "p = {
+	potential = {
+		has_idea_group = a
+		has_idea_group = b
+	}
+}
+";
+	let base = parse_at(path, base_text);
+	let changed = parse_at(
+		path,
+		"p = {
+	potential = {
+		has_idea_group = a
+		has_idea_group = c
+	}
+}
+",
+	);
+	let same = parse_at(path, base_text);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&changed, &same], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("trigger merge resolves"));
+	assert!(output.contains("has_idea_group = c"), "{output}");
+}
+
+#[test]
+fn a_replaced_policy_condition_survives_beside_unchanged_revisions() {
+	let path = "common/policies/00_dip.txt";
+	let base = parse_at(
+		path,
+		"appeal_to_old_powers_policy = {\n\tmonarch_power = DIP\n\t\n\tpotential = {\n\t\thas_idea_group = indigenous_ideas\n\t\thas_idea_group = diplomatic_ideas\n\t}\n\t\n\tallow = {\n\t\tfull_idea_group = indigenous_ideas\n\t\tfull_idea_group = diplomatic_ideas\n\t}\n\t\n\tdiplomatic_reputation = 1\n\timprove_relation_modifier = 0.15\n\n\teffect = {}\n\tremoved_effect = {}\n\tai_will_do = {\n\t\tfactor = 1.0\n\t}\n}\n",
+	);
+	let changed = parse_at(
+		path,
+		"appeal_to_old_powers_policy = {\n\tmonarch_power = DIP\n\t\n\tpotential = {\n\t\thas_idea_group = indigenous_ideas\n\t\thas_idea_group = trade_ideas\n\t}\n\t\n\tallow = {\n\t\tfull_idea_group = indigenous_ideas\n\t\tfull_idea_group = trade_ideas\n\t}\n\t\n\tdiplomatic_reputation = 1\n\timprove_relation_modifier = 0.15\n\n\tai_will_do = {\n\t\tfactor = 1.0\n\t}\n}\n",
+	);
+	let same = parse_at(
+		path,
+		"appeal_to_old_powers_policy = {\n\tmonarch_power = DIP\n\t\n\tpotential = {\n\t\thas_idea_group = indigenous_ideas\n\t\thas_idea_group = diplomatic_ideas\n\t}\n\t\n\tallow = {\n\t\tfull_idea_group = indigenous_ideas\n\t\tfull_idea_group = diplomatic_ideas\n\t}\n\t\n\tdiplomatic_reputation = 1\n\timprove_relation_modifier = 0.15\n\n\teffect = {}\n\tremoved_effect = {}\n\tai_will_do = {\n\t\tfactor = 1.0\n\t}\n}\n",
+	);
+
+	let outcome = merge_clausewitz_files_n_way(
+		&base,
+		&[&changed, &same, &same, &same],
+		&MergePolicies::default(),
+	)
+	.unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("trigger merge resolves"));
+	assert!(output.contains("has_idea_group = trade_ideas"), "{output}");
+}
+
+#[test]
+fn every_mods_added_condition_survives_in_a_trigger() {
+	let path = "common/policies/00_adm.txt";
+	let base = parse_at(
+		path,
+		"p = {\n\tpotential = {\n\t\thas_idea_group = a\n\t}\n}\n",
+	);
+	let left = parse_at(
+		path,
+		"p = {\n\tpotential = {\n\t\thas_idea_group = a\n\t\thas_idea_group = b\n\t}\n}\n",
+	);
+	let right = parse_at(
+		path,
+		"p = {\n\tpotential = {\n\t\thas_idea_group = a\n\t\tfull_idea_group = c\n\t}\n}\n",
+	);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("trigger merge resolves"));
+	assert!(output.contains("has_idea_group = b"), "{output}");
+	assert!(output.contains("full_idea_group = c"), "{output}");
+}
+
+#[test]
+fn a_tooltip_mods_set_differently_shows_every_version() {
+	let path = "common/custom_gui/buttons.txt";
+	let base = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = BASE_TT\n}\n",
+	);
+	let key = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = LEFT_TT\n}\n",
+	);
+	let text = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = \"written\"\n}\n",
+	);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&key, &text], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("tooltips combine"));
+	let combined = crate::merge::combined_text::keys_in(&output);
+	assert_eq!(combined.len(), 1, "{output}");
+	assert_eq!(
+		crate::merge::combined_text::versions(&combined[0]).unwrap(),
+		["LEFT_TT", "written"]
+	);
+}
+
+#[test]
+fn a_tooltip_two_mods_add_differently_shows_both() {
+	let path = "common/custom_gui/buttons.txt";
+	let base = parse_at(path, "custom_button = {\n\tname = b\n}\n");
+	let left = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = LEFT_TT\n}\n",
+	);
+	let right = parse_at(
+		path,
+		"custom_button = {\n\tname = b\n\ttooltip = RIGHT_TT\n}\n",
+	);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("tooltips combine"));
+	let combined = crate::merge::combined_text::keys_in(&output);
+	assert_eq!(combined.len(), 1, "{output}");
+	assert_eq!(
+		crate::merge::combined_text::versions(&combined[0]).unwrap(),
+		["LEFT_TT", "RIGHT_TT"]
+	);
+}
+
+#[test]
+fn a_chain_in_a_condition_stays_together() {
+	let path = "common/new_diplomatic_actions/actions.txt";
+	let text = "action = {\n\ton_accept = {\n\t\tif = {\n\t\t\tlimit = {\n\t\t\t\tis_at_war = no\n\t\t\t\tif = {\n\t\t\t\t\tlimit = { always = yes }\n\t\t\t\t\talliance_with = FROM\n\t\t\t\t}\n\t\t\t\telse = {\n\t\t\t\t\tFROM = { NOT = { liberty_desire = 50 } }\n\t\t\t\t}\n\t\t\t}\n\t\t\tcreate_subject = { subject = FROM }\n\t\t}\n\t}\n}\n";
+	let base = parse_at(path, "");
+	let added = parse_at(path, text);
+	let other = parse_at(path, "");
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&added, &other], &MergePolicies::default()).unwrap();
+
+	assert!(
+		outcome.conflicts().is_empty(),
+		"{:?}
+{}",
+		outcome.conflicts(),
+		emit(outcome.tentative_ast())
+	);
+	let output = emit(outcome.resolved_ast().expect("one mod's chain merges"));
+	assert!(!output.contains("OR"), "{output}");
+}
+
+#[test]
+fn two_mods_appending_guarded_branches_keep_both() {
+	let path = "common/scripted_effects/preview.txt";
+	let branch = |key: &str| {
+		format!(
+			"\tif = {{ limit = {{ can_preview_mission_of_key_and_batch = {{ key = {key} batch = $batch$ }} }} select_current_missions = {{ key = {key} }} }}\n"
+		)
+	};
+	let effect = |extra: &str| {
+		format!(
+			"select_current_branch = {{\n\tcustom_tooltip = end_preview\n{}{}{}}}\n",
+			branch("MAL"),
+			branch("SON"),
+			extra
+		)
+	};
+	let base = parse_at(path, &effect(""));
+	let left = parse_at(path, &effect(&branch("BUR")));
+	let right = parse_at(path, &effect(&branch("IRE")));
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(
+		outcome.conflicts().is_empty(),
+		"{:?}\n{}",
+		outcome.conflicts(),
+		emit(outcome.tentative_ast())
+	);
+	let output = emit(outcome.resolved_ast().expect("both branches merge"));
+	assert!(output.contains("key = BUR"), "{output}");
+	assert!(output.contains("key = IRE"), "{output}");
+}
+
+#[test]
+fn a_condition_an_input_repeats_merges_as_written() {
+	let path = "missions/test_missions.txt";
+	let chain = "if = { limit = { tag = FRA } is_year = 1500 } else = { is_year = 1600 }";
+	let mission = |extra: &str| {
+		format!(
+			"branch = {{\n\tm = {{\n\t\ttrigger = {{\n\t\t\tOR = {{\n\t\t\t\t{chain}\n\t\t\t\t{chain}\n\t\t\t}}\n\t\t}}\n\t\ticon = {extra}\n\t}}\n}}\n"
+		)
+	};
+	let base = parse_at(path, &mission("a"));
+	let left = parse_at(path, &mission("b"));
+	let right = parse_at(path, &mission("a"));
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("the input's own repetition merges"),
+	);
+	assert!(output.contains("icon = b"), "{output}");
+}
+
+#[test]
+fn the_same_condition_two_mods_add_appears_once() {
+	let path = "common/policies/00_adm.txt";
+	let base = parse_at(
+		path,
+		"p = {\n\tpotential = {\n\t\tOR = { tag = FRA }\n\t}\n}\n",
+	);
+	let added = "p = {\n\tpotential = {\n\t\tOR = { tag = FRA tag = ENG }\n\t}\n}\n";
+	let left = parse_at(path, added);
+	let right = parse_at(path, added);
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&left, &right], &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("one addition"));
+	assert_eq!(output.matches("tag = ENG").count(), 1, "{output}");
+}
+
+#[test]
+fn an_edit_follows_a_chain_another_mod_moved() {
+	let path = "decisions/spain.txt";
+	let inherit = |other: &str, condition: &str| {
+		format!(
+			"\t\t\tif = {{ limit = {{ {condition} {other} = {{ ai = yes }} }} inherit = {other} }}\n"
+		)
+	};
+	let decision = |body: &str| {
+		format!(
+			"country_decisions = {{\n\tspain = {{\n\t\teffect = {{\n\t\t\tremove_non_electors_emperors_from_empire_effect = yes\n{body}\t\t\tchange_tag = SPA\n\t\t}}\n\t}}\n}}\n"
+		)
+	};
+	let both = |condition: &dyn Fn(&str) -> String| {
+		format!(
+			"{}{}",
+			inherit("ARA", &condition("CAS")),
+			inherit("CAS", &condition("ARA"))
+		)
+	};
+	let tag = |tag: &str| format!("tag = {tag}");
+	let was = |tag: &str| format!("is_or_was_tag = {{ tag = {tag} }}");
+	let base = parse_at(path, &decision(&both(&tag)));
+	let moved = parse_at(
+		path,
+		&decision(&format!(
+			"\t\t\tif = {{ limit = {{ senior_union_with = NAV }} inherit = NAV }}\n\t\t\tif = {{ limit = {{ has_country_flag = joanna }} inherit = POR }}\n\t\t\telse = {{\n{}\t\t\t}}\n",
+			both(&tag)
+		)),
+	);
+	let edited = parse_at(path, &decision(&both(&was)));
+
+	let outcome =
+		merge_clausewitz_files_n_way(&base, &[&moved, &edited], &MergePolicies::default()).unwrap();
+
+	let output = emit(outcome.tentative_ast());
+	assert_eq!(output.matches("inherit = ARA").count(), 1, "{output}");
+	assert_eq!(output.matches("inherit = CAS").count(), 1, "{output}");
+	assert_eq!(output.matches("is_or_was_tag").count(), 2, "{output}");
+	let else_at = output.find("else =").expect("the move keeps its else");
+	assert!(output.find("inherit = ARA").unwrap() > else_at, "{output}");
 }

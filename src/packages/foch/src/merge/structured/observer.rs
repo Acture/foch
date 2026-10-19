@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rayon::prelude::*;
 
+use crate::merge::progress;
 use crate::merge::timing::{KernelStep, kernel};
 
 use crate::game::eu4::content::{
@@ -58,11 +59,17 @@ impl<'a> TreeSourceObserver<'a> {
 		let partition_ids = base.partitions_with(&revision);
 		let policies = self.policies;
 		let matcher = &self.matcher;
+		let unit = progress::current();
+		let total = partition_ids.len();
 		// Partitions are independent, and one large module unit otherwise
 		// matches hundreds of definition trees in sequence.
 		let observed = partition_ids
 			.into_par_iter()
-			.map(|partition| {
+			.enumerate()
+			.map(|(index, partition)| {
+				let _unit = progress::attach(unit.clone());
+				let _item =
+					progress::item(|| format!("partition {partition:?} ({}/{total})", index + 1));
 				// A partition the source left as its parent has it changes
 				// nothing: it carries the parent's lineage and needs no delta.
 				// Most of a folded module view is such vanilla content. A reset
@@ -90,12 +97,20 @@ impl<'a> TreeSourceObserver<'a> {
 						})?;
 					Ok::<_, String>((base_tree, revision_tree))
 				})?;
+				progress::detail(|| {
+					format!(
+						"match base_nodes={} revision_nodes={}",
+						base_tree.len(),
+						revision_tree.len()
+					)
+				});
 				let matching = kernel(KernelStep::ObserveMatch, || {
 					matcher.match_trees(&base_tree, &revision_tree)
 				});
 				let delta = kernel(KernelStep::ObserveDelta, || {
 					RevisionDelta::between(&base_tree, RevisionId::LEFT, &revision_tree, &matching)
 				});
+				progress::detail(|| "lineage".to_string());
 				let partition_lineage = kernel(KernelStep::ObserveLineage, || {
 					apply_source_delta_lineage(
 						&source,

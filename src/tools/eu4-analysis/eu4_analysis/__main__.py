@@ -54,7 +54,7 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 	builtins.add_arguments(
 		commands.add_parser(
 			"builtins",
-			help="Build a builtin symbol catalog from explicit local sources",
+			help="Write the builtin keyword catalog",
 		)
 	)
 	inspect = commands.add_parser("inspect", help="Export one function and its calls")
@@ -94,20 +94,7 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 	)
 	args: argparse.Namespace = parser.parse_args(argv)
 	if args.command == "builtins":
-		if args.max_game_files < 0:
-			parser.error("--max-game-files cannot be negative")
-		if args.max_game_files and args.game_root is None:
-			parser.error("--max-game-files requires --game-root")
-		return BuiltinOptions(
-			args.cwtools_dir,
-			args.wiki_effects,
-			args.wiki_conditions,
-			args.wiki_scope,
-			args.output,
-			args.irony_readme,
-			args.game_root,
-			args.max_game_files,
-		)
+		return BuiltinOptions(args.output)
 	if args.ghidra is None:
 		parser.error("set --ghidra or GHIDRA_INSTALL_DIR")
 	if args.timeout <= 0:

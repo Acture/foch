@@ -6,4 +6,4 @@
 /// Raise the last number by one when a change makes any of it unreadable or
 /// stale, at most once per pull request. Foch is unreleased, so this stays a
 /// 0.0.N pre-release version.
-pub const DATA_VERSION: &str = "0.0.21";
+pub const DATA_VERSION: &str = "0.0.22";

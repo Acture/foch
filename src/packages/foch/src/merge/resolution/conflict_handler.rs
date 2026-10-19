@@ -89,6 +89,13 @@ pub trait ConflictHandler {
 	fn set_conflict_progress(&mut self, _current: usize, _total: usize) {}
 
 	fn set_deferred_so_far(&mut self, _count: usize) {}
+
+	/// Whether conflicts this handler leaves deferred keep a change over a
+	/// deletion and otherwise what the game loads last, instead of waiting
+	/// for review.
+	fn defers_to_load_order(&self) -> bool {
+		false
+	}
 }
 
 fn unique_candidate_index(view: &ConflictMetadataView, mod_id: &str) -> Option<usize> {
@@ -121,6 +128,26 @@ pub enum ConflictDecision {
 	},
 	/// Abort the merge.
 	Abort,
+}
+
+/// Ends the automatic chain: defers every conflict, and with `enabled`
+/// leaves them to the load-order default rather than to review.
+pub(crate) struct LoadOrderDefaultHandler {
+	pub(crate) enabled: bool,
+}
+
+impl ConflictHandler for LoadOrderDefaultHandler {
+	fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
+		ConflictDecision::Defer { record: None }
+	}
+
+	fn conflict_view_requirement(&self) -> ConflictViewRequirement {
+		ConflictViewRequirement::DeferWithoutView
+	}
+
+	fn defers_to_load_order(&self) -> bool {
+		self.enabled
+	}
 }
 
 /// Default handler: always defer, reproducing the current behavior.
@@ -867,6 +894,10 @@ impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<
 	fn set_conflict_progress(&mut self, current: usize, total: usize) {
 		self.first.set_conflict_progress(current, total);
 		self.second.set_conflict_progress(current, total);
+	}
+
+	fn defers_to_load_order(&self) -> bool {
+		self.first.defers_to_load_order() || self.second.defers_to_load_order()
 	}
 
 	fn set_deferred_so_far(&mut self, count: usize) {

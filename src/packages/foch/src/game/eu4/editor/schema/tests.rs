@@ -1690,7 +1690,7 @@ fn diagnostics_accept_scope_keywords_in_alias_rule_bodies() {
 	let documents = [
 		(
 			"common/scripted_triggers/sample.txt",
-			"my_trigger = {\n\tOR = {\n\t\talways = yes\n\t\tis_at_war = yes\n\t}\n\tAND = { always = yes }\n\tNOT = { is_at_war = yes }\n\tNOR = { always = no }\n\tROOT = { is_at_war = yes }\n}\n",
+			"my_trigger = {\n\tOR = {\n\t\talways = yes\n\t\tis_at_war = yes\n\t}\n\tAND = { always = yes }\n\tNOT = { is_at_war = yes }\n\tROOT = { is_at_war = yes }\n}\n",
 		),
 		(
 			"common/scripted_effects/sample.txt",
@@ -1701,6 +1701,32 @@ fn diagnostics_accept_scope_keywords_in_alias_rule_bodies() {
 		let diagnostics = schema.diagnostics(game_path(path), text, None);
 		assert!(diagnostics.is_empty(), "{path}: {diagnostics:?}");
 	}
+}
+
+/// `NOR` is no logical block in EU4: the game writes `NOR = { ... }` for
+/// Norway (`peace_treaties/00_claim_norwegian_throne.txt`), so it is the tag
+/// the workspace defines, switching to a country.
+#[test]
+fn nor_is_a_country_tag_not_a_logical_block() {
+	let schema = EditorSchema::active();
+	let tags_path = game_path("common/country_tags/00_countries.txt");
+	let tags = "NOR = \"countries/Norway.txt\"\n";
+	let effect_path = game_path("common/scripted_effects/sample.txt");
+	let effect = "my_effect = {\n\tNOR = { junior_union_with = ROOT }\n}\n";
+	let workspace = schema.workspace(&[
+		SchemaDocument::new(tags_path, tags),
+		SchemaDocument::new(effect_path, effect),
+	]);
+	let diagnostics = schema.diagnostics(effect_path, effect, Some(&workspace));
+	assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+	let without_tags = schema.diagnostics(effect_path, effect, None);
+	assert!(
+		diagnostics_with_code(&without_tags, "V001")
+			.iter()
+			.any(|diagnostic| diagnostic.message.contains("`NOR`")),
+		"{without_tags:?}"
+	);
 }
 
 /// The fixes for OSS-407 must not hide genuine findings inside definitions.
@@ -1805,9 +1831,14 @@ fn diagnostics_accept_keys_matching_typed_rule_keys() {
 		names,
 		None,
 	);
-	let unknown = diagnostics_with_code(&diagnostics, "V001");
-	assert_eq!(unknown.len(), 1, "{diagnostics:?}");
-	assert!(unknown[0].message.contains("`11`"), "{diagnostics:?}");
+	// A number out of the range is the numbered key, of the wrong value.
+	let mistyped = diagnostics_with_code(&diagnostics, "V005");
+	assert_eq!(mistyped.len(), 1, "{diagnostics:?}");
+	assert!(mistyped[0].message.contains("`11`"), "{diagnostics:?}");
+	assert!(
+		diagnostics_with_code(&diagnostics, "V001").is_empty(),
+		"{diagnostics:?}"
+	);
 
 	let on_actions = "on_bi_yearly_pulse = {\n\trandom_events = {\n\t\t1000 = 0\n\t\t100 = sample.6\n\t\tnot_a_weight = 0\n\t}\n}\n";
 	let diagnostics = schema.diagnostics(

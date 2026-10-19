@@ -7,7 +7,6 @@ pub(crate) use coverage::{document_family_name, write_coverage_report};
 
 use crate::DATA_VERSION;
 use crate::game::eu4::Eu4;
-use crate::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
 use crate::game::eu4::base::analysis_rules_version;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::documents::{
@@ -19,9 +18,9 @@ use crate::input::{InventoryOwner, collect_relative_files, dedup_candidates};
 use crate::model::{
 	AliasUsage, AsGamePathText, CsvRow, DocumentFamily, DocumentRecord, GamePath, GamePathBuf,
 	JsonProperty, KeyUsage, LocalisationDefinition, LocalisationDuplicate, MaybeScope,
-	ParamBinding, ParamContract, ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment,
-	ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
-	SymbolReference, UiDefinition,
+	ParamBinding, ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind,
+	ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
+	UiDefinition,
 };
 use crate::playset::steam::steam_game_install_path;
 use flate2::Compression;
@@ -599,6 +598,7 @@ impl BaseAnalysisSnapshot {
 					path: item.path.clone(),
 					span: item.span.clone(),
 					key: item.key.clone(),
+					inherits_this: item.inherits_this,
 				})
 				.collect(),
 			symbol_definitions: index
@@ -620,7 +620,6 @@ impl BaseAnalysisSnapshot {
 					inferred_root_mask: item.inferred_root_mask,
 					required_params: item.required_params.clone(),
 					optional_params: item.optional_params.clone(),
-					param_contract: item.param_contract.clone(),
 					scope_param_names: item.scope_param_names.clone(),
 				})
 				.collect(),
@@ -637,6 +636,7 @@ impl BaseAnalysisSnapshot {
 					scope_id: item.scope_id,
 					provided_params: item.provided_params.clone(),
 					param_bindings: item.param_bindings.clone(),
+					schema_alias: item.schema_alias,
 				})
 				.collect(),
 			alias_usages: index
@@ -740,7 +740,7 @@ impl BaseAnalysisSnapshot {
 
 	pub fn to_semantic_index(&self) -> SemanticIndex {
 		let mod_id = base_game_mod_id(&self.game);
-		let mut index = SemanticIndex {
+		SemanticIndex {
 			documents: self
 				.documents
 				.iter()
@@ -765,6 +765,7 @@ impl BaseAnalysisSnapshot {
 					path: item.path.clone(),
 					span: item.span.clone(),
 					key: item.key.clone(),
+					inherits_this: item.inherits_this,
 				})
 				.collect(),
 			definitions: self
@@ -791,7 +792,6 @@ impl BaseAnalysisSnapshot {
 					inferred_root_mask: item.inferred_root_mask,
 					required_params: item.required_params.clone(),
 					optional_params: item.optional_params.clone(),
-					param_contract: item.param_contract.clone(),
 					scope_param_names: item.scope_param_names.clone(),
 				})
 				.collect(),
@@ -809,6 +809,7 @@ impl BaseAnalysisSnapshot {
 					scope_id: item.scope_id,
 					provided_params: item.provided_params.clone(),
 					param_bindings: item.param_bindings.clone(),
+					schema_alias: item.schema_alias,
 				})
 				.collect(),
 			alias_usages: self
@@ -917,9 +918,7 @@ impl BaseAnalysisSnapshot {
 				})
 				.collect(),
 			parse_issues: Vec::<ParseIssue>::new(),
-		};
-		apply_registered_param_contracts(&mut index);
-		index
+		}
 	}
 
 	pub(crate) fn parsed_script_files(
@@ -999,6 +998,8 @@ pub struct BaseScopeNode {
 	pub span: SourceSpan,
 	#[serde(default)]
 	pub key: String,
+	#[serde(default)]
+	pub inherits_this: bool,
 }
 
 #[derive(
@@ -1026,8 +1027,6 @@ pub struct BaseSymbolDefinition {
 	#[serde(default)]
 	pub optional_params: Vec<String>,
 	#[serde(default)]
-	pub param_contract: Option<ParamContract>,
-	#[serde(default)]
 	pub scope_param_names: Vec<String>,
 }
 
@@ -1049,6 +1048,7 @@ pub struct BaseSymbolReference {
 	pub scope_id: usize,
 	pub provided_params: Vec<String>,
 	pub param_bindings: Vec<ParamBinding>,
+	pub schema_alias: bool,
 }
 
 #[derive(
@@ -1260,6 +1260,11 @@ pub fn default_release_tag() -> String {
 
 pub fn base_game_mod_id(game_key: &str) -> String {
 	format!("{BASE_GAME_MOD_ID_PREFIX}{game_key}")
+}
+
+/// Whether `mod_id` names the game installation rather than a mod.
+pub fn is_base_game_mod_id(mod_id: &str) -> bool {
+	mod_id.starts_with(BASE_GAME_MOD_ID_PREFIX)
 }
 
 pub fn resolve_game_root(config: &Config, game: &Eu4) -> Option<PathBuf> {

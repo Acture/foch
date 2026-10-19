@@ -397,7 +397,7 @@ custom_button = {
 	name = transfer_occupation_button
 	potential = {
 		custom_trigger_tooltip = { tooltip = only_allies_tt controller = { alliance_with = FROM } }
-		owner = { any_owned_province = { type = all is_core = PREV } }
+		owner = { num_of_owned_provinces_with = { value = 2 is_core = PREV } }
 		NOT = { controller = FROM }
 	}
 	effect = {

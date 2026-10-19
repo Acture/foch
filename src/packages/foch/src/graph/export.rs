@@ -1034,7 +1034,6 @@ mod definition_deps_tests {
 			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
-			param_contract: None,
 			scope_param_names: Vec::new(),
 		}
 	}
@@ -1057,6 +1056,7 @@ mod definition_deps_tests {
 			scope_id: 0,
 			provided_params: Vec::new(),
 			param_bindings: Vec::new(),
+			schema_alias: false,
 		}
 	}
 

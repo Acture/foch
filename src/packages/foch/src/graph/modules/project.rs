@@ -123,7 +123,6 @@ mod tests {
 			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
-			param_contract: None,
 			scope_param_names: Vec::new(),
 		}
 	}
@@ -140,6 +139,7 @@ mod tests {
 			scope_id,
 			provided_params: Vec::new(),
 			param_bindings: Vec::new(),
+			schema_alias: false,
 		}
 	}
 
@@ -154,6 +154,7 @@ mod tests {
 			path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
 			span: SourceSpan { line: 1, column: 1 },
 			key: String::new(),
+			inherits_this: false,
 		}
 	}
 

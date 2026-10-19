@@ -1,9 +1,8 @@
 use super::{
-	BASE_DATA_DIR_ENV, BASE_DATA_ENV_LOCK, BaseAnalysisSnapshot, BaseDataSource,
-	BaseSymbolDefinition, CoverageClass, INSTALLED_COVERAGE_FILE_NAME,
-	INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata, build_coverage_report,
-	clear_cached_loaded_base_snapshot, decode_cached_base_snapshot, decode_snapshot_from_bytes,
-	encode_snapshot_to_bytes, install_installed_snapshot_decode_gate,
+	BASE_DATA_DIR_ENV, BASE_DATA_ENV_LOCK, BaseAnalysisSnapshot, BaseDataSource, CoverageClass,
+	INSTALLED_COVERAGE_FILE_NAME, INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata,
+	build_coverage_report, clear_cached_loaded_base_snapshot, decode_cached_base_snapshot,
+	decode_snapshot_from_bytes, encode_snapshot_to_bytes, install_installed_snapshot_decode_gate,
 	installed_base_snapshot_identity, installed_snapshot_cold_decode_count,
 	installed_snapshot_current_digest_count, installed_snapshot_current_validation_count,
 	installed_snapshot_file_read_count, load_installed_base_snapshot,
@@ -20,7 +19,7 @@ use crate::game::eu4::content::ScriptFileKind;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::parse_clausewitz_content;
 use crate::model::{
-	DocumentFamily, DocumentRecord, GamePathBuf, LocalisationDefinition, MaybeScope, ParamContract,
+	DocumentFamily, DocumentRecord, GamePathBuf, LocalisationDefinition, MaybeScope,
 	ResourceReference, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind, base_scope,
 	test_support,
 };
@@ -81,16 +80,6 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 			"name".to_string(),
 			"duration".to_string(),
 		],
-		param_contract: Some(ParamContract {
-			required_all: vec![
-				"age".to_string(),
-				"name".to_string(),
-				"duration".to_string(),
-			],
-			optional: vec!["else".to_string()],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
 		optional_params: Vec::new(),
 		scope_param_names: Vec::new(),
 	});
@@ -670,7 +659,6 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		inferred_from_mask: ScopeSet::EMPTY,
 		inferred_root_mask: ScopeSet::EMPTY,
 		required_params: vec!["value".to_string()],
-		param_contract: None,
 		optional_params: Vec::new(),
 		scope_param_names: Vec::new(),
 	});
@@ -1829,43 +1817,6 @@ fn base_snapshot_decode_rejects_record_paths_that_are_not_game_paths() {
 			"{name}: {error}"
 		);
 	}
-}
-
-#[test]
-fn base_snapshot_round_trip_preserves_param_contracts() {
-	let snapshot = sample_snapshot_with_contract();
-	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
-	let decoded = decode_snapshot_from_bytes(&encoded.bytes).expect("decode snapshot");
-	let contract = decoded
-		.symbol_definitions
-		.first()
-		.and_then(|definition| definition.param_contract.as_ref())
-		.expect("serialized param contract");
-	assert_eq!(contract.required_all, vec!["age", "name", "duration"]);
-	assert_eq!(contract.optional, vec!["else"]);
-	assert_eq!(
-		decoded
-			.symbol_definitions
-			.first()
-			.map(|definition| definition.inferred_this_mask),
-		Some(country_mask())
-	);
-
-	let rehydrated = decoded.to_semantic_index();
-	let contract = rehydrated
-		.definitions
-		.first()
-		.and_then(|definition| definition.param_contract.as_ref())
-		.expect("rehydrated param contract");
-	assert_eq!(contract.required_all, vec!["age", "name", "duration"]);
-	assert_eq!(contract.optional, vec!["else"]);
-	assert_eq!(
-		rehydrated
-			.definitions
-			.first()
-			.map(|definition| definition.inferred_this_mask),
-		Some(country_mask())
-	);
 }
 
 #[test]
@@ -3851,29 +3802,6 @@ fn load_installed_base_snapshot_rejects_stale_format_before_reading_snapshot() {
 	unsafe {
 		std::env::remove_var(BASE_DATA_DIR_ENV);
 	}
-}
-
-#[test]
-fn base_symbol_definition_defaults_missing_param_contract() {
-	test_support::install_defaults();
-	let raw = serde_json::json!({
-		"kind": "ScriptedEffect",
-		"name": "test.effect",
-		"module": "test",
-		"local_name": "test_effect",
-		"path": "common/scripted_effects/test.txt",
-		"line": 1,
-		"column": 1,
-		"scope_id": 0,
-		"declared_this_type": MaybeScope::Known(base_scope::country()),
-		"inferred_this_type": MaybeScope::Known(base_scope::country()),
-		"inferred_this_mask": country_mask(),
-		"required_params": []
-	});
-	let decoded: BaseSymbolDefinition =
-		serde_json::from_value(raw).expect("deserialize base symbol definition");
-	assert!(decoded.param_contract.is_none());
-	assert_eq!(decoded.inferred_this_mask, country_mask());
 }
 
 #[test]

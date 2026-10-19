@@ -570,6 +570,7 @@ impl App {
 				.map(|playset_mod| playset_mod.id.clone())
 				.collect(),
 			gui_scroll_merge: settings.gui_scroll_merge,
+			strict: false,
 			ignore_replace_path: settings.ignore_replace_path,
 			ignore_dep: Vec::new(),
 			config: None,

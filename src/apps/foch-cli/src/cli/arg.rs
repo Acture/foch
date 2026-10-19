@@ -351,6 +351,12 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub gui_scroll_merge: bool,
 
+	/// Leave conflicts nothing resolves for review. By default a change wins
+	/// over a deletion, and a definition whose changes cannot be reconciled
+	/// keeps the version of the mod loaded last, as the game would unmerged.
+	#[arg(long)]
+	pub strict: bool,
+
 	/// Treat replace_path declarations as no-ops; merge as if they were absent.
 	#[arg(long)]
 	pub ignore_replace_path: bool,
@@ -424,6 +430,7 @@ impl MergeArgs {
 			(self.no_game_base, "--no-game-base"),
 			(self.include_base, "--include-base"),
 			(self.gui_scroll_merge, "--gui-scroll-merge"),
+			(self.strict, "--strict"),
 			(self.ignore_replace_path, "--ignore-replace-path"),
 			(self.provenance, "--provenance"),
 			(self.confirm, "--confirm"),

@@ -11,7 +11,7 @@ use super::materialize::{
 use super::output::artifact_tree::AnalyzedArtifactTree;
 use super::review::{MergeReview, MergeReviewSummary, MergeUnitOutcome};
 use super::timing::stage;
-use crate::game::eu4::base::snapshot::InstalledBaseSnapshotIdentity;
+use crate::game::eu4::base::snapshot::{InstalledBaseSnapshotIdentity, is_base_game_mod_id};
 use crate::game::eu4::script::emit::EmitOptions;
 static VALIDATION_PLAYSET_COUNTER: AtomicU64 = AtomicU64::new(0);
 use crate::check::run_checks_with_options;
@@ -47,6 +47,9 @@ pub struct MergeAnalysisOptions {
 	pub include_base: bool,
 	pub gui_scroll_merge: bool,
 	pub force: bool,
+	/// Leave conflicts nothing resolves for review, instead of keeping a
+	/// change over a deletion and otherwise what the game loads last.
+	pub strict: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
 	/// Optional explicit foch.toml path supplied by the CLI.
@@ -588,6 +591,7 @@ fn complete_merge_analysis(
 			include_base: options.include_base,
 			gui_scroll_merge: options.gui_scroll_merge,
 			force: options.force,
+			load_order_default: !options.strict,
 			ignore_replace_path: options.ignore_replace_path,
 			dep_overrides: options.dep_overrides.clone(),
 			resolution_map,
@@ -1009,19 +1013,36 @@ fn revalidate_generated_output(
 
 	Ok(MergeReportValidation {
 		fatal_errors: result.fatal_errors.len(),
-		strict_findings: result.strict_findings.len(),
-		advisory_findings: result.advisory_findings.len(),
+		strict_findings: count_output_findings(&result.strict_findings, None),
+		advisory_findings: count_output_findings(&result.advisory_findings, None),
 		parse_errors: result.analysis_meta.parse_errors,
-		unresolved_references: count_findings_for_rules(
+		unresolved_references: count_output_findings(
 			&result.findings,
-			&[
+			Some(&[
 				"unresolved-call-target",
+				"call-in-wrong-position",
 				"missing-effect-parameter",
 				"unresolved-flag-reference",
-			],
+			]),
 		),
-		missing_localisation: count_findings_for_rules(&result.findings, &["missing-localisation"]),
+		missing_localisation: count_output_findings(
+			&result.findings,
+			Some(&["missing-localisation"]),
+		),
 	})
+}
+
+/// Findings in the generated output, of `rule_ids` when given. The game's own
+/// files carry findings of their own, the same with or without the merge, so
+/// they are not counted.
+fn count_output_findings(findings: &[Finding], rule_ids: Option<&[&str]>) -> usize {
+	findings
+		.iter()
+		.filter(|finding| !finding.mod_id.as_deref().is_some_and(is_base_game_mod_id))
+		.filter(|finding| {
+			rule_ids.is_none_or(|rule_ids| rule_ids.contains(&finding.rule_id.as_str()))
+		})
+		.count()
 }
 
 /// The configuration that checks the generated output. A project manifest can
@@ -1038,13 +1059,6 @@ fn validation_config(request: &InputRequest) -> Result<Config, InputResolveError
 			.insert(summary.game.key().to_string(), game_root);
 	}
 	Ok(config)
-}
-
-fn count_findings_for_rules(findings: &[Finding], rule_ids: &[&str]) -> usize {
-	findings
-		.iter()
-		.filter(|finding| rule_ids.contains(&finding.rule_id.as_str()))
-		.count()
 }
 
 pub(super) fn write_merge_report_artifact(
@@ -1166,6 +1180,40 @@ mod tests {
 	use crate::model::HandlerResolutionRecord;
 	use std::collections::HashMap;
 	use std::sync::Mutex;
+
+	#[test]
+	fn validation_counts_only_the_generated_outputs_findings() {
+		let finding = |rule_id: &str, mod_id: &str| Finding {
+			rule_id: rule_id.to_string(),
+			severity: crate::model::Severity::Error,
+			channel: crate::model::FindingChannel::Strict,
+			message: String::new(),
+			mod_id: Some(mod_id.to_string()),
+			path: None,
+			source_file: None,
+			evidence: None,
+			line: None,
+			column: None,
+			confidence: None,
+		};
+		let findings = [
+			finding("unresolved-call-target", "__game__eu4"),
+			finding("missing-localisation", "__game__eu4"),
+			finding("unresolved-call-target", "validation_merged"),
+			finding("missing-localisation", "validation_merged"),
+			finding("missing-localisation", "validation_merged"),
+		];
+
+		assert_eq!(count_output_findings(&findings, None), 3);
+		assert_eq!(
+			count_output_findings(&findings, Some(&["unresolved-call-target"])),
+			1
+		);
+		assert_eq!(
+			count_output_findings(&findings, Some(&["missing-localisation"])),
+			2
+		);
+	}
 
 	#[derive(Default)]
 	struct RecordingProgressObserver {
@@ -1293,6 +1341,7 @@ mod tests {
 				include_base: false,
 				gui_scroll_merge: false,
 				force: false,
+				strict: true,
 				ignore_replace_path: false,
 				dep_overrides: Vec::new(),
 				resolution_config_path: None,
@@ -1371,6 +1420,7 @@ mod tests {
 				include_base: false,
 				gui_scroll_merge: false,
 				force: false,
+				strict: true,
 				ignore_replace_path: false,
 				dep_overrides: Vec::new(),
 				resolution_config_path: Some(config_path.clone()),
@@ -1409,6 +1459,7 @@ mod tests {
 				include_base: false,
 				gui_scroll_merge: false,
 				force: false,
+				strict: true,
 				ignore_replace_path: false,
 				dep_overrides: Vec::new(),
 				resolution_config_path: None,
@@ -1446,6 +1497,7 @@ mod tests {
 				include_base: false,
 				gui_scroll_merge: false,
 				force: false,
+				strict: true,
 				ignore_replace_path: false,
 				dep_overrides: Vec::new(),
 				resolution_config_path: None,
@@ -1480,6 +1532,7 @@ mod tests {
 				include_base: false,
 				gui_scroll_merge: false,
 				force: false,
+				strict: true,
 				ignore_replace_path: false,
 				dep_overrides: Vec::new(),
 				resolution_config_path: None,
@@ -1786,6 +1839,7 @@ mod tests {
 				include_base: false,
 				gui_scroll_merge: false,
 				force: false,
+				strict: true,
 				ignore_replace_path: false,
 				dep_overrides: Vec::new(),
 				resolution_config_path: None,

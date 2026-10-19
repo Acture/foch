@@ -94,6 +94,7 @@ pub(crate) fn normalize_ast_with_findings(
 	file: &AstFile,
 	policy: &impl ClausewitzTreePolicy,
 ) -> Result<(NormalizedTree, Vec<String>), AstAdapterError> {
+	policy.prepare(file);
 	let mut findings = Vec::new();
 	let children = normalize_statements(
 		&file.statements,
@@ -106,7 +107,7 @@ pub(crate) fn normalize_ast_with_findings(
 		FILE_KIND,
 		None,
 		None,
-		ChildOrder::Ordered,
+		policy.file_child_order(),
 		ChildCardinality::Many,
 		children,
 	))?;
@@ -239,7 +240,21 @@ fn normalize_statement_with_item_anchor(
 			let mut node = branch(
 				&kind,
 				Some(key.clone()),
-				entity.or_else(|| policy.assignment_anchor(parent_assignment_key, key, value)),
+				entity
+					.or_else(|| policy.schema_identity(value))
+					.or_else(|| policy.assignment_anchor(parent_assignment_key, key, value))
+					.map(|mut anchor| {
+						// A statement the block may repeat is named by its key
+						// as any other, but marked so that two different ones
+						// added by two revisions stay two.
+						if anchor.namespace == "clausewitz.assignment.key"
+							&& policy.is_repeatable_statement(value)
+						{
+							anchor.namespace =
+								crate::merge::kernel::REPEATABLE_STATEMENT.to_string();
+						}
+						anchor
+					}),
 				ChildOrder::Ordered,
 				ChildCardinality::ExactlyOne,
 				vec![child],
@@ -385,7 +400,9 @@ fn normalize_value_at(
 		AstValue::Block { items, .. } => branch(
 			&block_kind(assignment_key),
 			None,
-			None,
+			policy
+				.is_condition_block(value)
+				.then(|| SemanticKey::parent_scoped(crate::merge::kernel::CONDITION_BLOCK, "")),
 			policy.block_child_order(assignment_key),
 			ChildCardinality::Many,
 			normalize_statements(
@@ -560,6 +577,23 @@ pub(crate) fn semantic_node_address(
 
 fn is_statement_node(node: &NormalizedNode) -> bool {
 	is_assignment_node(node) || node.kind == ITEM_KIND
+}
+
+/// Whether a node holds the one value of an assignment, or is an assignment
+/// holding one value: the place a mod can only set one way.
+pub(super) fn is_single_value(tree: &NormalizedTree, id: NodeId) -> bool {
+	let Ok(node) = tree.node(id) else {
+		return false;
+	};
+	let is_scalar = |node: &NormalizedNode| node.kind.starts_with("clausewitz.scalar.");
+	if is_scalar(node) {
+		return node
+			.parent
+			.and_then(|parent| tree.node(parent).ok())
+			.is_some_and(|parent| is_assignment_node(parent) && parent.children.len() == 1);
+	}
+	is_assignment_node(node)
+		&& matches!(node.children.as_slice(), [child] if tree.node(*child).is_ok_and(is_scalar))
 }
 
 fn is_assignment_node(node: &NormalizedNode) -> bool {

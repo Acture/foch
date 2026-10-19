@@ -1,8 +1,5 @@
 use foch::game::eu4::analysis::{AnalyzeOptions, analyze_visibility};
-use foch::game::eu4::base::builtin::{
-	alias_keywords, builtin_effect_names, builtin_trigger_names, contextual_keywords,
-	reserved_keywords,
-};
+use foch::game::eu4::base::builtin::{alias_keywords, contextual_keywords, reserved_keywords};
 use foch::game::eu4::editor::schema::{
 	EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
 	SchemaDiagnostic as EditorSchemaDiagnostic, SchemaDocument, SchemaHover, SchemaLoadStatus,
@@ -22,6 +19,7 @@ use foch::game::eu4::script::parser::{
 use foch::game::eu4::script::{
 	ParsedScriptFile, build_semantic_index, parse_script_file, resolve_symbol_reference_targets,
 };
+use foch::game::eu4::{schema_effect_names, schema_trigger_names};
 use foch::input::{
 	Config, InputRequest, InputSource, InputTargetRole, load_or_init_config, resolve_input_targets,
 };
@@ -1067,7 +1065,7 @@ fn build_static_candidates() -> Vec<CompletionCandidate> {
 			source: CandidateSource::Literal,
 		});
 	}
-	for key in builtin_trigger_names() {
+	for key in schema_trigger_names() {
 		out.push(CompletionCandidate {
 			label: key.clone(),
 			insert_text: key.clone(),
@@ -1076,7 +1074,7 @@ fn build_static_candidates() -> Vec<CompletionCandidate> {
 			source: CandidateSource::Builtin,
 		});
 	}
-	for key in builtin_effect_names() {
+	for key in schema_effect_names() {
 		out.push(CompletionCandidate {
 			label: key.clone(),
 			insert_text: key.clone(),
@@ -3350,7 +3348,7 @@ path = "local-mod"
 		fs::create_dir_all(root.join("events")).expect("create events");
 		fs::write(
 			root.join("decisions").join("a.txt"),
-			"test_decision = { effect = { set_country_flag = CTRLMA_open_config_menu_flag } }\n",
+			"country_decisions = { test_decision = { effect = { set_country_flag = CTRLMA_open_config_menu_flag } } }\n",
 		)
 		.expect("write decision");
 		fs::write(
@@ -3408,7 +3406,7 @@ path = "local-mod"
 		.expect("write effect");
 		fs::write(
 			root.join("decisions").join("b.txt"),
-			"test_decision = { effect = { my_effect = { } } }\n",
+			"country_decisions = { test_decision = { effect = { my_effect = { } } } }\n",
 		)
 		.expect("write decision");
 
@@ -3527,10 +3525,13 @@ path = "local-mod"
 		)
 		.expect("write trigger");
 		for (root, body) in [
-			(&effect_root, "test_decision = { effect = { foo = { } } }\n"),
+			(
+				&effect_root,
+				"country_decisions = { test_decision = { effect = { foo = { } } } }\n",
+			),
 			(
 				&trigger_root,
-				"test_decision = { allow  = { foo = { } } }\n",
+				"country_decisions = { test_decision = { allow  = { foo = { } } } }\n",
 			),
 		] {
 			fs::create_dir_all(root.join("decisions")).expect("create decisions");
@@ -3594,7 +3595,7 @@ path = "local-mod"
 		.expect("write effect");
 		fs::write(
 			root.join("decisions").join("b.txt"),
-			"test_decision = { effect = { my_effect = { } } }\n",
+			"country_decisions = { test_decision = { effect = { my_effect = { } } } }\n",
 		)
 		.expect("write decision");
 
@@ -3648,7 +3649,7 @@ path = "local-mod"
 		.expect("write effect");
 		fs::write(
 			root.join("decisions").join("b.txt"),
-			"test_decision = { effect = { my_effect = { } } }\n",
+			"country_decisions = { test_decision = { effect = { my_effect = { } } } }\n",
 		)
 		.expect("write decision");
 

@@ -11,30 +11,29 @@ pub(crate) use self::extractors::is_clausewitz_date_key;
 
 use self::localisation::collect_localisation_definitions_from_root;
 use self::parser::{AstFile, AstStatement, AstValue, ParseResult, SpanRange, read_failure};
-use super::analysis::param_contracts::{
-	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
-};
-use super::base::builtin::{
-	is_builtin_effect, is_builtin_iterator, is_builtin_scope_changer, is_builtin_special_block,
-	is_builtin_trigger, is_contextual_keyword, is_game_only_candidate, is_reserved_keyword,
-};
+use super::base::builtin::{is_contextual_keyword, is_reserved_keyword};
 use super::content::{
 	ContentFamilyDescriptor, ContentFamilyScopePolicy, ScriptFileKind, eu4,
 	module_name_for_descriptor,
 };
 use super::cwt::{
-	hand_container_scope_fallback, is_country_file_reference, is_country_tag_selector,
-	is_country_tag_text, is_dynamic_scope_reference_key, is_province_id_selector,
-	is_province_id_text, looks_like_map_group_key, schema_file_kind_container_scope_kind,
-	schema_path_container_scope_kind,
+	Eu4Dialect, is_country_file_reference, is_country_tag_text, is_province_id_text,
+	is_schema_effect, is_schema_trigger,
 };
-pub use super::cwt::{iterator_scope_type, scope_changer_target_type, special_block_scope_kind};
-use crate::game::schema::query::CwtQuery;
+use crate::game::eu4::editor::schema::{complex_enum_file_values, schema_definitions};
+use crate::game::schema::bind::{
+	BoundContext, DefinitionKeyTemplate, SCRIPT_PARAMETER_KEY_ENUM, SchemaBinder, ScopeKeyword,
+	StatementBinding, alias_wildcard, conditions_match, rules_admit,
+};
+use crate::game::schema::query::{
+	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledRoot, CompiledRuleValue,
+	CwtQuery, RuleContext,
+};
 use crate::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, GamePath, GamePathBuf, KeyUsage,
 	LocalisationDefinition, MaybeScope, ParamBinding, ParseIssue, ResourceReference,
-	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, ScopeType, SemanticIndex, SourceSpan,
-	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition, base_scope, has_fatal_parse_issue,
+	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition,
+	SymbolKind, SymbolReference, UiDefinition, base_scope, has_fatal_parse_issue, lookup_scope,
 };
 use rayon::prelude::*;
 use regex::Regex;
@@ -79,48 +78,6 @@ pub fn classify_script_file(relative: &GamePath) -> ScriptFileKind {
 		.map_or(ScriptFileKind::new("other"), |descriptor| {
 			descriptor.script_file_kind.clone()
 		})
-}
-
-#[derive(Default)]
-struct MapGroupLookup {
-	province_sets: HashSet<String>,
-}
-
-impl MapGroupLookup {
-	fn contains(&self, key: &str) -> bool {
-		self.province_sets.contains(key)
-	}
-}
-
-fn collect_map_groups(files: &[ParsedScriptFile]) -> MapGroupLookup {
-	let mut lookup = MapGroupLookup::default();
-	for file in files {
-		if !is_map_group_file(&file.relative_path) {
-			continue;
-		}
-		for stmt in &file.ast.statements {
-			if let AstStatement::Assignment {
-				key,
-				value: AstValue::Block { .. },
-				..
-			} = stmt && !is_keyword(key)
-			{
-				lookup.province_sets.insert(key.clone());
-			}
-		}
-	}
-	lookup
-}
-
-fn is_map_group_file(relative_path: &GamePath) -> bool {
-	matches!(
-		relative_path.as_str(),
-		"map/area.txt"
-			| "map/region.txt"
-			| "map/superregion.txt"
-			| "map/continent.txt"
-			| "map/provincegroup.txt"
-	) || relative_path.is_inside(&["common", "trade_companies"], str::eq)
 }
 
 /// The module of a file no content family names: its parent directories
@@ -271,8 +228,7 @@ pub fn collect_localisation_definitions(
 }
 
 pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
-	let map_groups = collect_map_groups(files);
-	let cwt_rule_engine = Some(super::cwt::rule_engine());
+	let declared = schema_declared_definitions(files);
 	// Files index independently: scope ids are positions within the index
 	// being built, and appending in file order moves them where a sequential
 	// build would have put them.
@@ -288,7 +244,10 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 					parse_ok: !has_fatal_parse_issue(&file.parse_issues),
 				});
 				index.parse_issues.extend(file.parse_issues.clone());
-				build_file_index(file, &map_groups, cwt_rule_engine, &mut index);
+				build_file_index(file, &declared, &mut index);
+				index
+					.resource_references
+					.extend(schema_key_definitions(file, super::cwt::rule_engine()));
 				let cultures =
 					super::cultures::collect_culture_references(&file.ast, &file.relative_path);
 				index
@@ -325,32 +284,239 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 	for file_index in file_indexes {
 		index.append(file_index);
 	}
+	link_schema_declared_calls(&mut index);
+	refine_named_scope_switches(&mut index);
 	infer_definition_scope_from_references(&mut index);
 	infer_definition_dynamic_alias_masks_from_references(&mut index);
-	apply_registered_param_contracts(&mut index);
 	index
 }
 
-/// Resolve the semantic role of a concrete script block in the active EU4 CWT schema.
-pub fn script_container_scope_kind(
-	file_kind: ScriptFileKind,
-	file_path: &GamePath,
-	ast_path: &[&str],
-) -> Option<ScopeKind> {
-	let key = *ast_path.last()?;
-	schema_path_container_scope_kind(
-		super::cwt::rule_engine(),
-		file_kind.clone(),
-		file_path,
-		ast_path,
+/// Key name, before `:` and the scope, for a definition whose name switches
+/// to that scope where it is written as a key (`named_scope:country` for a
+/// country tag).
+pub(crate) const NAMED_SCOPE_DEFINITION: &str = "named_scope";
+
+/// Gives each block a name opens where it switches scope (`FRA = { ... }`,
+/// `finland_area = { ... }`) the scope the set holding that name switches to,
+/// once the definitions are known, and the same scope to every block below
+/// it that runs in its parent's. A name two sets with different scopes hold
+/// (a trade node is named by its location's province) stays unknown.
+pub fn refine_named_scope_switches(index: &mut SemanticIndex) {
+	let mut named = HashMap::<String, Option<MaybeScope>>::new();
+	for reference in &index.resource_references {
+		let Some(scope) = reference
+			.key
+			.strip_prefix(NAMED_SCOPE_DEFINITION)
+			.and_then(|rest| rest.strip_prefix(':'))
+		else {
+			continue;
+		};
+		let scope = lookup_scope(scope).map_or(MaybeScope::Unknown, MaybeScope::Known);
+		named
+			.entry(reference.value.clone())
+			.and_modify(|known| {
+				if *known != Some(scope) {
+					*known = None;
+				}
+			})
+			.or_insert(Some(scope));
+	}
+	if named.is_empty() {
+		return;
+	}
+	let mut opened = HashMap::<(usize, &str), Vec<usize>>::new();
+	for scope in &index.scopes {
+		if let Some(parent) = scope.parent {
+			opened
+				.entry((parent, scope.key.as_str()))
+				.or_default()
+				.push(scope.id);
+		}
+	}
+	let mut switches = Vec::new();
+	for reference in &index.references {
+		if reference.schema_alias
+			|| !matches!(
+				reference.kind,
+				SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger
+			) {
+			continue;
+		}
+		let Some(Some(MaybeScope::Known(scope_type))) = named.get(&reference.name) else {
+			continue;
+		};
+		let Some(block) = opened
+			.get(&(reference.scope_id, reference.name.as_str()))
+			.and_then(|blocks| {
+				blocks
+					.iter()
+					.copied()
+					.filter(|block| index.scopes[*block].span.line >= reference.line)
+					.min_by_key(|block| index.scopes[*block].span.line)
+			})
+		else {
+			continue;
+		};
+		let scope = &index.scopes[block];
+		if scope.this_type.is_unknown()
+			&& matches!(scope.kind, ScopeKind::Effect | ScopeKind::Trigger)
+		{
+			switches.push((block, *scope_type));
+		}
+	}
+	let mut refined = vec![false; index.scopes.len()];
+	for (block, scope_type) in switches {
+		let scope = &mut index.scopes[block];
+		scope.this_type = scope_type.into();
+		scope.aliases.insert("THIS".to_string(), scope_type.into());
+		refined[block] = true;
+	}
+	// Scopes are numbered parents first, so one pass reaches every block
+	// below a refined one.
+	for id in 0..index.scopes.len() {
+		let Some(parent) = index.scopes[id].parent else {
+			continue;
+		};
+		if !refined[parent] {
+			continue;
+		}
+		let parent_this = index.scopes[parent].this_type;
+		let scope = &mut index.scopes[id];
+		if scope
+			.aliases
+			.get("PREV")
+			.is_none_or(|prev| prev.is_unknown())
+		{
+			scope.aliases.insert("PREV".to_string(), parent_this);
+		}
+		if scope.inherits_this && scope.this_type.is_unknown() {
+			scope.this_type = parent_this;
+			scope.aliases.insert("THIS".to_string(), parent_this);
+			refined[id] = true;
+		}
+	}
+}
+
+/// Key name for a definition whose name the schema makes a trigger key.
+pub(crate) const TRIGGER_KEY_DEFINITION: &str = "trigger_key_definition";
+/// Key name for a definition whose name the schema makes an effect key.
+pub(crate) const EFFECT_KEY_DEFINITION: &str = "effect_key_definition";
+
+/// The names in `file` that are trigger or effect keys, such as `tin = 1`
+/// for a trade good a mod adds, or `FRA = { ... }` for a tag. Each file
+/// records its own, so the game's names come with the base snapshot and a
+/// mod's with that mod.
+fn schema_key_definitions(file: &ParsedScriptFile, engine: &CwtQuery) -> Vec<ResourceReference> {
+	let schema_path = schema_path(file);
+	let mut references = Vec::new();
+	let mut push = |set: &str, name: String, line: usize, column: usize| {
+		let (trigger, effect) = super::cwt::schema_names_are_keys(set);
+		let keys = [
+			trigger.then(|| TRIGGER_KEY_DEFINITION.to_owned()),
+			effect.then(|| EFFECT_KEY_DEFINITION.to_owned()),
+			super::cwt::schema_names_push_scope(set)
+				.map(|scope| format!("{NAMED_SCOPE_DEFINITION}:{scope}")),
+		];
+		for key in keys.into_iter().flatten() {
+			references.push(ResourceReference {
+				key,
+				value: name.clone(),
+				mod_id: file.mod_id.clone(),
+				path: file.relative_path.clone(),
+				line,
+				column,
+			});
+		}
+	};
+	for root in engine.matching_roots(&schema_path) {
+		if super::cwt::schema_names_are_keys(&root.name) == (false, false) {
+			continue;
+		}
+		for (name, range) in schema_definitions(root, &file.ast.statements, &schema_path) {
+			push(
+				&root.name,
+				name,
+				range.start.line as usize + 1,
+				range.start.character as usize + 1,
+			);
+		}
+	}
+	for complex_enum in engine
+		.complex_enums()
+		.iter()
+		.filter(|complex_enum| complex_enum.matches(&schema_path))
+	{
+		let set = format!("enum[{}]", complex_enum.name);
+		if super::cwt::schema_names_are_keys(&set) == (false, false) {
+			continue;
+		}
+		for (name, span) in complex_enum_file_values(complex_enum, &file.ast.statements) {
+			push(&set, name, span.start.line, span.start.column);
+		}
+	}
+	references
+}
+
+/// What a block a path names holds in the active EU4 schema: effects,
+/// triggers or neither.
+pub fn script_container_scope_kind(file_path: &GamePath, ast_path: &[&str]) -> Option<ScopeKind> {
+	let binder = SchemaBinder::new(super::cwt::rule_engine(), &Eu4Dialect, None, file_path);
+	let rules = binder.context_for_path::<AstStatement>(&[], ast_path)?;
+	Some(rules_scope_kind(rules, &HashSet::new()))
+}
+
+/// The kind of a block by what its rules accept where they name no key:
+/// effects, triggers, or data.
+fn rules_scope_kind(rules: RuleContext<'_>, subtypes: &HashSet<String>) -> ScopeKind {
+	if rules_admit(rules, subtypes, &CompiledAliasCategory::Effect) {
+		ScopeKind::Effect
+	} else if rules_admit(rules, subtypes, &CompiledAliasCategory::Trigger) {
+		ScopeKind::Trigger
+	} else {
+		ScopeKind::Block
+	}
+}
+
+/// The game path whose rules read `file`.
+fn schema_path(file: &ParsedScriptFile) -> GamePathBuf {
+	file.content_family.map_or_else(
+		|| file.relative_path.clone(),
+		|descriptor| descriptor.schema_path(&file.relative_path),
 	)
-	.or_else(|| hand_container_scope_fallback(file_kind, key))
+}
+
+/// The scripted effects and triggers `files` define under names the schema
+/// declares as the engine's own (EU4's rule files declare some of the game's
+/// scripted effects that way). A call of one in the same files binds as the
+/// engine's, yet is recorded as a call, with what it passes.
+fn schema_declared_definitions(files: &[ParsedScriptFile]) -> HashSet<(SymbolKind, String)> {
+	let engine = super::cwt::rule_engine();
+	let mut declared = HashSet::new();
+	for file in files {
+		let path = schema_path(file);
+		for root in engine.matching_roots(&path) {
+			let kind = match root.name.as_str() {
+				"scripted_effect" => SymbolKind::ScriptedEffect,
+				"scripted_trigger" => SymbolKind::ScriptedTrigger,
+				_ => continue,
+			};
+			for (name, _) in schema_definitions(root, &file.ast.statements, &path) {
+				let schema_declared = match kind {
+					SymbolKind::ScriptedEffect => is_schema_effect(&name),
+					_ => is_schema_trigger(&name),
+				};
+				if schema_declared {
+					declared.insert((kind, name));
+				}
+			}
+		}
+	}
+	declared
 }
 
 fn build_file_index(
 	file: &ParsedScriptFile,
-	map_groups: &MapGroupLookup,
-	cwt_rule_engine: Option<&CwtQuery>,
+	declared: &HashSet<(SymbolKind, String)>,
 	index: &mut SemanticIndex,
 ) {
 	let mut aliases = BTreeMap::new();
@@ -376,17 +542,21 @@ fn build_file_index(
 		path: &file.relative_path,
 		line: line_from_stmt(file.ast.statements.first()),
 		key: "",
+		inherits_this: false,
 	});
 
+	let schema_path = schema_path(file);
+	let binder = SchemaBinder::new(super::cwt::rule_engine(), &Eu4Dialect, None, &schema_path);
+	let bound = binder.file(&file.ast.statements);
 	let mut ctx = BuildContext {
 		mod_id: &file.mod_id,
 		path: &file.relative_path,
 		content_family: file.content_family,
 		file_kind: file.file_kind.clone(),
-		cwt_rule_engine,
 		module_name: &file.module_name,
 		source: &file.source,
-		map_groups,
+		binder: &binder,
+		declared,
 		technology_monarch_power: None,
 		technology_definition_ordinal: 0,
 		random_map_tile_emitted: false,
@@ -398,35 +568,10 @@ fn build_file_index(
 		index,
 		root_scope,
 		&mut ctx,
+		&bound,
 		None,
 		None,
 	);
-}
-
-fn event_scope_type(key: &str) -> Option<ScopeType> {
-	match key {
-		"country_event" => Some(base_scope::country()),
-		"province_event" => Some(base_scope::province()),
-		_ => None,
-	}
-}
-
-fn event_from_type(key: &str) -> Option<ScopeType> {
-	match key {
-		"country_event" | "province_event" => Some(base_scope::country()),
-		_ => None,
-	}
-}
-
-fn is_top_level_event_definition(
-	index: &SemanticIndex,
-	scope_id: usize,
-	key: &str,
-	value: &AstValue,
-) -> bool {
-	scope_kind(index, scope_id) == ScopeKind::File
-		&& event_scope_type(key).is_some()
-		&& matches!(value, AstValue::Block { .. })
 }
 
 struct BuildContext<'a> {
@@ -434,196 +579,239 @@ struct BuildContext<'a> {
 	path: &'a GamePath,
 	content_family: Option<&'static ContentFamilyDescriptor>,
 	file_kind: ScriptFileKind,
-	cwt_rule_engine: Option<&'a CwtQuery>,
 	module_name: &'a str,
 	source: &'a str,
-	map_groups: &'a MapGroupLookup,
+	binder: &'a SchemaBinder<'a>,
+	/// Scripted definitions the indexed files make under names the schema
+	/// declares (see [`schema_declared_definitions`]).
+	declared: &'a HashSet<(SymbolKind, String)>,
 	technology_monarch_power: Option<String>,
 	technology_definition_ordinal: usize,
 	random_map_tile_emitted: bool,
 	random_name_table_emitted: bool,
 }
 
-fn walk_statements(
-	statements: &[AstStatement],
+/// How a block a key opens where effects or triggers are written takes it,
+/// when no rule names the key: a call of a scripted effect or trigger, with
+/// its parameters, or a switch to the scope the key names (a country tag, an
+/// area, a province).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CallBody {
+	Parameters,
+	ScopeSwitch,
+}
+
+fn walk_statements<'a>(
+	statements: &'a [AstStatement],
 	index: &mut SemanticIndex,
 	scope_id: usize,
-	ctx: &mut BuildContext<'_>,
+	ctx: &mut BuildContext<'a>,
+	bound: &BoundContext<'a, AstStatement>,
 	active_scripted_effect: Option<usize>,
 	namespace: Option<String>,
 ) {
 	let mut current_namespace = namespace;
 
-	for stmt in statements {
-		match stmt {
+	for statement in statements {
+		match statement {
 			AstStatement::Assignment {
 				key,
 				key_span,
 				value,
 				..
 			} => {
-				if is_top_level_event_definition(index, scope_id, key, value) {
-					record_foundation_resource_semantics(
-						index, scope_id, ctx, key, key_span, value,
-					);
-					handle_event_block(index, scope_id, ctx, key, value, current_namespace.clone());
-					continue;
-				}
-
-				record_key_usage(index, scope_id, ctx, key, key_span);
-				record_scalar_assignment(index, scope_id, ctx, key, key_span, value);
-				record_ui_scalar_semantics(index, ctx, key, key_span, value);
-				record_foundation_resource_semantics(index, scope_id, ctx, key, key_span, value);
-
-				if key == "namespace"
-					&& let Some(value_text) = scalar_text(value)
-				{
-					current_namespace = Some(value_text);
-				}
-
-				if is_alias_key(key) {
-					record_alias_usage(index, scope_id, ctx, key, key_span);
-				}
-
-				record_alias_tokens_from_value(index, scope_id, ctx, value);
-				record_param_tokens(index, active_scripted_effect, value);
-
-				if is_event_call(key, value)
-					&& let Some(event_id) = extract_event_call_id(value)
-				{
-					index.references.push(SymbolReference {
-						kind: SymbolKind::Event,
-						name: event_id,
-						module: ctx.module_name.to_string(),
-						mod_id: ctx.mod_id.to_string(),
-						path: ctx.path.to_owned(),
-						line: key_span.start.line,
-						column: key_span.start.column,
-						scope_id,
-						provided_params: Vec::new(),
-						param_bindings: Vec::new(),
-					});
-				}
-
-				if is_scripted_trigger_call_candidate(
-					ctx,
-					ctx.file_kind.clone(),
-					key,
-					scope_id,
-					index,
-				) {
-					index.references.push(SymbolReference {
-						kind: SymbolKind::ScriptedTrigger,
-						name: key.clone(),
-						module: ctx.module_name.to_string(),
-						mod_id: ctx.mod_id.to_string(),
-						path: ctx.path.to_owned(),
-						line: key_span.start.line,
-						column: key_span.start.column,
-						scope_id,
-						provided_params: Vec::new(),
-						param_bindings: Vec::new(),
-					});
-				}
-
-				if let AstValue::Block { items, span } = value {
-					record_ui_block_semantics(index, ctx, key, key_span, items);
-					let definition_kind =
-						symbol_definition_kind(ctx.file_kind.clone(), key, scope_id, index);
-					let child_scope = create_child_scope(index, scope_id, ctx, key, span, items);
-					if let Some(def_kind) = definition_kind {
-						let optional_params = collect_optional_params_from_source(
-							ctx.source,
-							span.start.offset,
-							span.end.offset,
-						);
-						let optional_set: HashSet<&str> =
-							optional_params.iter().map(String::as_str).collect();
-						let mut required_params: Vec<String> = collect_required_params(items)
-							.into_iter()
-							.filter(|param| !optional_set.contains(param.as_str()))
-							.collect();
-						required_params.sort();
-						required_params.dedup();
-
-						index.definitions.push(SymbolDefinition {
-							kind: def_kind,
-							name: qualify_symbol_name(ctx.module_name, key),
-							module: ctx.module_name.to_string(),
-							local_name: key.clone(),
-							mod_id: ctx.mod_id.to_string(),
-							path: ctx.path.to_owned(),
-							line: key_span.start.line,
-							column: key_span.start.column,
-							scope_id: child_scope,
-							declared_this_type: scope_this_type(index, child_scope),
-							inferred_this_type: MaybeScope::Unknown,
-							inferred_this_mask: ScopeSet::EMPTY,
-							inferred_from_mask: ScopeSet::EMPTY,
-							inferred_root_mask: ScopeSet::EMPTY,
-							required_params,
-							optional_params,
-							param_contract: registered_param_contract(key),
-							scope_param_names: collect_scope_param_names(items),
-						});
+				let binding = ctx.binder.bind(bound, key, value);
+				let call = call_kind(ctx.binder, bound, key, &binding);
+				// A parameter written as a key (`$scope$ = { ... }`) stands for a
+				// name its call substitutes, so its block is read as such a
+				// name's would be.
+				let dynamic = call.or_else(|| {
+					ctx.binder
+						.dialect
+						.is_parameter_key(key)
+						.then(|| position_kind(bound))
+						.flatten()
+				});
+				let call_choice = match (dynamic, value) {
+					(Some(kind), AstValue::Block { .. }) => {
+						dynamic_call_binding(ctx.binder, bound, kind, value)
 					}
-
-					if definition_kind.is_none()
-						&& !is_mission_slot_definition(ctx.file_kind.clone(), items)
-						&& is_scripted_effect_call_candidate(
-							ctx,
-							ctx.file_kind.clone(),
+					_ => None,
+				};
+				let call_body = call_choice.as_ref().map(|(_, body)| *body);
+				let child = match value {
+					AstValue::Block { .. } => Some(
+						ctx.binder.child(
+							bound,
+							statement,
 							key,
-							scope_id,
-							index,
-						) {
-						let mut provided = collect_provided_params(key, items);
-						provided.names.sort();
-						provided.names.dedup();
-						provided.bindings.sort_by(|lhs, rhs| {
-							(lhs.name.as_str(), lhs.value.as_str())
-								.cmp(&(rhs.name.as_str(), rhs.value.as_str()))
-						});
-						provided
-							.bindings
-							.dedup_by(|lhs, rhs| lhs.name == rhs.name && lhs.value == rhs.value);
-						index.references.push(SymbolReference {
-							kind: SymbolKind::ScriptedEffect,
-							name: key.clone(),
-							module: ctx.module_name.to_string(),
-							mod_id: ctx.mod_id.to_string(),
-							path: ctx.path.to_owned(),
-							line: key_span.start.line,
-							column: key_span.start.column,
-							scope_id,
-							provided_params: provided.names,
-							param_bindings: provided.bindings,
-						});
+							call_choice
+								.as_ref()
+								.map_or(&binding, |(call_binding, _)| call_binding),
+						),
+					),
+					AstValue::Scalar { .. } => None,
+				};
+				let definition = child.as_ref().and_then(definition_root);
+				let is_event_definition = definition.is_some_and(|root| root.name == "event");
+
+				record_foundation_resource_semantics(index, scope_id, ctx, key, key_span, value);
+				if !is_event_definition {
+					record_key_usage(index, scope_id, ctx, key, key_span);
+					record_scalar_assignment(index, scope_id, ctx, key, key_span, value);
+					record_ui_scalar_semantics(index, ctx, key, key_span, value);
+
+					if key == "namespace"
+						&& let Some(value_text) = scalar_text(value)
+					{
+						current_namespace = Some(value_text);
 					}
 
-					let next_scripted_effect = if event_scope_type(key).is_some() {
-						None
-					} else if ctx.file_kind == ScriptFileKind::new("scripted_effects")
-						&& scope_kind(index, scope_id) == ScopeKind::File
+					if let Some(alias) = scope_alias_key(ctx.binder, key)
+						&& !matches!(binding.matched, Some(CompiledBindFieldMatch::Field(_)))
 					{
-						find_scripted_effect_definition(index, ctx.mod_id, ctx.path, key)
-					} else {
-						active_scripted_effect
-					};
+						record_alias_usage(index, scope_id, ctx, alias, key_span);
+					}
 
-					walk_statements(
-						items,
+					record_alias_tokens_from_value(index, scope_id, ctx, value);
+					record_param_tokens(index, active_scripted_effect, value);
+				}
+
+				if let Some(text) = scalar_text(value).filter(|_| {
+					binding
+						.matched
+						.is_some_and(|field_match| names_localisation(field_match.value()))
+				}) {
+					push_resource_reference(index, ctx, key_span, LOCALISATION_REFERENCE, &text);
+				}
+				if let Some(event_id) = scalar_text(value).filter(|_| {
+					binding
+						.matched
+						.is_some_and(|field_match| names_event(field_match.value()))
+				}) {
+					push_symbol_reference(
 						index,
-						child_scope,
 						ctx,
-						next_scripted_effect,
-						current_namespace.clone(),
+						SymbolKind::Event,
+						event_id,
+						key_span,
+						scope_id,
+						ProvidedParams::default(),
 					);
 				}
+
+				let declared_call = call
+					.is_none()
+					.then(|| position_kind(bound))
+					.flatten()
+					.filter(|kind| {
+						binding
+							.matched
+							.is_some_and(|field_match| field_match.alias().is_some())
+							&& ctx.declared.contains(&(*kind, key.clone()))
+					});
+				if let Some(kind) = call.or(declared_call) {
+					let provided = match value {
+						AstValue::Block { items, .. } => collect_provided_params(items),
+						AstValue::Scalar { .. } => ProvidedParams::default(),
+					};
+					let index_before = index.references.len();
+					push_symbol_reference(
+						index,
+						ctx,
+						kind,
+						key.clone(),
+						key_span,
+						scope_id,
+						provided,
+					);
+					if declared_call.is_some() {
+						index.references[index_before].schema_alias = true;
+					}
+				}
+
+				let (Some(child), AstValue::Block { items, span }) = (child, value) else {
+					continue;
+				};
+				record_ui_block_semantics(index, ctx, key, key_span, items);
+				let child_scope = create_child_scope(ChildScopeArgs {
+					index,
+					parent_scope_id: scope_id,
+					ctx,
+					key,
+					span,
+					bound,
+					child: &child,
+					definition,
+					call_body,
+					is_field: matches!(binding.matched, Some(CompiledBindFieldMatch::Field(_))),
+				});
+				let mut next_scripted_effect = active_scripted_effect;
+				if let Some(root) = definition {
+					for text in required_localisation(ctx, root, &child, key, items) {
+						push_resource_reference(
+							index,
+							ctx,
+							key_span,
+							LOCALISATION_REFERENCE,
+							&text,
+						);
+					}
+					if is_event_definition {
+						push_event_definition(
+							index,
+							ctx,
+							key,
+							span,
+							items,
+							child_scope,
+							current_namespace.as_deref(),
+						);
+						next_scripted_effect = None;
+					} else if let Some(kind) = definition_symbol_kind(root) {
+						let definition_index = push_symbol_definition(
+							index,
+							ctx,
+							kind,
+							key,
+							key_span,
+							span,
+							items,
+							child_scope,
+						);
+						if kind == SymbolKind::ScriptedEffect {
+							next_scripted_effect = Some(definition_index);
+						}
+					}
+				}
+				walk_statements(
+					items,
+					index,
+					child_scope,
+					ctx,
+					&child,
+					next_scripted_effect,
+					current_namespace.clone(),
+				);
 			}
-			AstStatement::Item { value, .. } => {
+			AstStatement::Item { value, span } => {
 				record_alias_tokens_from_value(index, scope_id, ctx, value);
 				record_param_tokens(index, active_scripted_effect, value);
+				if let Some(event_id) = scalar_text(value).filter(|_| {
+					ctx.binder
+						.bind_item(bound, value)
+						.is_some_and(|field| names_event(&field.value))
+				}) {
+					push_symbol_reference(
+						index,
+						ctx,
+						SymbolKind::Event,
+						event_id,
+						span,
+						scope_id,
+						ProvidedParams::default(),
+					);
+				}
 				if let AstValue::Block { items, span } = value {
 					let this_type = scope_this_type(index, scope_id);
 					let aliases = scope_aliases(index, scope_id);
@@ -637,12 +825,14 @@ fn walk_statements(
 						path: ctx.path,
 						line: span.start.line,
 						key: "",
+						inherits_this: true,
 					});
 					walk_statements(
 						items,
 						index,
 						child_scope,
 						ctx,
+						bound,
 						active_scripted_effect,
 						current_namespace.clone(),
 					);
@@ -653,87 +843,315 @@ fn walk_statements(
 	}
 }
 
-fn handle_event_block(
+/// The kind of call a key makes: in a block whose rules accept effects or
+/// triggers, a key no rule names, which a scripted definition, or a name a
+/// definition gives, must answer for. A parameter of the definition being
+/// read (`$name$`), and a key an optional block opens (`[[name]key`), are
+/// known only once a call substitutes them.
+fn call_kind(
+	binder: &SchemaBinder<'_>,
+	bound: &BoundContext<'_, AstStatement>,
+	key: &str,
+	binding: &StatementBinding<'_>,
+) -> Option<SymbolKind> {
+	if binding.matched.is_some() || binder.dialect.holds_parameter(key) || key.contains('[') {
+		return None;
+	}
+	position_kind(bound)
+}
+
+/// What a block's rules accept where they name no key: effects, triggers, or
+/// neither.
+fn position_kind(bound: &BoundContext<'_, AstStatement>) -> Option<SymbolKind> {
+	if bound.admits(&CompiledAliasCategory::Effect) {
+		Some(SymbolKind::ScriptedEffect)
+	} else if bound.admits(&CompiledAliasCategory::Trigger) {
+		Some(SymbolKind::ScriptedTrigger)
+	} else {
+		None
+	}
+}
+
+/// The body a block call takes, chosen as any key's form is: among the sets
+/// of names the schema accepts where the call is written (a country tag's,
+/// an area's, a scripted effect's parameters), the one whose rules reject
+/// the fewest of the block's statements. A scope switch wins a tie.
+fn dynamic_call_binding<'a>(
+	binder: &SchemaBinder<'a>,
+	bound: &BoundContext<'a, AstStatement>,
+	kind: SymbolKind,
+	value: &AstValue,
+) -> Option<(StatementBinding<'a>, CallBody)> {
+	let category = call_category(kind);
+	let wildcard = alias_wildcard(bound.rules()?, bound.subtypes(), &category)?;
+	let (calls, switches): (Vec<_>, Vec<_>) = binder
+		.engine
+		.dynamic_aliases(&category)
+		.filter(|alias| {
+			matches!(alias.value, CompiledRuleValue::Block(_))
+				&& alias.name != SCRIPT_PARAMETER_KEY_ENUM
+		})
+		.map(|alias| CompiledBindFieldMatch::Alias { wildcard, alias })
+		.partition(|field_match| field_match.alias().is_some_and(is_scripted_call_body));
+	// Many sets switch with the same rules (any area's, any region's); each
+	// body is weighed once.
+	let mut alternatives = Vec::<CompiledBindFieldMatch<'a>>::new();
+	for candidate in switches.into_iter().chain(calls) {
+		let same_body = |other: &CompiledBindFieldMatch<'a>| {
+			other.alias().map(|alias| &alias.rules) == candidate.alias().map(|alias| &alias.rules)
+				&& other.alias().map(|alias| &alias.attributes.scope)
+					== candidate.alias().map(|alias| &alias.attributes.scope)
+		};
+		if !alternatives.iter().any(same_body) {
+			alternatives.push(candidate);
+		}
+	}
+	let matched =
+		binder.select_alternative(&alternatives, value, bound.subtypes(), bound.scopes())?;
+	let body = if matched.alias().is_some_and(is_scripted_call_body) {
+		CallBody::Parameters
+	} else {
+		CallBody::ScopeSwitch
+	};
+	Some((
+		StatementBinding {
+			alternatives: vec![matched],
+			matched: Some(matched),
+			block_form_count: 1,
+		},
+		body,
+	))
+}
+
+/// Whether an alias is the body of a call of a scripted effect or trigger
+/// (`<scripted_effect>`).
+fn is_scripted_call_body(alias: &CompiledAlias) -> bool {
+	DefinitionKeyTemplate::parse(&alias.name).is_some_and(|template| {
+		matches!(template.type_name, "scripted_effect" | "scripted_trigger")
+	})
+}
+
+fn call_category(kind: SymbolKind) -> CompiledAliasCategory {
+	match kind {
+		SymbolKind::ScriptedTrigger => CompiledAliasCategory::Trigger,
+		_ => CompiledAliasCategory::Effect,
+	}
+}
+
+/// The type a block defines an instance of: what a top-level key, below any
+/// wrappers, binds to.
+fn definition_root<'a>(child: &BoundContext<'a, AstStatement>) -> Option<&'a CompiledRoot> {
+	match child.rules()? {
+		RuleContext::RootType(root) | RuleContext::Subtype(root, _) => Some(root),
+		RuleContext::RuleField(_) | RuleContext::AliasRules(_) => None,
+	}
+}
+
+/// The symbol a definition of a schema type is indexed as.
+fn definition_symbol_kind(root: &CompiledRoot) -> Option<SymbolKind> {
+	match root.name.as_str() {
+		"scripted_effect" => Some(SymbolKind::ScriptedEffect),
+		"scripted_trigger" => Some(SymbolKind::ScriptedTrigger),
+		"decision" => Some(SymbolKind::Decision),
+		"diplomatic_action" | "new_diplomatic_action" => Some(SymbolKind::DiplomaticAction),
+		"triggered_modifier" => Some(SymbolKind::TriggeredModifier),
+		_ => None,
+	}
+}
+
+/// Key name for a localisation key the script needs: a value the rules type
+/// as one, or a key a definition's type requires (`$_title`).
+pub(crate) const LOCALISATION_REFERENCE: &str = "localisation_reference";
+
+/// Whether a rule value is a localisation key. Synced localisation (a
+/// ruler's or leader's name) may be the text itself, as inline localisation
+/// is.
+fn names_localisation(value: &CompiledRuleValue) -> bool {
+	matches!(
+		value,
+		CompiledRuleValue::Scalar(text) | CompiledRuleValue::Marker(text)
+			if matches!(text.as_str(), "localisation" | "localization")
+	)
+}
+
+/// The localisation keys a definition's type requires of it: each required
+/// pattern of the type's `localisation` rules that holds for its subtypes,
+/// with the definition's name for `$`.
+fn required_localisation(
+	ctx: &BuildContext<'_>,
+	root: &CompiledRoot,
+	child: &BoundContext<'_, AstStatement>,
+	key: &str,
+	items: &[AstStatement],
+) -> Vec<String> {
+	if root.localisation.is_empty() {
+		return Vec::new();
+	}
+	let identity = root
+		.name_field
+		.as_deref()
+		.and_then(|field| extract_assignment_scalar(items, field))
+		.or_else(|| {
+			root.name_from_file
+				.then(|| ctx.path.file_stem().map(str::to_string))
+				.flatten()
+		})
+		.unwrap_or_else(|| key.to_string());
+	root.localisation
+		.iter()
+		.filter(|rule| {
+			rule.attributes
+				.raw
+				.iter()
+				.any(|(name, value)| name == "required" && value.is_empty())
+				&& conditions_match(&rule.conditions, child.subtypes())
+		})
+		.filter_map(|rule| match &rule.value {
+			CompiledRuleValue::Scalar(pattern) | CompiledRuleValue::Marker(pattern)
+				if pattern.contains('$') =>
+			{
+				Some(pattern.replace('$', &identity))
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+/// Whether a rule value is an event's name (`<event.country>`).
+fn names_event(value: &CompiledRuleValue) -> bool {
+	matches!(
+		value,
+		CompiledRuleValue::Scalar(text) | CompiledRuleValue::Marker(text)
+			if text.strip_prefix('<').is_some_and(|rest| {
+				rest.strip_prefix("event").is_some_and(|rest| rest.starts_with(['>', '.']))
+			})
+	)
+}
+
+/// The scope alias a key names (`ROOT = { ... }`), as the index spells it.
+fn scope_alias_key(binder: &SchemaBinder<'_>, key: &str) -> Option<&'static str> {
+	match binder.dialect.scope_keyword(key)? {
+		ScopeKeyword::This => Some("THIS"),
+		ScopeKeyword::Root => Some("ROOT"),
+		ScopeKeyword::From => Some("FROM"),
+		ScopeKeyword::Prev => Some("PREV"),
+		_ => None,
+	}
+}
+
+fn push_symbol_reference(
 	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	kind: SymbolKind,
+	name: String,
+	span: &SpanRange,
 	scope_id: usize,
+	provided: ProvidedParams,
+) {
+	let ProvidedParams {
+		mut names,
+		mut bindings,
+	} = provided;
+	names.sort();
+	names.dedup();
+	bindings.sort_by(|lhs, rhs| {
+		(lhs.name.as_str(), lhs.value.as_str()).cmp(&(rhs.name.as_str(), rhs.value.as_str()))
+	});
+	bindings.dedup_by(|lhs, rhs| lhs.name == rhs.name && lhs.value == rhs.value);
+	index.references.push(SymbolReference {
+		kind,
+		name,
+		module: ctx.module_name.to_string(),
+		mod_id: ctx.mod_id.to_string(),
+		path: ctx.path.to_owned(),
+		line: span.start.line,
+		column: span.start.column,
+		scope_id,
+		provided_params: names,
+		param_bindings: bindings,
+		schema_alias: false,
+	});
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_symbol_definition(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	kind: SymbolKind,
+	key: &str,
+	key_span: &SpanRange,
+	span: &SpanRange,
+	items: &[AstStatement],
+	child_scope: usize,
+) -> usize {
+	let optional_params =
+		collect_optional_params_from_source(ctx.source, span.start.offset, span.end.offset);
+	let optional_set: HashSet<&str> = optional_params.iter().map(String::as_str).collect();
+	let mut required_params: Vec<String> = collect_required_params(items)
+		.into_iter()
+		.filter(|param| !optional_set.contains(param.as_str()))
+		.collect();
+	required_params.sort();
+	required_params.dedup();
+	index.definitions.push(SymbolDefinition {
+		kind,
+		name: qualify_symbol_name(ctx.module_name, key),
+		module: ctx.module_name.to_string(),
+		local_name: key.to_string(),
+		mod_id: ctx.mod_id.to_string(),
+		path: ctx.path.to_owned(),
+		line: key_span.start.line,
+		column: key_span.start.column,
+		scope_id: child_scope,
+		declared_this_type: scope_this_type(index, child_scope),
+		inferred_this_type: MaybeScope::Unknown,
+		inferred_this_mask: ScopeSet::EMPTY,
+		inferred_from_mask: ScopeSet::EMPTY,
+		inferred_root_mask: ScopeSet::EMPTY,
+		required_params,
+		optional_params,
+		scope_param_names: collect_scope_param_names(items),
+	});
+	index.definitions.len() - 1
+}
+
+/// An event, named by its `id` in the file's namespace.
+fn push_event_definition(
+	index: &mut SemanticIndex,
 	ctx: &BuildContext<'_>,
 	key: &str,
-	value: &AstValue,
-	namespace: Option<String>,
+	span: &SpanRange,
+	items: &[AstStatement],
+	event_scope: usize,
+	namespace: Option<&str>,
 ) {
-	let AstValue::Block { items, span } = value else {
+	let Some(id) = extract_assignment_scalar(items, "id") else {
 		return;
 	};
-	let Some(this_type) = event_scope_type(key) else {
-		return;
+	let full_id = match namespace {
+		Some(namespace) if !id.contains('.') => format!("{namespace}.{id}"),
+		_ => id,
 	};
-	let from_type = event_from_type(key)
-		.map(MaybeScope::from)
-		.unwrap_or(MaybeScope::Unknown);
-
-	let mut aliases = scope_aliases(index, scope_id);
-	aliases.insert("THIS".to_string(), MaybeScope::Known(this_type));
-	aliases.insert("ROOT".to_string(), MaybeScope::Known(this_type));
-	aliases.insert("FROM".to_string(), from_type);
-	aliases.insert("PREV".to_string(), scope_this_type(index, scope_id));
-	let event_scope = push_scope(ScopeArgs {
-		index,
-		kind: ScopeKind::Event,
-		parent: Some(scope_id),
-		this_type: this_type.into(),
-		aliases,
-		mod_id: ctx.mod_id,
-		path: ctx.path,
+	let this_type = scope_this_type(index, event_scope);
+	index.definitions.push(SymbolDefinition {
+		kind: SymbolKind::Event,
+		name: full_id,
+		module: ctx.module_name.to_string(),
+		local_name: key.to_string(),
+		mod_id: ctx.mod_id.to_string(),
+		path: ctx.path.to_owned(),
 		line: span.start.line,
-		key,
+		column: span.start.column,
+		scope_id: event_scope,
+		declared_this_type: this_type,
+		inferred_this_type: this_type,
+		inferred_this_mask: scope_mask(this_type),
+		inferred_from_mask: ScopeSet::EMPTY,
+		inferred_root_mask: ScopeSet::EMPTY,
+		required_params: Vec::new(),
+		optional_params: Vec::new(),
+		scope_param_names: Vec::new(),
 	});
-
-	if let Some(id) = extract_assignment_scalar(items, "id") {
-		let full_id = if id.contains('.') {
-			id
-		} else if let Some(ns) = namespace.as_ref() {
-			format!("{ns}.{id}")
-		} else {
-			id
-		};
-
-		index.definitions.push(SymbolDefinition {
-			kind: SymbolKind::Event,
-			name: full_id,
-			module: ctx.module_name.to_string(),
-			local_name: key.to_string(),
-			mod_id: ctx.mod_id.to_string(),
-			path: ctx.path.to_owned(),
-			line: span.start.line,
-			column: span.start.column,
-			scope_id: event_scope,
-			declared_this_type: this_type.into(),
-			inferred_this_type: this_type.into(),
-			inferred_this_mask: scope_mask(this_type),
-			inferred_from_mask: ScopeSet::EMPTY,
-			inferred_root_mask: ScopeSet::EMPTY,
-			required_params: Vec::new(),
-			optional_params: Vec::new(),
-			param_contract: None,
-			scope_param_names: Vec::new(),
-		});
-	}
-
-	let mut child_ctx = BuildContext {
-		mod_id: ctx.mod_id,
-		path: ctx.path,
-		content_family: ctx.content_family,
-		file_kind: ctx.file_kind.clone(),
-		cwt_rule_engine: ctx.cwt_rule_engine,
-		module_name: ctx.module_name,
-		source: ctx.source,
-		map_groups: ctx.map_groups,
-		technology_monarch_power: ctx.technology_monarch_power.clone(),
-		technology_definition_ordinal: ctx.technology_definition_ordinal,
-		random_map_tile_emitted: ctx.random_map_tile_emitted,
-		random_name_table_emitted: ctx.random_name_table_emitted,
-	};
-	walk_statements(items, index, event_scope, &mut child_ctx, None, namespace);
 }
 
 fn record_key_usage(
@@ -1099,534 +1517,88 @@ fn param_capture_regex() -> &'static Regex {
 	REGEX.get_or_init(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\$").expect("valid param regex"))
 }
 
-fn top_level_symbol_kind(
-	file_kind: ScriptFileKind,
-	key: &str,
-	scope_id: usize,
-	index: &SemanticIndex,
-) -> Option<SymbolKind> {
-	if scope_kind(index, scope_id) != ScopeKind::File {
-		return None;
-	}
-	match file_kind.as_str() {
-		"scripted_effects" if !is_keyword(key) => Some(SymbolKind::ScriptedEffect),
-		"scripted_triggers" if !is_keyword(key) => Some(SymbolKind::ScriptedTrigger),
-		"decisions" if !is_keyword(key) && !is_decision_container_key(key) => {
-			Some(SymbolKind::Decision)
-		}
-		"diplomatic_actions" if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
-		"new_diplomatic_actions" if !is_keyword(key) && !matches!(key, "static_actions") => {
-			Some(SymbolKind::DiplomaticAction)
-		}
-		"triggered_modifiers" if !is_keyword(key) => Some(SymbolKind::TriggeredModifier),
-		_ => None,
-	}
-}
-
-fn symbol_definition_kind(
-	file_kind: ScriptFileKind,
-	key: &str,
-	scope_id: usize,
-	index: &SemanticIndex,
-) -> Option<SymbolKind> {
-	if let Some(kind) = top_level_symbol_kind(file_kind.clone(), key, scope_id, index) {
-		return Some(kind);
-	}
-	if file_kind == ScriptFileKind::new("decisions")
-		&& is_decision_entry_scope(index, scope_id)
-		&& !is_keyword(key)
-	{
-		return Some(SymbolKind::Decision);
-	}
-	None
-}
-
-fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
-	let Some(scope) = index.scopes.get(scope_id) else {
-		return false;
-	};
-	if scope.kind != ScopeKind::Block {
-		return false;
-	}
-	let Some(parent_scope_id) = scope.parent else {
-		return false;
-	};
-	scope_kind(index, parent_scope_id) == ScopeKind::File
-}
-
-fn is_scripted_effect_call_candidate(
-	ctx: &BuildContext<'_>,
-	file_kind: ScriptFileKind,
-	key: &str,
-	scope_id: usize,
-	index: &SemanticIndex,
-) -> bool {
-	if is_keyword(key) || is_alias_key(key) {
-		return false;
-	}
-	if is_template_param_placeholder_key(key) || key.contains('$') || key.contains('[') {
-		return false;
-	}
-	if key.parse::<u32>().is_ok() {
-		return false;
-	}
-	if is_dynamic_scope_reference_key(key) {
-		return false;
-	}
-	if scope_kind(index, scope_id) == ScopeKind::File {
-		return false;
-	}
-	if is_data_context(index, scope_id) {
-		return false;
-	}
-	if is_param_block_scope(index, scope_id) {
-		return false;
-	}
-	if is_province_id_selector(key) || is_country_tag_selector(key) {
-		return false;
-	}
-	if effect_context_scope_semantics(ctx, key, scope_id, index).is_some() {
-		return false;
-	}
-	if is_map_group_scope_key(ctx, key, scope_id, index) {
-		return false;
-	}
-	if is_builtin_effect(key)
-		|| is_builtin_trigger(key)
-		|| is_builtin_scope_changer(key)
-		|| is_builtin_iterator(key)
-		|| is_builtin_special_block(key)
-		|| is_game_only_candidate(key)
-	{
-		return false;
-	}
-	if !is_effect_like_scope(index, scope_id) {
-		return false;
-	}
-	if !allows_generic_scripted_effect_fallback(scope_kind(index, scope_id)) {
-		return false;
-	}
-	if file_kind == ScriptFileKind::new("missions") {
-		// Mission slot definitions have structure keys like icon, position,
-		// required_missions, trigger, effect — these are NOT scripted effect calls.
-		// We cannot rely solely on scope kind because the scope classification
-		// may vary based on preceding siblings.
-	}
-	if file_kind == ScriptFileKind::new("decisions") && is_decision_entry_scope(index, scope_id) {
-		return false;
-	}
-	// Mission files: blocks at depth ≤ 2 are mission slot definitions, not calls
-	if file_kind == ScriptFileKind::new("missions") && is_mission_slot_scope(index, scope_id) {
-		return false;
-	}
-	if file_kind == ScriptFileKind::new("scripted_effects")
-		&& scope_kind(index, scope_id) == ScopeKind::File
-	{
-		return false;
-	}
-	true
-}
-
-fn is_scripted_trigger_call_candidate(
-	ctx: &BuildContext<'_>,
-	file_kind: ScriptFileKind,
-	key: &str,
-	scope_id: usize,
-	index: &SemanticIndex,
-) -> bool {
-	if is_keyword(key) || is_alias_key(key) {
-		return false;
-	}
-	if is_template_param_placeholder_key(key) || key.contains('$') || key.contains('[') {
-		return false;
-	}
-	if key.parse::<u32>().is_ok() {
-		return false;
-	}
-	if is_dynamic_scope_reference_key(key) {
-		return false;
-	}
-	if scope_kind(index, scope_id) == ScopeKind::File {
-		return false;
-	}
-	if is_data_context(index, scope_id) {
-		return false;
-	}
-	if is_param_block_scope(index, scope_id) {
-		return false;
-	}
-	if is_province_id_selector(key) || is_country_tag_selector(key) {
-		return false;
-	}
-	if event_scope_type(key).is_some() {
-		return false;
-	}
-	if effect_context_scope_semantics(ctx, key, scope_id, index).is_some() {
-		return false;
-	}
-	if is_map_group_scope_key(ctx, key, scope_id, index) {
-		return false;
-	}
-	if is_builtin_effect(key)
-		|| is_builtin_trigger(key)
-		|| is_builtin_scope_changer(key)
-		|| is_builtin_iterator(key)
-		|| is_builtin_special_block(key)
-		|| is_game_only_candidate(key)
-	{
-		return false;
-	}
-	if !is_trigger_like_scope(index, scope_id) {
-		return false;
-	}
-	if file_kind == ScriptFileKind::new("missions") && is_mission_slot_scope(index, scope_id) {
-		return false;
-	}
-	if file_kind == ScriptFileKind::new("scripted_triggers")
-		&& scope_kind(index, scope_id) == ScopeKind::File
-	{
-		return false;
-	}
-	true
-}
-
-fn is_effect_like_scope(index: &SemanticIndex, scope_id: usize) -> bool {
-	if scope_kind(index, scope_id) == ScopeKind::Trigger {
-		return false;
-	}
-	!is_under_trigger_scope(index, scope_id)
-}
-
-fn is_trigger_like_scope(index: &SemanticIndex, scope_id: usize) -> bool {
-	scope_kind(index, scope_id) == ScopeKind::Trigger || is_under_trigger_scope(index, scope_id)
-}
-
-fn allows_generic_scripted_effect_fallback(scope_kind: ScopeKind) -> bool {
-	matches!(
-		scope_kind,
-		ScopeKind::Effect | ScopeKind::AliasBlock | ScopeKind::Loop | ScopeKind::ScriptedEffect
-	)
-}
-
-fn is_under_trigger_scope(index: &SemanticIndex, mut scope_id: usize) -> bool {
-	loop {
-		let Some(scope) = index.scopes.get(scope_id) else {
-			return false;
-		};
-		if scope.kind == ScopeKind::Trigger {
-			return true;
-		}
-		let Some(parent) = scope.parent else {
-			return false;
-		};
-		scope_id = parent;
-	}
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EffectContextScopeSemantics {
-	EffectContainer,
-	Iterator(ScopeType),
-	ScopeChanger(ScopeType),
-}
-
-fn is_explicit_effect_context_scope(index: &SemanticIndex, scope_id: usize) -> bool {
-	is_effect_like_scope(index, scope_id)
-		&& allows_generic_scripted_effect_fallback(scope_kind(index, scope_id))
-}
-
-fn effect_context_scope_semantics(
-	ctx: &BuildContext<'_>,
-	key: &str,
-	scope_id: usize,
-	index: &SemanticIndex,
-) -> Option<EffectContextScopeSemantics> {
-	if !is_explicit_effect_context_scope(index, scope_id) {
-		return None;
-	}
-
-	if key == "random_list" {
-		return Some(EffectContextScopeSemantics::EffectContainer);
-	}
-	if matches!(
-		key,
-		"for" | "while" | "IF" | "ELSE_IF" | "else_if" | "ELSE" | "else"
-	) {
-		return Some(EffectContextScopeSemantics::EffectContainer);
-	}
-	if matches!(
-		key,
-		"every_country" | "every_subject_country" | "every_known_country" | "random_country"
-	) {
-		return Some(EffectContextScopeSemantics::Iterator(base_scope::country()));
-	}
-	if matches!(
-		key,
-		"random_owned_province" | "random_province" | "every_province"
-	) {
-		return Some(EffectContextScopeSemantics::Iterator(base_scope::province()));
-	}
-	if key == "overlord" {
-		return Some(EffectContextScopeSemantics::ScopeChanger(
-			base_scope::country(),
-		));
-	}
-	if let Some(selector) = numeric_effect_context_semantics(key) {
-		return Some(selector);
-	}
-	if is_country_tag_selector(key) {
-		return Some(EffectContextScopeSemantics::ScopeChanger(
-			base_scope::country(),
-		));
-	}
-	if is_map_group_scope_key(ctx, key, scope_id, index) {
-		return Some(EffectContextScopeSemantics::Iterator(base_scope::province()));
-	}
-
-	None
-}
-
-fn is_on_actions_callback_root(
-	file_kind: ScriptFileKind,
+struct ChildScopeArgs<'i, 'a> {
+	index: &'i mut SemanticIndex,
 	parent_scope_id: usize,
-	index: &SemanticIndex,
-	key: &str,
-) -> bool {
-	file_kind == ScriptFileKind::new("on_actions")
-		&& scope_kind(index, parent_scope_id) == ScopeKind::File
-		&& key.starts_with("on_")
+	ctx: &'i BuildContext<'a>,
+	key: &'i str,
+	span: &'i SpanRange,
+	bound: &'i BoundContext<'a, AstStatement>,
+	child: &'i BoundContext<'a, AstStatement>,
+	definition: Option<&'a CompiledRoot>,
+	call_body: Option<CallBody>,
+	/// Whether the key is a field of its block's rules, which names no scope
+	/// whatever it spells (`from = { 100 200 100 }` in a map tile).
+	is_field: bool,
 }
 
-fn on_actions_callback_this_type(key: &str) -> ScopeType {
-	match key {
-		"on_adm_development" | "on_dip_development" | "on_mil_development" => {
-			base_scope::province()
-		}
-		_ => base_scope::country(),
-	}
-}
-
-fn on_actions_callback_from_type(_key: &str) -> ScopeType {
-	base_scope::country()
-}
-
-#[cfg(test)]
-std::thread_local! {
-	static CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS: std::cell::Cell<usize> = const {
-		std::cell::Cell::new(0)
-	};
-}
-
-#[cfg(test)]
-fn reset_create_child_scope_cwt_path_bindings() {
-	CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-fn take_create_child_scope_cwt_path_bindings() -> usize {
-	CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS.with(std::cell::Cell::take)
-}
-
-fn child_scope_kind_override(
-	key: &str,
-	enclosing_conditional_context: Option<ScopeKind>,
-	effect_context_semantics: Option<EffectContextScopeSemantics>,
-	has_items: bool,
-) -> Option<ScopeKind> {
-	if key.eq_ignore_ascii_case("if") || key.eq_ignore_ascii_case("else") {
-		return Some(
-			if matches!(
-				enclosing_conditional_context,
-				Some(ScopeKind::Effect | ScopeKind::ScriptedEffect)
-			) || effect_context_semantics == Some(EffectContextScopeSemantics::EffectContainer)
-			{
-				ScopeKind::Effect
-			} else {
-				ScopeKind::Trigger
-			},
-		);
-	}
-	if key.eq_ignore_ascii_case("not")
-		|| key.eq_ignore_ascii_case("or")
-		|| key.eq_ignore_ascii_case("and")
-	{
-		return Some(ScopeKind::Trigger);
-	}
-	if key == "option" {
-		return Some(ScopeKind::Effect);
-	}
-	(event_scope_type(key).is_some() && has_items).then_some(ScopeKind::Event)
-}
-
-fn create_child_scope(
-	index: &mut SemanticIndex,
-	parent_scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	span: &SpanRange,
-	items: &[AstStatement],
-) -> usize {
+/// A block's scope: what it holds, and the scope it runs in, as its rules
+/// say. A key that switches to a scope the schema names by a set of names (a
+/// country tag, an area) leaves its scope unknown here; which set holds the
+/// key is known only once the definitions are.
+fn create_child_scope(args: ChildScopeArgs<'_, '_>) -> usize {
+	let ChildScopeArgs {
+		index,
+		parent_scope_id,
+		ctx,
+		key,
+		span,
+		bound,
+		child,
+		definition,
+		call_body,
+		is_field,
+	} = args;
+	let parent_this = scope_this_type(index, parent_scope_id);
 	let mut aliases = scope_aliases(index, parent_scope_id);
-	aliases.insert("PREV".to_string(), scope_this_type(index, parent_scope_id));
-	let mut this_type = scope_this_type(index, parent_scope_id);
-	let mut kind = ScopeKind::Block;
-	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
-	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
-	let scope_kind_override = child_scope_kind_override(
-		key,
-		enclosing_conditional_context,
-		effect_context_semantics,
-		!items.is_empty(),
-	);
-
-	if is_on_actions_callback_root(ctx.file_kind.clone(), parent_scope_id, index, key) {
-		kind = ScopeKind::Effect;
-		this_type = on_actions_callback_this_type(key).into();
-		aliases.insert("THIS".to_string(), this_type);
-		aliases.insert("ROOT".to_string(), this_type);
-		aliases.insert(
-			"FROM".to_string(),
-			on_actions_callback_from_type(key).into(),
-		);
-	} else if key == "trigger"
-		|| key == "limit"
-		|| key == "potential"
-		|| key == "allow"
-		|| key == "condition"
-		|| key == "hidden_trigger"
-	{
-		kind = ScopeKind::Trigger;
-	} else if matches!(
-		key,
-		"effect"
-			| "after" | "hidden_effect"
-			| "immediate"
-			| "on_add"
-			| "on_remove"
-			| "on_start"
-			| "on_end"
-			| "on_monthly"
-	) {
-		kind = ScopeKind::Effect;
-	} else if let Some(semantics) = effect_context_semantics {
-		match semantics {
-			EffectContextScopeSemantics::EffectContainer => {
-				kind = ScopeKind::Effect;
-			}
-			EffectContextScopeSemantics::Iterator(target) => {
-				kind = ScopeKind::Loop;
-				this_type = target.into();
-				aliases.insert("THIS".to_string(), target.into());
-			}
-			EffectContextScopeSemantics::ScopeChanger(target) => {
-				kind = ScopeKind::AliasBlock;
-				this_type = target.into();
-				aliases.insert("THIS".to_string(), target.into());
+	let alias = |name: &str| aliases.get(name).copied().unwrap_or(MaybeScope::Unknown);
+	let keyword = ctx.binder.dialect.scope_keyword(key).filter(|_| !is_field);
+	let (mut this_type, mut inherits_this) = match (keyword, call_body) {
+		(_, Some(CallBody::ScopeSwitch)) => (MaybeScope::Unknown, false),
+		(Some(ScopeKeyword::Root), _) => (alias("ROOT"), false),
+		(Some(ScopeKeyword::From), _) => (alias("FROM"), false),
+		(Some(ScopeKeyword::Prev), _) => (alias("PREV"), false),
+		(Some(ScopeKeyword::PrevPrev), _) => (MaybeScope::Unknown, false),
+		(Some(_), _) => (parent_this, true),
+		(None, _) if ctx.binder.dialect.is_event_target(key) => (MaybeScope::Unknown, false),
+		(None, _) if child.scopes() != bound.scopes() => (schema_scope_type(child.scopes()), false),
+		(None, _) => (parent_this, definition.is_none()),
+	};
+	aliases.insert("PREV".to_string(), parent_this);
+	if let Some(replace_scope) = child.replace_scope() {
+		for (name, scope) in replace_scope {
+			let scope = replaced_scope_type(ctx.binder, scope);
+			match name.as_str() {
+				"this" => {
+					this_type = scope;
+					inherits_this = false;
+				}
+				"root" => {
+					aliases.insert("ROOT".to_string(), scope);
+				}
+				"from" => {
+					aliases.insert("FROM".to_string(), scope);
+				}
+				_ => {}
 			}
 		}
-	} else if is_province_id_selector(key) && scope_kind(index, parent_scope_id) != ScopeKind::File
-	{
-		kind = ScopeKind::AliasBlock;
-		this_type = base_scope::province().into();
-		aliases.insert("THIS".to_string(), base_scope::province().into());
-	} else if is_map_group_scope_key(ctx, key, parent_scope_id, index) {
-		kind = ScopeKind::Loop;
-		this_type = base_scope::province().into();
-		aliases.insert("THIS".to_string(), base_scope::province().into());
-	} else if is_builtin_special_block(key) {
-		kind = special_block_scope_kind(key);
-	} else if is_builtin_iterator(key) {
-		kind = ScopeKind::Loop;
-		this_type = iterator_scope_type(key)
-			.map(MaybeScope::from)
-			.unwrap_or(this_type);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if is_builtin_scope_changer(key) {
-		kind = ScopeKind::AliasBlock;
-		this_type = scope_changer_target_type(key)
-			.map(MaybeScope::from)
-			.unwrap_or(this_type);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key == "every_owned_province" {
-		kind = ScopeKind::Loop;
-		this_type = base_scope::province().into();
-		aliases.insert("THIS".to_string(), base_scope::province().into());
-	} else if key.eq_ignore_ascii_case("ROOT") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("ROOT").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key.eq_ignore_ascii_case("THIS") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("THIS").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key.eq_ignore_ascii_case("FROM") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("FROM").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if key.eq_ignore_ascii_case("PREV") {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("PREV").copied().unwrap_or(MaybeScope::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
-	} else if is_dynamic_scope_reference_key(key) {
-		// `event_target:X = { ... }` switches the inner this scope to a
-		// dynamically saved target whose type is not statically known. Mark
-		// it Unknown so scope-sensitive advisories (e.g. scope-type-mismatch) skip the
-		// inner block instead of inheriting the parent's province/country
-		// type, which produces false positives in vanilla idioms like
-		// `event_target:foo = { country_event = { ... } }`.
-		kind = ScopeKind::AliasBlock;
-		this_type = MaybeScope::Unknown;
-		aliases.insert("THIS".to_string(), MaybeScope::Unknown);
-	} else if let Some(event_this_type) = event_scope_type(key) {
-		kind = ScopeKind::Event;
-		this_type = event_this_type.into();
-		aliases.insert("THIS".to_string(), event_this_type.into());
-		aliases.insert("ROOT".to_string(), event_this_type.into());
-		if let Some(from_type) = event_from_type(key) {
-			aliases.insert("FROM".to_string(), from_type.into());
+	}
+	let kind = match definition.map(|root| root.name.as_str()) {
+		// An event runs in its own scope, fired by a country.
+		Some("event") => {
+			aliases.insert("ROOT".to_string(), this_type);
+			aliases
+				.entry("FROM".to_string())
+				.or_insert(base_scope::country().into());
+			ScopeKind::Event
 		}
-	} else if ctx.file_kind == ScriptFileKind::new("scripted_triggers")
-		&& scope_kind(index, parent_scope_id) == ScopeKind::File
-		&& !is_keyword(key)
-	{
-		kind = ScopeKind::Trigger;
-	} else if ctx.file_kind == ScriptFileKind::new("scripted_effects")
-		&& scope_kind(index, parent_scope_id) == ScopeKind::File
-		&& !is_keyword(key)
-	{
-		kind = ScopeKind::ScriptedEffect;
-	} else if scope_kind_override.is_none()
-		&& let Some(file_kind_scope_kind) = ctx
-			.cwt_rule_engine
-			.and_then(|engine| {
-				#[cfg(test)]
-				CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS.with(|count| count.set(count.get() + 1));
-				let path = scope_assignment_path(index, parent_scope_id, key);
-				let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
-				schema_path_container_scope_kind(
-					engine,
-					ctx.file_kind.clone(),
-					ctx.path,
-					path_refs.as_slice(),
-				)
-			})
-			.or_else(|| {
-				ctx.cwt_rule_engine.map_or_else(
-					|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
-					|engine| {
-						schema_file_kind_container_scope_kind(engine, ctx.file_kind.clone(), key)
-					},
-				)
-			}) {
-		kind = file_kind_scope_kind;
-	}
-
-	// These classifications intentionally override generic and builtin kinds,
-	// but their presence makes the CWT path lookup provably unnecessary.
-	if let Some(scope_kind_override) = scope_kind_override {
-		kind = scope_kind_override;
-	}
-
+		Some("scripted_effect") => ScopeKind::ScriptedEffect,
+		Some("scripted_trigger") => ScopeKind::Trigger,
+		_ => child.rules().map_or(ScopeKind::Block, |rules| {
+			rules_scope_kind(rules, child.subtypes())
+		}),
+	};
+	aliases.insert("THIS".to_string(), this_type);
 	push_scope(ScopeArgs {
 		index,
 		kind,
@@ -1637,68 +1609,27 @@ fn create_child_scope(
 		path: ctx.path,
 		line: span.start.line,
 		key,
+		inherits_this,
 	})
 }
 
-fn scope_assignment_path(
-	index: &SemanticIndex,
-	mut parent_scope_id: usize,
-	key: &str,
-) -> Vec<String> {
-	let mut path = vec![key.to_string()];
-	while let Some(scope) = index.scopes.get(parent_scope_id) {
-		if !scope.key.is_empty() {
-			path.push(scope.key.clone());
-		}
-		let Some(parent) = scope.parent else {
-			break;
-		};
-		parent_scope_id = parent;
-	}
-	path.reverse();
-	path
+/// The scope a `replace_scope` entry names: a scope, or a link the rule files
+/// write for the scope it leads to (`from = owner` in buildings).
+fn replaced_scope_type(binder: &SchemaBinder<'_>, scope: &str) -> MaybeScope {
+	let scope = binder
+		.scope_link(scope)
+		.and_then(|link| link.output_scope.as_deref())
+		.unwrap_or(scope);
+	schema_scope_type(&[scope.to_string()])
 }
 
-fn nearest_conditional_context_kind(
-	index: &SemanticIndex,
-	mut scope_id: usize,
-) -> Option<ScopeKind> {
-	loop {
-		let scope = index.scopes.get(scope_id)?;
-		match scope.kind {
-			ScopeKind::Trigger | ScopeKind::Effect | ScopeKind::ScriptedEffect => {
-				return Some(scope.kind);
-			}
-			_ => {}
-		}
-		scope_id = scope.parent?;
+/// The scope a block runs in when the schema names exactly one the index
+/// tracks.
+fn schema_scope_type(scopes: &[String]) -> MaybeScope {
+	match scopes {
+		[scope] => lookup_scope(scope).map_or(MaybeScope::Unknown, MaybeScope::Known),
+		_ => MaybeScope::Unknown,
 	}
-}
-
-fn is_map_group_scope_key(
-	ctx: &BuildContext<'_>,
-	key: &str,
-	scope_id: usize,
-	index: &SemanticIndex,
-) -> bool {
-	if ctx.map_groups.contains(key) {
-		return scope_kind(index, scope_id) != ScopeKind::File;
-	}
-	if !looks_like_map_group_key(key) {
-		return false;
-	}
-	if scope_kind(index, scope_id) == ScopeKind::File {
-		return false;
-	}
-	// Map-group keys (areas/regions/superregions/provincegroups, plus
-	// content-derived `trade_company_*` keys whose definitions live in
-	// `common/trade_companies/` and therefore are usually invisible to a
-	// per-mod semantic index) act as province scope-changers in any
-	// non-file scope. Vanilla and mods alike use them in trigger blocks
-	// (e.g. `OR = { trade_company_west_africa = { owned_by = PREV } }`),
-	// effect blocks, mission triggers, CB types, and customizable
-	// localization. Accept them whenever we are inside a non-file scope.
-	true
 }
 
 fn province_name_table_id(path: &GamePath) -> Option<String> {
@@ -1718,21 +1649,6 @@ fn random_name_table_id(path: &GamePath) -> Option<String> {
 	}
 }
 
-fn is_template_param_placeholder_key(key: &str) -> bool {
-	extract_template_param_name(key).is_some()
-}
-
-fn numeric_effect_context_semantics(key: &str) -> Option<EffectContextScopeSemantics> {
-	let value = key.parse::<u32>().ok()?;
-	if value <= 100 {
-		Some(EffectContextScopeSemantics::EffectContainer)
-	} else {
-		Some(EffectContextScopeSemantics::ScopeChanger(
-			base_scope::province(),
-		))
-	}
-}
-
 struct ScopeArgs<'a> {
 	index: &'a mut SemanticIndex,
 	kind: ScopeKind,
@@ -1743,6 +1659,7 @@ struct ScopeArgs<'a> {
 	path: &'a GamePath,
 	line: usize,
 	key: &'a str,
+	inherits_this: bool,
 }
 
 fn push_scope(args: ScopeArgs<'_>) -> usize {
@@ -1756,6 +1673,7 @@ fn push_scope(args: ScopeArgs<'_>) -> usize {
 		path,
 		line,
 		key,
+		inherits_this,
 	} = args;
 	let id = index.scopes.len();
 	index.scopes.push(ScopeNode {
@@ -1768,6 +1686,7 @@ fn push_scope(args: ScopeArgs<'_>) -> usize {
 		path: path.to_owned(),
 		span: SourceSpan { line, column: 1 },
 		key: key.to_string(),
+		inherits_this,
 	});
 	id
 }
@@ -1778,175 +1697,6 @@ fn scope_kind(index: &SemanticIndex, scope_id: usize) -> ScopeKind {
 		.get(scope_id)
 		.map(|scope| scope.kind)
 		.unwrap_or(ScopeKind::Block)
-}
-
-/// Count the depth of a scope (how many parents up to the root).
-#[allow(dead_code)]
-fn scope_depth(index: &SemanticIndex, scope_id: usize) -> usize {
-	let mut depth = 0;
-	let mut current = scope_id;
-	while let Some(scope) = index.scopes.get(current) {
-		if let Some(parent) = scope.parent {
-			depth += 1;
-			current = parent;
-		} else {
-			break;
-		}
-	}
-	depth
-}
-
-/// Check if a block's children indicate it's a mission slot definition or
-/// a mission group definition.  Mission slots contain structure keys like
-/// icon, position, etc.  Mission groups contain slot, generic, ai, etc.
-fn is_mission_slot_definition(file_kind: ScriptFileKind, items: &[AstStatement]) -> bool {
-	if file_kind != ScriptFileKind::new("missions") {
-		return false;
-	}
-	items.iter().any(|stmt| {
-		if let AstStatement::Assignment { key, .. } = stmt {
-			matches!(
-				key.as_str(),
-				// Mission slot (individual mission node) keys
-				"icon"
-					| "position" | "required_missions"
-					| "trigger" | "effect"
-					| "ai_weight" | "provinces_to_highlight"
-					| "completed_by"
-					// Mission group (tree container) keys
-					| "slot" | "generic" | "has_country_shield"
-			)
-		} else {
-			false
-		}
-	})
-}
-
-/// Returns true if this scope is a mission slot definition context — i.e. the
-/// scope itself is a direct child of a mission group block (which is a direct
-/// child of the file scope).  Mission slots look like:
-///   mission_group = { my_mission = { icon = ... trigger = { } effect = { } } }
-/// The key `my_mission` is at depth 2 and should not be treated as a scripted call.
-fn is_mission_slot_scope(index: &SemanticIndex, scope_id: usize) -> bool {
-	let Some(scope) = index.scopes.get(scope_id) else {
-		return false;
-	};
-	// Must be a generic Block scope (not Effect/Trigger/Event).
-	if scope.kind != ScopeKind::Block {
-		return false;
-	}
-	let Some(parent_id) = scope.parent else {
-		return false;
-	};
-	let Some(parent) = index.scopes.get(parent_id) else {
-		return false;
-	};
-	// Parent must also be a generic Block (mission group) or File.
-	// If parent is Effect/Trigger, we're inside a mission's effect/trigger block.
-	matches!(parent.kind, ScopeKind::Block | ScopeKind::File)
-}
-
-/// Returns true if `scope_id` is a generic `Block` scope nested directly
-/// inside an effect/trigger/loop/scope-changer/scripted-effect context. Such
-/// blocks represent the parameter container of an outer call (builtin or
-/// mod-defined) — e.g. `has_imperial_privilege_available = { privilege = X }`
-/// or `province_can_auto_develop_tax = { val = 1000 }`. The keys inside are
-/// parameter bindings, not nested trigger/effect calls, and therefore must
-/// not be flagged as unresolved scripted calls.
-///
-/// Logic blocks (`AND`/`OR`/`NOT`), iterators, scope changers, special blocks
-/// and conditional helpers are assigned dedicated `ScopeKind`s by
-/// `create_child_scope`; only structurally-unmodelled call params survive as
-/// `ScopeKind::Block`, which makes this check both deterministic and safe.
-///
-/// To also cover nested call-arg blocks — e.g.
-/// `outer_call = { inner_call = { GOODS = grain } }` where the inner call's
-/// own param container has a `Block` parent rather than the outer
-/// effect/trigger context — we transparently walk up through chains of
-/// `Block` ancestors and treat the chain as a param container as long as the
-/// outermost non-`Block` ancestor is itself an effect/trigger/loop/scope-
-/// changer/scripted-effect context. This keeps the gate safe for File-rooted
-/// data containers (which would short-circuit on non-call ancestor kinds)
-/// while closing the gap on call-arg blocks at any depth.
-fn is_param_block_scope(index: &SemanticIndex, scope_id: usize) -> bool {
-	let Some(scope) = index.scopes.get(scope_id) else {
-		return false;
-	};
-	if scope.kind != ScopeKind::Block {
-		return false;
-	}
-	let mut cursor = scope.parent;
-	while let Some(parent_id) = cursor {
-		let Some(parent) = index.scopes.get(parent_id) else {
-			return false;
-		};
-		match parent.kind {
-			ScopeKind::Effect
-			| ScopeKind::Trigger
-			| ScopeKind::Loop
-			| ScopeKind::AliasBlock
-			| ScopeKind::ScriptedEffect => return true,
-			ScopeKind::Block => {
-				cursor = parent.parent;
-			}
-			_ => return false,
-		}
-	}
-	false
-}
-
-/// Returns true if the current scope or any ancestor scope has a key that
-/// means its children are data identifiers (variable names, mission names,
-/// advisor types, etc.) rather than scripted effect/trigger calls.
-fn is_data_context(index: &SemanticIndex, scope_id: usize) -> bool {
-	const DATA_CONTEXT_KEYS: &[&str] = &[
-		// Variable operations — children are variable names
-		"check_variable",
-		"set_variable",
-		"change_variable",
-		"multiply_variable",
-		"divide_variable",
-		"subtract_variable",
-		"export_to_variable",
-		"is_variable_equal",
-		"had_recent_war",
-		// Mission structure — children are mission names
-		"required_missions",
-		// Advisor checks — children are advisor type names
-		"ME_has_mil_advisor",
-		"ME_has_dip_advisor",
-		"ME_has_adm_advisor",
-		// Define namespace — children are config keys
-		"define",
-		"defines",
-		// Scripted parameter blocks — children are parameter names
-		"who",
-		"export_to_variable",
-		// Parameterised scripted effects/triggers — children are parameter
-		// names (option_1, mod_1, first_limit, tradition, hook, etc.)
-		"country_event_with_option_insight",
-		"complex_dynamic_effect",
-		"create_general_with_pips",
-		"ME_create_flagship",
-		// Scripted trigger wrappers — children are parameter names
-		"ME_legitimacy_or_tribal_allegiance_trigger",
-		"NED_faction_is_superior_by",
-		// Aggregation trigger — children are scope/trigger blocks
-		"calc_true_if",
-	];
-	let mut current = scope_id;
-	loop {
-		let Some(scope) = index.scopes.get(current) else {
-			return false;
-		};
-		if DATA_CONTEXT_KEYS.contains(&scope.key.as_str()) {
-			return true;
-		}
-		let Some(parent) = scope.parent else {
-			return false;
-		};
-		current = parent;
-	}
 }
 
 fn scope_this_type(index: &SemanticIndex, scope_id: usize) -> MaybeScope {
@@ -1972,31 +1722,6 @@ fn line_from_stmt(stmt: Option<&AstStatement>) -> usize {
 		AstStatement::Comment { span, .. } => span.start.line,
 	})
 	.unwrap_or(1)
-}
-
-fn find_scripted_effect_definition(
-	index: &SemanticIndex,
-	mod_id: &str,
-	path: &GamePath,
-	name: &str,
-) -> Option<usize> {
-	index.definitions.iter().position(|item| {
-		item.kind == SymbolKind::ScriptedEffect
-			&& item.mod_id == mod_id
-			&& item.path == path
-			&& item.local_name == name
-	})
-}
-
-fn is_event_call(key: &str, value: &AstValue) -> bool {
-	event_scope_type(key).is_some() && matches!(value, AstValue::Block { .. })
-}
-
-fn extract_event_call_id(value: &AstValue) -> Option<String> {
-	let AstValue::Block { items, .. } = value else {
-		return None;
-	};
-	extract_assignment_scalar(items, "id")
 }
 
 fn extract_assignment_scalar(items: &[AstStatement], name: &str) -> Option<String> {
@@ -2108,23 +1833,14 @@ struct ProvidedParams {
 	bindings: Vec<ParamBinding>,
 }
 
-fn collect_provided_params(local_name: &str, items: &[AstStatement]) -> ProvidedParams {
+/// The parameters a call passes: every key its block assigns, and the value
+/// of each one that assigns a value.
+fn collect_provided_params(items: &[AstStatement]) -> ProvidedParams {
 	let mut params = ProvidedParams::default();
-	let contract_names = explicit_contract_param_names(local_name);
 	for stmt in items {
 		if let AstStatement::Assignment { key, value, .. } = stmt {
-			let is_explicit_param_name = key
-				.chars()
-				.all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
-				|| contract_names.contains(key.as_str());
-			let is_named_param_binding = !key.is_empty()
-				&& key
-					.chars()
-					.all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
-			if is_explicit_param_name || is_named_param_binding {
-				params.names.push(key.clone());
-			}
-			if is_named_param_binding && let Some(value) = scalar_text(value) {
+			params.names.push(key.clone());
+			if let Some(value) = scalar_text(value) {
 				params.bindings.push(ParamBinding {
 					name: key.clone(),
 					value,
@@ -2174,10 +1890,6 @@ fn collect_scope_param_names_from_statements(items: &[AstStatement], names: &mut
 	}
 }
 
-fn is_alias_key(key: &str) -> bool {
-	matches!(key, "ROOT" | "FROM" | "THIS" | "PREV")
-}
-
 pub fn is_decision_container_key(key: &str) -> bool {
 	matches!(
 		key,
@@ -2219,6 +1931,71 @@ fn is_ui_resource_key(key: &str) -> bool {
 			| "pdxmesh"
 			| "mesh"
 	)
+}
+
+/// Links calls to scripted effects and triggers the schema declares under
+/// their own names. Those keys bind as the engine's effects and triggers, so
+/// the walk records no call; where the index holds a definition of that name,
+/// a key written where effects (or triggers) go calls it. Calls already linked
+/// stay as they are, so linking an index assembled from linked ones adds only
+/// the calls one part makes to another's definitions.
+pub fn link_schema_declared_calls(index: &mut SemanticIndex) {
+	let declared = index
+		.definitions
+		.iter()
+		.filter(|definition| match definition.kind {
+			SymbolKind::ScriptedEffect => is_schema_effect(&definition.local_name),
+			SymbolKind::ScriptedTrigger => is_schema_trigger(&definition.local_name),
+			_ => false,
+		})
+		.map(|definition| (definition.kind, definition.local_name.clone()))
+		.collect::<HashSet<_>>();
+	if declared.is_empty() {
+		return;
+	}
+	let linked = index
+		.references
+		.iter()
+		.map(|reference| {
+			(
+				reference.mod_id.clone(),
+				reference.path.clone(),
+				reference.line,
+				reference.column,
+			)
+		})
+		.collect::<HashSet<_>>();
+	let mut calls = Vec::new();
+	for usage in &index.key_usages {
+		let kind = match scope_kind(index, usage.scope_id) {
+			ScopeKind::Effect | ScopeKind::ScriptedEffect => SymbolKind::ScriptedEffect,
+			ScopeKind::Trigger => SymbolKind::ScriptedTrigger,
+			_ => continue,
+		};
+		if !declared.contains(&(kind, usage.key.clone()))
+			|| linked.contains(&(
+				usage.mod_id.clone(),
+				usage.path.clone(),
+				usage.line,
+				usage.column,
+			)) {
+			continue;
+		}
+		calls.push(SymbolReference {
+			kind,
+			name: usage.key.clone(),
+			module: String::new(),
+			mod_id: usage.mod_id.clone(),
+			path: usage.path.clone(),
+			line: usage.line,
+			column: usage.column,
+			scope_id: usage.scope_id,
+			provided_params: Vec::new(),
+			param_bindings: Vec::new(),
+			schema_alias: true,
+		});
+	}
+	index.references.extend(calls);
 }
 
 fn is_inferred_callable_kind(kind: SymbolKind) -> bool {
@@ -2289,22 +2066,8 @@ pub fn resolve_symbol_reference_targets(
 ) -> Vec<usize> {
 	match reference.kind {
 		SymbolKind::Event => resolve_event_reference_targets(index, reference),
-		SymbolKind::ScriptedEffect => {
-			let targets = resolve_scripted_effect_reference_targets(index, reference);
-			if targets.is_empty() {
-				resolve_cross_kind_reference_targets(index, reference, SymbolKind::ScriptedTrigger)
-			} else {
-				targets
-			}
-		}
-		SymbolKind::ScriptedTrigger => {
-			let targets = resolve_scripted_trigger_reference_targets(index, reference);
-			if targets.is_empty() {
-				resolve_cross_kind_reference_targets(index, reference, SymbolKind::ScriptedEffect)
-			} else {
-				targets
-			}
-		}
+		SymbolKind::ScriptedEffect => resolve_scripted_effect_reference_targets(index, reference),
+		SymbolKind::ScriptedTrigger => resolve_scripted_trigger_reference_targets(index, reference),
 		_ => Vec::new(),
 	}
 }
@@ -2314,12 +2077,14 @@ pub fn count_symbol_references_resolving_to_mod(
 	source_mod_id: &str,
 	target_mod_id: &str,
 ) -> u32 {
+	let table = SymbolTable::new(index);
 	let count = index
 		.references
 		.iter()
 		.filter(|reference| reference.mod_id == source_mod_id)
 		.filter(|reference| {
-			resolve_symbol_reference_targets(index, reference)
+			table
+				.targets(index, reference)
 				.into_iter()
 				.filter_map(|target| index.definitions.get(target))
 				.any(|definition| definition.mod_id == target_mod_id)
@@ -2398,8 +2163,123 @@ pub fn resolve_event_reference_targets(
 	matches
 }
 
+/// An index's definitions by kind and name, to resolve many references
+/// without reading every definition for each. Its answers are those of the
+/// `resolve_*` functions.
+pub struct SymbolTable {
+	by_name: HashMap<(SymbolKind, String), Vec<usize>>,
+	/// Event ids by every tail after a `.` (`9073` for `hre_event.9073`).
+	events_by_tail: HashMap<String, Vec<usize>>,
+}
+
+impl SymbolTable {
+	pub fn new(index: &SemanticIndex) -> Self {
+		let mut by_name = HashMap::<(SymbolKind, String), Vec<usize>>::new();
+		let mut events_by_tail = HashMap::<String, Vec<usize>>::new();
+		for (id, definition) in index.definitions.iter().enumerate() {
+			let name = match definition.kind {
+				SymbolKind::Event => &definition.name,
+				_ => &definition.local_name,
+			};
+			by_name
+				.entry((definition.kind, name.clone()))
+				.or_default()
+				.push(id);
+			if definition.kind == SymbolKind::Event {
+				for (dot, _) in name.match_indices('.') {
+					events_by_tail
+						.entry(name[dot + 1..].to_string())
+						.or_default()
+						.push(id);
+				}
+			}
+		}
+		Self {
+			by_name,
+			events_by_tail,
+		}
+	}
+
+	fn named(&self, kind: SymbolKind, name: &str) -> &[usize] {
+		self.by_name
+			.get(&(kind, name.to_string()))
+			.map_or(&[], Vec::as_slice)
+	}
+
+	/// What [`resolve_symbol_reference_targets`] answers.
+	pub fn targets(&self, index: &SemanticIndex, reference: &SymbolReference) -> Vec<usize> {
+		match reference.kind {
+			SymbolKind::Event => self.events(reference),
+			SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger => {
+				self.scripted(index, reference, reference.kind)
+			}
+			_ => Vec::new(),
+		}
+	}
+
+	/// What [`resolve_scripted_effect_reference_targets`] or its trigger twin
+	/// answers: the definitions of `kind` in the reference's own module,
+	/// else of its name anywhere.
+	pub fn scripted(
+		&self,
+		index: &SemanticIndex,
+		reference: &SymbolReference,
+		kind: SymbolKind,
+	) -> Vec<usize> {
+		if reference.kind != kind {
+			return Vec::new();
+		}
+		let all = self.named(kind, &reference.name);
+		let exact = all
+			.iter()
+			.copied()
+			.filter(|id| index.definitions[*id].module == reference.module)
+			.collect::<Vec<_>>();
+		if exact.is_empty() {
+			all.to_vec()
+		} else {
+			exact
+		}
+	}
+
+	/// What [`resolve_cross_kind_reference_targets`] answers.
+	pub fn of_kind(
+		&self,
+		index: &SemanticIndex,
+		reference: &SymbolReference,
+		kind: SymbolKind,
+	) -> Vec<usize> {
+		let all = self.named(kind, &reference.name);
+		match all
+			.iter()
+			.copied()
+			.find(|id| index.definitions[*id].module == reference.module)
+		{
+			Some(exact) => vec![exact],
+			None => all.to_vec(),
+		}
+	}
+
+	/// What [`resolve_event_reference_targets`] answers.
+	pub fn events(&self, reference: &SymbolReference) -> Vec<usize> {
+		if reference.kind != SymbolKind::Event {
+			return Vec::new();
+		}
+		let name = reference.name.as_str();
+		let mut ids = self.named(SymbolKind::Event, name).to_vec();
+		ids.extend(self.events_by_tail.get(name).into_iter().flatten());
+		for (dot, _) in name.match_indices('.') {
+			ids.extend_from_slice(self.named(SymbolKind::Event, &name[dot + 1..]));
+		}
+		ids.sort_unstable();
+		ids.dedup();
+		ids
+	}
+}
+
 fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	let callable_scope_map = build_inferred_callable_scope_map(index);
+	let table = SymbolTable::new(index);
 
 	let mut observed_masks: Vec<ScopeSet> = index
 		.definitions
@@ -2430,11 +2310,8 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 				continue;
 			}
 			let target_defs = match reference.kind {
-				SymbolKind::ScriptedEffect => {
-					resolve_scripted_effect_reference_targets(index, reference)
-				}
-				SymbolKind::ScriptedTrigger => {
-					resolve_scripted_trigger_reference_targets(index, reference)
+				SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger => {
+					table.scripted(index, reference, reference.kind)
 				}
 				_ => Vec::new(),
 			};
@@ -2543,6 +2420,7 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 /// scripted_effect / scripted_trigger inheriting the caller's ROOT.
 fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticIndex) {
 	let callable_scope_map = build_inferred_callable_scope_map(index);
+	let table = SymbolTable::new(index);
 	let mut from_masks: Vec<ScopeSet> = vec![ScopeSet::EMPTY; index.definitions.len()];
 	let mut root_masks: Vec<ScopeSet> = vec![ScopeSet::EMPTY; index.definitions.len()];
 
@@ -2573,16 +2451,7 @@ fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticInde
 			if caller_from.is_empty() && caller_root.is_empty() {
 				continue;
 			}
-			let target_defs = match reference.kind {
-				SymbolKind::ScriptedEffect => {
-					resolve_scripted_effect_reference_targets(index, reference)
-				}
-				SymbolKind::ScriptedTrigger => {
-					resolve_scripted_trigger_reference_targets(index, reference)
-				}
-				SymbolKind::Event => resolve_event_reference_targets(index, reference),
-				_ => Vec::new(),
-			};
+			let target_defs = table.targets(index, reference);
 			for def_idx in target_defs {
 				let merged_from = from_masks[def_idx] | caller_from;
 				if merged_from != from_masks[def_idx] {
@@ -2710,17 +2579,13 @@ fn binding_value_scope_mask(
 				trimmed,
 			);
 		}
-		"owner" => return scope_mask(base_scope::country()),
-		"capital_scope" => return scope_mask(base_scope::province()),
 		_ => {}
 	}
-	if is_country_tag_selector(trimmed) {
-		return scope_mask(base_scope::country());
-	}
-	if is_province_id_selector(trimmed) {
-		return scope_mask(base_scope::province());
-	}
-	ScopeSet::EMPTY
+	super::cwt::rule_engine()
+		.link(trimmed)
+		.and_then(|link| link.output_scope.as_deref())
+		.and_then(lookup_scope)
+		.map_or(ScopeSet::EMPTY, scope_mask)
 }
 
 pub(crate) fn effective_alias_scope_mask_with_overrides(

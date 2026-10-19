@@ -70,6 +70,21 @@ diagnostics: 13 scope findings (`V007`), 8 cardinality/repetition findings
 volume, not precision or recall. The base build parsed 8,986 documents without
 parse failures and installed an isolated matching snapshot.
 
+On 2026-10-18 the semantic index moved to the schema binding the editor uses
+(Windows, EU4 `v1.37.5.0`, embedded schema). Checking the installed game's own
+scripts as the only playset entry reports no unresolved calls and no calls in
+the wrong position, 39 missing localisation keys (from 143) and one invisible
+`FROM` (from 740). `build_semantic_index` over the game takes 2.5 s with
+60,407 references (from 4.9 s with 33,064). On a 39-mod Workshop playset,
+unresolved and misplaced calls rose from 263 to 472: undefined tags, areas and
+provinces are now checked against their definitions, and engine keys the
+vendored rules lack (`move_great_project`, `every_neighbor_sea_zone`) report
+until a supplement covers them. Missing localisation fell from 2,852 to 2,421,
+mostly hidden events' titles the rules type as plain text. The editor survey
+over the game reports 46 diagnostics: the 32 above and 14 scope findings in
+`on_actions`, whose callback scopes now apply and expose vendored alias scopes
+narrower than the game's use.
+
 An independent stdio probe found that an unsaved syntax repair cleared the
 buffer warning but retained the disk scan's old error. The candidate fixes this
 by recomputing document diagnostics from current text, binding cross-file

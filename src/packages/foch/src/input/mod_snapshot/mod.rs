@@ -1,6 +1,5 @@
 mod store;
 
-use crate::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
 use crate::game::eu4::base::analysis_rules_version;
 use crate::game::eu4::script::documents::{
 	build_semantic_index_from_owned_documents, discover_text_documents_from_paths,
@@ -272,11 +271,10 @@ fn to_loaded_snapshot_with_stats(
 	mod_hash: Option<String>,
 ) -> io::Result<LoadedModSnapshot> {
 	let CachedModData {
-		mut semantic_index,
+		semantic_index,
 		inventory_paths,
 		document_input_identities,
 	} = data;
-	apply_registered_param_contracts(&mut semantic_index);
 	let document_paths = document_game_paths(&semantic_index.documents)?;
 	let document_parse_hints = document_paths
 		.iter()

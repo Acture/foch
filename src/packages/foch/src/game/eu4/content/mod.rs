@@ -1,4 +1,4 @@
-use crate::model::{GamePath, MaybeScope, ScopeType};
+use crate::model::{GamePath, GamePathBuf, MaybeScope, ScopeType};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -307,6 +307,12 @@ pub struct MergePolicies {
 	/// re-ship the field. Game-logic families keep edit-vs-remove as a conflict.
 	#[serde(default)]
 	pub edit_wins_over_remove: bool,
+	/// The top-level statements of a file are definitions read by their keys,
+	/// in no order, as in a definition module: repeated keyed entries such as
+	/// `custom_button = { name = ... }` written in another order by another
+	/// mod are not reordered.
+	#[serde(default)]
+	pub unordered_definitions: bool,
 }
 
 impl MergePolicies {
@@ -751,6 +757,10 @@ pub struct ContentFamilyDescriptor {
 	pub merge_key_source: Option<MergeKeySource>,
 	pub conflict_policy: ConflictPolicy,
 	pub merge_policies: MergePolicies,
+	/// The game directory whose rules read this family's files, when the
+	/// family stands for content written in another place (a mod's
+	/// `events/decisions` read as `decisions`).
+	pub schema_directory: Option<&'static GamePath>,
 }
 
 #[derive(Clone, Debug)]
@@ -765,9 +775,17 @@ pub struct ContentFamilyDescriptorBuilder {
 	merge_key_source: Option<MergeKeySource>,
 	conflict_policy: ConflictPolicy,
 	merge_policies: MergePolicies,
+	schema_directory: Option<&'static GamePath>,
 }
 
 impl ContentFamilyDescriptorBuilder {
+	/// Read this family's files as the rules read the files of `directory`, a
+	/// game path literal.
+	pub fn read_as(mut self, directory: &'static str) -> Self {
+		self.schema_directory = Some(table_game_path(directory));
+		self
+	}
+
 	pub fn kind(mut self, kind: ScriptFileKind) -> Self {
 		self.script_file_kind = kind;
 		self
@@ -887,11 +905,23 @@ impl ContentFamilyDescriptorBuilder {
 			merge_key_source: self.merge_key_source,
 			conflict_policy: self.conflict_policy,
 			merge_policies: self.merge_policies,
+			schema_directory: self.schema_directory,
 		}
 	}
 }
 
 impl ContentFamilyDescriptor {
+	/// The game path whose rules read `path`, a file of this family: the path
+	/// itself, or its place in the directory the family is read as.
+	pub fn schema_path(&self, path: &GamePath) -> GamePathBuf {
+		match (self.schema_directory, &self.matcher) {
+			(Some(directory), ContentFamilyPathMatcher::Prefix(prefix)) => path
+				.strip_prefix(prefix)
+				.map_or_else(|| path.to_owned(), |rest| directory.join(rest)),
+			_ => path.to_owned(),
+		}
+	}
+
 	/// Whether a file-level semantic merge may use an empty ancestor after the
 	/// current game root has authoritatively proved that the exact path does not
 	/// exist. This is a property of the merge unit: aggregate definition modules
@@ -937,7 +967,9 @@ impl ContentFamilyDescriptor {
 				divergent_block_rules: &[],
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
+				unordered_definitions: false,
 			},
+			schema_directory: None,
 		}
 	}
 
@@ -976,7 +1008,9 @@ impl ContentFamilyDescriptor {
 				divergent_block_rules: &[],
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
+				unordered_definitions: false,
 			},
+			schema_directory: None,
 		}
 	}
 }

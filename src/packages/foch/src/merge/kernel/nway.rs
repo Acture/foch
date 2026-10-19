@@ -52,6 +52,9 @@ pub struct NWayClassFacts {
 	pub moved: SourceSet,
 	pub reordered: SourceSet,
 	pub deleted_by: Vec<RevisionId>,
+	/// Whether the class is kept for a change over a deletion that removed
+	/// it whole, so what is inside it merges as the base had it.
+	pub kept_over_deletion: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,22 +140,53 @@ impl NWayCorrespondence {
 
 		let matcher_started = Instant::now();
 		let matcher = TreeMatcher::default();
+		// Most revisions of a definition are the same tree: every mod that
+		// leaves it alone reads it as the base does. The matcher is a function
+		// of its trees and seed, so each distinct tree is matched once, and
+		// each pair of distinct trees once, instead of each pair of revisions.
+		let mut distinct = Vec::<&NormalizedTree>::new();
+		let tree_class = revisions
+			.iter()
+			.map(|revision| {
+				distinct
+					.iter()
+					.position(|tree| same_tree(tree, revision.tree))
+					.unwrap_or_else(|| {
+						distinct.push(revision.tree);
+						distinct.len() - 1
+					})
+			})
+			.collect::<Vec<_>>();
+		let base_matchings = distinct
+			.iter()
+			.map(|tree| matcher.match_trees(base, tree))
+			.collect::<Vec<_>>();
 		let mut matchings = BTreeMap::new();
-		for revision in revisions {
+		for (revision, &class) in revisions.iter().zip(&tree_class) {
 			matchings.insert(
 				(RevisionId::BASE, revision.id),
-				matcher.match_trees(base, revision.tree),
+				base_matchings[class].clone(),
 			);
 		}
+		let mut pair_matchings = BTreeMap::<(usize, usize), Matching>::new();
 		for (left_index, left) in revisions.iter().enumerate() {
-			for right in &revisions[left_index + 1..] {
-				let left_base = &matchings[&(RevisionId::BASE, left.id)];
-				let right_base = &matchings[&(RevisionId::BASE, right.id)];
-				let seed = Matching::compose_through_base(left_base, right_base);
-				matchings.insert(
-					(left.id, right.id),
-					matcher.match_trees_with_seed(left.tree, right.tree, Some(&seed)),
-				);
+			for (right_index, right) in revisions.iter().enumerate().skip(left_index + 1) {
+				let classes = (tree_class[left_index], tree_class[right_index]);
+				let matching = pair_matchings.entry(classes).or_insert_with(|| {
+					let seed = Matching::compose_through_base(
+						&base_matchings[classes.0],
+						&base_matchings[classes.1],
+					);
+					let mut matching =
+						matcher.match_trees_with_seed(left.tree, right.tree, Some(&seed));
+					separate_divergent_additions(
+						&mut matching,
+						(left.tree, &base_matchings[classes.0]),
+						(right.tree, &base_matchings[classes.1]),
+					);
+					matching
+				});
+				matchings.insert((left.id, right.id), matching.clone());
 			}
 		}
 		let matcher_ns = nanos(matcher_started.elapsed());
@@ -279,7 +313,13 @@ impl NWayCorrespondence {
 			&NWaySelectionOverrides::default(),
 			&mut plan,
 		);
-		assign_nway_children(base, revisions, self, &mut plan);
+		assign_nway_children(
+			base,
+			revisions,
+			self,
+			&crate::merge::kernel::ConservativeMergePolicy,
+			&mut plan,
+		);
 		plan
 	}
 
@@ -298,7 +338,7 @@ impl NWayCorrespondence {
 		apply_selection_overrides(&mut plan, overrides, self);
 		let policy_ns = nanos(policy_started.elapsed());
 		assign_nway_parents(base, revisions, self, overrides, &mut plan);
-		assign_nway_children(base, revisions, self, &mut plan);
+		assign_nway_children(base, revisions, self, policy, &mut plan);
 		(plan, policy_ns)
 	}
 
@@ -343,15 +383,17 @@ impl NWayCorrespondence {
 					&mut plan.conflicts,
 				),
 			};
-			// A delete-modify keeps the modifying revision's whole subtree until it
-			// is resolved: its unmodified descendants were deleted only as part of
-			// the deleted ancestor, so deleting them alone would leave a partial node.
-			let subtree_selected = selected.is_some() && !facts.deleted_by.is_empty();
 			plan.classes.insert(
 				class.id,
 				NWayClassSelection {
 					selected,
-					subtree_selected,
+					// A delete-modify the merge cannot keep open keeps the
+					// modifying revision's whole subtree until it is resolved:
+					// deleting its unmodified descendants alone would leave a
+					// partial node.
+					subtree_selected: selected.is_some()
+						&& !facts.deleted_by.is_empty()
+						&& !facts.kept_over_deletion,
 					scalar_synthesis: None,
 					child_revision: None,
 					sources,
@@ -473,6 +515,7 @@ fn assign_nway_children(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
 	correspondence: &NWayCorrespondence,
+	policy: &dyn crate::merge::kernel::MergePolicy,
 	plan: &mut NWaySelectionPlan,
 ) {
 	let live_classes = plan
@@ -531,6 +574,7 @@ fn assign_nway_children(
 				ChildCardinality::ExactlyOne => required_slot_nway_child(
 					base,
 					revisions,
+					policy,
 					parent,
 					&base_sequence,
 					&revision_sequences,
@@ -541,6 +585,7 @@ fn assign_nway_children(
 					commutative_nway_children(
 						base,
 						revisions,
+						correspondence,
 						&base_sequence,
 						&revision_sequences,
 						plan,
@@ -551,7 +596,9 @@ fn assign_nway_children(
 						.iter()
 						.map(Vec::as_slice)
 						.collect::<Vec<_>>();
-					match merge_orders(parent, &base_sequence, &revision_refs) {
+					match merge_orders(parent, &base_sequence, &revision_refs).or_else(|cycle| {
+						order_by_load_order(parent, &base_sequence, &revision_refs).ok_or(cycle)
+					}) {
 						Ok(children) => children,
 						Err(cycle) => {
 							let parent_class = correspondence.classes.class(parent);
@@ -603,6 +650,7 @@ fn assign_nway_children(
 fn required_slot_nway_child(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
+	policy: &dyn crate::merge::kernel::MergePolicy,
 	parent: ClassId,
 	base_sequence: &[ClassId],
 	revision_sequences: &[Vec<ClassId>],
@@ -656,6 +704,26 @@ fn required_slot_nway_child(
 		selection.parent = Some(parent);
 	}
 
+	if let Some(synthesis) = combined_slot_value(
+		base,
+		revisions,
+		policy,
+		selected_parent_node,
+		&candidates,
+		plan,
+	) {
+		for candidate in &candidates {
+			if *candidate != tentative {
+				plan.policy_excluded.insert(*candidate);
+			}
+		}
+		plan.classes
+			.get_mut(&tentative)
+			.expect("every required-slot child has a selection record")
+			.scalar_synthesis = Some(synthesis);
+		return vec![tentative];
+	}
+
 	let child_sources = candidates
 		.iter()
 		.copied()
@@ -699,6 +767,41 @@ fn required_slot_nway_child(
 	vec![tentative]
 }
 
+/// The value a policy combines the revisions' different values of one slot
+/// into, in load order.
+fn combined_slot_value(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	policy: &dyn crate::merge::kernel::MergePolicy,
+	parent: &NormalizedNode,
+	candidates: &BTreeSet<ClassId>,
+	plan: &NWaySelectionPlan,
+) -> Option<NWayScalarSynthesis> {
+	let mut values = candidates
+		.iter()
+		.map(|class| plan.classes[class].selected)
+		.collect::<Option<Vec<_>>>()?;
+	values.sort_by_key(|source| source.revision);
+	let nodes = values
+		.iter()
+		.map(|source| {
+			tree_for_revision(base, revisions, source.revision)
+				.node(source.node)
+				.unwrap()
+		})
+		.collect::<Vec<_>>();
+	let output = policy.combine_slot_values(parent, &nodes)?;
+	Some(NWayScalarSynthesis {
+		reducer_path: parent.policy_path.clone(),
+		inputs: values
+			.iter()
+			.zip(&nodes)
+			.map(|(source, node)| (source.revision, node.value.clone().unwrap_or_default()))
+			.collect(),
+		output,
+	})
+}
+
 fn class_child_sequence(
 	tree: &NormalizedTree,
 	revision: RevisionId,
@@ -728,9 +831,10 @@ fn class_child_sequence(
 fn commutative_nway_children(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
+	correspondence: &NWayCorrespondence,
 	base_sequence: &[ClassId],
 	revision_sequences: &[Vec<ClassId>],
-	plan: &NWaySelectionPlan,
+	plan: &mut NWaySelectionPlan,
 ) -> Vec<ClassId> {
 	let mut children = base_sequence
 		.iter()
@@ -739,6 +843,31 @@ fn commutative_nway_children(
 		.collect::<BTreeSet<_>>()
 		.into_iter()
 		.collect::<Vec<_>>();
+	// Mods that each add the same thing to an unordered block add it once:
+	// a second copy says nothing the first does not.
+	let mut added = BTreeSet::new();
+	children.retain(|class| {
+		if correspondence
+			.classes
+			.class(*class)
+			.get(RevisionId::BASE)
+			.is_some()
+		{
+			return true;
+		}
+		let selected = plan.classes[class]
+			.selected
+			.expect("commutative child is live");
+		let hash = tree_for_revision(base, revisions, selected.revision)
+			.node(selected.node)
+			.unwrap()
+			.subtree_hash;
+		if added.insert(hash) {
+			return true;
+		}
+		plan.policy_excluded.insert(*class);
+		false
+	});
 	children.sort_by_key(|class| {
 		let selected = plan.classes[class]
 			.selected
@@ -754,6 +883,42 @@ fn commutative_nway_children(
 		)
 	});
 	children
+}
+
+/// Where mods order one set of children in ways that contradict each other,
+/// the order of the mods loaded later stands, as a value the game reads from
+/// the mod it loads last would; an earlier mod's children it alone has keep
+/// their place beside the children it wrote them next to.
+fn order_by_load_order(
+	parent: ClassId,
+	base: &[ClassId],
+	revisions: &[&[ClassId]],
+) -> Option<Vec<ClassId>> {
+	let (kept, mut order) = (1..revisions.len()).find_map(|skip| {
+		merge_orders(parent, base, &revisions[skip..])
+			.ok()
+			.map(|order| (skip, order))
+	})?;
+	for sequence in revisions[..kept].iter().rev() {
+		for (index, class) in sequence.iter().enumerate() {
+			if order.contains(class) {
+				continue;
+			}
+			let position = sequence[..index]
+				.iter()
+				.rev()
+				.find_map(|before| order.iter().position(|placed| placed == before))
+				.map(|position| position + 1)
+				.or_else(|| {
+					sequence[index + 1..]
+						.iter()
+						.find_map(|after| order.iter().position(|placed| placed == after))
+				})
+				.unwrap_or(order.len());
+			order.insert(position, *class);
+		}
+	}
+	Some(order)
 }
 
 fn fallback_nway_order(base: &[ClassId], revisions: &[Vec<ClassId>]) -> Vec<ClassId> {
@@ -1197,7 +1362,7 @@ fn build_class_facts(
 			(revision, moved, reordered)
 		})
 		.collect::<Vec<_>>();
-	classes
+	let mut facts = classes
 		.classes()
 		.map(|class| {
 			let base_node = class.get(RevisionId::BASE);
@@ -1240,10 +1405,197 @@ fn build_class_facts(
 					moved,
 					reordered,
 					deleted_by,
+					kept_over_deletion: false,
 				},
 			)
 		})
-		.collect()
+		.collect::<BTreeMap<_, _>>();
+	keep_changes_inside_kept_deletions(base, revisions, classes, &mut facts);
+	facts
+}
+
+/// A part one mod deletes and another changes is kept for the change, and
+/// so is everything in it as the base had it: the deleting mod removed it
+/// only by removing the whole part, which no longer happens. What a changing
+/// mod deleted inside it stays deleted, and every mod's changes inside it
+/// merge as anywhere else. A mod that wrote another control-flow chain in
+/// the place of a chain replaced it instead: both chains would run, so the
+/// two versions stay a conflict.
+fn keep_changes_inside_kept_deletions(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	classes: &ClassMapping,
+	facts: &mut BTreeMap<ClassId, NWayClassFacts>,
+) {
+	// Each base node with the deletions it is kept over, and the revisions
+	// that replaced one of its ancestors, whose deletions inside stand.
+	let mut pending = vec![(
+		base.root(),
+		BTreeSet::<RevisionId>::new(),
+		BTreeSet::<RevisionId>::new(),
+	)];
+	while let Some((node, mut overridden, mut replaced)) = pending.pop() {
+		if let Some(class) = classes.class_for(RevisionNode::new(RevisionId::BASE, node))
+			&& let Some(facts) = facts.get_mut(&class)
+		{
+			facts
+				.deleted_by
+				.retain(|revision| !overridden.contains(revision));
+			let changed = !facts.subtree_changed.is_empty()
+				|| !facts.moved.is_empty()
+				|| !facts.reordered.is_empty();
+			if changed && !facts.deleted_by.is_empty() {
+				let replacing = facts
+					.deleted_by
+					.iter()
+					.copied()
+					.filter(|revision| {
+						replaced.contains(revision)
+							|| replaced_in(base, revisions, classes, node, *revision)
+					})
+					.collect::<Vec<_>>();
+				if replacing.is_empty() {
+					overridden.extend(facts.deleted_by.iter().copied());
+					facts.kept_over_deletion = true;
+				} else {
+					replaced.extend(replacing);
+				}
+			}
+		}
+		for child in &base.node(node).unwrap().children {
+			pending.push((*child, overridden.clone(), replaced.clone()));
+		}
+	}
+}
+
+/// Whether a revision that lacks a base control-flow chain wrote a new chain
+/// under the same parent.
+fn replaced_in(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	classes: &ClassMapping,
+	node: crate::merge::kernel::NodeId,
+	revision: RevisionId,
+) -> bool {
+	let base_node = base.node(node).unwrap();
+	let Some(parent) = base_node
+		.parent
+		.filter(|_| base_node.kind.starts_with(CONTROL_FLOW_CHAIN))
+	else {
+		return false;
+	};
+	let Some(tree) = revisions
+		.iter()
+		.find(|candidate| candidate.id == revision)
+		.map(|revision| revision.tree)
+	else {
+		return false;
+	};
+	let Some(parent_in_revision) = classes
+		.class_for(RevisionNode::new(RevisionId::BASE, parent))
+		.and_then(|class| classes.class(class).get(revision))
+	else {
+		return false;
+	};
+	// The new chain stands where the base one did: between the same
+	// neighbours. A chain added elsewhere beside an edited one is an addition.
+	let class_at =
+		|revision: RevisionId, siblings: &[crate::merge::kernel::NodeId], index: Option<usize>| {
+			index
+				.and_then(|index| siblings.get(index))
+				.and_then(|node| classes.class_for(RevisionNode::new(revision, *node)))
+		};
+	let base_siblings = &base.node(parent).unwrap().children;
+	let position = base_siblings
+		.iter()
+		.position(|sibling| *sibling == node)
+		.expect("a node is among its parent's children");
+	let before = class_at(RevisionId::BASE, base_siblings, position.checked_sub(1));
+	let after = class_at(RevisionId::BASE, base_siblings, Some(position + 1));
+	let siblings = &tree.node(parent_in_revision).unwrap().children;
+	siblings.iter().enumerate().any(|(index, child)| {
+		tree.node(*child)
+			.unwrap()
+			.kind
+			.starts_with(CONTROL_FLOW_CHAIN)
+			&& classes
+				.class_for(RevisionNode::new(revision, *child))
+				.is_some_and(|class| classes.class(class).get(RevisionId::BASE).is_none())
+			&& class_at(revision, siblings, index.checked_sub(1)) == before
+			&& class_at(revision, siblings, Some(index + 1)) == after
+	})
+}
+
+const CONTROL_FLOW_CHAIN: &str = "clausewitz.control_flow.chain:";
+
+/// The anchor namespace of a statement the schema lets a block repeat, such
+/// as a trigger in an `OR` or an effect in an effect block.
+pub const REPEATABLE_STATEMENT: &str = "clausewitz.statement.key";
+
+/// The anchor namespace of a block of conditions the game reads together,
+/// holding no effects.
+pub const CONDITION_BLOCK: &str = "clausewitz.block.conditions";
+
+/// Two revisions that each add a repeatable statement the base lacks add two
+/// statements, unless they add the same one: two mods that extend an `OR`
+/// with an alternative of their own keep both alternatives. Matching would
+/// pair the two by their shared key, so such pairs, with everything under
+/// them, are dropped. A statement the base has is matched as before, so a
+/// change to it is still a change.
+fn separate_divergent_additions(
+	matching: &mut Matching,
+	(left, left_base): (&NormalizedTree, &Matching),
+	(right, right_base): (&NormalizedTree, &Matching),
+) {
+	let is_addition =
+		|tree: &NormalizedTree, base: &Matching, node: crate::merge::kernel::NodeId| {
+			base.get_from_right(node).is_none()
+				&& tree.node(node).is_ok_and(|node| {
+					// A control-flow chain is a statement a block repeats too.
+					node.kind.starts_with(CONTROL_FLOW_CHAIN)
+						|| node
+							.anchor
+							.as_ref()
+							.is_some_and(|anchor| anchor.namespace == REPEATABLE_STATEMENT)
+				})
+		};
+	let separated = matching
+		.records()
+		.filter(|record| {
+			is_addition(left, left_base, record.left)
+				&& is_addition(right, right_base, record.right)
+				&& left.node(record.left).map(|node| node.subtree_hash)
+					!= right.node(record.right).map(|node| node.subtree_hash)
+		})
+		.map(|record| (record.left, record.right))
+		.collect::<Vec<_>>();
+	if separated.is_empty() {
+		return;
+	}
+	let (separated_left, separated_right): (BTreeSet<_>, BTreeSet<_>) =
+		separated.into_iter().unzip();
+	let under = |tree: &NormalizedTree,
+	             separated: &BTreeSet<crate::merge::kernel::NodeId>,
+	             node: crate::merge::kernel::NodeId| {
+		let mut current = Some(node);
+		while let Some(id) = current {
+			if separated.contains(&id) {
+				return true;
+			}
+			current = tree.node(id).ok().and_then(|node| node.parent);
+		}
+		false
+	};
+	matching.retain(|record| {
+		!under(left, &separated_left, record.left) && !under(right, &separated_right, record.right)
+	});
+}
+
+/// Whether two trees are equal, checking the root's subtree hash first.
+fn same_tree(left: &NormalizedTree, right: &NormalizedTree) -> bool {
+	let root_hash =
+		|tree: &NormalizedTree| tree.node(tree.root()).ok().map(|root| root.subtree_hash);
+	root_hash(left) == root_hash(right) && left == right
 }
 
 fn nanos(duration: Duration) -> u64 {

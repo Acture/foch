@@ -34,6 +34,10 @@ pub fn dispatch(name: &str, view: &ConflictView) -> ConflictDecision {
 		defer(view)
 	} else if name.eq_ignore_ascii_case("keep_existing") {
 		keep_existing(view)
+	} else if name.eq_ignore_ascii_case("max") {
+		extreme_value(view, "max", std::cmp::Ordering::Greater)
+	} else if name.eq_ignore_ascii_case("min") {
+		extreme_value(view, "min", std::cmp::Ordering::Less)
 	} else {
 		eprintln!("{}", unknown_handler_diagnostic(name, view));
 		ConflictDecision::Defer { record: None }
@@ -103,6 +107,86 @@ fn last_writer(view: &ConflictView) -> ConflictDecision {
 	}
 }
 
+/// Pick the candidate whose value is the largest (`max`) or smallest
+/// (`min`), as a number or as a date such as `1452.1.1`; ties go to the mod
+/// loaded last. Defers when a candidate's value is neither.
+fn extreme_value(
+	view: &ConflictView,
+	action: &str,
+	wanted: std::cmp::Ordering,
+) -> ConflictDecision {
+	let values = view
+		.candidates
+		.iter()
+		.map(|candidate| comparable_value(&candidate.candidate_rendered))
+		.collect::<Option<Vec<_>>>();
+	let Some(values) = values.filter(|values| {
+		values.windows(2).all(|pair| {
+			matches!(
+				pair,
+				[ComparableValue::Number(_), ComparableValue::Number(_)]
+					| [ComparableValue::Date(_), ComparableValue::Date(_)]
+			)
+		})
+	}) else {
+		return ConflictDecision::Defer { record: None };
+	};
+	let Some(candidate) = (0..values.len()).reduce(|best, index| {
+		let order = values[index].compare(&values[best]);
+		let later = view.candidates[index].precedence >= view.candidates[best].precedence;
+		if order == wanted || order == std::cmp::Ordering::Equal && later {
+			index
+		} else {
+			best
+		}
+	}) else {
+		return ConflictDecision::Defer { record: None };
+	};
+	let winner = view.candidates[candidate].mod_id.clone();
+	ConflictDecision::PickCandidate {
+		candidate,
+		record: Some(HandlerResolutionRecord {
+			path: view.file_path.clone(),
+			action: action.to_string(),
+			source: Some(winner.clone()),
+			rationale: Some(format!(
+				"{action} picked the value `{winner}` wrote at `{}`",
+				view.address_key
+			)),
+		}),
+	}
+}
+
+#[derive(Debug)]
+enum ComparableValue {
+	Number(f64),
+	Date(Vec<u32>),
+}
+
+impl ComparableValue {
+	fn compare(&self, other: &Self) -> std::cmp::Ordering {
+		match (self, other) {
+			(Self::Number(left), Self::Number(right)) => left.total_cmp(right),
+			(Self::Date(left), Self::Date(right)) => left.cmp(right),
+			_ => std::cmp::Ordering::Equal,
+		}
+	}
+}
+
+/// The value a rendered candidate sets: what follows its last `=`.
+fn comparable_value(rendered: &str) -> Option<ComparableValue> {
+	let value = rendered.rsplit('=').next()?.trim().trim_matches('"');
+	if let Ok(number) = value.parse::<f64>() {
+		return Some(ComparableValue::Number(number));
+	}
+	value
+		.split('.')
+		.map(|part| part.parse::<u32>().ok())
+		.collect::<Option<Vec<_>>>()
+		.filter(|parts| parts.len() == 3)
+		.map(ComparableValue::Date)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -128,6 +212,47 @@ mod tests {
 				})
 				.collect(),
 		}
+	}
+
+	fn view_with_values(values: &[(&str, usize, &str)]) -> ConflictView {
+		let mut view = view_for(
+			"common/great_projects/projects.txt",
+			&values
+				.iter()
+				.map(|(mod_id, precedence, _)| (*mod_id, *precedence))
+				.collect::<Vec<_>>(),
+		);
+		for (candidate, (_, _, rendered)) in view.candidates.iter_mut().zip(values) {
+			candidate.candidate_rendered = (*rendered).to_string();
+		}
+		view
+	}
+
+	#[test]
+	fn max_and_min_pick_by_value_not_load_order() {
+		let view = view_with_values(&[
+			("mod-a", 0, "date = 1452.1.1"),
+			("mod-b", 5, "date = 1444.11.11"),
+		]);
+
+		assert!(matches!(
+			dispatch("max", &view),
+			ConflictDecision::PickCandidate { candidate: 0, .. }
+		));
+		assert!(matches!(
+			dispatch("min", &view),
+			ConflictDecision::PickCandidate { candidate: 1, .. }
+		));
+		let numbers = view_with_values(&[("mod-a", 0, "factor = 2"), ("mod-b", 5, "factor = 0.5")]);
+		assert!(matches!(
+			dispatch("max", &numbers),
+			ConflictDecision::PickCandidate { candidate: 0, .. }
+		));
+		let words = view_with_values(&[("mod-a", 0, "type = a"), ("mod-b", 5, "type = b")]);
+		assert!(matches!(
+			dispatch("max", &words),
+			ConflictDecision::Defer { .. }
+		));
 	}
 
 	#[test]

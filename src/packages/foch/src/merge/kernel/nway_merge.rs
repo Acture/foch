@@ -732,10 +732,14 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 		self.sources_preorder.push(selection.sources);
 		self.syntheses_preorder
 			.push(selection.scalar_synthesis.clone());
-		let children = child_classes
-			.into_iter()
-			.map(|child| self.build(child))
-			.collect();
+		let children = if is_condition_conjunction(&selected_node) {
+			self.build_conditions(child_classes)
+		} else {
+			child_classes
+				.into_iter()
+				.map(|child| self.build(child))
+				.collect()
+		};
 		self.visiting.remove(&class);
 		TreeNode {
 			kind: selected_node.kind,
@@ -748,6 +752,92 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 			child_order: selected_node.child_order,
 			child_cardinality: selected_node.child_cardinality,
 			children,
+		}
+	}
+
+	/// The children of a block of conditions the game requires together.
+	/// A condition is there to hold, so what several mods each added to it
+	/// are ways it may hold: each mod's additions become one alternative of
+	/// an `OR`, and what every one of them added stays required outside it.
+	/// An addition only some of the mods share, which the `OR` would need
+	/// twice, keeps every addition required instead.
+	fn build_conditions(&mut self, child_classes: Vec<ClassId>) -> Vec<TreeNode> {
+		let additions = child_classes
+			.iter()
+			.filter_map(|class| Some((*class, self.adding_revisions(*class)?)))
+			.collect::<Vec<_>>();
+		let adders = additions
+			.iter()
+			.flat_map(|(_, revisions)| revisions.iter().copied())
+			.collect::<BTreeSet<_>>();
+		let mut by_revision = BTreeMap::<RevisionId, Vec<ClassId>>::new();
+		for (class, revisions) in &additions {
+			if *revisions == adders {
+				continue;
+			}
+			let [revision] = revisions.iter().copied().collect::<Vec<_>>()[..] else {
+				return self.build_each(child_classes);
+			};
+			by_revision.entry(revision).or_default().push(*class);
+		}
+		// Each mod adding something of its own, or nothing beyond the shared
+		// additions, which would make the `OR` hold whatever the rest say.
+		if by_revision.len() < 2 || by_revision.len() < adders.len() {
+			return self.build_each(child_classes);
+		}
+		let alternatives = by_revision.into_values().collect::<Vec<_>>();
+		let first = alternatives.iter().flatten().copied().min_by_key(|class| {
+			child_classes
+				.iter()
+				.position(|child| child == class)
+				.unwrap_or(usize::MAX)
+		});
+		let mut children = Vec::with_capacity(child_classes.len());
+		for child in &child_classes {
+			if Some(*child) == first {
+				children.push(self.build_alternatives(&alternatives));
+			} else if !alternatives.iter().flatten().any(|class| class == child) {
+				children.push(self.build(*child));
+			}
+		}
+		children
+	}
+
+	fn build_each(&mut self, child_classes: Vec<ClassId>) -> Vec<TreeNode> {
+		child_classes
+			.into_iter()
+			.map(|child| self.build(child))
+			.collect()
+	}
+
+	/// The revisions that added a condition the base lacks.
+	fn adding_revisions(&self, class: ClassId) -> Option<BTreeSet<RevisionId>> {
+		let members = &self.correspondence.classes.class(class).members;
+		(!members.contains_key(&RevisionId::BASE)).then(|| members.keys().copied().collect())
+	}
+
+	fn build_alternatives(&mut self, alternatives: &[Vec<ClassId>]) -> TreeNode {
+		// The `OR` and `AND`s are the merge's own: no input wrote them.
+		self.push_synthetic();
+		let alternatives = alternatives
+			.iter()
+			.map(|classes| match classes.as_slice() {
+				[only] => self.build(*only),
+				classes => {
+					self.push_synthetic();
+					let conditions = classes.iter().map(|class| self.build(*class)).collect();
+					synthetic_block("AND", ChildOrder::Ordered, conditions)
+				}
+			})
+			.collect();
+		synthetic_block("OR", ChildOrder::Commutative, alternatives)
+	}
+
+	/// Record an assignment and its block that no input wrote.
+	fn push_synthetic(&mut self) {
+		for _ in 0..2 {
+			self.sources_preorder.push(SourceSet::default());
+			self.syntheses_preorder.push(None);
 		}
 	}
 
@@ -793,8 +883,11 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 			let Some(signature) = self.node(selected).signature.clone() else {
 				continue;
 			};
+			// A copy an input already wrote twice is what the game loads from
+			// that input, not one the merge made.
 			if let Some(previous) = signatures.insert(signature.clone(), *child)
 				&& previous != *child
+				&& !self.written_together(previous, *child)
 			{
 				self.conflicts.push(class_conflict(
 					ConflictKind::DuplicateSignature,
@@ -807,6 +900,13 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 				));
 			}
 		}
+	}
+
+	/// Whether one input holds both classes.
+	fn written_together(&self, left: ClassId, right: ClassId) -> bool {
+		let left = &self.correspondence.classes.class(left).members;
+		let right = &self.correspondence.classes.class(right).members;
+		left.keys().any(|revision| right.contains_key(revision))
 	}
 
 	fn record_unreachable(&mut self) {
@@ -1120,6 +1220,42 @@ fn tree_for_revision<'tree>(
 
 fn nanos(duration: Duration) -> u64 {
 	u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// A block of conditions the game requires together: not an `OR`, whose
+/// conditions are alternatives already, nor a `NOT`.
+fn is_condition_conjunction(node: &NormalizedNode) -> bool {
+	node.anchor
+		.as_ref()
+		.is_some_and(|anchor| anchor.namespace == crate::merge::kernel::CONDITION_BLOCK)
+		&& !matches!(
+			node.kind.as_str(),
+			"clausewitz.block:OR" | "clausewitz.block:NOT" | "clausewitz.block:NOR"
+		)
+}
+
+/// `key = { children }` that the merge writes itself.
+fn synthetic_block(key: &str, order: ChildOrder, children: Vec<TreeNode>) -> TreeNode {
+	TreeNode {
+		kind: format!("clausewitz.assignment:{key}"),
+		value: Some(key.to_string()),
+		anchor: Some(crate::merge::kernel::SemanticKey::parent_scoped(
+			crate::merge::kernel::REPEATABLE_STATEMENT,
+			key,
+		)),
+		signature: None,
+		child_order: ChildOrder::Ordered,
+		child_cardinality: ChildCardinality::ExactlyOne,
+		children: vec![TreeNode {
+			kind: format!("clausewitz.block:{key}"),
+			value: None,
+			anchor: None,
+			signature: None,
+			child_order: order,
+			child_cardinality: ChildCardinality::Many,
+			children,
+		}],
+	}
 }
 
 #[cfg(test)]

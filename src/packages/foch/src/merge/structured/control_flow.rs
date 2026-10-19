@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use crate::merge::kernel::{
 	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, SemanticKey, TreeNode,
 };
+use crate::merge::progress;
 
 use super::ast_adapter::{
 	AstAdapterError, COMMENT_KIND, assignment_key, block_node, branch,
@@ -19,12 +21,36 @@ const ELSE_BRANCH_KIND: &str = "clausewitz.control_flow.else_branch";
 const BRANCH_BODY_ANCHOR_NAMESPACE: &str = "clausewitz.control_flow.branch.body";
 const ELSE_WITH_LIMIT_MESSAGE: &str = "`else` branch contains a top-level `limit`";
 const MAX_DNF_TERMS: usize = 256;
+/// The literals one chain's guard algebra may visit before the chain is kept
+/// opaque. The term bound alone does not limit the work: a long `else_if`
+/// chain stays under it while every case multiplies out the negated coverage
+/// of all the cases before it.
+const MAX_FORMULA_WORK: usize = 1 << 25;
 
 type Term = BTreeMap<String, bool>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Formula {
 	terms: BTreeSet<Term>,
+}
+
+/// The work spent on the guards of one chain, checked against
+/// [`MAX_FORMULA_WORK`].
+#[derive(Default)]
+struct FormulaWork {
+	spent: usize,
+}
+
+impl FormulaWork {
+	fn charge(&mut self, literals: usize) -> Result<(), AstAdapterError> {
+		self.spent = self.spent.saturating_add(literals.max(1));
+		if self.spent > MAX_FORMULA_WORK {
+			return Err(AstAdapterError::UnprovableControlFlow(format!(
+				"guard normalization exceeded {MAX_FORMULA_WORK} literal visits"
+			)));
+		}
+		Ok(())
+	}
 }
 
 impl Formula {
@@ -46,19 +72,20 @@ impl Formula {
 		}
 	}
 
-	fn or(&self, other: &Self) -> Result<Self, AstAdapterError> {
+	fn or(&self, other: &Self, work: &mut FormulaWork) -> Result<Self, AstAdapterError> {
 		let mut terms = self.terms.clone();
 		terms.extend(other.terms.iter().cloned());
 		if terms.len() > MAX_DNF_TERMS {
 			return Err(formula_size_error());
 		}
-		Self::from_terms(terms)
+		Self::from_terms(terms, work)
 	}
 
-	fn and(&self, other: &Self) -> Result<Self, AstAdapterError> {
+	fn and(&self, other: &Self, work: &mut FormulaWork) -> Result<Self, AstAdapterError> {
 		let mut terms = BTreeSet::new();
 		for left in &self.terms {
 			for right in &other.terms {
+				work.charge(left.len() + right.len())?;
 				let mut merged = left.clone();
 				let mut contradiction = false;
 				for (atom, polarity) in right {
@@ -78,72 +105,55 @@ impl Formula {
 				}
 			}
 		}
-		Self::from_terms(terms)
+		Self::from_terms(terms, work)
 	}
 
-	fn not(&self) -> Result<Self, AstAdapterError> {
+	fn not(&self, work: &mut FormulaWork) -> Result<Self, AstAdapterError> {
 		let mut result = Self::true_value();
 		for term in &self.terms {
 			let mut negated = Self::false_value();
 			for (atom, polarity) in term {
-				negated = negated.or(&Self {
-					terms: BTreeSet::from([Term::from([(atom.clone(), !polarity)])]),
-				})?;
+				negated = negated.or(
+					&Self {
+						terms: BTreeSet::from([Term::from([(atom.clone(), !polarity)])]),
+					},
+					work,
+				)?;
 			}
-			result = result.and(&negated)?;
+			result = result.and(&negated, work)?;
 		}
 		Ok(result)
 	}
 
-	fn from_terms(mut terms: BTreeSet<Term>) -> Result<Self, AstAdapterError> {
-		loop {
-			let snapshot = terms.iter().cloned().collect::<Vec<_>>();
-			let mut replacement = None;
-			'pair: for (left_index, left) in snapshot.iter().enumerate() {
-				for right in snapshot.iter().skip(left_index + 1) {
-					let opposites = left
-						.iter()
-						.filter(|(atom, polarity)| {
-							right.get(*atom).is_some_and(|other| other != *polarity)
-						})
-						.map(|(atom, _)| atom)
-						.collect::<Vec<_>>();
-					if opposites.len() != 1 {
-						continue;
-					}
-					let atom = opposites[0];
-					let mut left_rest = left.clone();
-					let mut right_rest = right.clone();
-					left_rest.remove(atom);
-					right_rest.remove(atom);
-					if term_contains(&right_rest, &left_rest) {
-						replacement = Some((right.clone(), right_rest));
-						break 'pair;
-					}
-					if term_contains(&left_rest, &right_rest) {
-						replacement = Some((left.clone(), left_rest));
-						break 'pair;
-					}
-				}
+	/// Simplify `terms` as repeated scans would: resolve the first pair, in
+	/// term order, that resolves on one atom into a shorter term, until none
+	/// does, then drop every term another absorbs. Pairs before the last
+	/// resolved one stay unresolvable except those with the new term, so the
+	/// scan resumes there instead of starting over.
+	fn from_terms(
+		mut terms: BTreeSet<Term>,
+		work: &mut FormulaWork,
+	) -> Result<Self, AstAdapterError> {
+		let mut next = first_resolution(&terms, None, work)?;
+		while let Some(resolution) = next {
+			terms.remove(&resolution.old);
+			terms.insert(resolution.new.clone());
+			let resolved = (&resolution.left, &resolution.right);
+			next = match earlier_resolution(&terms, &resolution.new, resolved, work)? {
+				Some(earlier) => Some(earlier),
+				None => first_resolution(&terms, Some(resolved), work)?,
+			};
+		}
+		// Absorption creates no resolvable pair, so one pass in term order
+		// removes what repeated scans would.
+		for candidate in terms.iter().cloned().collect::<Vec<_>>() {
+			work.charge(terms.len() * candidate.len())?;
+			if terms
+				.iter()
+				.any(|other| *other != candidate && term_contains(&candidate, other))
+			{
+				terms.remove(&candidate);
 			}
-			if let Some((old, new)) = replacement {
-				terms.remove(&old);
-				terms.insert(new);
-				continue;
-			}
-
-			let snapshot = terms.iter().cloned().collect::<Vec<_>>();
-			let redundant = snapshot.iter().find_map(|candidate| {
-				snapshot
-					.iter()
-					.any(|other| candidate != other && term_contains(candidate, other))
-					.then_some(candidate.clone())
-			});
-			if let Some(redundant) = redundant {
-				terms.remove(&redundant);
-				continue;
-			}
-			break;
 		}
 		if terms.len() > MAX_DNF_TERMS {
 			return Err(formula_size_error());
@@ -206,6 +216,7 @@ impl Formula {
 	fn without_prior_negations(
 		&self,
 		prior_positive_atoms: &BTreeSet<String>,
+		work: &mut FormulaWork,
 	) -> Result<Self, AstAdapterError> {
 		Self::from_terms(
 			self.terms
@@ -219,6 +230,7 @@ impl Formula {
 						.collect()
 				})
 				.collect(),
+			work,
 		)
 	}
 }
@@ -227,6 +239,100 @@ fn formula_size_error() -> AstAdapterError {
 	AstAdapterError::UnprovableControlFlow(format!(
 		"guard normalization exceeded {MAX_DNF_TERMS} disjuncts"
 	))
+}
+
+/// Two terms that resolve on one atom, and the term the resolution replaces.
+struct Resolution {
+	left: Term,
+	right: Term,
+	old: Term,
+	new: Term,
+}
+
+/// `x & A | !x & B` with `B` within `A` is `A | !x & B`, and the same with
+/// the roles swapped. `left` precedes `right` in term order.
+fn resolution(
+	left: &Term,
+	right: &Term,
+	work: &mut FormulaWork,
+) -> Result<Option<Resolution>, AstAdapterError> {
+	work.charge(left.len() + right.len())?;
+	let mut opposites = left
+		.iter()
+		.filter(|(atom, polarity)| right.get(*atom).is_some_and(|other| other != *polarity))
+		.map(|(atom, _)| atom);
+	let (Some(atom), None) = (opposites.next(), opposites.next()) else {
+		return Ok(None);
+	};
+	let mut left_rest = left.clone();
+	let mut right_rest = right.clone();
+	left_rest.remove(atom);
+	right_rest.remove(atom);
+	let (old, new) = if term_contains(&right_rest, &left_rest) {
+		(right.clone(), right_rest)
+	} else if term_contains(&left_rest, &right_rest) {
+		(left.clone(), left_rest)
+	} else {
+		return Ok(None);
+	};
+	Ok(Some(Resolution {
+		left: left.clone(),
+		right: right.clone(),
+		old,
+		new,
+	}))
+}
+
+/// The first resolvable pair in term order, after the pair `after`.
+fn first_resolution(
+	terms: &BTreeSet<Term>,
+	after: Option<(&Term, &Term)>,
+	work: &mut FormulaWork,
+) -> Result<Option<Resolution>, AstAdapterError> {
+	let lefts = match after {
+		Some((left, _)) => terms.range::<Term, _>((Bound::Included(left), Bound::Unbounded)),
+		None => terms.range::<Term, _>(..),
+	};
+	for left in lefts {
+		let right_floor = match after {
+			Some((after_left, after_right)) if after_left == left => after_right,
+			_ => left,
+		};
+		for right in terms.range::<Term, _>((Bound::Excluded(right_floor), Bound::Unbounded)) {
+			if let Some(found) = resolution(left, right, work)? {
+				return Ok(Some(found));
+			}
+		}
+	}
+	Ok(None)
+}
+
+/// The first resolvable pair with `new` that precedes the pair `before`.
+fn earlier_resolution(
+	terms: &BTreeSet<Term>,
+	new: &Term,
+	before: (&Term, &Term),
+	work: &mut FormulaWork,
+) -> Result<Option<Resolution>, AstAdapterError> {
+	let mut earliest: Option<Resolution> = None;
+	for other in terms.iter().filter(|other| *other != new) {
+		let (left, right) = if new < other {
+			(new, other)
+		} else {
+			(other, new)
+		};
+		if (left, right) >= before
+			|| earliest
+				.as_ref()
+				.is_some_and(|found| (&found.left, &found.right) <= (left, right))
+		{
+			continue;
+		}
+		if let Some(found) = resolution(left, right, work)? {
+			earliest = Some(found);
+		}
+	}
+	Ok(earliest)
 }
 
 fn term_contains(term: &Term, subset: &Term) -> bool {
@@ -244,6 +350,7 @@ struct GuardAtom {
 #[derive(Default)]
 struct GuardAtoms {
 	atoms: BTreeMap<String, GuardAtom>,
+	work: FormulaWork,
 }
 
 #[derive(Clone, Copy)]
@@ -260,10 +367,15 @@ impl PredicateJoin {
 		}
 	}
 
-	fn combine(self, left: &Formula, right: &Formula) -> Result<Formula, AstAdapterError> {
+	fn combine(
+		self,
+		left: &Formula,
+		right: &Formula,
+		work: &mut FormulaWork,
+	) -> Result<Formula, AstAdapterError> {
 		match self {
-			Self::And => left.and(right),
-			Self::Or => left.or(right),
+			Self::And => left.and(right, work),
+			Self::Or => left.or(right, work),
 		}
 	}
 }
@@ -275,11 +387,31 @@ impl GuardAtoms {
 		scopes: &[String],
 	) -> Result<Formula, AstAdapterError> {
 		let mut result = Formula::true_value();
-		for statement in items
+		let statements = items
 			.iter()
 			.filter(|statement| !matches!(statement, AstStatement::Comment { .. }))
-		{
-			result = result.and(&self.formula_for_statement(statement, scopes)?)?;
+			.collect::<Vec<_>>();
+		let mut index = 0;
+		while index < statements.len() {
+			// A chain holds as one condition: its `else` means nothing apart
+			// from the `if` before it.
+			let end = chain_end(&statements, index);
+			let formula = if end > index + 1 {
+				let chain = AstStatement::Assignment {
+					key: "AND".to_string(),
+					key_span: synthetic_span(),
+					value: AstValue::Block {
+						items: statements[index..end].iter().copied().cloned().collect(),
+						span: synthetic_span(),
+					},
+					span: synthetic_span(),
+				};
+				self.atom_formula(scopes, &chain)
+			} else {
+				self.formula_for_statement(statements[index], scopes)?
+			};
+			result = result.and(&formula, &mut self.work)?;
+			index = end.max(index + 1);
 		}
 		Ok(result)
 	}
@@ -305,21 +437,22 @@ impl GuardAtoms {
 					.iter()
 					.filter(|item| !matches!(item, AstStatement::Comment { .. }))
 				{
-					result = result.or(&self.formula_for_statement(item, scopes)?)?;
+					let formula = self.formula_for_statement(item, scopes)?;
+					result = result.or(&formula, &mut self.work)?;
 				}
 				Ok(result)
 			}
-			"NOT" => self.formula_for_items(items, scopes)?.not(),
-			"NAND" => self.formula_for_items(items, scopes)?.not(),
+			"NOT" | "NAND" => self.formula_for_items(items, scopes)?.not(&mut self.work),
 			"NOR" => {
 				let mut inner = Formula::false_value();
 				for item in items
 					.iter()
 					.filter(|item| !matches!(item, AstStatement::Comment { .. }))
 				{
-					inner = inner.or(&self.formula_for_statement(item, scopes)?)?;
+					let formula = self.formula_for_statement(item, scopes)?;
+					inner = inner.or(&formula, &mut self.work)?;
 				}
-				inner.not()
+				inner.not(&mut self.work)
 			}
 			_ if items
 				.iter()
@@ -369,7 +502,7 @@ impl GuardAtoms {
 					cursor + 1,
 				)
 			};
-			result = join.combine(&result, &predicate)?;
+			result = join.combine(&result, &predicate, &mut self.work)?;
 			cursor = next;
 		}
 		Ok(result)
@@ -393,10 +526,10 @@ impl GuardAtoms {
 			"OR" => self.predicate_formula_for_sequence(items, scopes, PredicateJoin::Or),
 			"NOT" | "NAND" => self
 				.predicate_formula_for_sequence(items, scopes, PredicateJoin::And)?
-				.not(),
+				.not(&mut self.work),
 			"NOR" => self
 				.predicate_formula_for_sequence(items, scopes, PredicateJoin::Or)?
-				.not(),
+				.not(&mut self.work),
 			_ if items.len() == 1 => {
 				let mut nested_scopes = scopes.to_vec();
 				nested_scopes.push(key.clone());
@@ -419,17 +552,20 @@ impl GuardAtoms {
 			));
 		}
 
-		let mut coverage = Formula::false_value();
+		// What no earlier case covers, narrowed by each case in turn.
+		let mut uncovered = Formula::true_value();
 		let mut result = Formula::false_value();
 		for case in cases {
 			let effective_guard = match &case.guard {
-				Some(guard) => guard.and(&coverage.not()?)?,
-				None => coverage.not()?,
+				Some(guard) => guard.and(&uncovered, &mut self.work)?,
+				None => uncovered.clone(),
 			};
 			let predicate = self.predicate_formula_for_items(&case.effect_items, scopes)?;
-			result = result.or(&effective_guard.and(&predicate)?)?;
+			let selected = effective_guard.and(&predicate, &mut self.work)?;
+			result = result.or(&selected, &mut self.work)?;
 			if let Some(guard) = &case.guard {
-				coverage = coverage.or(guard)?;
+				let excluded = guard.not(&mut self.work)?;
+				uncovered = uncovered.and(&excluded, &mut self.work)?;
 			}
 		}
 		Ok((result, next))
@@ -658,6 +794,21 @@ pub(super) fn branch_key(statement: &AstStatement) -> Option<&str> {
 	matches!(key.as_str(), "if" | "else_if" | "else").then_some(key)
 }
 
+/// Where the chain starting at `start` ends, or `start` when none does.
+fn chain_end(statements: &[&AstStatement], start: usize) -> usize {
+	if !starts_chain(statements[start]) {
+		return start;
+	}
+	let mut end = start + 1;
+	while statements
+		.get(end)
+		.is_some_and(|statement| matches!(branch_key(statement), Some("else_if" | "else")))
+	{
+		end += 1;
+	}
+	end
+}
+
 pub(super) fn starts_chain(statement: &AstStatement) -> bool {
 	branch_key(statement) == Some("if")
 }
@@ -721,25 +872,38 @@ fn normalize_chain_semantic(
 		}
 	}
 
-	let mut coverage = Formula::false_value();
+	// What no earlier case covers, narrowed by each case in turn rather than
+	// negating the growing coverage again for every case.
+	let mut uncovered = Formula::true_value();
 	let mut cases_by_effect: BTreeMap<String, Case> = BTreeMap::new();
-	for raw in raw_cases {
+	let case_count = raw_cases.len();
+	for (case_index, raw) in raw_cases.into_iter().enumerate() {
+		progress::detail(|| {
+			format!(
+				"control-flow chain guard {}/{case_count} uncovered_terms={}",
+				case_index + 1,
+				uncovered.terms.len()
+			)
+		});
 		let contains_default = raw.contains_default;
 		let effective_guard = match &raw.guard {
-			Some(guard) => guard.and(&coverage.not()?)?,
-			None => coverage.not()?,
+			Some(guard) => guard.and(&uncovered, &mut atoms.work)?,
+			None => uncovered.clone(),
 		};
 		if effective_guard.is_false() {
 			return normalize_opaque_chain(statements, start, next, policy, control_flow_findings);
 		}
 		if let Some(guard) = &raw.guard {
-			coverage = coverage.or(guard)?;
+			let excluded = guard.not(&mut atoms.work)?;
+			uncovered = uncovered.and(&excluded, &mut atoms.work)?;
 		}
 		let (effect_key, effect_children) =
 			normalized_effect(&raw.effect_items, policy, control_flow_findings)?;
 		match cases_by_effect.get_mut(&effect_key) {
 			Some(existing) => {
-				existing.effective_guard = existing.effective_guard.or(&effective_guard)?;
+				existing.effective_guard = existing
+					.effective_guard
+					.or(&effective_guard, &mut atoms.work)?;
 				existing.contains_default |= contains_default;
 				existing.leading_comments.extend(raw.leading_comments);
 				existing.original_rank = existing.original_rank.min(raw.original_index);
@@ -809,7 +973,7 @@ fn normalize_chain_semantic(
 	};
 	let mut children = Vec::new();
 	let mut prior_positive_atoms = BTreeSet::new();
-	let mut ordered_coverage = Formula::false_value();
+	let mut ordered_uncovered = Formula::true_value();
 	for index in order {
 		let case = &mut cases[index];
 		for comment in &case.leading_comments {
@@ -828,8 +992,8 @@ fn normalize_chain_semantic(
 		} else {
 			let mut selector = case
 				.effective_guard
-				.without_prior_negations(&prior_positive_atoms)?;
-			let actual = selector.and(&ordered_coverage.not()?)?;
+				.without_prior_negations(&prior_positive_atoms, &mut atoms.work)?;
+			let actual = selector.and(&ordered_uncovered, &mut atoms.work)?;
 			if actual != case.effective_guard {
 				selector = case.effective_guard.clone();
 			}
@@ -891,7 +1055,8 @@ fn normalize_chain_semantic(
 		node.signature = Some(format!("effect:{}", case.effect_key));
 		children.push(node);
 		prior_positive_atoms.extend(case.effective_guard.positive_atoms());
-		ordered_coverage = ordered_coverage.or(&case.effective_guard)?;
+		let excluded = case.effective_guard.not(&mut atoms.work)?;
+		ordered_uncovered = ordered_uncovered.and(&excluded, &mut atoms.work)?;
 	}
 
 	let identity = default_effect.or_else(|| {
@@ -1447,7 +1612,7 @@ mod tests {
 	use crate::game::eu4::script::parser::{
 		AstFile, AstStatement, AstValue, parse_clausewitz_content,
 	};
-	use crate::merge::kernel::{ConflictKind, SemanticKeyMatchMode, SemanticKeyScope};
+	use crate::merge::kernel::{SemanticKeyMatchMode, SemanticKeyScope};
 
 	use crate::game::eu4::script::emit::emit_clausewitz_statements;
 
@@ -1736,6 +1901,44 @@ mod tests {
 	}
 
 	#[test]
+	fn keeps_a_long_threshold_chain_opaque_within_the_work_budget() {
+		// A counter read through a thousand ranges, as a maintenance
+		// calculator effect does: each case holds `value = n` and not
+		// `value = n + 1`, so the uncovered guard gains a term per case.
+		let check =
+			|value: usize| format!("check_variable = {{ which = calculator value = {value} }}");
+		let cases = (1..=1000)
+			.map(|value| {
+				format!(
+					"{} = {{ limit = {{ {} NOT = {{ {} }} }} add_country_modifier = {{ name = cost_{value} duration = -1 }} }}",
+					if value == 1 { "if" } else { "else_if" },
+					check(value),
+					check(value + 1),
+				)
+			})
+			.collect::<Vec<_>>()
+			.join("\n");
+		let ast = parse(&format!("calculator_effect = {{\n{cases}\n}}\n"));
+
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let started = std::time::Instant::now();
+		let tree = normalize_ast(&ast, &policy).expect("normalize a long threshold chain");
+		let elapsed = started.elapsed();
+
+		assert!(
+			elapsed < std::time::Duration::from_secs(10),
+			"normalizing took {elapsed:?}"
+		);
+		assert!(
+			tree.nodes()
+				.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:opaque")
+		);
+		let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild long chain");
+		assert_eq!(emit(&rebuilt), emit(&ast));
+	}
+
+	#[test]
 	fn tracks_explicit_else_when_its_effective_guard_is_positive() {
 		let ast = parse(
 			"trigger = {\n\
@@ -1865,26 +2068,28 @@ mod tests {
 	}
 
 	#[test]
-	fn preserves_duplicate_guards_but_withholds_commit() {
+	fn writes_duplicate_guards_its_inputs_wrote() {
 		let source = parse(
-			"coal = { trigger = {\n\
-			\tif = { limit = { has_country_flag = repeated } add_prestige = 1 }\n\
-			\telse_if = { limit = { has_country_flag = repeated } add_stability = 1 }\n\
-			\telse = { add_legitimacy = 1 }\n\
-			} }\n",
+			"coal = { trigger = {
+				if = { limit = { has_country_flag = repeated } add_prestige = 1 }
+				else_if = { limit = { has_country_flag = repeated } add_stability = 1 }
+				else = { add_legitimacy = 1 }
+			} }
+",
 		);
 
 		let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
 			.expect("duplicate guards remain inspectable");
 
-		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
-		assert!(outcome.resolved_ast().is_none());
-		assert!(outcome.conflicts().iter().any(|conflict| {
-			conflict.kind == ConflictKind::Policy
-				&& conflict
-					.detail
-					.contains("duplicate Clausewitz control-flow guard")
-		}));
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		assert_eq!(
+			emit(
+				outcome
+					.resolved_ast()
+					.expect("the inputs' own spelling commits")
+			),
+			emit(&source)
+		);
 	}
 
 	#[test]
@@ -1966,7 +2171,7 @@ mod tests {
 	}
 
 	#[test]
-	fn withholds_precedence_cycles_as_typed_ordering_conflicts() {
+	fn contradicting_precedence_takes_the_order_of_the_mod_loaded_last() {
 		let source = |order: [&str; 3]| {
 			parse(&format!(
 				"coal = {{ trigger = {{\n\
@@ -1985,17 +2190,19 @@ mod tests {
 		let right = source(["1", "3", "2"]);
 
 		let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
-			.expect("ordering conflict remains a valid tentative merge");
+			.expect("contradicting orders merge");
 
-		assert!(outcome.resolved_ast().is_none());
-		assert!(
-			outcome
-				.conflicts()
-				.iter()
-				.any(|conflict| conflict.kind == ConflictKind::Ordering),
-			"{:?}",
-			outcome.conflicts()
-		);
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		let output = emit(outcome.resolved_ast().expect("the later order stands"));
+		let flags = ["1", "3", "2"].map(|flag| {
+			output
+				.find(&format!(
+					"has_country_flag = {flag}
+"
+				))
+				.unwrap_or_else(|| panic!("every branch survives: {output}"))
+		});
+		assert!(flags[0] < flags[1] && flags[1] < flags[2], "{output}");
 	}
 
 	#[test]

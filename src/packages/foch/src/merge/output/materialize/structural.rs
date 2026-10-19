@@ -34,8 +34,8 @@ use crate::merge::structured::{
 };
 
 use super::super::super::conflict_handler::{
-	ChainHandler, ConflictHandler, DeferHandler, DepImpliesResolutionHandler, LookupHandler,
-	PriorityBoostResolutionHandler, PromptOutcomeKind, prompt_survivors_and_persist,
+	ChainHandler, ConflictHandler, DepImpliesResolutionHandler, LoadOrderDefaultHandler,
+	LookupHandler, PriorityBoostResolutionHandler, PromptOutcomeKind, prompt_survivors_and_persist,
 };
 use super::super::super::error::{MergeError, MergeErrorSubject};
 use crate::merge::planning::dag_input::DagMergeInputRequest;
@@ -567,7 +567,8 @@ fn run_semantic_definition_module_engine(
 	resolution_map: &crate::project::ResolutionMap,
 ) -> Result<SemanticDagMergeComputation, MergeError> {
 	let mut handler = automatic_conflict_handler(target_path, context, resolution_map);
-	let effective_policies = effective_merge_policies(context);
+	let mut effective_policies = effective_merge_policies(context);
+	effective_policies.unordered_definitions = true;
 	compute_dag_merge_from_parsed(
 		context.entity_transform,
 		&views.file_dag,
@@ -602,7 +603,9 @@ fn automatic_conflict_handler<'a>(
 					context.mod_dag,
 					context.dep_overrides,
 				),
-				second: DeferHandler,
+				second: LoadOrderDefaultHandler {
+					enabled: context.load_order_default,
+				},
 			},
 		},
 	}

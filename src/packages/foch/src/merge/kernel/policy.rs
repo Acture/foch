@@ -59,6 +59,17 @@ pub trait MergePolicy {
 		PolicyDecision::Unresolved
 	}
 
+	/// One value for a node that holds exactly one, where revisions each
+	/// wrote a different `values` node there, or `None` to leave it a
+	/// conflict.
+	fn combine_slot_values(
+		&self,
+		_parent: &NormalizedNode,
+		_values: &[&NormalizedNode],
+	) -> Option<String> {
+		None
+	}
+
 	/// Permit a missing structural ancestor to be restored so an explicitly
 	/// preserved descendant remains reachable from the merged root.
 	fn permits_ancestor_closure(&self, _node: &NormalizedNode) -> bool {

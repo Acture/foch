@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+use rayon::prelude::*;
 
 use crate::game::eu4::content::MergePolicies;
 #[cfg(test)]
 use crate::game::eu4::content::OneSidedRemovalPolicy;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
 use crate::merge::kernel::{ConflictResolution, StructuralConflict};
+use crate::merge::progress;
 
 use crate::merge::model::SemanticPartitionId;
 
@@ -162,6 +166,73 @@ fn merge_clausewitz_definition_module_n_way_inner(
 				.push(resolution.clone());
 		}
 	}
+	let keys = keys.into_iter().collect::<Vec<_>>();
+	let total = keys.len();
+	let progress_step = (total / 10).max(1);
+	let started = Instant::now();
+	let completed = AtomicUsize::new(0);
+	let unit = progress::current();
+	// Definitions are independent, and one module can hold tens of thousands;
+	// merging them in sequence left one unit running long after the others.
+	let outcomes = keys
+		.par_iter()
+		.enumerate()
+		.map(|(index, &key)| {
+			let _unit = progress::attach(unit.clone());
+			let base_group = base_index.select(key);
+			let revision_groups = revision_indexes
+				.iter()
+				.map(|revision| revision.select(key))
+				.collect::<Vec<_>>();
+			let partition_resolutions = resolutions_by_definition
+				.get(key)
+				.map(Vec::as_slice)
+				.unwrap_or_default();
+			let outcome = if revision_groups
+				.iter()
+				.all(|revision| statements_content_equal(&base_group.statements, &revision.statements))
+			{
+				DefinitionOutcome::Unchanged(base_group.statements)
+			} else {
+				let _item = progress::item(|| format!("definition {key} ({}/{total})", index + 1));
+				let revision_group_refs = revision_groups.iter().collect::<Vec<_>>();
+				let outcome = merge_files_n_way(
+					&base_group,
+					&revision_group_refs,
+					policies,
+					partition_resolutions,
+				)?;
+				let conflicts = outcome
+					.conflicts()
+					.iter()
+					.cloned()
+					.map(|mut conflict| {
+						conflict.detail = format!("definition `{key}`: {}", conflict.detail);
+						conflict
+					})
+					.collect();
+				let (partition_ast, partition_lineage, kernel_fact) =
+					outcome.into_parts(SemanticPartitionId::Definition(key.to_owned()));
+				DefinitionOutcome::Merged {
+					statements: partition_ast.statements,
+					lineage: partition_lineage.statements,
+					conflicts,
+					kernel_fact: Box::new(kernel_fact),
+				}
+			};
+			let completed = completed.fetch_add(1, Ordering::Relaxed) + 1;
+			if total >= 20 && (completed == 1 || completed == total || completed.is_multiple_of(progress_step)) {
+				let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+				let eta_ms = elapsed_ms.saturating_mul((total - completed) as u64) / completed as u64;
+				eprintln!(
+					"[structured-module] {} definitions {completed}/{total} elapsed_ms={elapsed_ms} eta_ms={eta_ms}",
+					base.path,
+				);
+			}
+			Ok(outcome)
+		})
+		.collect::<Vec<Result<_, AstAdapterError>>>();
+
 	let mut statements = Vec::new();
 	let mut lineage_statements = Vec::new();
 	let mut conflicts = Vec::new();
@@ -169,54 +240,25 @@ fn merge_clausewitz_definition_module_n_way_inner(
 	let mut active_definitions = 0;
 	let copy_through_definitions = 0;
 	let mut structured_definitions = 0;
-	let total = keys.len();
-	let progress_step = (total / 10).max(1);
-	let started = Instant::now();
-	for (index, key) in keys.into_iter().enumerate() {
-		let base_group = base_index.select(key);
-		let revision_groups = revision_indexes
-			.iter()
-			.map(|revision| revision.select(key))
-			.collect::<Vec<_>>();
-		if revision_groups
-			.iter()
-			.all(|revision| statements_content_equal(&base_group.statements, &revision.statements))
-		{
-			lineage_statements.extend(base_group.statements.iter().cloned());
-			statements.extend(base_group.statements);
-		} else {
-			active_definitions += 1;
-			let revision_group_refs = revision_groups.iter().collect::<Vec<_>>();
-			let partition_resolutions = resolutions_by_definition
-				.get(key)
-				.map(Vec::as_slice)
-				.unwrap_or_default();
-			let outcome = merge_files_n_way(
-				&base_group,
-				&revision_group_refs,
-				policies,
-				partition_resolutions,
-			)?;
-			conflicts.extend(outcome.conflicts().iter().cloned().map(|mut conflict| {
-				conflict.detail = format!("definition `{key}`: {}", conflict.detail);
-				conflict
-			}));
-			let (partition_ast, partition_lineage, kernel_fact) =
-				outcome.into_parts(SemanticPartitionId::Definition(key.to_owned()));
-			statements.extend(partition_ast.statements);
-			lineage_statements.extend(partition_lineage.statements);
-			kernel_facts.push(kernel_fact);
-			structured_definitions += 1;
-		}
-
-		let completed = index + 1;
-		if total >= 20 && (completed == 1 || completed == total || completed % progress_step == 0) {
-			let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-			let eta_ms = elapsed_ms.saturating_mul((total - completed) as u64) / completed as u64;
-			eprintln!(
-				"[structured-module] {} definitions {completed}/{total} active={active_definitions} copy_through={copy_through_definitions} structured={structured_definitions} elapsed_ms={elapsed_ms} eta_ms={eta_ms}",
-				base.path,
-			);
+	for outcome in outcomes {
+		match outcome? {
+			DefinitionOutcome::Unchanged(group) => {
+				lineage_statements.extend(group.iter().cloned());
+				statements.extend(group);
+			}
+			DefinitionOutcome::Merged {
+				statements: merged,
+				lineage,
+				conflicts: definition_conflicts,
+				kernel_fact,
+			} => {
+				active_definitions += 1;
+				structured_definitions += 1;
+				statements.extend(merged);
+				lineage_statements.extend(lineage);
+				conflicts.extend(definition_conflicts);
+				kernel_facts.push(*kernel_fact);
+			}
 		}
 	}
 	statements.sort_by(compare_top_level_statements);
@@ -332,7 +374,9 @@ fn merge_clausewitz_definition_module_inner(
 		}
 
 		let completed = index + 1;
-		if total >= 20 && (completed == 1 || completed == total || completed % progress_step == 0) {
+		if total >= 20
+			&& (completed == 1 || completed == total || completed.is_multiple_of(progress_step))
+		{
 			let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 			let eta_ms = elapsed_ms.saturating_mul((total - completed) as u64) / completed as u64;
 			eprintln!(
@@ -364,6 +408,16 @@ fn merge_clausewitz_definition_module_inner(
 		copy_through_definitions,
 		structured_definitions,
 	})
+}
+
+enum DefinitionOutcome {
+	Unchanged(Vec<AstStatement>),
+	Merged {
+		statements: Vec<AstStatement>,
+		lineage: Vec<AstStatement>,
+		conflicts: Vec<StructuralConflict>,
+		kernel_fact: Box<ClausewitzKernelFacts>,
+	},
 }
 
 fn merge_files_n_way(
@@ -553,7 +607,9 @@ fn compare_top_level_statements(left: &AstStatement, right: &AstStatement) -> st
 #[cfg(test)]
 mod tests {
 
-	use crate::game::eu4::content::{MergePolicies, OneSidedRemovalPolicy};
+	use crate::game::eu4::content::MergePolicies;
+	#[cfg(test)]
+	use crate::game::eu4::content::OneSidedRemovalPolicy;
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
 
 	use super::merge_clausewitz_definition_module;

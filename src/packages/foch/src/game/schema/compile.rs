@@ -154,6 +154,10 @@ pub struct SchemaRootDefinition {
 	pub skip_root_keys: Vec<String>,
 	pub subtypes: Vec<CwtSubtype>,
 	pub rules: Vec<CwtRuleField>,
+	/// The attributes the type's body writes above a `subtype[...]` group of
+	/// its rules (EU4 on_actions: `## replace_scope = { ... }` above each
+	/// callback's group), by subtype.
+	pub subtype_group_attributes: Vec<(String, CwtFieldAttributes)>,
 	/// The rule files that first defined this type; later ones may extend it.
 	pub origin: CwtRuleOrigin,
 }
@@ -173,6 +177,7 @@ impl SchemaRootDefinition {
 			skip_root_keys: Vec::new(),
 			subtypes: Vec::new(),
 			rules: Vec::new(),
+			subtype_group_attributes: Vec::new(),
 			origin,
 		}
 	}
@@ -653,7 +658,16 @@ fn merge_type_items(
 					});
 				} else {
 					let mut fields = statement_to_rule_fields(item);
-					if !is_subtype_group(item)
+					if let Some(CwtRuleCondition::SubtypeActive(subtype)) =
+						parse_rule_subtype_condition(&key)
+					{
+						if !pending_doc_comments.is_empty() {
+							entry.subtype_group_attributes.push((
+								subtype,
+								parse_field_attributes(std::mem::take(&mut pending_doc_comments)),
+							));
+						}
+					} else if !is_subtype_group(item)
 						&& let Some(field) = fields.first_mut()
 					{
 						field.attributes =
@@ -777,6 +791,16 @@ fn statement_to_rule_fields(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
 			key.as_text().into_owned(),
 			CwtRuleValue::Block(items.iter().flat_map(statement_to_rule_fields).collect()),
 		)],
+		// A value alone in a block (`events = { <event.country> }`) is a rule
+		// for the values written alone there; such a rule has no key.
+		ParadoxNode::Item { value, .. }
+			if matches!(
+				value.as_ref(),
+				ParadoxNode::Scalar(_) | ParadoxNode::CwtMarker { .. }
+			) =>
+		{
+			vec![rule_field(String::new(), node_to_rule_value(value))]
+		}
 		ParadoxNode::Item { value, .. } => statement_to_rule_fields(value),
 		ParadoxNode::Comment { .. }
 		| ParadoxNode::Scalar(_)

@@ -1,10 +1,11 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::interpret::schema_definition_names;
 use crate::game::eu4::script::parser::{
-	AstStatement, AstValue, ScriptSyntax, parse_clausewitz_statements,
+	AstStatement, AstValue, ScriptSyntax, SpanRange, parse_clausewitz_statements,
 };
 use crate::game::schema::CwtQuery;
+use crate::game::schema::bind::DefinedNames;
 use crate::game::schema::query::{CompiledComplexEnum, CompiledRuleField, CompiledRuleValue};
 use crate::model::GamePath;
 
@@ -23,13 +24,17 @@ impl<'a> SchemaDocument<'a> {
 
 #[derive(Clone, Debug, Default)]
 pub struct SchemaWorkspace {
-	pub(super) complex_enums: HashMap<String, Vec<String>>,
+	complex_enums: HashMap<String, Vec<String>>,
 	/// The names each schema type's workspace definitions take.
-	pub(super) definitions: HashMap<String, BTreeSet<String>>,
+	definitions: HashMap<String, BTreeSet<String>>,
 }
 
-impl SchemaWorkspace {
-	pub(super) fn defines(&self, type_name: &str, name: &str) -> bool {
+impl DefinedNames for SchemaWorkspace {
+	fn complex_enum_values(&self, name: &str) -> Option<&[String]> {
+		self.complex_enums.get(name).map(Vec::as_slice)
+	}
+
+	fn defines(&self, type_name: &str, name: &str) -> bool {
 		self.definitions
 			.get(type_name)
 			.is_some_and(|names| names.contains(name))
@@ -67,7 +72,7 @@ fn build_dynamic_schema_values(
 		let mut values = BTreeSet::new();
 		for file in files {
 			if complex_enum.matches(file.path) {
-				collect_complex_enum_file_values(complex_enum, &file.statements, &mut values);
+				values.extend(complex_enum_file_values(complex_enum, &file.statements).into_keys());
 			}
 		}
 		if !values.is_empty() {
@@ -89,22 +94,25 @@ fn build_dynamic_schema_values(
 	}
 }
 
-fn collect_complex_enum_file_values(
+/// The values of a complex enum a file declares, each with where it is
+/// first written.
+pub(crate) fn complex_enum_file_values<'a>(
 	complex_enum: &CompiledComplexEnum,
-	statements: &[AstStatement],
-	out: &mut BTreeSet<String>,
-) {
+	statements: &'a [AstStatement],
+) -> BTreeMap<String, &'a SpanRange> {
+	let mut out = BTreeMap::new();
 	if complex_enum.start_from_root {
-		collect_complex_enum_rule_values(&complex_enum.name_rules, statements, out);
+		collect_complex_enum_rule_values(&complex_enum.name_rules, statements, &mut out);
 	} else {
-		collect_complex_enum_rule_values_recursive(&complex_enum.name_rules, statements, out);
+		collect_complex_enum_rule_values_recursive(&complex_enum.name_rules, statements, &mut out);
 	}
+	out
 }
 
-fn collect_complex_enum_rule_values_recursive(
+fn collect_complex_enum_rule_values_recursive<'a>(
 	rules: &[CompiledRuleField],
-	statements: &[AstStatement],
-	out: &mut BTreeSet<String>,
+	statements: &'a [AstStatement],
+	out: &mut BTreeMap<String, &'a SpanRange>,
 ) {
 	collect_complex_enum_rule_values(rules, statements, out);
 	for statement in statements {
@@ -114,20 +122,20 @@ fn collect_complex_enum_rule_values_recursive(
 	}
 }
 
-fn collect_complex_enum_rule_values(
+fn collect_complex_enum_rule_values<'a>(
 	rules: &[CompiledRuleField],
-	statements: &[AstStatement],
-	out: &mut BTreeSet<String>,
+	statements: &'a [AstStatement],
+	out: &mut BTreeMap<String, &'a SpanRange>,
 ) {
 	for rule in rules {
 		collect_complex_enum_rule_values_for_rule(rule, statements, out);
 	}
 }
 
-fn collect_complex_enum_rule_values_for_rule(
+fn collect_complex_enum_rule_values_for_rule<'a>(
 	rule: &CompiledRuleField,
-	statements: &[AstStatement],
-	out: &mut BTreeSet<String>,
+	statements: &'a [AstStatement],
+	out: &mut BTreeMap<String, &'a SpanRange>,
 ) {
 	if rule.key == "enum_name" {
 		collect_complex_enum_name_values(&rule.value, statements, out);
@@ -144,33 +152,39 @@ fn collect_complex_enum_rule_values_for_rule(
 			(CompiledRuleValue::Block(child_rules), AstValue::Block { items, .. }) => {
 				collect_complex_enum_rule_values(child_rules, items, out);
 			}
-			(_, AstValue::Scalar { value, .. })
+			(_, AstValue::Scalar { value, span })
 				if complex_enum_rule_accepts_scalar(&rule.value) =>
 			{
-				insert_nonempty_dynamic_value(out, value.as_text());
+				insert_nonempty_dynamic_value(out, value.as_text(), span);
 			}
 			_ => {}
 		}
 	}
 }
 
-fn collect_complex_enum_name_values(
+fn collect_complex_enum_name_values<'a>(
 	rule_value: &CompiledRuleValue,
-	statements: &[AstStatement],
-	out: &mut BTreeSet<String>,
+	statements: &'a [AstStatement],
+	out: &mut BTreeMap<String, &'a SpanRange>,
 ) {
 	for statement in statements {
 		match statement {
-			AstStatement::Assignment { key, value, .. }
-				if complex_enum_rule_accepts_value(rule_value, value) =>
-			{
-				insert_nonempty_dynamic_value(out, key.clone());
+			AstStatement::Assignment {
+				key,
+				key_span,
+				value,
+				..
+			} if complex_enum_rule_accepts_value(rule_value, value) => {
+				insert_nonempty_dynamic_value(out, key.clone(), key_span);
 			}
 			AstStatement::Item {
-				value: AstValue::Scalar { value: scalar, .. },
+				value: AstValue::Scalar {
+					value: scalar,
+					span,
+				},
 				..
 			} if complex_enum_rule_accepts_scalar(rule_value) => {
-				insert_nonempty_dynamic_value(out, scalar.as_text());
+				insert_nonempty_dynamic_value(out, scalar.as_text(), span);
 			}
 			_ => {}
 		}
@@ -213,8 +227,12 @@ fn statement_block_items(statement: &AstStatement) -> Option<&[AstStatement]> {
 	}
 }
 
-fn insert_nonempty_dynamic_value(out: &mut BTreeSet<String>, value: String) {
+fn insert_nonempty_dynamic_value<'a>(
+	out: &mut BTreeMap<String, &'a SpanRange>,
+	value: String,
+	span: &'a SpanRange,
+) {
 	if !value.is_empty() {
-		out.insert(value);
+		out.entry(value).or_insert(span);
 	}
 }

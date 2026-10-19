@@ -162,6 +162,7 @@ fn run_merge_plan_no_base(request: InputRequest) -> MergePlanResult {
 			include_base: false,
 			gui_scroll_merge: false,
 			force: false,
+			strict: true,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_config_path: None,
@@ -492,16 +493,16 @@ fn non_mergeable_cross_mod_overlap_reports_cross_mod_overshadow() {
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_script_file(
 		&mod_a,
-		"common/odd/event_defs.txt",
-		"country_event = { id = odd.1 title = odd_title }\n",
+		"common/scripted_triggers/triggers.txt",
+		"shared_trigger = { always = yes }\n",
 	);
 
 	let mod_b = temp.path().join("7022");
 	write_descriptor(&mod_b, "mod-b", &[]);
 	write_script_file(
 		&mod_b,
-		"common/odd/event_defs.txt",
-		"country_event = { id = odd.1 title = other_title }\n",
+		"common/scripted_triggers/triggers.txt",
+		"shared_trigger = { always = no }\n",
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));

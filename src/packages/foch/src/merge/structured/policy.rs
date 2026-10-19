@@ -3,6 +3,7 @@ use crate::game::eu4::content::{
 	OneSidedRemovalPolicy, ScalarMergePolicy,
 };
 use crate::game::eu4::script::parser::{AstStatement, AstValue};
+use crate::game::schema::CwtQuery;
 use crate::merge::kernel::{
 	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
 	RevisionId, SemanticKey,
@@ -45,6 +46,33 @@ pub(crate) trait ClausewitzTreePolicy {
 		left == right
 	}
 
+	/// Read `file` before it is normalized, for the identities the schema
+	/// gives its blocks.
+	fn prepare(&self, _file: &crate::game::eu4::script::parser::AstFile) {}
+
+	/// An identity the schema gives the block whose value is `value`, such as
+	/// a weight block's conditions.
+	fn schema_identity(&self, _value: &AstValue) -> Option<SemanticKey> {
+		None
+	}
+
+	/// Whether the schema lets the block holding the statement whose value is
+	/// `value` repeat it, as a trigger or an effect, rather than hold it once.
+	fn is_repeatable_statement(&self, _value: &AstValue) -> bool {
+		false
+	}
+
+	/// Whether the schema reads the block `value` as conditions read
+	/// together, holding no effects.
+	fn is_condition_block(&self, _value: &AstValue) -> bool {
+		false
+	}
+
+	/// How a file's top-level statements are ordered.
+	fn file_child_order(&self) -> ChildOrder {
+		ChildOrder::Ordered
+	}
+
 	fn block_child_order(&self, _assignment_key: Option<&str>) -> ChildOrder {
 		match _assignment_key {
 			Some("OR") => ChildOrder::Commutative,
@@ -57,6 +85,17 @@ pub(crate) trait ClausewitzTreePolicy {
 pub(crate) struct ContentFamilyMergePolicy<'a> {
 	policies: &'a MergePolicies,
 	entity_transform: Option<&'a dyn EntityTransform>,
+	/// The schema that gives blocks identities, if any.
+	schema: Option<SchemaReading<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct SchemaReading<'a>(&'a CwtQuery);
+
+impl std::fmt::Debug for SchemaReading<'_> {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter.write_str("SchemaReading")
+	}
 }
 
 impl<'a> ContentFamilyMergePolicy<'a> {
@@ -64,7 +103,15 @@ impl<'a> ContentFamilyMergePolicy<'a> {
 		Self {
 			policies,
 			entity_transform: None,
+			schema: None,
 		}
+	}
+
+	/// Read blocks with `schema`, for the identities it gives them. Without
+	/// a schema no block has one.
+	pub(crate) fn reading(mut self, schema: Option<&'a CwtQuery>) -> Self {
+		self.schema = schema.map(SchemaReading);
+		self
 	}
 
 	pub(crate) const fn with_transform(
@@ -74,11 +121,39 @@ impl<'a> ContentFamilyMergePolicy<'a> {
 		Self {
 			policies,
 			entity_transform: Some(entity_transform),
+			schema: None,
 		}
 	}
 }
 
 impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
+	fn file_child_order(&self) -> ChildOrder {
+		if self.policies.unordered_definitions {
+			ChildOrder::Commutative
+		} else {
+			ChildOrder::Ordered
+		}
+	}
+
+	fn prepare(&self, file: &crate::game::eu4::script::parser::AstFile) {
+		if let Some(SchemaReading(schema)) = self.schema {
+			super::weights::prepare(schema, file);
+		}
+	}
+
+	fn schema_identity(&self, value: &AstValue) -> Option<SemanticKey> {
+		self.schema?;
+		super::weights::identity(value)
+	}
+
+	fn is_repeatable_statement(&self, value: &AstValue) -> bool {
+		self.schema.is_some() && super::weights::is_repeatable(value)
+	}
+
+	fn is_condition_block(&self, value: &AstValue) -> bool {
+		self.schema.is_some() && super::weights::is_condition_block(value)
+	}
+
 	fn entity_identity(
 		&self,
 		ancestors: &[String],
@@ -331,22 +406,40 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		{
 			return PolicyDecision::Unresolved;
 		}
-		let values = || {
+		// Text the game shows reads every version where mods differ.
+		if first
+			.policy_path
+			.last()
+			.is_some_and(|field| crate::merge::combined_text::is_text_field(field))
+			&& changed.len() >= 2
+			&& let Some(output) = crate::merge::combined_text::combine(
+				changed.iter().filter_map(|view| view.node.value.as_deref()),
+			) {
+			return PolicyDecision::SynthesizeScalar(output);
+		}
+		// A bound such as `Max` weighs an unchanged copy, since keeping the
+		// stronger value is the rule. A sum must not: the copy of a revision
+		// that left the value as the base has it would count the base again.
+		let values = |reducer: ScalarMergePolicy| {
 			context
 				.contributors
 				.iter()
+				.filter(|view| {
+					reducer != ScalarMergePolicy::Sum
+						|| changed.iter().any(|changed| changed.source == view.source)
+				})
 				.map(|view| view.node.value.as_deref())
 				.collect::<Option<Vec<_>>>()
 		};
 		if let Some(rule) = self
 			.policies
 			.scalar_reducer_rule_for_path(&first.policy_path)
-			&& let Some(values) = values()
+			&& let Some(values) = values(rule.reducer)
 			&& let Some(output) = rule.reducer.reduce_numeric_values(values)
 		{
 			return PolicyDecision::SynthesizeScalar(output);
 		}
-		if let Some(values) = values()
+		if let Some(values) = values(self.policies.scalar)
 			&& let Some(output) = self.policies.scalar.reduce_numeric_values(values)
 		{
 			return PolicyDecision::SynthesizeScalar(output);
@@ -356,6 +449,22 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		} else {
 			PolicyDecision::Unresolved
 		}
+	}
+
+	fn combine_slot_values(
+		&self,
+		parent: &crate::merge::kernel::NormalizedNode,
+		values: &[&crate::merge::kernel::NormalizedNode],
+	) -> Option<String> {
+		let field = parent.policy_path.last()?;
+		if !crate::merge::combined_text::is_text_field(field)
+			|| !values.iter().all(|value| is_scalar_node(value))
+		{
+			return None;
+		}
+		crate::merge::combined_text::combine(
+			values.iter().filter_map(|value| value.value.as_deref()),
+		)
 	}
 
 	fn permits_ancestor_closure(&self, node: &crate::merge::kernel::NormalizedNode) -> bool {

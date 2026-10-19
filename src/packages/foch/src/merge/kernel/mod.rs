@@ -25,8 +25,8 @@ pub use decision::{
 pub use delta::{DeltaOperation, MergeInputId, RevisionDelta};
 pub use matching::{Matching, TreeMatcher};
 pub use nway::{
-	MergeRevision, NWayClassFacts, NWayClassSelection, NWayCorrespondence, NWayInputError,
-	NWayScalarSynthesis, NWaySelectionPlan,
+	CONDITION_BLOCK, MergeRevision, NWayClassFacts, NWayClassSelection, NWayCorrespondence,
+	NWayInputError, NWayScalarSynthesis, NWaySelectionPlan, REPEATABLE_STATEMENT,
 };
 #[cfg(test)]
 pub use nway_merge::n_way_merge;

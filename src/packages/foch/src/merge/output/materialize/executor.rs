@@ -6,16 +6,17 @@
 //! analyze, so the number of workers changes when a unit is analyzed, never
 //! what is written or in which order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::merge::analyze::CancellationToken;
 use crate::merge::error::MergeError;
+use crate::merge::progress::{self, UnitProgress};
 
 /// Stack size for threads that parse, merge and emit Clausewitz scripts. The
 /// recursive-descent parser and emitter need the same headroom as the CLI's
@@ -93,6 +94,7 @@ enum WorkerEvent<T> {
 		index: usize,
 		worker: usize,
 		started: Instant,
+		progress: Arc<UnitProgress>,
 	},
 	Finished {
 		index: usize,
@@ -289,15 +291,19 @@ fn run_worker<T: Send>(
 			continue;
 		}
 		let started: Instant = Instant::now();
+		let unit_progress: Arc<UnitProgress> = Arc::default();
 		let announced: bool = events
 			.send(WorkerEvent::Started {
 				index,
 				worker,
 				started,
+				progress: Arc::clone(&unit_progress),
 			})
 			.is_ok();
-		let analysis: Option<thread::Result<T>> =
-			announced.then(|| catch_unwind(AssertUnwindSafe(|| analyze(index))));
+		let analysis: Option<thread::Result<T>> = announced.then(|| {
+			let _unit = progress::attach(Some(unit_progress));
+			catch_unwind(AssertUnwindSafe(|| analyze(index)))
+		});
 		control.pause.leave();
 		let Some(analysis) = analysis else {
 			return;
@@ -345,12 +351,32 @@ fn coordinate<T: Send>(
 	// The estimate of the unit waiting for memory, so it is taken only once.
 	let mut waiting_estimate: Option<(usize, u64)> = None;
 	let mut finished: BTreeMap<usize, thread::Result<T>> = BTreeMap::new();
-	let mut in_flight: BTreeMap<usize, (usize, Instant)> = BTreeMap::new();
+	let mut in_flight: BTreeMap<usize, (usize, Instant, Arc<UnitProgress>)> = BTreeMap::new();
 	let mut last_slow_report: Instant = Instant::now();
+	// The largest units start first. Applied in plan order, a large unit late
+	// in the plan otherwise starts only when the window reaches it, and holds
+	// the window full while every other worker waits for it.
+	let mut dispatched_early: BTreeSet<usize> = BTreeSet::new();
+	for (index, estimate) in largest_units(schedule) {
+		if unfinished_bytes > 0
+			&& unfinished_bytes.saturating_add(estimate) > schedule.memory_budget
+		{
+			continue;
+		}
+		jobs.send(index).map_err(|_| workers_exited())?;
+		unfinished_estimates.insert(index, estimate);
+		unfinished_bytes = unfinished_bytes.saturating_add(estimate);
+		outstanding += 1;
+		dispatched_early.insert(index);
+	}
 	while next_apply < schedule.count {
 		// Checked before every unit is applied, as the serial loop does.
 		cancellation.check()?;
 		while next_dispatch < schedule.count && outstanding < window {
+			if dispatched_early.contains(&next_dispatch) {
+				next_dispatch += 1;
+				continue;
+			}
 			if !(schedule.runs_here)(next_dispatch) {
 				let estimate: u64 = match waiting_estimate {
 					Some((index, estimate)) if index == next_dispatch => estimate,
@@ -402,8 +428,9 @@ fn coordinate<T: Send>(
 				index,
 				worker,
 				started,
+				progress,
 			}) => {
-				in_flight.insert(index, (worker, started));
+				in_flight.insert(index, (worker, started, progress));
 			}
 			Ok(WorkerEvent::Finished {
 				index,
@@ -436,32 +463,52 @@ fn coordinate<T: Send>(
 	Ok(())
 }
 
+/// The worker-run units with the largest estimates, one per worker, largest
+/// first, with their estimates.
+fn largest_units(schedule: &UnitSchedule<'_>) -> Vec<(usize, u64)> {
+	let mut units = (0..schedule.count)
+		.filter(|&index| !(schedule.runs_here)(index))
+		.map(|index| (index, (schedule.estimate)(index)))
+		.collect::<Vec<_>>();
+	units.sort_by_key(|&(index, estimate)| (std::cmp::Reverse(estimate), index));
+	units.truncate(schedule.workers.get());
+	units
+}
+
 /// Print the units that have run for a long time, oldest first. Returns
 /// whether anything was reported.
 fn report_slow_units(
 	schedule: &UnitSchedule<'_>,
-	in_flight: &BTreeMap<usize, (usize, Instant)>,
+	in_flight: &BTreeMap<usize, (usize, Instant, Arc<UnitProgress>)>,
 	applied: usize,
 	analyzed_ahead: usize,
 ) -> bool {
-	let mut slow: Vec<(usize, usize, Duration)> = in_flight
+	let mut slow: Vec<(usize, usize, Duration, &UnitProgress)> = in_flight
 		.iter()
-		.map(|(&index, &(worker, started))| (index, worker, started.elapsed()))
-		.filter(|&(_, _, running)| running >= SLOW_UNIT)
+		.map(|(&index, (worker, started, progress))| {
+			(index, *worker, started.elapsed(), progress.as_ref())
+		})
+		.filter(|&(_, _, running, _)| running >= SLOW_UNIT)
 		.collect();
 	if slow.is_empty() {
 		return false;
 	}
-	slow.sort_by_key(|&(_, _, running)| std::cmp::Reverse(running));
+	slow.sort_by_key(|&(_, _, running, _)| std::cmp::Reverse(running));
 	let detail: Vec<String> = slow
 		.iter()
 		.take(4)
-		.map(|&(index, worker, running)| {
+		.map(|&(index, worker, running, progress)| {
+			let at: String = progress.describe();
 			format!(
-				"{} on {} for {:.1}s",
+				"{} on {} for {:.1}s{}",
 				(schedule.label)(index),
 				worker_name(worker),
-				running.as_secs_f64()
+				running.as_secs_f64(),
+				if at.is_empty() {
+					String::new()
+				} else {
+					format!(" [{at}]")
+				}
 			)
 		})
 		.collect();
@@ -966,13 +1013,13 @@ mod tests {
 		let gate: Gate = Gate::default();
 		let second_saw_first_finished: Mutex<Option<bool>> = Mutex::new(None);
 		let analyze = |index: usize| -> usize {
-			enter(&gate, index);
-			if index == 0 {
-				// Unit one would fit a worker at once, but not the budget.
+			let (started_before, _) = enter(&gate, index);
+			if started_before == 0 {
+				// The other unit would fit a worker at once, but not the budget.
 				thread::sleep(EXTRA_WORK_WINDOW);
 			} else {
 				*second_saw_first_finished.lock().unwrap() =
-					Some(gate.lock().finished.contains(&0));
+					Some(gate.lock().finished.contains(&(1 - index)));
 			}
 			exit(&gate, index);
 			index
@@ -1027,8 +1074,49 @@ mod tests {
 		let (started_before, running, started_after) =
 			large_unit.lock().unwrap().expect("the large unit ran");
 		assert_eq!(running, 0, "the large unit started beside another");
-		assert_eq!(started_before, 2);
-		assert_eq!(started_after, 3, "a unit started beside the large one");
+		assert_eq!(
+			started_after,
+			started_before + 1,
+			"a unit started beside the large one"
+		);
+		assert_eq!(applied, vec![0, 1, 2, 3, 4]);
+	}
+
+	#[test]
+	fn the_largest_units_start_first_and_apply_in_plan_order() {
+		let gate: Gate = Gate::default();
+		let analyze = |index: usize| -> usize {
+			enter(&gate, index);
+			if index >= 3 {
+				// Hold both workers until the two large units are running.
+				gate.wait_until(|progress| progress.started >= 2);
+			}
+			exit(&gate, index);
+			index
+		};
+		let estimates: [u64; 5] = [1, 1, 1, 50, 40];
+		let mut applied: Vec<usize> = Vec::new();
+		run_guarded(
+			&UnitSchedule {
+				estimate: &|index| estimates[index],
+				..schedule(5, 2)
+			},
+			&analyze,
+			&mut not_here,
+			&mut |index, _| {
+				applied.push(index);
+				Ok(())
+			},
+		)
+		.unwrap();
+		let progress = gate.lock();
+		assert!(!progress.timed_out);
+		let mut first = progress.threads[..2].to_vec();
+		first.sort();
+		assert_eq!(
+			first,
+			vec![Some("enter 3".to_string()), Some("enter 4".to_string())]
+		);
 		assert_eq!(applied, vec![0, 1, 2, 3, 4]);
 	}
 
