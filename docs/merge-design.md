@@ -281,10 +281,29 @@ IDs and files outrank pattern rules. Built-in handlers are dispatched by the
 main library’s merge resolution registry. See
 [foch-toml-resolutions.md](./foch-toml-resolutions.md).
 
-Foch never applies a broad last-writer policy merely because it would avoid a
-conflict. `--force` is limited to supported `needs_user_choice` fallbacks; it
-does not reinterpret unsupported input, engine failure, or explicit defer as
-safe.
+A conflict that no rule, priority or dependency decides takes a default,
+each at its own place and never for a whole definition:
+
+- a part one mod deleted and another changed keeps the change, with every
+  mod's changes inside it (`change_over_deletion`);
+- one value mods set differently, a scalar an assignment holds alone, takes
+  the version of the mod loaded last, as the game reads it unmerged
+  (`load_order_pick`); a `max` or `min` rule picks by value instead;
+- children mods order in contradicting ways take the order of the mod loaded
+  later, and a part mods move to different places stands where that mod put
+  it; and
+- any other conflict, such as a tie or two different additions, keeps the
+  merge's own result, which holds every mod's content
+  (`kept_every_version`, or `kernel_tentative` where a pick could not be
+  replayed).
+
+Each default is recorded in the report's `handler_resolutions` with its
+action, so a reviewer can find it and override it with an exact
+`[[resolutions]]` rule. `--strict` turns the defaults off: such conflicts
+then go to the terminal prompt, or stay `needs_user_choice`. Foch applies no
+last-writer policy beyond these places. `--force` is limited to supported
+`needs_user_choice` fallbacks; it does not reinterpret unsupported input,
+engine failure, or explicit defer as safe.
 
 ## Commit contract
 

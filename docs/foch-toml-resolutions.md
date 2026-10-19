@@ -18,7 +18,9 @@ For each structural conflict, analysis tries:
 1. an exact or pattern `[[resolutions]]` lookup;
 2. a unique winner produced by mod `priority_boost` metadata;
 3. a unique downstream contributor implied by declared dependencies; and
-4. defer for interactive review or the final unresolved report.
+4. the per-place default described in
+   [the merge design](./merge-design.md#resolution-policy), or, with
+   `--strict`, defer for interactive review or the final unresolved report.
 
 The chain advances only for an unrecorded defer. An explicit `handler =
 "defer"` records the choice and stops the chain.
@@ -139,6 +141,7 @@ Handler names are case-insensitive.
 | `last_writer` | Pick the largest `(precedence, mod_id, candidate index)` tuple; defer if there are no candidates. |
 | `defer` | Record an explicit defer and stop the chain. The review disposition is `deferred`. |
 | `keep_existing` | Keep matching prior-output bytes when present; otherwise warn and continue with normal output. |
+| `max` / `min` | Pick the candidate with the largest or smallest value, as a number or a date such as `1452.1.1`; ties go to the mod loaded last. Defer when a value is neither. |
 
 Use `last_writer` only where verified load-order semantics are acceptable. A
 global rule is intentionally broad:
@@ -183,8 +186,8 @@ declaration order.
 
 ## Terminal review
 
-When static policy, priority, and dependency implication all defer, `foch
-merge` may install the ratatui handler only when stdin/stdout are TTYs and
+With `--strict`, when static policy, priority, and dependency implication all
+defer, `foch merge` may install the ratatui handler only when stdin/stdout are TTYs and
 `--non-interactive` is absent. `--cli-prompt` selects the simple prompt.
 Without a suitable TTY, the conflict remains a `needs_user_choice` review unit.
 
@@ -214,7 +217,7 @@ Persisted terminal decisions use the same `[[resolutions]]` schema.
 | `priority_boost requires mod selector` | Change the selector to `mod`. |
 | `match pattern file side cannot be empty` | Use a non-empty file side such as `**`. |
 | `regex pattern side cannot be empty after re: prefix` | Supply a regex or remove `re:`. |
-| `unknown merge handler` | Use `last_writer`, `defer`, or `keep_existing`. |
+| `unknown merge handler` | Use `last_writer`, `defer`, `keep_existing`, `max` or `min`. |
 | A saved candidate no longer resolves | Inspect the current candidate sequence and replace/remove the stale exact rule. |
 | `keep_existing_failed` | Ensure the target file exists, use `use_file`, or remove the keep-existing rule. |
 
