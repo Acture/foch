@@ -109,6 +109,7 @@ impl CultureObservation<'_> {
 	fn correspondence(&self) -> Result<CultureCorrespondence, Vec<CultureFinding>> {
 		CultureCorrespondence::infer_observations(
 			&self.base,
+			self.policies.ambiguous_renames_by_position,
 			&self
 				.observations
 				.iter()

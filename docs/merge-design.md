@@ -29,6 +29,11 @@ DAG merging consume the generic `EntityTransform` contract. Culture is the first
 production adapter; this does not establish support for transformations in
 other content families. See the [boundary refactor](./superpowers/plans/2026-10-01-generic-transform-adapter.md).
 
+A culture whose definition reads the same as several new ones is renamed to
+the only one whose name shares a word with it. Where no name tells them apart,
+the load-order default takes the one its file defines first and notes it;
+`--strict` holds the rename for review.
+
 Transformation outputs that share a merge unit are committed or withheld
 together, transitively. An incomplete group does not withdraw an independent
 group, and `--force` cannot bypass the group's output validation.

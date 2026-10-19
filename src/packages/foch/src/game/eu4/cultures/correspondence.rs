@@ -15,6 +15,8 @@ pub(crate) struct CultureCorrespondence {
 	identities: BTreeMap<String, String>,
 	groups: BTreeSet<String>,
 	pub(crate) group_moves: Vec<CultureGroupMove>,
+	/// How each rename whose candidates read the same was settled.
+	pub(crate) chosen_renames: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +52,7 @@ impl CultureCorrespondence {
 		let reviewed = BTreeMap::new();
 		Self::infer_observations(
 			before,
+			false,
 			&revisions
 				.iter()
 				.map(|revision| CultureRevision {
@@ -62,8 +65,11 @@ impl CultureCorrespondence {
 	}
 
 	/// Each pair is an effective dependency parent and its authored child view.
+	/// With `by_position`, a rename whose candidates nothing else tells apart
+	/// goes to the one its file defines first.
 	pub(crate) fn infer_observations(
 		before: &CultureIndex,
+		by_position: bool,
 		observations: &[CultureRevision<'_>],
 	) -> Result<Self, Vec<CultureFinding>> {
 		let mut result = Self::default();
@@ -104,9 +110,17 @@ impl CultureCorrespondence {
 					[new] => {
 						record_rename(&mut result.renames, &mut findings, old, new);
 					}
-					_ => findings.push(ambiguous(format!(
-						"culture `{old}` has indistinguishable rename candidates: {candidates:?}"
-					))),
+					_ => match choose_rename(old, &candidates, after, by_position) {
+						Some((new, why)) => {
+							record_rename(&mut result.renames, &mut findings, old, new);
+							result.chosen_renames.push(format!(
+								"culture `{old}` reads as renamed to `{new}` of {candidates:?}: {why}"
+							));
+						}
+						None => findings.push(ambiguous(format!(
+							"culture `{old}` has indistinguishable rename candidates: {candidates:?}"
+						))),
+					},
 				}
 			}
 		}
@@ -269,6 +283,45 @@ fn ambiguous(message: String) -> CultureFinding {
 	}
 }
 
+/// The candidate a rename went to when their definitions read the same: the
+/// only one whose name shares a word of three letters or more with the old
+/// name, or, `by_position`, the one its file defines first. With the reason.
+fn choose_rename<'a>(
+	old: &str,
+	candidates: &[&'a String],
+	after: &CultureIndex,
+	by_position: bool,
+) -> Option<(&'a String, &'static str)> {
+	let words = |name: &str| {
+		name.split('_')
+			.filter(|word| word.len() >= 3)
+			.map(str::to_ascii_lowercase)
+			.collect::<BTreeSet<_>>()
+	};
+	let old_words = words(old);
+	let named = candidates
+		.iter()
+		.filter(|new| !words(new).is_disjoint(&old_words))
+		.collect::<Vec<_>>();
+	if let [new] = named.as_slice() {
+		return Some((new, "the only one whose name shares a word with it"));
+	}
+	if !by_position {
+		return None;
+	}
+	candidates
+		.iter()
+		.min_by_key(|new| {
+			after.definitions.get(new.as_str()).map(|definition| {
+				(
+					definition.location.relative_path.clone(),
+					definition.location.span.start.offset,
+				)
+			})
+		})
+		.map(|new| (*new, "the first its file defines, the load-order default"))
+}
+
 fn record_rename(
 	renames: &mut BTreeMap<String, String>,
 	findings: &mut Vec<CultureFinding>,
@@ -344,6 +397,7 @@ mod tests {
 		let reviewed = BTreeMap::from([("old_culture".into(), "new_culture".into())]);
 		let result = CultureCorrespondence::infer_observations(
 			&base,
+			false,
 			&[CultureRevision {
 				parent: &base,
 				revision: &revision,
@@ -372,6 +426,7 @@ mod tests {
 			assert!(
 				CultureCorrespondence::infer_observations(
 					&base,
+					false,
 					&[CultureRevision {
 						parent: &base,
 						revision: &revision,
@@ -386,6 +441,7 @@ mod tests {
 		assert!(
 			CultureCorrespondence::infer_observations(
 				&base,
+				false,
 				&[CultureRevision {
 					parent: &parent,
 					revision: &parent,
@@ -443,6 +499,51 @@ mod tests {
 			)
 			.is_err()
 		);
+	}
+
+	fn infer_by_position(
+		base: &CultureIndex,
+		revision: &CultureIndex,
+		by_position: bool,
+	) -> Result<CultureCorrespondence, Vec<CultureFinding>> {
+		let reviewed = BTreeMap::new();
+		CultureCorrespondence::infer_observations(
+			base,
+			by_position,
+			&[CultureRevision {
+				parent: base,
+				revision,
+				reviewed: &reviewed,
+			}],
+		)
+	}
+
+	#[test]
+	fn a_rename_whose_candidates_read_the_same_goes_to_the_one_named_like_it() {
+		// Cultural Influence removes `gothic_ger` and adds two cultures with
+		// its body; one is the Gothic culture, the other borrows its tag.
+		let base = index("germanic = { gothic_ger = { primary = FEO } }");
+		let revision = index(
+			"germanic = { krimdeutsch = { primary = FEO } }\nscandinavian = { o_gothic = { primary = FEO } }",
+		);
+		let correspondence = infer_by_position(&base, &revision, false).unwrap();
+		assert_eq!(correspondence.renames()["gothic_ger"], "o_gothic");
+		let [chosen] = correspondence.chosen_renames.as_slice() else {
+			panic!("{:?}", correspondence.chosen_renames);
+		};
+		assert!(chosen.contains("shares a word"), "{chosen}");
+	}
+
+	#[test]
+	fn a_rename_nothing_tells_apart_goes_to_the_first_candidate_by_default() {
+		let base = index("g = { old_culture = { primary = AAA } }");
+		let revision = index("g = { second = { primary = AAA } first = { primary = AAA } }");
+		let correspondence = infer_by_position(&base, &revision, true).unwrap();
+		assert_eq!(correspondence.renames()["old_culture"], "second");
+		assert!(correspondence.chosen_renames[0].contains("load-order default"));
+		// Without the default, as with `--strict`, it stays for review.
+		let findings = infer_by_position(&base, &revision, false).unwrap_err();
+		assert_eq!(findings[0].code, "ambiguous_culture_correspondence");
 	}
 
 	#[test]

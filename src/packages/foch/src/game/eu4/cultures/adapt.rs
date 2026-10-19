@@ -2,17 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::game::eu4::content::eu4;
+use crate::game::eu4::content::{MergePolicies, eu4};
 use crate::game::eu4::cultures::correspondence::{CultureCorrespondence, CultureGroupMove};
 use crate::game::eu4::cultures::{CultureIndex, CultureRenameMap, transform_cultures};
 use crate::game::eu4::script::documents::classify_document_family;
-use crate::game::eu4::script::emit::{EmitOptions, emit_clausewitz_statements_with_options};
+use crate::game::eu4::script::emit::emit_clausewitz_statements_with_options;
 use crate::game::eu4::script::parser::{AstFile, AstValue};
 use crate::input::ResolvedInput;
 use crate::model::{DocumentFamily, GamePathBuf, reads_completely};
-use crate::project::DepOverride;
 
-use crate::merge::dag::{IgnoreReplacePath, build_mod_dag};
+use crate::merge::dag::build_mod_dag;
 use crate::merge::error::{MergeError, MergeErrorSubject};
 use crate::merge::path_plan::build_merge_plan_from_input;
 use crate::merge::planning::module_view::build_cross_file_module_views;
@@ -124,15 +123,7 @@ impl TransformAdapter for CultureAdapter {
 				"reviewed culture mappings require an analyzed vanilla ancestor",
 			));
 		}
-		let mut culture = prepare_cultures(
-			input,
-			request.dep_overrides,
-			request.ignore_replace_path,
-			request.emit_options,
-			request.duplicate_definitions,
-			&config.renames,
-			request.reference_inventory_complete,
-		)?;
+		let mut culture = prepare_cultures(input, request)?;
 		if !config.renames.is_empty()
 			&& culture.correspondence.is_none()
 			&& culture.findings.is_empty()
@@ -265,13 +256,18 @@ impl OutputValidation for CultureAdaptations {
 
 fn prepare_cultures(
 	input: &mut ResolvedInput,
-	dep_overrides: &[DepOverride],
-	ignore_replace_path: &IgnoreReplacePath,
-	emit_options: &EmitOptions,
-	duplicate_definitions: Option<crate::game::eu4::content::DuplicateDefinitionPolicy>,
-	reviewed_entries: &[crate::project::CultureRenameEntry],
-	reference_inventory_complete: bool,
+	request: &TransformRequest<'_>,
 ) -> Result<CultureAdaptations, MergeError> {
+	let TransformRequest {
+		dep_overrides,
+		ignore_replace_path,
+		emit_options,
+		duplicate_definitions,
+		reference_inventory_complete,
+		load_order_default,
+		..
+	} = *request;
+	let reviewed_entries = request.project.cultures.renames.as_slice();
 	if input.installed_base_snapshot.is_none() {
 		return Ok(CultureAdaptations::default());
 	}
@@ -334,7 +330,10 @@ fn prepare_cultures(
 				&views.file_dag,
 				views.vanilla.as_ref(),
 				&views.contributors,
-				&descriptor.merge_policies,
+				&MergePolicies {
+					ambiguous_renames_by_position: load_order_default,
+					..descriptor.merge_policies
+				},
 				&reviewed,
 			)
 		})
@@ -373,8 +372,9 @@ fn prepare_cultures(
 		}
 	};
 	let mappings = correspondence.renames().clone();
-	let group_warnings =
+	let mut group_warnings =
 		group_move_warnings(input, &before, &revisions, &correspondence.group_moves);
+	group_warnings.extend(correspondence.chosen_renames.iter().cloned());
 	// The culture unit carries the move notes; nothing else is affected.
 	let warned_paths = if group_warnings.is_empty() {
 		BTreeSet::new()

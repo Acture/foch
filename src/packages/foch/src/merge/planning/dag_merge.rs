@@ -983,6 +983,7 @@ mod tests {
 		let reviewed = BTreeMap::from([("old_culture".into(), "new_culture".into())]);
 		let correspondence = CultureCorrespondence::infer_observations(
 			&before,
+			false,
 			&[CultureRevision {
 				parent: &before,
 				revision: &after,

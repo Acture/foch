@@ -632,6 +632,7 @@ custom_button = {
 			emit_options: &EmitOptions::default(),
 			duplicate_definitions: None,
 			reference_inventory_complete: true,
+			load_order_default: true,
 		};
 		let mut plan = TransformPlan::default();
 		for prepared in GuiAdapter
