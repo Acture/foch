@@ -1626,13 +1626,11 @@ fn default_choice(
 	}
 	let changed_differently = match conflict.kind {
 		ConflictKind::ValueSlot | ConflictKind::InsertInsert => true,
-		// Where mods move one part to different places, its place is a value
-		// they set differently.
-		ConflictKind::MoveMove => {
-			return changed_versions(conflict).map(DefaultChoice::LoadOrder);
-		}
 		ConflictKind::Policy => conflict.detail.ends_with(" differently"),
-		ConflictKind::AmbiguousMatch | ConflictKind::Ordering => {
+		// The kernel already places a part mods move to different places
+		// where the mod loaded last put it, with every mod's changes inside;
+		// picking one version would replace those changes.
+		ConflictKind::MoveMove | ConflictKind::AmbiguousMatch | ConflictKind::Ordering => {
 			return Some(DefaultChoice::KeepEvery);
 		}
 		_ => return None,
