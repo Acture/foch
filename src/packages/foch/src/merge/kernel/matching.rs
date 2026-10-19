@@ -579,10 +579,18 @@ fn record_unresolved_soft_signature_ambiguities(
 			// the same under parents already paired: what one mod changed is
 			// then a condition or a name.
 			let tied = left_nodes.len() > 1 || right_nodes.len() > 1;
+			eprintln!(
+				"RECORD_UNRESOLVED {} {}",
+				left_nodes.len(),
+				right_nodes.len()
+			);
 			for (index, left_node) in left_nodes.iter().enumerate() {
-				let identical = |right_node: &NodeId| {
+				let same_hash = |right_node: &NodeId| {
 					left.node(*left_node).unwrap().subtree_hash
 						== right.node(*right_node).unwrap().subtree_hash
+				};
+				let identical = |right_node: &NodeId| {
+					same_hash(right_node)
 						|| effect_features(left, *left_node) == effect_features(right, *right_node)
 				};
 				match right_nodes.get(index) {
@@ -597,7 +605,22 @@ fn record_unresolved_soft_signature_ambiguities(
 								*right_node,
 							) =>
 					{
-						match_isomorphic_subtree(left, right, matching, *left_node, *right_node);
+						if same_hash(right_node) {
+							match_isomorphic_subtree(
+								left,
+								right,
+								matching,
+								*left_node,
+								*right_node,
+							);
+						} else {
+							matching.insert(MatchRecord {
+								left: *left_node,
+								right: *right_node,
+								kind: MatchKind::SoftSignature,
+								score: 900_000,
+							});
+						}
 					}
 					Some(right_node)
 						if tied
@@ -2919,6 +2942,39 @@ mod tests {
 		let right = NormalizedTree::from_root(block("root", vec![item("is_or_was_tag")])).unwrap();
 
 		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn a_single_signature_left_unpaired_pairs_on_what_it_does() {
+		// What earlier passes left unpaired: only the conditions differ.
+		let chain = |conditions: [&str; 2]| {
+			block(
+				"chain",
+				vec![
+					block(
+						"clausewitz.assignment:limit",
+						conditions.into_iter().map(scalar).collect(),
+					),
+					scalar("add_prestige"),
+				],
+			)
+			.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+			.with_signature("guard")
+		};
+		let left = NormalizedTree::from_root(block("root", vec![chain(["a", "b"])])).unwrap();
+		let right = NormalizedTree::from_root(block("root", vec![chain(["c", "d"])])).unwrap();
+		let mut matching = Matching::default();
+		matching.insert(MatchRecord {
+			left: left.root(),
+			right: right.root(),
+			kind: MatchKind::Exact,
+			score: 1_000_000,
+		});
+
+		record_unresolved_soft_signature_ambiguities(&left, &right, &mut matching);
 
 		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
 		assert!(matching.ambiguities().is_empty());
