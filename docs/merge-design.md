@@ -149,17 +149,22 @@ database. Foch repairs the errors that have one trustworthy reading, in its own
 parsed copy only. The source file is never changed.
 
 The file is split at its definition heads, the lines that start at column 1
-with `key =` or `key {`. Each segment is parsed on its own, so an error stays
+with `key =` or `key {`, or with a key alone on its line followed by an
+assignment. Each segment is parsed on its own, so an error stays
 in its definition instead of swallowing the rest of the file. A column-1 line
 inside a sound block is recognised because the segments around it parse
 cleanly together. For a broken segment Foch tries every one-token edit:
 
 - leave out a `{` or `}`;
 - add a `}` before a line;
-- add a `{` after an `=` that ends its line; or
+- add a `{` after an `=` that ends its line;
+- read a `[` or `(` after an `=` as the `{` it stands for;
+- add `= {` after a key alone on its line at column 1; or
 - end a string that has no closing quote at the end of its line.
 
-An edit counts only if the segment then parses as exactly one definition. It
+An edit counts only if the segment then parses as exactly one definition, and
+not if it leaves a `[` or `(` as a value: the game reads neither, so a tree
+that keeps one has not read the block it opens. It
 is applied when one of three kinds of evidence holds:
 
 - every such edit gives the same tree;
@@ -187,6 +192,13 @@ repaired file must then parse cleanly as a whole into exactly the repaired
 segments; otherwise nothing is repaired. The search is bounded per file and
 gives up on a file that would need more. A reviewed repair from `foch.toml`
 must parse cleanly by itself; no automatic repair is added to it.
+
+A line whose code leaves blocks open, and whose comment holds exactly that
+many `}` and no `{`, wrote its closing braces after its `#`, as in
+`is_or_was_tag = { tag = AZT # Aztecs }`. Before the file is split, those
+braces are added in front of the comment. Each definition that then holds
+one must parse cleanly as written, with no other edit; otherwise the file is
+repaired as if none were added.
 
 An assignment with no value, `key =` where the block then closes or a later
 line no deeper than the key starts another assignment, is left out by the

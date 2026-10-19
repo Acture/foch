@@ -9,6 +9,8 @@ CLI tests additionally verify source-bound repairs through analysis and commit.
 
 - `missing_group_openers.txt` retains the four bare culture-group names seen in
   the source. Tests insert the missing `= {` and revalidate the culture hierarchy.
+- `mistyped_culture_openers.txt` retains the `= [` and `= (` the source wrote
+  for three cultures' `= {`. The parser reads each as `{`.
 - `extra_closing_brace.txt` contains an unmatched closing brace. The generic
   parser reports its location and continues parsing the following groups.
 - `premature_group_close.txt` is balanced but puts a name list outside its

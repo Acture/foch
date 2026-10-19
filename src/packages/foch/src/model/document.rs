@@ -201,6 +201,9 @@ impl RepairProposal {
 			SourceRepairEdit::InsertedOpeningBrace => "add a `{`",
 			SourceRepairEdit::ClosedStringAtLineEnd => "end the string",
 			SourceRepairEdit::RemovedEmptyAssignment => "leave out the empty assignment",
+			SourceRepairEdit::ReplacedWithOpeningBrace => "write `{` in place of the bracket",
+			SourceRepairEdit::InsertedAssignmentOpening => "add `= {`",
+			SourceRepairEdit::ClosedBeforeComment => "add the `}` before the comment",
 		};
 		format!("{edit} at {}:{}", self.line, self.column)
 	}
@@ -257,6 +260,13 @@ pub enum SourceRepairEdit {
 	ClosedStringAtLineEnd,
 	/// An assignment whose `=` has no value was left out.
 	RemovedEmptyAssignment,
+	/// A `[` or `(` that opens a block was read as the `{` it stands for.
+	ReplacedWithOpeningBrace,
+	/// A definition key alone on its line was given its missing `= {`.
+	InsertedAssignmentOpening,
+	/// A `}` written inside the comment that ends its line was added before
+	/// the comment.
+	ClosedBeforeComment,
 }
 
 /// Why a one-token repair is the reading of the text.
@@ -288,6 +298,8 @@ pub enum SourceRepairEvidence {
 	/// another parent than any other, measured from the tree the text gives
 	/// unedited, and the indentation does not clearly favour another.
 	SmallestChange,
+	/// The line leaves open as many blocks as its comment holds `}`.
+	ClosingInComment,
 }
 
 impl SourceRepair {
@@ -301,6 +313,9 @@ impl SourceRepair {
 				"ended an unterminated string at the end of its line"
 			}
 			SourceRepairEdit::RemovedEmptyAssignment => "left out an assignment with no value",
+			SourceRepairEdit::ReplacedWithOpeningBrace => "read a mistyped bracket as `{`",
+			SourceRepairEdit::InsertedAssignmentOpening => "added a missing `= {`",
+			SourceRepairEdit::ClosedBeforeComment => "added a `}` its comment held",
 		};
 		let evidence = match self.evidence {
 			SourceRepairEvidence::OnlyReading => "every one-token repair reads the same",
@@ -308,6 +323,9 @@ impl SourceRepair {
 			SourceRepairEvidence::OnlySchemaValid => "the only one-token repair the schema accepts",
 			SourceRepairEvidence::SmallestChange => {
 				"the one-token repair that moves the fewest statements"
+			}
+			SourceRepairEvidence::ClosingInComment => {
+				"the line's comment holds the `}` its code lacks"
 			}
 		};
 		format!("{edit} ({evidence})")

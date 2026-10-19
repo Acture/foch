@@ -1163,7 +1163,9 @@ pub fn repair_text_edits(
 
 /// The edit that writes one repair into `content` at `offset`: a brace left
 /// out is removed, a missing `}` goes on its own line before the line it was
-/// added before, a missing `{` follows the `=`, and an unterminated string,
+/// added before, a missing `{` follows the `=`, a mistyped bracket becomes
+/// `{`, a missing `= {` follows its key, a `}` a comment held goes before
+/// the comment, and an unterminated string,
 /// whose quote is at `offset`, is ended at its line's end. `None` when the
 /// text does not have what the repair expects there.
 pub fn repair_text_edit(
@@ -1239,6 +1241,31 @@ pub fn repair_text_edit(
 				offset,
 				remove: 0,
 				insert: " {",
+			}
+		}
+		SourceRepairEdit::ReplacedWithOpeningBrace => {
+			if !matches!(content.get(offset..offset + 1)?, "[" | "(") {
+				return None;
+			}
+			TextEdit {
+				offset,
+				remove: 1,
+				insert: "{",
+			}
+		}
+		SourceRepairEdit::InsertedAssignmentOpening => TextEdit {
+			offset,
+			remove: 0,
+			insert: " = {",
+		},
+		SourceRepairEdit::ClosedBeforeComment => {
+			if content.get(offset..offset + 1)? != "#" {
+				return None;
+			}
+			TextEdit {
+				offset,
+				remove: 0,
+				insert: "} ",
 			}
 		}
 		SourceRepairEdit::ClosedStringAtLineEnd => {

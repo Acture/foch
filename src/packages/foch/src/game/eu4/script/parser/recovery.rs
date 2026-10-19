@@ -68,6 +68,10 @@ enum Edit {
 	InsertClosing(usize),
 	/// A `{` after the `=` at this index.
 	InsertOpening(usize),
+	/// A `{` in place of the `[` or `(` at this index, a value after an `=`.
+	ReplaceWithOpening(usize),
+	/// An `= {` after the key at this index, alone on its line at column 1.
+	InsertAssignmentOpening(usize),
 }
 
 impl Edit {
@@ -76,6 +80,8 @@ impl Edit {
 			Self::Remove(index) => Self::Remove(index + by),
 			Self::InsertClosing(index) => Self::InsertClosing(index + by),
 			Self::InsertOpening(index) => Self::InsertOpening(index + by),
+			Self::ReplaceWithOpening(index) => Self::ReplaceWithOpening(index + by),
+			Self::InsertAssignmentOpening(index) => Self::InsertAssignmentOpening(index + by),
 		}
 	}
 }
@@ -127,6 +133,90 @@ fn repair(
 		}
 		None => lex(source, false, None).0,
 	};
+	// A file whose lines hold their `}` in a comment reads with those braces
+	// added where each definition holding one then reads cleanly as written,
+	// or else as the file was written.
+	let closings = commented_closings(&tokens);
+	if !closings.is_empty() {
+		let mut closed_diagnostics = diagnostics.clone();
+		let (closed, added) = close_before_comments(&tokens, &closings, &mut closed_diagnostics);
+		if let Some(repaired) =
+			repair_tokens(source, parsed, closed, &added, closed_diagnostics, schema)
+		{
+			return Some(repaired);
+		}
+	}
+	repair_tokens(source, parsed, tokens, &[], diagnostics, schema)
+}
+
+/// Each comment, by token index, that ends a line whose code leaves as many
+/// blocks open as the comment holds `}`, and holds no `{`: the line's closing
+/// braces were written after its `#`.
+fn commented_closings(tokens: &[Token]) -> Vec<(usize, usize)> {
+	let mut closings = Vec::new();
+	let mut open = 0isize;
+	for (index, token) in tokens.iter().enumerate() {
+		match &token.kind {
+			TokenKind::Newline => open = 0,
+			TokenKind::LBrace => open += 1,
+			TokenKind::RBrace => open -= 1,
+			TokenKind::Comment(text) if open > 0 && !text.contains('{') => {
+				let held = text.matches('}').count();
+				if held == open.unsigned_abs() {
+					closings.push((index, held));
+				}
+			}
+			_ => {}
+		}
+	}
+	closings
+}
+
+/// The tokens with each comment's `}` added before it, recording each as a
+/// repair, and the indices of the added braces.
+fn close_before_comments(
+	tokens: &[Token],
+	closings: &[(usize, usize)],
+	diagnostics: &mut Vec<ParseDiagnostic>,
+) -> (Vec<Token>, Vec<usize>) {
+	let mut closed = Vec::with_capacity(tokens.len() + closings.len());
+	let mut added = Vec::new();
+	let mut closings = closings.iter().peekable();
+	for (index, token) in tokens.iter().enumerate() {
+		if let Some(&(_, held)) = closings.next_if(|(at, _)| *at == index) {
+			let at = token.span.start.clone();
+			for _ in 0..held {
+				added.push(closed.len());
+				closed.push(synthetic_at(TokenKind::RBrace, &at));
+				diagnostics.push(repaired(
+					ParseDiagnosticCode::MissingClosingBrace,
+					"a block's `}` is written inside the comment that ends its line",
+					SpanRange {
+						start: at.clone(),
+						end: at.clone(),
+					},
+					SourceRepair {
+						edit: SourceRepairEdit::ClosedBeforeComment,
+						evidence: SourceRepairEvidence::ClosingInComment,
+					},
+				));
+			}
+		}
+		closed.push(token.clone());
+	}
+	(closed, added)
+}
+
+/// Repairs `tokens` segment by segment. A segment holding one of `added`, the
+/// braces a comment held, must read with no diagnostic and no further edit.
+fn repair_tokens(
+	source: &str,
+	parsed: &ParsedStatements,
+	tokens: Vec<Token>,
+	added: &[usize],
+	mut diagnostics: Vec<ParseDiagnostic>,
+	schema: Option<&SchemaCheck<'_>>,
+) -> Option<ParsedStatements> {
 	let reported: Vec<usize> = parsed
 		.diagnostics
 		.iter()
@@ -152,11 +242,16 @@ fn repair(
 			(&tokens[start..end], tokens[end].span.start.clone())
 		};
 		let mut settled = None;
-		for last in next..reach {
-			let (segment, following) = range(last);
+		for (last, &(_, end)) in bounds.iter().enumerate().take(reach).skip(next) {
+			let segment = &tokens[start..end];
+			let following = tokens[end].span.start.clone();
 			budget = budget.checked_sub(segment.len())?;
 			let parsed = parse_segment(segment, None, &following);
 			if !unrepaired(&parsed.diagnostics) {
+				let holds_added = added.iter().any(|index| (start..end).contains(index));
+				if holds_added && !parsed.diagnostics.is_empty() {
+					return None;
+				}
 				settled = Some((last, parsed.statements, None));
 				break;
 			}
@@ -166,6 +261,12 @@ fn repair(
 		// broken one, a reading that moves nothing while the tree the
 		// indentation describes is not among those tried.
 		if settled.is_none() {
+			if added
+				.iter()
+				.any(|index| (start..bounds[next].1).contains(index))
+			{
+				return None;
+			}
 			let (segment, following) = range(next);
 			match repair_segment(segment, &following, &layout, &reported, schema, &mut budget)? {
 				Decision::Repair(candidate, evidence) => {
@@ -255,7 +356,7 @@ fn segments(tokens: &[Token]) -> Vec<(usize, usize)> {
 	let eof = tokens.len() - 1;
 	let mut starts = vec![0];
 	for index in 1..eof {
-		if is_definition_head(tokens, index) {
+		if is_definition_head(tokens, index) || is_bare_head(tokens, index) {
 			starts.push(index);
 		}
 	}
@@ -279,6 +380,40 @@ fn is_definition_head(tokens: &[Token], index: usize) -> bool {
 		tokens.get(index + 1).map(|next| &next.kind),
 		Some(TokenKind::Eq | TokenKind::LBrace)
 	)
+}
+
+/// A key alone on its line at column 1 with an assignment on the next line:
+/// a definition head that lacks its `= {`.
+fn is_bare_head(tokens: &[Token], index: usize) -> bool {
+	let token = &tokens[index];
+	if index > 0 && !matches!(tokens[index - 1].kind, TokenKind::Newline)
+		|| token.span.start.column != 1
+		|| !matches!(token.kind, TokenKind::Identifier(_))
+	{
+		return false;
+	}
+	let kind = |index: usize| tokens.get(index).map(|token| &token.kind);
+	let mut next = index + 1;
+	while matches!(kind(next), Some(TokenKind::Comment(_))) {
+		next += 1;
+	}
+	if !matches!(kind(next), Some(TokenKind::Newline)) {
+		return false;
+	}
+	while matches!(kind(next), Some(TokenKind::Newline)) {
+		next += 1;
+	}
+	tokens.get(next).is_some_and(|token| {
+		token.span.start.column > 1 && matches!(token.kind, TokenKind::Identifier(_))
+	}) && matches!(kind(next + 1), Some(TokenKind::Eq))
+}
+
+/// A `[` or `(` read as a value after an `=`: neither is a value the game
+/// reads, but both are slips for the `{` that opens a block.
+fn is_mistyped_opening(tokens: &[Token], index: usize) -> bool {
+	matches!(&tokens[index].kind, TokenKind::Identifier(text) if text == "[" || text == "(")
+		&& index > 0
+		&& matches!(tokens[index - 1].kind, TokenKind::Eq)
 }
 
 /// What the search for a broken segment's one-token repair concludes, or
@@ -319,6 +454,11 @@ fn choose_reading(
 		// them inside a block than the text already has swallows a definition
 		// the author wrote at the top.
 		if column_one_lines_in_blocks(&tokens) > buried {
+			continue;
+		}
+		// A reading that keeps a `[` or `(` as a value keeps a slip the game
+		// cannot read, so it is no reading of the block that slip opens.
+		if (0..tokens.len()).any(|index| is_mistyped_opening(&tokens, index)) {
 			continue;
 		}
 		candidates.push(Candidate {
@@ -693,6 +833,8 @@ fn proposal(segment: &[Token], following: &Span, edit: Edit) -> RepairProposal {
 		Edit::Remove(_) => SourceRepairEdit::RemovedOpeningBrace,
 		Edit::InsertClosing(_) => SourceRepairEdit::InsertedClosingBrace,
 		Edit::InsertOpening(_) => SourceRepairEdit::InsertedOpeningBrace,
+		Edit::ReplaceWithOpening(_) => SourceRepairEdit::ReplacedWithOpeningBrace,
+		Edit::InsertAssignmentOpening(_) => SourceRepairEdit::InsertedAssignmentOpening,
 	};
 	RepairProposal {
 		edit,
@@ -801,7 +943,8 @@ fn moved_statements(
 }
 
 /// Every one-token edit worth trying in a segment: leave out any brace, add a
-/// `}` before any line, or add a `{` after an `=` that ends its line.
+/// `}` before any line, add a `{` after an `=` that ends its line, read a `[`
+/// or `(` after an `=` as `{`, or add `= {` after a key alone at column 1.
 fn candidate_edits(segment: &[Token]) -> Vec<Edit> {
 	let mut edits = Vec::new();
 	for (index, token) in segment.iter().enumerate() {
@@ -827,6 +970,14 @@ fn candidate_edits(segment: &[Token]) -> Vec<Edit> {
 			.find(|token| !matches!(token.kind, TokenKind::Comment(_)));
 		if rest.is_none_or(|token| matches!(token.kind, TokenKind::Newline)) {
 			edits.push(Edit::InsertOpening(index));
+		}
+	}
+	for index in 0..segment.len() {
+		if is_mistyped_opening(segment, index) {
+			edits.push(Edit::ReplaceWithOpening(index));
+		}
+		if is_bare_head(segment, index) {
+			edits.push(Edit::InsertAssignmentOpening(index));
 		}
 	}
 	edits
@@ -855,14 +1006,21 @@ fn anchor_span(tokens: &[Token], edit: Edit, following: &Span) -> Span {
 		Edit::InsertClosing(index) => tokens
 			.get(index)
 			.map_or_else(|| following.clone(), |token| token.span.start.clone()),
-		Edit::InsertOpening(index) => tokens[index].span.end.clone(),
+		Edit::InsertOpening(index) | Edit::InsertAssignmentOpening(index) => {
+			tokens[index].span.end.clone()
+		}
+		Edit::ReplaceWithOpening(index) => tokens[index].span.start.clone(),
 	}
 }
 
 /// The index of the whole-file token an edit is anchored at.
 fn edit_anchor(edit: Edit) -> usize {
 	match edit {
-		Edit::Remove(index) | Edit::InsertClosing(index) | Edit::InsertOpening(index) => index,
+		Edit::Remove(index)
+		| Edit::InsertClosing(index)
+		| Edit::InsertOpening(index)
+		| Edit::ReplaceWithOpening(index)
+		| Edit::InsertAssignmentOpening(index) => index,
 	}
 }
 
@@ -883,17 +1041,25 @@ fn apply(tokens: &mut Vec<Token>, edit: Edit, at: &Span) {
 		Edit::InsertClosing(index) => tokens.insert(index, synthetic(TokenKind::RBrace)),
 		Edit::InsertOpening(index) => {
 			let at = tokens[index].span.end.clone();
-			tokens.insert(
-				index + 1,
-				Token {
-					kind: TokenKind::LBrace,
-					span: SpanRange {
-						start: at.clone(),
-						end: at,
-					},
-				},
-			);
+			tokens.insert(index + 1, synthetic_at(TokenKind::LBrace, &at));
 		}
+		Edit::ReplaceWithOpening(index) => tokens[index].kind = TokenKind::LBrace,
+		Edit::InsertAssignmentOpening(index) => {
+			let at = tokens[index].span.end.clone();
+			tokens.insert(index + 1, synthetic_at(TokenKind::LBrace, &at));
+			tokens.insert(index + 1, synthetic_at(TokenKind::Eq, &at));
+		}
+	}
+}
+
+/// A zero-width token at `at`.
+fn synthetic_at(kind: TokenKind, at: &Span) -> Token {
+	Token {
+		kind,
+		span: SpanRange {
+			start: at.clone(),
+			end: at.clone(),
+		},
 	}
 }
 
@@ -943,6 +1109,24 @@ fn edit_diagnostic(
 					end: at,
 				},
 				SourceRepairEdit::InsertedOpeningBrace,
+			)
+		}
+		Edit::ReplaceWithOpening(index) => (
+			ParseDiagnosticCode::MissingOpeningBrace,
+			"a block opens with a `[` or `(` in place of its `{`",
+			tokens[index].span.clone(),
+			SourceRepairEdit::ReplacedWithOpeningBrace,
+		),
+		Edit::InsertAssignmentOpening(index) => {
+			let at = tokens[index].span.end.clone();
+			(
+				ParseDiagnosticCode::MissingOpeningBrace,
+				"a definition is missing the `= {` after its key",
+				SpanRange {
+					start: at.clone(),
+					end: at,
+				},
+				SourceRepairEdit::InsertedAssignmentOpening,
 			)
 		}
 	};
@@ -1257,6 +1441,133 @@ mod tests {
 		assert!(not_repaired(&parsed), "{:?}", parsed.diagnostics);
 	}
 
+	/// `source` with every repair in `parsed` written into it; it must parse
+	/// cleanly into the tree the repairs gave.
+	fn written(source: &str, parsed: &ParsedStatements) -> String {
+		let edits = super::super::repair_text_edits(source, &parsed.diagnostics)
+			.expect("each repair is where the text has it");
+		let bytes = crate::game::eu4::text::edit_paradox_bytes(source.as_bytes(), &edits)
+			.expect("the repairs apply");
+		let text = String::from_utf8(bytes).expect("utf-8");
+		let reparsed = parse(&text);
+		assert!(
+			reparsed.diagnostics.is_empty(),
+			"{:?}",
+			reparsed.diagnostics
+		);
+		assert_eq!(shape(&reparsed.statements), shape(&parsed.statements));
+		text
+	}
+
+	fn repairs(parsed: &ParsedStatements) -> Vec<(ParseDiagnosticCode, usize, SourceRepair)> {
+		parsed
+			.diagnostics
+			.iter()
+			.map(|diagnostic| {
+				let repair = diagnostic
+					.repair
+					.unwrap_or_else(|| panic!("expected a repair: {diagnostic:?}"));
+				(diagnostic.code, diagnostic.span.start.line, repair)
+			})
+			.collect()
+	}
+
+	#[test]
+	fn a_bracket_opening_a_block_reads_as_its_brace() {
+		// Read as written, `[` is `italienisch`'s value and the `}` under it
+		// closes `germanic`. Leaving that `}` out parses too, but keeps the
+		// `[` as a value the game cannot read.
+		let source = include_str!(
+			"../../../../../tests/fixtures/cultures/malformed/mistyped_culture_openers.txt"
+		);
+		let parsed = parse(source);
+		let replaced = SourceRepair {
+			edit: SourceRepairEdit::ReplacedWithOpeningBrace,
+			evidence: SourceRepairEvidence::OnlyReading,
+		};
+		assert_eq!(
+			repairs(&parsed),
+			[
+				(ParseDiagnosticCode::MissingOpeningBrace, 7, replaced),
+				(ParseDiagnosticCode::MissingOpeningBrace, 16, replaced),
+			]
+		);
+		assert_eq!(
+			shape(&parsed.statements),
+			"germanic={graphical_culture=westerngfx frankisch={primary=XXX} italienisch={primary=XXX} wolgadeutsch={primary=XXX}} \
+			 altaic={graphical_culture=muslimgfx khitan={primary=XXX} uyghur={primary=XXX}}"
+		);
+		let text = written(source, &parsed);
+		assert!(text.contains("italienisch = { #Germanic"), "{text}");
+		assert!(text.contains("khitan = {\n"), "{text}");
+	}
+
+	#[test]
+	fn a_bracket_value_is_left_alone_where_nothing_else_is_broken() {
+		let parsed = parse("a = {\n\tb = [\n}\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(shape(&parsed.statements), "a={b=[}");
+	}
+
+	#[test]
+	fn a_key_alone_at_column_one_takes_its_missing_assignment() {
+		let source = include_str!(
+			"../../../../../tests/fixtures/cultures/malformed/missing_group_openers.txt"
+		);
+		let parsed = parse(source);
+		let inserted = SourceRepair {
+			edit: SourceRepairEdit::InsertedAssignmentOpening,
+			evidence: SourceRepairEvidence::OnlyReading,
+		};
+		assert_eq!(
+			repairs(&parsed),
+			[2, 6, 10, 14].map(|line| (ParseDiagnosticCode::MissingOpeningBrace, line, inserted))
+		);
+		assert_eq!(
+			shape(&parsed.statements),
+			"thai_group={graphical_culture=inuitgfx placeholder_t={primary=xxx}} \
+			 eastern_algonquian={graphical_culture=inuitgfx placeholder_ea={primary=xxx}} \
+			 plains_algonquian={graphical_culture=inuitgfx placeholder_a={primary=xxx}} \
+			 sonoran={graphical_culture=inuitgfx placeholder_s={primary=xxx}}"
+		);
+		assert!(written(source, &parsed).contains("thai_group = {"));
+	}
+
+	#[test]
+	fn a_closing_brace_inside_a_comment_closes_its_line() {
+		// The `}` after `#` is comment text, so `is_or_was_tag` stays open
+		// and swallows the next event; the line written at column 1 also cuts
+		// the event in two, so no one-token edit of a part repairs it.
+		let source = "country_event = {\n\ttrigger = {\n\t\tNOT = {\nis_or_was_tag = { tag = AZT #Aztecs }\n\t\t}\n\t}\n}\ncountry_event = {\n\tid = b\n}\n";
+		let parsed = parse(source);
+		assert_eq!(
+			repairs(&parsed),
+			[(
+				ParseDiagnosticCode::MissingClosingBrace,
+				4,
+				SourceRepair {
+					edit: SourceRepairEdit::ClosedBeforeComment,
+					evidence: SourceRepairEvidence::ClosingInComment,
+				}
+			)]
+		);
+		assert_eq!(
+			shape(&parsed.statements),
+			"country_event={trigger={NOT={is_or_was_tag={tag=AZT}}}} country_event={id=b}"
+		);
+		assert!(written(source, &parsed).contains("tag = AZT } #Aztecs }"));
+	}
+
+	#[test]
+	fn a_comment_brace_that_does_not_read_cleanly_is_left_in_the_comment() {
+		// `a`'s block runs on past its line, so the `}` in its comment is not
+		// one it lacks; only `c` is missing its `}`.
+		let parsed = parse("a = { # see }\n\tb = 1\n}\nc = {\n\td = 1\n");
+		let [(_, _, repair)] = repairs(&parsed).try_into().expect("one repair");
+		assert_eq!(repair.edit, SourceRepairEdit::InsertedClosingBrace);
+		assert_eq!(shape(&parsed.statements), "a={b=1} c={d=1}");
+	}
+
 	#[test]
 	fn an_unterminated_string_ends_at_its_line() {
 		let parsed = parse("a = {\n\tname = \"abc\n}\nb = { c = 1 }\n");
@@ -1380,7 +1691,8 @@ mod tests {
 	fn a_column_one_line_inside_a_broken_definition_is_left_out_with_it() {
 		// `x` is written at column 1 inside `t`, after a deeper line, so it is
 		// no definition of its own; `b` follows a line at column 1.
-		let parsed = parse("a = {\n\tt = {\nx = { y = 1 # }\n\t}\n\tq = 1\n}\nb = {\n\tz = 2\n}\n");
+		let parsed =
+			parse("a = {\n\tt = {\nx = { y = 1 # note\n\t}\n\tq = 1\n}\nb = {\n\tz = 2\n}\n");
 		let isolation = only_isolation(&parsed);
 		assert_eq!(
 			(isolation.definition.as_str(), isolation.end_line),
@@ -1390,19 +1702,22 @@ mod tests {
 	}
 
 	#[test]
-	fn a_definition_missing_its_equals_is_neither_swallowed_nor_isolated() {
+	fn a_definition_missing_its_equals_takes_it_instead_of_joining_another() {
 		// `b` lacks ` = {`. Leaving out the `}` that closes `a` parses as one
 		// definition, but it would put `b`, written at column 1, inside `a`;
-		// and `a` with `b` after it is more than one definition to leave out.
+		// `b` alone at column 1 with an assignment under it is a head of its
+		// own.
 		let parsed = parse("a = {\n\tx = 1\n}\nb\n\ty = 1\n}\nc = {\n\tz = 1\n}\n");
-		assert!(
-			parsed
-				.diagnostics
-				.iter()
-				.all(|diagnostic| diagnostic.repair.is_none() && diagnostic.isolation.is_none()),
-			"{:?}",
-			parsed.diagnostics
+		let (code, line, _, repair) = only_repair(&parsed);
+		assert_eq!(
+			(code, line, repair.edit),
+			(
+				ParseDiagnosticCode::MissingOpeningBrace,
+				4,
+				SourceRepairEdit::InsertedAssignmentOpening
+			)
 		);
+		assert_eq!(shape(&parsed.statements), "a={x=1} b={y=1} c={z=1}");
 	}
 
 	#[test]
