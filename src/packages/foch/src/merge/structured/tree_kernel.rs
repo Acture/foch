@@ -1445,6 +1445,10 @@ impl DefaultChoices {
 		ordered.sort_by_key(|conflict| conflict.semantic_path.len());
 		let mut picked_paths = Vec::<&[String]>::new();
 		for conflict in ordered {
+			// A later round sees the conflicts an earlier one decided again.
+			if resolution.handled_conflicts.contains_key(&conflict.id) {
+				continue;
+			}
 			if self.tentative.contains(&conflict.id) {
 				resolution.handled_conflicts.insert(conflict.id, ());
 				resolution
@@ -1461,12 +1465,11 @@ impl DefaultChoices {
 					});
 				continue;
 			}
-			if resolution.handled_conflicts.contains_key(&conflict.id)
-				|| picked_paths.iter().any(|path| {
-					!path.is_empty()
-						&& conflict.semantic_path.len() > path.len()
-						&& conflict.semantic_path.starts_with(path)
-				}) {
+			if picked_paths.iter().any(|path| {
+				!path.is_empty()
+					&& conflict.semantic_path.len() > path.len()
+					&& conflict.semantic_path.starts_with(path)
+			}) {
 				continue;
 			}
 			let changes = match default_choice(conflict, facts) {
