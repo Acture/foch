@@ -249,6 +249,10 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 }
 
 impl MergePolicy for ContentFamilyMergePolicy<'_> {
+	fn orders_contradictions_by_load_order(&self) -> bool {
+		self.policies.contradicting_orders_by_load_order
+	}
+
 	fn select_nway_deleted_subtree(&self, context: NWayDeleteContext<'_>) -> Option<RevisionId> {
 		let content_changed = context
 			.class

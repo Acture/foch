@@ -1612,7 +1612,7 @@ mod tests {
 	use crate::game::eu4::script::parser::{
 		AstFile, AstStatement, AstValue, parse_clausewitz_content,
 	};
-	use crate::merge::kernel::{SemanticKeyMatchMode, SemanticKeyScope};
+	use crate::merge::kernel::{ConflictKind, SemanticKeyMatchMode, SemanticKeyScope};
 
 	use crate::game::eu4::script::emit::emit_clausewitz_statements;
 
@@ -2170,26 +2170,37 @@ mod tests {
 		assert_eq!(anchor.match_mode, SemanticKeyMatchMode::Identity);
 	}
 
-	#[test]
-	fn contradicting_precedence_takes_the_order_of_the_mod_loaded_last() {
+	fn contradicting_precedence() -> [AstFile; 3] {
 		let source = |order: [&str; 3]| {
 			parse(&format!(
-				"coal = {{ trigger = {{\n\
-				\tif = {{ {} }}\n\
-				\telse_if = {{ {} }}\n\
-				\telse_if = {{ {} }}\n\
-				\telse = {{ add_legitimacy = 0 }}\n\
-				}} }}\n",
+				"coal = {{ trigger = {{
+					if = {{ {} }}
+					else_if = {{ {} }}
+					else_if = {{ {} }}
+					else = {{ add_legitimacy = 0 }}
+				}} }}
+",
 				branch(order[0], order[0]),
 				branch(order[1], order[1]),
 				branch(order[2], order[2]),
 			))
 		};
-		let base = source(["1", "2", "3"]);
-		let left = source(["2", "1", "3"]);
-		let right = source(["1", "3", "2"]);
+		[
+			source(["1", "2", "3"]),
+			source(["2", "1", "3"]),
+			source(["1", "3", "2"]),
+		]
+	}
 
-		let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+	#[test]
+	fn contradicting_precedence_takes_the_order_of_the_mod_loaded_last() {
+		let [base, left, right] = contradicting_precedence();
+		let policies = MergePolicies {
+			contradicting_orders_by_load_order: true,
+			..MergePolicies::default()
+		};
+
+		let outcome = merge_clausewitz_files(&base, &left, &right, &policies)
 			.expect("contradicting orders merge");
 
 		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
@@ -2203,6 +2214,24 @@ mod tests {
 				.unwrap_or_else(|| panic!("every branch survives: {output}"))
 		});
 		assert!(flags[0] < flags[1] && flags[1] < flags[2], "{output}");
+	}
+
+	#[test]
+	fn contradicting_precedence_without_the_default_is_an_ordering_conflict() {
+		let [base, left, right] = contradicting_precedence();
+
+		let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+			.expect("ordering conflict remains a valid tentative merge");
+
+		assert!(outcome.resolved_ast().is_none());
+		assert!(
+			outcome
+				.conflicts()
+				.iter()
+				.any(|conflict| conflict.kind == ConflictKind::Ordering),
+			"{:?}",
+			outcome.conflicts()
+		);
 	}
 
 	#[test]

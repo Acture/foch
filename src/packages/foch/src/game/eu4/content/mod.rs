@@ -313,6 +313,11 @@ pub struct MergePolicies {
 	/// mod are not reordered.
 	#[serde(default)]
 	pub unordered_definitions: bool,
+	/// Where mods order the same children in ways that contradict each
+	/// other, take the order of the mod loaded later rather than report an
+	/// ordering conflict. The load-order default turns this on.
+	#[serde(default)]
+	pub contradicting_orders_by_load_order: bool,
 }
 
 impl MergePolicies {
@@ -968,6 +973,7 @@ impl ContentFamilyDescriptor {
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
 				unordered_definitions: false,
+				contradicting_orders_by_load_order: false,
 			},
 			schema_directory: None,
 		}
@@ -1009,6 +1015,7 @@ impl ContentFamilyDescriptor {
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
 				unordered_definitions: false,
+				contradicting_orders_by_load_order: false,
 			},
 			schema_directory: None,
 		}

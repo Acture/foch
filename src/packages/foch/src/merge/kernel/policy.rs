@@ -70,6 +70,12 @@ pub trait MergePolicy {
 		None
 	}
 
+	/// Whether children mods order in ways that contradict each other take
+	/// the order of the mod loaded later, rather than staying a conflict.
+	fn orders_contradictions_by_load_order(&self) -> bool {
+		false
+	}
+
 	/// Permit a missing structural ancestor to be restored so an explicitly
 	/// preserved descendant remains reachable from the merged root.
 	fn permits_ancestor_closure(&self, _node: &NormalizedNode) -> bool {

@@ -597,7 +597,11 @@ fn assign_nway_children(
 						.map(Vec::as_slice)
 						.collect::<Vec<_>>();
 					match merge_orders(parent, &base_sequence, &revision_refs).or_else(|cycle| {
-						order_by_load_order(parent, &base_sequence, &revision_refs).ok_or(cycle)
+						policy
+							.orders_contradictions_by_load_order()
+							.then(|| order_by_load_order(parent, &base_sequence, &revision_refs))
+							.flatten()
+							.ok_or(cycle)
 					}) {
 						Ok(children) => children,
 						Err(cycle) => {
