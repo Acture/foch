@@ -183,6 +183,8 @@ impl<'a> ContextWalk<'a> {
 		let mut stack = vec![self.root.clone()];
 		let mut path = vec![origin.to_owned()];
 		let Some(bound) = self.binder.alias_block(&stage_category(stage), statements) else {
+			self.unresolved
+				.push(format!("the schema binds no {stage:?} block at {origin}"));
 			return;
 		};
 		self.commands(statements, &bound, &mut stack, &mut path);
@@ -427,8 +429,12 @@ impl<'a> ContextWalk<'a> {
 		};
 		// A scripted trigger or effect runs in its caller's scope.
 		self.call_stack.push(name.to_owned());
-		if let Some(bound) = self.binder.alias_block(&script_category(kind), &body) {
-			self.commands(&body, &bound, stack, path);
+		match self.binder.alias_block(&script_category(kind), &body) {
+			Some(bound) => self.commands(&body, &bound, stack, path),
+			None => self.unresolved.push(format!(
+				"the schema binds no body of `{name}` at {}",
+				path.join(" > ")
+			)),
 		}
 		self.call_stack.pop();
 	}
