@@ -32,7 +32,16 @@ other content families. See the [boundary refactor](./superpowers/plans/2026-10-
 A culture whose definition reads the same as several new ones is renamed to
 the only one whose name shares a word with it. Where no name tells them apart,
 the load-order default takes the one its file defines first and notes it;
-`--strict` holds the rename for review.
+`--strict` holds the rename for review. A call argument naming a renamed
+culture is rewritten when every use of its parameter, through the scripts it
+is passed to, is a culture field or a name of a value set composed from it.
+Parameters are text substitution, so a flag such as `$CULTURE$_released`
+changes with the argument: the name it composed from the old culture is
+renamed wherever a field of the same value set holds it, so that
+`has_country_flag = gothic_ger_released` elsewhere still matches. Where the
+parameter is read as other text, such as a localisation key, the load-order
+default rewrites the argument with a note and `--strict` withholds the call
+and the scripts it reaches.
 
 Transformation outputs that share a merge unit are committed or withheld
 together, transitively. An incomplete group does not withdraw an independent

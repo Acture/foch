@@ -182,6 +182,26 @@ fn culture_rename_withholds_unverified_script_parameter_flows() {
 }
 
 #[test]
+fn culture_rename_rewrites_arguments_used_only_as_cultures() {
+	assert_culture_adaptation(CultureCase::CultureParameter);
+}
+
+#[test]
+fn culture_rename_rewrites_arguments_forwarded_only_to_cultures() {
+	assert_culture_adaptation(CultureCase::ForwardedCultureParameter);
+}
+
+#[test]
+fn culture_rename_renames_flags_composed_from_a_rewritten_argument() {
+	assert_culture_adaptation(CultureCase::ComposedFlagParameter);
+}
+
+#[test]
+fn culture_rename_rewrites_arguments_with_other_uses_by_default() {
+	assert_culture_adaptation(CultureCase::DefaultParameter);
+}
+
+#[test]
 fn culture_rename_withholds_forwarded_script_parameters_even_with_force() {
 	assert_culture_adaptation(CultureCase::ForwardedParameter);
 }
@@ -234,6 +254,10 @@ enum CultureCase {
 	MissingReviewedAncestor,
 	ConditionalMechanism,
 	ParameterizedReference,
+	CultureParameter,
+	ForwardedCultureParameter,
+	ComposedFlagParameter,
+	DefaultParameter,
 	ForwardedParameter,
 	FlagParameter,
 	ParameterDefault,
@@ -289,7 +313,7 @@ fn assert_culture_adaptation(case: CultureCase) {
 		write(
 			&game,
 			"common/scripted_effects/parameter.txt",
-			"apply_c = { change_primary_culture = $CULTURE$ }\n",
+			"apply_c = { change_primary_culture = $CULTURE$ custom_tooltip = $CULTURE$_freed_tt }\n",
 		);
 		write(
 			&game,
@@ -471,6 +495,10 @@ fn assert_culture_adaptation(case: CultureCase) {
 	if matches!(
 		case,
 		CultureCase::ParameterizedReference
+			| CultureCase::CultureParameter
+			| CultureCase::ForwardedCultureParameter
+			| CultureCase::ComposedFlagParameter
+			| CultureCase::DefaultParameter
 			| CultureCase::ForwardedParameter
 			| CultureCase::FlagParameter
 			| CultureCase::ParameterDefault
@@ -483,8 +511,17 @@ fn assert_culture_adaptation(case: CultureCase) {
 			"apply_c = { set_country_flag = $CULTURE$ }\nunused_c = { change_primary_culture = $CULTURE$ }\n"
 		} else if case == CultureCase::ParameterDefault {
 			"apply_c = { change_primary_culture = $CULTURE|old$ }\n"
-		} else {
+		} else if matches!(
+			case,
+			CultureCase::CultureParameter | CultureCase::ForwardedCultureParameter
+		) {
 			"apply_c = { change_primary_culture = $CULTURE$ }\n"
+		} else if case == CultureCase::ComposedFlagParameter {
+			"apply_c = { change_primary_culture = $CULTURE$ set_country_flag = $CULTURE$_freed }\n"
+		} else {
+			// The tooltip reads the argument's text as a localisation key, which
+			// renaming the argument would change.
+			"apply_c = { change_primary_culture = $CULTURE$ custom_tooltip = $CULTURE$_freed_tt }\n"
 		};
 		write(
 			root,
@@ -498,10 +535,13 @@ fn assert_culture_adaptation(case: CultureCase) {
 			write(
 				root,
 				"mods/bonus/common/scripted_triggers/parameter.txt",
-				"apply_c = { primary_culture = $CULTURE$ }\n",
+				"apply_c = { primary_culture = $CULTURE$ has_country_modifier = $CULTURE$_freed }\n",
 			);
 		}
-		let caller = if case == CultureCase::ForwardedParameter {
+		let caller = if matches!(
+			case,
+			CultureCase::ForwardedParameter | CultureCase::ForwardedCultureParameter
+		) {
 			write(
 				root,
 				"mods/bonus/common/scripted_effects/relay.txt",
@@ -516,6 +556,13 @@ fn assert_culture_adaptation(case: CultureCase) {
 			"country_event = { id = parameter.1 immediate = { apply_c = { CULTURE = old } } }\n"
 		};
 		write(root, "mods/bonus/events/parameter.txt", caller);
+		if case == CultureCase::ComposedFlagParameter {
+			write(
+				root,
+				"mods/bonus/events/flag.txt",
+				"country_event = { id = flag.1 trigger = { has_country_flag = old_freed } immediate = { set_country_flag = old } }\n",
+			);
+		}
 	}
 	let mut project = format!(
 		"[project]\ngame=\"eu4\"\ngame_path='{}'\n[[project.mods]]\nid=\"rename\"\npath=\"mods/rename\"\n[[project.mods]]\nid=\"bonus\"\npath=\"mods/bonus\"\n",
@@ -594,6 +641,7 @@ fn assert_culture_adaptation(case: CultureCase) {
 		case,
 		CultureCase::ForceUnsupportedUse | CultureCase::ForwardedParameter
 	);
+	analysis_options.strict = case != CultureCase::DefaultParameter;
 	if case == CultureCase::RetainedGroupMove {
 		analysis_options.retained_paths = Some(
 			["common/cultures/base.txt"]
@@ -874,6 +922,35 @@ fn assert_culture_adaptation(case: CultureCase) {
 				.contains("CULTURE = old")
 		);
 		assert!(emitted.contains("set_country_flag = $CULTURE$"));
+	}
+	if matches!(
+		case,
+		CultureCase::CultureParameter
+			| CultureCase::ForwardedCultureParameter
+			| CultureCase::ComposedFlagParameter
+			| CultureCase::DefaultParameter
+	) {
+		let argument = if case == CultureCase::ForwardedCultureParameter {
+			"VALUE = renamed"
+		} else {
+			"CULTURE = renamed"
+		};
+		let caller = fs::read_to_string(out.join("events/parameter.txt")).unwrap();
+		assert!(caller.contains(argument), "{caller}");
+		let noted = review_decisions
+			.iter()
+			.flat_map(|(_, _, notes)| notes)
+			.any(|note| note.contains("also uses it outside culture fields"));
+		assert_eq!(
+			noted,
+			case == CultureCase::DefaultParameter,
+			"{review_decisions:#?}"
+		);
+	}
+	if case == CultureCase::ComposedFlagParameter {
+		let flag = fs::read_to_string(out.join("events/flag.txt")).unwrap();
+		assert!(flag.contains("has_country_flag = renamed_freed"), "{flag}");
+		assert!(flag.contains("set_country_flag = old"), "{flag}");
 	}
 	if case == CultureCase::ConditionalMechanism {
 		for text in [

@@ -482,6 +482,30 @@ pub(crate) fn transform_cultures(
 	relative_path: &GamePath,
 	mapping: &CultureRenameMap,
 ) -> CultureTransform {
+	transform_cultures_with_arguments(
+		ast,
+		relative_path,
+		mapping,
+		&BTreeSet::new(),
+		&DerivedNames::new(),
+	)
+}
+
+/// Names a script composes from a culture parameter, such as the flag
+/// `$CULTURE$_released`, renamed with the culture: by value set, old name to
+/// new.
+pub(crate) type DerivedNames = BTreeMap<String, BTreeMap<String, String>>;
+
+/// As [`transform_cultures`], also reading the script call arguments that
+/// start at `arguments` as culture values, and renaming the `derived` names
+/// wherever a field of their value set holds them.
+pub(crate) fn transform_cultures_with_arguments(
+	ast: &AstFile,
+	relative_path: &GamePath,
+	mapping: &CultureRenameMap,
+	arguments: &BTreeSet<usize>,
+	derived: &DerivedNames,
+) -> CultureTransform {
 	let mut result = CultureTransform {
 		ast: ast.clone(),
 		changes: Vec::new(),
@@ -518,7 +542,10 @@ pub(crate) fn transform_cultures(
 			}
 		}
 	} else {
-		let kinds = culture_field_kinds(&ast.statements, relative_path);
+		let mut kinds = culture_field_kinds(&ast.statements, relative_path);
+		for offset in arguments {
+			kinds.entry(*offset).or_default().culture_value = true;
+		}
 		transform_statements(
 			&mut statements,
 			relative_path,
@@ -527,6 +554,16 @@ pub(crate) fn transform_cultures(
 			mapping,
 			&mut result,
 		);
+		if !derived.is_empty() {
+			let fields = value_set_fields(&ast.statements, relative_path);
+			rename_derived(
+				&mut statements,
+				relative_path,
+				&fields,
+				derived,
+				&mut result,
+			);
+		}
 	}
 	result.ast.statements = statements;
 	if is_culture_document(relative_path)
@@ -685,17 +722,59 @@ fn culture_field_kinds(
 	statements: &[AstStatement],
 	path: &GamePath,
 ) -> HashMap<usize, CultureFieldKinds> {
-	let binder = SchemaBinder::new(super::cwt::rule_engine(), &Eu4Dialect, None, path);
 	let mut kinds = HashMap::new();
-	bind_kinds(&binder, statements, &binder.file(statements), &mut kinds);
+	bind_fields(statements, path, &mut |offset, alternatives, key| {
+		kinds.insert(offset, reference_kinds(alternatives, key));
+	});
 	kinds
 }
 
-fn bind_kinds<'a>(
+/// The value sets each key's field holds, by where the key starts.
+pub(super) fn value_set_fields(
+	statements: &[AstStatement],
+	path: &GamePath,
+) -> HashMap<usize, BTreeSet<String>> {
+	let mut fields = HashMap::new();
+	bind_fields(statements, path, &mut |offset, alternatives, _| {
+		let sets = value_sets(alternatives);
+		if !sets.is_empty() {
+			fields.insert(offset, sets);
+		}
+	});
+	fields
+}
+
+/// The value sets a field's alternatives name, as `value[set]` or
+/// `value_set[set]`.
+pub(super) fn value_sets(alternatives: &[CompiledBindFieldMatch<'_>]) -> BTreeSet<String> {
+	alternatives
+		.iter()
+		.filter_map(|field| match field.value() {
+			CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => value
+				.strip_prefix("value_set[")
+				.or_else(|| value.strip_prefix("value["))
+				.and_then(|set| set.strip_suffix(']'))
+				.map(str::to_owned),
+			_ => None,
+		})
+		.collect()
+}
+
+/// Visits each assignment of a file with its binding, by where its key starts.
+fn bind_fields(
+	statements: &[AstStatement],
+	path: &GamePath,
+	visit: &mut dyn FnMut(usize, &[CompiledBindFieldMatch<'_>], &str),
+) {
+	let binder = SchemaBinder::new(super::cwt::rule_engine(), &Eu4Dialect, None, path);
+	bind_walk(&binder, statements, &binder.file(statements), visit);
+}
+
+fn bind_walk<'a>(
 	binder: &SchemaBinder<'a>,
 	statements: &'a [AstStatement],
 	bound: &BoundContext<'a, AstStatement>,
-	kinds: &mut HashMap<usize, CultureFieldKinds>,
+	visit: &mut dyn FnMut(usize, &[CompiledBindFieldMatch<'_>], &str),
 ) {
 	for statement in statements {
 		let AstStatement::Assignment {
@@ -708,13 +787,56 @@ fn bind_kinds<'a>(
 			continue;
 		};
 		let binding = binder.bind(bound, key, value);
-		kinds.insert(
-			key_span.start.offset,
-			reference_kinds(&binding.alternatives, key),
-		);
+		visit(key_span.start.offset, &binding.alternatives, key);
 		if let AstValue::Block { items, .. } = value {
 			let child = binder.child(bound, statement, key, &binding);
-			bind_kinds(binder, items, &child, kinds);
+			bind_walk(binder, items, &child, visit);
+		}
+	}
+}
+
+/// Renames the `derived` names held by a field of their value set, keeping a
+/// `@scope` suffix.
+fn rename_derived(
+	statements: &mut [AstStatement],
+	path: &GamePath,
+	fields: &HashMap<usize, BTreeSet<String>>,
+	derived: &DerivedNames,
+	result: &mut CultureTransform,
+) {
+	for statement in statements {
+		let AstStatement::Assignment {
+			key_span, value, ..
+		} = statement
+		else {
+			continue;
+		};
+		match value {
+			AstValue::Block { items, .. } => rename_derived(items, path, fields, derived, result),
+			AstValue::Scalar {
+				value: ScalarValue::Identifier(text) | ScalarValue::String(text),
+				span,
+			} => {
+				let Some(sets) = fields.get(&key_span.start.offset) else {
+					continue;
+				};
+				let (name, scope) = text.split_at(text.find('@').unwrap_or(text.len()));
+				let Some(new) = sets
+					.iter()
+					.find_map(|set| derived.get(set).and_then(|names| names.get(name)))
+				else {
+					continue;
+				};
+				let to = format!("{new}{scope}");
+				result.changes.push(CultureChange {
+					from: text.clone(),
+					to: to.clone(),
+					definition: false,
+					location: location(path, span),
+				});
+				*text = to;
+			}
+			AstValue::Scalar { .. } => {}
 		}
 	}
 }
