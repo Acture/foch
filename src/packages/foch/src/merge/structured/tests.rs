@@ -3409,6 +3409,54 @@ fn conditions_two_mods_add_become_alternatives_whatever_their_kind() {
 }
 
 #[test]
+fn comments_two_mods_add_to_a_condition_are_no_alternatives() {
+	// A comment holds no condition, so it is no way for one to hold.
+	let path = "common/scripted_effects/test.txt";
+	let make = |extra: &str| {
+		parse_at(
+			path,
+			&format!(
+				"fx = {{ every_owned_province = {{ limit = {{ is_capital = yes {extra} }} add_base_tax = 1 }} }}
+"
+			),
+		)
+	};
+	let merged = |revisions: [&str; 2]| {
+		let base = make("");
+		let revisions = revisions.map(make);
+		let policies = &eu4()
+			.classify_content_family(
+				&crate::model::GamePathBuf::parse(path).expect("valid game path"),
+			)
+			.unwrap()
+			.merge_policies;
+		let outcome =
+			merge_clausewitz_files_n_way(&base, &[&revisions[0], &revisions[1]], policies)
+				.expect("merge scripted effects");
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		emit(outcome.resolved_ast().expect("merged without conflicts"))
+	};
+
+	let output = merged([
+		"
+# one note
+",
+		"
+# another note
+",
+	]);
+	assert!(!output.contains("OR ="), "{output}");
+	let output = merged([
+		"
+# one note
+",
+		"is_at_war = no",
+	]);
+	assert!(!output.contains("OR ="), "{output}");
+	assert!(output.contains("is_at_war = no"), "{output}");
+}
+
+#[test]
 fn a_replaced_condition_survives_beside_unchanged_revisions() {
 	let path = "common/policies/00_dip.txt";
 	let base_text = "p = {
