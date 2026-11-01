@@ -1,0 +1,39 @@
+# One built-in EU4 DLL per row. A row is a Homebrew formula / Unity Mod
+# Manager Info.json: name, author, homepage, version, and the release url
+# `gh release download` fetches. depends_on and conflicts_with are written
+# only when the plugin has one. A conflict names the other plugin and why.
+schema = 1
+
+[[plugin]]
+id = "io.github.yozoratempest.eu4-unicode-patch"
+name = "EU4 Unicode Patch"
+author = "YozoraTempest"
+homepage = "https://github.com/YozoraTempest/EU4-Unicode-Patch"
+version = "0.1.15"
+url = "https://github.com/YozoraTempest/EU4-Unicode-Patch/releases/download/v0.1.15/EU4UnicodePatch-1.37.5-v0.1.15.zip"
+
+[[plugin.conflicts_with]]
+id = "io.github.matanki-saito.eu4dll"
+because = "EU4 Unicode Patch v0.1.15 refuses to initialize when plugin64.dll is loaded."
+
+[[plugin]]
+id = "io.github.yozoratempest.eu4-menu-patch"
+name = "EU4 Menu Patch"
+author = "YozoraTempest"
+homepage = "https://github.com/YozoraTempest/EU4-Menu-Patch"
+version = "0.1.4-experimental"
+url = "https://github.com/YozoraTempest/EU4-Menu-Patch/releases/download/v0.1.4-experimental/EU4MenuPatch-1.37.5-v0.1.4-experimental.zip"
+
+[[plugin]]
+id = "io.github.matanki-saito.eu4dll"
+name = "EU4dll"
+author = "matanki-saito"
+homepage = "https://github.com/matanki-saito/EU4dll"
+version = "93.0.0"
+url = "https://github.com/matanki-saito/EU4dll/releases/download/93/steam_EU4_fixdll_build_93.zip"
+omit = [
+    "plugins/Plugin.dll",
+    "plugins/dllautoupdater.exe",
+    "plugins/autoupdate64.bat",
+    "plugins/autoupdate.bat",
+]

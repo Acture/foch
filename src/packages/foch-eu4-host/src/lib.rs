@@ -5,6 +5,7 @@
 mod image;
 pub mod pattern;
 pub mod plan;
+mod prologue;
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod windows;

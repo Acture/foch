@@ -8,9 +8,11 @@
 
 pub mod builtin;
 pub mod deployment;
+pub mod github;
 pub mod manifest;
 pub mod paths;
 pub mod planner;
+pub mod registry;
 pub mod selection;
 pub mod store;
 

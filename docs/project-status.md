@@ -19,7 +19,7 @@ for review. It is not a verified one-click merger for arbitrary modlists.
 | Desktop | Direct library integration, input inspection and merge-review browsing | Commit/export and a durable merge session are not implemented; the CLI workflow does not distribute desktop |
 | GUI migration | `decisions` mode migrates scripted GUI actions to player decisions | `window` and `mixed` are not implemented; generated gameplay has not been checked in game |
 | Runtime tests | Inline annotations and a built-in game runner | Previous native Windows EU4 1.37.5 checks cover isolated per-clause runs; shared sessions, arbitrary dates and hosted Wine CI remain unverified |
-| Native plugins | Package/selection management, runtime staging and a Windows host | Previous Windows startup checks cover Unicode and Menu plugins; the host is unpublished; menu/save behavior, Chinese input/rendering and desktop integration remain unverified |
+| Native plugins | Package/selection management, `gh` install of pinned releases, runtime staging and a Windows host | `foch plugin install` pins Unicode 0.1.15, Menu 0.1.4-experimental and EU4dll 93. A Windows 1.37.5 startup loaded all three: Menu active, EU4dll's log ended `DLL [OK]` with host state unknown, and Unicode refused while `plugin64.dll` was loaded. The registry records that pair in `conflicts_with`. The host is unpublished; menu/save behavior, Chinese input/rendering, a campaign, and desktop integration remain unverified |
 
 The source includes recent lineage, control-flow, culture, empty-override,
 source-ordering and byte-preservation fixes. `common/on_actions` and

@@ -2,8 +2,9 @@
 //!
 //! [`plan`] is pure: given the game identity, the manifests available in the
 //! store, and the user's selection, it resolves versions, checks
-//! compatibility, orders plugins by their declared dependencies and ordering
-//! constraints, and reports every problem it finds. It performs no I/O and
+//! compatibility against each manifest and the central plugin registry, orders
+//! plugins by their declared dependencies and ordering constraints, and
+//! reports every problem it finds. It performs no I/O and
 //! never loads a DLL. The loader executes exactly what it returns; it does not
 //! re-order anything itself.
 //!
@@ -83,7 +84,9 @@ pub enum Diagnostic {
 		requires: String,
 		reason: String,
 	},
-	/// Two enabled plugins declare a mutual conflict.
+	/// A manifest `[[conflicts]]` entry, or one registry `conflicts_with`,
+	/// declares this enabled pair cannot load together. The registry reason
+	/// is that entry's `because`.
 	Conflict {
 		id: String,
 		with: String,
@@ -261,19 +264,34 @@ fn check_dependencies(resolved: &BTreeMap<String, &Manifest>, resolution: &mut R
 			}
 		}
 	}
+	for plugin in super::registry::plugins() {
+		if !resolved.contains_key(&plugin.id) {
+			continue;
+		}
+		for dependency in &plugin.depends_on {
+			if resolved.contains_key(dependency) {
+				continue;
+			}
+			resolution.errors.push(Diagnostic::Dependency {
+				id: plugin.id.clone(),
+				requires: dependency.clone(),
+				reason: "not enabled or not resolvable".into(),
+			});
+		}
+	}
 }
 
 fn check_conflicts(resolved: &BTreeMap<String, &Manifest>, resolution: &mut Resolution) {
-	let mut reported = BTreeSet::new();
+	let mut reported: BTreeSet<(String, String)> = BTreeSet::new();
 	for (id, manifest) in resolved {
 		for conflict in &manifest.conflicts {
 			if let Some(other) = resolved.get(&conflict.id)
 				&& conflict.version.matches(&other.plugin.version)
 			{
-				let pair = if id < &conflict.id {
-					(id, &conflict.id)
+				let pair = if id.as_str() < conflict.id.as_str() {
+					(id.clone(), conflict.id.clone())
 				} else {
-					(&conflict.id, id)
+					(conflict.id.clone(), id.clone())
 				};
 				if reported.insert(pair) {
 					resolution.errors.push(Diagnostic::Conflict {
@@ -282,6 +300,28 @@ fn check_conflicts(resolved: &BTreeMap<String, &Manifest>, resolution: &mut Reso
 						reason: conflict.reason.clone(),
 					});
 				}
+			}
+		}
+	}
+	for plugin in super::registry::plugins() {
+		if !resolved.contains_key(&plugin.id) {
+			continue;
+		}
+		for conflict in &plugin.conflicts_with {
+			if !resolved.contains_key(&conflict.id) {
+				continue;
+			}
+			let pair = if plugin.id.as_str() < conflict.id.as_str() {
+				(plugin.id.clone(), conflict.id.clone())
+			} else {
+				(conflict.id.clone(), plugin.id.clone())
+			};
+			if reported.insert(pair) {
+				resolution.errors.push(Diagnostic::Conflict {
+					id: plugin.id.clone(),
+					with: conflict.id.clone(),
+					reason: Some(conflict.because.clone()),
+				});
 			}
 		}
 	}
@@ -658,6 +698,47 @@ phase = "deferred"
 			&[select("base", "1.0.0"), select("leaf", "1.0.0")],
 		);
 		assert!(!resolution.is_launchable());
+	}
+
+	#[test]
+	fn compatibility_registry_refuses_unicode_with_eu4dll() {
+		let manifests = crate::plugin::builtin::adapters();
+		let store = store(manifests.clone());
+		let version = |id: &str| {
+			manifests
+				.iter()
+				.find(|manifest| manifest.plugin.id == id)
+				.unwrap()
+				.plugin
+				.version
+				.to_string()
+		};
+		let pick = |ids: &[&str]| -> Vec<Selection> {
+			ids.iter().map(|id| select(id, &version(id))).collect()
+		};
+		let unicode = "io.github.yozoratempest.eu4-unicode-patch";
+		let menu = "io.github.yozoratempest.eu4-menu-patch";
+		let eu4dll = "io.github.matanki-saito.eu4dll";
+		let refused = plan(&game(), &store, &pick(&[unicode, eu4dll]));
+		assert!(!refused.is_launchable());
+		let because = crate::plugin::registry::plugins()
+			.iter()
+			.find(|plugin| plugin.id == unicode)
+			.unwrap()
+			.conflicts_with
+			.iter()
+			.find(|conflict| conflict.id == eu4dll)
+			.unwrap()
+			.because
+			.clone();
+		assert!(refused.errors.iter().any(|error| matches!(
+			error,
+			Diagnostic::Conflict { id, with, reason: Some(reason) }
+				if id == unicode && with == eu4dll && reason == &because
+		)));
+		assert!(plan(&game(), &store, &pick(&[unicode, menu])).is_launchable());
+		assert!(plan(&game(), &store, &pick(&[menu, eu4dll])).is_launchable());
+		assert!(!plan(&game(), &store, &pick(&[unicode, menu, eu4dll])).is_launchable());
 	}
 
 	#[test]

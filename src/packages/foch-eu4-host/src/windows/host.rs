@@ -1,6 +1,9 @@
 //! The frozen plan and all native callback storage live until process exit.
 
-use super::{MODULE, gate};
+use super::{
+	MODULE, gate, link,
+	query::{executable, readable},
+};
 use crate::plan::{self, Kind, Phase, Plan, PlannedPlugin, StatusMode};
 use foch_plugin_abi::{self as abi, FochHostApi, FochStatus, FochStr};
 use serde_json::{Value, json};
@@ -35,11 +38,6 @@ use windows_sys::Win32::{
 			GetModuleFileNameW, GetModuleHandleExW, GetProcAddress,
 			LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 		},
-		Memory::{
-			MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-			PAGE_EXECUTE_WRITECOPY, PAGE_GUARD, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE,
-			PAGE_WRITECOPY, VirtualQuery,
-		},
 		Threading::GetCurrentProcessId,
 	},
 };
@@ -51,6 +49,7 @@ struct Runtime {
 	states: Mutex<BTreeMap<String, i32>>,
 	exe_hash: String,
 	exe_size: usize,
+	linker: Mutex<link::Linker>,
 }
 
 #[repr(C)]
@@ -235,6 +234,7 @@ fn prepare(root: &Path, module: HMODULE, exe_size: usize) -> Result<(), String> 
 		states: Mutex::new(BTreeMap::new()),
 		exe_hash,
 		exe_size,
+		linker: Mutex::new(link::Linker::new()),
 	}));
 	let pending = load_phase(runtime, Phase::Entry);
 	if pending.is_empty()
@@ -385,11 +385,11 @@ fn context(runtime: &'static Runtime, plugin: &'static PlannedPlugin) -> &'stati
 		dir,
 		config_json,
 		plugin_state,
-		find_pattern: unsupported_pattern,
-		hook_create: unsupported_hook,
-		hook_set_enabled: unsupported_hook_toggle,
-		patch_create: unsupported_patch,
-		patch_set_enabled: unsupported_patch_toggle,
+		find_pattern,
+		hook_create,
+		hook_set_enabled,
+		patch_create,
+		patch_set_enabled,
 	};
 	Box::leak(Box::new(Context {
 		api,
@@ -405,7 +405,27 @@ fn context(runtime: &'static Runtime, plugin: &'static PlannedPlugin) -> &'stati
 	}))
 }
 
+struct CloseInit<'a>(&'a Mutex<link::Linker>);
+
+impl Drop for CloseInit<'_> {
+	fn drop(&mut self) {
+		self.0
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.open_init(false);
+	}
+}
+
 fn load_phase(runtime: &'static Runtime, phase: Phase) -> Vec<Pending> {
+	// The prologue jump is installed only while entry init is on this thread.
+	let _entry = (phase == Phase::Entry).then(|| {
+		runtime
+			.linker
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.open_init(true);
+		CloseInit(&runtime.linker)
+	});
 	let mut pending = Vec::new();
 	for plugin in runtime.plan.plugins.iter().filter(|p| p.phase == phase) {
 		let ctx = context(runtime, plugin);
@@ -553,55 +573,6 @@ unsafe fn native_api(api: *const abi::FochPluginApi) -> Result<(Init, Status), S
 		return Err("native callback does not point to executable memory".into());
 	}
 	Ok((init, status))
-}
-
-fn executable(ptr: *const c_void) -> bool {
-	let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-	let queried = unsafe { VirtualQuery(ptr, &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) };
-	queried != 0
-		&& info.State == MEM_COMMIT
-		&& info.Protect & (PAGE_GUARD | PAGE_NOACCESS) == 0
-		&& info.Protect & 0xf0 != 0
-}
-
-fn readable(ptr: *const u8, len: usize) -> bool {
-	if ptr.is_null() {
-		return false;
-	}
-	let Some(end) = (ptr as usize).checked_add(len) else {
-		return false;
-	};
-	let mut at = ptr as usize;
-	while at < end {
-		let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-		if unsafe {
-			VirtualQuery(
-				at as *const c_void,
-				&mut info,
-				size_of::<MEMORY_BASIC_INFORMATION>(),
-			)
-		} == 0 || info.State != MEM_COMMIT
-			|| info.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0
-			|| !matches!(
-				info.Protect & 0xff,
-				PAGE_READONLY
-					| PAGE_READWRITE
-					| PAGE_WRITECOPY
-					| PAGE_EXECUTE_READ
-					| PAGE_EXECUTE_READWRITE
-					| PAGE_EXECUTE_WRITECOPY
-			) {
-			return false;
-		}
-		let Some(next) = (info.BaseAddress as usize).checked_add(info.RegionSize) else {
-			return false;
-		};
-		if next <= at {
-			return false;
-		}
-		at = next;
-	}
-	true
 }
 
 enum Source {
@@ -826,75 +797,96 @@ unsafe extern "C" fn plugin_state(host: *const FochHostApi, id: FochStr) -> i32 
 		.unwrap_or(0)
 }
 
-// The draft SDK reserved shared-hook slots. Keep its published layout; the
-// first-version design excludes these services and returns E_UNSUPPORTED.
-unsafe extern "C" fn unsupported_pattern(
-	_: *const FochHostApi,
-	_: FochStr,
+fn linker(ctx: &Context) -> std::sync::MutexGuard<'_, link::Linker> {
+	ctx.runtime
+		.linker
+		.lock()
+		.unwrap_or_else(|error| error.into_inner())
+}
+
+unsafe extern "C" fn find_pattern(
+	host: *const FochHostApi,
+	pattern: FochStr,
 	address: *mut *mut c_void,
 ) -> i32 {
-	if !address.is_null() {
-		unsafe {
-			*address = std::ptr::null_mut();
-		}
+	if address.is_null() {
+		return abi::result::E_INVALID;
 	}
-	abi::result::E_UNSUPPORTED
+	unsafe { *address = std::ptr::null_mut() };
+	let Some(ctx) = (unsafe { from_host(host) }) else {
+		return abi::result::E_INVALID;
+	};
+	let Ok(Some(text)) = (unsafe { text(pattern) }) else {
+		return abi::result::E_INVALID;
+	};
+	link::find_in_module(ctx.runtime.exe_size, &text, address)
 }
-unsafe extern "C" fn unsupported_hook(
-	_: *const FochHostApi,
-	_: *mut c_void,
-	_: *mut c_void,
-	_: i32,
+
+unsafe extern "C" fn hook_create(
+	host: *const FochHostApi,
+	target: *mut c_void,
+	detour: *mut c_void,
+	priority: i32,
 	next: *mut *const *const c_void,
 	hook: *mut *mut abi::FochHook,
 ) -> i32 {
-	if !next.is_null() {
-		unsafe {
-			*next = std::ptr::null();
+	let Some(ctx) = (unsafe { from_host(host) }) else {
+		if !next.is_null() {
+			unsafe { *next = std::ptr::null() };
 		}
-	}
-	if !hook.is_null() {
-		unsafe {
-			*hook = std::ptr::null_mut();
+		if !hook.is_null() {
+			unsafe { *hook = std::ptr::null_mut() };
 		}
-	}
-	abi::result::E_UNSUPPORTED
+		return abi::result::E_INVALID;
+	};
+	linker(ctx).hook_create(target, detour, priority, next, hook)
 }
-unsafe extern "C" fn unsupported_hook_toggle(
-	_: *const FochHostApi,
-	_: *mut abi::FochHook,
-	_: i32,
+
+unsafe extern "C" fn hook_set_enabled(
+	host: *const FochHostApi,
+	hook: *mut abi::FochHook,
+	enabled: i32,
 ) -> i32 {
-	abi::result::E_UNSUPPORTED
+	let Some(ctx) = (unsafe { from_host(host) }) else {
+		return abi::result::E_INVALID;
+	};
+	linker(ctx).hook_set_enabled(hook, enabled)
 }
-unsafe extern "C" fn unsupported_patch(
-	_: *const FochHostApi,
-	_: *mut c_void,
-	_: *const u8,
-	_: usize,
+
+unsafe extern "C" fn patch_create(
+	host: *const FochHostApi,
+	address: *mut c_void,
+	bytes: *const u8,
+	len: usize,
 	patch: *mut *mut abi::FochPatch,
 ) -> i32 {
-	if !patch.is_null() {
-		unsafe {
-			*patch = std::ptr::null_mut();
+	let Some(ctx) = (unsafe { from_host(host) }) else {
+		if !patch.is_null() {
+			unsafe { *patch = std::ptr::null_mut() };
 		}
-	}
-	abi::result::E_UNSUPPORTED
+		return abi::result::E_INVALID;
+	};
+	linker(ctx).patch_create(address, bytes, len, patch)
 }
-unsafe extern "C" fn unsupported_patch_toggle(
-	_: *const FochHostApi,
-	_: *mut abi::FochPatch,
-	_: i32,
+
+unsafe extern "C" fn patch_set_enabled(
+	host: *const FochHostApi,
+	patch: *mut abi::FochPatch,
+	enabled: i32,
 ) -> i32 {
-	abi::result::E_UNSUPPORTED
+	let Some(ctx) = (unsafe { from_host(host) }) else {
+		return abi::result::E_INVALID;
+	};
+	linker(ctx).patch_set_enabled(patch, enabled)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use windows_sys::Win32::System::Memory::{
-		MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-		PAGE_READONLY, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
+		MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ,
+		PAGE_EXECUTE_READWRITE, PAGE_GUARD, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE,
+		VirtualAlloc, VirtualFree, VirtualProtect,
 	};
 
 	#[test]
@@ -953,6 +945,7 @@ mod tests {
 			states: Mutex::new(BTreeMap::new()),
 			exe_hash: String::new(),
 			exe_size: 0,
+			linker: Mutex::new(link::Linker::new()),
 		}));
 		let ctx = context(runtime, &runtime.plan.plugins[0]);
 		let mut pending = Pending {

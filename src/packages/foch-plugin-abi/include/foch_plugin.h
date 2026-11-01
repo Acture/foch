@@ -111,9 +111,13 @@ struct FochHostApi {
 	/*
 	 * Shared code services. Every plugin that changes eu4.exe through these
 	 * is visible to the host, so overlapping changes are reported instead of
-	 * silently corrupting each other.
-	 * These slots are reserved in the first-version loading host, which
-	 * returns FOCH_E_UNSUPPORTED. Plugins must check service return codes.
+	 * silently corrupting each other. Plugins must check service return codes.
+	 *
+	 * find_pattern reads executable sections only. hook_create chains every
+	 * detour on one target. The 14-byte prologue jump is written on the first
+	 * enable during entry init; a later plugin joins that chain and does not
+	 * patch the function start. An unrelocatable prologue, or a first jump
+	 * after entry init, returns FOCH_E_UNSUPPORTED.
 	 */
 
 	/* Find the unique match of a pattern such as "48 8B ?? 05 ?" in the

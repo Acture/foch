@@ -71,6 +71,8 @@ pub enum PluginCommand {
 	List(PluginListArgs),
 	/// Import a plugin package from an extracted directory into the store.
 	Import(PluginImportArgs),
+	/// Download a pinned GitHub release with gh and install it. Does not enable it.
+	Install(PluginInstallArgs),
 	/// Enable a plugin for a playset, pinned to an installed version.
 	Enable(PluginToggleArgs),
 	/// Disable a plugin for a playset.
@@ -100,6 +102,16 @@ pub struct PluginImportArgs {
 	/// Bind an upstream release directory to a built-in legacy adapter.
 	#[arg(long, value_name = "PLUGIN_ID")]
 	pub adapter: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PluginInstallArgs {
+	/// owner/repo, a github.com URL, or a built-in plugin id.
+	#[arg(value_name = "SPEC")]
+	pub spec: Option<String>,
+	/// Install every registered GitHub release.
+	#[arg(long)]
+	pub all: bool,
 }
 
 #[derive(Parser, Debug)]
