@@ -1,0 +1,60 @@
+# Foch adapter manifest for EU4dll (matanki-saito plugin64.dll). The upstream
+# package is unchanged. Structural facts were read from release 93, tag `93`,
+# asset steam_EU4_fixdll_build_93.zip, and options.cpp at that tag.
+#
+# The DLL initializes inside DllMain and exports no status function. The host
+# records unknown after it loads. File digests are filled when the release is
+# installed. The store version is 93.0.0 because the GitHub tag is not semver.
+schema = 1
+
+# options.cpp joins GetModuleFileName(NULL) with plugins\plugin.ini.
+exe_relative = ["plugins/plugin.ini"]
+
+[plugin]
+id = "io.github.matanki-saito.eu4dll"
+name = "EU4dll"
+version = "93.0.0"
+authors = ["matanki-saito"]
+license = "MIT"
+description = "Upstream EU4dll release 93 (plugin64.dll), stored as version 93.0.0."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = ">=1.29, <=1.37.5"
+
+[entry]
+kind = "legacy"
+path = "plugins/plugin64.dll"
+phase = "entry"
+
+[lifecycle]
+restart_required = true
+
+[config.error_test]
+type = "bool"
+default = false
+description = "ERROR_TEST. The shipped plugin.ini leaves this off."
+adapter = { ini = "plugins/plugin.ini", section = "options", key = "ERROR_TEST", yes = "yes", no = "no" }
+
+[config.separate_character_code_point]
+type = "int"
+default = 38936
+min = 0
+max = 1114111
+description = "SEPARATE_CHARACTER_CODE_POINT. The shipped ini uses 38936; the DLL falls back to 32 only when the key is absent."
+adapter = { ini = "plugins/plugin.ini", section = "options", key = "SEPARATE_CHARACTER_CODE_POINT" }
+
+[config.reversing_words_battle_of_area]
+type = "bool"
+default = true
+description = "REVERSING_WORDS_BATTLE_OF_AREA."
+adapter = { ini = "plugins/plugin.ini", section = "options", key = "REVERSING_WORDS_BATTLE_OF_AREA", yes = "yes", no = "no" }
+
+[config.line_break_buffer_width]
+type = "int"
+default = 5
+min = 0
+max = 64
+description = "LINE_BREAK_BUFFER_WIDTH."
+adapter = { ini = "plugins/plugin.ini", section = "options", key = "LINE_BREAK_BUFFER_WIDTH" }

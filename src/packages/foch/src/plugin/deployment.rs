@@ -405,6 +405,7 @@ impl Deployment {
 				store::create_package_file(&destination, &file.data)?;
 			}
 			write_config(&root, manifest, &package.config)?;
+			publish_exe_relative(&runtime, &root, manifest)?;
 			let entry = package
 				.validated
 				.entries()
@@ -594,7 +595,7 @@ fn write_config(root: &Path, manifest: &Manifest, config: &Value) -> io::Result<
 		}
 		let value = match &config[name] {
 			Value::String(value) => value.clone(),
-			Value::Bool(value) => if *value { "1" } else { "0" }.into(),
+			Value::Bool(value) => bool_ini(*value, adapter)?,
 			other => other.to_string(),
 		};
 		if value.contains(['\r', '\n', '\0']) {
@@ -617,6 +618,47 @@ fn write_config(root: &Path, manifest: &Manifest, config: &Value) -> io::Result<
 			fs::create_dir_all(parent)?;
 		}
 		store::replace_package_file(&path, update_ini(&text, changes).as_bytes())?;
+	}
+	Ok(())
+}
+
+fn bool_ini(value: bool, adapter: &super::manifest::ConfigAdapter) -> io::Result<String> {
+	match (value, adapter.yes.as_deref(), adapter.no.as_deref()) {
+		(true, Some(text), Some(_)) => Ok(text.to_string()),
+		(false, Some(_), Some(text)) => Ok(text.to_string()),
+		(_, None, None) => Ok(if value { "1" } else { "0" }.into()),
+		_ => Err(io::Error::other(
+			"bool INI adapter must set both yes and no, or neither",
+		)),
+	}
+}
+
+/// Copy manifest `exe_relative` files from the staged package to the runtime
+/// root. The copy happens after INI updates, and an existing destination fails.
+fn publish_exe_relative(
+	runtime: &Path,
+	package_root: &Path,
+	manifest: &Manifest,
+) -> io::Result<()> {
+	for relative in &manifest.exe_relative {
+		let relative = store::safe_relative(relative).map_err(io::Error::other)?;
+		let source = package_root.join(&relative);
+		let bytes = store::read_package_file(&source)?;
+		let destination = runtime.join(&relative);
+		match fs::symlink_metadata(&destination) {
+			Ok(_) => {
+				return Err(io::Error::other(format!(
+					"{}: exe-relative path {relative} is already in the runtime",
+					manifest.plugin.id
+				)));
+			}
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error),
+		}
+		if let Some(parent) = destination.parent() {
+			fs::create_dir_all(parent)?;
+		}
+		store::create_package_file(&destination, &bytes)?;
 	}
 	Ok(())
 }
@@ -1029,6 +1071,85 @@ mod tests {
 		assert!(text.contains("other=yes\n"));
 		assert!(text.contains("typo_tolerance=2\n"));
 		assert!(!text.contains("typo_tolerance=0"));
+	}
+
+	#[test]
+	fn eu4dll_bools_publish_yes_no_at_the_executable_relative_ini() {
+		let scratch = tempfile::tempdir().unwrap();
+		let package = scratch.path().join("package");
+		let runtime = scratch.path().join("runtime");
+		fs::create_dir_all(&package).unwrap();
+		fs::create_dir_all(&runtime).unwrap();
+		let manifest = super::super::builtin::adapter("io.github.matanki-saito.eu4dll").unwrap();
+		let ini = package.join("plugins/plugin.ini");
+		fs::create_dir_all(ini.parent().unwrap()).unwrap();
+		fs::write(
+			&ini,
+			"[options]\nERROR_TEST=yes\n;note=keep\nSEPARATE_CHARACTER_CODE_POINT=32\nREVERSING_WORDS_BATTLE_OF_AREA=no\nLINE_BREAK_BUFFER_WIDTH=9\n",
+		)
+		.unwrap();
+		let config = effective_config(&manifest, &json!({})).unwrap();
+		write_config(&package, &manifest, &config).unwrap();
+		publish_exe_relative(&runtime, &package, &manifest).unwrap();
+		let published = fs::read_to_string(runtime.join("plugins/plugin.ini")).unwrap();
+		assert!(published.contains("ERROR_TEST=no\n"), "{published}");
+		assert!(
+			published.contains("REVERSING_WORDS_BATTLE_OF_AREA=yes\n"),
+			"{published}"
+		);
+		assert!(
+			published.contains("SEPARATE_CHARACTER_CODE_POINT=38936\n"),
+			"{published}"
+		);
+		assert!(
+			published.contains("LINE_BREAK_BUFFER_WIDTH=5\n"),
+			"{published}"
+		);
+		assert!(published.contains(";note=keep\n"), "{published}");
+		assert!(
+			!published.contains("=0\n") && !published.contains("=1\n"),
+			"{published}"
+		);
+		let before = published.clone();
+		assert!(publish_exe_relative(&runtime, &package, &manifest).is_err());
+		assert_eq!(
+			fs::read_to_string(runtime.join("plugins/plugin.ini")).unwrap(),
+			before
+		);
+	}
+
+	#[test]
+	fn bool_adapters_without_words_still_write_one_and_zero() {
+		let manifest = Manifest::parse(
+			r#"
+schema = 1
+[plugin]
+id = "example.flag"
+name = "Flag"
+version = "1.0.0"
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "*"
+[entry]
+kind = "legacy"
+path = "example.dll"
+phase = "entry"
+[config.flag]
+type = "bool"
+default = true
+adapter = { ini = "config.ini", section = "options", key = "flag" }
+"#,
+		)
+		.unwrap();
+		let root = tempfile::tempdir().unwrap();
+		write_config(root.path(), &manifest, &manifest.default_config()).unwrap();
+		assert_eq!(
+			fs::read_to_string(root.path().join("config.ini"))
+				.unwrap()
+				.trim(),
+			"[options]\nflag=1"
+		);
 	}
 
 	#[test]

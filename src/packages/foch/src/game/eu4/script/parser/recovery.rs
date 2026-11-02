@@ -1499,7 +1499,9 @@ mod tests {
 		);
 		let text = written(source, &parsed);
 		assert!(text.contains("italienisch = { #Germanic"), "{text}");
-		assert!(text.contains("khitan = {\n"), "{text}");
+		// The fixture keeps the checkout's newlines, so the brace only has to
+		// end the line.
+		assert!(text.lines().any(|line| line == "\tkhitan = {"), "{text}");
 	}
 
 	#[test]

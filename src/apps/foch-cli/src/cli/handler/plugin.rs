@@ -6,8 +6,8 @@
 
 use super::HandlerResult;
 use crate::cli::arg::{
-	CheckOutputFormat, PluginArgs, PluginCommand, PluginImportArgs, PluginLaunchArgs,
-	PluginListArgs, PluginPlanArgs, PluginStatusArgs, PluginToggleArgs,
+	CheckOutputFormat, PluginArgs, PluginCommand, PluginImportArgs, PluginInstallArgs,
+	PluginLaunchArgs, PluginListArgs, PluginPlanArgs, PluginStatusArgs, PluginToggleArgs,
 };
 use foch::game::eu4::Eu4;
 use foch::game::eu4::base::snapshot::{data_root, detect_game_version, resolve_game_root};
@@ -23,6 +23,7 @@ pub fn handle_plugin(args: &PluginArgs, config: Config) -> HandlerResult {
 	match &args.command {
 		PluginCommand::List(list) => list_plugins(list, &config),
 		PluginCommand::Import(import) => import_plugin(import, &config),
+		PluginCommand::Install(install) => install_plugins(install, &config),
 		PluginCommand::Enable(toggle) => set_enabled(toggle, true),
 		PluginCommand::Disable(toggle) => set_enabled(toggle, false),
 		PluginCommand::Plan(plan) => plan_launch(plan, &config),
@@ -183,6 +184,120 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 		});
 	}
 	Ok(entries)
+}
+
+fn install_plugins(args: &PluginInstallArgs, config: &Config) -> HandlerResult {
+	let releases: Vec<&plugin::github::Release> = match (args.spec.as_deref(), args.all) {
+		(Some(spec), false) => vec![plugin::github::resolve(spec)?],
+		(None, true) => plugin::github::releases().iter().collect(),
+		(Some(_), true) => {
+			return Err("pass a plugin spec or --all, not both".into());
+		}
+		(None, false) => return Err("pass a plugin spec or --all".into()),
+	};
+	let data_root = data_root();
+	let game_root = resolve_game_root(config, &Eu4);
+	for release in releases {
+		install_release(release, &data_root, game_root.as_deref())?;
+	}
+	Ok(0)
+}
+
+fn install_release(
+	release: &plugin::github::Release,
+	data_root: &Path,
+	game_root: Option<&Path>,
+) -> HandlerResult {
+	let download_dir = fresh_download_dir()?;
+	let gh = std::process::Command::new("gh")
+		.args(plugin::github::download_args(release, &download_dir.0))
+		.output()
+		.map_err(|error| -> Box<dyn std::error::Error> {
+			if error.kind() == std::io::ErrorKind::NotFound {
+				"gh was not found on PATH. Install GitHub CLI to download plugin releases.".into()
+			} else {
+				format!("could not run gh: {error}").into()
+			}
+		})?;
+	if !gh.status.success() {
+		let stderr = String::from_utf8_lossy(&gh.stderr);
+		return Err(format!(
+			"gh release download failed for {}@{}: {stderr}",
+			release.repo, release.tag
+		)
+		.into());
+	}
+	let asset = download_dir.0.join(&release.asset);
+	let bytes = store::read_package_file(&asset).map_err(|_| {
+		std::io::Error::other(format!(
+			"gh did not write {} for {}@{}",
+			release.asset, release.repo, release.tag
+		))
+	})?;
+	let validated = plugin::github::package_from_zip(&bytes, release)?;
+	let destination = store::version_dir(&data_root.join("plugins/store"), &validated);
+	for source in std::iter::once(download_dir.0.as_path()).chain(game_root) {
+		plugin::deployment::ensure_outside_game(source, data_root)?;
+		plugin::deployment::ensure_outside_game(source, &destination)?;
+	}
+	let store_root = plugin::paths::prepare_store_root(data_root)?;
+	let id = &validated.manifest.plugin.id;
+	let version = &validated.manifest.plugin.version;
+	match plugin::install(&store_root, &validated)? {
+		plugin::Installed::New(path) => {
+			println!(
+				"Installed {id} {version} from {}@{} into {}",
+				release.repo,
+				release.tag,
+				path.display()
+			);
+		}
+		plugin::Installed::AlreadyPresent(path) => {
+			println!(
+				"{id} {version} from {}@{} is already in the store ({})",
+				release.repo,
+				release.tag,
+				path.display()
+			);
+		}
+	}
+	for conflict in &validated.manifest.conflicts {
+		println!(
+			"Conflicts with {} ({})",
+			conflict.id,
+			conflict.reason.as_deref().unwrap_or("overlapping hooks")
+		);
+	}
+	println!("Enable it with: foch plugin enable {id} --playset default --version {version}");
+	Ok(0)
+}
+
+struct DownloadDir(PathBuf);
+
+impl Drop for DownloadDir {
+	fn drop(&mut self) {
+		let _ = std::fs::remove_dir_all(&self.0);
+	}
+}
+
+fn fresh_download_dir() -> std::io::Result<DownloadDir> {
+	let nanos = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|duration| duration.as_nanos())
+		.unwrap_or(0);
+	let parent = std::env::temp_dir().join("foch-plugin-install");
+	std::fs::create_dir_all(&parent)?;
+	for salt in 0..16 {
+		let path = parent.join(format!("{}-{nanos}-{salt}", std::process::id()));
+		match std::fs::create_dir(&path) {
+			Ok(()) => return Ok(DownloadDir(path)),
+			Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+			Err(error) => return Err(error),
+		}
+	}
+	Err(std::io::Error::other(
+		"could not create a plugin download directory",
+	))
 }
 
 fn set_enabled(args: &PluginToggleArgs, enabled: bool) -> HandlerResult {

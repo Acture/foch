@@ -7,12 +7,48 @@ pub(crate) struct Image {
 }
 
 pub(crate) const GATE_BYTES: usize = 14;
+const EXECUTE: usize = 0x20000000;
+
+struct Section {
+	start: usize,
+	len: usize,
+	characteristics: usize,
+}
+
+pub(crate) fn fits_page(address: usize, len: usize, page_size: usize) -> bool {
+	len > 0 && page_size >= len && address % page_size <= page_size - len
+}
 
 pub(crate) fn gate_fits_page(address: usize, page_size: usize) -> bool {
-	page_size >= GATE_BYTES && address % page_size <= page_size - GATE_BYTES
+	fits_page(address, GATE_BYTES, page_size)
 }
 
 pub(crate) fn inspect(headers: &[u8]) -> Result<Image, &'static str> {
+	let (entry, size, sections) = sections(headers)?;
+	let gate_end = entry.checked_add(GATE_BYTES).ok_or("entry overflow")?;
+	let executable_entry = sections.iter().any(|section| {
+		section.characteristics & EXECUTE != 0
+			&& entry >= section.start
+			&& gate_end <= section.start + section.len
+	});
+	if entry == 0 || !executable_entry {
+		return Err("entry gate is outside executable section bounds");
+	}
+	Ok(Image { entry, size })
+}
+
+/// Virtual ranges of sections marked executable. Non-executable sections,
+/// including `.rdata`, are omitted.
+pub(crate) fn executable_ranges(headers: &[u8]) -> Result<Vec<(usize, usize)>, &'static str> {
+	let (_, _, sections) = sections(headers)?;
+	Ok(sections
+		.into_iter()
+		.filter(|section| section.characteristics & EXECUTE != 0 && section.len > 0)
+		.map(|section| (section.start, section.len))
+		.collect())
+}
+
+fn sections(headers: &[u8]) -> Result<(usize, usize, Vec<Section>), &'static str> {
 	let word = |at: usize| -> Result<u16, &'static str> {
 		let bytes = headers.get(at..at + 2).ok_or("truncated PE header")?;
 		Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
@@ -38,28 +74,26 @@ pub(crate) fn inspect(headers: &[u8]) -> Result<Image, &'static str> {
 	}
 	let size = dword(nt + 24 + 56)?;
 	let entry = dword(nt + 24 + 16)?;
-	let sections = nt + 24 + optional_size;
-	if headers.get(sections..sections + count * 40).is_none() {
+	let table = nt + 24 + optional_size;
+	if headers.get(table..table + count * 40).is_none() {
 		return Err("truncated section table");
 	}
-	let gate_end = entry.checked_add(GATE_BYTES).ok_or("entry overflow")?;
-	let mut executable_entry = false;
+	let mut sections = Vec::with_capacity(count);
 	for i in 0..count {
-		let at = sections + i * 40;
+		let at = table + i * 40;
 		let len = dword(at + 8)?;
 		let start = dword(at + 12)?;
 		let end = start.checked_add(len).ok_or("section overflow")?;
 		if end > size {
 			return Err("section outside image");
 		}
-		if dword(at + 36)? & 0x20000000 != 0 && entry >= start && gate_end <= end {
-			executable_entry = true;
-		}
+		sections.push(Section {
+			start,
+			len,
+			characteristics: dword(at + 36)?,
+		});
 	}
-	if entry == 0 || !executable_entry {
-		return Err("entry gate is outside executable section bounds");
-	}
-	Ok(Image { entry, size })
+	Ok((entry, size, sections))
 }
 
 #[cfg(test)]
@@ -107,6 +141,18 @@ mod tests {
 		let mut b = headers();
 		b[60..64].copy_from_slice(&u32::MAX.to_le_bytes());
 		assert!(inspect(&b).is_err());
+	}
+
+	#[test]
+	fn executable_ranges_skip_rdata() {
+		let mut b = headers();
+		b[70..72].copy_from_slice(&2u16.to_le_bytes());
+		b[368..372].copy_from_slice(b".dat");
+		b[376..380].copy_from_slice(&0x100u32.to_le_bytes());
+		b[380..384].copy_from_slice(&0x2000u32.to_le_bytes());
+		b[404..408].copy_from_slice(&0x40000040u32.to_le_bytes());
+		assert_eq!(executable_ranges(&b).unwrap(), vec![(0x1000, 0x100)]);
+		assert!(inspect(&b).is_ok());
 	}
 
 	#[test]
