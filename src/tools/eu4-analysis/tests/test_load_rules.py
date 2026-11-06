@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import json
 import unittest
 from dataclasses import asdict, replace
+
+from test_analysis import FakeAnalysis, function, instruction, invoke, literal
+from test_catalog import fixture, symbol
 
 from eu4_analysis.catalog import CatalogDiscovery, discover_catalog
 from eu4_analysis.load_rules import (
 	FileSelection,
 	LoadRules,
+	RuleBuild,
 	directory_roots,
 	discover_load_rules,
+	parse_rules,
+	with_prior_build,
 )
 from eu4_analysis.models import FunctionEvidence
-from test_analysis import FakeAnalysis, function, instruction, invoke, literal
-from test_catalog import fixture, symbol
 
 
 def directories() -> tuple[FunctionEvidence, FunctionEvidence]:
@@ -49,7 +54,7 @@ def discover(analysis: FakeAnalysis) -> LoadRules:
 	catalog: CatalogDiscovery = discover_catalog(
 		analysis, "a" * 64, game_version="test"
 	)
-	return discover_load_rules(analysis, catalog)
+	return discover_load_rules(analysis, catalog, platform="macos")
 
 
 class LoadRuleTests(unittest.TestCase):
@@ -73,9 +78,7 @@ class LoadRuleTests(unittest.TestCase):
 				)
 			},
 		)
-		self.assertEqual(
-			set(asdict(rules)), {"game_version", "binary_sha256", "databases"}
-		)
+		self.assertEqual(set(asdict(rules)), {"game_version", "builds", "databases"})
 		self.assertEqual(
 			set(asdict(rules)["databases"]["CThingDatabase"][0]), {"directory", "files"}
 		)
@@ -151,12 +154,35 @@ class LoadRuleTests(unittest.TestCase):
 			analysis, "a" * 64, game_version="test", limit=1
 		)
 		with self.assertRaisesRegex(ValueError, "partial scan"):
-			discover_load_rules(analysis, catalog)
+			discover_load_rules(analysis, catalog, platform="macos")
 
 	def test_unresolved_enum_layout_is_not_guessed(self) -> None:
 		constructor, getter = directories()
 		with self.assertRaisesRegex(ValueError, "one string member"):
 			directory_roots(constructor, replace(getter, instructions=()))
+
+	def test_a_build_that_agrees_extends_the_provenance(self) -> None:
+		rules: LoadRules = discover(analysis_fixture())
+		prior: LoadRules = replace(rules, builds=(RuleBuild("macos", "b" * 64),))
+		merged: LoadRules = with_prior_build(
+			replace(rules, builds=(RuleBuild("windows", "c" * 64),)), prior
+		)
+		self.assertEqual(
+			merged.builds,
+			(RuleBuild("macos", "b" * 64), RuleBuild("windows", "c" * 64)),
+		)
+		self.assertEqual(parse_rules(json.dumps(asdict(merged))), merged)
+
+	def test_a_build_that_disagrees_is_not_written_over(self) -> None:
+		rules: LoadRules = discover(analysis_fixture())
+		prior: LoadRules = replace(rules, builds=(RuleBuild("macos", "b" * 64),))
+		divergent: LoadRules = replace(
+			rules, databases={**rules.databases, "COtherDatabase": ()}
+		)
+		with self.assertRaisesRegex(ValueError, "disagree"):
+			with_prior_build(divergent, prior)
+		with self.assertRaisesRegex(ValueError, "another game version"):
+			with_prior_build(replace(rules, game_version="other"), prior)
 
 
 if __name__ == "__main__":

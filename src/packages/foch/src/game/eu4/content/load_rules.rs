@@ -1,7 +1,7 @@
 use crate::model::{GamePath, GamePathBuf};
 use globset::{Candidate, GlobBuilder, GlobMatcher};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 const RULES_1_37_5: &str = include_str!("rules/1.37.5.json");
@@ -9,7 +9,49 @@ const RULES_1_37_5: &str = include_str!("rules/1.37.5.json");
 #[derive(Deserialize)]
 struct RuleFile {
 	game_version: String,
-	databases: BTreeMap<String, Vec<FileSelection>>,
+	/// The executable builds the rules were verified against. Builds of one
+	/// game version come from the same engine source, so one version's rules
+	/// are a single semantic artifact and this list records the provenance;
+	/// a build that ever disagrees is split into its own rule file instead.
+	builds: Vec<RuleBuild>,
+	/// Each database as written: a bare list of its directories, or an object
+	/// that also records how a name two of them share resolves. Reading the
+	/// raw value keeps the inner error (such as an invalid game path) instead
+	/// of an untagged enum's "matched no variant".
+	databases: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct RuleBuild {
+	platform: String,
+	binary_sha256: String,
+}
+
+/// A database whose directories are listed, plus the established handling of
+/// a name two of them share.
+#[derive(Deserialize)]
+struct DetailedDatabaseRule {
+	directories: Vec<FileSelection>,
+	same_name: SameNameRule,
+}
+
+#[derive(Deserialize)]
+struct SameNameRule {
+	/// How a name two directories of the database both define resolves. The
+	/// one recorded resolution: the later-registered directory's entry is the
+	/// one lookups return.
+	resolution: SameNameResolution,
+	/// The directories in the order the executable registers them.
+	registration_order: Vec<GamePathBuf>,
+	/// What established the resolution — the binary and the functions read —
+	/// so a rule never reads as a guess.
+	evidence: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SameNameResolution {
+	LaterDirectoryWins,
 }
 
 #[derive(Deserialize)]
@@ -24,6 +66,7 @@ struct FileSelection {
 struct DatabaseSelection {
 	name: String,
 	files: Vec<(GamePathBuf, GlobMatcher)>,
+	same_name: Option<SameNameRule>,
 }
 
 pub(crate) struct DatabaseLoadRules {
@@ -34,8 +77,42 @@ pub(crate) struct DatabaseLoadRules {
 impl DatabaseLoadRules {
 	fn parse(json: &str) -> Result<Self, String> {
 		let file: RuleFile = serde_json::from_str(json).map_err(|error| error.to_string())?;
+		for build in &file.builds {
+			if !matches!(build.platform.as_str(), "macos" | "windows" | "linux")
+				|| build.binary_sha256.len() != 64
+				|| !build
+					.binary_sha256
+					.bytes()
+					.all(|byte| byte.is_ascii_hexdigit())
+			{
+				return Err(format!(
+					"rule build provenance is malformed: {} {}",
+					build.platform, build.binary_sha256
+				));
+			}
+		}
+		if file.builds.is_empty() {
+			return Err("rule file records no verifying build".to_string());
+		}
 		let mut databases: Vec<DatabaseSelection> = Vec::new();
-		for (name, selections) in file.databases {
+		for (name, rule) in file.databases {
+			let (selections, same_name) = match rule {
+				serde_json::Value::Array(_) => {
+					let selections: Vec<FileSelection> =
+						serde_json::from_value(rule).map_err(|error| error.to_string())?;
+					(selections, None)
+				}
+				serde_json::Value::Object(_) => {
+					let detailed: DetailedDatabaseRule =
+						serde_json::from_value(rule).map_err(|error| error.to_string())?;
+					(detailed.directories, Some(detailed.same_name))
+				}
+				_ => {
+					return Err(format!(
+						"rule for database {name} is neither a directory list nor a detailed rule"
+					));
+				}
+			};
 			let mut files: Vec<(GamePathBuf, GlobMatcher)> = Vec::new();
 			for selection in selections {
 				let matcher: GlobMatcher = GlobBuilder::new(&selection.files)
@@ -46,7 +123,30 @@ impl DatabaseLoadRules {
 					.compile_matcher();
 				files.push((selection.directory, matcher));
 			}
-			databases.push(DatabaseSelection { name, files });
+			if let Some(same_name) = &same_name {
+				// The order must place every directory exactly once: a
+				// directory it misses would leave that pair's repeat as
+				// unresolvable as a database with no rule at all.
+				let directories: BTreeSet<_> = files
+					.iter()
+					.map(|(directory, _)| directory.as_game_path())
+					.collect();
+				let ordered: BTreeSet<_> = same_name
+					.registration_order
+					.iter()
+					.map(|directory| directory.as_game_path())
+					.collect();
+				if directories != ordered || same_name.evidence.trim().is_empty() {
+					return Err(format!(
+						"same-name rule for {name} is malformed: the registration order must cover the database's directories exactly and cite its evidence"
+					));
+				}
+			}
+			databases.push(DatabaseSelection {
+				name,
+				files,
+				same_name,
+			});
 		}
 		Ok(Self {
 			game_version: file.game_version,
@@ -80,6 +180,19 @@ impl DatabaseLoadRules {
 		}
 		Ok(matched)
 	}
+
+	/// The directories of `database` in the order the executable registers
+	/// them, when the rules record how a name two of them share resolves: the
+	/// last one holding the name is the one lookups return.
+	pub(crate) fn same_name_registration_order(&self, database: &str) -> Option<&[GamePathBuf]> {
+		self.databases
+			.iter()
+			.find(|selection| selection.name == database)
+			.and_then(|selection| selection.same_name.as_ref())
+			.map(|rule| match rule.resolution {
+				SameNameResolution::LaterDirectoryWins => rule.registration_order.as_slice(),
+			})
+	}
 }
 
 /// EU4 reports its own version as the launcher's `rawVersion` (`v1.37.5.0`),
@@ -88,9 +201,12 @@ impl DatabaseLoadRules {
 /// latter so rules resolve for a real installation and not only for a
 /// hand-written test string.
 ///
-/// The triple is a proxy identity, not the real one: the rule file also records
-/// `binary_sha256`, and a hotfix can ship a different binary under the same
-/// triple.
+/// The triple is a proxy identity, not the real one: each rule file records
+/// the builds (`platform` and `binary_sha256`) its content was extracted and
+/// verified against, and a hotfix can ship a different binary under the same
+/// triple. Builds of one triple share the engine source, so they verify the
+/// same rules in principle; the extractor refuses to merge a build whose
+/// rules disagree and splits it into its own file instead.
 fn normalize_game_version(version: &str) -> Option<String> {
 	let version: &str = version.trim();
 	let version: &str = version.strip_prefix(['v', 'V']).unwrap_or(version);
@@ -121,8 +237,88 @@ pub(crate) fn load_rules_for_version(version: &str) -> Option<&'static DatabaseL
 
 #[cfg(test)]
 mod tests {
-	use super::{DatabaseLoadRules, load_rules_for_version, normalize_game_version};
+	use super::{
+		DatabaseLoadRules, RULES_1_37_5, RuleFile, load_rules_for_version, normalize_game_version,
+	};
 	use crate::model::{GamePath, GamePathErrorKind};
+
+	#[test]
+	fn embedded_rules_record_the_builds_that_verified_them() {
+		// One game version is one semantic artifact; `builds` is the
+		// provenance of which executable builds verified it.
+		let file: RuleFile =
+			serde_json::from_str(RULES_1_37_5).expect("valid embedded EU4 loading rules");
+		assert_eq!(file.game_version, "1.37.5");
+		assert!(!file.builds.is_empty());
+		for build in &file.builds {
+			assert!(
+				matches!(build.platform.as_str(), "macos" | "windows" | "linux"),
+				"unknown platform {}",
+				build.platform
+			);
+			assert_eq!(build.binary_sha256.len(), 64);
+		}
+	}
+
+	#[test]
+	fn the_same_name_rule_records_the_registration_order_that_resolves_repeats() {
+		let rules: &DatabaseLoadRules = load_rules_for_version("1.37.5").unwrap();
+		let order = rules
+			.same_name_registration_order("CStaticModifierDataBase")
+			.expect("the static modifier database records its registration order");
+		assert_eq!(
+			order
+				.iter()
+				.map(|directory| directory.as_str())
+				.collect::<Vec<_>>(),
+			["common/static_modifiers", "common/event_modifiers"]
+		);
+		// A single-directory database has no repeat to resolve.
+		assert_eq!(rules.same_name_registration_order("CIdeaDataBase"), None);
+	}
+
+	#[test]
+	fn a_same_name_rule_must_place_every_directory_and_cite_its_evidence() {
+		let rules = |order: serde_json::Value, evidence: &str| {
+			serde_json::json!({
+				"game_version": "test",
+				"builds": [{"platform": "macos", "binary_sha256": "a".repeat(64)}],
+				"databases": {"DB": {
+					"directories": [
+						{"directory": "common/one", "files": "*.txt"},
+						{"directory": "common/two", "files": "*.txt"}
+					],
+					"same_name": {
+						"resolution": "later_directory_wins",
+						"registration_order": order,
+						"evidence": evidence
+					}
+				}}
+			})
+			.to_string()
+		};
+		assert!(
+			DatabaseLoadRules::parse(&rules(
+				serde_json::json!(["common/one", "common/two"]),
+				"decompiled registration and lookup"
+			))
+			.is_ok()
+		);
+		for malformed in [
+			// An order that misses a directory leaves that pair's repeat as
+			// unresolvable as a database with no rule at all.
+			rules(serde_json::json!(["common/one"]), "decompiled"),
+			// An order naming a directory the database does not hold.
+			rules(
+				serde_json::json!(["common/one", "common/two", "common/three"]),
+				"decompiled",
+			),
+			// A rule without its evidence reads as a guess.
+			rules(serde_json::json!(["common/one", "common/two"]), "   "),
+		] {
+			assert!(DatabaseLoadRules::parse(&malformed).is_err(), "{malformed}");
+		}
+	}
 
 	#[test]
 	fn rules_resolve_for_the_version_string_a_real_installation_reports() {
@@ -208,7 +404,7 @@ mod tests {
 	#[test]
 	fn filename_globs_use_portable_escapes_on_every_host() {
 		let rules: DatabaseLoadRules = DatabaseLoadRules::parse(
-			r#"{"game_version":"test","databases":{"Ideas":[{"directory":"common/ideas","files":"literal\\*.txt"}]}}"#,
+			r#"{"game_version":"test","builds":[{"platform":"macos","binary_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"databases":{"Ideas":[{"directory":"common/ideas","files":"literal\\*.txt"}]}}"#,
 		)
 		.expect("valid rules");
 		assert_eq!(
@@ -258,6 +454,7 @@ mod tests {
 		for directory in ["common/test/", r"common\test", "../common", ""] {
 			let json = serde_json::json!({
 				"game_version": "test",
+				"builds": [{"platform": "macos", "binary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
 				"databases": {"First": [{"directory": directory, "files": "*.txt"}]},
 			})
 			.to_string();
@@ -274,7 +471,7 @@ mod tests {
 	#[test]
 	fn overlapping_database_rules_do_not_choose_an_arbitrary_owner() {
 		let rules: DatabaseLoadRules = DatabaseLoadRules::parse(
-			r#"{"game_version":"test","databases":{
+			r#"{"game_version":"test","builds":[{"platform":"macos","binary_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"databases":{
 				"First":[{"directory":"common/test","files":"*.txt"}],
 				"Second":[{"directory":"common/test","files":"special.*"}]
 			}}"#,
