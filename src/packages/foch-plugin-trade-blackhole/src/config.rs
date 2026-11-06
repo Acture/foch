@@ -56,13 +56,19 @@ pub struct Config {
 	pub force_node: String,
 	/// Write the monthly observer dump to the plugin log directory.
 	pub observer_log: bool,
-	/// A node terminates its outflow when its tax reaches this percent of
-	/// its neighborhood's best other tax (100 = the strict peak).
-	pub converge_pct: i64,
+	/// Tax intensity (thousandths) at which a node absorbs half of what
+	/// pools in it; higher means only richer nodes sink.
+	pub absorb_ref: i64,
+	/// Trade power (thousandths) at which a partner doubles its relay
+	/// attractiveness; higher flattens hub preference.
+	pub relay_ref: i64,
+	/// An edge whose net flow is below this percent of its source's pool
+	/// counts as carrying nothing.
+	pub flow_epsilon_pct: i64,
+	/// A closed edge reopens only above this percent of the pool.
+	pub reopen_pct: i64,
 	/// Sink signal basis: per-province mean tax (intensity) or raw sum.
 	pub sink_basis: SinkBasis,
-	/// A terminated node reopens only below this percent of the best.
-	pub hysteresis_pct: i64,
 	/// Edge flips the whole graph may apply per month.
 	pub max_flips_total: usize,
 }
@@ -76,8 +82,10 @@ impl Default for Config {
 			force_node: "Great Lakes".to_string(),
 			observer_log: true,
 			sink_basis: SinkBasis::Mean,
-			converge_pct: params.converge_pct,
-			hysteresis_pct: params.hysteresis_pct,
+			absorb_ref: params.absorb_ref,
+			relay_ref: params.relay_ref,
+			flow_epsilon_pct: params.flow_epsilon_pct,
+			reopen_pct: params.reopen_pct,
 			max_flips_total: params.max_flips_total,
 		}
 	}
@@ -129,8 +137,10 @@ impl Config {
 			return Self::observe_only();
 		}
 		for (key, target) in [
-			("converge_pct", &mut config.converge_pct),
-			("hysteresis_pct", &mut config.hysteresis_pct),
+			("absorb_ref", &mut config.absorb_ref),
+			("relay_ref", &mut config.relay_ref),
+			("flow_epsilon_pct", &mut config.flow_epsilon_pct),
+			("reopen_pct", &mut config.reopen_pct),
 		] {
 			if let Some(number) = object.get(key).and_then(|v| v.as_i64()) {
 				*target = number;
@@ -166,10 +176,10 @@ mod tests {
 	#[test]
 	fn known_keys_override_defaults() {
 		let config = Config::from_json(
-			br#"{"mode":"policy","converge_pct":150,"force_node":"beijing_trade_node"}"#,
+			br#"{"mode":"policy","absorb_ref":5000,"force_node":"beijing_trade_node"}"#,
 		);
 		assert_eq!(config.mode, Mode::Policy);
-		assert_eq!(config.converge_pct, 150);
+		assert_eq!(config.absorb_ref, 5000);
 		assert_eq!(config.force_node, "beijing_trade_node");
 	}
 
@@ -183,7 +193,7 @@ mod tests {
 
 	#[test]
 	fn crossed_thresholds_downgrade_to_observe_only() {
-		let config = Config::from_json(br#"{"converge_pct":50,"hysteresis_pct":120}"#);
+		let config = Config::from_json(br#"{"reopen_pct":0}"#);
 		assert!(!config.enabled);
 	}
 

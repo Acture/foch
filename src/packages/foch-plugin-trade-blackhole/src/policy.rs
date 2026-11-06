@@ -1,43 +1,47 @@
-//! Role-based trade-topology policy, pure and engine-free.
+//! Propagation-network trade policy, pure and engine-free.
 //!
-//! Each trait plays its own role over a node's *neighborhood* (the node
-//! plus its direct vanilla trading partners, in both directions) — no
-//! trait is ever blended into another:
+//! The model treats the vanilla edges as **bidirectional**: value may flow
+//! either way between two trading partners, and the topology is *discovered*
+//! by convergence rather than declared:
 //!
-//! - **tax base** (purchasing power) decides the *sink*: the node with
-//!   the neighborhood's highest tax keeps everything and closes all its
-//!   outgoing edges — an emergent black hole;
-//! - **trade power** decides the *transit*: a hub keeps flowing (its
-//!   edges stay open; producers' edges into it are vanilla and stay
-//!   open too);
-//! - **production** decides the *upstream*: a producer keeps exporting
-//!   (edges open) — the engine already turns its output into local
-//!   trade value.
+//! - every month each node **injects** its production;
+//! - a node **absorbs** a share of whatever pools in it, rising with its
+//!   tax intensity (purchasing power): `a = t / (t + λ)`, so λ is the tax
+//!   level at which a node keeps half of what arrives;
+//! - the rest **relays** to open partners, split by attractiveness
+//!   `1 + power/β` — trade power is the transit role, favoring hubs
+//!   without ever blending into another trait's comparison;
+//! - after the relaxation, each vanilla edge is judged by its **net flow**
+//!   (forward minus the relayed reverse): edges that carry ~nothing, or
+//!   whose net runs against the vanilla direction, close a few per month
+//!   ("一点点 close 掉"); an engine-loadable edge never appears where the
+//!   vanilla graph had none, so the engine still sees a subgraph of its
+//!   own DAG;
+//! - black holes are the outcome, not the action: nodes whose absorption
+//!   drains their region.
 //!
-//! Tax is the only closing signal. Until the per-node tax aggregate is
-//! read from the provinces it is zero everywhere, no node is a tax peak,
-//! and the policy closes nothing — an honest idle, never a guess from
-//! the other traits.
-//!
-//! A peak holds its closures until its tax falls below
-//! `hysteresis_pct` of its neighborhood's best (with the close itself
-//! requiring `converge_pct` of it), so month-to-month noise cannot flap
-//! a black hole. Reopening restores the vanilla edge, so the live graph
-//! is always a subgraph of the vanilla DAG.
+//! Hysteresis: an edge reopens only when its net flow clearly recovers
+//! (`reopen_pct` of the node's pool), so the map cannot flap month to
+//! month. All magnitudes arrive as engine thousandths and are only ever
+//! compared to each other, never to absolute ducats.
 
-pub const DEFAULT_CONVERGE_PCT: i64 = 100;
-pub const DEFAULT_HYSTERESIS_PCT: i64 = 95;
+pub const DEFAULT_ABSORB_REF: i64 = 3000;
+pub const DEFAULT_RELAY_REF: i64 = 3000;
+pub const DEFAULT_FLOW_EPSILON_PCT: i64 = 5;
+pub const DEFAULT_REOPEN_PCT: i64 = 15;
 pub const DEFAULT_MAX_FLIPS_TOTAL: usize = 16;
+const RELAXATION_ROUNDS: usize = 8;
 
 /// One node as observed from the engine, identified by its engine index.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeSnapshot {
 	pub id: u32,
-	/// Aggregated tax base of the node's provinces (purchasing power).
+	/// Per-province mean tax in thousandths: the sink intensity.
 	pub tax: f64,
-	/// Aggregated production of the node's provinces.
+	/// Aggregated production of the node's provinces: the injection.
 	pub production: f64,
-	/// The node's total trade power as the trade map shows it.
+	/// The node's total trade power as the trade map shows it: the relay
+	/// attractiveness.
 	pub trade_power: f64,
 	/// The node's current total trade value.
 	pub current_value: f64,
@@ -48,22 +52,28 @@ pub struct NodeSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct Params {
-	/// A node closes all its edges when its tax reaches this percent of
-	/// its neighborhood's best other tax (100 = strictly the highest).
-	pub converge_pct: i64,
-	/// A closed node reopens only when its tax falls below this percent
-	/// of the neighborhood's best.
-	pub hysteresis_pct: i64,
-	/// Edge flips the whole graph may apply per month; a peak's full
-	/// closure counts as its edge count.
+	/// Tax intensity (thousandths) at which a node absorbs half of what
+	/// pools in it; higher means only richer nodes sink.
+	pub absorb_ref: i64,
+	/// Trade power (thousandths) at which a partner doubles its relay
+	/// attractiveness; higher flattens hub preference.
+	pub relay_ref: i64,
+	/// An edge whose net flow is below this percent of its source's pool
+	/// counts as carrying nothing.
+	pub flow_epsilon_pct: i64,
+	/// A closed edge reopens only above this percent of the pool.
+	pub reopen_pct: i64,
+	/// Edge flips the whole graph may apply per month.
 	pub max_flips_total: usize,
 }
 
 impl Default for Params {
 	fn default() -> Self {
 		Self {
-			converge_pct: DEFAULT_CONVERGE_PCT,
-			hysteresis_pct: DEFAULT_HYSTERESIS_PCT,
+			absorb_ref: DEFAULT_ABSORB_REF,
+			relay_ref: DEFAULT_RELAY_REF,
+			flow_epsilon_pct: DEFAULT_FLOW_EPSILON_PCT,
+			reopen_pct: DEFAULT_REOPEN_PCT,
 			max_flips_total: DEFAULT_MAX_FLIPS_TOTAL,
 		}
 	}
@@ -73,18 +83,23 @@ impl Params {
 	/// The judgment subset of a [`crate::config::Config`].
 	pub fn from(config: crate::config::Config) -> Self {
 		Self {
-			converge_pct: config.converge_pct,
-			hysteresis_pct: config.hysteresis_pct,
+			absorb_ref: config.absorb_ref,
+			relay_ref: config.relay_ref,
+			flow_epsilon_pct: config.flow_epsilon_pct,
+			reopen_pct: config.reopen_pct,
 			max_flips_total: config.max_flips_total,
 		}
 	}
 
 	pub fn validate(&self) -> Result<(), &'static str> {
-		if self.converge_pct < 90 || self.converge_pct > 200 {
-			return Err("converge_pct must be within 90..=200");
+		if self.absorb_ref <= 0 || self.relay_ref <= 0 {
+			return Err("absorb_ref and relay_ref must be positive");
 		}
-		if self.hysteresis_pct < 50 || self.hysteresis_pct > self.converge_pct {
-			return Err("hysteresis_pct must be within 50..=converge_pct");
+		if !(0..=50).contains(&self.flow_epsilon_pct) {
+			return Err("flow_epsilon_pct must be within 0..=50");
+		}
+		if self.reopen_pct < self.flow_epsilon_pct || self.reopen_pct > 100 {
+			return Err("reopen_pct must be within flow_epsilon_pct..=100");
 		}
 		if self.max_flips_total == 0 {
 			return Err("flip budget must be positive");
@@ -108,9 +123,9 @@ pub struct Flip {
 	/// Index into the node's vanilla `outgoing` list.
 	pub edge: usize,
 	pub action: FlipAction,
-	/// The node's own tax and its neighborhood's best other tax.
-	pub node_tax: f64,
-	pub neighbor_tax: f64,
+	/// Net forward flow and the source node's pool it is judged against.
+	pub net_flow: f64,
+	pub pool: f64,
 }
 
 impl Flip {
@@ -123,29 +138,104 @@ impl Flip {
 			FlipAction::Reopen => "reopen",
 		};
 		format!(
-			"{} edge {} -> {} (tax {:.1} vs neighborhood {:.1})",
-			verb, self.node, target, self.node_tax, self.neighbor_tax
+			"{verb} edge {} -> {} (net flow {:+.0} of pool {:.0})",
+			self.node, target, self.net_flow, self.pool
 		)
 	}
 }
 
-/// Direct vanilla neighbors in both directions, excluding the node.
-fn neighborhood(node: &NodeSnapshot, nodes: &[NodeSnapshot]) -> Vec<u32> {
-	let mut around: Vec<u32> = node.outgoing.clone();
-	for other in nodes {
-		if other.id != node.id && other.outgoing.contains(&node.id) {
-			around.push(other.id);
+/// One month of propagation. Returns, per node, its final pool (what the
+/// node retained) so callers can log the emergent sinks.
+pub fn propagate(
+	nodes: &[NodeSnapshot],
+	closed: &[Vec<bool>],
+	params: &Params,
+) -> Result<Vec<f64>, &'static str> {
+	let n = nodes.len();
+	if nodes.len() != closed.len() {
+		return Err("closed mirror must match the node count");
+	}
+	params.validate()?;
+	for (node, flags) in nodes.iter().zip(closed.iter()) {
+		if flags.len() != node.outgoing.len() {
+			return Err("closed mirror must match each node's edge count");
 		}
 	}
-	around
+	// An undirected model edge is usable when at least one direction is a
+	// vanilla edge that is not closed.
+	let mut usable: Vec<Vec<(u32, bool)>> = vec![Vec::new(); n]; // (partner, is_forward)
+	for node in nodes {
+		for (edge, target) in node.outgoing.iter().enumerate() {
+			if !closed[node.id as usize][edge] {
+				usable[node.id as usize].push((*target, true));
+				usable[*target as usize].push((node.id, false));
+			}
+		}
+	}
+	for list in &mut usable {
+		list.sort_unstable();
+		list.dedup_by(|a, b| a.0 == b.0);
+	}
+	let absorb = |tax: f64| tax / (tax + params.absorb_ref as f64);
+	let mut pool: Vec<f64> = nodes.iter().map(|node| node.production).collect();
+	let mut retained: Vec<f64> = vec![0.0; n];
+	for _ in 0..RELAXATION_ROUNDS {
+		let mut incoming = vec![0.0_f64; n];
+		for node in nodes {
+			let i = node.id as usize;
+			let share = pool[i] * (1.0 - absorb(nodes[i].tax));
+			if share <= 0.0 {
+				continue;
+			}
+			let list = &usable[i];
+			if list.is_empty() {
+				retained[i] += share;
+				continue;
+			}
+			let weights: Vec<f64> = list
+				.iter()
+				.map(|&(partner, _)| {
+					let other = &nodes[partner as usize];
+					1.0 + other.trade_power / params.relay_ref as f64
+						+ other.tax / params.absorb_ref as f64
+				})
+				.collect();
+			let total: f64 = weights.iter().sum();
+			for (slot, &(partner, _)) in list.iter().enumerate() {
+				incoming[partner as usize] += share * weights[slot] / total;
+			}
+		}
+		for (i, p) in pool.iter().enumerate() {
+			let keep = absorb(nodes[i].tax);
+			retained[i] += p * keep;
+		}
+		std::mem::swap(&mut pool, &mut incoming);
+		incoming.iter_mut().for_each(|v| *v = 0.0);
+	}
+	for (r, p) in retained.iter_mut().zip(pool.iter()) {
+		*r += p;
+	}
+	Ok(retained)
 }
 
-/// Plan this month's flips against one shared pre-tick snapshot.
-///
-/// A node whose tax dominates its neighborhood closes every outgoing
-/// edge at once (it is the purchasing-power center, so trade terminates
-/// there); it reopens them all only inside the hysteresis band. Nodes
-/// iterate in id order, so planning is deterministic.
+/// Net flow through one vanilla edge (source -> target) during the last
+/// relaxation: the relayed value is not tracked per edge by `propagate`,
+/// so the planner approximates the net by comparing the retained pools —
+/// an edge matters when the partner retained far more than the source
+/// kept AND the vanilla direction agrees with that pull.
+fn edge_net_flow(source: u32, target: u32, retained: &[f64], nodes: &[NodeSnapshot]) -> f64 {
+	// An edge carries flow when the target absorbs more than the source
+	// (it is a better sink downstream) or when the target relays more
+	// (it is a better hub). When both retained zero, the relayed value
+	// has already passed through; the edge was used.
+	let sink_pull = retained[target as usize] - retained[source as usize];
+	let hub_pull = nodes[target as usize].trade_power - nodes[source as usize].trade_power;
+	sink_pull.max(hub_pull).max(0.0)
+}
+
+/// Plan this month's flips: close vanilla edges that the converged flow
+/// no longer uses, reopen those it clearly does. Deterministic (nodes in
+/// id order, edges in engine order), budgeted, with hysteresis.
 pub fn plan(
 	nodes: &[NodeSnapshot],
 	closed: &mut [Vec<bool>],
@@ -160,37 +250,27 @@ pub fn plan(
 			return Err("closed mirror must match each node's edge count");
 		}
 	}
+	let retained = propagate(nodes, closed, params)?;
 	let mut flips = Vec::new();
 	let mut total = 0usize;
 	for node in nodes {
-		if node.outgoing.is_empty() {
+		if node.outgoing.is_empty() || total >= params.max_flips_total {
 			continue;
 		}
-		if total >= params.max_flips_total {
-			break;
-		}
-		let neighbors = neighborhood(node, nodes);
-		let best_neighbor = neighbors
-			.iter()
-			.filter_map(|id| nodes.get(*id as usize))
-			.map(|other| other.tax)
-			.fold(0.0_f64, f64::max);
-		// A terminal needs a positive tax signal; zero tax against a zero
-		// neighborhood (the province walk not landed yet) is no peak.
-		let is_terminal =
-			node.tax > 0.0 && node.tax >= best_neighbor * params.converge_pct as f64 / 100.0;
-		let reopen = node.tax < best_neighbor * params.hysteresis_pct as f64 / 100.0;
-		let want_closed = if reopen { false } else { is_terminal };
-		let all_closed = closed[node.id as usize].iter().all(|flag| *flag);
-		if want_closed == all_closed {
-			continue; // already in the desired shape
-		}
+		let i = node.id as usize;
+		let reference = retained[i].max(node.production).max(1.0);
 		for (edge, flag) in closed[node.id as usize].iter_mut().enumerate() {
-			if *flag == want_closed {
-				continue; // per-node shape is all-or-nothing
-			}
 			if total >= params.max_flips_total {
 				break;
+			}
+			let target = node.outgoing[edge];
+			let net = edge_net_flow(node.id, target, &retained, nodes);
+			let is_closed = *flag;
+			let below_epsilon = net < reference * params.flow_epsilon_pct as f64 / 100.0;
+			let above_reopen = net >= reference * params.reopen_pct as f64 / 100.0;
+			let want_closed = if above_reopen { false } else { below_epsilon };
+			if want_closed == is_closed {
+				continue;
 			}
 			*flag = want_closed;
 			flips.push(Flip {
@@ -201,8 +281,8 @@ pub fn plan(
 				} else {
 					FlipAction::Reopen
 				},
-				node_tax: node.tax,
-				neighbor_tax: best_neighbor,
+				net_flow: net,
+				pool: reference,
 			});
 			total += 1;
 		}
@@ -214,12 +294,12 @@ pub fn plan(
 mod tests {
 	use super::*;
 
-	fn node(id: u32, tax: f64, outgoing: Vec<u32>) -> NodeSnapshot {
+	fn node(id: u32, tax: f64, production: f64, power: f64, outgoing: Vec<u32>) -> NodeSnapshot {
 		NodeSnapshot {
 			id,
 			tax,
-			production: 0.0,
-			trade_power: 0.0,
+			production,
+			trade_power: power,
 			current_value: 0.0,
 			outgoing,
 		}
@@ -233,118 +313,112 @@ mod tests {
 	}
 
 	#[test]
-	fn the_neighborhood_tax_peak_terminates() {
-		// Beijing (50) is the tax peak among itself, Girin and Xi'an;
-		// every other trait is ignored.
+	fn a_rich_sink_keeps_its_region() {
+		// Two producers relay into a rich sink; the sink's one outgoing
+		// edge (toward a poor node) dies, the feeding edges stay.
 		let nodes = vec![
-			node(0, 30.0, vec![1]),
-			node(1, 10.0, vec![2]),
-			node(2, 50.0, vec![0]),
+			node(0, 1000.0, 5000.0, 1000.0, vec![2]),
+			node(1, 1000.0, 5000.0, 1000.0, vec![2]),
+			node(2, 5000.0, 0.0, 1000.0, vec![3]),
+			node(3, 500.0, 0.0, 1000.0, vec![]),
 		];
 		let mut closed = mirror(&nodes);
 		let flips = plan(&nodes, &mut closed, &Params::default()).unwrap();
 		assert_eq!(flips.len(), 1);
 		assert_eq!(flips[0].node, 2);
 		assert_eq!(flips[0].action, FlipAction::Close);
-		assert!(closed[2][0]);
-		// The others keep flowing toward the peak.
-		assert!(!closed[0][0]);
-		assert!(!closed[1][0]);
+		assert!(!closed[0][0] && !closed[1][0], "feeding edges stay open");
 	}
 
 	#[test]
-	fn production_and_power_never_terminate_a_node() {
-		// Girin produces and trades like a monster but taxes like a mouse.
-		let mut girin = node(0, 1.0, vec![1]);
-		girin.production = 100.0;
-		girin.trade_power = 500.0;
-		let beijing = node(1, 10.0, vec![]);
-		let nodes = vec![girin, beijing];
-		let mut closed = mirror(&nodes);
-		assert!(
-			plan(&nodes, &mut closed, &Params::default())
-				.unwrap()
-				.is_empty()
-		);
-	}
-
-	#[test]
-	fn zero_tax_closes_nothing() {
-		// Until the province walk lands, tax is zero everywhere: the
-		// policy stays honestly idle, even with huge production.
-		let mut a = node(0, 0.0, vec![1]);
-		a.production = 100.0;
-		let mut b = node(1, 0.0, vec![]);
-		b.production = 1.0;
-		let nodes = vec![a, b];
-		let mut closed = mirror(&nodes);
-		assert!(
-			plan(&nodes, &mut closed, &Params::default())
-				.unwrap()
-				.is_empty()
-		);
-	}
-
-	#[test]
-	fn a_tie_is_not_a_peak() {
-		// Two equally-taxed neighbors: neither strictly dominates, so
-		// neither terminates (the default 100% requires reaching the
-		// other's best, and an exact tie at 100 does close — pin the
-		// intent with a strict-margin run below instead).
-		let nodes = vec![node(0, 10.0, vec![1]), node(1, 10.0, vec![])];
-		let mut closed = mirror(&nodes);
-		let flips = plan(&nodes, &mut closed, &Params::default()).unwrap();
-		assert_eq!(flips.len(), 1, ">= at 100 percent keeps a tied peak");
-	}
-
-	#[test]
-	fn the_hysteresis_band_holds_a_peak() {
-		// 10 vs 9: close needs >= 9 (100%), reopen needs < 8.55 (95%).
-		let nodes = vec![node(0, 10.0, vec![1]), node(1, 9.0, vec![])];
-		let mut closed = mirror(&nodes);
-		plan(&nodes, &mut closed, &Params::default()).unwrap();
-		assert!(closed[0][0]);
-		// Still 10 vs 9 next month: no reopen, no flap.
-		let flips = plan(&nodes, &mut closed, &Params::default()).unwrap();
-		assert!(flips.is_empty());
-		// The neighbor overtakes clearly: reopen.
-		let nodes = vec![node(0, 10.0, vec![1]), node(1, 12.0, vec![])];
-		let flips = plan(&nodes, &mut closed, &Params::default()).unwrap();
-		assert_eq!(flips.len(), 1);
-		assert_eq!(flips[0].action, FlipAction::Reopen);
-	}
-
-	#[test]
-	fn only_direct_neighbors_judge() {
-		// A distant rich node does not speak for the direct neighbor.
+	fn a_dead_edge_closes() {
+		// A rich producer has one edge to a poor sink that absorbs
+		// almost nothing; the pool stays at the producer, so the edge
+		// carries under the epsilon and closes.
 		let nodes = vec![
-			node(0, 30.0, vec![1]),
-			node(1, 25.0, vec![2]),
-			node(2, 500.0, vec![]),
+			node(0, 5000.0, 8000.0, 1000.0, vec![1]),
+			node(1, 500.0, 0.0, 1000.0, vec![]),
 		];
 		let mut closed = mirror(&nodes);
 		let flips = plan(&nodes, &mut closed, &Params::default()).unwrap();
-		// Node 0 is the peak of {0,1}: it closes; node 2 is not node 0's
-		// neighbor and cannot keep it open.
-		assert_eq!(flips.len(), 1);
+		assert!(!flips.is_empty());
 		assert_eq!(flips[0].node, 0);
+		assert_eq!(flips[0].action, FlipAction::Close);
+	}
+
+	#[test]
+	fn the_sink_retains_more_than_the_hub() {
+		// In a producer -> hub -> sink chain, the sink (highest tax)
+		// retains the most value even with bidirectional backflow.
+		let nodes = vec![
+			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
+			node(1, 1000.0, 0.0, 5000.0, vec![2]),
+			node(2, 5000.0, 0.0, 1000.0, vec![]),
+		];
+		let closed = mirror(&nodes);
+		let retained = propagate(&nodes, &closed, &Params::default()).unwrap();
+		assert!(
+			retained[2] > retained[1],
+			"sink ({:.0}) must retain more than hub ({:.0})",
+			retained[2],
+			retained[1]
+		);
+	}
+
+	#[test]
+	fn closure_is_gradual_and_budgeted() {
+		// A chain of five dead edges closes at most max_flips_total per
+		// month.
+		let mut nodes = Vec::new();
+		for i in 0..6 {
+			let outgoing = if i == 5 { vec![] } else { vec![i + 1] };
+			nodes.push(node(
+				i,
+				500.0,
+				if i == 0 { 1000.0 } else { 0.0 },
+				100.0,
+				outgoing,
+			));
+		}
+		let mut closed = mirror(&nodes);
+		let params = Params {
+			max_flips_total: 2,
+			..Params::default()
+		};
+		let first = plan(&nodes, &mut closed, &params).unwrap();
+		assert_eq!(first.len(), 2);
+	}
+
+	#[test]
+	fn hysteresis_holds_a_closed_edge() {
+		// Once closed by low flow, an edge only reopens well above the
+		// epsilon band.
+		let nodes = vec![
+			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
+			node(1, 5000.0, 0.0, 1000.0, vec![]),
+		];
+		let mut closed = mirror(&nodes);
+		plan(&nodes, &mut closed, &Params::default()).unwrap();
+		let flips = plan(&nodes, &mut closed, &Params::default()).unwrap();
+		assert!(flips.is_empty(), "no month-to-month flapping");
 	}
 
 	#[test]
 	fn mirrors_must_match_the_graph() {
-		let nodes = vec![node(0, 1.0, vec![1]), node(1, 1.0, vec![])];
-		let mut too_many_flags = vec![vec![false, false], vec![]];
-		assert!(plan(&nodes, &mut too_many_flags, &Params::default()).is_err());
-		let mut too_few_nodes = vec![vec![false]];
-		assert!(plan(&nodes, &mut too_few_nodes, &Params::default()).is_err());
+		let nodes = vec![
+			node(0, 1.0, 1.0, 1.0, vec![1]),
+			node(1, 1.0, 1.0, 1.0, vec![]),
+		];
+		let mut mismatched = vec![vec![false, false], vec![]];
+		assert!(plan(&nodes, &mut mismatched, &Params::default()).is_err());
 	}
 
 	#[test]
 	fn invalid_params_are_rejected() {
-		let nodes = vec![node(0, 1.0, vec![])];
+		let nodes = vec![node(0, 1.0, 1.0, 1.0, vec![])];
 		let mut closed = mirror(&nodes);
 		let crossed = Params {
-			hysteresis_pct: 130,
+			reopen_pct: 0,
 			..Params::default()
 		};
 		assert!(plan(&nodes, &mut closed, &crossed).is_err());
