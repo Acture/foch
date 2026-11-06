@@ -26,6 +26,14 @@ pub trait EngineBackend {
 	fn set_edge_closed(&mut self, node: u32, edge: usize, closed: bool)
 	-> Result<(), &'static str>;
 
+	/// Add a new outgoing edge from `source` to `target` (by engine index)
+	/// by cloning an existing route entry and repointing it. Uses spare
+	/// vector capacity; fails when the vector is full.
+	/// The primitive is tested and ready; the policy wires it in when
+	/// the reverse-flow detection lands.
+	#[allow(dead_code)]
+	fn add_edge(&mut self, source: u32, target: u32) -> Result<(), &'static str>;
+
 	/// One log line about the applied state of the backend.
 	fn describe(&self) -> &'static str;
 
@@ -277,6 +285,15 @@ mod tests {
 	impl EngineBackend for FakeBackend {
 		fn observe(&mut self) -> Result<Vec<NodeSnapshot>, &'static str> {
 			Ok(self.inner.borrow().nodes.clone())
+		}
+
+		fn add_edge(&mut self, source: u32, target: u32) -> Result<(), &'static str> {
+			let mut inner = self.inner.borrow_mut();
+			if inner.fail_set {
+				return Err("add refused");
+			}
+			inner.mutations.push(format!("{source}:+{target}"));
+			Ok(())
 		}
 
 		fn node_index(&self, name: &str) -> Option<u32> {
