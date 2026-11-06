@@ -98,9 +98,35 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	// runner's watch loop, which stops the game and lets the layer tear down.
 	let cancel = Arc::new(AtomicBool::new(false));
 	install_cancel_handler(&cancel);
+	let host = args
+		.with_plugins
+		.as_ref()
+		.map(
+			|playset| -> std::result::Result<foch_runner::HostLaunch, String> {
+				let host_dll = std::env::current_exe()
+					.ok()
+					.and_then(|exe| exe.parent().map(|dir| dir.join("foch_eu4_host.dll")))
+					.filter(|path| path.is_file())
+					.ok_or_else(|| {
+						format!(
+							"cannot find foch_eu4_host.dll beside {}; build foch-eu4-host",
+							std::env::current_exe()
+								.map(|exe| exe.display().to_string())
+								.unwrap_or_default()
+						)
+					})?;
+				Ok(foch_runner::HostLaunch {
+					playset: playset.clone(),
+					host_dll,
+				})
+			},
+		)
+		.transpose()
+		.map_err(Box::<dyn std::error::Error>::from)?;
 	let options = RunOptions {
 		timeout: Duration::from_secs(args.timeout),
 		cancel: cancel.clone(),
+		host,
 	};
 	let requested_output = match &args.out {
 		Some(output) => output.clone(),
@@ -790,6 +816,8 @@ struct RunView<'a> {
 struct SessionRecord {
 	cases: Vec<String>,
 	launch: String,
+	/// The plugin host's events file, when plugins were loaded.
+	host_events: Option<PathBuf>,
 	#[serde(flatten)]
 	exit: foch_test::RunnerExit,
 }
@@ -835,6 +863,7 @@ fn run_one_session(
 			.map(|&index| plan.case(index).case.node.to_string())
 			.collect(),
 		launch: outcome.launch_detail,
+		host_events: outcome.host_events,
 		exit: outcome.exit,
 	};
 	Ok((record, results))

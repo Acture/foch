@@ -216,6 +216,11 @@ pub struct TestArgs {
 	/// Documents/Paradox Interactive/Europa Universalis IV.
 	#[arg(long, value_name = "PATH")]
 	pub eu4_user_dir: Option<PathBuf>,
+	/// Load the Foch in-game host and the enabled plugins of this playset
+	/// into every game session, like `foch plugin launch`. The host DLL is
+	/// looked up beside the `foch` executable.
+	#[arg(long, value_name = "PLAYSET")]
+	pub with_plugins: Option<String>,
 	/// Maximum seconds per game launch.
 	#[arg(long, default_value = "300", value_parser = clap::value_parser!(u64).range(1..))]
 	pub timeout: u64,
