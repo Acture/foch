@@ -13,6 +13,9 @@ pub enum SourceKind {
 	/// It may contain plain `test = { ... }` and `fixture = { ... }` blocks;
 	/// files below `tests/events/` are helper events for the test layer only.
 	TestsDir,
+	/// A file below `common/scripted_triggers/` or `common/scripted_effects/`,
+	/// whose top-level `name = { ... }` definitions the interpreter inlines.
+	Scripted,
 }
 
 /// The caller reads files; the library only receives their text.

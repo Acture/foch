@@ -154,4 +154,4 @@ EU4 每次启动都会往 `error.log` 写入与测试无关的环境条目（缺
 
 尚未验证/未完成：游戏完全不碰真实目录（需文件 API 层方案）、共用一局、任意开局日期、托管 CI（Linux + Wine）。原游戏安装目录在以上所有运行中文件数不变。
 
-产品方向见 [作者工具链设计](./foch-authoring-design.md)。这些事件测试不替代 `cargo acceptance` 的合并质量验收。
+产品方向见 [作者工具链设计](./foch-authoring-design.md)。这些事件测试不替代 `cargo acceptance` 的合并质量验收。不启动游戏的解释层(反编译证据钉扎的模拟)另见 [离线测试层](./foch-offline-tests.md)。

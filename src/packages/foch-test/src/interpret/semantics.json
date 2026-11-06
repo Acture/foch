@@ -1,0 +1,126 @@
+{
+	"format": 1,
+	"status": "unpinned",
+	"game_version": null,
+	"binary_sha256": null,
+	"primitives": {
+		"set_country_flag": {
+			"kind": "effect",
+			"facts": {
+				"storage": "country flag set"
+			},
+			"handler": null
+		},
+		"clr_country_flag": {
+			"kind": "effect",
+			"facts": {
+				"storage": "country flag set"
+			},
+			"handler": null
+		},
+		"set_global_flag": {
+			"kind": "effect",
+			"facts": {
+				"storage": "global flag set"
+			},
+			"handler": null
+		},
+		"clr_global_flag": {
+			"kind": "effect",
+			"facts": {
+				"storage": "global flag set"
+			},
+			"handler": null
+		},
+		"set_variable": {
+			"kind": "effect",
+			"facts": {
+				"operands": "which, value",
+				"storage": "country variable map"
+			},
+			"handler": null
+		},
+		"change_variable": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"operands": "which, value",
+				"storage": "country variable map"
+			},
+			"handler": null
+		},
+		"log": {
+			"kind": "effect",
+			"facts": {
+				"behavior": "writes to game.log; no state change"
+			},
+			"handler": null
+		},
+		"country_event": {
+			"kind": "effect",
+			"facts": {
+				"behavior": "fires a collected hidden event, immediately or after a delay in days",
+				"options": "a hidden event does not execute option content (verified EU4 1.37.5 native Windows 2026-11-05)"
+			},
+			"handler": null
+		},
+		"random": {
+			"kind": "effect",
+			"facts": {
+				"behavior": "decidable only at constant chance 0 and 100"
+			},
+			"handler": null
+		},
+		"random_list": {
+			"kind": "effect",
+			"facts": {
+				"behavior": "runs only when exactly one branch's trigger holds"
+			},
+			"handler": null
+		},
+		"has_country_flag": {
+			"kind": "trigger",
+			"facts": {
+				"storage": "country flag set"
+			},
+			"handler": null
+		},
+		"has_global_flag": {
+			"kind": "trigger",
+			"facts": {
+				"storage": "global flag set"
+			},
+			"handler": null
+		},
+		"has_variable": {
+			"kind": "trigger",
+			"facts": {
+				"storage": "country variable map"
+			},
+			"handler": null
+		},
+		"check_variable": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"operands": "which, value",
+				"storage": "country variable map"
+			},
+			"handler": null
+		},
+		"always": {
+			"kind": "trigger",
+			"facts": {
+				"behavior": "constant yes/no"
+			},
+			"handler": null
+		},
+		"tag": {
+			"kind": "trigger",
+			"facts": {
+				"behavior": "current scope tag equality"
+			},
+			"handler": null
+		}
+	}
+}

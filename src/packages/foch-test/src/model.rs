@@ -387,6 +387,27 @@ pub struct EventInfo {
 	pub helper: bool,
 }
 
+/// Which kind of block a scripted definition holds; the directory decides.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptedKind {
+	/// `common/scripted_triggers/`: the body is a condition block.
+	Trigger,
+	/// `common/scripted_effects/`: the body is an effect block.
+	Effect,
+}
+
+/// A top-level `name = { ... }` from a scripted directory, inlined wherever
+/// the name is used in the matching kind of block.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScriptedDef {
+	pub name: String,
+	pub kind: ScriptedKind,
+	/// The definition's block without its outer braces.
+	pub body: String,
+	pub origin: SourceSpan,
+}
+
 /// A helper event file copied into the generated test layer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HelperFile {

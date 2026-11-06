@@ -10,8 +10,9 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-from .macho import BinaryImage, read_binary
+from .binary import BinaryImage, read_binary
 from .models import Function, FunctionEvidence, Instruction, Reference
+from .pe import PEImage
 
 if TYPE_CHECKING:
 	from ghidra.program.model.listing import Program
@@ -37,7 +38,7 @@ class GhidraSession:
 	def __init__(
 		self, binary: Path, installation: Path, workspace: Path, timeout: int = 45
 	) -> None:
-		self.image: BinaryImage = read_binary(binary)
+		self.image: BinaryImage | PEImage = read_binary(binary)
 		self.installation: Path = installation.resolve()
 		self.workspace: Path = workspace.resolve()
 		self.timeout: int = timeout
