@@ -26,13 +26,6 @@ pub trait EngineBackend {
 	fn set_edge_closed(&mut self, node: u32, edge: usize, closed: bool)
 	-> Result<(), &'static str>;
 
-	/// Add a new outgoing edge from `source` to `target` (by engine index)
-	/// by cloning an existing route entry and repointing it. Uses spare
-	/// vector capacity; fails when the vector is full.
-	/// The primitive is tested and ready; the policy wires it in when
-	/// the reverse-flow detection lands.
-	fn add_edge(&mut self, source: u32, target: u32) -> Result<(), &'static str>;
-
 	/// One log line about the applied state of the backend.
 	fn describe(&self) -> &'static str;
 
@@ -208,7 +201,7 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 			return;
 		};
 		let params = policy::Params::from(self.config.clone());
-		let Ok((flips, additions)) = policy::plan(nodes, closed, evidence, &params) else {
+		let Ok((flips, _)) = policy::plan(nodes, closed, evidence, &params) else {
 			(self.log)(logging::WARN, "policy rejected its parameters");
 			return;
 		};
@@ -221,25 +214,6 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 				);
 			} else {
 				(self.log)(logging::INFO, &flip.describe(nodes));
-			}
-		}
-		for add in &additions {
-			match self.backend.add_edge(add.source, add.target) {
-				Ok(()) => {
-					(self.log)(
-						logging::INFO,
-						&format!("reverse edge {} -> {} grown", add.source, add.target),
-					);
-				}
-				Err(reason) => {
-					(self.log)(
-						logging::WARN,
-						&format!(
-							"reverse edge {} -> {} failed: {reason}",
-							add.source, add.target
-						),
-					);
-				}
 			}
 		}
 	}
@@ -303,15 +277,6 @@ mod tests {
 	impl EngineBackend for FakeBackend {
 		fn observe(&mut self) -> Result<Vec<NodeSnapshot>, &'static str> {
 			Ok(self.inner.borrow().nodes.clone())
-		}
-
-		fn add_edge(&mut self, source: u32, target: u32) -> Result<(), &'static str> {
-			let mut inner = self.inner.borrow_mut();
-			if inner.fail_set {
-				return Err("add refused");
-			}
-			inner.mutations.push(format!("{source}:+{target}"));
-			Ok(())
 		}
 
 		fn node_index(&self, name: &str) -> Option<u32> {
