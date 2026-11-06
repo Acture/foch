@@ -41,8 +41,9 @@ pub fn install(config: Config, exe_base: usize, plugin_dir: Option<std::path::Pa
 			"node_members.txt missing or empty: node tax stays zero",
 		);
 	}
+	let basis = config.sink_basis;
 	let _ = ENGINE.set(Mutex::new(Engine::new(
-		LiveBackend::with_members(members),
+		LiveBackend::with_members(members, basis),
 		config,
 		crate::logging::write,
 	)));
@@ -139,17 +140,22 @@ pub struct LiveBackend {
 	/// Offline node-members table: internal key -> member province ids,
 	/// shipped in the plugin package (generated from 00_tradenodes.txt).
 	member_ids: HashMap<String, Vec<u32>>,
-	/// Per-node-index tax aggregate in thousandths, built at the first
-	/// observe by summing the members' CProvince base tax.
+	/// Per-node-index sink signal, built at the first observe from the
+	/// members' CProvince base tax: the per-province mean or the sum.
 	node_tax: HashMap<u32, f64>,
+	/// Which basis `node_tax` holds.
+	sink_basis: crate::config::SinkBasis,
 }
 
 impl LiveBackend {
 	pub fn new() -> Self {
-		Self::with_members(Vec::new())
+		Self::with_members(Vec::new(), crate::config::SinkBasis::Mean)
 	}
 
-	fn with_members(members: Vec<(String, Vec<u32>)>) -> Self {
+	fn with_members(
+		members: Vec<(String, Vec<u32>)>,
+		sink_basis: crate::config::SinkBasis,
+	) -> Self {
 		Self {
 			db: 0,
 			context: 0,
@@ -162,6 +168,7 @@ impl LiveBackend {
 			entry_logged: false,
 			member_ids: members.into_iter().collect(),
 			node_tax: HashMap::new(),
+			sink_basis,
 		}
 	}
 
@@ -222,6 +229,7 @@ impl LiveBackend {
 				continue;
 			};
 			let mut sum = 0.0;
+			let mut counted = 0.0;
 			for id in ids {
 				if let Some(tax) = self.read_i32(
 					cprov_base
@@ -229,9 +237,17 @@ impl LiveBackend {
 						+ layout::province::TAX,
 				) {
 					sum += tax as f64;
+					counted += 1.0;
 				}
 			}
-			self.node_tax.insert(index as u32, sum);
+			// The mean expresses wealth intensity; the raw sum expresses
+			// mass. A big reworked region full of poor provinces wins the
+			// sum but not the mean.
+			let signal = match self.sink_basis {
+				crate::config::SinkBasis::Mean if counted > 0.0 => sum / counted,
+				_ => sum,
+			};
+			self.node_tax.insert(index as u32, signal);
 		}
 		crate::logging::write(
 			crate::logging::INFO,

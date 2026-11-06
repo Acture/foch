@@ -14,9 +14,15 @@ role-based rule: each trait keeps its own role over a node's neighborhood
 blended into a combined score:
 
 - **tax base** (purchasing power) is the only closing signal: the node
-  with the neighborhood's highest tax closes all its outgoing edges — an
-  emergent black hole. It reopens only inside the `hysteresis_pct` band,
-  so month-to-month noise cannot flap a black hole;
+  with the neighborhood's highest *per-province mean tax* closes all its
+  outgoing edges — an emergent black hole. The mean, not the sum:
+  node-level sums are dominated by province count (1.37's reworked
+  Manchuria has 77 mostly-poor provinces and out-sums Beijing), while
+  the mean expresses wealth intensity and lets the true cores emerge
+  (Hangzhou 5.22 over Beijing 3.24 and Girin 1.94; Champagne, Genoa,
+  Venice top the world). `sink_basis = "sum"` keeps the raw mass if a
+  scenario wants it. Reopening only happens inside the `hysteresis_pct`
+  band, so month-to-month noise cannot flap a black hole;
 - **trade power** means transit: a hub keeps flowing (its edges stay
   open; producers' edges into it are vanilla and stay open too);
 - **production** means upstream: a producer keeps exporting, and the
@@ -153,6 +159,11 @@ removed).
 
 ## Acceptance record
 
+- 2026-11-06 (policy, mean-tax sink): with the per-province mean as the
+  sink signal, Hangzhou (5.22 mean tax) terminated its whole outflow over
+  Beijing (3.24) and Girin (1.94) — the intensity ranking matches
+  offline sums from the history files exactly — alongside Champagne,
+  Mexico, Deccan, Aleppo and Novgorod across four ticks.
 - 2026-11-06 (policy, tax-peak): same harness — tax aggregated for 73/81
   nodes from the provinces; regional tax centers terminated across four
   monthly ticks (Malacca 205k, Mexico 201k, Nippon 197k, Sevilla 180k,

@@ -29,6 +29,24 @@ impl Mode {
 	}
 }
 
+/// How the per-node sink signal is derived from the members' tax:
+/// the per-province mean (wealth intensity) or the raw sum (mass).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SinkBasis {
+	Mean,
+	Sum,
+}
+
+impl SinkBasis {
+	fn parse(text: &str) -> Option<Self> {
+		match text {
+			"mean" => Some(Self::Mean),
+			"sum" => Some(Self::Sum),
+			_ => None,
+		}
+	}
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
 	/// Master switch; `false` leaves the plugin an inert observer.
@@ -41,6 +59,8 @@ pub struct Config {
 	/// A node terminates its outflow when its tax reaches this percent of
 	/// its neighborhood's best other tax (100 = the strict peak).
 	pub converge_pct: i64,
+	/// Sink signal basis: per-province mean tax (intensity) or raw sum.
+	pub sink_basis: SinkBasis,
 	/// A terminated node reopens only below this percent of the best.
 	pub hysteresis_pct: i64,
 	/// Edge flips the whole graph may apply per month.
@@ -55,6 +75,7 @@ impl Default for Config {
 			mode: Mode::Observe,
 			force_node: "Great Lakes".to_string(),
 			observer_log: true,
+			sink_basis: SinkBasis::Mean,
 			converge_pct: params.converge_pct,
 			hysteresis_pct: params.hysteresis_pct,
 			max_flips_total: params.max_flips_total,
@@ -97,6 +118,15 @@ impl Config {
 		}
 		if let Some(log) = object.get("observer_log").and_then(|v| v.as_bool()) {
 			config.observer_log = log;
+		}
+		if let Some(basis) = object
+			.get("sink_basis")
+			.and_then(|v| v.as_str())
+			.and_then(SinkBasis::parse)
+		{
+			config.sink_basis = basis;
+		} else if object.contains_key("sink_basis") {
+			return Self::observe_only();
 		}
 		for (key, target) in [
 			("converge_pct", &mut config.converge_pct),
