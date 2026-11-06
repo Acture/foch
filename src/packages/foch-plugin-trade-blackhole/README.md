@@ -8,23 +8,37 @@ touches `common/tradenodes`, so no other trade mod is displaced.
 ## Concept
 
 EU4's trade topology is fixed at load: value always flows toward the three
-vanilla end nodes. This plugin re-opens that decision during play:
+vanilla end nodes. This plugin re-opens that decision during play with a
+role-based rule: each trait keeps its own role over a node's neighborhood
+(the node plus its direct vanilla trading partners), and nothing is ever
+blended into a combined score:
 
-- a node's **wealth** is a weighted sum of its tax base (purchasing power),
-  production and trade power (weights in percent, all configurable);
-- each outgoing edge is judged against the **basin wealth** reachable
-  through it on currently open edges, discounted per hop;
-- an open edge whose basin is at least `converge_pct` poorer than the node
-  closes; a closed edge reopens only under `hysteresis_pct`, so a band
-  between the two thresholds cannot flap;
-- a node whose edges all close is an emergent **black hole** — exactly the
-  engine's own representation of an end node;
-- closures drain the poorest basins first, reopens restore the richest
-  first, and per-node/per-month budgets keep the trade map readable.
+- **tax base** (purchasing power) is the only closing signal: the node
+  with the neighborhood's highest tax closes all its outgoing edges — an
+  emergent black hole. It reopens only inside the `hysteresis_pct` band,
+  so month-to-month noise cannot flap a black hole;
+- **trade power** means transit: a hub keeps flowing (its edges stay
+  open; producers' edges into it are vanilla and stay open too);
+- **production** means upstream: a producer keeps exporting, and the
+  engine already turns its output into local trade value.
+
+Tax comes from the provinces themselves: the `CProvince` array exposed by
+the `Set base tax to` console command (context+0x1ca8, stride 0x2e10,
+base tax at +0x3e4 in thousandths — live-verified against the history
+files), summed per node over an offline `node_members.txt` generated from
+`00_tradenodes.txt` and shipped inside the plugin package. The runtime
+key-to-definition mapping is learned from incoming route entries (an
+entry names its target's internal key), so nothing depends on the game
+locale.
+
+The north-star design is a propagation network (producers inject, hubs
+relay, tax sinks absorb, unused paths wither); the neighborhood rule is
+its first decisive approximation, chosen because pure per-edge flow
+pruning would freeze once minor traffic keeps every edge faintly alive.
 
 Because the plugin only removes edges, the live topology is always a
-subgraph of the vanilla DAG: no cycles, no new states the engine could not
-have loaded itself.
+subgraph of the vanilla DAG: no cycles, no new states the engine could
+not have loaded itself.
 
 ## Package layout
 
@@ -43,7 +57,7 @@ have loaded itself.
 | --- | --- |
 | `observe` | Log the trade graph every month; never mutate |
 | `force_toggle` | Close and reopen one node's whole route vector on alternating months (the mutation-primitive proof) |
-| `policy` | Run the wealth-gradient planner |
+| `policy` | Run the neighborhood tax-peak planner |
 
 `force_node` matches a node's **display name** in the English locale (the
 engine keeps display names on the definition; internal keys only exist
@@ -105,6 +119,8 @@ it against the context global before every use.
 | node | +0xb0 | current total trade value (int32, thousandths) |
 | node | +0xc8 / +0xd0 / +0xd8 | total trade power, a second near-identical total, and the provincial-only share (int32, thousandths) |
 | node | +0xe4 | total goods produced in the node (int32, thousandths) |
+| province array | ctx+0x1ca8 | contiguous `CProvince` elements, stride 0x2e10, indexed by province id (from the `Set base tax to` console command) |
+| `CProvince` | +0x3e0 / +0x3e4 / +0x3e8 | base manpower / **base tax** / base production (int32, thousandths; all three live-verified against the history files) |
 | def | +0x30 | MSVC SSO **display name** (`Great Lakes`, `Lübeck`) |
 | def | +0x98 / +0xa0 | `vector<CTradeRoute>` begin/end, stride 0x78; 159 edges across all nodes |
 | route | +0x10 | MSVC SSO **internal key** of the target (`zanzibar`, no suffix — matches `00_tradenodes.txt`) |
@@ -137,6 +153,14 @@ removed).
 
 ## Acceptance record
 
+- 2026-11-06 (policy, tax-peak): same harness — tax aggregated for 73/81
+  nodes from the provinces; regional tax centers terminated across four
+  monthly ticks (Malacca 205k, Mexico 201k, Nippon 197k, Sevilla 180k,
+  Rheinland 162k, Timbuktu 134k, ... each closing its full outflow), and
+  the earlier wealth-blend artifact is gone: Girin (149k tax) no longer
+  cuts its edge toward Beijing, because Beijing's neighborhood holds
+  Girin itself.
+
 - 2026-11-06, EU4 1.37.5 Steam x64, `foch test --with-plugins default`
   (`plugin_host_smoke`, 1444.11.11 SWE, `advance_days=70`): smoke passed,
   empty game error log, clean exit. Plugin events: `graph frozen: 81
@@ -159,9 +183,9 @@ removed).
 - Ironman/achievements are unavailable while any DLL plugin is loaded.
 - Node identification uses English display names; a locale-independent
   key lookup (route entries carry the internal key) is future work.
-- The wealth inputs are the engine's own node aggregates: goods produced
-  (`+0xe4`) and trade power (`+0xc8`). A per-node tax aggregate does not
-  exist anywhere in the trade node object, so tax stays zero until a
-  province walk through the node's province table lands; the default
-  weights lean on production accordingly and a tax weight stays
-  configurable for when it does.
+- Eight of the 81 nodes (pure sources and the vanilla end nodes) have no
+  incoming route entry to learn their internal key from, so their tax
+  aggregate stays zero; none of them needs a closing decision anyway.
+- The province-to-node membership ships as an offline table generated
+  from vanilla `00_tradenodes.txt`; mods that redefine trade-node
+  membership need the table regenerated.

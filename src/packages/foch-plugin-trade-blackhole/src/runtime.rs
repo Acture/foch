@@ -24,15 +24,44 @@ type LiveEngine = Engine<LiveBackend, fn(i32, &str)>;
 static ENGINE: OnceLock<Mutex<LiveEngine>> = OnceLock::new();
 static EXE_BASE: AtomicUsize = AtomicUsize::new(0);
 
+/// The host-reported image base of this process's `eu4.exe`.
 /// Install the engine the economy-update detour drives. `exe_base` is the
-/// host-reported image base, used to cross-check the context pointer.
-pub fn install(config: Config, exe_base: usize) {
+/// host-reported image base, used to cross-check the context pointer;
+/// `plugin_dir` is the plugin's own read-only package directory, where the
+/// offline node-members table ships.
+pub fn install(config: Config, exe_base: usize, plugin_dir: Option<std::path::PathBuf>) {
 	EXE_BASE.store(exe_base, Ordering::Release);
+	let members = plugin_dir
+		.and_then(|dir| std::fs::read(dir.join("node_members.txt")).ok())
+		.map(|bytes| parse_members(&bytes))
+		.unwrap_or_default();
+	if members.is_empty() {
+		crate::logging::write(
+			crate::logging::WARN,
+			"node_members.txt missing or empty: node tax stays zero",
+		);
+	}
 	let _ = ENGINE.set(Mutex::new(Engine::new(
-		LiveBackend::new(),
+		LiveBackend::with_members(members),
 		config,
 		crate::logging::write,
 	)));
+}
+
+/// Parse the offline `node_members.txt`: one line per node,
+/// `<internal key> <province id>...`.
+fn parse_members(bytes: &[u8]) -> Vec<(String, Vec<u32>)> {
+	let text = String::from_utf8_lossy(bytes);
+	let mut out = Vec::new();
+	for line in text.lines() {
+		let mut fields = line.split_whitespace();
+		let Some(key) = fields.next() else { continue };
+		let ids: Vec<u32> = fields.filter_map(|f| f.parse().ok()).collect();
+		if !ids.is_empty() {
+			out.push((key.to_string(), ids));
+		}
+	}
+	out
 }
 
 /// One economy-update step on the game thread. `context` is the hook's
@@ -107,10 +136,20 @@ pub struct LiveBackend {
 	observes: u32,
 	/// Whether the route-entry dump was already logged.
 	entry_logged: bool,
+	/// Offline node-members table: internal key -> member province ids,
+	/// shipped in the plugin package (generated from 00_tradenodes.txt).
+	member_ids: HashMap<String, Vec<u32>>,
+	/// Per-node-index tax aggregate in thousandths, built at the first
+	/// observe by summing the members' CProvince base tax.
+	node_tax: HashMap<u32, f64>,
 }
 
 impl LiveBackend {
 	pub fn new() -> Self {
+		Self::with_members(Vec::new())
+	}
+
+	fn with_members(members: Vec<(String, Vec<u32>)>) -> Self {
 		Self {
 			db: 0,
 			context: 0,
@@ -121,7 +160,106 @@ impl LiveBackend {
 			fields_logged: false,
 			observes: 0,
 			entry_logged: false,
+			member_ids: members.into_iter().collect(),
+			node_tax: HashMap::new(),
 		}
+	}
+
+	/// Sum the members' base tax for every node, once the province array
+	/// and the key->definition mapping are available. A node's internal
+	/// key is read from any incoming route entry (the entry carries the
+	/// target's key), so no localization-dependent name is involved.
+	fn aggregate_taxes(&mut self, count: usize) {
+		if !self.node_tax.is_empty() || self.member_ids.is_empty() {
+			return;
+		}
+		let Some(cprov_base) = self
+			.read_qword(self.context + layout::province::CPROVINCES)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+		else {
+			return;
+		};
+		// Route entries name their target: entry+0x10 holds the target's
+		// internal key, entry+0x30 the target definition pointer.
+		let mut key_by_def: HashMap<usize, String> = HashMap::new();
+		for index in 0..count {
+			let Some(node) = self.node_at(index) else {
+				continue;
+			};
+			let Some(def) = self.definition_of(node) else {
+				continue;
+			};
+			let Some((begin, end)) = self.routes(def) else {
+				continue;
+			};
+			for slot in (begin..end).step_by(layout::route::SIZE) {
+				let Some(target) = self
+					.read_qword(slot + layout::route::TARGET)
+					.map(|p| p as usize)
+				else {
+					continue;
+				};
+				if key_by_def.contains_key(&target) {
+					continue;
+				}
+				if let Some(key) = self.read_sso_key(slot + 0x10) {
+					key_by_def.insert(target, key);
+				}
+			}
+		}
+		for index in 0..count {
+			let Some(node) = self.node_at(index) else {
+				continue;
+			};
+			let Some(def) = self.definition_of(node) else {
+				continue;
+			};
+			let Some(key) = key_by_def.get(&def) else {
+				continue;
+			};
+			let Some(ids) = self.member_ids.get(key) else {
+				continue;
+			};
+			let mut sum = 0.0;
+			for id in ids {
+				if let Some(tax) = self.read_i32(
+					cprov_base
+						+ *id as usize * layout::province::CPROVINCE_SIZE
+						+ layout::province::TAX,
+				) {
+					sum += tax as f64;
+				}
+			}
+			self.node_tax.insert(index as u32, sum);
+		}
+		crate::logging::write(
+			crate::logging::INFO,
+			&format!("tax aggregated for {}/{} nodes", self.node_tax.len(), count),
+		);
+	}
+
+	/// Read an MSVC SSO string holding an internal key (`a-z0-9_`).
+	fn read_sso_key(&self, addr: usize) -> Option<String> {
+		let length = self.read_qword(addr + 0x10)? as usize;
+		if length == 0 || length > 64 {
+			return None;
+		}
+		let capacity = self.read_qword(addr + 0x18)?;
+		let data = if capacity > 0xF {
+			self.read_qword(addr)? as usize
+		} else {
+			addr
+		};
+		let mut bytes = Vec::with_capacity(length);
+		for i in 0..length {
+			let byte = self.read_i32(data + i)? as u8;
+			if !byte.is_ascii_lowercase() && !byte.is_ascii_digit() && byte != b'_' {
+				return None;
+			}
+			bytes.push(byte);
+		}
+		String::from_utf8(bytes).ok()
 	}
 
 	fn read_qword(&self, addr: usize) -> Option<u64> {
@@ -440,7 +578,7 @@ impl EngineBackend for LiveBackend {
 			// walk lands (see the README's known limits).
 			nodes.push(NodeSnapshot {
 				id: index as u32,
-				tax: 0.0,
+				tax: self.node_tax.get(&(index as u32)).copied().unwrap_or(0.0),
 				production: self.read_i32(node + layout::node::GOODS).unwrap_or(0) as f64,
 				trade_power: self.read_i32(node + layout::node::POWER).unwrap_or(0) as f64,
 				current_value: self.read_i32(node + layout::node::VALUE).unwrap_or(0) as f64,
@@ -452,8 +590,21 @@ impl EngineBackend for LiveBackend {
 		// tell trade power from tax-like aggregates by correlation.
 		if !self.entry_logged {
 			self.entry_logged = true;
+			let edges: Vec<String> = self
+				.vanilla_outgoing
+				.iter()
+				.filter(|(_, targets)| !targets.is_empty())
+				.map(|(node, targets)| {
+					let list: Vec<String> = targets.iter().map(|t| t.to_string()).collect();
+					format!("{node}->{}", list.join(","))
+				})
+				.collect();
+			crate::logging::write(
+				crate::logging::DEBUG,
+				&format!("vanilla edges: {}", edges.join(" ")),
+			);
 			let mut lines = Vec::new();
-			for probe in 0..count.min(14) {
+			for probe in 0..count {
 				let Some(probe_node) = self.node_at(probe) else {
 					continue;
 				};
@@ -472,6 +623,17 @@ impl EngineBackend for LiveBackend {
 				&format!("node field survey:\n  {}", lines.join("\n  ")),
 			);
 		}
+		// Province-memory survey, deferred past the load phase (the first
+		// observe fires during Late History, when the province pointer
+		// table is not yet safe to walk). Sample entries of the province
+		// table shared by all nodes (node+0x18, 0xc0 stride): each entry
+		// carries its province id (entry+0x10 high half) and, by the
+		// spike's reading, its node index at entry+0xa8. The first
+		// 0x400 bytes of each province object are dumped as hex words to
+		// correlate against the history files' base_tax offline.
+		// Taxes need the province array, which is only safe after the
+		// load phase; retry until it lands.
+		self.aggregate_taxes(count);
 		// A periodic summary shows whether a late observe sees a database
 		// the first one could not (the update can fire mid-load).
 		self.observes += 1;

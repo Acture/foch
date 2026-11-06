@@ -185,7 +185,11 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 	}
 	hook::install_next_cell(next as *mut *const *const std::ffi::c_void);
 
-	runtime::install(config, host.exe_base as usize);
+	// The plugin's own read-only package directory carries the offline
+	// node-members table used for the tax aggregation.
+	let dir = unsafe { (host.dir)(host, foch_plugin_abi::dir::PLUGIN) };
+	let plugin_dir = unsafe { dir.as_str() }.map(std::path::PathBuf::from);
+	runtime::install(config, host.exe_base as usize, plugin_dir);
 	state::set(state_code::ACTIVE, Reason::None);
 	unsafe { (host.report)(host, &state::status()) };
 	logging::write(

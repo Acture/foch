@@ -74,6 +74,18 @@ pub mod layout {
 		/// Target `CTradeNodeDefinition*` of the destination node.
 		pub const TARGET: usize = 0x30;
 	}
+
+	/// Province-side access (tax aggregation input).
+	pub mod province {
+		/// Offset of the `CProvince` array base pointer inside the game
+		/// context: contiguous elements indexed by province id, exposed
+		/// by the `Set base tax to` console command.
+		pub const CPROVINCES: usize = 0x1ca8;
+		/// `CProvince` element stride.
+		pub const CPROVINCE_SIZE: usize = 0x2e10;
+		/// Base tax in thousandths, from `CProvince::SetBaseTax`.
+		pub const TAX: usize = 0x3e4;
+	}
 }
 
 /// `find_pattern` signatures for one pinned build. A signature matches

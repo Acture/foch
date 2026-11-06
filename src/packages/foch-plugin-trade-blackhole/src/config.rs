@@ -34,20 +34,16 @@ pub struct Config {
 	/// Master switch; `false` leaves the plugin an inert observer.
 	pub enabled: bool,
 	pub mode: Mode,
-	/// Engine node name for `force_toggle`, e.g. `lubeck_trade_node`.
+	/// Engine node name for `force_toggle`, e.g. `Great Lakes`.
 	pub force_node: String,
 	/// Write the monthly observer dump to the plugin log directory.
 	pub observer_log: bool,
-	/// Percent weights of the node-wealth aggregate.
-	pub wealth_tax_pct: i64,
-	pub wealth_prod_pct: i64,
-	pub wealth_tp_pct: i64,
-	/// Edge judgment thresholds and the basin distance discount, in percent.
+	/// A node terminates its outflow when its tax reaches this percent of
+	/// its neighborhood's best other tax (100 = the strict peak).
 	pub converge_pct: i64,
+	/// A terminated node reopens only below this percent of the best.
 	pub hysteresis_pct: i64,
-	pub decay_pct: i64,
-	/// Monthly flip budgets.
-	pub max_flips_per_node: usize,
+	/// Edge flips the whole graph may apply per month.
 	pub max_flips_total: usize,
 }
 
@@ -59,13 +55,8 @@ impl Default for Config {
 			mode: Mode::Observe,
 			force_node: "Great Lakes".to_string(),
 			observer_log: true,
-			wealth_tax_pct: params.wealth_tax_pct,
-			wealth_prod_pct: params.wealth_prod_pct,
-			wealth_tp_pct: params.wealth_tp_pct,
 			converge_pct: params.converge_pct,
 			hysteresis_pct: params.hysteresis_pct,
-			decay_pct: params.decay_pct,
-			max_flips_per_node: params.max_flips_per_node,
 			max_flips_total: params.max_flips_total,
 		}
 	}
@@ -108,19 +99,12 @@ impl Config {
 			config.observer_log = log;
 		}
 		for (key, target) in [
-			("wealth_tax_pct", &mut config.wealth_tax_pct),
-			("wealth_prod_pct", &mut config.wealth_prod_pct),
-			("wealth_tp_pct", &mut config.wealth_tp_pct),
 			("converge_pct", &mut config.converge_pct),
 			("hysteresis_pct", &mut config.hysteresis_pct),
-			("decay_pct", &mut config.decay_pct),
 		] {
 			if let Some(number) = object.get(key).and_then(|v| v.as_i64()) {
 				*target = number;
 			}
-		}
-		if let Some(per_node) = object.get("max_flips_per_node").and_then(|v| v.as_u64()) {
-			config.max_flips_per_node = per_node.min(usize::MAX as u64) as usize;
 		}
 		if let Some(total) = object.get("max_flips_total").and_then(|v| v.as_u64()) {
 			config.max_flips_total = total.min(usize::MAX as u64) as usize;
