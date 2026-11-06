@@ -43,9 +43,35 @@ pub(super) fn resolve_replaced_trigger_chains(
 		ScriptContext::Data,
 		merge_branch,
 	)?;
-	Ok(walk
-		.rewritten
-		.then(|| walk.revisions.into_iter().map(Cow::into_owned).collect()))
+	Ok(walk.rewritten.then(|| {
+		walk.revisions
+			.into_iter()
+			.map(Cow::into_owned)
+			.map(reparse_for_binding)
+			.collect()
+	}))
+}
+
+/// A rewritten revision is rebuilt from tree nodes, and the schema binder's
+/// context chain does not resolve through it: keys inside a rebuilt `limit`
+/// bind against a context that declares nothing, so the trigger reading
+/// misses parameterized calls. Re-parsing the emitted text gives the binder
+/// the same tree shape it resolves on an originally parsed file.
+fn reparse_for_binding(file: AstFile) -> AstFile {
+	use crate::game::eu4::script::emit::emit_clausewitz_statements;
+	use crate::game::eu4::script::parser::{ScriptSyntax, parse_clausewitz_statements};
+	let Ok(text) = emit_clausewitz_statements(&file.statements) else {
+		return file;
+	};
+	let parsed = parse_clausewitz_statements(ScriptSyntax::Clausewitz, &text);
+	if parsed.diagnostics.is_empty() {
+		AstFile {
+			path: file.path,
+			statements: parsed.statements,
+		}
+	} else {
+		file
+	}
 }
 
 struct Walk<'a> {

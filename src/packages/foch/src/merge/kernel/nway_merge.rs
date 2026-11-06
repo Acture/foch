@@ -762,8 +762,45 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 	/// An addition only some of the mods share, which the `OR` would need
 	/// twice, keeps every addition required instead.
 	fn build_conditions(&mut self, child_classes: Vec<ClassId>) -> Vec<TreeNode> {
+		// A child the adapter distinguished by value (a weight entry's
+		// conditions, a parameterized call's arguments) is one entry of a
+		// list the game reads together or one value it reads once per key:
+		// not a way this condition may hold, so it never becomes an
+		// alternative; both revisions' children stay, each built as itself.
+		let distinguished = |builder: &Self, class: ClassId| {
+			builder
+				.correspondence
+				.classes
+				.class(class)
+				.members
+				.iter()
+				.next()
+				.is_some_and(|source| {
+					let revision = *source.0;
+					let member = builder.node(RevisionNode {
+						revision,
+						node: *source.1,
+					});
+					// The anchor of the assignment itself, or of the block it
+					// assigns, carries the distinguishing value.
+					std::iter::once(member)
+						.chain(member.children.iter().map(|child| {
+							builder.node(RevisionNode {
+								revision,
+								node: *child,
+							})
+						}))
+						.any(|node| {
+							node.anchor.as_ref().is_some_and(|anchor| {
+								anchor.namespace == crate::merge::kernel::CONDITION_BLOCK
+									&& !anchor.value.is_empty()
+							})
+						})
+				})
+		};
 		let additions = child_classes
 			.iter()
+			.filter(|class| !distinguished(self, **class))
 			.filter_map(|class| Some((*class, self.adding_revisions(*class)?)))
 			.collect::<Vec<_>>();
 		let adders = additions

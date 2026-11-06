@@ -1408,6 +1408,9 @@ mod tests {
 
 	#[test]
 	fn real_merges_attribute_a_cross_directory_clash_to_its_pair() {
+		// The ruler personality database's two directories hold no recorded
+		// same-name resolution, so a name both define is a clash the probe
+		// must attribute to the pair that brings it.
 		let temp = tempfile::tempdir().unwrap();
 		let fixture = crate::workshop_probe::tests::fixture(temp.path());
 		let ids: Vec<String> = ["22", "33", "11"].map(String::from).to_vec();
@@ -1415,14 +1418,14 @@ mod tests {
 		let content = &pairs[0].content_root;
 		write_file(
 			&content.join("22"),
-			"common/static_modifiers/clash.txt",
-			"cross_directory_clash = { global_tax_modifier = 0.4 }
+			"common/ancestor_personalities/clash.txt",
+			"cross_directory_clash = { loyalty = 0.4 }
 ",
 		);
 		write_file(
 			&content.join("11"),
-			"common/event_modifiers/clash.txt",
-			"cross_directory_clash = { land_morale = 0.5 }
+			"common/ruler_personalities/clash.txt",
+			"cross_directory_clash = { loyalty = 0.5 }
 ",
 		);
 		let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
@@ -1439,10 +1442,10 @@ mod tests {
 			budget,
 		};
 		fs::create_dir_all(&config.root).unwrap();
-		let before = fs::read(content.join("22/common/static_modifiers/clash.txt")).unwrap();
+		let before = fs::read(content.join("22/common/ancestor_personalities/clash.txt")).unwrap();
 		let run = execute(&config, &mut CliRunner).unwrap();
 		assert_eq!(
-			fs::read(content.join("22/common/static_modifiers/clash.txt")).unwrap(),
+			fs::read(content.join("22/common/ancestor_personalities/clash.txt")).unwrap(),
 			before
 		);
 		assert!(
