@@ -266,17 +266,31 @@ pub struct Evidence {
 	pub above_reopen: u32,
 }
 
-/// Plan this month's flips using sustained evidence: an edge closes only
-/// after `evidence_months` consecutive months of below-epsilon flow, and
-/// reopens only after the same sustained period above the reopen
-/// threshold. Deterministic (nodes in id order, edges in engine order),
-/// budgeted.
+/// A new reverse edge the engine should grow: when a vanilla edge A→B
+/// closes because the flow runs backward, and B produces value that A
+/// would absorb, the model asks the engine to grow B→A so the next
+/// propagation round sees the corrected direction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReverseAdd {
+	/// The node that gets the new outgoing edge (was the vanilla target).
+	pub source: u32,
+	/// Where the new edge points (was the vanilla source, now the sink).
+	pub target: u32,
+}
+
+/// Plan this month's flips and reverse-edge additions using sustained
+/// evidence. An edge closes only after `evidence_months` consecutive
+/// months of below-epsilon flow, and reopens only after the same
+/// sustained period above the reopen threshold. When a close happens on
+/// an edge whose flow ran backward (the source retains far more than the
+/// target and the target produces), a ReverseAdd is emitted so the
+/// engine grows the correct direction.
 pub fn plan(
 	nodes: &[NodeSnapshot],
 	closed: &mut [Vec<bool>],
 	evidence: &mut [Vec<Evidence>],
 	params: &Params,
-) -> Result<Vec<Flip>, &'static str> {
+) -> Result<(Vec<Flip>, Vec<ReverseAdd>), &'static str> {
 	if nodes.len() != closed.len() || evidence.len() != closed.len() {
 		return Err("mirrors must match the node count");
 	}
@@ -288,6 +302,7 @@ pub fn plan(
 	}
 	let retained = propagate(nodes, closed, params)?;
 	let mut flips = Vec::new();
+	let mut additions = Vec::new();
 	let mut total = 0usize;
 	for node in nodes {
 		if node.outgoing.is_empty() || total >= params.max_flips_total {
@@ -332,9 +347,26 @@ pub fn plan(
 				pool: reference,
 			});
 			total += 1;
+
+			// Reverse-edge detection: when we close A→B because the flow
+			// ran backward, and B produces value that A would absorb,
+			// grow B→A so the next round routes correctly.
+			if should_close {
+				let target_node = &nodes[target as usize];
+				let source_retained = retained[i];
+				let target_retained = retained[target as usize];
+				let reverse_viable =
+					target_node.production > 0.0 && source_retained > target_retained * 2.0;
+				if reverse_viable {
+					additions.push(ReverseAdd {
+						source: target,
+						target: node.id,
+					});
+				}
+			}
 		}
 	}
-	Ok(flips)
+	Ok((flips, additions))
 }
 
 #[cfg(test)]
@@ -399,7 +431,7 @@ mod tests {
 		let mut ev = evidence(nodes);
 		let mut all = Vec::new();
 		for _ in 0..months {
-			all.extend(plan(nodes, closed, &mut ev, params).unwrap());
+			all.extend(plan(nodes, closed, &mut ev, params).unwrap().0);
 		}
 		all
 	}

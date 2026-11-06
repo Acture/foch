@@ -31,7 +31,6 @@ pub trait EngineBackend {
 	/// vector capacity; fails when the vector is full.
 	/// The primitive is tested and ready; the policy wires it in when
 	/// the reverse-flow detection lands.
-	#[allow(dead_code)]
 	fn add_edge(&mut self, source: u32, target: u32) -> Result<(), &'static str>;
 
 	/// One log line about the applied state of the backend.
@@ -209,7 +208,7 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 			return;
 		};
 		let params = policy::Params::from(self.config.clone());
-		let Ok(flips) = policy::plan(nodes, closed, evidence, &params) else {
+		let Ok((flips, additions)) = policy::plan(nodes, closed, evidence, &params) else {
 			(self.log)(logging::WARN, "policy rejected its parameters");
 			return;
 		};
@@ -222,6 +221,25 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 				);
 			} else {
 				(self.log)(logging::INFO, &flip.describe(nodes));
+			}
+		}
+		for add in &additions {
+			match self.backend.add_edge(add.source, add.target) {
+				Ok(()) => {
+					(self.log)(
+						logging::INFO,
+						&format!("reverse edge {} -> {} grown", add.source, add.target),
+					);
+				}
+				Err(reason) => {
+					(self.log)(
+						logging::WARN,
+						&format!(
+							"reverse edge {} -> {} failed: {reason}",
+							add.source, add.target
+						),
+					);
+				}
 			}
 		}
 	}
