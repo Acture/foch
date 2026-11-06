@@ -67,6 +67,8 @@ pub struct Config {
 	pub flow_epsilon_pct: i64,
 	/// A closed edge reopens only above this percent of the pool.
 	pub reopen_pct: i64,
+	/// Consecutive months of sustained evidence before an edge flips.
+	pub evidence_months: u32,
 	/// Sink signal basis: per-province mean tax (intensity) or raw sum.
 	pub sink_basis: SinkBasis,
 	/// Edge flips the whole graph may apply per month.
@@ -86,6 +88,7 @@ impl Default for Config {
 			relay_ref: params.relay_ref,
 			flow_epsilon_pct: params.flow_epsilon_pct,
 			reopen_pct: params.reopen_pct,
+			evidence_months: params.evidence_months,
 			max_flips_total: params.max_flips_total,
 		}
 	}

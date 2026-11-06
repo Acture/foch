@@ -41,6 +41,8 @@ pub struct Engine<B: EngineBackend, F: Fn(i32, &str)> {
 	config: Config,
 	/// `None` until the first successful observe freezes the graph shape.
 	closed: Option<Vec<Vec<bool>>>,
+	/// Per-edge sustained-evidence counters, parallel to `closed`.
+	evidence: Option<Vec<Vec<policy::Evidence>>>,
 	/// Ticks seen; each one is one monthly-cadence step of the hook.
 	ticks: u32,
 	force_closed: bool,
@@ -53,6 +55,7 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 			backend,
 			config,
 			closed: None,
+			evidence: None,
 			ticks: 0,
 			force_closed: false,
 			log,
@@ -86,6 +89,12 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 				.map(|n| vec![false; n.outgoing.len()])
 				.collect();
 			self.closed = Some(mirror);
+			self.evidence = Some(
+				nodes
+					.iter()
+					.map(|n| vec![policy::Evidence::default(); n.outgoing.len()])
+					.collect(),
+			);
 			(self.log)(
 				logging::INFO,
 				&format!(
@@ -188,8 +197,11 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 		let Some(closed) = self.closed.as_mut() else {
 			return;
 		};
+		let Some(evidence) = self.evidence.as_mut() else {
+			return;
+		};
 		let params = policy::Params::from(self.config.clone());
-		let Ok(flips) = policy::plan(nodes, closed, &params) else {
+		let Ok(flips) = policy::plan(nodes, closed, evidence, &params) else {
 			(self.log)(logging::WARN, "policy rejected its parameters");
 			return;
 		};
@@ -234,13 +246,17 @@ mod tests {
 
 	fn inner() -> Rc<RefCell<Inner>> {
 		// lubeck(0, rich) -> english_channel(1); venice(2) is an end node.
-		let node = |id: u32, tax: f64, outgoing: Vec<u32>| NodeSnapshot {
-			id,
-			tax,
-			production: 0.0,
-			trade_power: 0.0,
-			current_value: 0.0,
-			outgoing,
+		let node = |id: u32, tax: f64, outgoing: Vec<u32>| {
+			let steering = vec![0.0; outgoing.len()];
+			NodeSnapshot {
+				id,
+				tax,
+				production: 0.0,
+				trade_power: 0.0,
+				current_value: 0.0,
+				outgoing,
+				steering,
+			}
 		};
 		Rc::new(RefCell::new(Inner {
 			nodes: vec![
@@ -356,6 +372,9 @@ mod tests {
 		let mut engine = make(
 			Config {
 				mode: Mode::Policy,
+				// One-month evidence: unit tests exercise the mechanism,
+				// not the sustained-evidence patience.
+				evidence_months: 1,
 				..Config::default()
 			},
 			&state,

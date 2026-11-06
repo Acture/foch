@@ -592,6 +592,21 @@ impl EngineBackend for LiveBackend {
 			// the current value. A per-node tax aggregate does not exist
 			// in the trade node object; tax stays zero until the province
 			// walk lands (see the README's known limits).
+			// Steering: the engine's per-edge effort vector, read from
+			// the live node (merchants, investments, light ships).
+			let steering = match self.read_qword(node + layout::node::WEIGHTS) {
+				Some(begin) => match self.read_qword(node + layout::node::WEIGHTS + 8) {
+					Some(end) if end >= begin => {
+						let count = ((end - begin) / 4) as usize;
+						(0..count.min(outgoing.len()))
+							.filter_map(|i| self.read_i32(begin as usize + i * 4))
+							.map(|v| v as f64)
+							.collect::<Vec<f64>>()
+					}
+					_ => Vec::new(),
+				},
+				None => Vec::new(),
+			};
 			nodes.push(NodeSnapshot {
 				id: index as u32,
 				tax: self.node_tax.get(&(index as u32)).copied().unwrap_or(0.0),
@@ -599,6 +614,7 @@ impl EngineBackend for LiveBackend {
 				trade_power: self.read_i32(node + layout::node::POWER).unwrap_or(0) as f64,
 				current_value: self.read_i32(node + layout::node::VALUE).unwrap_or(0) as f64,
 				outgoing,
+				steering,
 			});
 		}
 		// M2 semantics survey, once, after every name is collected:
