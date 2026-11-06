@@ -102,16 +102,24 @@ it against the context global before every use.
 | db | +0x30 / +0x3c | node **pointer** array (stride 8) / count; 81 entries in a full 1.37.5 install |
 | node (heap `CTradeNode`) | +0x88 | `vector<int32>` steering weights, paired with routes |
 | node | +0xa8 | `CTradeNodeDefinition*` |
-| node | +0xb0 | current total trade value (int32) |
+| node | +0xb0 | current total trade value (int32, thousandths) |
+| node | +0xc8 / +0xd0 / +0xd8 | total trade power, a second near-identical total, and the provincial-only share (int32, thousandths) |
+| node | +0xe4 | total goods produced in the node (int32, thousandths) |
 | def | +0x30 | MSVC SSO **display name** (`Great Lakes`, `Lübeck`) |
 | def | +0x98 / +0xa0 | `vector<CTradeRoute>` begin/end, stride 0x78; 159 edges across all nodes |
 | route | +0x10 | MSVC SSO **internal key** of the target (`zanzibar`, no suffix — matches `00_tradenodes.txt`) |
 | route | +0x30 | target node's `CTradeNodeDefinition*` |
 
-Mutation primitive: writing the route vector's `begin` into `end`
-empties a node's outgoing routes — the same state a vanilla end node
-has — and restoring the cached original `end` reopens it. No allocation,
-no realloc, no engine state the loader could not have produced.
+Mutation primitive: per edge. The plugin captures a node's vanilla
+route entries and steering weights before its first mutation, and every
+state change rewrites the live arrays from the originals — open entries
+first in vanilla order, closed entries parked at the tail — then shrinks
+the vector's `end` to the open prefix. Any open subset is a contiguous,
+legal vector (exactly what vanilla end nodes and low-outdegree nodes look
+like), all writes stay inside the original capacity, and restoring every
+flag rebuilds the byte-exact vanilla layout. The vanilla outgoing list
+the policy plans against is frozen at the first observe, so live
+reordering never disturbs vanilla slot indices.
 
 Live-confirmed invariants the backend re-checks every observe: node count
 within 20..=512, every node pointer and definition pointer plausible,
@@ -136,17 +144,24 @@ removed).
   reopened 2 edges` alternating — the Great Lakes node's two vanilla
   outgoing routes were closed and fully restored four times in one
   session. Artifacts: `foch-tests-*` session dir, `foch-host-events.jsonl`.
+- 2026-11-06, same harness in `policy` mode (the shipped wealth inputs:
+  goods produced + 25% trade power): 20 per-edge closures across four
+  monthly ticks, each logged with its judgment (e.g. `close edge 78 ->
+  79 (wealth 141755 vs basin 110682)`), hysteresis held with zero
+  flapping, and the economy demonstrably re-routed downstream — node 36
+  value 8487 -> 15180 once its branch was cut, nodes 33/35 lost their
+  inflow to 0.0, and the vanilla end nodes kept accumulating.
 
 ## Known limits
 
 - Only the pinned Steam 1.37.5 x64 build; every other build is refused
   (`refused: eu4.exe is not the reversed build`).
 - Ironman/achievements are unavailable while any DLL plugin is loaded.
-- `force_toggle` works on whole nodes; per-edge policy mutations (route
-  entry reordering, since the vector is contiguous) arrive with the
-  policy milestone.
 - Node identification uses English display names; a locale-independent
   key lookup (route entries carry the internal key) is future work.
-- Tax/production aggregates for the wealth function are still zero in
-  the snapshot (M2); the policy mode currently judges on trade value
-  until the province aggregates land.
+- The wealth inputs are the engine's own node aggregates: goods produced
+  (`+0xe4`) and trade power (`+0xc8`). A per-node tax aggregate does not
+  exist anywhere in the trade node object, so tax stays zero until a
+  province walk through the node's province table lands; the default
+  weights lean on production accordingly and a tax weight stays
+  configurable for when it does.

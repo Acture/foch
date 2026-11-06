@@ -22,8 +22,11 @@
 pub const DEFAULT_CONVERGE_PCT: i64 = 120;
 pub const DEFAULT_HYSTERESIS_PCT: i64 = 80;
 pub const DEFAULT_DECAY_PCT: i64 = 85;
-pub const DEFAULT_WEALTH_TAX_PCT: i64 = 100;
-pub const DEFAULT_WEALTH_PROD_PCT: i64 = 50;
+/// Tax is zero in the live snapshot until the province walk lands, so the
+/// default wealth leans on the engine's own aggregates: goods produced
+/// plus a quarter of trade power.
+pub const DEFAULT_WEALTH_TAX_PCT: i64 = 0;
+pub const DEFAULT_WEALTH_PROD_PCT: i64 = 100;
 pub const DEFAULT_WEALTH_TP_PCT: i64 = 25;
 pub const DEFAULT_MAX_FLIPS_PER_NODE: usize = 1;
 pub const DEFAULT_MAX_FLIPS_TOTAL: usize = 8;
@@ -271,11 +274,11 @@ pub fn plan(
 mod tests {
 	use super::*;
 
-	fn node(id: u32, tax: f64, outgoing: Vec<u32>) -> NodeSnapshot {
+	fn node(id: u32, production: f64, outgoing: Vec<u32>) -> NodeSnapshot {
 		NodeSnapshot {
 			id,
-			tax,
-			production: 0.0,
+			tax: 0.0,
+			production,
 			trade_power: 0.0,
 			current_value: 0.0,
 			outgoing,
@@ -419,6 +422,28 @@ mod tests {
 			..Params::default()
 		};
 		assert!(plan(&nodes, &mut closed, &hub).unwrap().is_empty());
+	}
+
+	#[test]
+	fn tax_only_wealth_needs_an_explicit_weight() {
+		// Tax is zero in live snapshots until the province walk fills it;
+		// with an explicit tax weight it still drives decisions alone.
+		let nodes = vec![
+			NodeSnapshot {
+				id: 0,
+				tax: 100.0,
+				..node(0, 0.0, vec![1])
+			},
+			node(1, 10.0, vec![]),
+		];
+		let mut closed = mirror(&nodes);
+		let tax_only = Params {
+			wealth_prod_pct: 0,
+			..Params::default()
+		};
+		let flips = plan(&nodes, &mut closed, &tax_only).unwrap();
+		assert_eq!(flips.len(), 1);
+		assert_eq!(flips[0].action, FlipAction::Close);
 	}
 
 	#[test]

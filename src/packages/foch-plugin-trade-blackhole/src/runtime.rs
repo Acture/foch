@@ -60,17 +60,43 @@ pub fn monthly(context: usize, db: usize) {
 	}
 }
 
+/// The per-node mutation state: the vanilla route entries and steering
+/// weights captured before the first mutation, plus the live closed flags.
+/// Applying a state rewrites the live arrays from the originals with the
+/// open entries first and parks the closed ones at the tail, then shrinks
+/// the vector's end — so any open subset is a contiguous, legal vector
+/// and restoring every flag rebuilds the exact vanilla layout.
+struct NodeMutation {
+	def: usize,
+	routes_begin: usize,
+	original_routes: Vec<u8>,
+	weights_begin: Option<usize>,
+	original_weights: Vec<i32>,
+	closed: Vec<bool>,
+}
+
+/// The live slot order for vanilla edges with the given closed flags:
+/// open vanilla slots first in vanilla order, closed slots parked at the
+/// tail. Pure, so the ordering is unit-tested without engine memory.
+fn live_order(closed: &[bool]) -> Vec<usize> {
+	let open = (0..closed.len()).filter(|i| !closed[*i]);
+	let shut = (0..closed.len()).filter(|i| closed[*i]);
+	open.chain(shut).collect()
+}
+
 /// Reads and mutates the engine's trade structures. Every access happens
 /// on the game thread inside the recalculation hook, so the database and
 /// its nodes are stable for the whole call; reads still guard against
 /// implausible addresses instead of trusting the layout blindly.
 pub struct LiveBackend {
 	db: usize,
-	/// The global game context, kept for the date-anchor scan.
+	/// The global game context, kept for the context cross-check.
 	context: usize,
-	/// Original route-vector end per definition pointer, captured before
-	/// the first closure so reopening restores the vanilla topology.
-	original_ends: HashMap<usize, usize>,
+	/// Per-node mutation state, captured before the first mutation.
+	mutations: HashMap<u32, NodeMutation>,
+	/// Vanilla outgoing targets per node index, frozen at the first
+	/// observe and reported from cache afterwards.
+	vanilla_outgoing: HashMap<u32, Vec<u32>>,
 	/// Definition pointer and name per node index, refreshed on observe.
 	names: Vec<(usize, String)>,
 	/// Whether the weights-pairing diagnostic was already logged.
@@ -88,7 +114,8 @@ impl LiveBackend {
 		Self {
 			db: 0,
 			context: 0,
-			original_ends: HashMap::new(),
+			mutations: HashMap::new(),
+			vanilla_outgoing: HashMap::new(),
 			names: Vec::new(),
 			pairing_logged: false,
 			fields_logged: false,
@@ -108,6 +135,105 @@ impl LiveBackend {
 	fn write_qword(&self, addr: usize, value: u64) -> Option<()> {
 		(addr > 0x1_0000 && addr & 7 == 0)
 			.then(|| unsafe { std::ptr::write(addr as *mut u64, value) })
+	}
+
+	fn write_bytes(&self, addr: usize, bytes: &[u8]) -> Option<()> {
+		(addr > 0x1_0000).then(|| unsafe {
+			std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len())
+		})
+	}
+
+	/// Capture a node's vanilla routes and weights before the first
+	/// mutation so every later state is a rewrite of the originals.
+	fn capture(&mut self, node: u32) -> Result<(), &'static str> {
+		if self.mutations.contains_key(&node) {
+			return Ok(());
+		}
+		let address = self
+			.node_at(node as usize)
+			.ok_or("implausible node pointer")?;
+		let def = self
+			.definition_of(address)
+			.ok_or("implausible definition")?;
+		let (begin, end) = self.routes(def).ok_or("implausible route vector")?;
+		let count = (end - begin) / layout::route::SIZE;
+		let mut original_routes = Vec::with_capacity(count * layout::route::SIZE);
+		for offset in 0..count * layout::route::SIZE {
+			let Some(byte) = self.read_i32(begin + offset) else {
+				return Err("route bytes unreadable");
+			};
+			original_routes.push(byte as u8);
+		}
+		// The steering weights pair with the routes entry for entry; when
+		// they do not, route reordering alone still holds and the weights
+		// keep their live order (the pairing diagnostic covers the case).
+		let weights_begin = self
+			.read_qword(address + layout::node::WEIGHTS)
+			.map(|p| p as usize);
+		let weights_end = self
+			.read_qword(address + layout::node::WEIGHTS + 8)
+			.map(|p| p as usize);
+		let paired = matches!((weights_begin, weights_end), (Some(a), Some(e)) if e >= a && (e - a) / 4 == count);
+		let (weights_begin, original_weights) = if paired {
+			let Some(begin) = weights_begin else {
+				unreachable!("paired implies begin")
+			};
+			let mut values = Vec::with_capacity(count);
+			for slot in 0..count {
+				match self.read_i32(begin + slot * 4) {
+					Some(value) => values.push(value),
+					None => return Err("weight bytes unreadable"),
+				}
+			}
+			(Some(begin), values)
+		} else {
+			(None, Vec::new())
+		};
+		self.mutations.insert(
+			node,
+			NodeMutation {
+				def,
+				routes_begin: begin,
+				original_routes,
+				weights_begin,
+				original_weights,
+				closed: vec![false; count],
+			},
+		);
+		Ok(())
+	}
+
+	/// Rewrite a node's live route and weight arrays from the captured
+	/// originals: open entries first, closed entries parked at the tail,
+	/// and the vector end shrunk to the open prefix.
+	fn apply(&self, node: u32) -> Result<(), &'static str> {
+		let Some(state) = self.mutations.get(&node) else {
+			return Ok(());
+		};
+		let stride = layout::route::SIZE;
+		let order = live_order(&state.closed);
+		for (live_slot, vanilla_slot) in order.iter().enumerate() {
+			let source = vanilla_slot * stride;
+			let target = state.routes_begin + live_slot * stride;
+			let bytes = &state.original_routes[source..source + stride];
+			self.write_bytes(target, bytes)
+				.ok_or("route write refused")?;
+			if let (Some(weights_begin), value) = (
+				state.weights_begin,
+				state.original_weights.get(*vanilla_slot).copied(),
+			) {
+				let Some(value) = value else { continue };
+				let addr = weights_begin + live_slot * 4;
+				(addr > 0x1_0000)
+					.then(|| unsafe { std::ptr::write_unaligned(addr as *mut i32, value) })
+					.ok_or("weight write refused")?;
+			}
+		}
+		let open_count = state.closed.iter().filter(|c| !**c).count();
+		let new_end = state.routes_begin + open_count * stride;
+		self.write_qword(state.def + layout::def::ROUTES_END, new_end as u64)
+			.ok_or("end write refused")?;
+		Ok(())
 	}
 
 	fn node_count(&self) -> Option<usize> {
@@ -209,23 +335,57 @@ impl EngineBackend for LiveBackend {
 			index_by_def.insert(def, index as u32);
 		}
 		self.names.clear();
+		// The vanilla outgoing edges, captured at the first observe (which
+		// always precedes any mutation) and reported from the cache after
+		// that: mutations reorder and shrink the live vector, so the live
+		// order cannot serve as a stable vanilla-slot index for the policy
+		// mirror. The live vector is still counted below as a diagnostic.
+		if self.vanilla_outgoing.is_empty() {
+			for index in 0..count {
+				let node = self.node_at(index).expect("validated above");
+				let def = self.definition_of(node).expect("validated above");
+				let Some((begin, end)) = self.routes(def) else {
+					return Err("implausible route vector");
+				};
+				let outgoing: Vec<u32> = (begin..end)
+					.step_by(layout::route::SIZE)
+					.filter_map(|slot| {
+						let target = self.read_qword(slot + layout::route::TARGET)? as usize;
+						index_by_def.get(&target).copied()
+					})
+					.collect();
+				self.vanilla_outgoing.insert(index as u32, outgoing);
+			}
+		}
 		let mut nodes = Vec::with_capacity(count);
 		for index in 0..count {
 			let node = self.node_at(index).expect("validated above");
 			let def = self.definition_of(node).expect("validated above");
 			self.names
 				.push((def, self.read_name(def).unwrap_or_default()));
-			// Route targets the mirror cannot resolve to a known node are
-			// dropped from the mirror; the engine keeps its own entry.
-			let (begin, end) = self.routes(def).ok_or("implausible route vector")?;
+			let outgoing = self
+				.vanilla_outgoing
+				.get(&(index as u32))
+				.cloned()
+				.unwrap_or_default();
+			let Some((begin, end)) = self.routes(def) else {
+				return Err("implausible route vector");
+			};
 			let route_count = (end - begin) / layout::route::SIZE;
-			let outgoing: Vec<u32> = (begin..end)
-				.step_by(layout::route::SIZE)
-				.filter_map(|slot| {
-					let target = self.read_qword(slot + layout::route::TARGET)? as usize;
-					index_by_def.get(&target).copied()
-				})
-				.collect();
+			// After mutations the live vector holds exactly the open
+			// entries; a drift from the plugin's own closed flags would
+			// mean an external writer touched the topology.
+			if let Some(state) = self.mutations.get(&(index as u32)) {
+				let expected = state.closed.iter().filter(|c| !**c).count();
+				if route_count != expected {
+					crate::logging::write(
+						crate::logging::WARN,
+						&format!(
+							"node {index}: live routes {route_count} but {expected} expected open"
+						),
+					);
+				}
+			}
 			// The steering weights are expected to pair with the routes
 			// entry for entry, but that pairing is a spike hypothesis, not
 			// a pinned fact: log the first mismatch as a diagnostic and
@@ -273,28 +433,44 @@ impl EngineBackend for LiveBackend {
 					);
 				}
 			}
-			if !self.entry_logged
-				&& let Some((begin, end)) = self.routes(def)
-				&& end > begin
-			{
-				self.entry_logged = true;
-				let words: Vec<String> = (0..15)
-					.filter_map(|i| self.read_qword(begin + i * 8))
-					.map(|w| format!("{w:x}"))
-					.collect();
-				crate::logging::write(
-					crate::logging::DEBUG,
-					&format!("route entry qwords: {}", words.join(" ")),
-				);
-			}
+			// Engine-cached aggregates, all in thousandths: goods produced
+			// as the production-side wealth input, total trade power, and
+			// the current value. A per-node tax aggregate does not exist
+			// in the trade node object; tax stays zero until the province
+			// walk lands (see the README's known limits).
 			nodes.push(NodeSnapshot {
 				id: index as u32,
 				tax: 0.0,
-				production: 0.0,
-				trade_power: 0.0,
+				production: self.read_i32(node + layout::node::GOODS).unwrap_or(0) as f64,
+				trade_power: self.read_i32(node + layout::node::POWER).unwrap_or(0) as f64,
 				current_value: self.read_i32(node + layout::node::VALUE).unwrap_or(0) as f64,
 				outgoing,
 			});
+		}
+		// M2 semantics survey, once, after every name is collected:
+		// per-node engine-cached candidates across a dozen nodes, to
+		// tell trade power from tax-like aggregates by correlation.
+		if !self.entry_logged {
+			self.entry_logged = true;
+			let mut lines = Vec::new();
+			for probe in 0..count.min(14) {
+				let Some(probe_node) = self.node_at(probe) else {
+					continue;
+				};
+				let value = self.read_i32(probe_node + layout::node::VALUE);
+				let c8 = self.read_i32(probe_node + 0xc8);
+				let d0 = self.read_i32(probe_node + 0xd0);
+				let d8 = self.read_i32(probe_node + 0xd8);
+				let e4 = self.read_i32(probe_node + 0xe4);
+				lines.push(format!(
+					"{}: value {value:?} c8 {c8:?} d0 {d0:?} d8 {d8:?} e4 {e4:?}",
+					self.names[probe].1
+				));
+			}
+			crate::logging::write(
+				crate::logging::DEBUG,
+				&format!("node field survey:\n  {}", lines.join("\n  ")),
+			);
 		}
 		// A periodic summary shows whether a late observe sees a database
 		// the first one could not (the update can fire mid-load).
@@ -332,29 +508,37 @@ impl EngineBackend for LiveBackend {
 	fn set_edge_closed(
 		&mut self,
 		node: u32,
-		_edge: usize,
+		edge: usize,
 		closed: bool,
 	) -> Result<(), &'static str> {
-		let address = self
-			.node_at(node as usize)
-			.ok_or("implausible node pointer")?;
-		let def = self
-			.definition_of(address)
-			.ok_or("implausible definition")?;
-		let (begin, end) = self.routes(def).ok_or("implausible route vector")?;
-		let open = end > begin;
-		if closed != open {
+		self.capture(node)?;
+		let Some(state) = self.mutations.get_mut(&node) else {
 			return Ok(());
+		};
+		if edge >= state.closed.len() {
+			return Err("edge slot beyond the vanilla set");
 		}
-		if closed {
-			self.original_ends.insert(def, end);
-			self.write_qword(def + layout::def::ROUTES_END, begin as u64)
-				.ok_or("end write refused")?;
-		} else {
-			let original = self.original_ends.get(&def).copied().unwrap_or(begin);
-			self.write_qword(def + layout::def::ROUTES_END, original as u64)
-				.ok_or("end write refused")?;
-		}
-		Ok(())
+		state.closed[edge] = closed;
+		self.apply(node)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::live_order;
+
+	#[test]
+	fn open_entries_stay_first_in_vanilla_order() {
+		assert_eq!(live_order(&[false, false]), vec![0, 1]);
+		// Closing the middle of three parks vanilla slot 1 at the tail.
+		assert_eq!(live_order(&[false, true, false]), vec![0, 2, 1]);
+		// Closed slots keep their vanilla order at the tail.
+		assert_eq!(live_order(&[true, true]), vec![0, 1]);
+		assert_eq!(live_order(&[true, false, true]), vec![1, 0, 2]);
+	}
+
+	#[test]
+	fn an_empty_node_has_an_empty_order() {
+		assert!(live_order(&[]).is_empty());
 	}
 }

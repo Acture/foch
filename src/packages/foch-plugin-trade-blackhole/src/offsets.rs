@@ -44,8 +44,15 @@ pub mod layout {
 		/// `CTradeNodeDefinition*`; the definition carries the route
 		/// vector and the node name.
 		pub const DEFINITION: usize = 0xa8;
-		/// Current total trade value of the node (int32).
+		/// Current total trade value of the node (int32, thousandths).
 		pub const VALUE: usize = 0xb0;
+		/// Total trade power of the node (int32, thousandths); a second
+		/// near-identical total sits at +0xd0 and the provincial-only
+		/// share at +0xd8.
+		pub const POWER: usize = 0xc8;
+		/// Total goods produced in the node (int32, thousandths): the
+		/// engine's own production-side aggregate for the node.
+		pub const GOODS: usize = 0xe4;
 	}
 
 	/// `CTradeNodeDefinition`, reached through `node::DEFINITION`.
