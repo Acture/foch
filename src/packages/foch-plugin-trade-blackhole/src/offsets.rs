@@ -85,6 +85,9 @@ pub mod layout {
 		pub const CPROVINCE_SIZE: usize = 0x2e10;
 		/// Base tax in thousandths, from `CProvince::SetBaseTax`.
 		pub const TAX: usize = 0x3e4;
+		/// Base manpower in thousandths (potential consumption), at
+		/// `+0x3e0` per the live dump correlation.
+		pub const MANPOWER: usize = 0x3e0;
 	}
 }
 

@@ -196,13 +196,31 @@ pub fn propagate(
 		list.dedup_by(|a, b| a.0 == b.0);
 	}
 	let absorb = |tax: f64| tax / (tax + params.absorb_ref as f64);
+	// Colonial tension: when a node's outgoing steering effort is high
+	// relative to its own production, a foreign power is actively pulling
+	// trade out, and the node's ability to retain value drops. A node
+	// with zero steering (local control) absorbs at full strength; a node
+	// dominated by external steering (a colonial extraction hub) loses
+	// most of its absorption.
+	let steering_pressure: Vec<f64> = nodes
+		.iter()
+		.map(|node| {
+			let outgoing_effort: f64 = node.steering.iter().sum();
+			let local_base = node.production + 1.0;
+			outgoing_effort / (outgoing_effort + local_base)
+		})
+		.collect();
 	let mut pool: Vec<f64> = nodes.iter().map(|node| node.production).collect();
 	let mut retained: Vec<f64> = vec![0.0; n];
 	for _ in 0..RELAXATION_ROUNDS {
 		let mut incoming = vec![0.0_f64; n];
 		for node in nodes {
 			let i = node.id as usize;
-			let share = pool[i] * (1.0 - absorb(nodes[i].tax));
+			// Effective absorption: the wealth gradient modulated by how
+			// much external steering is pulling value out of the node.
+			let base = absorb(nodes[i].tax);
+			let effective = base * (1.0 - steering_pressure[i]);
+			let share = pool[i] * (1.0 - effective);
 			if share <= 0.0 {
 				continue;
 			}
@@ -229,7 +247,7 @@ pub fn propagate(
 			}
 		}
 		for (i, p) in pool.iter().enumerate() {
-			let keep = absorb(nodes[i].tax);
+			let keep = absorb(nodes[i].tax) * (1.0 - steering_pressure[i]);
 			retained[i] += p * keep;
 		}
 		std::mem::swap(&mut pool, &mut incoming);
@@ -276,6 +294,50 @@ pub struct ReverseAdd {
 	pub source: u32,
 	/// Where the new edge points (was the vanilla source, now the sink).
 	pub target: u32,
+}
+
+/// Monthly trade intelligence: where value converges and where the
+/// steering effort is mismatched with the flow potential. This is the
+/// transit-fee and hegemony-recommendation layer: it tells the player
+/// (and the model) which nodes are the high-value transit corridors and
+/// which are under-steered relative to their potential.
+pub fn transit_intelligence(
+	nodes: &[NodeSnapshot],
+	closed: &[Vec<bool>],
+	params: &Params,
+) -> Vec<String> {
+	let Ok(retained) = propagate(nodes, closed, params) else {
+		return Vec::new();
+	};
+	// Transit volume: value that arrived from neighbors beyond the node's
+	// own injection, approximated as retained minus self-absorbed
+	// production. High transit + low steering = an under-steered corridor
+	// (a hegemon should place a merchant here).
+	let mut rows: Vec<(u32, f64, f64, f64)> = Vec::new();
+	for node in nodes {
+		let i = node.id as usize;
+		let base_absorb = node.tax / (node.tax + params.absorb_ref as f64);
+		let own = node.production * base_absorb;
+		let transit = (retained[i] - own).max(0.0);
+		let steering: f64 = node.steering.iter().sum();
+		rows.push((node.id, transit, steering, node.trade_power));
+	}
+	rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+	let mut lines = Vec::new();
+	for (id, transit, steering, power) in rows.iter().take(10) {
+		if *transit < 100.0 {
+			continue;
+		}
+		let gap = if *steering < transit * 0.1 {
+			" ← under-steered"
+		} else {
+			""
+		};
+		lines.push(format!(
+			"transit node {id}: volume {transit:.0}, steering {steering:.0}, power {power:.0}{gap}"
+		));
+	}
+	lines
 }
 
 /// Plan this month's flips and reverse-edge additions using sustained
@@ -526,6 +588,38 @@ mod tests {
 		let _first = run_months(&nodes, &mut closed, &Params::default(), 6);
 		let flips = run_months(&nodes, &mut closed, &Params::default(), 6);
 		assert!(flips.is_empty(), "no month-to-month flapping");
+	}
+
+	#[test]
+	fn colonial_steering_suppresses_local_absorption() {
+		// A colony with raw production but heavy extraction steering
+		// retains less than a similarly-taxed local node without
+		// external steering pulling value out.
+		let local = node(0, 5000.0, 4000.0, 1000.0, vec![1]);
+		let colonial = steered(1, 5000.0, 4000.0, 1000.0, vec![2], vec![8000.0]);
+		let sink = node(2, 6000.0, 0.0, 1000.0, vec![]);
+		let nodes = vec![local, colonial, sink];
+		let closed = mirror(&nodes);
+		let retained = propagate(&nodes, &closed, &Params::default()).unwrap();
+		assert!(
+			retained[0] > retained[1],
+			"local ({:.0}) must retain more than colonial ({:.0})",
+			retained[0],
+			retained[1]
+		);
+	}
+
+	#[test]
+	fn transit_intelligence_finds_corridors() {
+		// A hub between a producer and a sink carries transit flow.
+		let nodes = vec![
+			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
+			node(1, 1000.0, 0.0, 5000.0, vec![2]),
+			node(2, 5000.0, 0.0, 1000.0, vec![]),
+		];
+		let closed = mirror(&nodes);
+		let report = transit_intelligence(&nodes, &closed, &Params::default());
+		assert!(!report.is_empty(), "sink should appear as transit target");
 	}
 
 	#[test]

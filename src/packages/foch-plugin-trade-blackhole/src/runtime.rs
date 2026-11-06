@@ -229,23 +229,30 @@ impl LiveBackend {
 				continue;
 			};
 			let mut sum = 0.0;
+			let mut manpower_sum = 0.0;
 			let mut counted = 0.0;
 			for id in ids {
-				if let Some(tax) = self.read_i32(
-					cprov_base
-						+ *id as usize * layout::province::CPROVINCE_SIZE
-						+ layout::province::TAX,
-				) {
+				let base = cprov_base + *id as usize * layout::province::CPROVINCE_SIZE;
+				if let Some(tax) = self.read_i32(base + layout::province::TAX) {
 					sum += tax as f64;
+					// Manpower is potential consumption: a large population
+					// represents purchasing power that tax alone understates.
+					// It joins the sink signal at half weight so tax stays
+					// the dominant expression of current wealth.
+					if let Some(man) = self.read_i32(base + layout::province::MANPOWER) {
+						manpower_sum += man as f64;
+					}
 					counted += 1.0;
 				}
 			}
 			// The mean expresses wealth intensity; the raw sum expresses
 			// mass. A big reworked region full of poor provinces wins the
-			// sum but not the mean.
+			// sum but not the mean. Manpower joins at half weight as
+			// potential consumption.
+			let combined = sum + manpower_sum * 0.5;
 			let signal = match self.sink_basis {
-				crate::config::SinkBasis::Mean if counted > 0.0 => sum / counted,
-				_ => sum,
+				crate::config::SinkBasis::Mean if counted > 0.0 => combined / counted,
+				_ => combined,
 			};
 			self.node_tax.insert(index as u32, signal);
 		}

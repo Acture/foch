@@ -216,6 +216,13 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 				(self.log)(logging::INFO, &flip.describe(nodes));
 			}
 		}
+		// Transit intelligence: which corridors carry the most flow and
+		// where the steering effort is mismatched with the potential.
+		// This is the trade-company layer — it tells a hegemon where to
+		// invest for maximum carriage return.
+		for line in policy::transit_intelligence(nodes, self.closed.as_ref().unwrap(), &params) {
+			(self.log)(logging::INFO, &line);
+		}
 	}
 }
 
