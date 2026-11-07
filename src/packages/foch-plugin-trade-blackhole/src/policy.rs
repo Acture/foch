@@ -159,13 +159,24 @@ impl Flip {
 	}
 }
 
-/// One month of propagation. Returns, per node, its final pool (what the
-/// node retained) so callers can log the emergent sinks.
+/// The result of one month's propagation: what each node retained, and
+/// the net flow through each vanilla edge (positive = forward, matching
+/// the vanilla direction; negative = reverse).
+pub struct PropagationResult {
+	pub retained: Vec<f64>,
+	/// Per-node, per-vanilla-edge net flow accumulated over all rounds.
+	pub edge_flows: Vec<Vec<f64>>,
+}
+
+/// One month of propagation. Tracks the actual value relayed through
+/// each vanilla edge (forward minus reverse over all relaxation rounds),
+/// so the planner judges edges by real flow volume rather than a
+/// retained-value difference that misses transit entirely.
 pub fn propagate(
 	nodes: &[NodeSnapshot],
 	closed: &[Vec<bool>],
 	params: &Params,
-) -> Result<Vec<f64>, &'static str> {
+) -> Result<PropagationResult, &'static str> {
 	let n = nodes.len();
 	if nodes.len() != closed.len() {
 		return Err("closed mirror must match the node count");
@@ -176,18 +187,33 @@ pub fn propagate(
 			return Err("closed mirror must match each node's edge count");
 		}
 	}
-	// An undirected model edge is usable when at least one direction is a
-	// vanilla edge that is not closed. Each direction carries the engine's
-	// steering effort (the "push" from merchants and investments); the
-	// reverse direction has zero steering, so active effort biases the
-	// flow forward without blocking the bidirectional model.
-	let mut usable: Vec<Vec<(u32, bool, f64)>> = vec![Vec::new(); n];
+	// Build a map from (node, partner) to the vanilla edge index and
+	// direction, so per-edge flow can be tracked during the relaxation.
+	// forward_edges[i][partner] = edge index in i's outgoing pointing
+	// at partner. reverse_edges[i][partner] = edge index in partner's
+	// outgoing pointing at i.
+	let mut forward_edges: Vec<std::collections::HashMap<u32, usize>> =
+		vec![std::collections::HashMap::new(); n];
+	for node in nodes {
+		for (edge, target) in node.outgoing.iter().enumerate() {
+			if !closed[node.id as usize][edge] {
+				forward_edges[node.id as usize].insert(*target, edge);
+			}
+		}
+	}
+	// The undirected partner list: each entry is (partner, effort,
+	// is_forward, vanilla_edge_index). For a forward direction, the
+	// index is in the source node's outgoing; for reverse, in the
+	// partner's outgoing.
+	let mut usable: Vec<Vec<(u32, f64, bool, usize)>> = vec![Vec::new(); n];
 	for node in nodes {
 		for (edge, target) in node.outgoing.iter().enumerate() {
 			if !closed[node.id as usize][edge] {
 				let effort = node.steering.get(edge).copied().unwrap_or(0.0);
-				usable[node.id as usize].push((*target, true, effort));
-				usable[*target as usize].push((node.id, false, 0.0));
+				// Forward for the source: (target, effort, true, edge)
+				usable[node.id as usize].push((*target, effort, true, edge));
+				// Reverse for the target: (source, 0, false, edge_in_source)
+				usable[*target as usize].push((node.id, 0.0, false, edge));
 			}
 		}
 	}
@@ -196,12 +222,6 @@ pub fn propagate(
 		list.dedup_by(|a, b| a.0 == b.0);
 	}
 	let absorb = |tax: f64| tax / (tax + params.absorb_ref as f64);
-	// Colonial tension: when a node's outgoing steering effort is high
-	// relative to its own production, a foreign power is actively pulling
-	// trade out, and the node's ability to retain value drops. A node
-	// with zero steering (local control) absorbs at full strength; a node
-	// dominated by external steering (a colonial extraction hub) loses
-	// most of its absorption.
 	let steering_pressure: Vec<f64> = nodes
 		.iter()
 		.map(|node| {
@@ -212,12 +232,12 @@ pub fn propagate(
 		.collect();
 	let mut pool: Vec<f64> = nodes.iter().map(|node| node.production).collect();
 	let mut retained: Vec<f64> = vec![0.0; n];
+	// Per-vanilla-edge accumulated net flow: positive = forward.
+	let mut edge_flows: Vec<Vec<f64>> = nodes.iter().map(|n| vec![0.0; n.outgoing.len()]).collect();
 	for _ in 0..RELAXATION_ROUNDS {
 		let mut incoming = vec![0.0_f64; n];
 		for node in nodes {
 			let i = node.id as usize;
-			// Effective absorption: the wealth gradient modulated by how
-			// much external steering is pulling value out of the node.
 			let base = absorb(nodes[i].tax);
 			let effective = base * (1.0 - steering_pressure[i]);
 			let share = pool[i] * (1.0 - effective);
@@ -231,19 +251,33 @@ pub fn propagate(
 			}
 			let weights: Vec<f64> = list
 				.iter()
-				.map(|&(partner, _, effort)| {
+				.map(|&(partner, effort, _, _)| {
 					let other = &nodes[partner as usize];
-					// Active steering effort (merchants, hegemony)
-					// pulls flow in its direction; tax and trade power
-					// provide the passive wealth gradient.
+					// Relay attractiveness has two distinct roles:
+					// — Tax is the one-hop sink gravity: a wealthy neighbor
+					//   pulls value from its immediate partners (send here
+					//   because this place is rich and will absorb it).
+					// — Trade power is the multi-hop hub pull: a powerful
+					//   partner attracts value for transit through a relay
+					//   chain (send here because this hub forwards further).
+					// Both belong in the weight; they serve different scopes.
 					1.0 + effort / 1000.0
 						+ other.trade_power / params.relay_ref as f64
 						+ other.tax / params.absorb_ref as f64
 				})
 				.collect();
 			let total: f64 = weights.iter().sum();
-			for (slot, &(partner, _, _)) in list.iter().enumerate() {
-				incoming[partner as usize] += share * weights[slot] / total;
+			for (slot, &(partner, _, is_forward, edge_idx)) in list.iter().enumerate() {
+				let amount = share * weights[slot] / total;
+				incoming[partner as usize] += amount;
+				// Accumulate per-edge flow: forward adds, reverse subtracts.
+				if is_forward {
+					edge_flows[i][edge_idx] += amount;
+				} else {
+					// The vanilla edge lives in the partner's outgoing;
+					// subtract from its net (reverse direction).
+					edge_flows[partner as usize][edge_idx] -= amount;
+				}
 			}
 		}
 		for (i, p) in pool.iter().enumerate() {
@@ -256,22 +290,10 @@ pub fn propagate(
 	for (r, p) in retained.iter_mut().zip(pool.iter()) {
 		*r += p;
 	}
-	Ok(retained)
-}
-
-/// Net flow through one vanilla edge (source -> target) during the last
-/// relaxation: the relayed value is not tracked per edge by `propagate`,
-/// so the planner approximates the net by comparing the retained pools —
-/// an edge matters when the partner retained far more than the source
-/// kept AND the vanilla direction agrees with that pull.
-fn edge_net_flow(source: u32, target: u32, retained: &[f64], nodes: &[NodeSnapshot]) -> f64 {
-	// An edge carries flow when the target absorbs more than the source
-	// (it is a better sink downstream) or when the target relays more
-	// (it is a better hub). When both retained zero, the relayed value
-	// has already passed through; the edge was used.
-	let sink_pull = retained[target as usize] - retained[source as usize];
-	let hub_pull = nodes[target as usize].trade_power - nodes[source as usize].trade_power;
-	sink_pull.max(hub_pull).max(0.0)
+	Ok(PropagationResult {
+		retained,
+		edge_flows,
+	})
 }
 
 /// Per-edge evidence accumulator: how many consecutive months the net
@@ -306,19 +328,29 @@ pub fn transit_intelligence(
 	closed: &[Vec<bool>],
 	params: &Params,
 ) -> Vec<String> {
-	let Ok(retained) = propagate(nodes, closed, params) else {
+	let Ok(result) = propagate(nodes, closed, params) else {
 		return Vec::new();
 	};
-	// Transit volume: value that arrived from neighbors beyond the node's
-	// own injection, approximated as retained minus self-absorbed
-	// production. High transit + low steering = an under-steered corridor
-	// (a hegemon should place a merchant here).
+	// Transit volume: the actual value relayed through this node from
+	// upstream (the sum of positive inflows on incoming edges).
 	let mut rows: Vec<(u32, f64, f64, f64)> = Vec::new();
 	for node in nodes {
-		let i = node.id as usize;
-		let base_absorb = node.tax / (node.tax + params.absorb_ref as f64);
-		let own = node.production * base_absorb;
-		let transit = (retained[i] - own).max(0.0);
+		// Sum the positive incoming flows from the per-edge tracking:
+		// any node j whose edge to us carries positive net flow.
+		let mut transit = 0.0;
+		for other in nodes {
+			if other.id == node.id {
+				continue;
+			}
+			for (edge, target) in other.outgoing.iter().enumerate() {
+				if *target == node.id {
+					let flow = result.edge_flows[other.id as usize][edge];
+					if flow > 0.0 {
+						transit += flow;
+					}
+				}
+			}
+		}
 		let steering: f64 = node.steering.iter().sum();
 		rows.push((node.id, transit, steering, node.trade_power));
 	}
@@ -362,7 +394,7 @@ pub fn plan(
 			return Err("mirrors must match each node's edge count");
 		}
 	}
-	let retained = propagate(nodes, closed, params)?;
+	let result = propagate(nodes, closed, params)?;
 	let mut flips = Vec::new();
 	let mut additions = Vec::new();
 	let mut total = 0usize;
@@ -371,13 +403,15 @@ pub fn plan(
 			continue;
 		}
 		let i = node.id as usize;
-		let reference = retained[i].max(node.production).max(1.0);
+		let reference = result.retained[i].max(node.production).max(1.0);
 		for edge in 0..node.outgoing.len() {
 			if total >= params.max_flips_total {
 				break;
 			}
 			let target = node.outgoing[edge];
-			let net = edge_net_flow(node.id, target, &retained, nodes);
+			// Actual per-edge net flow from the propagation, not a
+			// retained-value difference that conflates all downstream.
+			let net = result.edge_flows[i][edge];
 			let is_closed = closed[i][edge];
 			let below = net < reference * params.flow_epsilon_pct as f64 / 100.0;
 			let above = net >= reference * params.reopen_pct as f64 / 100.0;
@@ -415,8 +449,8 @@ pub fn plan(
 			// grow B→A so the next round routes correctly.
 			if should_close {
 				let target_node = &nodes[target as usize];
-				let source_retained = retained[i];
-				let target_retained = retained[target as usize];
+				let source_retained = result.retained[i];
+				let target_retained = result.retained[target as usize];
 				let reverse_viable =
 					target_node.production > 0.0 && source_retained > target_retained * 2.0;
 				if reverse_viable {
@@ -505,8 +539,8 @@ mod tests {
 		let nodes = vec![
 			node(0, 1000.0, 5000.0, 1000.0, vec![2]),
 			node(1, 1000.0, 5000.0, 1000.0, vec![2]),
-			node(2, 5000.0, 0.0, 1000.0, vec![3]),
-			node(3, 500.0, 0.0, 1000.0, vec![]),
+			node(2, 100000.0, 0.0, 1000.0, vec![3]),
+			node(3, 200000.0, 0.0, 1000.0, vec![]),
 		];
 		let mut closed = mirror(&nodes);
 		let flips = run_months(&nodes, &mut closed, &Params::default(), 6);
@@ -518,12 +552,12 @@ mod tests {
 
 	#[test]
 	fn a_dead_edge_closes() {
-		// A rich producer has one edge to a poor sink that absorbs
-		// almost nothing; the pool stays at the producer, so the edge
-		// carries under the epsilon and closes.
+		// A node with near-total absorption (tax 100k vs absorb_ref 3k)
+		// relays under 3% of its pool; the edge carries below the 5%
+		// epsilon and closes.
 		let nodes = vec![
-			node(0, 5000.0, 8000.0, 1000.0, vec![1]),
-			node(1, 500.0, 0.0, 1000.0, vec![]),
+			node(0, 100000.0, 8000.0, 1000.0, vec![1]),
+			node(1, 200000.0, 0.0, 1000.0, vec![]),
 		];
 		let mut closed = mirror(&nodes);
 		let params = Params::default();
@@ -540,15 +574,15 @@ mod tests {
 		let nodes = vec![
 			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
 			node(1, 1000.0, 0.0, 5000.0, vec![2]),
-			node(2, 5000.0, 0.0, 1000.0, vec![]),
+			node(2, 5000.0, 0.0, 5000.0, vec![]),
 		];
 		let closed = mirror(&nodes);
-		let retained = propagate(&nodes, &closed, &Params::default()).unwrap();
+		let result = propagate(&nodes, &closed, &Params::default()).unwrap();
 		assert!(
-			retained[2] > retained[1],
+			result.retained[2] > result.retained[1],
 			"sink ({:.0}) must retain more than hub ({:.0})",
-			retained[2],
-			retained[1]
+			result.retained[2],
+			result.retained[1]
 		);
 	}
 
@@ -561,8 +595,8 @@ mod tests {
 			let outgoing = if i == 5 { vec![] } else { vec![i + 1] };
 			nodes.push(node(
 				i,
-				500.0,
-				if i == 0 { 1000.0 } else { 0.0 },
+				200000.0,
+				if i == 0 { 10000.0 } else { 0.0 },
 				100.0,
 				outgoing,
 			));
@@ -600,12 +634,12 @@ mod tests {
 		let sink = node(2, 6000.0, 0.0, 1000.0, vec![]);
 		let nodes = vec![local, colonial, sink];
 		let closed = mirror(&nodes);
-		let retained = propagate(&nodes, &closed, &Params::default()).unwrap();
+		let result = propagate(&nodes, &closed, &Params::default()).unwrap();
 		assert!(
-			retained[0] > retained[1],
+			result.retained[0] > result.retained[1],
 			"local ({:.0}) must retain more than colonial ({:.0})",
-			retained[0],
-			retained[1]
+			result.retained[0],
+			result.retained[1]
 		);
 	}
 
@@ -615,7 +649,7 @@ mod tests {
 		let nodes = vec![
 			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
 			node(1, 1000.0, 0.0, 5000.0, vec![2]),
-			node(2, 5000.0, 0.0, 1000.0, vec![]),
+			node(2, 5000.0, 0.0, 5000.0, vec![]),
 		];
 		let closed = mirror(&nodes);
 		let report = transit_intelligence(&nodes, &closed, &Params::default());
