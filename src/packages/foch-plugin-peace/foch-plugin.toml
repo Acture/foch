@@ -1,0 +1,19 @@
+schema = 1
+
+[plugin]
+id = "io.github.acture.foch-peace"
+name = "Foch bilateral peace preview"
+version = "0.0.2"
+authors = ["Foch contributors"]
+description = "Experimental two-direction peace summary. Mixed submission is not implemented."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "=1.37.5"
+abi_major = 1
+
+[entry]
+kind = "native"
+path = "foch_plugin_peace.dll"
+phase = "entry"

@@ -1,0 +1,16 @@
+[package]
+name = "foch-plugin-peace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Bilateral EU4 peace-window plugin for the Foch native host"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+foch-plugin-abi = { path = "../foch-plugin-abi", version = "=0.0.2" }
