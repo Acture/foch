@@ -1,0 +1,21 @@
+namespace = dev_test
+
+#test(time=1444.11.11, tag=SWE, name="development_shifts_topology",
+#     effect={
+#         696 = { add_base_tax = 20 }
+#         697 = { add_base_tax = 15 }
+#         698 = { add_base_tax = 15 }
+#         699 = { add_base_tax = 10 }
+#         700 = { add_base_tax = 10 }
+#     },
+#     advance_days=800)
+country_event = {
+	id = dev_test.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

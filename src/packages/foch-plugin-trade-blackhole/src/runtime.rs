@@ -177,9 +177,16 @@ impl LiveBackend {
 	/// key is read from any incoming route entry (the entry carries the
 	/// target's key), so no localization-dependent name is involved.
 	fn aggregate_taxes(&mut self, count: usize) {
-		if !self.node_tax.is_empty() || self.member_ids.is_empty() {
+		// Re-aggregate every 6 months alongside the evidence window:
+		// province development changes tax and manpower, and the sink
+		// signal must track it.
+		if !self.node_tax.is_empty() && !self.observes.is_multiple_of(6) {
 			return;
 		}
+		if self.member_ids.is_empty() {
+			return;
+		}
+		self.node_tax.clear();
 		let Some(cprov_base) = self
 			.read_qword(self.context + layout::province::CPROVINCES)
 			.map(|p| p as usize)
