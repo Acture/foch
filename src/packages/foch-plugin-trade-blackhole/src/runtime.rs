@@ -624,7 +624,7 @@ impl EngineBackend for LiveBackend {
 			nodes.push(NodeSnapshot {
 				id: index as u32,
 				tax: self.node_tax.get(&(index as u32)).copied().unwrap_or(0.0),
-				production: self.read_i32(node + layout::node::GOODS).unwrap_or(0) as f64,
+				production: self.read_i32(node + layout::node::LOCAL_VALUE).unwrap_or(0) as f64,
 				trade_power: self.read_i32(node + layout::node::POWER).unwrap_or(0) as f64,
 				current_value: self.read_i32(node + layout::node::VALUE).unwrap_or(0) as f64,
 				outgoing,

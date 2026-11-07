@@ -50,9 +50,11 @@ pub mod layout {
 		/// near-identical total sits at +0xd0 and the provincial-only
 		/// share at +0xd8.
 		pub const POWER: usize = 0xc8;
-		/// Total goods produced in the node (int32, thousandths): the
-		/// engine's own production-side aggregate for the node.
-		pub const GOODS: usize = 0xe4;
+		/// Local trade value: the production-side injection (goods
+		/// produced × their prices), from the trade UI's `local_value`
+		/// read. This is what the engine itself feeds into trade
+		/// propagation; it already reflects price changes.
+		pub const LOCAL_VALUE: usize = 0xb4;
 	}
 
 	/// `CTradeNodeDefinition`, reached through `node::DEFINITION`.
