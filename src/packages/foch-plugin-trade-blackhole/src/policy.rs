@@ -386,28 +386,6 @@ pub fn plan(
 		}
 	}
 	let result = propagate(nodes, closed, params)?;
-	// The tax-peak condition: a node may only close its edges when its
-	// tax intensity is the best in its neighborhood (itself plus direct
-	// vanilla partners in both directions). Retention alone is not
-	// enough — a node that merely collects from one neighbor does not
-	// deserve to be a black hole; it must also be the wealth center.
-	let is_tax_peak: Vec<bool> = nodes
-		.iter()
-		.map(|node| {
-			let mut best_neighbor = 0.0_f64;
-			for other in nodes {
-				if other.id == node.id {
-					continue;
-				}
-				let is_neighbor =
-					node.outgoing.contains(&other.id) || other.outgoing.contains(&node.id);
-				if is_neighbor {
-					best_neighbor = best_neighbor.max(other.tax);
-				}
-			}
-			node.tax > 0.0 && node.tax >= best_neighbor
-		})
-		.collect();
 	let mut flips = Vec::new();
 	let mut additions = Vec::new();
 	let mut total = 0usize;
@@ -422,12 +400,19 @@ pub fn plan(
 				break;
 			}
 			let target = node.outgoing[edge];
+			let target_node = &nodes[target as usize];
 			// Actual per-edge net flow from the propagation, not a
 			// retained-value difference that conflates all downstream.
 			let net = result.edge_flows[i][edge];
 			let is_closed = closed[i][edge];
 			let below = net < reference * params.flow_epsilon_pct as f64 / 100.0;
 			let above = net >= reference * params.reopen_pct as f64 / 100.0;
+			// Per-edge wealth gradient: value should not flow from a
+			// richer node to a poorer one. Each edge is judged on its
+			// own source-vs-target comparison, not against the entire
+			// neighborhood — Beijing can close its edge to a poor target
+			// even when a richer neighbor sends value to Beijing.
+			let wealth_gradient = node.tax >= target_node.tax;
 
 			// Accumulate evidence; reset the counter on any reversal.
 			let ev = &mut evidence[i][edge];
@@ -438,7 +423,7 @@ pub fn plan(
 			// AND the node is the neighborhood tax peak (economic
 			// justification). Reopen only needs flow recovery.
 			let should_close =
-				!is_closed && ev.below_epsilon >= params.evidence_months && is_tax_peak[i];
+				!is_closed && ev.below_epsilon >= params.evidence_months && wealth_gradient;
 			let should_reopen = is_closed && ev.above_reopen >= params.evidence_months;
 			if !should_close && !should_reopen {
 				continue;
