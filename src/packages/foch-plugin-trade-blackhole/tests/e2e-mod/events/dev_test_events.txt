@@ -2,15 +2,15 @@ namespace = dev_test
 
 #test(time=1444.11.11, tag=SWE, name="development_shifts_topology",
 #     effect={
-#         # Develop Malacca-area provinces: Malacca is a transit hub
-#         # between India and China. Making it richer should pull more
-#         # flow through it, potentially starving the Coromandel/Deccan
-#         # routes and causing their edges to close.
-#         462 = { add_base_tax = 15 }
-#         463 = { add_base_tax = 15 }
-#         464 = { add_base_tax = 10 }
-#         465 = { add_base_tax = 10 }
-#         466 = { add_base_tax = 10 }
+#         # Develop Malacca-area production AND tax: production increases
+#         # the injection (more value flowing), tax increases the sink
+#         # signal (more attractive destination). Both together should
+#         # shift the propagation and change edge decisions.
+#         462 = { add_base_production = 10  add_base_tax = 10 }
+#         463 = { add_base_production = 10  add_base_tax = 10 }
+#         464 = { add_base_production = 8  add_base_tax = 8 }
+#         465 = { add_base_production = 8  add_base_tax = 8 }
+#         466 = { add_base_production = 8  add_base_tax = 8 }
 #     },
 #     advance_days=800)
 country_event = {

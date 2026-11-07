@@ -197,21 +197,21 @@ pub fn propagate(
 	// outgoing pointing at i.
 	let mut forward_edges: Vec<std::collections::HashMap<u32, usize>> =
 		vec![std::collections::HashMap::new(); n];
+	// The propagation ALWAYS uses the full vanilla graph: every edge is
+	// open in the model regardless of what we've closed in the engine.
+	// This means (a) a closed edge's flow can recover and trigger a
+	// reopen, and (b) the model never sees its own closures, so no
+	// cascade/feedback effect — the topology emerges from where value
+	// wants to flow, not from iteratively pruning and re-converging.
 	for node in nodes {
 		for (edge, target) in node.outgoing.iter().enumerate() {
-			if !closed[node.id as usize][edge] {
-				forward_edges[node.id as usize].insert(*target, edge);
-			}
+			forward_edges[node.id as usize].insert(*target, edge);
 		}
 	}
-	// The undirected partner list: each entry is (partner, effort,
-	// is_forward, vanilla_edge_index). For a forward direction, the
-	// index is in the source node's outgoing; for reverse, in the
-	// partner's outgoing.
 	let mut usable: Vec<Vec<(u32, f64, bool, usize)>> = vec![Vec::new(); n];
 	for node in nodes {
 		for (edge, target) in node.outgoing.iter().enumerate() {
-			if !closed[node.id as usize][edge] {
+			{
 				let effort = node.steering.get(edge).copied().unwrap_or(0.0);
 				// Forward for the source: (target, effort, true, edge)
 				usable[node.id as usize].push((*target, effort, true, edge));
