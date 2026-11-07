@@ -24,18 +24,21 @@ pub(super) type BranchMerge<'a> =
 	dyn FnMut(&AstFile, &[&AstFile]) -> Result<Option<AstFile>, AstAdapterError> + 'a;
 
 /// Rewrite the revisions so that every trigger chain one revision replaced and
-/// another edited carries its branch-wise merge in all of them. Returns `None`
-/// when nothing was rewritten.
+/// another edited carries its branch-wise merge in all of them. Returns the
+/// rewritten revisions (`None` when nothing was rewritten) and a review
+/// finding for each chain whose branch-wise merge had a conflict and stayed
+/// as written for the kernel merge.
 pub(super) fn resolve_replaced_trigger_chains(
 	base: &AstFile,
 	revisions: &[&AstFile],
 	merge_branch: &mut BranchMerge<'_>,
-) -> Result<Option<Vec<AstFile>>, AstAdapterError> {
+) -> Result<(Option<Vec<AstFile>>, Vec<String>), AstAdapterError> {
 	let mut walk = Walk {
 		file_path: &base.path,
 		scope_cache: HashMap::new(),
 		revisions: revisions.iter().map(|file| Cow::Borrowed(*file)).collect(),
 		rewritten: false,
+		branch_conflicts: Vec::new(),
 	};
 	walk.statements(
 		&base.statements,
@@ -43,13 +46,17 @@ pub(super) fn resolve_replaced_trigger_chains(
 		ScriptContext::Data,
 		merge_branch,
 	)?;
-	Ok(walk.rewritten.then(|| {
-		walk.revisions
-			.into_iter()
-			.map(Cow::into_owned)
-			.map(reparse_for_binding)
-			.collect()
-	}))
+	let findings = std::mem::take(&mut walk.branch_conflicts);
+	Ok((
+		walk.rewritten.then(|| {
+			walk.revisions
+				.into_iter()
+				.map(Cow::into_owned)
+				.map(reparse_for_binding)
+				.collect()
+		}),
+		findings,
+	))
 }
 
 /// A rewritten revision is rebuilt from tree nodes, and the schema binder's
@@ -79,6 +86,9 @@ struct Walk<'a> {
 	scope_cache: HashMap<Vec<String>, Option<ScopeKind>>,
 	revisions: Vec<Cow<'a, AstFile>>,
 	rewritten: bool,
+	/// One entry per chain whose branch-wise merge had a conflict and whose
+	/// revisions stay as written.
+	branch_conflicts: Vec<String>,
 }
 
 impl Walk<'_> {
@@ -182,6 +192,15 @@ impl Walk<'_> {
 				.collect::<Vec<_>>();
 			let revision_refs = revision_files.iter().collect::<Vec<_>>();
 			let Some(output) = merge_branch(&base_file, &revision_refs)? else {
+				// One revision replaced this chain and another's edit of a
+				// branch body conflicts with the replacement, so the
+				// branch-wise rewrite this pass exists to give declines. The
+				// chain stays as written in every revision and the kernel
+				// merges it whole; that is a review finding, not silence.
+				self.branch_conflicts.push(format!(
+					"{}: a replaced chain's branch body conflicts with another revision's edit; the chain merges as written",
+					path.join("/")
+				));
 				return Ok(());
 			};
 			let Some(body) = block_at(&output.statements, path) else {

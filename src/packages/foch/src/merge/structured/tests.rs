@@ -3206,12 +3206,70 @@ fn a_replaced_trigger_chain_merges_branch_by_branch() {
 		)))
 	);
 
-	// Removing the chain outright is still a delete against a modify.
+	// Removing the chain outright is still a delete against a modify, and the
+	// branch rewrite's give-up says so as a control-flow finding instead of
+	// passing silently.
 	let removed = potential("");
 	let outcome =
 		merge_clausewitz_files_n_way(&base, &[&removed, &both_branches], &policies).unwrap();
-	assert_eq!(outcome.conflicts().len(), 1, "{:?}", outcome.conflicts());
-	assert_eq!(outcome.conflicts()[0].kind, ConflictKind::DeleteModify);
+	assert_eq!(
+		outcome
+			.conflicts()
+			.iter()
+			.filter(|conflict| conflict.kind == ConflictKind::DeleteModify)
+			.count(),
+		1,
+		"{:?}",
+		outcome.conflicts()
+	);
+	assert!(
+		outcome.conflicts().iter().any(|conflict| conflict
+			.detail
+			.contains("a replaced chain's branch body conflicts with another revision's edit")),
+		"{:?}",
+		outcome.conflicts()
+	);
+}
+
+#[test]
+fn a_divergent_required_slot_reports_one_choice_not_a_subtree_of_unreachables() {
+	// Two revisions replace one required-slot block with wholly different
+	// bodies. The slot conflict carries the choice; the losing subtree's
+	// classes must not echo as one unreachable report each.
+	let path = "events/x.txt";
+	let policies = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.map(|descriptor| descriptor.merge_policies)
+		.unwrap_or_default();
+	let event = |hab: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_event = {{\n\tid = x.1\n\ttrigger = {{\n\t\ttag = FRA\n\t\tHAB = {{\n{hab}\t\t}}\n\t}}\n}}\n"
+			),
+		)
+	};
+	let base = event("\t\t\tfirst = { line = 1 }\n");
+	let rev1 = event("\t\t\tfirst = { line = 2 }\n");
+	let rev2 = event("\t\t\tsecond = { other = 3 }\n");
+	let outcome = merge_clausewitz_files_n_way(&base, &[&rev1, &rev2], &policies).unwrap();
+	assert!(
+		outcome
+			.conflicts()
+			.iter()
+			.any(|conflict| conflict.kind == ConflictKind::ValueSlot
+				&& conflict.semantic_path.join("/").ends_with("HAB")),
+		"{:?}",
+		outcome.conflicts()
+	);
+	assert!(
+		outcome
+			.conflicts()
+			.iter()
+			.all(|conflict| !conflict.detail.contains("unreachable")),
+		"{:?}",
+		outcome.conflicts()
+	);
 }
 
 #[test]
