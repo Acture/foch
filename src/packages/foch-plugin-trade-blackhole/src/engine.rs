@@ -105,7 +105,7 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 				),
 			);
 		}
-		if self.config.observer_log && (self.ticks <= 3 || self.ticks.is_multiple_of(50)) {
+		if self.config.observer_log {
 			self.log_observer(&nodes);
 		}
 		if !self.config.enabled {
@@ -123,12 +123,14 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 			(self.log)(
 				logging::DEBUG,
 				&format!(
-					"node {} tax {:.1} prod {:.1} power {:.1} value {:.1} edges {}",
+					"tick {} node {} tax {:.1} prod {:.1} power {:.1} value {:.1} retention {:.3} edges {}",
+					self.ticks,
 					node.id,
 					node.tax,
 					node.production,
 					node.trade_power,
 					node.current_value,
+					node.retention,
 					node.outgoing.len()
 				),
 			);
@@ -213,7 +215,10 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 					&format!("flip failed ({}): {reason}", flip.describe(nodes)),
 				);
 			} else {
-				(self.log)(logging::INFO, &flip.describe(nodes));
+				(self.log)(
+					logging::INFO,
+					&format!("tick {}: {}", self.ticks, flip.describe(nodes)),
+				);
 			}
 		}
 		// Transit intelligence: which corridors carry the most flow and
