@@ -25,7 +25,6 @@
 //! month. All magnitudes arrive as engine thousandths and are only ever
 //! compared to each other, never to absolute ducats.
 
-pub const DEFAULT_ABSORB_REF: i64 = 3000;
 pub const DEFAULT_RELAY_REF: i64 = 3000;
 pub const DEFAULT_FLOW_EPSILON_PCT: i64 = 5;
 pub const DEFAULT_REOPEN_PCT: i64 = 15;
@@ -40,9 +39,16 @@ const RELAXATION_ROUNDS: usize = 8;
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeSnapshot {
 	pub id: u32,
-	/// Per-province mean tax in thousandths: the sink intensity.
+	/// Per-province mean tax in thousandths: the economic wealth
+	/// indicator for the neighborhood-peak check (is this node the
+	/// wealth center of its region?).
 	pub tax: f64,
-	/// Aggregated production of the node's provinces: the injection.
+	/// The engine's own retention rate: retained / (retained +
+	/// transferred), from node+0xb0 and +0xbc. This reflects the actual
+	/// game mechanics — trade power shares, merchant modes, modifiers.
+	/// Used by the propagation to determine how much value stays.
+	pub retention: f64,
+	/// Local trade value (production × price): the injection.
 	pub production: f64,
 	/// The node's total trade power as the trade map shows it: the relay
 	/// attractiveness.
@@ -64,7 +70,6 @@ pub struct NodeSnapshot {
 pub struct Params {
 	/// Tax intensity (thousandths) at which a node absorbs half of what
 	/// pools in it; higher means only richer nodes sink.
-	pub absorb_ref: i64,
 	/// Trade power (thousandths) at which a partner doubles its relay
 	/// attractiveness; higher flattens hub preference.
 	pub relay_ref: i64,
@@ -83,7 +88,6 @@ pub struct Params {
 impl Default for Params {
 	fn default() -> Self {
 		Self {
-			absorb_ref: DEFAULT_ABSORB_REF,
 			relay_ref: DEFAULT_RELAY_REF,
 			flow_epsilon_pct: DEFAULT_FLOW_EPSILON_PCT,
 			reopen_pct: DEFAULT_REOPEN_PCT,
@@ -97,7 +101,6 @@ impl Params {
 	/// The judgment subset of a [`crate::config::Config`].
 	pub fn from(config: crate::config::Config) -> Self {
 		Self {
-			absorb_ref: config.absorb_ref,
 			relay_ref: config.relay_ref,
 			flow_epsilon_pct: config.flow_epsilon_pct,
 			reopen_pct: config.reopen_pct,
@@ -107,8 +110,8 @@ impl Params {
 	}
 
 	pub fn validate(&self) -> Result<(), &'static str> {
-		if self.absorb_ref <= 0 || self.relay_ref <= 0 {
-			return Err("absorb_ref and relay_ref must be positive");
+		if self.relay_ref <= 0 {
+			return Err("relay_ref must be positive");
 		}
 		if !(0..=50).contains(&self.flow_epsilon_pct) {
 			return Err("flow_epsilon_pct must be within 0..=50");
@@ -221,15 +224,12 @@ pub fn propagate(
 		list.sort_unstable_by_key(|entry| entry.0);
 		list.dedup_by(|a, b| a.0 == b.0);
 	}
-	let absorb = |tax: f64| tax / (tax + params.absorb_ref as f64);
-	let steering_pressure: Vec<f64> = nodes
-		.iter()
-		.map(|node| {
-			let outgoing_effort: f64 = node.steering.iter().sum();
-			let local_base = node.production + 1.0;
-			outgoing_effort / (outgoing_effort + local_base)
-		})
-		.collect();
+	// The engine's own retention rate: no artificial parameters. Each
+	// node absorbs this fraction of whatever pools in it; the rest
+	// relays onward. The relay weight uses trade power (multi-hop hub
+	// pull) and steering effort (directional push); retention is the
+	// engine's answer, not ours.
+	let retention: Vec<f64> = nodes.iter().map(|n| n.retention).collect();
 	let mut pool: Vec<f64> = nodes.iter().map(|node| node.production).collect();
 	let mut retained: Vec<f64> = vec![0.0; n];
 	// Per-vanilla-edge accumulated net flow: positive = forward.
@@ -238,9 +238,7 @@ pub fn propagate(
 		let mut incoming = vec![0.0_f64; n];
 		for node in nodes {
 			let i = node.id as usize;
-			let base = absorb(nodes[i].tax);
-			let effective = base * (1.0 - steering_pressure[i]);
-			let share = pool[i] * (1.0 - effective);
+			let share = pool[i] * (1.0 - retention[i]);
 			if share <= 0.0 {
 				continue;
 			}
@@ -253,17 +251,11 @@ pub fn propagate(
 				.iter()
 				.map(|&(partner, effort, _, _)| {
 					let other = &nodes[partner as usize];
-					// Relay attractiveness has two distinct roles:
-					// — Tax is the one-hop sink gravity: a wealthy neighbor
-					//   pulls value from its immediate partners (send here
-					//   because this place is rich and will absorb it).
-					// — Trade power is the multi-hop hub pull: a powerful
-					//   partner attracts value for transit through a relay
-					//   chain (send here because this hub forwards further).
-					// Both belong in the weight; they serve different scopes.
-					1.0 + effort / 1000.0
-						+ other.trade_power / params.relay_ref as f64
-						+ other.tax / params.absorb_ref as f64
+					// Relay: trade power is the hub pull, steering is the
+					// directional push. Retention (the engine's own rate)
+					// determines what stays; this determines where the
+					// rest goes.
+					1.0 + effort / 1000.0 + other.trade_power / params.relay_ref as f64
 				})
 				.collect();
 			let total: f64 = weights.iter().sum();
@@ -281,8 +273,7 @@ pub fn propagate(
 			}
 		}
 		for (i, p) in pool.iter().enumerate() {
-			let keep = absorb(nodes[i].tax) * (1.0 - steering_pressure[i]);
-			retained[i] += p * keep;
+			retained[i] += p * retention[i];
 		}
 		std::mem::swap(&mut pool, &mut incoming);
 		incoming.iter_mut().for_each(|v| *v = 0.0);
@@ -395,6 +386,28 @@ pub fn plan(
 		}
 	}
 	let result = propagate(nodes, closed, params)?;
+	// The tax-peak condition: a node may only close its edges when its
+	// tax intensity is the best in its neighborhood (itself plus direct
+	// vanilla partners in both directions). Retention alone is not
+	// enough — a node that merely collects from one neighbor does not
+	// deserve to be a black hole; it must also be the wealth center.
+	let is_tax_peak: Vec<bool> = nodes
+		.iter()
+		.map(|node| {
+			let mut best_neighbor = 0.0_f64;
+			for other in nodes {
+				if other.id == node.id {
+					continue;
+				}
+				let is_neighbor =
+					node.outgoing.contains(&other.id) || other.outgoing.contains(&node.id);
+				if is_neighbor {
+					best_neighbor = best_neighbor.max(other.tax);
+				}
+			}
+			node.tax > 0.0 && node.tax >= best_neighbor
+		})
+		.collect();
 	let mut flips = Vec::new();
 	let mut additions = Vec::new();
 	let mut total = 0usize;
@@ -421,8 +434,11 @@ pub fn plan(
 			ev.below_epsilon = if below { ev.below_epsilon + 1 } else { 0 };
 			ev.above_reopen = if above { ev.above_reopen + 1 } else { 0 };
 
-			// Only flip after sustained evidence, never on a spike.
-			let should_close = !is_closed && ev.below_epsilon >= params.evidence_months;
+			// Close requires BOTH conditions: sustained flow evidence
+			// AND the node is the neighborhood tax peak (economic
+			// justification). Reopen only needs flow recovery.
+			let should_close =
+				!is_closed && ev.below_epsilon >= params.evidence_months && is_tax_peak[i];
 			let should_reopen = is_closed && ev.above_reopen >= params.evidence_months;
 			if !should_close && !should_reopen {
 				continue;
@@ -469,11 +485,19 @@ pub fn plan(
 mod tests {
 	use super::*;
 
-	fn node(id: u32, tax: f64, production: f64, power: f64, outgoing: Vec<u32>) -> NodeSnapshot {
+	fn node(
+		id: u32,
+		tax: f64,
+		retention: f64,
+		production: f64,
+		power: f64,
+		outgoing: Vec<u32>,
+	) -> NodeSnapshot {
 		let steering = vec![0.0; outgoing.len()];
 		NodeSnapshot {
 			id,
 			tax,
+			retention,
 			production,
 			trade_power: power,
 			current_value: 0.0,
@@ -486,6 +510,7 @@ mod tests {
 	fn steered(
 		id: u32,
 		tax: f64,
+		retention: f64,
 		production: f64,
 		power: f64,
 		outgoing: Vec<u32>,
@@ -494,6 +519,7 @@ mod tests {
 		NodeSnapshot {
 			id,
 			tax,
+			retention,
 			production,
 			trade_power: power,
 			current_value: 0.0,
@@ -534,13 +560,13 @@ mod tests {
 
 	#[test]
 	fn a_rich_sink_keeps_its_region() {
-		// Two producers relay into a rich sink; the sink's one outgoing
-		// edge (toward a poor node) dies, the feeding edges stay.
+		// A node with high retention (engine says 95% stays) AND the
+		// highest tax in its neighborhood closes its outgoing edge.
 		let nodes = vec![
-			node(0, 1000.0, 5000.0, 1000.0, vec![2]),
-			node(1, 1000.0, 5000.0, 1000.0, vec![2]),
-			node(2, 100000.0, 0.0, 1000.0, vec![3]),
-			node(3, 200000.0, 0.0, 1000.0, vec![]),
+			node(0, 1000.0, 0.3, 5000.0, 1000.0, vec![2]),
+			node(1, 1000.0, 0.3, 5000.0, 1000.0, vec![2]),
+			node(2, 5000.0, 0.95, 0.0, 1000.0, vec![3]),
+			node(3, 2000.0, 0.3, 0.0, 1000.0, vec![]),
 		];
 		let mut closed = mirror(&nodes);
 		let flips = run_months(&nodes, &mut closed, &Params::default(), 6);
@@ -552,12 +578,10 @@ mod tests {
 
 	#[test]
 	fn a_dead_edge_closes() {
-		// A node with near-total absorption (tax 100k vs absorb_ref 3k)
-		// relays under 3% of its pool; the edge carries below the 5%
-		// epsilon and closes.
+		// Retention 98%: relay 2% < epsilon 5%, plus tax-peak.
 		let nodes = vec![
-			node(0, 100000.0, 8000.0, 1000.0, vec![1]),
-			node(1, 200000.0, 0.0, 1000.0, vec![]),
+			node(0, 5000.0, 0.98, 8000.0, 1000.0, vec![1]),
+			node(1, 500.0, 0.3, 0.0, 1000.0, vec![]),
 		];
 		let mut closed = mirror(&nodes);
 		let params = Params::default();
@@ -572,9 +596,9 @@ mod tests {
 		// In a producer -> hub -> sink chain, the sink (highest tax)
 		// retains the most value even with bidirectional backflow.
 		let nodes = vec![
-			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
-			node(1, 1000.0, 0.0, 5000.0, vec![2]),
-			node(2, 5000.0, 0.0, 5000.0, vec![]),
+			node(0, 1000.0, 0.3, 8000.0, 1000.0, vec![1]),
+			node(1, 1000.0, 0.2, 0.0, 5000.0, vec![2]),
+			node(2, 5000.0, 0.9, 0.0, 1000.0, vec![]),
 		];
 		let closed = mirror(&nodes);
 		let result = propagate(&nodes, &closed, &Params::default()).unwrap();
@@ -596,6 +620,7 @@ mod tests {
 			nodes.push(node(
 				i,
 				200000.0,
+				0.95,
 				if i == 0 { 10000.0 } else { 0.0 },
 				100.0,
 				outgoing,
@@ -615,8 +640,8 @@ mod tests {
 		// Once closed by low flow, an edge only reopens well above the
 		// epsilon band.
 		let nodes = vec![
-			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
-			node(1, 5000.0, 0.0, 1000.0, vec![]),
+			node(0, 1000.0, 0.5, 8000.0, 1000.0, vec![1]),
+			node(1, 5000.0, 0.5, 0.0, 1000.0, vec![]),
 		];
 		let mut closed = mirror(&nodes);
 		let _first = run_months(&nodes, &mut closed, &Params::default(), 6);
@@ -625,31 +650,12 @@ mod tests {
 	}
 
 	#[test]
-	fn colonial_steering_suppresses_local_absorption() {
-		// A colony with raw production but heavy extraction steering
-		// retains less than a similarly-taxed local node without
-		// external steering pulling value out.
-		let local = node(0, 5000.0, 4000.0, 1000.0, vec![1]);
-		let colonial = steered(1, 5000.0, 4000.0, 1000.0, vec![2], vec![8000.0]);
-		let sink = node(2, 6000.0, 0.0, 1000.0, vec![]);
-		let nodes = vec![local, colonial, sink];
-		let closed = mirror(&nodes);
-		let result = propagate(&nodes, &closed, &Params::default()).unwrap();
-		assert!(
-			result.retained[0] > result.retained[1],
-			"local ({:.0}) must retain more than colonial ({:.0})",
-			result.retained[0],
-			result.retained[1]
-		);
-	}
-
-	#[test]
 	fn transit_intelligence_finds_corridors() {
 		// A hub between a producer and a sink carries transit flow.
 		let nodes = vec![
-			node(0, 1000.0, 8000.0, 1000.0, vec![1]),
-			node(1, 1000.0, 0.0, 5000.0, vec![2]),
-			node(2, 5000.0, 0.0, 5000.0, vec![]),
+			node(0, 1000.0, 0.3, 8000.0, 1000.0, vec![1]),
+			node(1, 1000.0, 0.2, 0.0, 5000.0, vec![2]),
+			node(2, 5000.0, 0.9, 0.0, 1000.0, vec![]),
 		];
 		let closed = mirror(&nodes);
 		let report = transit_intelligence(&nodes, &closed, &Params::default());
@@ -659,8 +665,8 @@ mod tests {
 	#[test]
 	fn mirrors_must_match_the_graph() {
 		let nodes = vec![
-			node(0, 1.0, 1.0, 1.0, vec![1]),
-			node(1, 1.0, 1.0, 1.0, vec![]),
+			node(0, 1.0, 0.5, 1.0, 1.0, vec![1]),
+			node(1, 1.0, 0.5, 1.0, 1.0, vec![]),
 		];
 		let mut mismatched = vec![vec![false, false], vec![]];
 		assert!(
@@ -676,7 +682,7 @@ mod tests {
 
 	#[test]
 	fn invalid_params_are_rejected() {
-		let nodes = vec![node(0, 1.0, 1.0, 1.0, vec![])];
+		let nodes = vec![node(0, 1.0, 0.5, 1.0, 1.0, vec![])];
 		let mut closed = mirror(&nodes);
 		let crossed = Params {
 			reopen_pct: 0,

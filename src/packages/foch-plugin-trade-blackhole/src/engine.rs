@@ -258,6 +258,7 @@ mod tests {
 			NodeSnapshot {
 				id,
 				tax,
+				retention: 0.5,
 				production: 0.0,
 				trade_power: 0.0,
 				current_value: 0.0,

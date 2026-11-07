@@ -46,6 +46,11 @@ pub mod layout {
 		pub const DEFINITION: usize = 0xa8;
 		/// Current total trade value of the node (int32, thousandths).
 		pub const VALUE: usize = 0xb0;
+		/// The amount the engine transferred out this tick (int32,
+		/// thousandths), read by PushValue and subtracted from VALUE
+		/// when any steering weight is active. The engine's own
+		/// retention rate is `VALUE / (VALUE + TRANSFERRED)`.
+		pub const TRANSFERRED: usize = 0xbc;
 		/// Total trade power of the node (int32, thousandths); a second
 		/// near-identical total sits at +0xd0 and the provincial-only
 		/// share at +0xd8.

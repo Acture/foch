@@ -58,7 +58,6 @@ pub struct Config {
 	pub observer_log: bool,
 	/// Tax intensity (thousandths) at which a node absorbs half of what
 	/// pools in it; higher means only richer nodes sink.
-	pub absorb_ref: i64,
 	/// Trade power (thousandths) at which a partner doubles its relay
 	/// attractiveness; higher flattens hub preference.
 	pub relay_ref: i64,
@@ -84,7 +83,6 @@ impl Default for Config {
 			force_node: "Great Lakes".to_string(),
 			observer_log: true,
 			sink_basis: SinkBasis::Mean,
-			absorb_ref: params.absorb_ref,
 			relay_ref: params.relay_ref,
 			flow_epsilon_pct: params.flow_epsilon_pct,
 			reopen_pct: params.reopen_pct,
@@ -140,7 +138,6 @@ impl Config {
 			return Self::observe_only();
 		}
 		for (key, target) in [
-			("absorb_ref", &mut config.absorb_ref),
 			("relay_ref", &mut config.relay_ref),
 			("flow_epsilon_pct", &mut config.flow_epsilon_pct),
 			("reopen_pct", &mut config.reopen_pct),
@@ -179,10 +176,10 @@ mod tests {
 	#[test]
 	fn known_keys_override_defaults() {
 		let config = Config::from_json(
-			br#"{"mode":"policy","absorb_ref":5000,"force_node":"beijing_trade_node"}"#,
+			br#"{"mode":"policy","relay_ref":5000,"force_node":"beijing_trade_node"}"#,
 		);
 		assert_eq!(config.mode, Mode::Policy);
-		assert_eq!(config.absorb_ref, 5000);
+		assert_eq!(config.relay_ref, 5000);
 		assert_eq!(config.force_node, "beijing_trade_node");
 	}
 

@@ -621,12 +621,24 @@ impl EngineBackend for LiveBackend {
 				},
 				None => Vec::new(),
 			};
+			// The engine's own retention rate: retained / (retained +
+			// transferred), from the live node after the monthly update.
+			// This is what the game's mechanics (trade power shares,
+			// merchant modes) actually compute — no artificial formula.
+			let retained_value = self.read_i32(node + layout::node::VALUE).unwrap_or(0) as f64;
+			let transferred = self.read_i32(node + layout::node::TRANSFERRED).unwrap_or(0) as f64;
+			let retention = if retained_value + transferred > 0.0 {
+				retained_value / (retained_value + transferred)
+			} else {
+				0.0
+			};
 			nodes.push(NodeSnapshot {
 				id: index as u32,
 				tax: self.node_tax.get(&(index as u32)).copied().unwrap_or(0.0),
+				retention,
 				production: self.read_i32(node + layout::node::LOCAL_VALUE).unwrap_or(0) as f64,
 				trade_power: self.read_i32(node + layout::node::POWER).unwrap_or(0) as f64,
-				current_value: self.read_i32(node + layout::node::VALUE).unwrap_or(0) as f64,
+				current_value: retained_value,
 				outgoing,
 				steering,
 			});
