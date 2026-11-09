@@ -228,6 +228,11 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 		for line in policy::transit_intelligence(nodes, self.closed.as_ref().unwrap(), &params) {
 			(self.log)(logging::INFO, &line);
 		}
+		// Reopen diagnostics: every closed edge's net flow against the
+		// threshold band, so a stuck reopen is visible month by month.
+		for line in policy::closed_edge_report(nodes, self.closed.as_ref().unwrap(), &params) {
+			(self.log)(logging::DEBUG, &line);
+		}
 	}
 }
 

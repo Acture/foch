@@ -477,6 +477,19 @@ namespace = dev_test
 #     },
 #     advance_days=800)
 
+
+# Reopen, scheduled variant: the case only arms a flag at day 0, so
+# months 1-6 are pure baseline and hangzhou -> xi'an closes exactly as
+# in the baseline run. A natural (MTTH) event fired for the armed flag
+# at 1446 then applies the late farm: hangzhou production +30 (forward
+# flow on the closed edge scales with the pool while the reverse flow
+# from Xi'an stays put) and xi'an tax +40 (Xi'an's relay weight share
+# in Hangzhou's partner set rises from ~13% past the 15% reopen band).
+# After six months above the threshold the closed edge must REOPEN.
+#test(time=1444.11.11, tag=SWE, name="reopen_late_farm",
+#     effect={ set_country_flag = reopen_late_farm_armed },
+#     advance_days=800)
+
 country_event = {
 	id = dev_test.1
 	title = none
@@ -485,5 +498,160 @@ country_event = {
 	hidden = yes
 	is_triggered_only = yes
 	immediate = { }
+	option = { name = OK }
+}
+
+
+
+country_event = {
+	id = dev_test.2
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = no
+	fire_only_once = yes
+	trigger = {
+		has_country_flag = reopen_late_farm_armed
+		is_year = 1446
+	}
+	mean_time_to_happen = {
+		months = 1
+	}
+	immediate = {
+		log = "FOCH reopen_late_farm late effects applied"
+		669 = { add_base_production = 40 }
+		670 = { add_base_production = 40 }
+		683 = { add_base_production = 40 }
+		684 = { add_base_production = 40 }
+		685 = { add_base_production = 40 }
+		686 = { add_base_production = 40 }
+		1821 = { add_base_production = 40 }
+		1822 = { add_base_production = 40 }
+		1824 = { add_base_production = 40 }
+		1829 = { add_base_production = 40 }
+		1833 = { add_base_production = 40 }
+		1838 = { add_base_production = 40 }
+		1897 = { add_base_production = 40 }
+		2143 = { add_base_production = 40 }
+		2144 = { add_base_production = 40 }
+		2145 = { add_base_production = 40 }
+		2146 = { add_base_production = 40 }
+		2147 = { add_base_production = 40 }
+		2148 = { add_base_production = 40 }
+		2149 = { add_base_production = 40 }
+		2150 = { add_base_production = 40 }
+		2151 = { add_base_production = 40 }
+		2152 = { add_base_production = 40 }
+		2153 = { add_base_production = 40 }
+		2141 = { add_base_production = 40 }
+		2142 = { add_base_production = 40 }
+		4196 = { add_base_production = 40 }
+		687 = { add_base_tax = 80 }
+		1836 = { add_base_tax = 80 }
+		2181 = { add_base_tax = 80 }
+		2180 = { add_base_tax = 80 }
+		698 = { add_base_tax = 80 }
+		699 = { add_base_tax = 80 }
+		688 = { add_base_tax = 80 }
+		692 = { add_base_tax = 80 }
+		2183 = { add_base_tax = 80 }
+		2175 = { add_base_tax = 80 }
+		2176 = { add_base_tax = 80 }
+		681 = { add_base_tax = 80 }
+		682 = { add_base_tax = 80 }
+		2171 = { add_base_tax = 80 }
+		2172 = { add_base_tax = 80 }
+		4197 = { add_base_tax = 80 }
+		689 = { add_base_tax = 80 }
+		700 = { add_base_tax = 80 }
+		2179 = { add_base_tax = 80 }
+		4198 = { add_base_tax = 80 }
+		701 = { add_base_tax = 80 }
+		709 = { add_base_tax = 80 }
+		2191 = { add_base_tax = 80 }
+		4223 = { add_base_tax = 80 }
+		4676 = { add_base_tax = 80 }
+		690 = { add_base_tax = 50 }
+		691 = { add_base_tax = 50 }
+		702 = { add_base_tax = 50 }
+		2138 = { add_base_tax = 50 }
+		2139 = { add_base_tax = 50 }
+		2140 = { add_base_tax = 50 }
+		2114 = { add_base_tax = 50 }
+		2747 = { add_base_tax = 50 }
+		703 = { add_base_tax = 50 }
+		1816 = { add_base_tax = 50 }
+		2136 = { add_base_tax = 50 }
+		4194 = { add_base_tax = 50 }
+		695 = { add_base_tax = 50 }
+		696 = { add_base_tax = 50 }
+		2137 = { add_base_tax = 50 }
+		4195 = { add_base_tax = 50 }
+		704 = { add_base_tax = 50 }
+		726 = { add_base_tax = 50 }
+		2112 = { add_base_tax = 50 }
+		2113 = { add_base_tax = 50 }
+		693 = { add_base_tax = 50 }
+		694 = { add_base_tax = 50 }
+		697 = { add_base_tax = 50 }
+		2177 = { add_base_tax = 50 }
+		2178 = { add_base_tax = 50 }
+		4233 = { add_base_tax = 50 }
+		4652 = { add_base_tax = 50 }
+		4671 = { add_base_tax = 50 }
+		4670 = { add_base_tax = 50 }
+		710 = { add_base_tax = 50 }
+		1786 = { add_base_tax = 50 }
+		707 = { add_base_tax = 50 }
+		708 = { add_base_tax = 50 }
+		711 = { add_base_tax = 50 }
+		714 = { add_base_tax = 50 }
+		719 = { add_base_tax = 50 }
+		1784 = { add_base_tax = 50 }
+		2118 = { add_base_tax = 50 }
+		2119 = { add_base_tax = 50 }
+		2123 = { add_base_tax = 50 }
+		2189 = { add_base_tax = 50 }
+		2190 = { add_base_tax = 50 }
+		2194 = { add_base_tax = 50 }
+		2182 = { add_base_tax = 50 }
+		2184 = { add_base_tax = 50 }
+		2122 = { add_base_tax = 50 }
+		4206 = { add_base_tax = 50 }
+		4207 = { add_base_tax = 50 }
+		717 = { add_base_tax = 50 }
+		721 = { add_base_tax = 50 }
+		2116 = { add_base_tax = 50 }
+		4219 = { add_base_tax = 50 }
+		4220 = { add_base_tax = 50 }
+		720 = { add_base_tax = 50 }
+		2193 = { add_base_tax = 50 }
+		4221 = { add_base_tax = 50 }
+		713 = { add_base_tax = 50 }
+		715 = { add_base_tax = 50 }
+		2120 = { add_base_tax = 50 }
+		4208 = { add_base_tax = 50 }
+		718 = { add_base_tax = 50 }
+		2117 = { add_base_tax = 50 }
+		4222 = { add_base_tax = 50 }
+		712 = { add_base_tax = 50 }
+		2121 = { add_base_tax = 50 }
+		2192 = { add_base_tax = 50 }
+		4673 = { add_base_tax = 50 }
+		4666 = { add_base_tax = 50 }
+		4667 = { add_base_tax = 50 }
+		723 = { add_base_tax = 50 }
+		4669 = { add_base_tax = 50 }
+		4668 = { add_base_tax = 50 }
+		4681 = { add_base_tax = 50 }
+		4683 = { add_base_tax = 50 }
+		4682 = { add_base_tax = 50 }
+		4678 = { add_base_tax = 50 }
+		4677 = { add_base_tax = 50 }
+		4680 = { add_base_tax = 50 }
+		4684 = { add_base_tax = 50 }
+		4693 = { add_base_tax = 50 }
+	}
 	option = { name = OK }
 }

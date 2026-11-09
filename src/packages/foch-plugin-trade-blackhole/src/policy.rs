@@ -363,6 +363,39 @@ pub fn transit_intelligence(
 	lines
 }
 
+/// Monthly report line for every closed edge: its current net flow against
+/// the reference the thresholds use. This is the reopen diagnostics — the
+/// evidence counters are invisible otherwise, and a closed edge that never
+/// reopens can only be debugged by watching how close its net comes to the
+/// `reopen_pct` band month after month.
+pub fn closed_edge_report(
+	nodes: &[NodeSnapshot],
+	closed: &[Vec<bool>],
+	params: &Params,
+) -> Vec<String> {
+	let Ok(result) = propagate(nodes, closed, params) else {
+		return Vec::new();
+	};
+	let mut lines = Vec::new();
+	for node in nodes {
+		let i = node.id as usize;
+		let reference = result.retained[i].max(node.production).max(1.0);
+		for (edge, &target) in node.outgoing.iter().enumerate() {
+			if !closed[i][edge] {
+				continue;
+			}
+			let net = result.edge_flows[i][edge];
+			lines.push(format!(
+				"closed edge {} -> {}: net {net:+.0} / ref {reference:.0} ({:+.1}%)",
+				node.id,
+				target,
+				100.0 * net / reference
+			));
+		}
+	}
+	lines
+}
+
 /// Plan this month's flips and reverse-edge additions using sustained
 /// evidence. An edge closes only after `evidence_months` consecutive
 /// months of below-epsilon flow, and reopens only after the same
