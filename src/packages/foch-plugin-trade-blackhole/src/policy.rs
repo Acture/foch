@@ -363,31 +363,56 @@ pub fn transit_intelligence(
 	lines
 }
 
-/// One node's monthly transit-fee pool: the reward for a node whose
-/// through-flow runs a surplus (顺差) — more value flows in than flows
-/// out, so countries holding trade power there are relaying real trade
-/// and earn a cut of it without collecting either end.
+/// One node's monthly fee pool. Two channels keep the three roles'
+/// incomes distinct: a transit fee on the volume a node forwards for
+/// others (the trade-power role — pure relays earn the most, sinks
+/// nothing), and a source bounty on the local injection that actually
+/// leaves the node (the production role — farming upstream pays even
+/// though the value flows away). Sinks need neither: closures already
+/// hand them the vanilla collection income.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TransitFeePool {
+pub struct FeePool {
 	pub node: u32,
-	/// Net through-flow this month: positive inflow on incoming edges
-	/// minus positive outflow on outgoing edges. Local production is
-	/// neither imported nor exported, so it stays out of the balance.
-	pub surplus: f64,
-	/// The pool to distribute: `surplus × fee_pct/100`.
-	pub fee_pool: f64,
+	/// Which role the pool rewards.
+	pub kind: FeeKind,
+	/// The measured volume the pool is a cut of: forwarded transit
+	/// volume, or exported local production.
+	pub volume: f64,
+	/// The pool to distribute: `volume × pct/100`.
+	pub pool: f64,
 }
 
-/// Compute every node's transit-fee pool from the propagation's per-edge
-/// flows. Deficit nodes (逆差, outflow exceeds inflow) get nothing: the
-/// flow is leaving them and the sink downstream already profits by
-/// retaining it.
-pub fn transit_fee_pools(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeeKind {
+	/// Transit service: value relayed through the node on behalf of
+	/// others — `outflow × inflow / (inflow + production)`.
+	Transit,
+	/// Source export: local production that left the node —
+	/// `production × (1 − retention)`.
+	Source,
+}
+
+impl FeeKind {
+	pub fn label(&self) -> &'static str {
+		match self {
+			FeeKind::Transit => "transit fee",
+			FeeKind::Source => "source bounty",
+		}
+	}
+}
+
+/// Compute every node's fee pools from the propagation's per-edge flows.
+/// The transit volume strips the locally injected share out of the
+/// outflow, so a producer is not paid transit fees for pushing its own
+/// goods, and a sink (nothing forwarded) earns no transit fee however
+/// much it absorbs.
+pub fn fee_pools(
 	nodes: &[NodeSnapshot],
 	closed: &[Vec<bool>],
 	params: &Params,
-	fee_pct: i64,
-) -> Vec<TransitFeePool> {
+	transit_pct: i64,
+	source_pct: i64,
+) -> Vec<FeePool> {
 	let Ok(result) = propagate(nodes, closed, params) else {
 		return Vec::new();
 	};
@@ -407,18 +432,35 @@ pub fn transit_fee_pools(
 	}
 	let mut pools = Vec::new();
 	for node in nodes {
-		let surplus = inflow[node.id as usize] - outflow[node.id as usize];
-		if surplus > 0.0 {
-			pools.push(TransitFeePool {
+		let i = node.id as usize;
+		// The outflow splits by origin: the share proportional to the
+		// inflow was relayed for others (transit service), the share
+		// proportional to the local injection is this node's own export.
+		// The two volumes sum to the whole outflow, so the channels
+		// never pay for the same ducat twice.
+		let origin_total = inflow[i] + node.production;
+		let relayed = outflow[i] * inflow[i] / origin_total;
+		if relayed > 0.0 && transit_pct > 0 {
+			pools.push(FeePool {
 				node: node.id,
-				surplus,
-				fee_pool: surplus * fee_pct as f64 / 100.0,
+				kind: FeeKind::Transit,
+				volume: relayed,
+				pool: relayed * transit_pct as f64 / 100.0,
+			});
+		}
+		let exported = outflow[i] * node.production / origin_total;
+		if exported > 0.0 && source_pct > 0 {
+			pools.push(FeePool {
+				node: node.id,
+				kind: FeeKind::Source,
+				volume: exported,
+				pool: exported * source_pct as f64 / 100.0,
 			});
 		}
 	}
 	pools.sort_by(|a, b| {
-		b.fee_pool
-			.partial_cmp(&a.fee_pool)
+		b.pool
+			.partial_cmp(&a.pool)
 			.unwrap_or(std::cmp::Ordering::Equal)
 	});
 	pools
@@ -742,37 +784,84 @@ mod tests {
 	}
 
 	#[test]
-	fn a_relay_node_earns_a_fee_and_the_producer_pays_the_flow() {
-		// Producer -> hub -> sink: the hub relays more than it sources,
-		// so it runs a through-flow surplus and earns a fee pool; the
-		// producer's own production does not count as imported value.
+	fn a_pure_relay_earns_transit_and_a_producer_earns_source() {
+		// Producer -> hub -> sink, both low retention: the hub forwards
+		// everything it receives (pure transit service) and the producer
+		// exports its own injection. Each earns exactly its own channel.
 		let nodes = vec![
-			node(0, 1000.0, 0.1, 8000.0, 1000.0, vec![1]),
-			node(1, 1000.0, 0.1, 0.0, 5000.0, vec![2]),
+			node(0, 1000.0, 0.0, 8000.0, 1000.0, vec![1]),
+			node(1, 1000.0, 0.0, 0.0, 5000.0, vec![2]),
 			node(2, 5000.0, 0.95, 0.0, 1000.0, vec![]),
 		];
 		let closed = mirror(&nodes);
-		let pools = transit_fee_pools(&nodes, &closed, &Params::default(), 20);
-		let hub = pools
-			.iter()
-			.find(|p| p.node == 1)
-			.expect("hub earns a pool");
-		assert!(hub.surplus > 0.0);
-		assert!((hub.fee_pool - hub.surplus * 0.2).abs() < 1e-6);
-		// The producer exports everything it makes: deficit, no pool.
-		assert!(pools.iter().all(|p| p.node != 0), "producer gets nothing");
+		let pools = fee_pools(&nodes, &closed, &Params::default(), 20, 20);
+		let kinds = |n: u32| {
+			pools
+				.iter()
+				.filter(|p| p.node == n)
+				.map(|p| p.kind)
+				.collect::<Vec<_>>()
+		};
+		// Producer: only a source bounty, never a transit fee for
+		// pushing its own goods.
+		assert_eq!(kinds(0), vec![FeeKind::Source]);
+		// Hub: only a transit fee — it forwards, it does not produce.
+		assert_eq!(kinds(1), vec![FeeKind::Transit]);
+		// Sink: neither. It absorbs; the vanilla collection income is
+		// its channel.
+		assert!(kinds(2).is_empty());
 	}
 
 	#[test]
-	fn a_deficit_node_gets_no_pool() {
-		// A node whose outflow exceeds inflow (逆差) earns nothing.
+	fn a_sinking_node_earns_no_transit_fee_however_much_it_absorbs() {
+		// High retention (a black hole in the making): the absorbed
+		// inflow is not transit service, so no fee of either kind.
 		let nodes = vec![
 			node(0, 1000.0, 0.1, 9000.0, 1000.0, vec![1]),
-			node(1, 1000.0, 0.9, 0.0, 1000.0, vec![]),
+			node(1, 5000.0, 1.0, 0.0, 1000.0, vec![]),
 		];
 		let closed = mirror(&nodes);
-		let pools = transit_fee_pools(&nodes, &closed, &Params::default(), 20);
-		assert!(pools.iter().all(|p| p.node != 0));
+		let pools = fee_pools(&nodes, &closed, &Params::default(), 20, 20);
+		assert!(
+			pools.iter().all(|p| p.node != 1),
+			"the sink earns neither pool: {pools:?}"
+		);
+		// The producer still earns on what left its node.
+		assert!(
+			pools
+				.iter()
+				.any(|p| p.node == 0 && p.kind == FeeKind::Source)
+		);
+	}
+
+	#[test]
+	fn transit_and_source_split_the_outflow_exactly() {
+		// A node that both produces and relays: the two volumes sum to
+		// its whole model outflow — no ducat is paid twice.
+		let nodes = vec![
+			node(0, 1000.0, 0.1, 6000.0, 1000.0, vec![2]),
+			node(1, 1000.0, 0.1, 4000.0, 1000.0, vec![2]),
+			node(2, 5000.0, 0.9, 0.0, 1000.0, vec![]),
+		];
+		let closed = mirror(&nodes);
+		let result = propagate(&nodes, &closed, &Params::default()).unwrap();
+		let pools = fee_pools(&nodes, &closed, &Params::default(), 20, 20);
+		for node in &nodes {
+			let outflow: f64 = result.edge_flows[node.id as usize]
+				.iter()
+				.filter(|f| **f > 0.0)
+				.sum();
+			let volume: f64 = pools
+				.iter()
+				.filter(|p| p.node == node.id)
+				.map(|p| p.volume)
+				.sum();
+			assert!(
+				(volume - outflow).abs() < 1e-6,
+				"node {}: pools {volume} vs outflow {outflow}",
+				node.id
+			);
+		}
 	}
 
 	#[test]

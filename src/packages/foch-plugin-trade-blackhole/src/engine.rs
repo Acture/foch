@@ -245,21 +245,24 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 		for line in policy::closed_edge_report(nodes, self.closed.as_ref().unwrap(), &params) {
 			(self.log)(logging::DEBUG, &line);
 		}
-		// The transit fee: surplus nodes share a fee pool among the
-		// countries holding trade power there, so a middle monopoly
-		// earns from the flow it relays without collecting either end.
+		// The role incomes: transit fees pay the volume a node forwards
+		// for others (trade-power role, pure relays earn the most) and
+		// source bounties pay the local injection that leaves the node
+		// (production role, farming upstream pays). Sinks keep their
+		// vanilla collection income and earn neither.
 		if self.config.transit_fee {
-			self.pay_transit_fees(nodes, &params);
+			self.pay_fee_pools(nodes, &params);
 		}
 	}
 
-	/// Distribute this month's transit-fee pools by trade-power share.
-	fn pay_transit_fees(&mut self, nodes: &[NodeSnapshot], params: &policy::Params) {
-		let pools = policy::transit_fee_pools(
+	/// Distribute this month's fee pools by trade-power share.
+	fn pay_fee_pools(&mut self, nodes: &[NodeSnapshot], params: &policy::Params) {
+		let pools = policy::fee_pools(
 			nodes,
 			self.closed.as_ref().unwrap(),
 			params,
 			self.config.transit_fee_pct,
+			self.config.source_fee_pct,
 		);
 		for pool in pools {
 			let participants = self.backend.node_participants(pool.node);
@@ -269,7 +272,7 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 			}
 			let mut paid = Vec::new();
 			for (country, power) in participants {
-				let amount = pool.fee_pool * power / total;
+				let amount = pool.pool * power / total;
 				if amount < 1.0 {
 					continue;
 				}
@@ -280,7 +283,10 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 					)),
 					Err(reason) => (self.log)(
 						logging::WARN,
-						&format!("transit fee to country {country} failed: {reason}"),
+						&format!(
+							"{} to country {country} failed: {reason}",
+							pool.kind.label()
+						),
 					),
 				}
 			}
@@ -288,10 +294,11 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 				(self.log)(
 					logging::INFO,
 					&format!(
-						"transit fee node {}: surplus {:.0}, pool {:.0} -> {}",
+						"{} node {}: volume {:.0}, pool {:.0} -> {}",
+						pool.kind.label(),
 						pool.node,
-						pool.surplus,
-						pool.fee_pool,
+						pool.volume,
+						pool.pool,
 						paid.join(", ")
 					),
 				);
@@ -537,7 +544,7 @@ mod tests {
 					steering: vec![],
 				},
 			];
-			inner.participants = vec![(1, vec![(7, 3000.0), (9, 1000.0)])];
+			inner.participants = vec![(0, vec![(7, 3000.0), (9, 1000.0)])];
 		}
 		let logs = RefCell::new(Vec::new());
 		let mut engine = make(
@@ -562,8 +569,8 @@ mod tests {
 		assert!(total > 0.0);
 		let messages = logs.borrow().join("\n");
 		assert!(
-			messages.contains("transit fee node 1"),
-			"logged: {messages}"
+			messages.contains("source bounty node 0"),
+			"the producer's export pays its holders: {messages}"
 		);
 	}
 

@@ -72,12 +72,16 @@ pub struct Config {
 	pub sink_basis: SinkBasis,
 	/// Edge flips the whole graph may apply per month.
 	pub max_flips_total: usize,
-	/// Pay the transit fee: nodes whose through-flow runs a surplus share
-	/// a fee pool among the countries holding trade power there, so a
-	/// middleman monopoly earns without owning either end.
+	/// Pay the role incomes: transit fees on forwarded volume and source
+	/// bounties on exported local injection, shared among the countries
+	/// holding trade power in each node.
 	pub transit_fee: bool,
-	/// The fee pool is this percent of the node's monthly net through-flow.
+	/// The transit pool is this percent of the volume the node forwards
+	/// for others (the trade-power role's income).
 	pub transit_fee_pct: i64,
+	/// The source bounty is this percent of the local injection that
+	/// leaves the node (the production role's income).
+	pub source_fee_pct: i64,
 }
 
 impl Default for Config {
@@ -96,6 +100,7 @@ impl Default for Config {
 			max_flips_total: params.max_flips_total,
 			transit_fee: true,
 			transit_fee_pct: DEFAULT_TRANSIT_FEE_PCT,
+			source_fee_pct: DEFAULT_SOURCE_FEE_PCT,
 		}
 	}
 }
@@ -104,6 +109,7 @@ impl Default for Config {
 /// transit fee pool: a fifth by default, so passing trade pays the
 /// middlemen without draining the flow it rewards.
 pub const DEFAULT_TRANSIT_FEE_PCT: i64 = 20;
+pub const DEFAULT_SOURCE_FEE_PCT: i64 = 20;
 
 impl Config {
 	/// Parse the host's JSON object over the defaults. A shape the manifest
@@ -168,7 +174,12 @@ impl Config {
 		if let Some(pct) = object.get("transit_fee_pct").and_then(|v| v.as_i64()) {
 			config.transit_fee_pct = pct;
 		}
-		if !(0..=100).contains(&config.transit_fee_pct) {
+		if let Some(pct) = object.get("source_fee_pct").and_then(|v| v.as_i64()) {
+			config.source_fee_pct = pct;
+		}
+		if !(0..=100).contains(&config.transit_fee_pct)
+			|| !(0..=100).contains(&config.source_fee_pct)
+		{
 			return Self::observe_only();
 		}
 		if policy::Params::from(config.clone()).validate().is_err() {
