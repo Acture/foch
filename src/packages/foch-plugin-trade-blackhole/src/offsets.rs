@@ -28,6 +28,13 @@ pub mod layout {
 	pub const COUNTRY_MANAGER_GLOBAL_RVA: usize = 0x233d8d0;
 	/// Offset of `CTradeNodeDataBase` inside the game context.
 	pub const DB_IN_CONTEXT: usize = 0x2198;
+	/// `std::vector<CCountry*>` begin inside the game context; the
+	/// distribution loop walks it (`local_170 = DAT_14233fe78`). The
+	/// plugin reads the count only.
+	#[allow(dead_code)]
+	pub const COUNTRIES_BEGIN: usize = 0x1d08;
+	/// Element count of the country vector, an int in the context.
+	pub const COUNTRIES_COUNT: usize = 0x1d14;
 
 	/// `CTradeNodeDataBase`, the recalculation's `this` argument.
 	pub mod db {
@@ -123,17 +130,11 @@ pub mod layout {
 		pub const MANPOWER: usize = 0x3e0;
 	}
 
-	/// The country manager behind `image+0x233d8d0`.
+	/// The country registry behind `image+0x233d8d0`.
 	pub mod country_manager {
 		/// `CCountry**` indexed by country index: the trade distribution
 		/// loop resolves every participant through this array.
 		pub const INDEX_ARRAY: usize = 0x118;
-		/// `std::vector<CCountry*>` begin; the update iterates it to walk
-		/// every country. The plugin reads the count only.
-		#[allow(dead_code)]
-		pub const LIST_BEGIN: usize = 0x1d08;
-		/// Element count of the country list.
-		pub const LIST_COUNT: usize = 0x1d14;
 	}
 
 	/// `CCountry`, reached through the manager's index array.

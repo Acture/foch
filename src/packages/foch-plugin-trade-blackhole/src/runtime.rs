@@ -315,18 +315,28 @@ impl LiveBackend {
 	/// One-shot diagnostic: a few countries' tag and treasury, so the
 	/// e2e probe (a known `add_treasury` effect) can pin the field's unit.
 	fn probe_countries(&self) {
-		let Some(count) = self.country_count() else {
-			return;
-		};
 		let base = EXE_BASE.load(Ordering::Acquire);
 		if base <= 0x1_0000 {
 			return;
 		}
-		let Some(manager) = self
-			.read_qword(base + layout::COUNTRY_MANAGER_GLOBAL_RVA)
-			.map(|p| p as usize)
-			.filter(|p| *p > 0x1_0000)
-		else {
+		let manager_raw = self.read_qword(base + layout::COUNTRY_MANAGER_GLOBAL_RVA);
+		crate::logging::write(
+			crate::logging::DEBUG,
+			&format!("country probe: manager global reads {manager_raw:?}"),
+		);
+		let Some(manager) = manager_raw.map(|p| p as usize).filter(|p| *p > 0x1_0000) else {
+			return;
+		};
+		for (label, offset) in [("count_1d14", 0x1d14usize), ("count_1d10", 0x1d10)] {
+			crate::logging::write(
+				crate::logging::DEBUG,
+				&format!(
+					"country probe: {label} reads {:?}",
+					self.read_i32(manager + offset)
+				),
+			);
+		}
+		let Some(count) = self.country_count() else {
 			return;
 		};
 		let Some(pointers) = self
@@ -369,17 +379,13 @@ impl LiveBackend {
 		String::from_utf8_lossy(&bytes[..len.min(4)]).into_owned()
 	}
 
-	/// The number of countries, from the country manager's list count.
+	/// The number of countries, from the country vector in the game
+	/// context: the same begin/count pair the distribution loop reads.
 	fn country_count(&self) -> Option<usize> {
-		let base = EXE_BASE.load(Ordering::Acquire);
-		if base <= 0x1_0000 {
+		if self.context == 0 {
 			return None;
 		}
-		let manager = self
-			.read_qword(base + layout::COUNTRY_MANAGER_GLOBAL_RVA)
-			.map(|p| p as usize)
-			.filter(|p| *p > 0x1_0000)?;
-		let count = self.read_i32(manager + layout::country_manager::LIST_COUNT)? as usize;
+		let count = self.read_i32(self.context + layout::COUNTRIES_COUNT)? as usize;
 		(1..=1024).contains(&count).then_some(count)
 	}
 
