@@ -1640,8 +1640,12 @@ fn default_choice(
 	// A branch-wise rewrite that declined left the kernel's whole-chain
 	// merge standing, which holds every contributor's content — the same
 	// uncertainty KeepEvery names. The finding records what conflicted; the
-	// unit commits instead of blocking on a choice that is already made.
-	if conflict.kind == ConflictKind::Policy && conflict.detail.contains("chain merges as written")
+	// unit commits instead of blocking on a choice that is already made. A
+	// finding about an output orphan rides the same report and is real
+	// damage in the merged text: that one still blocks for review.
+	if conflict.kind == ConflictKind::Policy
+		&& conflict.detail.contains("chain merges as written")
+		&& !conflict.detail.contains("output:")
 	{
 		return Some(DefaultChoice::KeepEvery);
 	}
@@ -2098,12 +2102,18 @@ mod tests {
 			Some(super::DefaultChoice::KeepEvery)
 		));
 		// The same finding about an output orphan (real damage in the merged
-		// text) still has no default and blocks for review.
+		// text) still has no default and blocks for review — alone or folded
+		// into the same report with the declined rewrite.
 		let orphan = conflict(
 			"1 control-flow finding(s) require review: output:else@2",
 			Vec::new(),
 		);
 		assert!(super::default_choice(&orphan, &[]).is_none());
+		let folded = conflict(
+			"2 control-flow finding(s) require review: d/potential: a replaced chain's branch body conflicts with another revision's edit; the chain merges as written, output:else@2",
+			Vec::new(),
+		);
+		assert!(super::default_choice(&folded, &[]).is_none());
 	}
 
 	use std::collections::{BTreeMap, BTreeSet};

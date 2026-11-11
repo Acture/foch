@@ -43,7 +43,30 @@ fn exclude_dropped_subtree_variants(
 		.filter_map(|(class, selection)| selection.selected.map(|source| (*class, source)))
 		.collect();
 	for (class, source) in selected_subtrees {
-		let inside = correspondence.subtree_variant_descendants(source, base, revisions);
+		// The builder's clone emits the classes of the nodes physically
+		// inside the SELECTED revision's subtree — not every member's, so a
+		// class another revision matched under this class but the selected
+		// subtree does not hold is a variant the choice set aside.
+		let tree = tree_for_revision(base, revisions, source.revision);
+		let mut inside = BTreeSet::new();
+		let mut pending: Vec<_> = tree
+			.node(source.node)
+			.expect("a selected source node exists")
+			.children
+			.clone();
+		while let Some(node) = pending.pop() {
+			inside.insert(
+				correspondence
+					.classes
+					.class_of(RevisionNode::new(source.revision, node)),
+			);
+			pending.extend(
+				tree.node(node)
+					.expect("a listed node exists")
+					.children
+					.clone(),
+			);
+		}
 		let dropped = plan
 			.classes
 			.iter()

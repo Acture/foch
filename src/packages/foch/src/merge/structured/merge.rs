@@ -350,10 +350,14 @@ pub(super) fn merge_clausewitz_files_with_context(
 			// as the preview. A scattered control-flow chain already carries
 			// its own conflict with every contributor's chain as candidates,
 			// so only other render failures add this candidate-less report.
-			let chain_already_reported = kernel
-				.conflicts
-				.iter()
-				.any(|conflict| conflict.detail.contains("control-flow chain is no chain"));
+			// The same error text is the tie: a chain the kernel already
+			// reported produces exactly this chain-shaped render error, while
+			// any other malformed node fails with words of its own.
+			let chain_already_reported = error.to_string().contains("control-flow chain")
+				&& kernel
+					.conflicts
+					.iter()
+					.any(|conflict| conflict.detail.contains("control-flow chain is no chain"));
 			if !chain_already_reported {
 				kernel.push_conflict(StructuralConflictDraft::new(
 					ConflictKind::Policy,
