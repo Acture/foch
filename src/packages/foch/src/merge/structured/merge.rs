@@ -886,7 +886,7 @@ pub(super) fn script_context(
 	}
 }
 
-fn is_boolean_operator(key: &str) -> bool {
+pub(super) fn is_boolean_operator(key: &str) -> bool {
 	["or", "and", "not", "nor", "nand"]
 		.iter()
 		.any(|operator| key.eq_ignore_ascii_case(operator))

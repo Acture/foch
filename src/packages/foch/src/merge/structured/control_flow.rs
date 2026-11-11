@@ -503,18 +503,28 @@ impl GuardAtoms<'_> {
 		let mut cursor = 0;
 		while cursor < items.len() {
 			let statement = &items[cursor];
+			// A parameterized call this predicate descends into is one whose
+			// arguments a negation must never be tucked inside, exactly as in
+			// the condition machinery: the atom the descent ends in carries
+			// the flag that renders the `NOT` around the whole chain.
+			let held = self.traversal_holds_call;
+			if let AstStatement::Assignment { value, .. } = statement {
+				self.traversal_holds_call =
+					held || self.is_parameterized.is_some_and(|check| check(value));
+			}
 			let (predicate, next) = if starts_chain(statement) {
-				self.predicate_formula_for_chain(items, cursor, scopes)?
+				let pair = self.predicate_formula_for_chain(items, cursor, scopes)?;
+				self.traversal_holds_call = held;
+				pair
 			} else {
 				if branch_key(statement).is_some() {
 					return Err(AstAdapterError::UnprovableControlFlow(
 						"orphan branch in trigger predicate".to_string(),
 					));
 				}
-				(
-					self.predicate_formula_for_statement(statement, scopes)?,
-					cursor + 1,
-				)
+				let formula = self.predicate_formula_for_statement(statement, scopes)?;
+				self.traversal_holds_call = held;
+				(formula, cursor + 1)
 			};
 			result = join.combine(&result, &predicate, &mut self.work)?;
 			cursor = next;

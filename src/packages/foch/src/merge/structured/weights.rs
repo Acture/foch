@@ -120,7 +120,14 @@ fn collect<'a>(
 			continue;
 		};
 		let binding = binder.bind(context, key, value);
+		// The boolean operators and the control-flow branch keys are no
+		// calls: the binder declares none of them, but each has machinery of
+		// its own (the DNF reader, the chain normalizer), and recording their
+		// blocks as calls would pull `OR` and `if` blocks out of it.
+		let has_own_machinery = super::merge::is_boolean_operator(key)
+			|| matches!(key.as_str(), "if" | "else_if" | "else");
 		if binding.matched.is_none()
+			&& !has_own_machinery
 			&& context.admits(&CompiledAliasCategory::Trigger)
 			&& matches!(value, AstValue::Block { .. })
 			&& let Ok(text) = emit_clausewitz_statements(std::slice::from_ref(statement))

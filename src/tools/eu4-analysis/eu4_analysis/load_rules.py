@@ -24,6 +24,23 @@ class FileSelection:
 
 
 @dataclass(frozen=True)
+class SameNameRule:
+	"""How a name two directories of one database share resolves."""
+
+	resolution: str
+	registration_order: tuple[str, ...]
+	evidence: str
+
+
+@dataclass(frozen=True)
+class DatabaseRule:
+	"""One database's directories, plus its same-name resolution if recorded."""
+
+	selections: tuple[FileSelection, ...]
+	same_name: SameNameRule | None = None
+
+
+@dataclass(frozen=True)
 class RuleBuild:
 	"""One executable build the rules were verified against."""
 
@@ -35,11 +52,39 @@ class RuleBuild:
 class LoadRules:
 	game_version: str
 	builds: tuple[RuleBuild, ...]
-	databases: dict[str, tuple[FileSelection, ...]]
+	databases: dict[str, DatabaseRule]
+
+
+def _parse_database(value: object) -> DatabaseRule:
+	"""Read one database as written: a bare directory list, or an object
+	that also records its same-name resolution."""
+	if isinstance(value, list):
+		return DatabaseRule(
+		 tuple(
+				FileSelection(selection["directory"], selection["files"])
+				for selection in value
+			)
+		)
+	if isinstance(value, dict):
+		same_name = value.get("same_name")
+		return DatabaseRule(
+			tuple(
+				FileSelection(selection["directory"], selection["files"])
+				for selection in value["directories"]
+			),
+			None
+			if same_name is None
+			else SameNameRule(
+				same_name["resolution"],
+				tuple(same_name["registration_order"]),
+				same_name["evidence"],
+			),
+		)
+	raise ValueError("a database rule is neither a directory list nor an object")
 
 
 def parse_rules(text: str) -> LoadRules:
-	"""Read back one rule file, symmetric with the artifact `write_json` emits."""
+	"""Read back one rule file, symmetric with what `rules_to_json` emits."""
 	data: dict = json.loads(text)
 	return LoadRules(
 		data["game_version"],
@@ -47,14 +92,38 @@ def parse_rules(text: str) -> LoadRules:
 			RuleBuild(build["platform"], build["binary_sha256"])
 			for build in data["builds"]
 		),
-		{
-			owner: tuple(
-				FileSelection(selection["directory"], selection["files"])
-				for selection in selections
-			)
-			for owner, selections in data["databases"].items()
-		},
+		{owner: _parse_database(rule) for owner, rule in data["databases"].items()},
 	)
+
+
+def rules_to_json(rules: LoadRules) -> dict:
+	"""The artifact shape: a bare list per database, or the detailed object
+	whose same-name record the extractor cannot discover and must carry over."""
+	databases: dict[str, object] = {}
+	for owner, rule in rules.databases.items():
+		selections = [
+			{"directory": selection.directory, "files": selection.files}
+			for selection in rule.selections
+		]
+		if rule.same_name is None:
+			databases[owner] = selections
+		else:
+			databases[owner] = {
+				"directories": selections,
+				"same_name": {
+					"resolution": rule.same_name.resolution,
+					"registration_order": list(rule.same_name.registration_order),
+					"evidence": rule.same_name.evidence,
+				},
+			}
+	return {
+		"game_version": rules.game_version,
+		"builds": [
+			{"platform": build.platform, "binary_sha256": build.binary_sha256}
+			for build in rules.builds
+		],
+		"databases": databases,
+	}
 
 
 def with_prior_build(rules: LoadRules, prior: LoadRules) -> LoadRules:
@@ -63,11 +132,15 @@ def with_prior_build(rules: LoadRules, prior: LoadRules) -> LoadRules:
 	Builds of one game version come from the same engine source, so their
 	databases agree in principle; a disagreement is a platform divergence to
 	adjudicate by hand — and to split into per-build rule files — not to
-	overwrite silently.
+	overwrite silently. A same-name record is evidence the binary analysis
+	cannot rediscover, so the prior file's record survives unchanged beside
+	the newly discovered directories.
 	"""
 	if prior.game_version != rules.game_version:
 		raise ValueError("prior rules are for another game version")
-	if prior.databases != rules.databases:
+	if {owner: rule.selections for owner, rule in prior.databases.items()} != {
+		owner: rule.selections for owner, rule in rules.databases.items()
+	}:
 		raise ValueError(
 			"builds disagree on the rule content; adjudicate the divergence by hand"
 		)
@@ -75,7 +148,11 @@ def with_prior_build(rules: LoadRules, prior: LoadRules) -> LoadRules:
 	for build in rules.builds:
 		if build not in builds:
 			builds.append(build)
-	return replace(rules, builds=tuple(builds))
+	merged = {
+		owner: DatabaseRule(rule.selections, prior.databases[owner].same_name)
+		for owner, rule in rules.databases.items()
+	}
+	return replace(rules, builds=tuple(builds), databases=merged)
 
 
 def directory_roots(
@@ -222,10 +299,12 @@ def discover_load_rules(
 		catalog.report.game_version,
 		(RuleBuild(platform, catalog.report.binary_sha256),),
 		{
-			owner: tuple(
-				sorted(
-					selections,
-					key=lambda selection: (selection.directory, selection.files),
+			owner: DatabaseRule(
+				tuple(
+					sorted(
+						selections,
+						key=lambda selection: (selection.directory, selection.files),
+					)
 				)
 			)
 			for owner, selections in sorted(selected.items())

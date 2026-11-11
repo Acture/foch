@@ -126,7 +126,9 @@ impl DatabaseLoadRules {
 			if let Some(same_name) = &same_name {
 				// The order must place every directory exactly once: a
 				// directory it misses would leave that pair's repeat as
-				// unresolvable as a database with no rule at all.
+				// unresolvable as a database with no rule at all, and one it
+				// names twice would leave the repeat's winner to whichever
+				// position a lookup happens to read.
 				let directories: BTreeSet<_> = files
 					.iter()
 					.map(|(directory, _)| directory.as_game_path())
@@ -136,9 +138,12 @@ impl DatabaseLoadRules {
 					.iter()
 					.map(|directory| directory.as_game_path())
 					.collect();
-				if directories != ordered || same_name.evidence.trim().is_empty() {
+				if same_name.registration_order.len() != ordered.len()
+					|| directories != ordered
+					|| same_name.evidence.trim().is_empty()
+				{
 					return Err(format!(
-						"same-name rule for {name} is malformed: the registration order must cover the database's directories exactly and cite its evidence"
+						"same-name rule for {name} is malformed: the registration order must cover the database's directories exactly once each and cite its evidence"
 					));
 				}
 			}

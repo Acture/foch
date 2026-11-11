@@ -10,3 +10,19 @@
 limit = {
 	alias_name[trigger] = alias_match_left[trigger]
 }
+
+allow = {
+	alias_name[trigger] = alias_match_left[trigger]
+}
+
+potential = {
+	alias_name[trigger] = alias_match_left[trigger]
+}
+
+hidden_trigger = {
+	alias_name[trigger] = alias_match_left[trigger]
+}
+
+condition = {
+	alias_name[trigger] = alias_match_left[trigger]
+}

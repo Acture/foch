@@ -3855,3 +3855,31 @@ fn not_wrapped_parameterized_call_keeps_its_wrapper() {
 	assert!(not_at < call_at, "NOT stays outside the call: {output}");
 	assert_eq!(output.matches("amount = 3").count(), 1, "{output}");
 }
+
+#[test]
+fn a_negated_predicate_keeps_not_outside_a_parameterized_call() {
+	// The simplifier's predicate path descends through `NOT` into the call
+	// without the condition machinery's scope walk, so the atom it ends in
+	// must still learn the descent holds a call: the negation renders around
+	// the whole chain, never inside the call's arguments.
+	let path = "events/x.txt";
+	let file = parse_at(
+		path,
+		"OR = {\n\tNOT = {\n\t\tnum_of_ruler_traits = { amount = 3 }\n\t}\n\tif = {\n\t\tlimit = { has_dlc = \"x\" }\n\t\tarmy_size = 50\n\t}\n\telse = {\n\t\tarmy_size = 10\n\t}\n}\n",
+	);
+	let is_call = |value: &AstValue| match value {
+		AstValue::Block { items, .. } => matches!(
+			items.first(),
+			Some(AstStatement::Assignment { key, .. }) if key == "amount"
+		),
+		_ => false,
+	};
+	let simplified =
+		super::control_flow::simplify_merged_trigger_predicate(&file.statements, Some(&is_call))
+			.expect("the predicate simplifies");
+	let output = emit_clausewitz_statements(&simplified).expect("emits");
+	let not_at = output.find("NOT = {").expect("negation kept");
+	let call_at = output.find("num_of_ruler_traits").expect("call kept");
+	assert!(not_at < call_at, "NOT stays outside the call: {output}");
+	assert_eq!(output.matches("amount = 3").count(), 1, "{output}");
+}

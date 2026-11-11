@@ -16,7 +16,7 @@ from .builtins import BuiltinOptions
 from .catalog import CatalogDiscovery, CatalogReport, discover_catalog
 from .families import DEFAULT_BOOTSTRAP, Discovery, FamilyQuery, discover_family
 from .ghidra import GhidraSession, validate_output_directory
-from .load_rules import LoadRules, discover_load_rules, parse_rules, with_prior_build
+from .load_rules import LoadRules, discover_load_rules, parse_rules, rules_to_json, with_prior_build
 from .models import Function, FunctionEvidence
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -186,7 +186,7 @@ def run(options: Options | BuiltinOptions) -> None:
 					rules = with_prior_build(
 						rules, parse_rules(target.read_text(encoding="utf-8"))
 					)
-				write_json(target, asdict(rules))
+				write_json(target, rules_to_json(rules))
 				LOGGER.info(
 					"Wrote loading rules for %d databases", len(rules.databases)
 				)
