@@ -5,7 +5,6 @@
 //! mods that change one block's factor change the same block, and two that add
 //! blocks with other conditions add two.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crate::game::eu4::cwt::Eu4Dialect;
@@ -15,10 +14,13 @@ use crate::game::schema::bind::{BoundContext, SchemaBinder};
 use crate::game::schema::query::{CompiledAliasCategory, CwtQuery, SchemaScalarType};
 use crate::merge::kernel::SemanticKey;
 
-/// What the schema says about the statements of the file being normalized on
-/// this thread, by the address of each statement's value.
-#[derive(Default)]
-struct FileReading {
+/// What the schema says about the statements of one bound file, by the
+/// address of each statement's value. A reading belongs to the exact tree it
+/// was bound from: a clone of the file is a different tree whose addresses
+/// mean nothing here, so the reading is handed to whoever walks that tree
+/// instead of being kept where a walk of another tree could find it.
+#[derive(Default, Debug)]
+pub(super) struct FileReading {
 	/// Weight blocks' identities.
 	identities: HashMap<usize, SemanticKey>,
 	/// Statements a block may repeat: triggers, effects, scope switches and
@@ -27,42 +29,84 @@ struct FileReading {
 	repeatable: HashSet<usize>,
 	/// Blocks that hold conditions and no effects, read together.
 	conditions: HashSet<usize>,
+	/// Parameterized calls: a trigger context calls a name no rule declares
+	/// with a block of arguments (such as `num_of_ruler_traits = { amount =
+	/// 3 }`). Keyed by the call block's address, with the block's emitted
+	/// text as the distinguishing value.
+	parameterized: HashMap<usize, String>,
 }
 
-thread_local! {
-	static READING: RefCell<FileReading> = RefCell::new(FileReading::default());
-}
-
-/// Bind `file` and note what the schema says about its statements, for
-/// [`identity`] and [`is_repeatable`] to answer while `file` is normalized.
-/// Subtypes decide what a block holds, as `ai_will_do` belongs to selectable
-/// idea groups, so the binding reads the file's own statements rather than
-/// key paths alone.
-pub(super) fn prepare(schema: &CwtQuery, file: &AstFile) {
+/// Bind `file` and note what the schema says about its statements, for the
+/// [`FileReading`] queries to answer while that exact tree is walked.
+pub(super) fn read(schema: &CwtQuery, file: &AstFile) -> FileReading {
 	let mut reading = FileReading::default();
 	let binder = SchemaBinder::new(schema, &Eu4Dialect, None, &file.path);
 	let context = binder.file(&file.statements);
 	collect(&binder, &context, &file.statements, &mut reading);
-	READING.with(|current| *current.borrow_mut() = reading);
+	reading
 }
 
-/// The identity [`prepare`] found for the block whose value is `value`.
-pub(super) fn identity(value: &AstValue) -> Option<SemanticKey> {
-	let address = std::ptr::from_ref(value) as usize;
-	READING.with(|reading| reading.borrow().identities.get(&address).cloned())
+impl FileReading {
+	/// The identity [`read`] found for the block whose value is `value`.
+	pub(super) fn identity(&self, value: &AstValue) -> Option<SemanticKey> {
+		self.identities
+			.get(&(std::ptr::from_ref(value) as usize))
+			.cloned()
+	}
+
+	/// Whether [`read`] read the block `value` as one of conditions.
+	pub(super) fn is_condition_block(&self, value: &AstValue) -> bool {
+		self.conditions
+			.contains(&(std::ptr::from_ref(value) as usize))
+	}
+
+	/// Whether [`read`] read the statement whose value is `value` as one its
+	/// block may repeat.
+	pub(super) fn is_repeatable(&self, value: &AstValue) -> bool {
+		self.repeatable
+			.contains(&(std::ptr::from_ref(value) as usize))
+	}
+
+	/// The emitted argument text of the parameterized call whose block value
+	/// is `value`, if it is one. An exact address lookup, so the answer is
+	/// the same in every process.
+	pub(super) fn parameterized_call(&self, value: &AstValue) -> Option<String> {
+		self.parameterized
+			.get(&(std::ptr::from_ref(value) as usize))
+			.cloned()
+	}
+
+	/// Whether the block `value` is a parameterized call, by its content:
+	/// a boolean answer, so any iteration order gives the same result and
+	/// the check works on any clone of the file the reading bound.
+	pub(super) fn is_parameterized_block(&self, value: &AstValue) -> bool {
+		let Some(key) = block_key(value) else {
+			return false;
+		};
+		self.parameterized.values().any(|text| text.ends_with(&key))
+	}
 }
 
-/// Whether [`prepare`] read the block `value` as one of conditions.
-pub(super) fn is_condition_block(value: &AstValue) -> bool {
-	let address = std::ptr::from_ref(value) as usize;
-	READING.with(|reading| reading.borrow().conditions.contains(&address))
-}
-
-/// Whether [`prepare`] read the statement whose value is `value` as one its
-/// block may repeat.
-pub(super) fn is_repeatable(value: &AstValue) -> bool {
-	let address = std::ptr::from_ref(value) as usize;
-	READING.with(|reading| reading.borrow().repeatable.contains(&address))
+/// The text a parameterized call's block is recorded under: the block's
+/// statements emitted bare, so `{ amount = 3 }` keys the call whatever
+/// name called it.
+fn block_key(value: &AstValue) -> Option<String> {
+	fn zero_span() -> crate::game::eu4::script::parser::Span {
+		crate::game::eu4::script::parser::Span {
+			line: 0,
+			column: 0,
+			offset: 0,
+		}
+	}
+	let call = AstStatement::Item {
+		value: value.clone(),
+		span: crate::game::eu4::script::parser::SpanRange {
+			start: zero_span(),
+			end: zero_span(),
+		},
+	};
+	let text = emit_clausewitz_statements(std::slice::from_ref(&call)).ok()?;
+	Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn collect<'a>(
@@ -76,6 +120,16 @@ fn collect<'a>(
 			continue;
 		};
 		let binding = binder.bind(context, key, value);
+		if binding.matched.is_none()
+			&& context.admits(&CompiledAliasCategory::Trigger)
+			&& matches!(value, AstValue::Block { .. })
+			&& let Ok(text) = emit_clausewitz_statements(std::slice::from_ref(statement))
+		{
+			reading.parameterized.insert(
+				std::ptr::from_ref(value) as usize,
+				text.split_whitespace().collect::<Vec<_>>().join(" "),
+			);
+		}
 		if binding.matched.is_some_and(|matched| {
 			matched.alias().is_some_and(|alias| {
 				matches!(
@@ -135,9 +189,6 @@ fn weight_identity<'a>(
 			AstStatement::Assignment {
 				key: field, value, ..
 			} => {
-				// A key no rule names here is most often a call of a scripted
-				// trigger, which this reading does not know by name: still a
-				// condition of the block.
 				let Some(matched) = binder.bind(context, field, value).matched else {
 					conditions.push(
 						emit_clausewitz_statements(std::slice::from_ref(item))

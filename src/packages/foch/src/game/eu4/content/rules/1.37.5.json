@@ -1,5 +1,7 @@
 {
-  "binary_sha256": "bfb1f9dade119cb3adee4f595593df3983d9b7c3b480d3c2e2cb92e7576a7dbf",
+  "builds": [
+    {"binary_sha256": "bfb1f9dade119cb3adee4f595593df3983d9b7c3b480d3c2e2cb92e7576a7dbf", "platform": "macos"}
+  ],
   "databases": {
     "CAIArmyDataBase": [
       {
@@ -405,16 +407,23 @@
         "files": "*.txt"
       }
     ],
-    "CStaticModifierDataBase": [
-      {
-        "directory": "common/event_modifiers",
-        "files": "*.txt"
-      },
-      {
-        "directory": "common/static_modifiers",
-        "files": "*.txt"
+    "CStaticModifierDataBase": {
+      "directories": [
+        {
+          "directory": "common/event_modifiers",
+          "files": "*.txt"
+        },
+        {
+          "directory": "common/static_modifiers",
+          "files": "*.txt"
+        }
+      ],
+      "same_name": {
+        "resolution": "later_directory_wins",
+        "registration_order": ["common/static_modifiers", "common/event_modifiers"],
+        "evidence": "windows eu4.exe 1.37.5.0 sha256 c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e: the application init loads common/static_modifiers before common/event_modifiers into one database through one loader; registration prepends to the name hash bucket with no duplicate check and lookup walks the bucket from the head, so the later-registered directory entry is the one every lookup returns"
       }
-    ],
+    },
     "CSubjectTypeDatabase": [
       {
         "directory": "common/subject_types",

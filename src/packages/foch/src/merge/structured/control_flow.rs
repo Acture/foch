@@ -345,12 +345,21 @@ fn term_contains(term: &Term, subset: &Term) -> bool {
 struct GuardAtom {
 	scopes: Vec<String>,
 	statement: AstStatement,
+	/// Whether the scope chain holds a parameterized call: negating such an
+	/// atom must wrap the whole chain, not tuck the `NOT` where the game
+	/// reads the call's argument.
+	call_scope: bool,
 }
 
 #[derive(Default)]
-struct GuardAtoms {
+struct GuardAtoms<'a> {
 	atoms: BTreeMap<String, GuardAtom>,
 	work: FormulaWork,
+	/// Whether a block value is a parameterized call.
+	is_parameterized: Option<&'a dyn Fn(&AstValue) -> bool>,
+	/// Whether the scope chain the current traversal descends through holds
+	/// a parameterized call.
+	traversal_holds_call: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -380,7 +389,7 @@ impl PredicateJoin {
 	}
 }
 
-impl GuardAtoms {
+impl GuardAtoms<'_> {
 	fn formula_for_items(
 		&mut self,
 		items: &[AstStatement],
@@ -423,7 +432,7 @@ impl GuardAtoms {
 	) -> Result<Formula, AstAdapterError> {
 		let AstStatement::Assignment {
 			key,
-			value: AstValue::Block { items, .. },
+			value: value @ AstValue::Block { items, .. },
 			..
 		} = statement
 		else {
@@ -465,7 +474,12 @@ impl GuardAtoms {
 					.iter()
 					.find(|item| !matches!(item, AstStatement::Comment { .. }))
 					.expect("singleton scope has one semantic child");
-				self.formula_for_statement(child, &nested_scopes)
+				let held = self.traversal_holds_call;
+				self.traversal_holds_call =
+					held || self.is_parameterized.is_some_and(|check| check(value));
+				let formula = self.formula_for_statement(child, &nested_scopes);
+				self.traversal_holds_call = held;
+				formula
 			}
 			_ => Ok(self.atom_formula(scopes, statement)),
 		}
@@ -573,9 +587,11 @@ impl GuardAtoms {
 
 	fn atom_formula(&mut self, scopes: &[String], statement: &AstStatement) -> Formula {
 		let key = format!("{}{}", scopes.join("/"), statement_key(statement));
+		let call_scope = self.traversal_holds_call;
 		self.atoms.entry(key.clone()).or_insert_with(|| GuardAtom {
 			scopes: scopes.to_vec(),
 			statement: statement.clone(),
+			call_scope,
 		});
 		Formula::literal(key)
 	}
@@ -636,18 +652,24 @@ impl GuardAtoms {
 			AstAdapterError::UnprovableControlFlow("normalized guard atom was lost".to_string())
 		})?;
 		let mut statement = atom.statement.clone();
-		if !polarity {
+		if !polarity && !atom.call_scope {
 			statement = block_assignment("NOT", vec![statement]);
 		}
 		for scope in atom.scopes.iter().rev() {
 			statement = block_assignment(scope, vec![statement]);
 		}
+		if !polarity && atom.call_scope {
+			// A parameterized call in the chain reads its argument where the
+			// `NOT` would land: negate the whole chain instead.
+			statement = block_assignment("NOT", vec![statement]);
+		}
 		Ok(statement)
 	}
 }
 
-pub(super) fn simplify_merged_trigger_predicate(
-	items: &[AstStatement],
+pub(super) fn simplify_merged_trigger_predicate<'a>(
+	items: &'a [AstStatement],
+	is_parameterized: Option<&'a dyn Fn(&AstValue) -> bool>,
 ) -> Option<Vec<AstStatement>> {
 	let [
 		AstStatement::Assignment {
@@ -669,7 +691,10 @@ pub(super) fn simplify_merged_trigger_predicate(
 		return None;
 	}
 
-	let mut atoms = GuardAtoms::default();
+	let mut atoms = GuardAtoms {
+		is_parameterized,
+		..GuardAtoms::default()
+	};
 	let formula = atoms.predicate_formula_for_items(items, &[]).ok()?;
 	atoms.predicate_items(&formula).ok()
 }
@@ -860,7 +885,11 @@ fn normalize_chain_semantic(
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<(TreeNode, usize), AstAdapterError> {
-	let mut atoms = GuardAtoms::default();
+	let check = |v: &AstValue| policy.is_parameterized_block(v);
+	let mut atoms = GuardAtoms {
+		is_parameterized: Some(&check),
+		..GuardAtoms::default()
+	};
 	let (raw_cases, next, complete) = extract_raw_cases(statements, start, &mut atoms)?;
 	let mut seen_guards = BTreeSet::new();
 	for case in &raw_cases {

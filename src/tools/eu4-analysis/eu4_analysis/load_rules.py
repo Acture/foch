@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 
 from .catalog import CatalogDiscovery
@@ -23,10 +24,58 @@ class FileSelection:
 
 
 @dataclass(frozen=True)
+class RuleBuild:
+	"""One executable build the rules were verified against."""
+
+	platform: str
+	binary_sha256: str
+
+
+@dataclass(frozen=True)
 class LoadRules:
 	game_version: str
-	binary_sha256: str
+	builds: tuple[RuleBuild, ...]
 	databases: dict[str, tuple[FileSelection, ...]]
+
+
+def parse_rules(text: str) -> LoadRules:
+	"""Read back one rule file, symmetric with the artifact `write_json` emits."""
+	data: dict = json.loads(text)
+	return LoadRules(
+		data["game_version"],
+		tuple(
+			RuleBuild(build["platform"], build["binary_sha256"])
+			for build in data["builds"]
+		),
+		{
+			owner: tuple(
+				FileSelection(selection["directory"], selection["files"])
+				for selection in selections
+			)
+			for owner, selections in data["databases"].items()
+		},
+	)
+
+
+def with_prior_build(rules: LoadRules, prior: LoadRules) -> LoadRules:
+	"""Keep the builds that already verified the same rule content.
+
+	Builds of one game version come from the same engine source, so their
+	databases agree in principle; a disagreement is a platform divergence to
+	adjudicate by hand — and to split into per-build rule files — not to
+	overwrite silently.
+	"""
+	if prior.game_version != rules.game_version:
+		raise ValueError("prior rules are for another game version")
+	if prior.databases != rules.databases:
+		raise ValueError(
+			"builds disagree on the rule content; adjudicate the divergence by hand"
+		)
+	builds: list[RuleBuild] = list(prior.builds)
+	for build in rules.builds:
+		if build not in builds:
+			builds.append(build)
+	return replace(rules, builds=tuple(builds))
 
 
 def directory_roots(
@@ -81,7 +130,7 @@ def directory_roots(
 
 
 def discover_load_rules(
-	analysis: BinaryAnalysis, catalog: CatalogDiscovery
+	analysis: BinaryAnalysis, catalog: CatalogDiscovery, *, platform: str
 ) -> LoadRules:
 	if not catalog.report.scan_complete:
 		raise ValueError("a partial scan must not replace the repository's rule file")
@@ -171,7 +220,7 @@ def discover_load_rules(
 		)
 	return LoadRules(
 		catalog.report.game_version,
-		catalog.report.binary_sha256,
+		(RuleBuild(platform, catalog.report.binary_sha256),),
 		{
 			owner: tuple(
 				sorted(
