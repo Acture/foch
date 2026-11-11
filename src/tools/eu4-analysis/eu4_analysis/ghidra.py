@@ -10,7 +10,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-from .macho import BinaryImage, read_binary
+from .binary import BinaryImage, read_binary
 from .models import Function, FunctionEvidence, Instruction, Reference
 
 if TYPE_CHECKING:

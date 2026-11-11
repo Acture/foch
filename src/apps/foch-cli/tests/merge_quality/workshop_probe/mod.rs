@@ -604,6 +604,16 @@ mod tests {
 			"common/event_modifiers/base.txt",
 			"event_shared = { land_morale = 0.1 }\n",
 		);
+		write_file(
+			&game,
+			"common/ancestor_personalities/base.txt",
+			"ancestor_base = { loyalty = 0.1 }\n",
+		);
+		write_file(
+			&game,
+			"common/ruler_personalities/base.txt",
+			"ruler_base = { loyalty = 0.1 }\n",
+		);
 		let selection = Selection {
 			url: PAGE_URL.into(),
 			collected_at_unix: 1,
@@ -743,19 +753,22 @@ mod tests {
 
 	#[test]
 	fn semantic_deferrals_are_reported_with_paths_and_reasons() {
+		// The ruler personality database holds two directories whose repeats
+		// the loading rules record no resolution for, so a name both define
+		// still defers as an engine evidence gap.
 		let temp = tempfile::tempdir().unwrap();
 		let config = fixture(temp.path());
 		let run = execute(&config, |config, _, ids| {
 			let pairs = install_fixture(config, ids)?;
 			write_file(
 				&pairs[0].content_root.join("22"),
-				"common/static_modifiers/clash.txt",
-				"cross_directory_clash = { global_tax_modifier = 0.4 }\n",
+				"common/ancestor_personalities/clash.txt",
+				"cross_directory_clash = { loyalty = 0.4 }\n",
 			);
 			write_file(
 				&pairs[0].content_root.join("11"),
-				"common/event_modifiers/clash.txt",
-				"cross_directory_clash = { land_morale = 0.5 }\n",
+				"common/ruler_personalities/clash.txt",
+				"cross_directory_clash = { loyalty = 0.5 }\n",
 			);
 			Ok(pairs)
 		})

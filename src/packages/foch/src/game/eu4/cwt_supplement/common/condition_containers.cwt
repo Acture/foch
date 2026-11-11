@@ -1,0 +1,12 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+# The game writes `limit = { triggers }` inside every `if`/`else_if`/`while`
+# effect block, and `allow`/`potential`/`hidden_trigger` as condition
+# containers; the vendored rules declare each inside its specific alias, but
+# the binder resolving `alias_match_left[effect]` does not reach them, so a
+# block under `limit` binds against a context that declares nothing and the
+# trigger reading misses it. These declarations make the containers hold
+# triggers wherever the game writes them.
+
+limit = {
+	alias_name[trigger] = alias_match_left[trigger]
+}

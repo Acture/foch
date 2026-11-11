@@ -7,10 +7,12 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from eu4_analysis.binary import read_binary
 from eu4_analysis.families import Discovery, FamilyQuery, discover_family
 from eu4_analysis.ghidra import GhidraSession
-from eu4_analysis.macho import function_starts, read_binary
+from eu4_analysis.macho import function_starts, read_macho_image
 from eu4_analysis.models import Function, FunctionEvidence, Instruction, Reference
+from eu4_analysis.pe import read_pe_image
 from eu4_analysis.x86 import Pointer, trace
 
 
@@ -313,11 +315,11 @@ class MachOTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as directory:
 			path: Path = Path(directory) / "eu4"
 			path.write_bytes(macho())
-			image = read_binary(path)
+			image = read_macho_image(path)
 		self.assertEqual(image.function_starts, (0x1100, 0x1120))
 		self.assertEqual(image.function_end(0x1100), 0x1120)
 		self.assertEqual(image.function_end(0x1120), 0x1400)
-		with self.assertRaisesRegex(ValueError, "not an LC_FUNCTION_STARTS"):
+		with self.assertRaisesRegex(ValueError, "not a recorded function start"):
 			image.function_end(0x1101)
 
 	def test_rejects_malformed_binary_and_unsupported_cpu(self) -> None:
@@ -335,12 +337,117 @@ class MachOTests(unittest.TestCase):
 				path: Path = Path(directory) / "bad"
 				path.write_bytes(data)
 				with self.assertRaises(ValueError):
-					read_binary(path)
+					read_macho_image(path)
 
 	def test_invalid_function_table(self) -> None:
 		for data in (b"\x80", b"\x80" * 10, b"\x01", b"\xff\x7f\x00"):
 			with self.subTest(data=data), self.assertRaises(ValueError):
 				function_starts(data, 0x1000, 0x1100)
+
+
+def pe(
+	entries: tuple[tuple[int, int], ...] = ((0x1100, 0x1120), (0x1120, 0x1180)),
+	machine: int = 0x8664,
+) -> bytes:
+	"""One minimal x64 PE32+ image: headers, `.text` at 0x200, `.pdata` at 0x600."""
+	pdata: bytes = b"".join(
+		struct.pack("<III", begin, end, 0) for begin, end in entries
+	)
+	text: bytes = b"\x90" * 0x400
+	directories: bytes = (
+		b"\0" * 8 * 3 + struct.pack("<II", 0x1800, len(pdata)) + b"\0" * 8 * 12
+	)
+	optional: bytes = (
+		struct.pack("<HBBIIIIIQ", 0x20B, 2, 0, 0, 0, 0, 0, 0x1000, 0x140000000)
+		+ b"\0" * 76
+		+ struct.pack("<I", 16)
+		+ directories
+	)
+	assert len(optional) == 240, len(optional)
+	sections: bytes = struct.pack(
+		"<8sIIIIIIHHI",
+		b".text\0\0\0",
+		0x400,
+		0x1000,
+		0x400,
+		0x200,
+		0,
+		0,
+		0,
+		0,
+		0x60000020,
+	) + struct.pack(
+		"<8sIIIIIIHHI",
+		b".pdata",
+		len(pdata),
+		0x1800,
+		len(pdata),
+		0x600,
+		0,
+		0,
+		0,
+		0,
+		0x40000040,
+	)
+	coff: bytes = struct.pack("<HHIIIHH", machine, 2, 0, 0, 0, len(optional), 0)
+	image: bytes = b"MZ" + b"\0" * 0x3A + struct.pack("<I", 0x40)
+	image += b"PE\0\0" + coff + optional + sections
+	assert len(image) <= 0x200, len(image)
+	return image.ljust(0x200, b"\0") + text + pdata
+
+
+class PETests(unittest.TestCase):
+	def test_exact_metadata_boundaries(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			path: Path = Path(directory) / "eu4.exe"
+			path.write_bytes(pe())
+			image = read_pe_image(path)
+		self.assertEqual(image.function_starts, (0x140001100, 0x140001120))
+		self.assertEqual(image.function_ends, (0x140001120, 0x140001180))
+		self.assertEqual(image.function_end(0x140001100), 0x140001120)
+		self.assertEqual(image.function_end(0x140001120), 0x140001180)
+		with self.assertRaisesRegex(ValueError, "not a recorded function start"):
+			image.function_end(0x140001101)
+
+	def test_read_binary_dispatches_on_the_dos_header(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			pe_path: Path = Path(directory) / "eu4.exe"
+			pe_path.write_bytes(pe())
+			self.assertEqual(
+				read_binary(pe_path).function_ends, (0x140001120, 0x140001180)
+			)
+			macho_path: Path = Path(directory) / "eu4"
+			macho_path.write_bytes(macho())
+			self.assertIsNone(read_binary(macho_path).function_ends)
+
+	def test_rejects_malformed_image_and_unsupported_cpu(self) -> None:
+		valid: bytes = pe()
+		bad_machine: bytes = pe(machine=0x14C)
+		for data in (
+			b"short",
+			b"MZ" + b"\0" * 0x3E,
+			valid[:0x100],
+			bad_machine,
+		):
+			with (
+				self.subTest(length=len(data)),
+				tempfile.TemporaryDirectory() as directory,
+			):
+				path: Path = Path(directory) / "bad.exe"
+				path.write_bytes(data)
+				with self.assertRaises(ValueError):
+					read_pe_image(path)
+
+	def test_rejects_unsorted_or_empty_function_entries(self) -> None:
+		for entries in ((), ((0x1120, 0x1180), (0x1100, 0x1120)), ((0x1100, 0x1100),)):
+			with (
+				self.subTest(entries=entries),
+				tempfile.TemporaryDirectory() as directory,
+			):
+				path: Path = Path(directory) / "bad.exe"
+				path.write_bytes(pe(entries=entries))
+				with self.assertRaises(ValueError):
+					read_pe_image(path)
 
 
 if __name__ == "__main__":
