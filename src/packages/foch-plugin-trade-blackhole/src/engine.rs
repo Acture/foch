@@ -29,6 +29,18 @@ pub trait EngineBackend {
 	/// One log line about the applied state of the backend.
 	fn describe(&self) -> &'static str;
 
+	/// The countries holding trade power in one node, as `(country
+	/// index, power)` pairs, for the transit-fee distribution.
+	fn node_participants(&mut self, _node: u32) -> Vec<(u32, f64)> {
+		Vec::new()
+	}
+
+	/// Add to one country's treasury (engine thousandths). The transit
+	/// fee's payment primitive.
+	fn pay_country(&mut self, _country: u32, _amount: f64) -> Result<(), &'static str> {
+		Ok(())
+	}
+
 	/// Hand the engine-side sources of this tick to the backend: the
 	/// global context and the trade database embedded in it.
 	fn set_source(&mut self, _context: usize, _db: usize) {}
@@ -233,6 +245,58 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 		for line in policy::closed_edge_report(nodes, self.closed.as_ref().unwrap(), &params) {
 			(self.log)(logging::DEBUG, &line);
 		}
+		// The transit fee: surplus nodes share a fee pool among the
+		// countries holding trade power there, so a middle monopoly
+		// earns from the flow it relays without collecting either end.
+		if self.config.transit_fee {
+			self.pay_transit_fees(nodes, &params);
+		}
+	}
+
+	/// Distribute this month's transit-fee pools by trade-power share.
+	fn pay_transit_fees(&mut self, nodes: &[NodeSnapshot], params: &policy::Params) {
+		let pools = policy::transit_fee_pools(
+			nodes,
+			self.closed.as_ref().unwrap(),
+			params,
+			self.config.transit_fee_pct,
+		);
+		for pool in pools {
+			let participants = self.backend.node_participants(pool.node);
+			let total: f64 = participants.iter().map(|(_, power)| power).sum();
+			if total <= 0.0 || participants.is_empty() {
+				continue;
+			}
+			let mut paid = Vec::new();
+			for (country, power) in participants {
+				let amount = pool.fee_pool * power / total;
+				if amount < 1.0 {
+					continue;
+				}
+				match self.backend.pay_country(country, amount) {
+					Ok(()) => paid.push(format!(
+						"country {country} {amount:.0} ({:.0}%)",
+						100.0 * power / total
+					)),
+					Err(reason) => (self.log)(
+						logging::WARN,
+						&format!("transit fee to country {country} failed: {reason}"),
+					),
+				}
+			}
+			if !paid.is_empty() {
+				(self.log)(
+					logging::INFO,
+					&format!(
+						"transit fee node {}: surplus {:.0}, pool {:.0} -> {}",
+						pool.node,
+						pool.surplus,
+						pool.fee_pool,
+						paid.join(", ")
+					),
+				);
+			}
+		}
 	}
 }
 
@@ -253,6 +317,8 @@ mod tests {
 		names: Vec<&'static str>,
 		fail_set: bool,
 		mutations: Vec<String>,
+		participants: Vec<(u32, Vec<(u32, f64)>)>,
+		payments: Vec<(u32, f64)>,
 	}
 
 	impl FakeBackend {
@@ -289,6 +355,8 @@ mod tests {
 			],
 			fail_set: false,
 			mutations: Vec::new(),
+			participants: Vec::new(),
+			payments: Vec::new(),
 		}))
 	}
 
@@ -324,6 +392,21 @@ mod tests {
 
 		fn describe(&self) -> &'static str {
 			"fake"
+		}
+
+		fn node_participants(&mut self, node: u32) -> Vec<(u32, f64)> {
+			self.inner
+				.borrow()
+				.participants
+				.iter()
+				.find(|(n, _)| *n == node)
+				.map(|(_, list)| list.clone())
+				.unwrap_or_default()
+		}
+
+		fn pay_country(&mut self, country: u32, amount: f64) -> Result<(), &'static str> {
+			self.inner.borrow_mut().payments.push((country, amount));
+			Ok(())
 		}
 	}
 
@@ -423,6 +506,96 @@ mod tests {
 		let messages = logs.borrow().join("\n");
 		assert!(messages.contains("failed"), "logged: {messages}");
 		assert!(state.borrow().mutations.is_empty());
+	}
+
+	#[test]
+	fn transit_fees_pay_participants_by_power_share() {
+		// A producer feeds node 1 (the transit hub): its pool is shared
+		// by two countries 3:1 by trade power.
+		let state = inner();
+		{
+			let mut inner = state.borrow_mut();
+			inner.nodes = vec![
+				NodeSnapshot {
+					id: 0,
+					tax: 1000.0,
+					retention: 0.1,
+					production: 8000.0,
+					trade_power: 1000.0,
+					current_value: 0.0,
+					outgoing: vec![1],
+					steering: vec![0.0],
+				},
+				NodeSnapshot {
+					id: 1,
+					tax: 1000.0,
+					retention: 0.1,
+					production: 0.0,
+					trade_power: 5000.0,
+					current_value: 0.0,
+					outgoing: vec![],
+					steering: vec![],
+				},
+			];
+			inner.participants = vec![(1, vec![(7, 3000.0), (9, 1000.0)])];
+		}
+		let logs = RefCell::new(Vec::new());
+		let mut engine = make(
+			Config {
+				mode: Mode::Policy,
+				evidence_months: 1,
+				..Config::default()
+			},
+			&state,
+			&logs,
+		);
+		engine.tick();
+		let payments = state.borrow().payments.clone();
+		assert_eq!(payments.len(), 2, "both participants paid");
+		let total: f64 = payments.iter().map(|(_, a)| a).sum();
+		let by7 = payments.iter().find(|(c, _)| *c == 7).unwrap().1;
+		let by9 = payments.iter().find(|(c, _)| *c == 9).unwrap().1;
+		assert!(
+			(by7 - 3.0 * by9).abs() < 1e-6,
+			"3:1 by power, got {by7} vs {by9}"
+		);
+		assert!(total > 0.0);
+		let messages = logs.borrow().join("\n");
+		assert!(
+			messages.contains("transit fee node 1"),
+			"logged: {messages}"
+		);
+	}
+
+	#[test]
+	fn transit_fees_can_be_disabled() {
+		let state = inner();
+		{
+			let mut inner = state.borrow_mut();
+			inner.nodes = vec![NodeSnapshot {
+				id: 0,
+				tax: 1000.0,
+				retention: 0.1,
+				production: 8000.0,
+				trade_power: 1000.0,
+				current_value: 0.0,
+				outgoing: vec![],
+				steering: vec![],
+			}];
+			inner.participants = vec![(0, vec![(7, 100.0)])];
+		}
+		let logs = RefCell::new(Vec::new());
+		let mut engine = make(
+			Config {
+				mode: Mode::Policy,
+				transit_fee: false,
+				..Config::default()
+			},
+			&state,
+			&logs,
+		);
+		engine.tick();
+		assert!(state.borrow().payments.is_empty());
 	}
 
 	#[test]

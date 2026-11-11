@@ -22,6 +22,10 @@ pub mod layout {
 	/// value stored there is the hook's first argument and the base the
 	/// trade database is embedded in.
 	pub const CONTEXT_GLOBAL_RVA: usize = 0x233fe78;
+	/// The global country-manager pointer variable, `image+0x233d8d0`,
+	/// dereferenced by the trade distribution loop (`*(manager+0x118)`
+	/// indexed by country index) inside the per-node update.
+	pub const COUNTRY_MANAGER_GLOBAL_RVA: usize = 0x233d8d0;
 	/// Offset of `CTradeNodeDataBase` inside the game context.
 	pub const DB_IN_CONTEXT: usize = 0x2198;
 
@@ -60,6 +64,28 @@ pub mod layout {
 		/// read. This is what the engine itself feeds into trade
 		/// propagation; it already reflects price changes.
 		pub const LOCAL_VALUE: usize = 0xb4;
+		/// Per-country entry table: `entry = *(node+0x18) + country_index * 0xc0`.
+		/// The distribution loop reads each participant's entry fields
+		/// (power, merchant-mode flags) from this table.
+		pub const ENTRY_TABLE: usize = 0x18;
+		/// Stride of one country's entry in the table.
+		pub const ENTRY_SIZE: usize = 0xc0;
+	}
+
+	/// One country's presence in a trade node, from the distribution loop.
+	pub mod entry {
+		/// This country's trade power contribution to the node (int32,
+		/// thousandths): the value the loop accumulates into the node's
+		/// per-country power subtotal.
+		pub const POWER: usize = 0x28;
+		/// Merchant-mode flags read before distributing: collecting at
+		/// +0xac, transferring at +0xad, a third mode at +0xae. The fee
+		/// pays every power holder regardless of mode, so the plugin
+		/// keeps them documented here without reading them yet.
+		#[allow(dead_code)]
+		pub const MODE_COLLECT: usize = 0xac;
+		#[allow(dead_code)]
+		pub const MODE_TRANSFER: usize = 0xad;
 	}
 
 	/// `CTradeNodeDefinition`, reached through `node::DEFINITION`.
@@ -95,6 +121,43 @@ pub mod layout {
 		/// Base manpower in thousandths (potential consumption), at
 		/// `+0x3e0` per the live dump correlation.
 		pub const MANPOWER: usize = 0x3e0;
+	}
+
+	/// The country manager behind `image+0x233d8d0`.
+	pub mod country_manager {
+		/// `CCountry**` indexed by country index: the trade distribution
+		/// loop resolves every participant through this array.
+		pub const INDEX_ARRAY: usize = 0x118;
+		/// `std::vector<CCountry*>` begin; the update iterates it to walk
+		/// every country. The plugin reads the count only.
+		#[allow(dead_code)]
+		pub const LIST_BEGIN: usize = 0x1d08;
+		/// Element count of the country list.
+		pub const LIST_COUNT: usize = 0x1d14;
+	}
+
+	/// `CCountry`, reached through the manager's index array.
+	pub mod country {
+		/// Packed identity: the low bytes hold the tag (printed as `%s`
+		/// by the ChangeTreasury console log), and bits 32..48 of the
+		/// same qword hold the country index.
+		pub const TAG: usize = 0x20;
+		/// The treasury (int32), added to by `ChangeTreasury` at
+		/// `country.cpp:0x5882` and clamped to ±1,000,000,000.
+		pub const TREASURY: usize = 0xbb0;
+		/// `ChangeTreasury` clamps the treasury to this magnitude.
+		pub const TREASURY_CLAMP: i64 = 1_000_000_000;
+	}
+
+	/// Player-facing UI refresh, mirrored from ChangeTreasury's tail.
+	pub mod ui {
+		/// The UI controller object inside the game context; its +0x388
+		/// flag word carries the treasury-dirty bit.
+		pub const CONTROLLER: usize = 0x1e00;
+		/// The flag word holding per-widget dirty bits.
+		pub const FLAGS: usize = 0x388;
+		/// The bit ChangeTreasury sets when the player's treasury moved.
+		pub const TREASURY_DIRTY: i32 = 0x40;
 	}
 }
 

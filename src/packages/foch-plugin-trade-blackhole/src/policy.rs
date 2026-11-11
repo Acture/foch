@@ -363,6 +363,67 @@ pub fn transit_intelligence(
 	lines
 }
 
+/// One node's monthly transit-fee pool: the reward for a node whose
+/// through-flow runs a surplus (顺差) — more value flows in than flows
+/// out, so countries holding trade power there are relaying real trade
+/// and earn a cut of it without collecting either end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransitFeePool {
+	pub node: u32,
+	/// Net through-flow this month: positive inflow on incoming edges
+	/// minus positive outflow on outgoing edges. Local production is
+	/// neither imported nor exported, so it stays out of the balance.
+	pub surplus: f64,
+	/// The pool to distribute: `surplus × fee_pct/100`.
+	pub fee_pool: f64,
+}
+
+/// Compute every node's transit-fee pool from the propagation's per-edge
+/// flows. Deficit nodes (逆差, outflow exceeds inflow) get nothing: the
+/// flow is leaving them and the sink downstream already profits by
+/// retaining it.
+pub fn transit_fee_pools(
+	nodes: &[NodeSnapshot],
+	closed: &[Vec<bool>],
+	params: &Params,
+	fee_pct: i64,
+) -> Vec<TransitFeePool> {
+	let Ok(result) = propagate(nodes, closed, params) else {
+		return Vec::new();
+	};
+	// Per-edge nets are forward-positive by convention: an edge's source
+	// holds it, so outflow sums a node's own edges and inflow sums the
+	// edges of everyone pointing at it.
+	let mut inflow = vec![0.0_f64; nodes.len()];
+	let mut outflow = vec![0.0_f64; nodes.len()];
+	for node in nodes {
+		for (edge, &target) in node.outgoing.iter().enumerate() {
+			let net = result.edge_flows[node.id as usize][edge];
+			if net > 0.0 {
+				outflow[node.id as usize] += net;
+				inflow[target as usize] += net;
+			}
+		}
+	}
+	let mut pools = Vec::new();
+	for node in nodes {
+		let surplus = inflow[node.id as usize] - outflow[node.id as usize];
+		if surplus > 0.0 {
+			pools.push(TransitFeePool {
+				node: node.id,
+				surplus,
+				fee_pool: surplus * fee_pct as f64 / 100.0,
+			});
+		}
+	}
+	pools.sort_by(|a, b| {
+		b.fee_pool
+			.partial_cmp(&a.fee_pool)
+			.unwrap_or(std::cmp::Ordering::Equal)
+	});
+	pools
+}
+
 /// Monthly report line for every closed edge: its current net flow against
 /// the reference the thresholds use. This is the reopen diagnostics — the
 /// evidence counters are invisible otherwise, and a closed edge that never
@@ -678,6 +739,40 @@ mod tests {
 		let closed = mirror(&nodes);
 		let report = transit_intelligence(&nodes, &closed, &Params::default());
 		assert!(!report.is_empty(), "sink should appear as transit target");
+	}
+
+	#[test]
+	fn a_relay_node_earns_a_fee_and_the_producer_pays_the_flow() {
+		// Producer -> hub -> sink: the hub relays more than it sources,
+		// so it runs a through-flow surplus and earns a fee pool; the
+		// producer's own production does not count as imported value.
+		let nodes = vec![
+			node(0, 1000.0, 0.1, 8000.0, 1000.0, vec![1]),
+			node(1, 1000.0, 0.1, 0.0, 5000.0, vec![2]),
+			node(2, 5000.0, 0.95, 0.0, 1000.0, vec![]),
+		];
+		let closed = mirror(&nodes);
+		let pools = transit_fee_pools(&nodes, &closed, &Params::default(), 20);
+		let hub = pools
+			.iter()
+			.find(|p| p.node == 1)
+			.expect("hub earns a pool");
+		assert!(hub.surplus > 0.0);
+		assert!((hub.fee_pool - hub.surplus * 0.2).abs() < 1e-6);
+		// The producer exports everything it makes: deficit, no pool.
+		assert!(pools.iter().all(|p| p.node != 0), "producer gets nothing");
+	}
+
+	#[test]
+	fn a_deficit_node_gets_no_pool() {
+		// A node whose outflow exceeds inflow (逆差) earns nothing.
+		let nodes = vec![
+			node(0, 1000.0, 0.1, 9000.0, 1000.0, vec![1]),
+			node(1, 1000.0, 0.9, 0.0, 1000.0, vec![]),
+		];
+		let closed = mirror(&nodes);
+		let pools = transit_fee_pools(&nodes, &closed, &Params::default(), 20);
+		assert!(pools.iter().all(|p| p.node != 0));
 	}
 
 	#[test]

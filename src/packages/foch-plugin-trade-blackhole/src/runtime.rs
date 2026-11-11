@@ -137,6 +137,8 @@ pub struct LiveBackend {
 	observes: u32,
 	/// Whether the route-entry dump was already logged.
 	entry_logged: bool,
+	/// Whether the one-shot country probe already ran.
+	countries_probed: bool,
 	/// Offline node-members table: internal key -> member province ids,
 	/// shipped in the plugin package (generated from 00_tradenodes.txt).
 	member_ids: HashMap<String, Vec<u32>>,
@@ -166,6 +168,7 @@ impl LiveBackend {
 			fields_logged: false,
 			observes: 0,
 			entry_logged: false,
+			countries_probed: false,
 			member_ids: members.into_iter().collect(),
 			node_tax: HashMap::new(),
 			sink_basis,
@@ -303,6 +306,81 @@ impl LiveBackend {
 	fn write_qword(&self, addr: usize, value: u64) -> Option<()> {
 		(addr > 0x1_0000 && addr & 7 == 0)
 			.then(|| unsafe { std::ptr::write(addr as *mut u64, value) })
+	}
+
+	fn write_i32(&self, addr: usize, value: i32) -> Option<()> {
+		(addr > 0x1_0000).then(|| unsafe { std::ptr::write_unaligned(addr as *mut i32, value) })
+	}
+
+	/// One-shot diagnostic: a few countries' tag and treasury, so the
+	/// e2e probe (a known `add_treasury` effect) can pin the field's unit.
+	fn probe_countries(&self) {
+		let Some(count) = self.country_count() else {
+			return;
+		};
+		let base = EXE_BASE.load(Ordering::Acquire);
+		if base <= 0x1_0000 {
+			return;
+		}
+		let Some(manager) = self
+			.read_qword(base + layout::COUNTRY_MANAGER_GLOBAL_RVA)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+		else {
+			return;
+		};
+		let Some(pointers) = self
+			.read_qword(manager + layout::country_manager::INDEX_ARRAY)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+		else {
+			return;
+		};
+		let mut lines = Vec::new();
+		for index in 0..count.min(6) {
+			let Some(country) = self
+				.read_qword(pointers + index * 8)
+				.map(|p| p as usize)
+				.filter(|p| *p > 0x1_0000)
+			else {
+				continue;
+			};
+			let tag = self.read_tag(country);
+			let treasury = self.read_i32(country + layout::country::TREASURY);
+			lines.push(format!("country {index} tag {tag} treasury {treasury:?}"));
+		}
+		crate::logging::write(
+			crate::logging::DEBUG,
+			&format!("country probe ({} countries): {}", count, lines.join("; ")),
+		);
+	}
+
+	/// The tag embedded in a country's identity qword at +0x20: the low
+	/// bytes as ASCII, up to the first non-tag character.
+	fn read_tag(&self, country: usize) -> String {
+		let Some(packed) = self.read_qword(country + layout::country::TAG) else {
+			return "?".to_string();
+		};
+		let bytes = packed.to_le_bytes();
+		let len = bytes
+			.iter()
+			.position(|b| !b.is_ascii_uppercase() && !b.is_ascii_digit())
+			.unwrap_or(4);
+		String::from_utf8_lossy(&bytes[..len.min(4)]).into_owned()
+	}
+
+	/// The number of countries, from the country manager's list count.
+	fn country_count(&self) -> Option<usize> {
+		let base = EXE_BASE.load(Ordering::Acquire);
+		if base <= 0x1_0000 {
+			return None;
+		}
+		let manager = self
+			.read_qword(base + layout::COUNTRY_MANAGER_GLOBAL_RVA)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)?;
+		let count = self.read_i32(manager + layout::country_manager::LIST_COUNT)? as usize;
+		(1..=1024).contains(&count).then_some(count)
 	}
 
 	fn write_bytes(&self, addr: usize, bytes: &[u8]) -> Option<()> {
@@ -692,6 +770,13 @@ impl EngineBackend for LiveBackend {
 		// Taxes need the province array, which is only safe after the
 		// load phase; retry until it lands.
 		self.aggregate_taxes(count);
+		// One-shot country probe: the first few countries' tag and
+		// treasury, to calibrate the treasury field's unit against a
+		// known `add_treasury` amount in the e2e probe case.
+		if !self.countries_probed {
+			self.countries_probed = true;
+			self.probe_countries();
+		}
 		// A periodic summary shows whether a late observe sees a database
 		// the first one could not (the update can fire mid-load).
 		self.observes += 1;
@@ -723,6 +808,85 @@ impl EngineBackend for LiveBackend {
 			.iter()
 			.position(|(_, node)| node.eq_ignore_ascii_case(name))
 			.map(|i| i as u32)
+	}
+
+	/// The countries holding trade power in one node: every country
+	/// index whose entry in the node's per-country table carries power.
+	fn node_participants(&mut self, node: u32) -> Vec<(u32, f64)> {
+		let Some(node_ptr) = self.node_at(node as usize) else {
+			return Vec::new();
+		};
+		let Some(table) = self
+			.read_qword(node_ptr + layout::node::ENTRY_TABLE)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+		else {
+			return Vec::new();
+		};
+		let count = self.country_count().unwrap_or(0);
+		if count == 0 || count > 1024 {
+			return Vec::new();
+		}
+		let mut participants = Vec::new();
+		for index in 0..count {
+			let entry = table + index * layout::node::ENTRY_SIZE;
+			match self.read_i32(entry + layout::entry::POWER) {
+				Some(power) if power > 0 => {
+					participants.push((index as u32, power as f64));
+				}
+				_ => {}
+			}
+		}
+		participants
+	}
+
+	/// Add to one country's treasury, mirroring `CCountry::ChangeTreasury`:
+	/// the field add with the ±1e9 clamp and the player-UI dirty bit.
+	fn pay_country(&mut self, country: u32, amount: f64) -> Result<(), &'static str> {
+		let base = EXE_BASE.load(Ordering::Acquire);
+		if base <= 0x1_0000 {
+			return Err("no exe base");
+		}
+		let manager = self
+			.read_qword(base + layout::COUNTRY_MANAGER_GLOBAL_RVA)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+			.ok_or("implausible country manager")?;
+		let pointers = self
+			.read_qword(manager + layout::country_manager::INDEX_ARRAY)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+			.ok_or("implausible country array")?;
+		let country_ptr = self
+			.read_qword(pointers + country as usize * 8)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+			.ok_or("implausible country pointer")?;
+		let treasury = self
+			.read_i32(country_ptr + layout::country::TREASURY)
+			.ok_or("treasury unreadable")? as i64;
+		// The amounts arrive as engine thousandths; the treasury field's
+		// own unit is the same thousandths-of-a-ducat scale the trade
+		// values use, so the add is direct.
+		let updated = (treasury + amount.round() as i64).clamp(
+			-layout::country::TREASURY_CLAMP,
+			layout::country::TREASURY_CLAMP,
+		);
+		self.write_i32(country_ptr + layout::country::TREASURY, updated as i32)
+			.ok_or("treasury write refused")?;
+		// Refresh the player's treasury label, as ChangeTreasury does.
+		if let Some(controller) = self
+			.read_qword(self.context + layout::ui::CONTROLLER)
+			.map(|p| p as usize)
+			.filter(|p| *p > 0x1_0000)
+			&& let Some(flags) = self.read_i32(controller + layout::ui::FLAGS)
+		{
+			let _ = self.write_i32(
+				controller + layout::ui::FLAGS,
+				flags | layout::ui::TREASURY_DIRTY,
+			);
+		}
+		Ok(())
 	}
 
 	fn set_edge_closed(

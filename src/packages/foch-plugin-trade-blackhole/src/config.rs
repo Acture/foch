@@ -72,6 +72,12 @@ pub struct Config {
 	pub sink_basis: SinkBasis,
 	/// Edge flips the whole graph may apply per month.
 	pub max_flips_total: usize,
+	/// Pay the transit fee: nodes whose through-flow runs a surplus share
+	/// a fee pool among the countries holding trade power there, so a
+	/// middleman monopoly earns without owning either end.
+	pub transit_fee: bool,
+	/// The fee pool is this percent of the node's monthly net through-flow.
+	pub transit_fee_pct: i64,
 }
 
 impl Default for Config {
@@ -88,9 +94,16 @@ impl Default for Config {
 			reopen_pct: params.reopen_pct,
 			evidence_months: params.evidence_months,
 			max_flips_total: params.max_flips_total,
+			transit_fee: true,
+			transit_fee_pct: DEFAULT_TRANSIT_FEE_PCT,
 		}
 	}
 }
+
+/// The share of a node's monthly net through-flow that becomes the
+/// transit fee pool: a fifth by default, so passing trade pays the
+/// middlemen without draining the flow it rewards.
+pub const DEFAULT_TRANSIT_FEE_PCT: i64 = 20;
 
 impl Config {
 	/// Parse the host's JSON object over the defaults. A shape the manifest
@@ -148,6 +161,15 @@ impl Config {
 		}
 		if let Some(total) = object.get("max_flips_total").and_then(|v| v.as_u64()) {
 			config.max_flips_total = total.min(usize::MAX as u64) as usize;
+		}
+		if let Some(fee) = object.get("transit_fee").and_then(|v| v.as_bool()) {
+			config.transit_fee = fee;
+		}
+		if let Some(pct) = object.get("transit_fee_pct").and_then(|v| v.as_i64()) {
+			config.transit_fee_pct = pct;
+		}
+		if !(0..=100).contains(&config.transit_fee_pct) {
+			return Self::observe_only();
 		}
 		if policy::Params::from(config.clone()).validate().is_err() {
 			return Self::observe_only();

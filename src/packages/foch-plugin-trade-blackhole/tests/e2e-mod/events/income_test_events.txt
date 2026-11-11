@@ -1,0 +1,115 @@
+namespace = income_test
+
+# Income probe: MLC owns every Malacca member and develops them, so its
+# collection share in the node is ~100%. The same case runs under the
+# policy playset (topology mutates, malacca closes) and the observe
+# playset (no mutations); the monthly_income/treasury ladder boundaries
+# reveal how much of the black hole the collecting country actually
+# keeps, versus the same farm with vanilla topology.
+#test(time=1444.11.11, tag=MLC, name="malacca_income",
+#     effect={
+#         593 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         594 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         595 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         596 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         597 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         598 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         599 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         617 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         618 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         619 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         620 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         621 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         622 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         623 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         636 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         637 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         638 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         639 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         640 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         659 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         1361 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2390 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2391 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2392 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2393 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2394 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2673 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2674 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2675 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2676 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2677 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2678 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2679 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2680 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2681 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2682 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2683 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2684 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2685 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2686 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2703 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2704 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2705 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2706 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2707 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2708 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2709 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2710 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2711 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2712 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         2740 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4799 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4800 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4801 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4802 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4803 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4804 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4805 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4806 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4809 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4810 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4811 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4812 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4813 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4814 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4815 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4816 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4817 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#         4818 = { owner = MLC  add_base_tax = 6  add_base_production = 6 }
+#     },
+#     advance_days=800,
+#     expect={
+#         monthly_income = 10
+#         monthly_income = 15
+#         monthly_income = 20
+#         monthly_income = 25
+#         monthly_income = 30
+#         monthly_income = 35
+#         treasury = 200
+#         treasury = 400
+#         treasury = 600
+#         treasury = 800
+#     })
+
+
+# Treasury unit calibration: set a known 10 ducats, then the plugin's
+# one-shot country probe reads the raw field (10 = ducats, 1000 =
+# thousandths, 100 = cents).
+#test(time=1444.11.11, tag=MLC, name="treasury_units",
+#     effect={
+#         MLC = { treasury = 0  add_treasury = 10 }
+#     },
+#     advance_days=60,
+#     expect={ treasury = 5 })
+
+country_event = {
+	id = income_test.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}
