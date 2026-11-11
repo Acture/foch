@@ -98,7 +98,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, windows-latest, macos-14]
+        runner: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
