@@ -63,6 +63,20 @@ pub struct RunOptions {
 	/// Set from outside (e.g. a Ctrl-C handler) to stop the current launch. The
 	/// game is stopped gracefully and the runtime layer is still torn down.
 	pub cancel: Arc<AtomicBool>,
+	/// Load the Foch in-game host and the enabled plugins of one playset
+	/// into every session's runtime layer, mirroring `foch plugin launch`.
+	/// The host's own events file is reported through
+	/// [`SessionOutcome::host_events`].
+	pub host: Option<HostLaunch>,
+}
+
+/// The plugin host to load into test sessions.
+#[derive(Clone, Debug)]
+pub struct HostLaunch {
+	/// The playset whose enabled plugins stage into each session.
+	pub playset: String,
+	/// The `foch_eu4_host.dll` to deploy as the layer's `VERSION.dll`.
+	pub host_dll: PathBuf,
 }
 
 impl Default for RunOptions {
@@ -70,6 +84,7 @@ impl Default for RunOptions {
 		Self {
 			timeout: Duration::from_secs(300),
 			cancel: Arc::new(AtomicBool::new(false)),
+			host: None,
 		}
 	}
 }
@@ -128,6 +143,8 @@ pub struct SessionOutcome {
 	pub profile_untouched: bool,
 	/// Human-readable account of how the game was launched.
 	pub launch_detail: String,
+	/// The plugin host's events file, when [`RunOptions::host`] staged one.
+	pub host_events: Option<PathBuf>,
 }
 
 /// What this built-in runner can provide, as verified against a real game.
@@ -238,6 +255,10 @@ pub fn run_session(
 	if let Some(message) = runtime.budget_error() {
 		return Err(io::Error::other(message));
 	}
+	let host_events = match &options.host {
+		Some(host) => Some(stage_host(&runtime, installation, host, &bundle.namespace)?),
+		None => None,
+	};
 	let user_dir = session_dir.join("userdir");
 	let real_settings = installation
 		.real_user_dir
@@ -278,6 +299,15 @@ pub fn run_session(
 		.as_ref()
 		.map(ProfileGuard::verify_and_restore)
 		.unwrap_or(true);
+	// The plugin host writes its events inside the runtime layer, which is
+	// removed below; keep the evidence beside the session's other logs.
+	let host_events = host_events.map(|source| {
+		let kept = session_dir.join("foch-host-events.jsonl");
+		match fs::read(&source) {
+			Ok(bytes) => fs::write(&kept, bytes).map(|()| kept).unwrap_or(source),
+			Err(_) => source,
+		}
+	});
 	let outcome = SessionOutcome {
 		game_log: fs::read_to_string(&log).ok(),
 		error_log: fs::read_to_string(&error_log).ok(),
@@ -285,6 +315,7 @@ pub fn run_session(
 		timing,
 		profile_untouched,
 		launch_detail,
+		host_events,
 	};
 	// `runtime` is dropped here, which removes the layer.
 	Ok(outcome)
@@ -418,6 +449,64 @@ fn assemble_runtime(
 		}
 	}
 	Ok(runtime)
+}
+
+/// Deploy the plugin host into a fresh session runtime layer: write the
+/// host DLL as the layer's `VERSION.dll` and stage the playset's enabled
+/// plugins exactly as `foch plugin launch` does. Returns the host's events
+/// file for the caller to report. The layer is freshly prepared, so the
+/// exclusive `VERSION.dll` create cannot clash with a game file.
+fn stage_host(
+	runtime: &RuntimeLayer,
+	installation: &Installation,
+	host: &HostLaunch,
+	run_id: &str,
+) -> io::Result<PathBuf> {
+	if !cfg!(all(windows, target_arch = "x86_64")) {
+		return Err(io::Error::other(
+			"the plugin host only runs on Windows x64 game builds",
+		));
+	}
+	use foch::plugin::{self, GameIdentity, Selections, planner, store};
+
+	let raw_version = foch::game::eu4::base::snapshot::detect_game_version(&installation.game_root)
+		.ok_or_else(|| io::Error::other("could not detect the EU4 version"))?;
+	let game = GameIdentity {
+		game: "eu4".into(),
+		version: planner::parse_game_version(&raw_version)
+			.ok_or_else(|| io::Error::other("invalid EU4 version"))?,
+		platform: planner::WINDOWS_X64.into(),
+	};
+	let selections_path =
+		plugin::paths::selections_path().map_err(|error| io::Error::other(error.to_string()))?;
+	let selections = Selections::load(&selections_path)
+		.map_err(|error| io::Error::other(format!("plugin selections: {error}")))?;
+	let selected = selections.for_playset(&host.playset).to_selections();
+	let data_root = foch::game::eu4::base::snapshot::data_root();
+	let store_root = plugin::paths::checked_store_root(&data_root)
+		.map_err(|error| io::Error::other(error.to_string()))?;
+	runtime::ensure_outside_game(&installation.game_root, &data_root)?;
+	let deployment = plugin::deployment::resolve(&game, &store_root, &selected)
+		.map_err(|error| io::Error::other(format!("plugin plan: {error}")))?;
+	let host_bytes = fs::read(&host.host_dll).map_err(|error| {
+		io::Error::other(format!(
+			"cannot read host {}: {error}; build foch-eu4-host and pass its path",
+			host.host_dll.display()
+		))
+	})?;
+	if store::pe_machine(&host_bytes) != Some(store::MACHINE_AMD64) {
+		return Err(io::Error::other("host DLL is not an AMD64 PE image"));
+	}
+	store::create_package_file(&runtime.directory.join("VERSION.dll"), &host_bytes)?;
+	let prepared = deployment
+		.stage(
+			&runtime.directory,
+			&data_root,
+			run_id,
+			&installation.game_root,
+		)
+		.map_err(|error| io::Error::other(format!("plugin staging: {error}")))?;
+	Ok(PathBuf::from(prepared.plan.events))
 }
 
 #[cfg(test)]

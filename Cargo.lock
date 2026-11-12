@@ -1470,6 +1470,15 @@ name = "foch-plugin-abi"
 version = "0.0.2"
 
 [[package]]
+name = "foch-plugin-trade-blackhole"
+version = "0.1.0"
+dependencies = [
+ "foch-plugin-abi",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "foch-runner"
 version = "0.0.2"
 dependencies = [

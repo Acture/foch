@@ -1,0 +1,657 @@
+namespace = dev_test
+
+# Baseline: no player action, the topology converges on its own.
+#test(time=1444.11.11, tag=SWE, name="baseline_topology",
+#     advance_days=800)
+
+# Sink lever: tax-only development on every Malacca member. Raises the
+# purchasing-power signal (and provincial trade power) without injecting
+# more production. Tests the black-hole path: close malacca -> ganges_delta
+# and malacca -> cape_of_good_hope once Malacca outbids its downstream.
+#test(time=1444.11.11, tag=SWE, name="malacca_tax_farm",
+#     effect={
+#         593 = { add_base_tax = 12 }
+#         594 = { add_base_tax = 12 }
+#         595 = { add_base_tax = 12 }
+#         596 = { add_base_tax = 12 }
+#         597 = { add_base_tax = 12 }
+#         598 = { add_base_tax = 12 }
+#         599 = { add_base_tax = 12 }
+#         617 = { add_base_tax = 12 }
+#         618 = { add_base_tax = 12 }
+#         619 = { add_base_tax = 12 }
+#         620 = { add_base_tax = 12 }
+#         621 = { add_base_tax = 12 }
+#         622 = { add_base_tax = 12 }
+#         623 = { add_base_tax = 12 }
+#         636 = { add_base_tax = 12 }
+#         637 = { add_base_tax = 12 }
+#         638 = { add_base_tax = 12 }
+#         639 = { add_base_tax = 12 }
+#         640 = { add_base_tax = 12 }
+#         659 = { add_base_tax = 12 }
+#         1361 = { add_base_tax = 12 }
+#         2390 = { add_base_tax = 12 }
+#         2391 = { add_base_tax = 12 }
+#         2392 = { add_base_tax = 12 }
+#         2393 = { add_base_tax = 12 }
+#         2394 = { add_base_tax = 12 }
+#         2673 = { add_base_tax = 12 }
+#         2674 = { add_base_tax = 12 }
+#         2675 = { add_base_tax = 12 }
+#         2676 = { add_base_tax = 12 }
+#         2677 = { add_base_tax = 12 }
+#         2678 = { add_base_tax = 12 }
+#         2679 = { add_base_tax = 12 }
+#         2680 = { add_base_tax = 12 }
+#         2681 = { add_base_tax = 12 }
+#         2682 = { add_base_tax = 12 }
+#         2683 = { add_base_tax = 12 }
+#         2684 = { add_base_tax = 12 }
+#         2685 = { add_base_tax = 12 }
+#         2686 = { add_base_tax = 12 }
+#         2703 = { add_base_tax = 12 }
+#         2704 = { add_base_tax = 12 }
+#         2705 = { add_base_tax = 12 }
+#         2706 = { add_base_tax = 12 }
+#         2707 = { add_base_tax = 12 }
+#         2708 = { add_base_tax = 12 }
+#         2709 = { add_base_tax = 12 }
+#         2710 = { add_base_tax = 12 }
+#         2711 = { add_base_tax = 12 }
+#         2712 = { add_base_tax = 12 }
+#         2740 = { add_base_tax = 12 }
+#         4799 = { add_base_tax = 12 }
+#         4800 = { add_base_tax = 12 }
+#         4801 = { add_base_tax = 12 }
+#         4802 = { add_base_tax = 12 }
+#         4803 = { add_base_tax = 12 }
+#         4804 = { add_base_tax = 12 }
+#         4805 = { add_base_tax = 12 }
+#         4806 = { add_base_tax = 12 }
+#         4809 = { add_base_tax = 12 }
+#         4810 = { add_base_tax = 12 }
+#         4811 = { add_base_tax = 12 }
+#         4812 = { add_base_tax = 12 }
+#         4813 = { add_base_tax = 12 }
+#         4814 = { add_base_tax = 12 }
+#         4815 = { add_base_tax = 12 }
+#         4816 = { add_base_tax = 12 }
+#         4817 = { add_base_tax = 12 }
+#         4818 = { add_base_tax = 12 }
+#     },
+#     advance_days=800)
+
+# Source lever: production-only development on every Malacca member.
+# Injects local trade value (goods x price) without touching the sink
+# signal. Tests the upstream path: more value pooling at Malacca and
+# relaying toward its partners.
+#test(time=1444.11.11, tag=SWE, name="malacca_prod_farm",
+#     effect={
+#         593 = { add_base_production = 12 }
+#         594 = { add_base_production = 12 }
+#         595 = { add_base_production = 12 }
+#         596 = { add_base_production = 12 }
+#         597 = { add_base_production = 12 }
+#         598 = { add_base_production = 12 }
+#         599 = { add_base_production = 12 }
+#         617 = { add_base_production = 12 }
+#         618 = { add_base_production = 12 }
+#         619 = { add_base_production = 12 }
+#         620 = { add_base_production = 12 }
+#         621 = { add_base_production = 12 }
+#         622 = { add_base_production = 12 }
+#         623 = { add_base_production = 12 }
+#         636 = { add_base_production = 12 }
+#         637 = { add_base_production = 12 }
+#         638 = { add_base_production = 12 }
+#         639 = { add_base_production = 12 }
+#         640 = { add_base_production = 12 }
+#         659 = { add_base_production = 12 }
+#         1361 = { add_base_production = 12 }
+#         2390 = { add_base_production = 12 }
+#         2391 = { add_base_production = 12 }
+#         2392 = { add_base_production = 12 }
+#         2393 = { add_base_production = 12 }
+#         2394 = { add_base_production = 12 }
+#         2673 = { add_base_production = 12 }
+#         2674 = { add_base_production = 12 }
+#         2675 = { add_base_production = 12 }
+#         2676 = { add_base_production = 12 }
+#         2677 = { add_base_production = 12 }
+#         2678 = { add_base_production = 12 }
+#         2679 = { add_base_production = 12 }
+#         2680 = { add_base_production = 12 }
+#         2681 = { add_base_production = 12 }
+#         2682 = { add_base_production = 12 }
+#         2683 = { add_base_production = 12 }
+#         2684 = { add_base_production = 12 }
+#         2685 = { add_base_production = 12 }
+#         2686 = { add_base_production = 12 }
+#         2703 = { add_base_production = 12 }
+#         2704 = { add_base_production = 12 }
+#         2705 = { add_base_production = 12 }
+#         2706 = { add_base_production = 12 }
+#         2707 = { add_base_production = 12 }
+#         2708 = { add_base_production = 12 }
+#         2709 = { add_base_production = 12 }
+#         2710 = { add_base_production = 12 }
+#         2711 = { add_base_production = 12 }
+#         2712 = { add_base_production = 12 }
+#         2740 = { add_base_production = 12 }
+#         4799 = { add_base_production = 12 }
+#         4800 = { add_base_production = 12 }
+#         4801 = { add_base_production = 12 }
+#         4802 = { add_base_production = 12 }
+#         4803 = { add_base_production = 12 }
+#         4804 = { add_base_production = 12 }
+#         4805 = { add_base_production = 12 }
+#         4806 = { add_base_production = 12 }
+#         4809 = { add_base_production = 12 }
+#         4810 = { add_base_production = 12 }
+#         4811 = { add_base_production = 12 }
+#         4812 = { add_base_production = 12 }
+#         4813 = { add_base_production = 12 }
+#         4814 = { add_base_production = 12 }
+#         4815 = { add_base_production = 12 }
+#         4816 = { add_base_production = 12 }
+#         4817 = { add_base_production = 12 }
+#         4818 = { add_base_production = 12 }
+#     },
+#     advance_days=800)
+
+# Hub lever: production development upstream of Malacca (gulf_of_siam +
+# the_moluccas, both flow into malacca). Tests the transit path: value
+# routed through Malacca should rise, and the transit intelligence
+# should flag the corridor.
+#test(time=1444.11.11, tag=SWE, name="upstream_prod_farm",
+#     effect={
+#         592 = { add_base_production = 12 }
+#         600 = { add_base_production = 12 }
+#         601 = { add_base_production = 12 }
+#         602 = { add_base_production = 12 }
+#         603 = { add_base_production = 12 }
+#         604 = { add_base_production = 12 }
+#         605 = { add_base_production = 12 }
+#         606 = { add_base_production = 12 }
+#         609 = { add_base_production = 12 }
+#         607 = { add_base_production = 12 }
+#         608 = { add_base_production = 12 }
+#         611 = { add_base_production = 12 }
+#         612 = { add_base_production = 12 }
+#         614 = { add_base_production = 12 }
+#         615 = { add_base_production = 12 }
+#         1817 = { add_base_production = 12 }
+#         1823 = { add_base_production = 12 }
+#         1844 = { add_base_production = 12 }
+#         1022 = { add_base_production = 12 }
+#         2374 = { add_base_production = 12 }
+#         2375 = { add_base_production = 12 }
+#         2376 = { add_base_production = 12 }
+#         2377 = { add_base_production = 12 }
+#         2378 = { add_base_production = 12 }
+#         2379 = { add_base_production = 12 }
+#         2380 = { add_base_production = 12 }
+#         2381 = { add_base_production = 12 }
+#         2382 = { add_base_production = 12 }
+#         2383 = { add_base_production = 12 }
+#         2384 = { add_base_production = 12 }
+#         2385 = { add_base_production = 12 }
+#         2386 = { add_base_production = 12 }
+#         2387 = { add_base_production = 12 }
+#         2388 = { add_base_production = 12 }
+#         2389 = { add_base_production = 12 }
+#         591 = { add_base_production = 12 }
+#         2404 = { add_base_production = 12 }
+#         2371 = { add_base_production = 12 }
+#         1365 = { add_base_production = 12 }
+#         589 = { add_base_production = 12 }
+#         4822 = { add_base_production = 12 }
+#         4823 = { add_base_production = 12 }
+#         4824 = { add_base_production = 12 }
+#         4825 = { add_base_production = 12 }
+#         4826 = { add_base_production = 12 }
+#         4827 = { add_base_production = 12 }
+#         4828 = { add_base_production = 12 }
+#         4829 = { add_base_production = 12 }
+#         4830 = { add_base_production = 12 }
+#         4831 = { add_base_production = 12 }
+#         4832 = { add_base_production = 12 }
+#         4833 = { add_base_production = 12 }
+#         4834 = { add_base_production = 12 }
+#         4835 = { add_base_production = 12 }
+#         4836 = { add_base_production = 12 }
+#         4837 = { add_base_production = 12 }
+#         4838 = { add_base_production = 12 }
+#         4839 = { add_base_production = 12 }
+#         4840 = { add_base_production = 12 }
+#         4841 = { add_base_production = 12 }
+#         4842 = { add_base_production = 12 }
+#         646 = { add_base_production = 12 }
+#         2687 = { add_base_production = 12 }
+#         2688 = { add_base_production = 12 }
+#         2689 = { add_base_production = 12 }
+#         2690 = { add_base_production = 12 }
+#         2718 = { add_base_production = 12 }
+#         2724 = { add_base_production = 12 }
+#         1357 = { add_base_production = 12 }
+#         1245 = { add_base_production = 12 }
+#         647 = { add_base_production = 12 }
+#         645 = { add_base_production = 12 }
+#         2717 = { add_base_production = 12 }
+#         648 = { add_base_production = 12 }
+#         649 = { add_base_production = 12 }
+#         650 = { add_base_production = 12 }
+#         2725 = { add_base_production = 12 }
+#         2696 = { add_base_production = 12 }
+#         2695 = { add_base_production = 12 }
+#         635 = { add_base_production = 12 }
+#         633 = { add_base_production = 12 }
+#         634 = { add_base_production = 12 }
+#         643 = { add_base_production = 12 }
+#         2713 = { add_base_production = 12 }
+#         2714 = { add_base_production = 12 }
+#         642 = { add_base_production = 12 }
+#         2715 = { add_base_production = 12 }
+#         641 = { add_base_production = 12 }
+#         2716 = { add_base_production = 12 }
+#         632 = { add_base_production = 12 }
+#         627 = { add_base_production = 12 }
+#         2691 = { add_base_production = 12 }
+#         631 = { add_base_production = 12 }
+#         2693 = { add_base_production = 12 }
+#         629 = { add_base_production = 12 }
+#         2692 = { add_base_production = 12 }
+#         628 = { add_base_production = 12 }
+#         626 = { add_base_production = 12 }
+#         625 = { add_base_production = 12 }
+#         630 = { add_base_production = 12 }
+#         624 = { add_base_production = 12 }
+#         644 = { add_base_production = 12 }
+#         2723 = { add_base_production = 12 }
+#         2722 = { add_base_production = 12 }
+#         2721 = { add_base_production = 12 }
+#         1237 = { add_base_production = 12 }
+#         2720 = { add_base_production = 12 }
+#         2719 = { add_base_production = 12 }
+#         1789 = { add_base_production = 12 }
+#         4790 = { add_base_production = 12 }
+#         4791 = { add_base_production = 12 }
+#         4792 = { add_base_production = 12 }
+#         4793 = { add_base_production = 12 }
+#         4794 = { add_base_production = 12 }
+#         4795 = { add_base_production = 12 }
+#         4796 = { add_base_production = 12 }
+#         4797 = { add_base_production = 12 }
+#         4798 = { add_base_production = 12 }
+#         4845 = { add_base_production = 12 }
+#     },
+#     advance_days=800)
+
+# Sink creation: tax+production on every Siam member. In the baseline
+# siam -> canton stays open because the wealth gradient blocks it (siam
+# tax 4328 < canton 4676) and siam relays ~24% of its pool. Farming both
+# levers flips the gradient (16328 > 4676) and raises the locals' power
+# share, so the engine retention should climb until the outflow drops
+# below epsilon: a player-made black hole at Siam.
+#test(time=1444.11.11, tag=SWE, name="siam_full_farm",
+#     effect={
+#         592 = { add_base_tax = 12  add_base_production = 12 }
+#         600 = { add_base_tax = 12  add_base_production = 12 }
+#         601 = { add_base_tax = 12  add_base_production = 12 }
+#         602 = { add_base_tax = 12  add_base_production = 12 }
+#         603 = { add_base_tax = 12  add_base_production = 12 }
+#         604 = { add_base_tax = 12  add_base_production = 12 }
+#         605 = { add_base_tax = 12  add_base_production = 12 }
+#         606 = { add_base_tax = 12  add_base_production = 12 }
+#         609 = { add_base_tax = 12  add_base_production = 12 }
+#         607 = { add_base_tax = 12  add_base_production = 12 }
+#         608 = { add_base_tax = 12  add_base_production = 12 }
+#         611 = { add_base_tax = 12  add_base_production = 12 }
+#         612 = { add_base_tax = 12  add_base_production = 12 }
+#         614 = { add_base_tax = 12  add_base_production = 12 }
+#         615 = { add_base_tax = 12  add_base_production = 12 }
+#         1817 = { add_base_tax = 12  add_base_production = 12 }
+#         1823 = { add_base_tax = 12  add_base_production = 12 }
+#         1844 = { add_base_tax = 12  add_base_production = 12 }
+#         1022 = { add_base_tax = 12  add_base_production = 12 }
+#         2374 = { add_base_tax = 12  add_base_production = 12 }
+#         2375 = { add_base_tax = 12  add_base_production = 12 }
+#         2376 = { add_base_tax = 12  add_base_production = 12 }
+#         2377 = { add_base_tax = 12  add_base_production = 12 }
+#         2378 = { add_base_tax = 12  add_base_production = 12 }
+#         2379 = { add_base_tax = 12  add_base_production = 12 }
+#         2380 = { add_base_tax = 12  add_base_production = 12 }
+#         2381 = { add_base_tax = 12  add_base_production = 12 }
+#         2382 = { add_base_tax = 12  add_base_production = 12 }
+#         2383 = { add_base_tax = 12  add_base_production = 12 }
+#         2384 = { add_base_tax = 12  add_base_production = 12 }
+#         2385 = { add_base_tax = 12  add_base_production = 12 }
+#         2386 = { add_base_tax = 12  add_base_production = 12 }
+#         2387 = { add_base_tax = 12  add_base_production = 12 }
+#         2388 = { add_base_tax = 12  add_base_production = 12 }
+#         2389 = { add_base_tax = 12  add_base_production = 12 }
+#         591 = { add_base_tax = 12  add_base_production = 12 }
+#         2404 = { add_base_tax = 12  add_base_production = 12 }
+#         2371 = { add_base_tax = 12  add_base_production = 12 }
+#         1365 = { add_base_tax = 12  add_base_production = 12 }
+#         589 = { add_base_tax = 12  add_base_production = 12 }
+#         4822 = { add_base_tax = 12  add_base_production = 12 }
+#         4823 = { add_base_tax = 12  add_base_production = 12 }
+#         4824 = { add_base_tax = 12  add_base_production = 12 }
+#         4825 = { add_base_tax = 12  add_base_production = 12 }
+#         4826 = { add_base_tax = 12  add_base_production = 12 }
+#         4827 = { add_base_tax = 12  add_base_production = 12 }
+#         4828 = { add_base_tax = 12  add_base_production = 12 }
+#         4829 = { add_base_tax = 12  add_base_production = 12 }
+#         4830 = { add_base_tax = 12  add_base_production = 12 }
+#         4831 = { add_base_tax = 12  add_base_production = 12 }
+#         4832 = { add_base_tax = 12  add_base_production = 12 }
+#         4833 = { add_base_tax = 12  add_base_production = 12 }
+#         4834 = { add_base_tax = 12  add_base_production = 12 }
+#         4835 = { add_base_tax = 12  add_base_production = 12 }
+#         4836 = { add_base_tax = 12  add_base_production = 12 }
+#         4837 = { add_base_tax = 12  add_base_production = 12 }
+#         4838 = { add_base_tax = 12  add_base_production = 12 }
+#         4839 = { add_base_tax = 12  add_base_production = 12 }
+#         4840 = { add_base_tax = 12  add_base_production = 12 }
+#         4841 = { add_base_tax = 12  add_base_production = 12 }
+#         4842 = { add_base_tax = 12  add_base_production = 12 }
+#     },
+#     advance_days=800)
+
+# Sink creation, single-edge case: tax-only on every Nippon member.
+# Nippon has exactly one outgoing edge (-> Hangzhou) and already retains
+# 94%; the edge stays open in the baseline only because Hangzhou is
+# richer (6315 > 3884). +12 tax flips the gradient (15884 > 6315) and
+# pushes the retention share up: nippon -> hangzhou should close and
+# Nippon becomes a black hole collecting Japan's trade.
+#test(time=1444.11.11, tag=SWE, name="nippon_tax_farm",
+#     effect={
+#         1376 = { add_base_tax = 12 }
+#         1012 = { add_base_tax = 12 }
+#         1014 = { add_base_tax = 12 }
+#         1017 = { add_base_tax = 12 }
+#         1018 = { add_base_tax = 12 }
+#         1019 = { add_base_tax = 12 }
+#         1020 = { add_base_tax = 12 }
+#         1021 = { add_base_tax = 12 }
+#         1023 = { add_base_tax = 12 }
+#         1024 = { add_base_tax = 12 }
+#         1025 = { add_base_tax = 12 }
+#         1026 = { add_base_tax = 12 }
+#         1027 = { add_base_tax = 12 }
+#         1028 = { add_base_tax = 12 }
+#         1029 = { add_base_tax = 12 }
+#         1030 = { add_base_tax = 12 }
+#         1031 = { add_base_tax = 12 }
+#         1032 = { add_base_tax = 12 }
+#         1818 = { add_base_tax = 12 }
+#         1819 = { add_base_tax = 12 }
+#         1820 = { add_base_tax = 12 }
+#         1825 = { add_base_tax = 12 }
+#         1830 = { add_base_tax = 12 }
+#         1832 = { add_base_tax = 12 }
+#         1835 = { add_base_tax = 12 }
+#         1837 = { add_base_tax = 12 }
+#         1839 = { add_base_tax = 12 }
+#         1843 = { add_base_tax = 12 }
+#         1847 = { add_base_tax = 12 }
+#         1852 = { add_base_tax = 12 }
+#         4131 = { add_base_tax = 12 }
+#         4180 = { add_base_tax = 12 }
+#         4181 = { add_base_tax = 12 }
+#         4182 = { add_base_tax = 12 }
+#         4183 = { add_base_tax = 12 }
+#         4184 = { add_base_tax = 12 }
+#         4185 = { add_base_tax = 12 }
+#         4186 = { add_base_tax = 12 }
+#         4187 = { add_base_tax = 12 }
+#         4188 = { add_base_tax = 12 }
+#         4189 = { add_base_tax = 12 }
+#         4190 = { add_base_tax = 12 }
+#         4191 = { add_base_tax = 12 }
+#         4192 = { add_base_tax = 12 }
+#         4193 = { add_base_tax = 12 }
+#         1015 = { add_base_tax = 12 }
+#         4359 = { add_base_tax = 12 }
+#         4360 = { add_base_tax = 12 }
+#         4651 = { add_base_tax = 12 }
+#         1845 = { add_base_tax = 12 }
+#         2744 = { add_base_tax = 12 }
+#         4232 = { add_base_tax = 12 }
+#         732 = { add_base_tax = 12 }
+#         2742 = { add_base_tax = 12 }
+#         2743 = { add_base_tax = 12 }
+#         733 = { add_base_tax = 12 }
+#         735 = { add_base_tax = 12 }
+#         4230 = { add_base_tax = 12 }
+#         4231 = { add_base_tax = 12 }
+#         734 = { add_base_tax = 12 }
+#         736 = { add_base_tax = 12 }
+#         2694 = { add_base_tax = 12 }
+#         2745 = { add_base_tax = 12 }
+#         4227 = { add_base_tax = 12 }
+#         737 = { add_base_tax = 12 }
+#         1013 = { add_base_tax = 12 }
+#         2741 = { add_base_tax = 12 }
+#         4228 = { add_base_tax = 12 }
+#         4229 = { add_base_tax = 12 }
+#     },
+#     advance_days=800)
+
+# Reopen lever: production-only on every Hangzhou member. In the
+# baseline hangzhou -> xi'an closes at month 6 with NEGATIVE net flow
+# (-146: Xi'an relays more toward Hangzhou than Hangzhou sends west).
+# Pumping Hangzhou production should drive the forward flow far above
+# the reopen threshold, proving closed routes reopen when trade revives.
+#test(time=1444.11.11, tag=SWE, name="hangzhou_prod_farm",
+#     effect={
+#         669 = { add_base_production = 12 }
+#         670 = { add_base_production = 12 }
+#         683 = { add_base_production = 12 }
+#         684 = { add_base_production = 12 }
+#         685 = { add_base_production = 12 }
+#         686 = { add_base_production = 12 }
+#         1821 = { add_base_production = 12 }
+#         1822 = { add_base_production = 12 }
+#         1824 = { add_base_production = 12 }
+#         1829 = { add_base_production = 12 }
+#         1833 = { add_base_production = 12 }
+#         1838 = { add_base_production = 12 }
+#         1897 = { add_base_production = 12 }
+#         2143 = { add_base_production = 12 }
+#         2144 = { add_base_production = 12 }
+#         2145 = { add_base_production = 12 }
+#         2146 = { add_base_production = 12 }
+#         2147 = { add_base_production = 12 }
+#         2148 = { add_base_production = 12 }
+#         2149 = { add_base_production = 12 }
+#         2150 = { add_base_production = 12 }
+#         2151 = { add_base_production = 12 }
+#         2152 = { add_base_production = 12 }
+#         2153 = { add_base_production = 12 }
+#         2141 = { add_base_production = 12 }
+#         2142 = { add_base_production = 12 }
+#         4196 = { add_base_production = 12 }
+#     },
+#     advance_days=800)
+
+
+# Reopen, scheduled variant: the case only arms a flag at day 0, so
+# months 1-6 are pure baseline and hangzhou -> xi'an closes exactly as
+# in the baseline run. A natural (MTTH) event fired for the armed flag
+# at 1446 then applies the late farm: hangzhou production +30 (forward
+# flow on the closed edge scales with the pool while the reverse flow
+# from Xi'an stays put) and xi'an tax +40 (Xi'an's relay weight share
+# in Hangzhou's partner set rises from ~13% past the 15% reopen band).
+# After six months above the threshold the closed edge must REOPEN.
+#test(time=1444.11.11, tag=SWE, name="reopen_late_farm",
+#     effect={ set_country_flag = reopen_late_farm_armed },
+#     advance_days=800)
+
+country_event = {
+	id = dev_test.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}
+
+
+
+country_event = {
+	id = dev_test.2
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = no
+	fire_only_once = yes
+	trigger = {
+		has_country_flag = reopen_late_farm_armed
+		is_year = 1446
+	}
+	mean_time_to_happen = {
+		months = 1
+	}
+	immediate = {
+		log = "FOCH reopen_late_farm late effects applied"
+		669 = { add_base_production = 40 }
+		670 = { add_base_production = 40 }
+		683 = { add_base_production = 40 }
+		684 = { add_base_production = 40 }
+		685 = { add_base_production = 40 }
+		686 = { add_base_production = 40 }
+		1821 = { add_base_production = 40 }
+		1822 = { add_base_production = 40 }
+		1824 = { add_base_production = 40 }
+		1829 = { add_base_production = 40 }
+		1833 = { add_base_production = 40 }
+		1838 = { add_base_production = 40 }
+		1897 = { add_base_production = 40 }
+		2143 = { add_base_production = 40 }
+		2144 = { add_base_production = 40 }
+		2145 = { add_base_production = 40 }
+		2146 = { add_base_production = 40 }
+		2147 = { add_base_production = 40 }
+		2148 = { add_base_production = 40 }
+		2149 = { add_base_production = 40 }
+		2150 = { add_base_production = 40 }
+		2151 = { add_base_production = 40 }
+		2152 = { add_base_production = 40 }
+		2153 = { add_base_production = 40 }
+		2141 = { add_base_production = 40 }
+		2142 = { add_base_production = 40 }
+		4196 = { add_base_production = 40 }
+		687 = { add_base_tax = 80 }
+		1836 = { add_base_tax = 80 }
+		2181 = { add_base_tax = 80 }
+		2180 = { add_base_tax = 80 }
+		698 = { add_base_tax = 80 }
+		699 = { add_base_tax = 80 }
+		688 = { add_base_tax = 80 }
+		692 = { add_base_tax = 80 }
+		2183 = { add_base_tax = 80 }
+		2175 = { add_base_tax = 80 }
+		2176 = { add_base_tax = 80 }
+		681 = { add_base_tax = 80 }
+		682 = { add_base_tax = 80 }
+		2171 = { add_base_tax = 80 }
+		2172 = { add_base_tax = 80 }
+		4197 = { add_base_tax = 80 }
+		689 = { add_base_tax = 80 }
+		700 = { add_base_tax = 80 }
+		2179 = { add_base_tax = 80 }
+		4198 = { add_base_tax = 80 }
+		701 = { add_base_tax = 80 }
+		709 = { add_base_tax = 80 }
+		2191 = { add_base_tax = 80 }
+		4223 = { add_base_tax = 80 }
+		4676 = { add_base_tax = 80 }
+		690 = { add_base_tax = 50 }
+		691 = { add_base_tax = 50 }
+		702 = { add_base_tax = 50 }
+		2138 = { add_base_tax = 50 }
+		2139 = { add_base_tax = 50 }
+		2140 = { add_base_tax = 50 }
+		2114 = { add_base_tax = 50 }
+		2747 = { add_base_tax = 50 }
+		703 = { add_base_tax = 50 }
+		1816 = { add_base_tax = 50 }
+		2136 = { add_base_tax = 50 }
+		4194 = { add_base_tax = 50 }
+		695 = { add_base_tax = 50 }
+		696 = { add_base_tax = 50 }
+		2137 = { add_base_tax = 50 }
+		4195 = { add_base_tax = 50 }
+		704 = { add_base_tax = 50 }
+		726 = { add_base_tax = 50 }
+		2112 = { add_base_tax = 50 }
+		2113 = { add_base_tax = 50 }
+		693 = { add_base_tax = 50 }
+		694 = { add_base_tax = 50 }
+		697 = { add_base_tax = 50 }
+		2177 = { add_base_tax = 50 }
+		2178 = { add_base_tax = 50 }
+		4233 = { add_base_tax = 50 }
+		4652 = { add_base_tax = 50 }
+		4671 = { add_base_tax = 50 }
+		4670 = { add_base_tax = 50 }
+		710 = { add_base_tax = 50 }
+		1786 = { add_base_tax = 50 }
+		707 = { add_base_tax = 50 }
+		708 = { add_base_tax = 50 }
+		711 = { add_base_tax = 50 }
+		714 = { add_base_tax = 50 }
+		719 = { add_base_tax = 50 }
+		1784 = { add_base_tax = 50 }
+		2118 = { add_base_tax = 50 }
+		2119 = { add_base_tax = 50 }
+		2123 = { add_base_tax = 50 }
+		2189 = { add_base_tax = 50 }
+		2190 = { add_base_tax = 50 }
+		2194 = { add_base_tax = 50 }
+		2182 = { add_base_tax = 50 }
+		2184 = { add_base_tax = 50 }
+		2122 = { add_base_tax = 50 }
+		4206 = { add_base_tax = 50 }
+		4207 = { add_base_tax = 50 }
+		717 = { add_base_tax = 50 }
+		721 = { add_base_tax = 50 }
+		2116 = { add_base_tax = 50 }
+		4219 = { add_base_tax = 50 }
+		4220 = { add_base_tax = 50 }
+		720 = { add_base_tax = 50 }
+		2193 = { add_base_tax = 50 }
+		4221 = { add_base_tax = 50 }
+		713 = { add_base_tax = 50 }
+		715 = { add_base_tax = 50 }
+		2120 = { add_base_tax = 50 }
+		4208 = { add_base_tax = 50 }
+		718 = { add_base_tax = 50 }
+		2117 = { add_base_tax = 50 }
+		4222 = { add_base_tax = 50 }
+		712 = { add_base_tax = 50 }
+		2121 = { add_base_tax = 50 }
+		2192 = { add_base_tax = 50 }
+		4673 = { add_base_tax = 50 }
+		4666 = { add_base_tax = 50 }
+		4667 = { add_base_tax = 50 }
+		723 = { add_base_tax = 50 }
+		4669 = { add_base_tax = 50 }
+		4668 = { add_base_tax = 50 }
+		4681 = { add_base_tax = 50 }
+		4683 = { add_base_tax = 50 }
+		4682 = { add_base_tax = 50 }
+		4678 = { add_base_tax = 50 }
+		4677 = { add_base_tax = 50 }
+		4680 = { add_base_tax = 50 }
+		4684 = { add_base_tax = 50 }
+		4693 = { add_base_tax = 50 }
+	}
+	option = { name = OK }
+}

@@ -1,0 +1,14 @@
+namespace = trade_probe
+
+#test(time=1444.11.11, tag=SWE, name="plugin_host_smoke",
+#     advance_days=400)
+country_event = {
+	id = trade_probe.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}
