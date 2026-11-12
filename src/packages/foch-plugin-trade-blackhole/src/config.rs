@@ -139,9 +139,12 @@ impl Config {
 		if let Some(node) = object
 			.get("force_node")
 			.and_then(|v| v.as_str())
-			.filter(|node| {
-				!node.is_empty() && node.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-			}) {
+			.map(str::trim)
+			.filter(|node| !node.is_empty() && node.chars().all(|c| !c.is_control()))
+		{
+			// Display names carry spaces and non-ASCII ("Great Lakes",
+			// "Lübeck"), so the guard only rejects emptiness and control
+			// characters; the lookup itself compares case-insensitively.
 			config.force_node = node.to_string();
 		}
 		if let Some(log) = object.get("observer_log").and_then(|v| v.as_bool()) {
@@ -231,8 +234,16 @@ mod tests {
 	}
 
 	#[test]
-	fn a_node_name_is_sanitized() {
-		let config = Config::from_json(br#"{"force_node":"bad name!"}"#);
+	fn a_node_name_accepts_spaces_and_unicode_but_not_controls() {
+		// Display names carry spaces and non-ASCII ("Great Lakes",
+		// "Lübeck"); only emptiness and control characters are rejected.
+		let config = Config::from_json("{\"force_node\":\"Great Lakes\"}".as_bytes());
+		assert_eq!(config.force_node, "Great Lakes");
+		let config = Config::from_json("{\"force_node\":\"Lübeck\"}".as_bytes());
+		assert_eq!(config.force_node, "Lübeck");
+		let config = Config::from_json(br#"{"force_node":"bad	name"}"#);
+		assert_eq!(config.force_node, Config::default().force_node);
+		let config = Config::from_json(br#"{"force_node":"   "}"#);
 		assert_eq!(config.force_node, Config::default().force_node);
 	}
 }

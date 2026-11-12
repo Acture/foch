@@ -508,7 +508,7 @@ pub fn closed_edge_report(
 /// engine grows the correct direction.
 pub fn plan(
 	nodes: &[NodeSnapshot],
-	closed: &mut [Vec<bool>],
+	closed: &[Vec<bool>],
 	evidence: &mut [Vec<Evidence>],
 	params: &Params,
 ) -> Result<(Vec<Flip>, Vec<ReverseAdd>), &'static str> {
@@ -565,9 +565,10 @@ pub fn plan(
 				continue;
 			}
 			let want_closed = should_close;
-			closed[i][edge] = want_closed;
-			// Reset both counters on any flip.
-			evidence[i][edge] = Evidence::default();
+			// The caller commits the mirror and resets this edge's
+			// counters only after the backend accepted the flip, so a
+			// refused mutation can never desync the mirror from the
+			// engine's route table.
 			flips.push(Flip {
 				node: node.id,
 				edge,
@@ -674,7 +675,11 @@ mod tests {
 		let mut ev = evidence(nodes);
 		let mut all = Vec::new();
 		for _ in 0..months {
-			all.extend(plan(nodes, closed, &mut ev, params).unwrap().0);
+			for flip in plan(nodes, closed, &mut ev, params).unwrap().0 {
+				closed[flip.node as usize][flip.edge] = matches!(flip.action, FlipAction::Close);
+				ev[flip.node as usize][flip.edge] = Evidence::default();
+				all.push(flip);
+			}
 		}
 		all
 	}
@@ -870,11 +875,11 @@ mod tests {
 			node(0, 1.0, 0.5, 1.0, 1.0, vec![1]),
 			node(1, 1.0, 0.5, 1.0, 1.0, vec![]),
 		];
-		let mut mismatched = vec![vec![false, false], vec![]];
+		let mismatched = vec![vec![false, false], vec![]];
 		assert!(
 			plan(
 				&nodes,
-				&mut mismatched,
+				&mismatched,
 				&mut evidence(&nodes),
 				&Params::default()
 			)
@@ -885,11 +890,11 @@ mod tests {
 	#[test]
 	fn invalid_params_are_rejected() {
 		let nodes = vec![node(0, 1.0, 0.5, 1.0, 1.0, vec![])];
-		let mut closed = mirror(&nodes);
+		let closed = mirror(&nodes);
 		let crossed = Params {
 			reopen_pct: 0,
 			..Params::default()
 		};
-		assert!(plan(&nodes, &mut closed, &mut evidence(&nodes), &crossed).is_err());
+		assert!(plan(&nodes, &closed, &mut evidence(&nodes), &crossed).is_err());
 	}
 }

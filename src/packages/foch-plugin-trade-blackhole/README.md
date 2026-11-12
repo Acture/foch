@@ -75,13 +75,20 @@ per playset in `~/.config/foch/plugins/selections.toml`.
 
 ```powershell
 cargo build -p foch-plugin-trade-blackhole -p foch-eu4-host -p foch-cli --release --locked
-uv run python -I D:\eu4-re\scripts\assemble_pkg.py   # or fill [[files]] by hand
+uv run python -I src/packages/foch-plugin-trade-blackhole/tools/assemble_pkg.py
 foch plugin import ./target/plugin-pkg
 foch plugin enable dev.foch.trade-blackhole --playset default
 foch plugin plan --playset default --game-path <EU4>
 foch plugin launch --playset default
 foch plugin status --run-dir <runtime dir>
 ```
+
+`tools/assemble_pkg.py` copies the release DLL plus the offline
+`tools/node_members.txt` (the node membership table generated from
+vanilla `common/tradenodes/00_tradenodes.txt`, shipped with the package)
+into `target/plugin-pkg` and fills the `[[files]]` sha256 digests; after
+importing a rebuilt package, remove the previous `0.1.0+<hash>` store
+directory so `plugin enable` stays unambiguous.
 
 Automated end-to-end (loads a 1444.11.11 start by itself, advances 70
 days across two month boundaries, requires no interaction; the plugin

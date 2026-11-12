@@ -220,13 +220,29 @@ impl<B: EngineBackend, F: Fn(i32, &str)> Engine<B, F> {
 			return;
 		};
 		for flip in &flips {
-			let closed = matches!(flip.action, FlipAction::Close);
-			if let Err(reason) = self.backend.set_edge_closed(flip.node, flip.edge, closed) {
+			let want_closed = matches!(flip.action, FlipAction::Close);
+			if let Err(reason) = self
+				.backend
+				.set_edge_closed(flip.node, flip.edge, want_closed)
+			{
 				(self.log)(
 					logging::WARN,
 					&format!("flip failed ({}): {reason}", flip.describe(nodes)),
 				);
 			} else {
+				// Commit the mirror and reset this edge's evidence only
+				// after the engine accepted the mutation, so a refused
+				// write can never desync the mirror from the route table.
+				if let Some(flags) = closed.get_mut(flip.node as usize)
+					&& let Some(flag) = flags.get_mut(flip.edge)
+				{
+					*flag = want_closed;
+				}
+				if let Some(rows) = evidence.get_mut(flip.node as usize)
+					&& let Some(ev) = rows.get_mut(flip.edge)
+				{
+					*ev = policy::Evidence::default();
+				}
 				(self.log)(
 					logging::INFO,
 					&format!("tick {}: {}", self.ticks, flip.describe(nodes)),

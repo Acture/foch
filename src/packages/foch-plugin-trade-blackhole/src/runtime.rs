@@ -303,6 +303,13 @@ impl LiveBackend {
 		(addr > 0x1_0000).then(|| unsafe { std::ptr::read_unaligned(addr as *const i32) })
 	}
 
+	/// One byte, for the SSO-string and route-byte walks: reading four
+	/// bytes where one is walked risks touching the page after the
+	/// object near a segment boundary.
+	fn read_u8(&self, addr: usize) -> Option<u8> {
+		(addr > 0x1_0000).then(|| unsafe { std::ptr::read(addr as *const u8) })
+	}
+
 	fn write_qword(&self, addr: usize, value: u64) -> Option<()> {
 		(addr > 0x1_0000 && addr & 7 == 0)
 			.then(|| unsafe { std::ptr::write(addr as *mut u64, value) })
@@ -481,6 +488,11 @@ impl LiveBackend {
 					.ok_or("weight write refused")?;
 			}
 		}
+		// The paired steering-weight vector's end is left untouched: the
+		// engine walks the weights by the route count (the pairing
+		// diagnostic has never tripped in a live session), and the
+		// parked tail entries keep the vector's own length stable for
+		// the observe-side permutation recovery.
 		let open_count = state.closed.iter().filter(|c| !**c).count();
 		let new_end = state.routes_begin + open_count * stride;
 		self.write_qword(state.def + layout::def::ROUTES_END, new_end as u64)
@@ -525,7 +537,7 @@ impl LiveBackend {
 		};
 		let mut bytes = Vec::with_capacity(length);
 		for i in 0..length {
-			let byte = self.read_i32(data + i)? as u8;
+			let byte = self.read_u8(data + i)?;
 			if !(byte == b' ' || byte.is_ascii_graphic() || byte >= 0x80) {
 				return None;
 			}
@@ -692,19 +704,35 @@ impl EngineBackend for LiveBackend {
 			// walk lands (see the README's known limits).
 			// Steering: the engine's per-edge effort vector, read from
 			// the live node (merchants, investments, light ships).
-			let steering = match self.read_qword(node + layout::node::WEIGHTS) {
-				Some(begin) => match self.read_qword(node + layout::node::WEIGHTS + 8) {
-					Some(end) if end >= begin => {
-						let count = ((end - begin) / 4) as usize;
-						(0..count.min(outgoing.len()))
-							.filter_map(|i| self.read_i32(begin as usize + i * 4))
-							.map(|v| v as f64)
-							.collect::<Vec<f64>>()
+			// Steering, restored to vanilla edge order: after a mutation
+			// the live slots hold the open-first permutation, so slot i
+			// carries vanilla edge live_order(closed)[i]. Invert the
+			// permutation before pairing the weights with the vanilla
+			// outgoing list.
+			let mut steering = vec![0.0_f64; outgoing.len()];
+			if let Some(begin) = self
+				.read_qword(node + layout::node::WEIGHTS)
+				.map(|p| p as usize)
+			{
+				let end = self
+					.read_qword(node + layout::node::WEIGHTS + 8)
+					.map(|p| p as usize)
+					.unwrap_or(begin);
+				let live_count = end.saturating_sub(begin) / 4;
+				let order = self
+					.mutations
+					.get(&(index as u32))
+					.map(|state| live_order(&state.closed))
+					.unwrap_or_else(|| (0..outgoing.len()).collect::<Vec<_>>());
+				for (slot, &vanilla_slot) in order.iter().enumerate() {
+					if slot >= live_count || vanilla_slot >= steering.len() {
+						continue;
 					}
-					_ => Vec::new(),
-				},
-				None => Vec::new(),
-			};
+					if let Some(value) = self.read_i32(begin + slot * 4) {
+						steering[vanilla_slot] = value as f64;
+					}
+				}
+			}
 			// The engine's own retention rate: retained / (retained +
 			// transferred), from the live node after the monthly update.
 			// This is what the game's mechanics (trade power shares,
