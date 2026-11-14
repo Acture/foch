@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 use std::time::Instant;
 
 use crate::game::eu4::content::{BooleanMergePolicy, DivergentBlockPolicy, MergePolicies};
@@ -105,6 +107,7 @@ impl ClausewitzMergeOutcome {
 			.collect()
 	}
 
+	#[cfg(test)]
 	#[cfg(test)]
 	pub(crate) fn kernel(&self) -> &MergeOutcome {
 		&self.kernel
@@ -386,7 +389,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 		attach_trivia(&mut tentative_ast, &merged_trivia);
 	}
 	let lineage_ast = tentative_ast.clone();
-	simplify_boolean_or_definitions(&mut tentative_ast, policies, &mut scope_cache);
+	simplify_boolean_or_definitions(&mut tentative_ast, policies, schema, &mut scope_cache);
 	if reduce_event_fallbacks {
 		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
 	}
@@ -427,10 +430,11 @@ pub fn canonicalize_clausewitz_file(
 ) -> Result<AstFile, AstAdapterError> {
 	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
+	let schema = Some(rule_engine());
 	let canonical = canonicalize_for_merge(
 		file,
 		policies,
-		Some(rule_engine()),
+		schema,
 		&mut scope_cache,
 		&mut NumberSpellings::default(),
 	);
@@ -438,7 +442,7 @@ pub fn canonicalize_clausewitz_file(
 	let tree = normalize_ast(&semantic, &policy)?;
 	let mut canonical = denormalize_ast(file.path.clone(), &tree)?;
 	attach_trivia(&mut canonical, &trivia);
-	simplify_boolean_or_definitions(&mut canonical, policies, &mut scope_cache);
+	simplify_boolean_or_definitions(&mut canonical, policies, schema, &mut scope_cache);
 	Ok(canonical)
 }
 
@@ -566,7 +570,7 @@ fn canonicalize_for_merge(
 ) -> AstFile {
 	let mut file = crate::merge::numeric::canonicalize_numeric_values(file, schema, spellings);
 	canonicalize_multiline_strings(&mut file.statements);
-	canonicalize_boolean_or_definitions(&file, policies, scope_cache)
+	canonicalize_boolean_or_definitions(&file, policies, schema, scope_cache)
 }
 
 /// A quoted string that spans lines holds script the game parses again, such
@@ -600,14 +604,17 @@ fn canonicalize_multiline_strings(statements: &mut [AstStatement]) {
 fn canonicalize_boolean_or_definitions(
 	file: &AstFile,
 	policies: &MergePolicies,
+	schema: Option<&CwtQuery>,
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
 ) -> AstFile {
 	let mut file = file.clone();
+	let reading = schema.map(|schema| Rc::new(RefCell::new(super::weights::read(schema, &file))));
 	BooleanConditionTransformer {
 		file_path: &file.path,
 		policies,
 		transform: BooleanTransform::Canonicalize,
 		scope_cache,
+		reading,
 	}
 	.transform(&mut file.statements, &mut Vec::new(), ScriptContext::Data);
 	file
@@ -616,13 +623,16 @@ fn canonicalize_boolean_or_definitions(
 fn simplify_boolean_or_definitions(
 	file: &mut AstFile,
 	policies: &MergePolicies,
+	schema: Option<&CwtQuery>,
 	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
 ) {
+	let reading = schema.map(|schema| Rc::new(RefCell::new(super::weights::read(schema, file))));
 	BooleanConditionTransformer {
 		file_path: &file.path,
 		policies,
 		transform: BooleanTransform::Simplify,
 		scope_cache,
+		reading,
 	}
 	.transform(&mut file.statements, &mut Vec::new(), ScriptContext::Data);
 }
@@ -645,9 +655,37 @@ struct BooleanConditionTransformer<'a> {
 	policies: &'a MergePolicies,
 	transform: BooleanTransform,
 	scope_cache: &'a mut HashMap<Vec<String>, Option<ScopeKind>>,
+	/// What the schema said about the file being transformed, shared with
+	/// the walk of that exact tree: the value-like blocks it names are one
+	/// entry of a list or one value the game reads once per key, not
+	/// disjunctions.
+	reading: Option<Rc<RefCell<super::weights::FileReading>>>,
 }
 
 impl BooleanConditionTransformer<'_> {
+	/// Whether the statement assigns a weight entry the reading names: one
+	/// entry of a list the game reads together, which canonicalizing as a
+	/// disjunction would reshape into a trigger the game cannot read.
+	fn weight_entry(&self, statement: &AstStatement) -> bool {
+		let Some(reading) = self.reading.as_ref() else {
+			return false;
+		};
+		matches!(statement, AstStatement::Assignment { value, .. }
+			if reading.borrow().identity(value).is_some())
+	}
+
+	/// Whether the statement is a parameterized call: a trigger context
+	/// calling a name no rule declares with a block of arguments. The
+	/// transformer walks the very tree the reading bound, so the exact
+	/// address lookup answers — no other block, however similar its body,
+	/// reads as a call.
+	fn parameterized(&self, statement: &AstStatement) -> bool {
+		let Some(reading) = self.reading.as_ref() else {
+			return false;
+		};
+		matches!(statement, AstStatement::Assignment { value, .. }
+			if reading.borrow().parameterized_call(value).is_some())
+	}
 	fn transform(
 		&mut self,
 		statements: &mut [AstStatement],
@@ -655,6 +693,7 @@ impl BooleanConditionTransformer<'_> {
 		parent_context: ScriptContext,
 	) {
 		for statement in statements {
+			let value_like = self.weight_entry(statement);
 			let AstStatement::Assignment {
 				key,
 				value: AstValue::Block { items, .. },
@@ -673,11 +712,19 @@ impl BooleanConditionTransformer<'_> {
 			let configured_definition = path.len() == 1
 				&& self.policies.divergent_block_policy_for_key(key)
 					== DivergentBlockPolicy::BooleanOr;
-			let trigger_root = configured_definition
-				|| (self.policies.boolean == BooleanMergePolicy::Or
-					&& context == ScriptContext::Trigger
-					&& parent_context != context
-					&& !is_boolean_operator(key));
+			// A value-like block (a weight entry, or a parameterized call)
+			// is one entry of a list the game reads together or one value it
+			// reads once per key, not a disjunction: canonicalizing its body
+			// as boolean alternatives would wrap the entry's number or the
+			// call's arguments where the game reads a trigger. The
+			// schema-bound reading decides, so a numeric trigger (such as
+			// `prestige = 10`) still canonicalizes as a condition.
+			let trigger_root = !value_like
+				&& (configured_definition
+					|| (self.policies.boolean == BooleanMergePolicy::Or
+						&& context == ScriptContext::Trigger
+						&& parent_context != context
+						&& !is_boolean_operator(key)));
 
 			self.transform(
 				items,
@@ -691,12 +738,99 @@ impl BooleanConditionTransformer<'_> {
 			if trigger_root && !items.is_empty() {
 				*items = match self.transform {
 					BooleanTransform::Canonicalize => {
-						canonical_boolean_or_body(std::mem::take(items))
+						// A parameterized call (a trigger context calling a
+						// name no rule declares, with a block of arguments)
+						// holds a value the game reads once per key: it is no
+						// predicate a disjunction may span. A block holding
+						// only such calls is no disjunction at all, and in a
+						// mixed block each call stays beside the `OR` of the
+						// predicates, in its written place.
+						// The address-keyed reading only answers for statements
+						// at their tree addresses, so each judgement happens
+						// before the statements are moved out.
+						let calls_first: Vec<bool> =
+							items.iter().map(|item| self.parameterized(item)).collect();
+						let mut calls = Vec::new();
+						let mut predicates = Vec::new();
+						for (item, is_call) in std::mem::take(items).into_iter().zip(calls_first) {
+							if is_call {
+								calls.push(item);
+							} else {
+								predicates.push(item);
+							}
+						}
+						if predicates.is_empty() {
+							calls
+						} else if calls.is_empty() {
+							canonical_boolean_or_body(predicates)
+						} else {
+							let mut body = canonical_boolean_or_body(predicates);
+							let at = body
+								.iter()
+								.position(|item| {
+									matches!(item, AstStatement::Assignment { key, .. }
+										if key == "OR")
+								})
+								.unwrap_or(body.len());
+							for (offset, call) in calls.into_iter().enumerate() {
+								body.insert(at + offset, call);
+							}
+							body
+						}
 					}
 					BooleanTransform::Simplify => {
-						let simplified = simplify_boolean_or_body(std::mem::take(items));
-						super::control_flow::simplify_merged_trigger_predicate(&simplified)
-							.unwrap_or(simplified)
+						// The same parameterized calls stay out of the `OR`
+						// the simplification writes: they are values the game
+						// reads once per key, not alternatives.
+						let calls_first: Vec<bool> =
+							items.iter().map(|item| self.parameterized(item)).collect();
+						let mut calls = Vec::new();
+						let mut predicates = Vec::new();
+						for (item, is_call) in std::mem::take(items).into_iter().zip(calls_first) {
+							if is_call {
+								calls.push(item);
+							} else {
+								predicates.push(item);
+							}
+						}
+						if predicates.is_empty() {
+							calls
+						} else if calls.is_empty() {
+							let simplified = simplify_boolean_or_body(predicates);
+							let narrowed = self.reading.as_ref().and_then(|reading| {
+								let check = |value: &AstValue| {
+									reading.borrow().is_parameterized_block(value)
+								};
+								super::control_flow::simplify_merged_trigger_predicate(
+									&simplified,
+									Some(&check),
+								)
+							});
+							narrowed.unwrap_or(simplified)
+						} else {
+							let mut body = simplify_boolean_or_body(predicates);
+							let narrowed = self.reading.as_ref().and_then(|reading| {
+								let check = |value: &AstValue| {
+									reading.borrow().is_parameterized_block(value)
+								};
+								super::control_flow::simplify_merged_trigger_predicate(
+									&body,
+									Some(&check),
+								)
+							});
+							body = narrowed.unwrap_or(body);
+							let at = body
+								.iter()
+								.position(|item| {
+									matches!(item, AstStatement::Assignment { key, .. }
+										if key == "OR")
+								})
+								.unwrap_or(body.len());
+							for (offset, call) in calls.into_iter().enumerate() {
+								body.insert(at + offset, call);
+							}
+							body
+						}
 					}
 				};
 			}

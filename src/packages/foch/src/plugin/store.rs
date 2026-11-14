@@ -269,6 +269,11 @@ pub fn validate(entries: Vec<ArchiveEntry>) -> Result<ValidatedPackage, Vec<Impo
 			}
 		}
 	}
+	for relative in &manifest.exe_relative {
+		if !by_path.contains_key(relative.as_str()) {
+			errors.push(ImportError::MissingFile(relative.clone()));
+		}
+	}
 
 	// The entry DLL must exist and be an AMD64 PE image.
 	match by_path.get(manifest.entry.path.as_str()) {
@@ -982,6 +987,8 @@ sha256 = "{dll_digest}"
 						ini: destination.into(),
 						section: "settings".into(),
 						key: "enabled".into(),
+						yes: None,
+						no: None,
 					}),
 				},
 			);

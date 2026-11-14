@@ -12,22 +12,50 @@ It never loads a plugin in the management process.
 
 ## Management commands
 
-Build `foch-cli` and the host locally. Import a package containing a
-`foch-plugin.toml`, or bind an extracted upstream release to a built-in adapter:
+Build `foch-cli` and the host locally. Install the pinned Steam DLL releases
+with GitHub CLI; Foch's host is the only loader. Install does not enable a
+plugin. `foch plugin install --all` installs:
+
+- `YozoraTempest/EU4-Unicode-Patch` tag `v0.1.15`
+- `YozoraTempest/EU4-Menu-Patch` tag `v0.1.4-experimental`
+- `matanki-saito/EU4dll` tag `93` (stored as version `93.0.0`)
+
+A spec may be `owner/repo`, a `github.com` URL, or the plugin id. The download
+is `gh release download` of that pinned asset. Proxy DLLs (`version.dll`,
+`d3d9.dll`, and the other known proxies) are stripped. The EU4dll asset also
+omits x86 `plugins/Plugin.dll`, `dllautoupdater.exe`, and the autoupdate batch
+files. EU4dll reads `<exe>\plugins\plugin.ini`, so that file is published at
+the runtime root after Foch writes its managed keys. Enabled plugins load in
+plan order. Each built-in plugin is one row in
+`src/packages/foch/src/plugin/registry.toml`: display name, author, homepage,
+pinned version, and the GitHub release URL. A row writes `depends_on` or
+`conflicts_with` only when it has one, and a conflict includes why. Unicode's
+row conflicts with EU4dll because that build refuses to initialize when
+`plugin64.dll` is loaded. A playset with both is not launchable. Menu's row
+names no dependency and no conflict. `plugin64.dll` has no status export, so a
+load is reported unknown rather than active.
 
 ```powershell
 cargo build -p foch-cli -p foch-eu4-host --release --locked
-foch plugin import ./EU4UnicodePatch --adapter io.github.yozoratempest.eu4-unicode-patch
-foch plugin import ./EU4MenuPatch --adapter io.github.yozoratempest.eu4-menu-patch
-foch plugin enable io.github.yozoratempest.eu4-unicode-patch --playset default --version 0.1.14
+foch plugin install --all
+foch plugin enable io.github.yozoratempest.eu4-unicode-patch --playset default --version 0.1.15
 foch plugin enable io.github.yozoratempest.eu4-menu-patch --playset default --version 0.1.4-experimental
 foch plugin plan --playset default --game-path "G:/SteamLibrary/steamapps/common/Europa Universalis IV"
 foch plugin launch --playset default --host-dll ./target/release/foch_eu4_host.dll
 foch plugin status --run-dir "<runtime directory printed by launch>"
 ```
 
-Extract ZIP releases before importing. Optional Unicode fonts must be placed in
-the extracted package's `plugins/eu4_unicode_patch` directory before importing.
+Enable EU4dll with Menu, or on its own. Do not enable it in a playset that also
+has Unicode 0.1.15:
+
+```powershell
+foch plugin enable io.github.matanki-saito.eu4dll --playset default --version 93.0.0
+```
+
+`foch plugin import ./dir --adapter PLUGIN_ID` still binds an extracted
+directory. Extract ZIP releases before that import. Optional Unicode fonts must
+be placed in the extracted package's `plugins/eu4_unicode_patch` directory
+before importing. `plugin install` does not download the separate fonts zip.
 Copy the targets of symbolic links or directory junctions into the extracted
 package; import rejects symbolic links and reparse points rather than silently
 omitting their resources. File hard links are read as bytes and copied into
@@ -179,15 +207,18 @@ executes the resulting plan in the disposable executable.
 
 Verified locally on 2026-10-11 with EU4 1.37.5 x64: official Unicode 0.1.14
 reports `active` at `entry` and reaches the main menu/country-selection screen.
-Its generated font cache leaves original fonts intact. Official Menu
-0.1.4-experimental reports `active` alone and alongside Unicode; both selected
-modules come from the Foch layer and the old plugin64 module is excluded.
+The adapter now pins Unicode 0.1.15. Its generated font cache leaves original
+fonts intact. Official Menu 0.1.4-experimental reports `active` alone and
+alongside Unicode; both selected modules come from the Foch layer and the
+installation `plugins` directory stays excluded.
 Unicode's 348-site and Menu's 26-site executable checks pass. The Menu/combined
 probes ran on an inactive Windows desktop, where Direct3D device creation fails;
 they establish initialization compatibility, not gameplay or menu transitions.
 Chinese rendering/input, Return to Menu and save reload remain manual checks.
-The installed old `Plugin.dll` is x86 and rejected; old `plugin64.dll` has no
-status export and has no verified Foch adapter.
+EU4dll release 93 installs through the same host plan. Its startup has not been
+checked in EU4. `plugin64.dll` has no status export, so the host reports
+unknown after the DLL loads. The x86 `Plugin.dll` in that release is omitted
+and is not an entry.
 
 ## Startup
 
@@ -310,9 +341,17 @@ A malformed status or unreadable/invalid UTF-8 detail stops initialization
 polling and records terminal `failed`. Unaligned report buffers are copied
 without forming an unaligned Rust reference.
 
-The draft SDK's shared pattern/hook/patch slots retain their existing layout,
-but this first-version loader returns `FOCH_E_UNSUPPORTED` for those services,
-as the published first-version design excludes shared hook management.
+The shared pattern, hook, and patch slots are implemented. `find_pattern`
+returns the one match in executable sections, or `FOCH_E_NOT_FOUND` /
+`FOCH_E_AMBIGUOUS`. `hook_create` chains every detour on a target, higher
+`priority` first and earlier registration on a tie, through a host-owned
+`*next` cell. Hooks and patches start disabled. The 14-byte prologue jump is
+written on the first enable while entry-phase init is still on the host
+thread. A prologue that cannot be relocated, or a first jump after that
+window, returns `FOCH_E_UNSUPPORTED`. Later enables only relink the chain. A
+patch that overlaps another patch or a hooked prologue returns
+`FOCH_E_CONFLICT`. Disabling a hook skips it. Disabling a patch restores the
+bytes captured when it was created.
 It does not currently send live configuration/toggle or shutdown callbacks.
 Enable/configuration changes take effect on the next launch. Loaded DLLs and
 host callback storage are retained until process exit; there is no hot unload.

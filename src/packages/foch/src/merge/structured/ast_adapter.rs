@@ -400,9 +400,36 @@ fn normalize_value_at(
 		AstValue::Block { items, .. } => branch(
 			&block_kind(assignment_key),
 			None,
+			// A parameterized call (a trigger context calling a name no rule
+			// declares, with a block of arguments, such as
+			// `num_of_ruler_traits = { amount = 3 }`) holds the call's value:
+			// its anchor carries the argument text, so calls with different
+			// arguments stay separate and the later read wins as the game
+			// reads one value per key. Such a call's context admits nothing
+			// the schema declares, so this anchor is its own branch.
 			policy
-				.is_condition_block(value)
-				.then(|| SemanticKey::parent_scoped(crate::merge::kernel::CONDITION_BLOCK, "")),
+				.parameterized_call(value)
+				.map(|arguments| {
+					SemanticKey::parent_scoped(crate::merge::kernel::CONDITION_BLOCK, arguments)
+				})
+				.or_else(|| {
+					policy.is_condition_block(value).then(|| {
+						// A weight block (numbers plus conditions, such as a
+						// `modifier` entry of an `ai_will_do`) is one entry of
+						// a list the game reads together: the conditions say
+						// which entry it is. Two such entries with different
+						// conditions are two entries, so the block carries its
+						// weight identity in the conditions anchor instead of
+						// the empty value every conditions block shares; a
+						// shared anchor would pair them and fold their
+						// divergent bodies into boolean alternatives.
+						let entry = policy
+							.schema_identity(value)
+							.map(|identity| identity.value)
+							.unwrap_or_default();
+						SemanticKey::parent_scoped(crate::merge::kernel::CONDITION_BLOCK, entry)
+					})
+				}),
 			policy.block_child_order(assignment_key),
 			ChildCardinality::Many,
 			normalize_statements(

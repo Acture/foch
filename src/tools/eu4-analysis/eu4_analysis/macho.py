@@ -2,29 +2,11 @@
 
 from __future__ import annotations
 
-import bisect
 import hashlib
 import struct
-from dataclasses import dataclass
 from pathlib import Path
 
-
-@dataclass(frozen=True)
-class BinaryImage:
-	path: Path
-	sha256: str
-	function_starts: tuple[int, ...]
-	text_end: int
-
-	def function_end(self, start: int) -> int:
-		index: int = bisect.bisect_left(self.function_starts, start)
-		if index == len(self.function_starts) or self.function_starts[index] != start:
-			raise ValueError(f"{start:#x} is not an LC_FUNCTION_STARTS entry")
-		return (
-			self.function_starts[index + 1]
-			if index + 1 < len(self.function_starts)
-			else self.text_end
-		)
+from .binary import BinaryImage
 
 
 def function_starts(data: bytes, text_address: int, text_end: int) -> tuple[int, ...]:
@@ -49,7 +31,7 @@ def function_starts(data: bytes, text_address: int, text_end: int) -> tuple[int,
 	raise ValueError("unterminated function-start table")
 
 
-def read_binary(path: Path) -> BinaryImage:
+def read_macho_image(path: Path) -> BinaryImage:
 	"""Use Mach-O function metadata rather than guessing ends from nearby labels."""
 	data: bytes = path.read_bytes()
 	if len(data) < 32:
@@ -100,5 +82,5 @@ def read_binary(path: Path) -> BinaryImage:
 	if not starts:
 		raise ValueError("empty function-start table")
 	return BinaryImage(
-		path.resolve(), hashlib.sha256(data).hexdigest(), starts, text_end
+		path.resolve(), hashlib.sha256(data).hexdigest(), "macos", starts, text_end
 	)

@@ -17,7 +17,7 @@ from .builtins import BuiltinOptions
 from .catalog import CatalogDiscovery, CatalogReport, discover_catalog
 from .families import DEFAULT_BOOTSTRAP, Discovery, FamilyQuery, discover_family
 from .ghidra import GhidraSession, validate_output_directory
-from .load_rules import LoadRules, discover_load_rules
+from .load_rules import LoadRules, discover_load_rules, parse_rules, with_prior_build
 from .models import Function, FunctionEvidence
 from .semantics import (
 	DEFAULT_EFFECT_PATTERNS,
@@ -63,7 +63,7 @@ def label(value: str) -> str:
 	return value
 
 
-def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
+def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions | SemanticsOptions:
 	parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
 	commands = parser.add_subparsers(dest="command", required=True)
 	discover = commands.add_parser(
@@ -273,11 +273,15 @@ def run(options: Options | BuiltinOptions | SemanticsOptions) -> None:
 				)
 			if catalog.report.scan_complete:
 				assert options.rules_directory is not None
-				rules: LoadRules = discover_load_rules(analysis, catalog)
-				write_json(
-					options.rules_directory / f"{options.game_version}.json",
-					asdict(rules),
+				rules: LoadRules = discover_load_rules(
+					analysis, catalog, platform=analysis.image.platform
 				)
+				target: Path = options.rules_directory / f"{options.game_version}.json"
+				if target.is_file():
+					rules = with_prior_build(
+						rules, parse_rules(target.read_text(encoding="utf-8"))
+					)
+				write_json(target, asdict(rules))
 				LOGGER.info(
 					"Wrote loading rules for %d databases", len(rules.databases)
 				)

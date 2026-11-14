@@ -2,7 +2,9 @@
 
 mod gate;
 mod host;
+mod link;
 mod proxy;
+mod query;
 
 use std::{
 	ffi::c_void,

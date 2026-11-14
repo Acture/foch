@@ -4,6 +4,8 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from eu4_analysis import pe
 from eu4_analysis.pe import PEImage, keyword_reference_functions, read_binary
@@ -137,6 +139,50 @@ class ReadPE(unittest.TestCase):
 			with self.assertRaises(ValueError):
 				read_binary(path)
 
+	def test_dispatched_image_uses_virtual_addresses_for_keyword_discovery(self) -> None:
+		from eu4_analysis.binary import read_binary as read_dispatched
+		from eu4_analysis.semantics import registration_functions
+
+		begin, code = registry_function("set_country_flag", RDATA_RVA, TEXT_RVA + 0x100)
+		blob = bytearray(build_pe(("set_country_flag",), (begin, code)))
+		optional = 0x80 + 24
+		struct.pack_into("<II", blob, optional + 112 + 3 * 8, PDATA_RVA, 12)
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_dispatched(path)
+
+		self.assertIsInstance(image, PEImage)
+		self.assertEqual(image.platform, "windows")
+		start = IMAGE_BASE + begin
+		end = start + len(code) + 0x10
+		self.assertEqual(image.function_starts, (start,))
+		self.assertEqual(image.function_ends, (end,))
+		self.assertEqual(keyword_reference_functions(image, "set_country_flag"), ((start, end),))
+
+		class Analysis:
+			def find(self, pattern: str) -> tuple:
+				return ()
+
+		analysis = Analysis()
+		analysis.image = image
+		functions = registration_functions(analysis, "set_country_flag", ())
+		self.assertEqual([(item.address, item.end) for item in functions], [(start, end)])
+
+	def test_ghidra_reads_windows_readonly_data_strings(self) -> None:
+		from eu4_analysis.ghidra import GhidraSession
+
+		session = GhidraSession.__new__(GhidraSession)
+		session.image = SimpleNamespace(platform="windows")
+		session.program = MagicMock()
+		location = session.program.getAddressFactory().getDefaultAddressSpace().getAddress()
+		block = session.program.getMemory().getBlock()
+		block.getName.return_value = ".rdata"
+		block.getEnd().getOffset.return_value = 0x1010
+		session.program.getMemory().getByte.side_effect = b"flag\0"
+		self.assertEqual(session._reference(0x1000).string, "flag")
+		self.assertEqual(location.add.call_count, 5)
+
 
 class KeywordReferences(unittest.TestCase):
 	def test_a_keyword_reference_finds_its_function(self) -> None:
@@ -154,6 +200,17 @@ class KeywordReferences(unittest.TestCase):
 		# A lea of some unrelated address (rdata + 0x80, inside padding).
 		code: bytes = lea_rdx(RDATA_RVA + 0x80, TEXT_RVA) + b"\xff\xd0"
 		blob = build_pe(("set_country_flag",), (TEXT_RVA, code))
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_binary(path)
+		self.assertEqual(keyword_reference_functions(image, "set_country_flag"), ())
+
+	def test_reference_in_gap_after_function_is_not_attributed_to_it(self) -> None:
+		code = b"\x90" * 0x20 + lea_rdx(RDATA_RVA, TEXT_RVA + 0x20)
+		blob = bytearray(build_pe(("set_country_flag",), (TEXT_RVA, code)))
+		pdata_offset = 0x200 + 0x200 + 0x100
+		struct.pack_into("<I", blob, pdata_offset + 4, TEXT_RVA + 0x10)
 		with tempfile.TemporaryDirectory() as temporary:
 			path = Path(temporary) / "eu4.exe"
 			path.write_bytes(blob)

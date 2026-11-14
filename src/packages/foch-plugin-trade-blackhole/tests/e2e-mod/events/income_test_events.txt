@@ -1,0 +1,115 @@
+namespace = income_test
+
+# Income probe: MLC owns every Malacca member and develops them, so its
+# collection share in the node is ~100%. The same case runs under the
+# policy playset (topology mutates, malacca closes) and the observe
+# playset (no mutations); the monthly_income/treasury ladder boundaries
+# reveal how much of the black hole the collecting country actually
+# keeps, versus the same farm with vanilla topology.
+#test(time=1444.11.11, tag=MLC, name="malacca_income",
+#     effect={
+#         593 = { add_base_tax = 6  add_base_production = 6 }
+#         594 = { add_base_tax = 6  add_base_production = 6 }
+#         595 = { add_base_tax = 6  add_base_production = 6 }
+#         596 = { add_base_tax = 6  add_base_production = 6 }
+#         597 = { add_base_tax = 6  add_base_production = 6 }
+#         598 = { add_base_tax = 6  add_base_production = 6 }
+#         599 = { add_base_tax = 6  add_base_production = 6 }
+#         617 = { add_base_tax = 6  add_base_production = 6 }
+#         618 = { add_base_tax = 6  add_base_production = 6 }
+#         619 = { add_base_tax = 6  add_base_production = 6 }
+#         620 = { add_base_tax = 6  add_base_production = 6 }
+#         621 = { add_base_tax = 6  add_base_production = 6 }
+#         622 = { add_base_tax = 6  add_base_production = 6 }
+#         623 = { add_base_tax = 6  add_base_production = 6 }
+#         636 = { add_base_tax = 6  add_base_production = 6 }
+#         637 = { add_base_tax = 6  add_base_production = 6 }
+#         638 = { add_base_tax = 6  add_base_production = 6 }
+#         639 = { add_base_tax = 6  add_base_production = 6 }
+#         640 = { add_base_tax = 6  add_base_production = 6 }
+#         659 = { add_base_tax = 6  add_base_production = 6 }
+#         1361 = { add_base_tax = 6  add_base_production = 6 }
+#         2390 = { add_base_tax = 6  add_base_production = 6 }
+#         2391 = { add_base_tax = 6  add_base_production = 6 }
+#         2392 = { add_base_tax = 6  add_base_production = 6 }
+#         2393 = { add_base_tax = 6  add_base_production = 6 }
+#         2394 = { add_base_tax = 6  add_base_production = 6 }
+#         2673 = { add_base_tax = 6  add_base_production = 6 }
+#         2674 = { add_base_tax = 6  add_base_production = 6 }
+#         2675 = { add_base_tax = 6  add_base_production = 6 }
+#         2676 = { add_base_tax = 6  add_base_production = 6 }
+#         2677 = { add_base_tax = 6  add_base_production = 6 }
+#         2678 = { add_base_tax = 6  add_base_production = 6 }
+#         2679 = { add_base_tax = 6  add_base_production = 6 }
+#         2680 = { add_base_tax = 6  add_base_production = 6 }
+#         2681 = { add_base_tax = 6  add_base_production = 6 }
+#         2682 = { add_base_tax = 6  add_base_production = 6 }
+#         2683 = { add_base_tax = 6  add_base_production = 6 }
+#         2684 = { add_base_tax = 6  add_base_production = 6 }
+#         2685 = { add_base_tax = 6  add_base_production = 6 }
+#         2686 = { add_base_tax = 6  add_base_production = 6 }
+#         2703 = { add_base_tax = 6  add_base_production = 6 }
+#         2704 = { add_base_tax = 6  add_base_production = 6 }
+#         2705 = { add_base_tax = 6  add_base_production = 6 }
+#         2706 = { add_base_tax = 6  add_base_production = 6 }
+#         2707 = { add_base_tax = 6  add_base_production = 6 }
+#         2708 = { add_base_tax = 6  add_base_production = 6 }
+#         2709 = { add_base_tax = 6  add_base_production = 6 }
+#         2710 = { add_base_tax = 6  add_base_production = 6 }
+#         2711 = { add_base_tax = 6  add_base_production = 6 }
+#         2712 = { add_base_tax = 6  add_base_production = 6 }
+#         2740 = { add_base_tax = 6  add_base_production = 6 }
+#         4799 = { add_base_tax = 6  add_base_production = 6 }
+#         4800 = { add_base_tax = 6  add_base_production = 6 }
+#         4801 = { add_base_tax = 6  add_base_production = 6 }
+#         4802 = { add_base_tax = 6  add_base_production = 6 }
+#         4803 = { add_base_tax = 6  add_base_production = 6 }
+#         4804 = { add_base_tax = 6  add_base_production = 6 }
+#         4805 = { add_base_tax = 6  add_base_production = 6 }
+#         4806 = { add_base_tax = 6  add_base_production = 6 }
+#         4809 = { add_base_tax = 6  add_base_production = 6 }
+#         4810 = { add_base_tax = 6  add_base_production = 6 }
+#         4811 = { add_base_tax = 6  add_base_production = 6 }
+#         4812 = { add_base_tax = 6  add_base_production = 6 }
+#         4813 = { add_base_tax = 6  add_base_production = 6 }
+#         4814 = { add_base_tax = 6  add_base_production = 6 }
+#         4815 = { add_base_tax = 6  add_base_production = 6 }
+#         4816 = { add_base_tax = 6  add_base_production = 6 }
+#         4817 = { add_base_tax = 6  add_base_production = 6 }
+#         4818 = { add_base_tax = 6  add_base_production = 6 }
+#     },
+#     advance_days=800,
+#     expect={
+#         monthly_income = 10
+#         monthly_income = 15
+#         monthly_income = 20
+#         monthly_income = 25
+#         monthly_income = 30
+#         monthly_income = 35
+#         treasury = 200
+#         treasury = 400
+#         treasury = 600
+#         treasury = 800
+#     })
+
+
+# Treasury unit calibration: set a known 10 ducats, then the plugin's
+# one-shot country probe reads the raw field (10 = ducats, 1000 =
+# thousandths, 100 = cents).
+#test(time=1444.11.11, tag=MLC, name="treasury_units",
+#     effect={
+#         MLC = { add_treasury = 10 }
+#     },
+#     advance_days=60,
+#     expect={ treasury = 5 })
+
+country_event = {
+	id = income_test.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

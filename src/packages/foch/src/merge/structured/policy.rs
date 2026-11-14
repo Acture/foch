@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use super::weights::FileReading;
 use crate::game::eu4::content::{
 	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, NestedInsertionPolicy,
 	OneSidedRemovalPolicy, ScalarMergePolicy,
@@ -56,6 +60,17 @@ pub(crate) trait ClausewitzTreePolicy {
 		None
 	}
 
+	/// The emitted argument text of a parameterized call whose block value is
+	/// `value`, such as `num_of_ruler_traits = { amount = 3 }`.
+	fn parameterized_call(&self, _value: &AstValue) -> Option<String> {
+		None
+	}
+
+	/// Whether the block `value` is a parameterized call, by content.
+	fn is_parameterized_block(&self, _value: &AstValue) -> bool {
+		false
+	}
+
 	/// Whether the schema lets the block holding the statement whose value is
 	/// `value` repeat it, as a trigger or an effect, rather than hold it once.
 	fn is_repeatable_statement(&self, _value: &AstValue) -> bool {
@@ -81,12 +96,17 @@ pub(crate) trait ClausewitzTreePolicy {
 	}
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ContentFamilyMergePolicy<'a> {
 	policies: &'a MergePolicies,
 	entity_transform: Option<&'a dyn EntityTransform>,
 	/// The schema that gives blocks identities, if any.
 	schema: Option<SchemaReading<'a>>,
+	/// What the schema said about the statements of the file `prepare` bound
+	/// last, shared with whoever walks that exact tree. A clone of the file
+	/// is a different tree, so the reading travels with the walk instead of
+	/// living where another tree's walk could read it.
+	reading: Rc<RefCell<FileReading>>,
 }
 
 #[derive(Clone, Copy)]
@@ -99,11 +119,12 @@ impl std::fmt::Debug for SchemaReading<'_> {
 }
 
 impl<'a> ContentFamilyMergePolicy<'a> {
-	pub(crate) const fn new(policies: &'a MergePolicies) -> Self {
+	pub(crate) fn new(policies: &'a MergePolicies) -> Self {
 		Self {
 			policies,
 			entity_transform: None,
 			schema: None,
+			reading: Rc::new(RefCell::new(FileReading::default())),
 		}
 	}
 
@@ -114,7 +135,7 @@ impl<'a> ContentFamilyMergePolicy<'a> {
 		self
 	}
 
-	pub(crate) const fn with_transform(
+	pub(crate) fn with_transform(
 		policies: &'a MergePolicies,
 		entity_transform: &'a dyn EntityTransform,
 	) -> Self {
@@ -122,6 +143,7 @@ impl<'a> ContentFamilyMergePolicy<'a> {
 			policies,
 			entity_transform: Some(entity_transform),
 			schema: None,
+			reading: Rc::new(RefCell::new(FileReading::default())),
 		}
 	}
 }
@@ -137,21 +159,31 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 
 	fn prepare(&self, file: &crate::game::eu4::script::parser::AstFile) {
 		if let Some(SchemaReading(schema)) = self.schema {
-			super::weights::prepare(schema, file);
+			let fresh = super::weights::read(schema, file);
+			*self.reading.borrow_mut() = fresh;
 		}
 	}
 
 	fn schema_identity(&self, value: &AstValue) -> Option<SemanticKey> {
 		self.schema?;
-		super::weights::identity(value)
+		self.reading.borrow().identity(value)
+	}
+
+	fn parameterized_call(&self, value: &AstValue) -> Option<String> {
+		self.schema?;
+		self.reading.borrow().parameterized_call(value)
+	}
+
+	fn is_parameterized_block(&self, value: &AstValue) -> bool {
+		self.schema.is_some() && self.reading.borrow().is_parameterized_block(value)
 	}
 
 	fn is_repeatable_statement(&self, value: &AstValue) -> bool {
-		self.schema.is_some() && super::weights::is_repeatable(value)
+		self.schema.is_some() && self.reading.borrow().is_repeatable(value)
 	}
 
 	fn is_condition_block(&self, value: &AstValue) -> bool {
-		self.schema.is_some() && super::weights::is_condition_block(value)
+		self.schema.is_some() && self.reading.borrow().is_condition_block(value)
 	}
 
 	fn entity_identity(

@@ -81,4 +81,34 @@ mod tests {
 		let absent = Pattern::parse("CC CC").unwrap();
 		assert_eq!(find_unique(&absent, &haystack), Found::None);
 	}
+
+	fn find_unique_spans(pattern: &Pattern, spans: &[&[u8]]) -> Found {
+		let mut found = None;
+		for span in spans {
+			match find_unique(pattern, span) {
+				Found::Ambiguous => return Found::Ambiguous,
+				Found::None => {}
+				Found::Unique(at) => {
+					if found.is_some() {
+						return Found::Ambiguous;
+					}
+					found = Some(at);
+				}
+			}
+		}
+		found.map_or(Found::None, Found::Unique)
+	}
+
+	#[test]
+	fn a_second_span_makes_a_match_ambiguous() {
+		let code = [0x90, 0x48, 0x8b, 0x01, 0x05];
+		let data = [0x48, 0x8b, 0x01, 0x05, 0x90];
+		let pattern = Pattern::parse("48 8B ?? 05").unwrap();
+		assert_eq!(find_unique_spans(&pattern, &[&code]), Found::Unique(1));
+		assert_eq!(
+			find_unique_spans(&pattern, &[&code, &data]),
+			Found::Ambiguous
+		);
+		assert_eq!(find_unique_spans(&pattern, &[&[0x90]]), Found::None);
+	}
 }

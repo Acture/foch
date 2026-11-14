@@ -1429,7 +1429,7 @@ fn plugin_plan_recognizes_an_enabled_builtin_without_an_imported_release() {
 			"enable",
 			id,
 			"--version",
-			"0.1.14",
+			"0.1.15",
 			"--playset",
 			"builtin",
 		],
@@ -1464,6 +1464,26 @@ fn plugin_plan_recognizes_an_enabled_builtin_without_an_imported_release() {
 	);
 	assert_eq!(output["errors"].as_array().unwrap().len(), 1, "{stdout}");
 	assert_eq!(output["order"][0]["id"], id);
+}
+
+#[test]
+fn plugin_install_rejects_an_unknown_spec_without_downloading() {
+	let scratch = TempDir::new().unwrap();
+	let (code, stdout, stderr) = run_foch(
+		&["plugin", "install", "not-a-registered-plugin"],
+		scratch.path(),
+	);
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(
+		stderr.contains("unknown plugin install spec"),
+		"{stdout}\n{stderr}"
+	);
+	let (code, stdout, stderr) = run_foch(&["plugin", "install"], scratch.path());
+	assert_ne!(code, 0, "{stdout}\n{stderr}");
+	assert!(
+		stderr.contains("pass a plugin spec or --all"),
+		"{stdout}\n{stderr}"
+	);
 }
 
 #[test]

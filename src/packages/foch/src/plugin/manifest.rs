@@ -60,6 +60,11 @@ pub struct Manifest {
 	/// them without writing through to the install.
 	#[serde(default)]
 	pub writes: Vec<WriteKind>,
+	/// Package files the game or DLL reads from the executable directory.
+	/// Staging copies them there after INI configuration is written.
+	/// `plugin64.dll` reads `<exe>\plugins\plugin.ini`, not the DLL directory.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub exe_relative: Vec<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub status: Option<StatusRule>,
 }
@@ -179,12 +184,17 @@ pub enum ConfigField {
 /// How a configuration value reaches a legacy plugin: a key in an INI file,
 /// relative to the plugin's own directory. DLL destinations are refused
 /// during package validation, before any configuration is staged.
+/// A bool writes `1`/`0` unless `yes` and `no` name the words the DLL compares.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigAdapter {
 	pub ini: String,
 	pub section: String,
 	pub key: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub yes: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub no: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -233,6 +243,10 @@ fn version_req_star() -> VersionReq {
 	VersionReq::STAR
 }
 
+fn ini_token(text: &str) -> bool {
+	!text.is_empty() && !text.chars().any(|c| matches!(c, '\r' | '\n' | '\0'))
+}
+
 /// Why a manifest is not usable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ManifestError {
@@ -270,6 +284,10 @@ impl Manifest {
 			file.path = super::store::safe_relative(&file.path)
 				.map_err(|error| ManifestError::Invalid(error.to_string()))?;
 		}
+		for relative in &mut manifest.exe_relative {
+			*relative = super::store::safe_relative(relative)
+				.map_err(|error| ManifestError::Invalid(error.to_string()))?;
+		}
 		Ok(manifest)
 	}
 
@@ -304,19 +322,13 @@ impl Manifest {
 				"{id} conflicts with itself"
 			)));
 		}
-		match (&self.entry.kind, self.target.abi_major) {
-			(Kind::Native, None) => {
-				return Err(ManifestError::Invalid(format!(
-					"{id}: a native plugin must declare target.abi_major"
-				)));
-			}
-			(Kind::Legacy, _) if self.status.is_none() => {
-				return Err(ManifestError::Invalid(format!(
-					"{id}: a legacy plugin must declare a [status] rule"
-				)));
-			}
-			_ => {}
+		if let (Kind::Native, None) = (&self.entry.kind, self.target.abi_major) {
+			return Err(ManifestError::Invalid(format!(
+				"{id}: a native plugin must declare target.abi_major"
+			)));
 		}
+		// A legacy DLL may omit [status]. plugin64.dll has no status export;
+		// the host then records unknown after the DLL loads.
 		if let Some(status) = &self.status {
 			if self.entry.kind != Kind::Legacy
 				|| status.export.is_empty()
@@ -364,6 +376,26 @@ impl Manifest {
 						"{id}: INI adapter destination for {name} must not be a DLL"
 					)));
 				}
+				match (&adapter.yes, &adapter.no) {
+					(None, None) => {}
+					(Some(yes), Some(no)) => {
+						if !matches!(field, ConfigField::Bool { .. }) {
+							return Err(ManifestError::Invalid(format!(
+								"{id}: yes/no INI words are only valid on bool field {name}"
+							)));
+						}
+						if !ini_token(yes) || !ini_token(no) {
+							return Err(ManifestError::Invalid(format!(
+								"{id}: yes/no words for {name} must be a single line"
+							)));
+						}
+					}
+					_ => {
+						return Err(ManifestError::Invalid(format!(
+							"{id}: bool INI adapter for {name} must set both yes and no"
+						)));
+					}
+				}
 			}
 			if let ConfigField::Int {
 				default, min, max, ..
@@ -373,6 +405,27 @@ impl Manifest {
 			{
 				return Err(ManifestError::Invalid(format!(
 					"{id}: invalid default or bounds for {name}"
+				)));
+			}
+		}
+		let mut exe_relative = std::collections::BTreeSet::new();
+		for relative in &self.exe_relative {
+			let path = super::store::safe_relative(relative).map_err(|_| {
+				ManifestError::Invalid(format!("{id}: unsafe exe-relative path {relative}"))
+			})?;
+			let lower = path.to_ascii_lowercase();
+			if super::store::is_proxy_name(&path)
+				|| lower.ends_with(".dll")
+				|| lower.ends_with(".exe")
+				|| lower.ends_with(".bat")
+			{
+				return Err(ManifestError::Invalid(format!(
+					"{id}: exe-relative path {path} would publish another loader"
+				)));
+			}
+			if !exe_relative.insert(lower) {
+				return Err(ManifestError::Invalid(format!(
+					"{id}: duplicate exe-relative path {path}"
 				)));
 			}
 		}
@@ -524,13 +577,12 @@ values = [
 	}
 
 	#[test]
-	fn a_legacy_plugin_needs_a_status_rule() {
-		let text = UNICODE.replace("[status]", "[ignored]");
-		let error = Manifest::parse(&text).unwrap_err();
-		assert!(matches!(
-			error,
-			ManifestError::Parse(_) | ManifestError::Invalid(_)
-		));
+	fn a_legacy_plugin_may_omit_its_status_rule() {
+		let text = UNICODE.split("[status]").next().unwrap();
+		let manifest = Manifest::parse(text).unwrap();
+		assert!(manifest.status.is_none());
+		let unknown = UNICODE.replace("[status]", "[ignored]");
+		assert!(Manifest::parse(&unknown).is_err());
 	}
 
 	#[test]

@@ -1837,13 +1837,33 @@ fn materialize_cross_file_module(
 	}
 
 	// A database whose directories share one definition lookup cannot keep the
-	// same name in two of them: the loader would register one over the other,
-	// and the extracted rules do not record which directory it reads first.
-	if failure.is_none()
-		&& conflict.is_none()
-		&& let Some(collision) = cross_namespace_definition_collision(entry, input, &staged)
-	{
-		failure = Some((DeferredUnitReason::UnsupportedInput, collision));
+	// same name in two of them: the loader registers one over the other. When
+	// the loading rules record the registration order, the later directory's
+	// entry is the one every lookup returns — the merged mod behaves exactly as
+	// the game would read the mods unmerged, so the unit commits and the
+	// shadowing is reported for review. Without a recorded order the repeat is
+	// an engine evidence gap no merge may guess away.
+	if failure.is_none() && conflict.is_none() {
+		match cross_namespace_repeat(entry, input, &staged) {
+			CrossNamespaceRepeat::Unsupported(detail) => {
+				failure = Some((DeferredUnitReason::UnsupportedInput, detail));
+			}
+			CrossNamespaceRepeat::Resolved(shadowed) => {
+				for name in shadowed {
+					report.warnings.push(format!(
+						"shadowed definition: `{}` resolves to {}, the directory the game registers last; its entries in {} stay in the output but no lookup returns them",
+						name.name,
+						name.winner,
+						name.shadowed
+							.iter()
+							.map(|directory| directory.as_str())
+							.collect::<Vec<_>>()
+							.join(", "),
+					));
+				}
+			}
+			CrossNamespaceRepeat::Composed => {}
+		}
 	}
 
 	if let Some((deferred_reason, reason)) = failure {
@@ -2076,14 +2096,43 @@ fn stage_cross_file_module_namespace<'a>(
 /// declare all 32 goods. Where vanilla never repeats a name — static and event
 /// modifiers share none of their 375 and 3055 names — nothing shows what a
 /// mod-introduced repeat would do, so it is reported instead of guessed.
-fn cross_namespace_definition_collision(
+/// A name the merged output defines in more than one directory of one
+/// database, with the directory the engine resolves that repeat to.
+struct ShadowedName {
+	name: String,
+	/// The directory whose entry every lookup of the name returns.
+	winner: GamePathBuf,
+	/// The directories whose entries the engine never returns for the name.
+	shadowed: Vec<GamePathBuf>,
+}
+
+/// What the merged output does with a name two directories of one database
+/// both define.
+enum CrossNamespaceRepeat {
+	/// Nothing repeats, or vanilla itself repeats a name across the
+	/// directories, which proves the database composes them.
+	Composed,
+	/// The loading rules record the database's registration order, so every
+	/// repeat resolves to its last-registered directory. The entries the
+	/// engine never returns stay in the output, exactly as the game would
+	/// read the mods unmerged, and the shadowing is reported for review.
+	Resolved(Vec<ShadowedName>),
+	/// A repeat whose resolution the loading rules record nothing about.
+	Unsupported(String),
+}
+
+fn cross_namespace_repeat(
 	entry: &MergePlanEntry,
 	input: &ResolvedInput,
 	staged: &[StagedNamespaceOutput<'_>],
-) -> Option<String> {
+) -> CrossNamespaceRepeat {
 	if staged.len() < 2 {
-		return None;
+		return CrossNamespaceRepeat::Composed;
 	}
+	let Some(database) = entry.target.module_id() else {
+		return CrossNamespaceRepeat::Composed;
+	};
+	let database: &str = database.family_id.as_str();
 	let namespaces: Vec<&GamePath> = staged
 		.iter()
 		.map(|output| output.namespace.namespace_prefix())
@@ -2101,17 +2150,77 @@ fn cross_namespace_definition_collision(
 			)
 		})
 		.collect();
-	cross_namespace_collision_detail(
-		entry.target.module_id()?.family_id.as_str(),
-		&namespaces,
-		|namespace, base_game_only| {
-			if base_game_only {
-				declared_definition_keys(entry.target.namespace_input_paths(namespace), input, true)
-			} else {
-				merged_keys.get(namespace).cloned().unwrap_or_default()
-			}
-		},
-	)
+	let keys_for = |namespace: &GamePath, base_game_only: bool| {
+		if base_game_only {
+			declared_definition_keys(entry.target.namespace_input_paths(namespace), input, true)
+		} else {
+			merged_keys.get(namespace).cloned().unwrap_or_default()
+		}
+	};
+	// Vanilla repeating a name across these directories proves the database
+	// composes them, so no repeat is a conflict.
+	if !repeated_definitions(&namespaces, &keys_for, true).is_empty() {
+		return CrossNamespaceRepeat::Composed;
+	}
+	let collisions: BTreeMap<String, Vec<&GamePath>> =
+		repeated_definitions(&namespaces, &keys_for, false);
+	if collisions.is_empty() {
+		return CrossNamespaceRepeat::Composed;
+	}
+	let Some(order) = input
+		.game_version
+		.as_deref()
+		.and_then(crate::game::eu4::content::load_rules::load_rules_for_version)
+		.and_then(|rules| rules.same_name_registration_order(database))
+	else {
+		return CrossNamespaceRepeat::Unsupported(collision_detail(database, &collisions));
+	};
+	let mut resolved: Vec<ShadowedName> = Vec::new();
+	for (name, owners) in &collisions {
+		let mut ranked: Vec<(usize, &GamePath)> = owners
+			.iter()
+			.filter_map(|owner| {
+				order
+					.iter()
+					.position(|directory| directory.as_game_path() == *owner)
+					.map(|position| (position, *owner))
+			})
+			.collect();
+		// A staged directory the recorded order does not place leaves the
+		// repeat as unresolvable as a database with no rule at all.
+		if ranked.len() != owners.len() {
+			return CrossNamespaceRepeat::Unsupported(collision_detail(database, &collisions));
+		}
+		ranked.sort_by_key(|(position, _)| *position);
+		let (_, winner) = ranked.pop().expect("a collision has at least two owners");
+		resolved.push(ShadowedName {
+			name: name.clone(),
+			winner: winner.to_owned(),
+			shadowed: ranked
+				.iter()
+				.map(|(_, owner)| (*owner).to_owned())
+				.collect(),
+		});
+	}
+	CrossNamespaceRepeat::Resolved(resolved)
+}
+
+/// The names more than one of `namespaces` defines, and the namespaces
+/// holding them, either as vanilla does (`base_game_only`) or as the merged
+/// output would.
+fn repeated_definitions<N: Copy>(
+	namespaces: &[N],
+	keys_for: &impl Fn(N, bool) -> BTreeSet<String>,
+	base_game_only: bool,
+) -> BTreeMap<String, Vec<N>> {
+	let mut owners: BTreeMap<String, Vec<N>> = BTreeMap::new();
+	for &namespace in namespaces {
+		for definition in keys_for(namespace, base_game_only) {
+			owners.entry(definition).or_default().push(namespace);
+		}
+	}
+	owners.retain(|_, owners| owners.len() > 1);
+	owners
 }
 
 /// Top-level definition names in one namespace's merged output.
@@ -2133,30 +2242,10 @@ fn rendered_definition_keys(rendered: &str) -> BTreeSet<String> {
 	.collect()
 }
 
-fn cross_namespace_collision_detail<N: Copy + std::fmt::Display>(
+fn collision_detail<N: std::fmt::Display>(
 	database: &str,
-	namespaces: &[N],
-	keys_for: impl Fn(N, bool) -> BTreeSet<String>,
-) -> Option<String> {
-	let repeated_in = |base_game_only: bool| -> BTreeMap<String, Vec<N>> {
-		let mut owners: BTreeMap<String, Vec<N>> = BTreeMap::new();
-		for &namespace in namespaces {
-			for definition in keys_for(namespace, base_game_only) {
-				owners.entry(definition).or_default().push(namespace);
-			}
-		}
-		owners.retain(|_, owners| owners.len() > 1);
-		owners
-	};
-	// Vanilla repeating a name across these directories proves the database
-	// composes them, so no repeat in it is a conflict.
-	if !repeated_in(true).is_empty() {
-		return None;
-	}
-	let collisions: BTreeMap<String, Vec<N>> = repeated_in(false);
-	if collisions.is_empty() {
-		return None;
-	}
+	collisions: &BTreeMap<String, Vec<N>>,
+) -> String {
 	let detail: Vec<String> = collisions
 		.iter()
 		.map(|(definition, owners)| {
@@ -2164,10 +2253,24 @@ fn cross_namespace_collision_detail<N: Copy + std::fmt::Display>(
 			format!("{definition} (in {})", owners.join(" and "))
 		})
 		.collect();
-	Some(format!(
+	format!(
 		"database {database} defines {} in more than one directory. The analyzed base game never repeats a name across those directories, so nothing establishes whether the game composes the two or lets one directory replace the other, and the extracted loading rules record neither the registration behavior nor the directory read order",
 		detail.join(", ")
-	))
+	)
+}
+
+fn cross_namespace_collision_detail<N: Copy + std::fmt::Display>(
+	database: &str,
+	namespaces: &[N],
+	keys_for: impl Fn(N, bool) -> BTreeSet<String>,
+) -> Option<String> {
+	// Vanilla repeating a name across these directories proves the database
+	// composes them, so no repeat is a conflict.
+	if !repeated_definitions(namespaces, &keys_for, true).is_empty() {
+		return None;
+	}
+	let collisions: BTreeMap<String, Vec<N>> = repeated_definitions(namespaces, &keys_for, false);
+	(!collisions.is_empty()).then(|| collision_detail(database, &collisions))
 }
 
 /// A private staging directory for one namespace's output, named by the
@@ -4807,10 +4910,12 @@ mod tests {
 	}
 
 	#[test]
-	fn same_definition_in_two_directories_of_one_database_is_unsupported_not_a_user_choice() {
-		// The loader registers one of the two over the other, and the extracted
-		// rules do not record which directory it reads first. That is an engine
-		// evidence gap, so it must not be offered as a gameplay choice.
+	fn same_definition_in_two_directories_resolves_by_the_recorded_registration_order() {
+		// The extracted rules record that the game registers static_modifiers
+		// before event_modifiers and answers the first chain match, so a name
+		// both directories define resolves to event_modifiers — exactly how the
+		// game reads the mods unmerged. The unit commits and the shadowing is
+		// reported; nothing is offered as a gameplay choice.
 		let temp: TempDir = TempDir::new().unwrap();
 		let playlist_path: PathBuf = temp.path().join("playlist.json");
 		let out_dir: PathBuf = temp.path().join("out");
@@ -4845,24 +4950,29 @@ mod tests {
 		.unwrap();
 		let units = materialized.review.units();
 		assert_eq!(units.len(), 1);
-		assert_eq!(units[0].disposition, MergeDisposition::UnsupportedInput);
-		assert_ne!(units[0].disposition, MergeDisposition::NeedsUserChoice);
-		assert!(
-			units[0].summary.contains("shared_name")
-				&& units[0].summary.contains("never repeats a name"),
-			"{}",
-			units[0].summary
-		);
-		// Nothing is written when the unit cannot be merged.
-		assert!(units[0].output_paths.is_empty());
-		assert!(units[0].output_path.is_none());
-		for directory in ["static_modifiers", "event_modifiers"] {
+		assert_eq!(units[0].disposition, MergeDisposition::Safe);
+		// Each contribution lands in the file for its own directory; the game
+		// reads the event_modifiers one and never the static_modifiers one.
+		for (directory, contributor) in [
+			("static_modifiers", "tax_income = 1"),
+			("event_modifiers", "tax_income = 2"),
+		] {
+			let merged: String = fs::read_to_string(
+				out_dir.join(format!("common/{directory}/zzz_foch_{directory}.txt")),
+			)
+			.unwrap();
 			assert!(
-				!out_dir
-					.join(format!("common/{directory}/zzz_foch_{directory}.txt"))
-					.exists()
+				merged.contains("shared_name") && merged.contains(contributor),
+				"{merged}"
 			);
 		}
+		assert!(
+			materialized.report.warnings.iter().any(|warning| warning
+				.contains("`shared_name` resolves to common/event_modifiers")
+				&& warning.contains("common/static_modifiers")),
+			"{:?}",
+			materialized.report.warnings
+		);
 	}
 
 	#[test]

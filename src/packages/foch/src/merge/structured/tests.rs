@@ -3737,3 +3737,121 @@ fn an_edit_follows_a_chain_another_mod_moved() {
 	let else_at = output.find("else =").expect("the move keeps its else");
 	assert!(output.find("inherit = ARA").unwrap() > else_at, "{output}");
 }
+
+#[test]
+fn weight_modifier_entries_two_mods_add_stay_two_entries() {
+	// A weight block is one entry of a list the game reads together (the
+	// conditions say which entry it is, the numbers are its value), so two
+	// mods that each add their own entry add two: the entries must not
+	// canonicalize into boolean alternatives, whose `OR = { AND = { ... } }`
+	// would tuck the entry's factor where the game reads a trigger.
+	let path = "common/buildings/zzz_foch_buildings.txt";
+	let body = |second: &str| {
+		format!(
+			"marketplace = {{
+				ai_will_do = {{
+					factor = 1.5
+					modifier = {{ factor = 0 FROM = {{ num_of_loans = 1 }} }}
+					modifier = {{ {second} }}
+				}}
+			}}
+"
+		)
+	};
+	let base = parse_at(path, "");
+	let left = parse_at(path, &body("factor = 4.5 owner = { is_subject = yes }"));
+	let right = parse_at(path, &body("factor = 1000 is_capital = yes"));
+	let descriptor = eu4()
+		.classify_content_family(crate::model::GamePath::new(path).expect("valid game path"))
+		.expect("buildings descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge ai_will_do");
+
+	let output = emit(outcome.resolved_ast().expect("resolved"));
+	assert!(!output.contains("OR"), "{output}");
+	assert!(!output.contains("AND"), "{output}");
+	assert_eq!(output.matches("modifier = {").count(), 3, "{output}");
+	assert!(output.contains("factor = 4.5"), "{output}");
+	assert!(output.contains("factor = 1000"), "{output}");
+}
+
+#[test]
+fn parameterized_calls_two_mods_two_values_settle_by_load_order() {
+	// A trigger context calling a name no rule declares with a block of
+	// arguments (such as `num_of_ruler_traits = { amount = 3 }`) holds the
+	// call's value: two mods giving different arguments disagree about one
+	// value, which the game settles by reading the later one. The merge
+	// keeps the later call standing as its tentative result and reports the
+	// disagreement for review instead of folding the arguments into boolean
+	// alternatives, which would tuck them where the game reads triggers.
+	let path = "events/FlavorENG.txt";
+	let make = |amount: &str| {
+		parse_at(
+			path,
+			&format!(
+				"country_event = {{\n\
+				\tid = 1.1\n\
+				\ttrigger = {{\n\
+				\t\tnum_of_ruler_traits = {{ amount = {amount} }}\n\
+				\t}}\n\
+				}}\n"
+			),
+		)
+	};
+	let base = parse_at(path, "country_event = {\n\tid = 1.1\n}\n");
+	let left = make("3");
+	let right = make("2");
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome = merge_event_files(&base, &left, &right, policies).expect("merge events");
+	let output = emit(&outcome.tentative_ast().clone());
+	assert!(!output.contains("OR"), "{output}");
+	assert!(!output.contains("NOT"), "{output}");
+	// The later revision's value wins outright; the kernel records the
+	// settle as a decision, not a silent third shape.
+	assert_eq!(output.matches("num_of_ruler_traits").count(), 1, "{output}");
+	assert!(output.contains("amount = 2"), "{output}");
+	assert!(!output.contains("amount = 3"), "{output}");
+}
+
+#[test]
+fn not_wrapped_parameterized_call_keeps_its_wrapper() {
+	// Both mods add the same `NOT = { call = { argument } }` to one limit.
+	// The condition formulas treat a singleton block as a scope switch and
+	// would render the negation inside the chain — `call = { NOT = {
+	// argument } }` — where the game reads a trigger, not an argument. A
+	// parameterized call in the chain is one value, so the negation wraps
+	// the whole chain.
+	let path = "events/FlavorENG.txt";
+	let src = "country_event = {\n\
+	\tid = 1.1\n\
+	\toption = {\n\
+	\t\tname = opt\n\
+	\t\tif = {\n\
+	\t\t\tlimit = {\n\
+	\t\t\t\thas_dlc = \"Rights of Man\"\n\
+	\t\t\t\tNOT = {\n\
+	\t\t\t\t\tnum_of_ruler_traits = { amount = 3 }\n\
+	\t\t\t\t}\n\
+	\t\t\t}\n\
+	\t\t\tadd_ruler_personality = navigator_personality\n\
+	\t\t}\n\
+	\t}\n\
+	}\n";
+	let base = parse_at(path, "country_event = {\n\tid = 1.1\n}\n");
+	let left = parse_at(path, src);
+	let right = parse_at(path, src);
+	let policies = &eu4()
+		.classify_content_family(&crate::model::GamePathBuf::parse(path).expect("valid game path"))
+		.unwrap()
+		.merge_policies;
+	let outcome = merge_event_files(&base, &left, &right, policies).expect("merge events");
+	let output = emit(outcome.tentative_ast());
+	let not_at = output.find("NOT = {").expect("wrapper kept");
+	let call_at = output.find("num_of_ruler_traits").expect("call kept");
+	assert!(not_at < call_at, "NOT stays outside the call: {output}");
+	assert_eq!(output.matches("amount = 3").count(), 1, "{output}");
+}
