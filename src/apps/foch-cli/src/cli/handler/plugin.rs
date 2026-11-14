@@ -187,18 +187,29 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 }
 
 fn install_plugins(args: &PluginInstallArgs, config: &Config) -> HandlerResult {
-	let releases: Vec<&plugin::github::Release> = match (args.spec.as_deref(), args.all) {
-		(Some(spec), false) => vec![plugin::github::resolve(spec)?],
-		(None, true) => plugin::github::releases().iter().collect(),
+	let data_root = data_root();
+	let game_root = resolve_game_root(config, &Eu4);
+	match (args.spec.as_deref(), args.all) {
+		(Some(spec), false) => {
+			// Registry adapters first; any other owner/repo spec resolves
+			// its release dynamically with gh.
+			if let Ok(release) = plugin::github::resolve(spec) {
+				install_release(release, &data_root, game_root.as_deref())?;
+			} else {
+				let (repo, reference) = plugin::github::split_install_spec(spec)?;
+				let dynamic = plugin::github::resolve_dynamic(&repo, reference.as_deref())?;
+				install_dynamic_release(&dynamic, &data_root, game_root.as_deref())?;
+			}
+		}
+		(None, true) => {
+			for release in plugin::github::releases() {
+				install_release(release, &data_root, game_root.as_deref())?;
+			}
+		}
 		(Some(_), true) => {
 			return Err("pass a plugin spec or --all, not both".into());
 		}
 		(None, false) => return Err("pass a plugin spec or --all".into()),
-	};
-	let data_root = data_root();
-	let game_root = resolve_game_root(config, &Eu4);
-	for release in releases {
-		install_release(release, &data_root, game_root.as_deref())?;
 	}
 	Ok(0)
 }
@@ -208,9 +219,47 @@ fn install_release(
 	data_root: &Path,
 	game_root: Option<&Path>,
 ) -> HandlerResult {
+	install_from(
+		&release.repo,
+		&release.tag,
+		&release.asset,
+		data_root,
+		game_root,
+		|bytes| plugin::github::package_from_zip(bytes, release),
+	)
+}
+
+fn install_dynamic_release(
+	release: &plugin::github::DynamicRelease,
+	data_root: &Path,
+	game_root: Option<&Path>,
+) -> HandlerResult {
+	install_from(
+		&release.repo,
+		&release.tag,
+		&release.asset,
+		data_root,
+		game_root,
+		plugin::github::package_from_own_zip,
+	)
+}
+
+fn install_from(
+	repo: &str,
+	tag: &str,
+	asset_name: &str,
+	data_root: &Path,
+	game_root: Option<&Path>,
+	package: impl FnOnce(&[u8]) -> Result<plugin::store::ValidatedPackage, plugin::github::GithubError>,
+) -> HandlerResult {
 	let download_dir = fresh_download_dir()?;
 	let gh = std::process::Command::new("gh")
-		.args(plugin::github::download_args(release, &download_dir.0))
+		.args(plugin::github::download_args(
+			repo,
+			tag,
+			asset_name,
+			&download_dir.0,
+		))
 		.output()
 		.map_err(|error| -> Box<dyn std::error::Error> {
 			if error.kind() == std::io::ErrorKind::NotFound {
@@ -221,20 +270,13 @@ fn install_release(
 		})?;
 	if !gh.status.success() {
 		let stderr = String::from_utf8_lossy(&gh.stderr);
-		return Err(format!(
-			"gh release download failed for {}@{}: {stderr}",
-			release.repo, release.tag
-		)
-		.into());
+		return Err(format!("gh release download failed for {repo}@{tag}: {stderr}").into());
 	}
-	let asset = download_dir.0.join(&release.asset);
+	let asset = download_dir.0.join(asset_name);
 	let bytes = store::read_package_file(&asset).map_err(|_| {
-		std::io::Error::other(format!(
-			"gh did not write {} for {}@{}",
-			release.asset, release.repo, release.tag
-		))
+		std::io::Error::other(format!("gh did not write {asset_name} for {repo}@{tag}"))
 	})?;
-	let validated = plugin::github::package_from_zip(&bytes, release)?;
+	let validated = package(&bytes)?;
 	let destination = store::version_dir(&data_root.join("plugins/store"), &validated);
 	for source in std::iter::once(download_dir.0.as_path()).chain(game_root) {
 		plugin::deployment::ensure_outside_game(source, data_root)?;
@@ -246,17 +288,13 @@ fn install_release(
 	match plugin::install(&store_root, &validated)? {
 		plugin::Installed::New(path) => {
 			println!(
-				"Installed {id} {version} from {}@{} into {}",
-				release.repo,
-				release.tag,
+				"Installed {id} {version} from {repo}@{tag} into {}",
 				path.display()
 			);
 		}
 		plugin::Installed::AlreadyPresent(path) => {
 			println!(
-				"{id} {version} from {}@{} is already in the store ({})",
-				release.repo,
-				release.tag,
+				"{id} {version} from {repo}@{tag} is already in the store ({})",
 				path.display()
 			);
 		}
@@ -300,12 +338,72 @@ fn fresh_download_dir() -> std::io::Result<DownloadDir> {
 	))
 }
 
+/// Split a `plugin[@tag-or-hash]` reference: `Acture/x@v0.1.0` pins the
+/// version the tag names, `Acture/x@18304ae4` the installed version
+/// whose content hash matches. A bare `--version` argument may carry
+/// the same `@`-less forms.
+fn resolve_requested(
+	id: &str,
+	version: Option<&str>,
+	catalog: &BTreeMap<String, BTreeMap<Version, plugin::Manifest>>,
+) -> Result<(String, Option<Version>), Box<dyn std::error::Error>> {
+	let (id, mut reference) = match id.rsplit_once('@') {
+		// Ids cannot contain '@', so any split belongs to the reference.
+		Some((id, reference)) => (id.to_string(), Some(reference.to_string())),
+		None => (id.to_string(), None),
+	};
+	if let Some(version) = version
+		&& reference.is_none()
+	{
+		reference = Some(version.to_string());
+	}
+	let mut requested = None;
+	if reference.as_deref().is_some_and(|r| r != "latest")
+		&& let Some(reference) = reference
+	{
+		let versions = catalog
+			.get(&id)
+			.ok_or_else(|| std::io::Error::other(format!("no plugin with id {id} is installed")))?;
+		let tag = reference.strip_prefix('v').unwrap_or(&reference);
+		if let Ok(version) = Version::parse(tag) {
+			requested = Some(version);
+		} else if reference.len() >= 7 && reference.bytes().all(|b| b.is_ascii_hexdigit()) {
+			// A content-hash reference: match the installed version's
+			// build-metadata suffix.
+			let matched = versions
+				.keys()
+				.find(|version| {
+					version.build.as_str().len() >= reference.len()
+						&& version.build.as_str().ends_with(&reference)
+				})
+				.ok_or_else(|| {
+					std::io::Error::other(format!(
+						"no installed version of {id} matches hash {reference}"
+					))
+				})?;
+			requested = Some(matched.clone());
+		} else {
+			return Err(std::io::Error::other(format!(
+				"reference {reference:?} is neither a version tag nor a hash"
+			))
+			.into());
+		}
+	}
+	Ok((id, requested))
+}
+
 fn set_enabled(args: &PluginToggleArgs, enabled: bool) -> HandlerResult {
 	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let (catalog, _) = catalog_with_builtins(&store_root);
 
 	let path = plugin::paths::selections_path()?;
-	let requested = args.version.as_deref().map(Version::parse).transpose()?;
+	let (id, requested) = resolve_requested(&args.id, args.version.as_deref(), &catalog)?;
+	let args = PluginToggleArgs {
+		id,
+		version: None,
+		playset: args.playset.clone(),
+	};
+	let args = &args;
 	let version = Selections::update(&path, |selections| {
 		let mut chosen = selections.for_playset(&args.playset);
 		// Disabling an existing choice must remain possible after its installed

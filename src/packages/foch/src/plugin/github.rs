@@ -113,16 +113,130 @@ pub fn resolve(spec: &str) -> Result<&'static Release, GithubError> {
 	Ok(release)
 }
 
+/// A release resolved dynamically from a repository, outside the
+/// built-in registry: `foch plugin install Owner/Repo[@vX.Y.Z|@latest]`.
+#[derive(Clone, Debug)]
+pub struct DynamicRelease {
+	pub repo: String,
+	pub tag: String,
+	pub asset: String,
+}
+
+/// Resolve any repository's release with the GitHub CLI. `reference` is
+/// a tag, `latest` for the newest release, or `None` for latest.
+pub fn resolve_dynamic(repo: &str, reference: Option<&str>) -> Result<DynamicRelease, GithubError> {
+	let repo = repo.trim().trim_end_matches(".git");
+	if repo.is_empty()
+		|| !repo
+			.split('/')
+			.all(|segment| !segment.is_empty() && !segment.starts_with('.'))
+	{
+		return Err(GithubError::UnknownSpec(repo.to_string()));
+	}
+	let tag = match reference {
+		None | Some("latest") => None,
+		Some(tag)
+			if tag.starts_with('v') || tag.chars().next().is_some_and(|c| c.is_ascii_digit()) =>
+		{
+			Some(tag.to_string())
+		}
+		Some(other) => {
+			return Err(GithubError::UnknownSpec(format!(
+				"{repo}@{other}: install references are release tags or latest"
+			)));
+		}
+	};
+	let mut args = vec!["release".to_string(), "view".to_string()];
+	if let Some(tag) = &tag {
+		args.push(tag.clone());
+	}
+	args.push("--repo".to_string());
+	args.push(repo.to_string());
+	args.push("--json".to_string());
+	args.push("tagName,assets".to_string());
+	let output = std::process::Command::new("gh")
+		.args(&args)
+		.output()
+		.map_err(|_| GithubError::UnknownSpec("gh was not found on PATH".to_string()))?;
+	if !output.status.success() {
+		return Err(GithubError::UnknownSpec(format!(
+			"gh release view failed for {repo}: {}",
+			String::from_utf8_lossy(&output.stderr).trim()
+		)));
+	}
+	let view: serde_json::Value = serde_json::from_slice(&output.stdout)
+		.map_err(|error| GithubError::UnknownSpec(format!("gh returned invalid JSON: {error}")))?;
+	let resolved_tag = view
+		.get("tagName")
+		.and_then(|value| value.as_str())
+		.unwrap_or_default()
+		.to_string();
+	let short = repo.rsplit('/').next().unwrap_or_default();
+	let assets: Vec<String> = view
+		.get("assets")
+		.and_then(|value| value.as_array())
+		.map(|entries| {
+			entries
+				.iter()
+				.filter_map(|entry| entry.get("name").and_then(|name| name.as_str()))
+				.map(str::to_string)
+				.collect()
+		})
+		.unwrap_or_default();
+	// Prefer a zip whose name carries the repository's, then any zip.
+	let asset = assets
+		.iter()
+		.find(|name| name.ends_with(".zip") && name.to_lowercase().contains(&short.to_lowercase()))
+		.or_else(|| assets.iter().find(|name| name.ends_with(".zip")))
+		.ok_or_else(|| {
+			GithubError::UnknownSpec(format!(
+				"{repo}@{resolved_tag} ships no zip asset (assets: {})",
+				assets.join(", ")
+			))
+		})?
+		.clone();
+	Ok(DynamicRelease {
+		repo: repo.to_string(),
+		tag: resolved_tag,
+		asset,
+	})
+}
+
+/// Split an install spec into `(repo, reference)`; `owner/repo` URLs and
+/// `@latest` are accepted, and a missing reference means latest.
+pub fn split_install_spec(spec: &str) -> Result<(String, Option<String>), GithubError> {
+	let spec = spec.trim();
+	let (repo, reference) = match spec.rsplit_once('@') {
+		Some((repo, reference)) => (repo, Some(reference.to_string())),
+		None => (spec, None),
+	};
+	let mut repo = repo.trim().trim_end_matches(".git").to_string();
+	if let Some((_, after)) = repo.split_once("://") {
+		repo = after.to_string();
+	} else if let Some((_, after)) = repo.split_once(':') {
+		repo = after.to_string();
+	}
+	let segments: Vec<&str> = repo.split('/').filter(|s| !s.is_empty()).collect();
+	if segments.first().is_some_and(|first| first.contains('.')) {
+		// Strip the host of a full URL.
+		repo = segments[1.min(segments.len() - 1)..].join("/");
+	}
+	if repo.split('/').count() != 2 {
+		return Err(GithubError::UnknownSpec(spec.to_string()));
+	}
+	Ok((repo, reference))
+}
+
 /// Arguments for `gh release download`, excluding the `gh` program name.
-pub fn download_args(release: &Release, dest: &Path) -> Vec<OsString> {
+pub fn download_args(repo: &str, tag: &str, asset: &str, dest: &Path) -> Vec<OsString> {
 	vec![
 		"release".into(),
 		"download".into(),
-		release.tag.as_str().into(),
+		tag.into(),
 		"--repo".into(),
-		release.repo.as_str().into(),
+		repo.into(),
 		"--pattern".into(),
-		release.asset.as_str().into(),
+		asset.into(),
 		"--dir".into(),
 		dest.as_os_str().to_os_string(),
 		"--clobber".into(),
@@ -130,6 +244,8 @@ pub fn download_args(release: &Release, dest: &Path) -> Vec<OsString> {
 }
 
 /// Extract a release zip, drop its omitted paths, and bind the built-in adapter.
+/// A registry release: the zip carries a foreign DLL, the manifest is
+/// the built-in adapter's and `omit` drops adapter-bound files.
 pub fn package_from_zip(bytes: &[u8], release: &Release) -> Result<ValidatedPackage, GithubError> {
 	let mut entries = extract_zip(bytes)?;
 	let omit: BTreeSet<String> = release
@@ -145,6 +261,13 @@ pub fn package_from_zip(bytes: &[u8], release: &Release) -> Result<ValidatedPack
 	let manifest = super::builtin::adapter(&release.adapter)
 		.ok_or_else(|| GithubError::MissingAdapter(release.adapter.to_string()))?;
 	store::adapt(manifest, entries).map_err(GithubError::Import)
+}
+
+/// A repository's own release: the zip already carries its
+/// `foch-plugin.toml`, so the package validates as-is.
+pub fn package_from_own_zip(bytes: &[u8]) -> Result<ValidatedPackage, GithubError> {
+	let entries = extract_zip(bytes)?;
+	store::validate(entries).map_err(GithubError::Import)
 }
 
 fn repository(spec: &str) -> Option<(String, Option<String>)> {
@@ -501,6 +624,39 @@ fn zip(message: impl Into<String>) -> GithubError {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn install_specs_split_into_repo_and_reference() {
+		for (spec, repo, reference) in [
+			(
+				"Acture/eu4-dynamic-trade-blackhole@v0.1.0",
+				"Acture/eu4-dynamic-trade-blackhole",
+				Some("v0.1.0"),
+			),
+			(
+				"Acture/eu4-dynamic-trade-blackhole@latest",
+				"Acture/eu4-dynamic-trade-blackhole",
+				Some("latest"),
+			),
+			(
+				"Acture/eu4-dynamic-trade-blackhole",
+				"Acture/eu4-dynamic-trade-blackhole",
+				None,
+			),
+			(
+				"https://github.com/Acture/eu4-dynamic-trade-blackhole.git@v0.2.0",
+				"Acture/eu4-dynamic-trade-blackhole",
+				Some("v0.2.0"),
+			),
+		] {
+			let (resolved, tag) = split_install_spec(spec).unwrap();
+			assert_eq!(resolved, repo, "{spec}");
+			assert_eq!(tag.as_deref(), reference, "{spec}");
+		}
+		assert!(split_install_spec("not-a-repo").is_err());
+		assert!(split_install_spec("github.com/owner/repo/extra").is_err());
+	}
+
 	use flate2::Compression;
 	use flate2::write::DeflateEncoder;
 	use std::collections::BTreeMap;
@@ -640,7 +796,12 @@ mod tests {
 	#[test]
 	fn download_args_pin_the_release_asset() {
 		let release = resolve("matanki-saito/EU4dll").unwrap();
-		let args = download_args(release, Path::new("dest"));
+		let args = download_args(
+			&release.repo,
+			&release.tag,
+			&release.asset,
+			Path::new("dest"),
+		);
 		let text: Vec<String> = args
 			.iter()
 			.map(|arg| arg.to_string_lossy().into_owned())

@@ -26,6 +26,7 @@ include = [
 ]
 
 [dependencies]
+foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }
 bincode.workspace = true
 blake3 = "1.5.5"
 chardetng.workspace = true

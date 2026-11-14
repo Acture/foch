@@ -56,7 +56,7 @@ static int32_t init(const FochHostApi *host) {
 	FochStatus active = { sizeof(FochStatus), FOCH_STATE_ACTIVE, 0, { "native init", 11 } };
 	FochStr config = host->config_json(host);
 	FochStr dir = host->dir(host, FOCH_DIR_PLUGIN);
-	if (host->abi_major != 1 || !host->exe_base || !host->exe_size || dir.len == 0)
+	if (host->abi_major != 0 || !host->exe_base || !host->exe_size || dir.len == 0)
 		return FOCH_E_INVALID;
 	if (config.len != 17 || memcmp(config.ptr, "{\"greeting\":\"hi\"}", 17) != 0)
 		return FOCH_E_INVALID;

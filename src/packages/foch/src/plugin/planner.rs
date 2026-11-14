@@ -18,7 +18,7 @@ use semver::Version;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The ABI major versions this Foch build's host can load.
-pub const SUPPORTED_ABI_MAJOR: &[u32] = &[1];
+pub const SUPPORTED_ABI_MAJOR: &[u32] = &[0];
 
 /// The platform tuple of the only target this build supports.
 pub const WINDOWS_X64: &str = "windows-x86_64";
@@ -498,7 +498,7 @@ version = "{version}"
 platform = "windows-x86_64"
 game = "eu4"
 game_versions = "=1.37.5"
-abi_major = 1
+abi_major = 0
 [entry]
 kind = "native"
 path = "{id}.dll"

@@ -1,5 +1,5 @@
 /*
- * foch_plugin.h — the Foch native plugin interface, ABI 1.0.
+ * foch_plugin.h — the Foch native plugin interface, ABI 0.1.
  *
  * A plugin is a Windows x64 DLL that Foch's in-game host loads into eu4.exe
  * according to the frozen load plan of one launch. The plugin exports exactly
@@ -28,8 +28,8 @@
 extern "C" {
 #endif
 
-#define FOCH_ABI_MAJOR 1
-#define FOCH_ABI_MINOR 0
+#define FOCH_ABI_MAJOR 0
+#define FOCH_ABI_MINOR 1
 
 typedef struct FochStr {
 	const char *ptr;
