@@ -21,6 +21,7 @@ Used by:
 - foch 0.0.2 (https://github.com/Acture/foch)
 - foch-annotation 0.0.2 (https://github.com/Acture/foch)
 - foch-lsp 0.0.2 (https://github.com/Acture/foch)
+- foch-plugin-sdk 0.0.1 (https://github.com/Acture/foch)
 - foch-runner 0.0.2 (https://github.com/Acture/foch)
 - foch-test 0.0.2 (https://github.com/Acture/foch)
 - tree-sitter-paradox 0.3.0 (https://github.com/acture/tree-sitter-paradox.git)
