@@ -7,7 +7,7 @@ members = [
 	"src/packages/foch-runner",
 	"src/packages/foch-plugin-abi",
 	"src/packages/foch-eu4-host",
-	"src/packages/foch-plugin-trade-blackhole",
+	"plugins/eu4-dynamic-trade-blackhole",
 	"src/packages/foch-test",
 	"src/apps/foch-cli",
 	"src/apps/foch-desktop/src-tauri",

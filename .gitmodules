@@ -8,3 +8,6 @@
 	path = notes
 	url = https://github.com/Acture/obsidian-vault.git
 	branch = project/foch
+[submodule "plugins/eu4-dynamic-trade-blackhole"]
+	path = plugins/eu4-dynamic-trade-blackhole
+	url = git@github.com:Acture/eu4-dynamic-trade-blackhole.git
