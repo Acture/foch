@@ -73,6 +73,44 @@ const EVENT_META_KEYS: &[&str] = &[
 	"is_triggered_only",
 ];
 
+/// Player-facing numeric country stats, as (effect key, trigger key). The
+/// model starts every slot at `0`, adds accumulate, and the trigger family
+/// compares `>=`. The starting value is a modeling choice recorded in the
+/// catalog facts and in every trace: whether it matches the game's own
+/// start is the author's judgement until a base-snapshot seed lands.
+const NUMBER_SLOTS: &[(&str, &str)] = &[
+	("add_adm_power", "adm_power"),
+	("add_dip_power", "dip_power"),
+	("add_mil_power", "mil_power"),
+	("add_treasury", "treasury"),
+	("add_stability", "stability"),
+	("add_prestige", "prestige"),
+	("add_legitimacy", "legitimacy"),
+	("add_republican_tradition", "republican_tradition"),
+	("add_devotion", "devotion"),
+	("add_horde_unity", "horde_unity"),
+	("add_absolutism", "absolutism"),
+	("add_army_tradition", "army_tradition"),
+	("add_navy_tradition", "navy_tradition"),
+	("add_manpower", "manpower"),
+];
+
+/// The slot an effect key adds to.
+fn number_effect(key: &str) -> Option<&'static str> {
+	NUMBER_SLOTS
+		.iter()
+		.find(|(effect, _)| *effect == key)
+		.map(|(_, trigger)| *trigger)
+}
+
+/// The slot a trigger key compares.
+fn number_trigger(key: &str) -> Option<&'static str> {
+	NUMBER_SLOTS
+		.iter()
+		.find(|(_, trigger)| *trigger == key)
+		.map(|(_, trigger)| *trigger)
+}
+
 /// The scope aliases the model resolves.
 const ALIASES: &[&str] = &["THIS", "ROOT", "PREV", "FROM"];
 
@@ -390,6 +428,8 @@ struct World {
 	/// Every country the case has named: the model world `every_country`
 	/// iterates. It is not the full game country set.
 	named: BTreeSet<Tag>,
+	/// Player-facing numeric stats; absent entries read as the modeled 0.
+	numbers: BTreeMap<Tag, BTreeMap<&'static str, f64>>,
 	/// Observer mode: the run trace, recorded only when asked for.
 	trace: Vec<Observation>,
 	recording: bool,
@@ -619,6 +659,7 @@ impl<'a> Interpreter<'a> {
 			governments: BTreeMap::new(),
 			government_ranks: BTreeMap::new(),
 			named: BTreeSet::from([case.start.tag.clone()]),
+			numbers: BTreeMap::new(),
 			trace: Vec::new(),
 			recording: self.observe,
 		};
@@ -1597,6 +1638,31 @@ impl<'a> Interpreter<'a> {
 					},
 				);
 			}
+			other if number_effect(other).is_some() => {
+				let amount = match value {
+					AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} => text
+						.parse::<f64>()
+						.map_err(|_| format!("{where_}: {other} needs a number"))?,
+					_ => return Err(format!("{where_}: {other} needs a number")),
+				};
+				let slot = number_effect(other).expect("checked above");
+				let current = {
+					let slots = world.numbers.entry(ctx.current.clone()).or_default();
+					let value = slots.entry(slot).or_insert(0.0);
+					*value += amount;
+					*value
+				};
+				world.note(
+					&ctx.current,
+					Observed::SlotSet {
+						slot: slot.into(),
+						value: current.to_string(),
+					},
+				);
+			}
 			"declare_war_with_cb" => {
 				let AstValue::Block { items, .. } = value else {
 					return Err(format!("{where_}: declare_war_with_cb needs who = ..."));
@@ -1962,6 +2028,25 @@ impl<'a> Interpreter<'a> {
 					name_of(value).ok_or_else(|| format!("{where_}: tag needs a country tag"))?;
 				ctx.current.as_str() == wanted
 			}
+			other if number_trigger(other).is_some() => {
+				let wanted = match value {
+					AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} => text
+						.parse::<f64>()
+						.map_err(|_| format!("{where_}: {other} needs a number"))?,
+					_ => return Err(format!("{where_}: {other} needs a number")),
+				};
+				let slot = number_trigger(other).expect("checked above");
+				let observed = world
+					.numbers
+					.get(&ctx.current)
+					.and_then(|slots| slots.get(slot))
+					.copied()
+					.unwrap_or(0.0);
+				observed >= wanted
+			}
 			"offensive_war_with" | "defensive_war_with" => {
 				let other = Tag::parse(
 					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
@@ -2099,6 +2184,23 @@ impl<'a> Interpreter<'a> {
 			let AstStatement::Assignment { key, value, .. } = &statement else {
 				continue;
 			};
+			if let Some(slot) = number_trigger(key)
+				&& let AstValue::Scalar {
+					value: ScalarValue::Number(text),
+					..
+				} = value && let Ok(wanted) = text.parse::<f64>()
+			{
+				let observed = world
+					.numbers
+					.get(&ctx.current)
+					.and_then(|slots| slots.get(slot))
+					.copied()
+					.unwrap_or(0.0);
+				return format!(
+					"the model has {slot} = {observed} on {}, expected at least {wanted}",
+					ctx.current
+				);
+			}
 			let AstValue::Scalar { value, .. } = value else {
 				if key == "check_variable"
 					&& let Some((which, wanted)) = variable_args(value)
@@ -2662,9 +2764,12 @@ country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = 
 	fn unmodeled_primitives_refuse_with_all_reasons() {
 		let facts = ProjectFacts {
 			effects: Some(
-				["add_adm_power".to_string(), "every_country".to_string()]
-					.into_iter()
-					.collect(),
+				[
+					"add_ruler_personality".to_string(),
+					"every_country".to_string(),
+				]
+				.into_iter()
+				.collect(),
 			),
 			triggers: Some(["is_at_war".to_string()].into_iter().collect()),
 			..ProjectFacts::default()
@@ -2673,7 +2778,7 @@ country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = 
 			"events/cases.txt",
 			SourceKind::Inline,
 			r#"namespace = cases
-#test(time=1444.11.11, tag=SWE, name=numeric, effect={ add_adm_power = 50 }, expect={ adm_power = 50 })
+#test(time=1444.11.11, tag=SWE, name=numeric, effect={ add_ruler_personality = x }, expect={ adm_power = 50 })
 country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = {} }
 #test(time=1444.11.11, tag=SWE, name=war, expect={ is_at_war = yes })
 country_event = { id = cases.2 hidden = yes is_triggered_only = yes immediate = {} }
@@ -2688,25 +2793,18 @@ country_event = { id = cases.3 hidden = yes is_triggered_only = yes immediate = 
 			numeric
 				.unsupported
 				.iter()
-				.any(|reason| reason.contains("add_adm_power is a known game effect")),
+				.any(|reason| reason.contains("add_ruler_personality is a known game effect")),
 			"{:#?}",
 			numeric.unsupported
 		);
-		assert!(
-			numeric
-				.unsupported
-				.iter()
-				.any(|reason| reason.contains("adm_power is not a known trigger")),
-			"{:#?}",
-			numeric.unsupported
-		);
+		// adm_power is a modeled numeric trigger now; only the effect refuses.
 		// every_country is modeled over the case's named world: this one
 		// runs (it has no expectation, so it is a smoke), and the war case
 		// now fails on its own clause instead of refusing.
 		assert_eq!(case(&result, "iteration").outcome, Outcome::Smoke);
 		assert_eq!(case(&result, "war").outcome, Outcome::Fail);
 		assert_eq!(result.summary().unsupported, 1);
-		assert_eq!(result.exit_code(), 1, "the numeric case still refuses");
+		assert_eq!(result.exit_code(), 1, "the personality case still refuses");
 	}
 
 	#[test]
@@ -3394,6 +3492,42 @@ test = {
 			blocked.unsupported[0].contains("not allowed"),
 			"{:#?}",
 			blocked.unsupported
+		);
+	}
+
+	#[test]
+	fn numeric_slots_start_at_zero_and_accumulate() {
+		const CASES: &str = r#"test = {
+	name = treasury_run
+	time = 1444.11.11
+	tag = SWE
+	effect = { add_adm_power = 50 add_treasury = 25.5 add_treasury = 10 add_stability = 1 }
+	expect = {
+		adm_power = 50
+		treasury = 35
+		stability = 1
+		NOT = { prestige = 1 }
+	}
+}
+test = {
+	name = below_threshold
+	time = 1444.11.11
+	tag = SWE
+	effect = { add_prestige = 30 }
+	expect = { prestige = 50 }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let run = case(&result, "treasury_run");
+		assert_eq!(run.outcome, Outcome::Pass, "{:#?}", run);
+		let below = case(&result, "below_threshold");
+		assert_eq!(below.outcome, Outcome::Fail);
+		assert_eq!(
+			below.failures[0].message,
+			"the model has prestige = 30 on SWE, expected at least 50"
 		);
 	}
 

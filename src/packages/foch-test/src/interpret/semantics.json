@@ -245,6 +245,230 @@
 				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
 			},
 			"handler": null
+		},
+		"add_adm_power": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"adm_power": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_dip_power": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"dip_power": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_mil_power": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"mil_power": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_treasury": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"treasury": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_stability": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"stability": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_prestige": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"prestige": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_legitimacy": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"legitimacy": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_republican_tradition": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"republican_tradition": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_devotion": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"devotion": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_horde_unity": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"horde_unity": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_absolutism": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"absolutism": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_army_tradition": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"army_tradition": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_navy_tradition": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"navy_tradition": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"add_manpower": {
+			"kind": "effect",
+			"facts": {
+				"operation": "+=",
+				"modeled start": "0"
+			},
+			"handler": null
+		},
+		"manpower": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"modeled start": "0"
+			},
+			"handler": null
 		}
 	}
 }
