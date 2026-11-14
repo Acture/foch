@@ -16,6 +16,9 @@ pub enum SourceKind {
 	/// A file below `common/scripted_triggers/` or `common/scripted_effects/`,
 	/// whose top-level `name = { ... }` definitions the interpreter inlines.
 	Scripted,
+	/// A file below `common/decisions/`, whose top-level definitions become
+	/// decision targets for `take_decision` steps.
+	Decisions,
 }
 
 /// The caller reads files; the library only receives their text.

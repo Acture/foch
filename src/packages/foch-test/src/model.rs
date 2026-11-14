@@ -300,6 +300,12 @@ pub enum Step {
 		fields: Vec<(String, String)>,
 		span: SourceSpan,
 	},
+	/// Apply a collected decision: its `allow` gates the step and its
+	/// `effect` block runs in the case's country scope.
+	TakeDecision {
+		name: String,
+		span: SourceSpan,
+	},
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -375,6 +381,7 @@ impl TestCase {
 						.collect::<Vec<_>>()
 						.join(" ")
 				),
+				Step::TakeDecision { name, .. } => format!("take_decision {name}"),
 			})
 			.collect();
 		let identity = Identity {
@@ -400,6 +407,16 @@ pub struct Fixture {
 	/// Preconditions after `effect`; a false clause is a setup error, not a
 	/// failure of the tested behavior.
 	pub check: Vec<Clause>,
+}
+
+/// A top-level decision from `common/decisions/`, keyed by its definition
+/// name; the body holds potential/allow/effect as authored.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DecisionInfo {
+	pub name: String,
+	pub origin: SourceSpan,
+	/// The decision block without its outer braces.
+	pub body: String,
 }
 
 /// A top-level `country_event` seen while collecting, used to validate `fire`
