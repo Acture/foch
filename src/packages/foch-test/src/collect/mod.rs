@@ -11,8 +11,9 @@ mod tests_dir;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::model::{
-	AiMode, EventInfo, Fixture, FixtureName, GameDate, HelperFile, MAX_ADVANCE_DAYS, ScriptedDef,
-	ScriptedKind, SessionRequest, Start, Step, Tag, TestCase, valid_case_name, valid_mod_name,
+	AiMode, DecisionInfo, EventInfo, Fixture, FixtureName, GameDate, HelperFile, MAX_ADVANCE_DAYS,
+	ScriptedDef, ScriptedKind, SessionRequest, Start, Step, Tag, TestCase, valid_case_name,
+	valid_mod_name,
 };
 use crate::source::{SourceFile, SourceKind, SourceSpan};
 use foch::game::eu4::script::parser::{
@@ -35,6 +36,7 @@ pub struct Collection {
 	pub events: Vec<EventInfo>,
 	pub helpers: Vec<HelperFile>,
 	pub scripted: Vec<ScriptedDef>,
+	pub decisions: Vec<DecisionInfo>,
 	pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -92,6 +94,7 @@ pub fn collect(files: &[SourceFile]) -> Collection {
 			}
 			SourceKind::TestsDir => tests_dir::collect(file, statements, &mut collection),
 			SourceKind::Scripted => scripted_collect(file, statements, &mut collection),
+			SourceKind::Decisions => decisions_collect(file, statements, &mut collection),
 		}
 	}
 
@@ -128,6 +131,25 @@ pub fn collect(files: &[SourceFile]) -> Collection {
 	}
 	collection.fixtures = fixtures;
 	collection
+}
+
+/// Collect top-level decision definitions from `common/decisions/`.
+fn decisions_collect(file: &SourceFile, statements: &[AstStatement], out: &mut Collection) {
+	for statement in statements {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { span, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		out.decisions.push(DecisionInfo {
+			name: key.clone(),
+			origin: SourceSpan::from_parser(&file.path, span),
+			body: file.text[span.start.offset + 1..span.end.offset - 1].into(),
+		});
+	}
 }
 
 /// Collect top-level `name = { ... }` definitions from a scripted directory.
@@ -323,6 +345,7 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			event,
 			span: span(),
 		},
+		("take_decision", Some(Value::Text(name))) => Step::TakeDecision { name, span: span() },
 		_ => unreachable!("step types are fixed by the schema"),
 	}))
 }
@@ -330,6 +353,9 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Value>, String> {
 	match key {
 		"effect" | "expect" | "advance_days" => typed(file, key, value).map(Some),
+		"take_decision" => parse_value(&file.path, &file.text, value, ValueType::Text)
+			.map(Some)
+			.map_err(|message| format!("take_decision: {message}")),
 		"fire" => parse_value(&file.path, &file.text, value, ValueType::EventId)
 			.map(Some)
 			.map_err(|message| format!("fire: {message}")),

@@ -121,6 +121,130 @@
 				"behavior": "current scope tag equality"
 			},
 			"handler": null
+		},
+		"declare_war_with_cb": {
+			"kind": "effect",
+			"facts": {
+				"shape": "who + casus_belli",
+				"behavior": "attacker is the current scope"
+			},
+			"handler": null
+		},
+		"white_peace": {
+			"kind": "effect",
+			"facts": {
+				"shape": "tag",
+				"behavior": "clears the war between both sides"
+			},
+			"handler": null
+		},
+		"create_alliance": {
+			"kind": "effect",
+			"facts": {
+				"shape": "tag",
+				"behavior": "mutual alliance slot"
+			},
+			"handler": null
+		},
+		"break_alliance": {
+			"kind": "effect",
+			"facts": {
+				"shape": "tag",
+				"behavior": "clears the mutual alliance slot"
+			},
+			"handler": null
+		},
+		"change_religion": {
+			"kind": "effect",
+			"facts": {
+				"slot": "religion"
+			},
+			"handler": null
+		},
+		"change_primary_culture": {
+			"kind": "effect",
+			"facts": {
+				"slot": "primary culture"
+			},
+			"handler": null
+		},
+		"change_government": {
+			"kind": "effect",
+			"facts": {
+				"slot": "government"
+			},
+			"handler": null
+		},
+		"set_government_rank": {
+			"kind": "effect",
+			"facts": {
+				"slot": "government rank"
+			},
+			"handler": null
+		},
+		"every_country": {
+			"kind": "effect",
+			"facts": {
+				"behavior": "iterates the countries the case has named (the model world), not the full game set"
+			},
+			"handler": null
+		},
+		"offensive_war_with": {
+			"kind": "trigger",
+			"facts": {
+				"behavior": "current scope declared the war"
+			},
+			"handler": null
+		},
+		"defensive_war_with": {
+			"kind": "trigger",
+			"facts": {
+				"behavior": "the other side declared the war"
+			},
+			"handler": null
+		},
+		"is_at_war": {
+			"kind": "trigger",
+			"facts": {
+				"behavior": "current scope has any war"
+			},
+			"handler": null
+		},
+		"alliance_with": {
+			"kind": "trigger",
+			"facts": {
+				"behavior": "mutual alliance slot"
+			},
+			"handler": null
+		},
+		"religion": {
+			"kind": "trigger",
+			"facts": {
+				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+			},
+			"handler": null
+		},
+		"primary_culture": {
+			"kind": "trigger",
+			"facts": {
+				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+			},
+			"handler": null
+		},
+		"government": {
+			"kind": "trigger",
+			"facts": {
+				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+			},
+			"handler": null
+		},
+		"government_rank": {
+			"kind": "trigger",
+			"facts": {
+				"comparison": ">=",
+				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+			},
+			"handler": null
 		}
 	}
 }

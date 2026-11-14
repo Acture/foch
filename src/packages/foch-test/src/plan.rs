@@ -9,8 +9,8 @@ use crate::collect::Collection;
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::lint::LintResult;
 use crate::model::{
-	AiMode, CaseIndex, EventInfo, Fixture, FixtureName, GameDate, HelperFile, NodeId, ScriptedDef,
-	SessionRequest, Tag, TestCase,
+	AiMode, CaseIndex, DecisionInfo, EventInfo, Fixture, FixtureName, GameDate, HelperFile, NodeId,
+	ScriptedDef, SessionRequest, Tag, TestCase,
 };
 use crate::select::Selector;
 use crate::source::SourceSpan;
@@ -78,6 +78,7 @@ pub struct Expanded {
 	pub events: Vec<EventInfo>,
 	pub helpers: Vec<HelperFile>,
 	pub scripted: Vec<ScriptedDef>,
+	pub decisions: Vec<DecisionInfo>,
 }
 
 pub fn expand(
@@ -160,6 +161,7 @@ pub fn expand(
 		events: collection.events.clone(),
 		helpers: collection.helpers.clone(),
 		scripted: collection.scripted.clone(),
+		decisions: collection.decisions.clone(),
 	})
 }
 
@@ -298,6 +300,7 @@ pub struct Plan {
 	pub events: Vec<EventInfo>,
 	pub helpers: Vec<HelperFile>,
 	pub scripted: Vec<ScriptedDef>,
+	pub decisions: Vec<DecisionInfo>,
 }
 
 impl Plan {
@@ -334,6 +337,7 @@ impl Plan {
 			events: self.events.clone(),
 			helpers: self.helpers.clone(),
 			scripted: self.scripted.clone(),
+			decisions: self.decisions.clone(),
 		}
 	}
 }
@@ -453,5 +457,6 @@ pub fn group(expanded: Expanded, lint: &LintResult, options: &GroupOptions) -> P
 		events: expanded.events,
 		helpers: expanded.helpers,
 		scripted: expanded.scripted,
+		decisions: expanded.decisions,
 	}
 }

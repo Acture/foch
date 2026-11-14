@@ -346,6 +346,23 @@ fn observation_label(observation: &foch_test::Observed) -> String {
 		foch_test::Observed::VariableSet { which, value } => {
 			format!("{which} = {value}")
 		}
+		foch_test::Observed::SlotSet { slot, value } => format!("{slot} = {value}"),
+		foch_test::Observed::WarChanged { with, at_war } => {
+			let verb = if *at_war {
+				"declare war on"
+			} else {
+				"peace with"
+			};
+			format!("{verb} {with}")
+		}
+		foch_test::Observed::AllianceChanged { with, allied } => {
+			let verb = if *allied {
+				"ally"
+			} else {
+				"break alliance with"
+			};
+			format!("{verb} {with}")
+		}
 	}
 }
 
@@ -477,6 +494,8 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 			|| relative.starts_with("common/scripted_effects/")
 		{
 			SourceKind::Scripted
+		} else if relative.starts_with("common/decisions/") {
+			SourceKind::Decisions
 		} else {
 			SourceKind::Inline
 		};
@@ -540,6 +559,7 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 				events: Vec::new(),
 				helpers: Vec::new(),
 				scripted: Vec::new(),
+				decisions: Vec::new(),
 			}
 		}
 	};
@@ -703,6 +723,7 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 		let mut files = event_files(&root)?;
 		files.extend(tests_files(&root)?);
 		files.extend(scripted_files(&root)?);
+		files.extend(directory_files(&root, "common/decisions")?);
 		if !files.contains(&path) {
 			files.push(path);
 		}
@@ -721,6 +742,7 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 	let mut files = event_files(&root)?;
 	files.extend(tests_files(&root)?);
 	files.extend(scripted_files(&root)?);
+	files.extend(directory_files(&root, "common/decisions")?);
 	Ok((root, files))
 }
 
@@ -729,6 +751,15 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 fn scripted_files(root: &Path) -> Result<Vec<PathBuf>> {
 	let mut files = Vec::new();
 	for name in ["common/scripted_triggers", "common/scripted_effects"] {
+		files.extend(directory_files(root, name)?);
+	}
+	Ok(files)
+}
+
+/// `.txt` files below one mod content directory, refusing symlinks.
+fn directory_files(root: &Path, name: &str) -> Result<Vec<PathBuf>> {
+	let mut files = Vec::new();
+	{
 		let directory = root.join(name);
 		match fs::symlink_metadata(&directory) {
 			Ok(metadata) if metadata.file_type().is_symlink() => {

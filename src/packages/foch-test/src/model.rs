@@ -275,10 +275,26 @@ pub struct Start {
 #[serde(tag = "step", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Step {
-	Effect { block: NativeBlock },
-	Fire { event: EventId, span: SourceSpan },
-	AdvanceDays { days: u32, span: SourceSpan },
-	Expect { clauses: Vec<Clause> },
+	Effect {
+		block: NativeBlock,
+	},
+	Fire {
+		event: EventId,
+		span: SourceSpan,
+	},
+	AdvanceDays {
+		days: u32,
+		span: SourceSpan,
+	},
+	Expect {
+		clauses: Vec<Clause>,
+	},
+	/// Apply a collected decision: its `allow` gates the step and its
+	/// `effect` block runs in the case's country scope.
+	TakeDecision {
+		name: String,
+		span: SourceSpan,
+	},
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -346,6 +362,7 @@ impl TestCase {
 						clauses.iter().map(|clause| clause.text.as_str()).collect();
 					format!("expect {}", clauses.join("\n"))
 				}
+				Step::TakeDecision { name, .. } => format!("take_decision {name}"),
 			})
 			.collect();
 		let identity = Identity {
@@ -371,6 +388,16 @@ pub struct Fixture {
 	/// Preconditions after `effect`; a false clause is a setup error, not a
 	/// failure of the tested behavior.
 	pub check: Vec<Clause>,
+}
+
+/// A top-level decision from `common/decisions/`, keyed by its definition
+/// name; the body holds potential/allow/effect as authored.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DecisionInfo {
+	pub name: String,
+	pub origin: SourceSpan,
+	/// The decision block without its outer braces.
+	pub body: String,
 }
 
 /// A top-level `country_event` seen while collecting, used to validate `fire`

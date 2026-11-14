@@ -25,8 +25,8 @@ pub mod pins;
 
 use crate::lint::ProjectFacts;
 use crate::model::{
-	AiMode, CaseIndex, Clause, ContentId, EventId, EventInfo, GameDate, NativeBlock, NodeId, RunId,
-	ScriptedDef, ScriptedKind, Start, Step, Tag,
+	AiMode, CaseIndex, Clause, ContentId, DecisionInfo, EventId, EventInfo, GameDate, NativeBlock,
+	NodeId, RunId, ScriptedDef, ScriptedKind, Start, Step, Tag,
 };
 use crate::plan::{NotRun, NotRunReason, Plan, PlannedCase};
 use crate::source::SourceSpan;
@@ -157,6 +157,19 @@ pub enum Observed {
 	VariableSet {
 		which: String,
 		value: f64,
+	},
+	/// A named slot write: religion, culture, government, government rank.
+	SlotSet {
+		slot: String,
+		value: String,
+	},
+	WarChanged {
+		with: Tag,
+		at_war: bool,
+	},
+	AllianceChanged {
+		with: Tag,
+		allied: bool,
 	},
 }
 
@@ -329,6 +342,11 @@ pub fn interpret(
 			.iter()
 			.map(|definition| (definition.name.as_str(), definition))
 			.collect(),
+		decisions: plan
+			.decisions
+			.iter()
+			.map(|decision| (decision.name.as_str(), decision))
+			.collect(),
 		observe: options.observe,
 	};
 	Interpretation {
@@ -358,6 +376,20 @@ struct World {
 	global_flags: BTreeSet<String>,
 	scheduled: BTreeMap<GameDate, Vec<(EventId, ScopeCtx)>>,
 	deliveries: usize,
+	/// Wars, stored as the attacker facing each defender; both directions
+	/// answer the trigger family (offensive for the attacker,
+	/// defensive for the defender).
+	wars: BTreeMap<Tag, BTreeSet<Tag>>,
+	alliances: BTreeMap<Tag, BTreeSet<Tag>>,
+	/// Enum and number slots a case can write; absent means unknown, and an
+	/// unwritten read refuses rather than guessing a starting value.
+	religions: BTreeMap<Tag, String>,
+	cultures: BTreeMap<Tag, String>,
+	governments: BTreeMap<Tag, String>,
+	government_ranks: BTreeMap<Tag, i64>,
+	/// Every country the case has named: the model world `every_country`
+	/// iterates. It is not the full game country set.
+	named: BTreeSet<Tag>,
 	/// Observer mode: the run trace, recorded only when asked for.
 	trace: Vec<Observation>,
 	recording: bool,
@@ -509,6 +541,8 @@ struct Interpreter<'a> {
 	/// The mod's scripted definitions, inlined wherever their names appear in
 	/// the matching kind of block.
 	scripted: BTreeMap<&'a str, &'a ScriptedDef>,
+	/// The mod's decisions, applied by `take_decision` steps.
+	decisions: BTreeMap<&'a str, &'a DecisionInfo>,
 	/// Observer mode: record each case's run trace.
 	observe: bool,
 }
@@ -578,6 +612,13 @@ impl<'a> Interpreter<'a> {
 			global_flags: BTreeSet::new(),
 			scheduled: BTreeMap::new(),
 			deliveries: 0,
+			wars: BTreeMap::new(),
+			alliances: BTreeMap::new(),
+			religions: BTreeMap::new(),
+			cultures: BTreeMap::new(),
+			governments: BTreeMap::new(),
+			government_ranks: BTreeMap::new(),
+			named: BTreeSet::from([case.start.tag.clone()]),
 			trace: Vec::new(),
 			recording: self.observe,
 		};
@@ -643,6 +684,7 @@ impl<'a> Interpreter<'a> {
 				Step::Fire { .. } => "fire",
 				Step::AdvanceDays { .. } => "advance_days",
 				Step::Expect { .. } => "expect",
+				Step::TakeDecision { .. } => "take_decision",
 			};
 			world.note(
 				&case.start.tag,
@@ -675,6 +717,16 @@ impl<'a> Interpreter<'a> {
 				}
 				Step::AdvanceDays { days, .. } => {
 					if let Err(reason) = self.advance(&mut world, *days) {
+						return unsupported(
+							vec![reason],
+							failures,
+							passed,
+							std::mem::take(&mut world.trace),
+						);
+					}
+				}
+				Step::TakeDecision { name, .. } => {
+					if let Err(reason) = self.take_decision(&mut world, &root, name) {
 						return unsupported(
 							vec![reason],
 							failures,
@@ -724,6 +776,67 @@ impl<'a> Interpreter<'a> {
 			notes,
 			trace: world.trace,
 		}
+	}
+
+	/// Apply a collected decision: `potential` and `allow` gate the step (a
+	/// decision the country cannot currently take is a setup error), then
+	/// its `effect` block runs in the case's country scope.
+	fn take_decision(&self, world: &mut World, ctx: &ScopeCtx, name: &str) -> Result<(), String> {
+		let decision = self
+			.decisions
+			.get(name)
+			.ok_or_else(|| format!("take_decision {name}: no such decision was collected"))?;
+		for statement in parse(&decision.body) {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				continue;
+			};
+			if (key == "potential" || key == "allow")
+				&& let AstValue::Block { items, .. } = &value
+				&& !items.is_empty()
+			{
+				let gate = format!(
+					"{} {}",
+					if key == "potential" {
+						"unavailable"
+					} else {
+						"not allowed"
+					},
+					"to take"
+				);
+				if !self.eval_statements(world, ctx, items, &decision.origin, 0)? {
+					world.note(
+						&ctx.current,
+						Observed::SlotSet {
+							slot: "decision".into(),
+							value: format!("{name}: {gate}"),
+						},
+					);
+					return Err(format!(
+						"take_decision {name}: the country is {} — the decision's {key} 						 block does not hold in the model",
+						gate
+					));
+				}
+			}
+		}
+		world.note(
+			&ctx.current,
+			Observed::SlotSet {
+				slot: "decision".into(),
+				value: name.to_string(),
+			},
+		);
+		for statement in parse(&decision.body) {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				continue;
+			};
+			if key == "effect"
+				&& let AstValue::Block { items, .. } = &value
+			{
+				let mut visited = BTreeSet::new();
+				self.exec_statements(world, ctx, items, &decision.origin, &mut visited)?;
+			}
+		}
+		Ok(())
 	}
 
 	/// Advance the calendar and deliver every event due by the new date, in
@@ -824,6 +937,9 @@ impl<'a> Interpreter<'a> {
 				}
 				Step::Fire { event, span } => {
 					self.scan_event(event, span, scope, &mut seen, reasons);
+				}
+				Step::TakeDecision { name, span } => {
+					self.scan_decision(name, span, scope, &mut seen, reasons);
 				}
 				Step::AdvanceDays { .. } => {}
 			}
@@ -1076,6 +1192,55 @@ impl<'a> Interpreter<'a> {
 		// nested script; its shape is validated at execution.
 		if let Err(reason) = self.catalog.permits(key) {
 			reasons.push(self.refusal(key, &reason, context, where_));
+		}
+	}
+
+	/// Scan a collected decision: `potential`/`allow` are conditions, the
+	/// `effect` block holds effects; other keys refuse.
+	fn scan_decision(
+		&self,
+		name: &str,
+		span: &SourceSpan,
+		scope: ScanScope,
+		seen: &mut BTreeSet<String>,
+		reasons: &mut Vec<String>,
+	) {
+		let Some(decision) = self.decisions.get(name) else {
+			reasons.push(format!(
+				"{span}: take_decision {name}: no such decision was collected"
+			));
+			return;
+		};
+		for statement in parse(&decision.body) {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				continue;
+			};
+			let AstValue::Block { items, .. } = &value else {
+				continue;
+			};
+			if key == "effect" {
+				self.scan_statements(
+					items,
+					&decision.origin,
+					Context::Effect,
+					scope,
+					seen,
+					reasons,
+				);
+			} else if key == "potential" || key == "allow" {
+				self.scan_statements(
+					items,
+					&decision.origin,
+					Context::Condition,
+					scope,
+					seen,
+					reasons,
+				);
+			} else if !matches!(key.as_str(), "ai_will_do" | "alert" | "button") {
+				reasons.push(format!(
+					"{span}: decision {name} has {key}, which the offline model does not execute"
+				));
+			}
 		}
 	}
 
@@ -1363,6 +1528,7 @@ impl<'a> Interpreter<'a> {
 				})?,
 				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
 			};
+			world.named.insert(tag.clone());
 			return self.exec_statements(world, &ctx.enter(&tag), items, where_, visited);
 		}
 		match key {
@@ -1430,6 +1596,158 @@ impl<'a> Interpreter<'a> {
 						value,
 					},
 				);
+			}
+			"declare_war_with_cb" => {
+				let AstValue::Block { items, .. } = value else {
+					return Err(format!("{where_}: declare_war_with_cb needs who = ..."));
+				};
+				let mut who = None;
+				for statement in items {
+					let AstStatement::Assignment { key, value, .. } = statement else {
+						continue;
+					};
+					if key == "who" {
+						who = Tag::parse(name_of(value).ok_or_else(|| {
+							format!("{where_}: declare_war_with_cb needs who = <tag>")
+						})?)
+						.ok();
+					}
+				}
+				let who =
+					who.ok_or_else(|| format!("{where_}: declare_war_with_cb needs who = <tag>"))?;
+				world.named.insert(who.clone());
+				world
+					.wars
+					.entry(ctx.current.clone())
+					.or_default()
+					.insert(who.clone());
+				world.note(
+					&ctx.current,
+					Observed::WarChanged {
+						with: who,
+						at_war: true,
+					},
+				);
+			}
+			"white_peace" => {
+				let other = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: white_peace needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				world.named.insert(other.clone());
+				if let Some(set) = world.wars.get_mut(&ctx.current) {
+					set.remove(&other);
+				}
+				if let Some(set) = world.wars.get_mut(&other) {
+					set.remove(&ctx.current);
+				}
+				world.note(
+					&ctx.current,
+					Observed::WarChanged {
+						with: other,
+						at_war: false,
+					},
+				);
+			}
+			"create_alliance" | "break_alliance" => {
+				let other = Tag::parse(
+					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				world.named.insert(other.clone());
+				let allied = key == "create_alliance";
+				let set = world.alliances.entry(ctx.current.clone()).or_default();
+				if allied {
+					set.insert(other.clone());
+				} else {
+					set.remove(&other);
+				}
+				let set = world.alliances.entry(other.clone()).or_default();
+				if allied {
+					set.insert(ctx.current.clone());
+				} else {
+					set.remove(&ctx.current);
+				}
+				world.note(
+					&ctx.current,
+					Observed::AllianceChanged {
+						with: other,
+						allied,
+					},
+				);
+			}
+			"change_religion" | "change_primary_culture" | "change_government" => {
+				let slot = match key {
+					"change_religion" => ("religions", "religion"),
+					"change_primary_culture" => ("cultures", "culture"),
+					_ => ("governments", "government"),
+				};
+				let value = name_of(value)
+					.ok_or_else(|| format!("{where_}: {key} needs a name"))?
+					.to_string();
+				match slot.0 {
+					"religions" => world.religions.insert(ctx.current.clone(), value.clone()),
+					"cultures" => world.cultures.insert(ctx.current.clone(), value.clone()),
+					_ => world.governments.insert(ctx.current.clone(), value.clone()),
+				};
+				world.note(
+					&ctx.current,
+					Observed::SlotSet {
+						slot: slot.1.into(),
+						value,
+					},
+				);
+			}
+			"set_government_rank" => {
+				let rank = match value {
+					AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} => text
+						.parse::<i64>()
+						.map_err(|_| format!("{where_}: set_government_rank needs a number"))?,
+					_ => return Err(format!("{where_}: set_government_rank needs a number")),
+				};
+				world.government_ranks.insert(ctx.current.clone(), rank);
+				world.note(
+					&ctx.current,
+					Observed::SlotSet {
+						slot: "government_rank".into(),
+						value: rank.to_string(),
+					},
+				);
+			}
+			"every_country" => {
+				let AstValue::Block { items, .. } = value else {
+					return Err(format!("{where_}: every_country must be a block"));
+				};
+				// The limit is optional here; multiple ones refuse.
+				let (limit, body) = match split_limit(items) {
+					Some(split) => split,
+					None if !items.iter().any(|statement| {
+						matches!(
+							statement,
+							AstStatement::Assignment { key, .. } if key == "limit"
+						)
+					}) =>
+					{
+						(Vec::new(), items.to_vec())
+					}
+					None => {
+						return Err(format!(
+							"{where_}: every_country needs exactly one limit block"
+						));
+					}
+				};
+				// The model world holds only the countries the case has
+				// named; that is what this iteration covers.
+				for tag in world.named.clone() {
+					let scope = ctx.enter(&tag);
+					if limit.is_empty() || self.eval_statements(world, &scope, &limit, where_, 0)? {
+						self.exec_statements(world, &scope, &body, where_, visited)?;
+					}
+				}
 			}
 			"country_event" => {
 				let args =
@@ -1643,6 +1961,77 @@ impl<'a> Interpreter<'a> {
 				let wanted =
 					name_of(value).ok_or_else(|| format!("{where_}: tag needs a country tag"))?;
 				ctx.current.as_str() == wanted
+			}
+			"offensive_war_with" | "defensive_war_with" => {
+				let other = Tag::parse(
+					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				let (attacker, defender) = if key == "offensive_war_with" {
+					(&ctx.current, &other)
+				} else {
+					(&other, &ctx.current)
+				};
+				world
+					.wars
+					.get(attacker)
+					.is_some_and(|set| set.contains(defender))
+			}
+			"is_at_war" => {
+				let wanted =
+					boolean(value).ok_or_else(|| format!("{where_}: is_at_war needs yes or no"))?;
+				let at_war = world
+					.wars
+					.get(&ctx.current)
+					.is_some_and(|set| !set.is_empty());
+				at_war == wanted
+			}
+			"alliance_with" => {
+				let other = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: alliance_with needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				world
+					.alliances
+					.get(&ctx.current)
+					.is_some_and(|set| set.contains(&other))
+			}
+			"religion" | "primary_culture" | "government" => {
+				let wanted = name_of(value)
+					.ok_or_else(|| format!("{where_}: {key} needs a name"))?
+					.to_string();
+				let known = match key {
+					"religion" => world.religions.get(&ctx.current),
+					"primary_culture" => world.cultures.get(&ctx.current),
+					_ => world.governments.get(&ctx.current),
+				};
+				// Without a base-snapshot seed the starting value is
+				// unknown: reading it before the case writes one refuses
+				// rather than guessing.
+				let Some(current) = known else {
+					return Err(format!(
+						"{where_}: {key} is unknown until the case writes it or a 						 base-snapshot seed supplies it"
+					));
+				};
+				*current == wanted
+			}
+			"government_rank" => {
+				let wanted = match value {
+					AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} => text
+						.parse::<i64>()
+						.map_err(|_| format!("{where_}: government_rank needs a number"))?,
+					_ => return Err(format!("{where_}: government_rank needs a number")),
+				};
+				let Some(current) = world.government_ranks.get(&ctx.current) else {
+					return Err(format!(
+						"{where_}: government_rank is unknown until the case writes it or a 						 base-snapshot seed supplies it"
+					));
+				};
+				*current >= wanted
 			}
 			"AND" | "OR" | "NOT" | "NOR" | "NAND" | "hidden_trigger" => {
 				let AstValue::Block { items, .. } = value else {
@@ -2311,15 +2700,13 @@ country_event = { id = cases.3 hidden = yes is_triggered_only = yes immediate = 
 			"{:#?}",
 			numeric.unsupported
 		);
-		let iteration = case(&result, "iteration");
-		assert_eq!(iteration.outcome, Outcome::Unsupported);
-		assert!(
-			iteration.unsupported[0].contains("every_country"),
-			"{:#?}",
-			iteration.unsupported
-		);
-		assert_eq!(result.summary().unsupported, 3);
-		assert_eq!(result.exit_code(), 1, "nothing was interpreted");
+		// every_country is modeled over the case's named world: this one
+		// runs (it has no expectation, so it is a smoke), and the war case
+		// now fails on its own clause instead of refusing.
+		assert_eq!(case(&result, "iteration").outcome, Outcome::Smoke);
+		assert_eq!(case(&result, "war").outcome, Outcome::Fail);
+		assert_eq!(result.summary().unsupported, 1);
+		assert_eq!(result.exit_code(), 1, "the numeric case still refuses");
 	}
 
 	#[test]
@@ -2860,6 +3247,154 @@ test = {
 			.position(|kind| *kind == "country_flag_set")
 			.unwrap();
 		assert!(delivery < flag, "{kinds:?}");
+	}
+
+	#[test]
+	fn wars_alliances_and_slots_round_trip() {
+		const CASES: &str = r#"test = {
+	name = diplomacy
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		declare_war_with_cb = { who = DAN casus_belli = cb_restore_personal_union }
+		create_alliance = NOR
+		change_religion = protestant
+		change_primary_culture = swedish
+		change_government = republic
+		set_government_rank = 2
+	}
+	expect = {
+		offensive_war_with = DAN
+		DAN = { defensive_war_with = SWE }
+		is_at_war = yes
+		alliance_with = NOR
+		religion = protestant
+		primary_culture = swedish
+		government = republic
+		government_rank = 2
+	}
+	effect = { white_peace = DAN break_alliance = NOR }
+	expect = {
+		NOT = { offensive_war_with = DAN }
+		is_at_war = no
+		NOT = { alliance_with = NOR }
+	}
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let diplomacy = case(&result, "diplomacy");
+		assert_eq!(diplomacy.outcome, Outcome::Pass, "{:#?}", diplomacy);
+	}
+
+	#[test]
+	fn unwritten_slot_reads_refuse() {
+		const CASES: &str = r#"test = {
+	name = unseeded
+	time = 1444.11.11
+	tag = SWE
+	expect = { religion = catholic }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let unseeded = case(&result, "unseeded");
+		assert_eq!(unseeded.outcome, Outcome::Unsupported);
+		assert!(
+			unseeded.unsupported[0].contains("unknown until the case writes it"),
+			"{:#?}",
+			unseeded.unsupported
+		);
+	}
+
+	#[test]
+	fn every_country_iterates_the_named_world() {
+		const CASES: &str = r#"test = {
+	name = iterate_world
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		DAN = { set_country_flag = dan_seen }
+		every_country = { limit = { NOT = { tag = SWE } } set_country_flag = iterated }
+	}
+	expect = {
+		DAN = { has_country_flag = iterated has_country_flag = dan_seen }
+		NOT = { has_country_flag = iterated }
+	}
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let iterate = case(&result, "iterate_world");
+		assert_eq!(iterate.outcome, Outcome::Pass, "{:#?}", iterate);
+	}
+
+	const DECISION_FILE: &str = r#"unify_japan_test = {
+	potential = { tag = SWE }
+	allow = { has_country_flag = ready }
+	effect = { set_country_flag = decided }
+}"#;
+
+	#[test]
+	fn decisions_apply_their_effect_when_allowed() {
+		const CASES: &str = r#"test = {
+	name = takes_decision
+	time = 1444.11.11
+	tag = SWE
+	effect = { set_country_flag = ready }
+	take_decision = unify_japan_test
+	expect = { has_country_flag = decided }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"common/decisions/test.txt",
+					SourceKind::Decisions,
+					DECISION_FILE,
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let takes = case(&result, "takes_decision");
+		assert_eq!(takes.outcome, Outcome::Pass, "{:#?}", takes);
+	}
+
+	#[test]
+	fn a_decision_whose_allow_fails_refuses_with_the_reason() {
+		const CASES: &str = r#"test = {
+	name = blocked_decision
+	time = 1444.11.11
+	tag = SWE
+	take_decision = unify_japan_test
+	expect = { always = yes }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"common/decisions/test.txt",
+					SourceKind::Decisions,
+					DECISION_FILE,
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let blocked = case(&result, "blocked_decision");
+		assert_eq!(blocked.outcome, Outcome::Unsupported);
+		assert!(
+			blocked.unsupported[0].contains("not allowed"),
+			"{:#?}",
+			blocked.unsupported
+		);
 	}
 
 	/// The implemented comparison matches the fact recorded in the catalog,

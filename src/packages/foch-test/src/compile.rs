@@ -301,6 +301,7 @@ pub fn compile(
 		for (step_index, step) in case.steps.iter().enumerate() {
 			let step_index = step_index as u32;
 			match step {
+				Step::TakeDecision { .. } => unreachable!("refused before writing"),
 				Step::AdvanceDays { days, .. } => {
 					*pending_days.get_or_insert(0) += days;
 					continue;
@@ -330,6 +331,14 @@ pub fn compile(
 					}
 				}
 				Step::AdvanceDays { .. } => unreachable!("handled above"),
+				Step::TakeDecision { name, span } => {
+					return Err(fail(
+						Some(span),
+						format!(
+							"the built-in runner cannot take decisions yet; run {name} with 							 --offline"
+						),
+					));
+				}
 			}
 		}
 		if let Some(days) = pending_days {
