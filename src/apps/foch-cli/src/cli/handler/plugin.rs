@@ -300,12 +300,70 @@ fn fresh_download_dir() -> std::io::Result<DownloadDir> {
 	))
 }
 
+/// Split a `plugin[@tag-or-hash]` reference: `Acture/x@v0.1.0` pins the
+/// version the tag names, `Acture/x@18304ae4` the installed version
+/// whose content hash matches. A bare `--version` argument may carry
+/// the same `@`-less forms.
+fn resolve_requested(
+	id: &str,
+	version: Option<&str>,
+	catalog: &BTreeMap<String, BTreeMap<Version, plugin::Manifest>>,
+) -> Result<(String, Option<Version>), Box<dyn std::error::Error>> {
+	let (id, mut reference) = match id.rsplit_once('@') {
+		// Ids cannot contain '@', so any split belongs to the reference.
+		Some((id, reference)) => (id.to_string(), Some(reference.to_string())),
+		None => (id.to_string(), None),
+	};
+	if let Some(version) = version
+		&& reference.is_none()
+	{
+		reference = Some(version.to_string());
+	}
+	let mut requested = None;
+	if let Some(reference) = reference {
+		let versions = catalog
+			.get(&id)
+			.ok_or_else(|| std::io::Error::other(format!("no plugin with id {id} is installed")))?;
+		let tag = reference.strip_prefix('v').unwrap_or(&reference);
+		if let Ok(version) = Version::parse(tag) {
+			requested = Some(version);
+		} else if reference.len() >= 7 && reference.bytes().all(|b| b.is_ascii_hexdigit()) {
+			// A content-hash reference: match the installed version's
+			// build-metadata suffix.
+			let matched = versions
+				.keys()
+				.find(|version| {
+					version.build.as_str().len() >= reference.len()
+						&& version.build.as_str().ends_with(&reference)
+				})
+				.ok_or_else(|| {
+					std::io::Error::other(format!(
+						"no installed version of {id} matches hash {reference}"
+					))
+				})?;
+			requested = Some(matched.clone());
+		} else {
+			return Err(std::io::Error::other(format!(
+				"reference {reference:?} is neither a version tag nor a hash"
+			))
+			.into());
+		}
+	}
+	Ok((id, requested))
+}
+
 fn set_enabled(args: &PluginToggleArgs, enabled: bool) -> HandlerResult {
 	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let (catalog, _) = catalog_with_builtins(&store_root);
 
 	let path = plugin::paths::selections_path()?;
-	let requested = args.version.as_deref().map(Version::parse).transpose()?;
+	let (id, requested) = resolve_requested(&args.id, args.version.as_deref(), &catalog)?;
+	let args = PluginToggleArgs {
+		id,
+		version: None,
+		playset: args.playset.clone(),
+	};
+	let args = &args;
 	let version = Selections::update(&path, |selections| {
 		let mut chosen = selections.for_playset(&args.playset);
 		// Disabling an existing choice must remain possible after its installed
