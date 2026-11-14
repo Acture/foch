@@ -11,8 +11,9 @@ mod tests_dir;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::model::{
-	AiMode, EventInfo, Fixture, FixtureName, GameDate, HelperFile, MAX_ADVANCE_DAYS,
-	SessionRequest, Start, Step, Tag, TestCase, valid_case_name, valid_mod_name,
+	AiMode, DecisionInfo, EventInfo, Fixture, FixtureName, GameDate, HelperFile, MAX_ADVANCE_DAYS,
+	ScriptedDef, ScriptedKind, SessionRequest, Start, Step, Tag, TestCase, valid_case_name,
+	valid_mod_name,
 };
 use crate::source::{SourceFile, SourceKind, SourceSpan};
 use foch::game::eu4::script::parser::{
@@ -34,6 +35,8 @@ pub struct Collection {
 	pub fixtures: Vec<Fixture>,
 	pub events: Vec<EventInfo>,
 	pub helpers: Vec<HelperFile>,
+	pub scripted: Vec<ScriptedDef>,
+	pub decisions: Vec<DecisionInfo>,
 	pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -90,6 +93,8 @@ pub fn collect(files: &[SourceFile]) -> Collection {
 				});
 			}
 			SourceKind::TestsDir => tests_dir::collect(file, statements, &mut collection),
+			SourceKind::Scripted => scripted_collect(file, statements, &mut collection),
+			SourceKind::Decisions => decisions_collect(file, statements, &mut collection),
 		}
 	}
 
@@ -126,6 +131,80 @@ pub fn collect(files: &[SourceFile]) -> Collection {
 	}
 	collection.fixtures = fixtures;
 	collection
+}
+
+/// Collect top-level decision definitions from `common/decisions/`.
+fn decisions_collect(file: &SourceFile, statements: &[AstStatement], out: &mut Collection) {
+	for statement in statements {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { span, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		out.decisions.push(DecisionInfo {
+			name: key.clone(),
+			origin: SourceSpan::from_parser(&file.path, span),
+			body: file.text[span.start.offset + 1..span.end.offset - 1].into(),
+		});
+	}
+}
+
+/// Collect top-level `name = { ... }` definitions from a scripted directory.
+/// The path decides the kind: `common/scripted_triggers/` holds condition
+/// blocks, `common/scripted_effects/` holds effect blocks.
+fn scripted_collect(file: &SourceFile, statements: &[AstStatement], out: &mut Collection) {
+	let kind = if file.path.is_below("common/scripted_effects") {
+		ScriptedKind::Effect
+	} else if file.path.is_below("common/scripted_triggers") {
+		ScriptedKind::Trigger
+	} else {
+		out.diagnostics.push(Diagnostic::error(
+			DiagnosticCode::Annotation,
+			None,
+			format!(
+				"{}: scripted sources must be under common/scripted_*",
+				file.path
+			),
+		));
+		return;
+	};
+	for statement in statements {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { span, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		if !identifier_like(key) {
+			out.diagnostics.push(Diagnostic::error(
+				DiagnosticCode::Annotation,
+				Some(SourceSpan::from_parser(&file.path, span)),
+				format!("{key:?} is not a valid scripted definition name"),
+			));
+			continue;
+		}
+		out.scripted.push(ScriptedDef {
+			name: key.clone(),
+			kind,
+			body: file.text[span.start.offset + 1..span.end.offset - 1].into(),
+			origin: SourceSpan::from_parser(&file.path, span),
+		});
+	}
+}
+
+/// A scripted definition name: an identifier, so it cannot collide with the
+/// numeric-keyed or symbolic forms inside blocks.
+fn identifier_like(key: &str) -> bool {
+	!key.is_empty()
+		&& key
+			.bytes()
+			.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+		&& !key.bytes().next().is_some_and(|byte| byte.is_ascii_digit())
 }
 
 /// Record a top-level `country_event` definition.
@@ -266,6 +345,7 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			event,
 			span: span(),
 		},
+		("take_decision", Some(Value::Text(name))) => Step::TakeDecision { name, span: span() },
 		_ => unreachable!("step types are fixed by the schema"),
 	}))
 }
@@ -273,6 +353,9 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Value>, String> {
 	match key {
 		"effect" | "expect" | "advance_days" => typed(file, key, value).map(Some),
+		"take_decision" => parse_value(&file.path, &file.text, value, ValueType::Text)
+			.map(Some)
+			.map_err(|message| format!("take_decision: {message}")),
 		"fire" => parse_value(&file.path, &file.text, value, ValueType::EventId)
 			.map(Some)
 			.map_err(|message| format!("fire: {message}")),

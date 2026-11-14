@@ -9,8 +9,8 @@ use crate::collect::Collection;
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::lint::LintResult;
 use crate::model::{
-	AiMode, CaseIndex, EventInfo, Fixture, FixtureName, GameDate, HelperFile, NodeId,
-	SessionRequest, Tag, TestCase,
+	AiMode, CaseIndex, DecisionInfo, EventInfo, Fixture, FixtureName, GameDate, HelperFile, NodeId,
+	ScriptedDef, SessionRequest, Tag, TestCase,
 };
 use crate::select::Selector;
 use crate::source::SourceSpan;
@@ -55,7 +55,7 @@ pub enum NotRunReason {
 	Ignored { message: Option<String> },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NotRun {
 	pub node: NodeId,
 	pub origin: SourceSpan,
@@ -77,6 +77,8 @@ pub struct Expanded {
 	pub not_run: Vec<NotRun>,
 	pub events: Vec<EventInfo>,
 	pub helpers: Vec<HelperFile>,
+	pub scripted: Vec<ScriptedDef>,
+	pub decisions: Vec<DecisionInfo>,
 }
 
 pub fn expand(
@@ -158,6 +160,8 @@ pub fn expand(
 		not_run,
 		events: collection.events.clone(),
 		helpers: collection.helpers.clone(),
+		scripted: collection.scripted.clone(),
+		decisions: collection.decisions.clone(),
 	})
 }
 
@@ -295,6 +299,8 @@ pub struct Plan {
 	pub alone_reasons: BTreeMap<CaseIndex, AloneReason>,
 	pub events: Vec<EventInfo>,
 	pub helpers: Vec<HelperFile>,
+	pub scripted: Vec<ScriptedDef>,
+	pub decisions: Vec<DecisionInfo>,
 }
 
 impl Plan {
@@ -330,6 +336,8 @@ impl Plan {
 			alone_reasons,
 			events: self.events.clone(),
 			helpers: self.helpers.clone(),
+			scripted: self.scripted.clone(),
+			decisions: self.decisions.clone(),
 		}
 	}
 }
@@ -448,5 +456,7 @@ pub fn group(expanded: Expanded, lint: &LintResult, options: &GroupOptions) -> P
 		alone_reasons,
 		events: expanded.events,
 		helpers: expanded.helpers,
+		scripted: expanded.scripted,
+		decisions: expanded.decisions,
 	}
 }

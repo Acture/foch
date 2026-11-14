@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from .binary import BinaryImage, read_binary
 from .models import Function, FunctionEvidence, Instruction, Reference
+from .pe import PEImage
 
 if TYPE_CHECKING:
 	from ghidra.program.model.listing import Program
@@ -37,7 +38,7 @@ class GhidraSession:
 	def __init__(
 		self, binary: Path, installation: Path, workspace: Path, timeout: int = 45
 	) -> None:
-		self.image: BinaryImage = read_binary(binary)
+		self.image: BinaryImage | PEImage = read_binary(binary)
 		self.installation: Path = installation.resolve()
 		self.workspace: Path = workspace.resolve()
 		self.timeout: int = timeout
@@ -150,7 +151,10 @@ class GhidraSession:
 		)
 		block = self.program.getMemory().getBlock(location)
 		literal: str | None = None
-		if block is not None and "cstring" in str(block.getName()).lower():
+		if block is not None and (
+			"cstring" in str(block.getName()).lower()
+			or (self.image.platform == "windows" and str(block.getName()).lower() == ".rdata")
+		):
 			length: int = min(512, int(block.getEnd().getOffset()) - address + 1)
 			buffer: bytearray = bytearray()
 			for offset in range(length):

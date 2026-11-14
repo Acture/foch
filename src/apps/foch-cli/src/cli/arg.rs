@@ -185,6 +185,17 @@ pub struct TestArgs {
 	/// launching the game, like `cargo test --no-run`.
 	#[arg(long)]
 	pub no_run: bool,
+	/// Interpret the planned cases against the offline model instead of
+	/// launching the game. Modeled semantics only; never game evidence.
+	#[arg(
+		long,
+		conflicts_with_all = ["collect_only", "no_run", "game_path", "eu4_user_dir", "isolate", "with_plugins"]
+	)]
+	pub offline: bool,
+	/// With --offline: skip the run trace (observer mode records it by
+	/// default, showing what the model did step by step).
+	#[arg(long, requires = "offline")]
+	pub no_observe: bool,
 	/// Keyword expression over node IDs, such as "reform and not slow".
 	#[arg(short = 'k', value_name = "EXPRESSION")]
 	pub filter: Option<String>,

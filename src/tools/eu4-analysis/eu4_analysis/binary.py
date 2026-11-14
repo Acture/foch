@@ -5,6 +5,10 @@ from __future__ import annotations
 import bisect
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+	from .pe import PEImage
 
 
 @dataclass(frozen=True)
@@ -39,7 +43,7 @@ class BinaryImage:
 		)
 
 
-def read_binary(path: Path) -> BinaryImage:
+def read_binary(path: Path) -> BinaryImage | PEImage:
 	"""Read one supported executable: a PE image by its `MZ` DOS header, else Mach-O."""
 	with path.open("rb") as image:
 		pe: bool = image.read(2) == b"MZ"

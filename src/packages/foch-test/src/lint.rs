@@ -109,6 +109,7 @@ pub fn lint(expanded: &Expanded, facts: &ProjectFacts) -> LintResult {
 					);
 				}
 				Step::AdvanceDays { .. } => {}
+				Step::TakeDecision { .. } => {}
 			}
 		}
 		for block in effects {
