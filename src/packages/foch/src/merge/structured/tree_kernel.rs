@@ -1627,6 +1627,28 @@ fn default_choice(
 	if conflict.kind == ConflictKind::DeleteModify {
 		return Some(DefaultChoice::ChangeOverDeletion);
 	}
+	// A chain the merge scattered reports every contributor's whole chain as
+	// a candidate. Keeping more than one would scatter it again, and the game
+	// reads the chain of the mod it loads last — so the merge defaults to the
+	// same one version it defaults any differently-set value to.
+	if conflict.kind == ConflictKind::Policy
+		&& conflict.detail.contains("control-flow chain is no chain")
+		&& let Some(changes) = changed_versions(conflict)
+	{
+		return Some(DefaultChoice::LoadOrder(changes));
+	}
+	// A branch-wise rewrite that declined left the kernel's whole-chain
+	// merge standing, which holds every contributor's content — the same
+	// uncertainty KeepEvery names. The finding records what conflicted; the
+	// unit commits instead of blocking on a choice that is already made. A
+	// finding about an output orphan rides the same report and is real
+	// damage in the merged text: that one still blocks for review.
+	if conflict.kind == ConflictKind::Policy
+		&& conflict.detail.contains("chain merges as written")
+		&& !conflict.detail.contains("output:")
+	{
+		return Some(DefaultChoice::KeepEvery);
+	}
 	let changed_differently = match conflict.kind {
 		ConflictKind::ValueSlot | ConflictKind::InsertInsert => true,
 		ConflictKind::Policy => conflict.detail.ends_with(" differently"),
@@ -2026,6 +2048,74 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 #[cfg(test)]
 mod tests {
 	use std::cell::RefCell;
+
+	#[test]
+	fn scattered_chains_and_declined_rewrites_default_like_the_game_reads_them() {
+		use crate::merge::kernel::{
+			ChildCardinality, ChildOrder, ConflictKind, ConflictNodeId, MergeInputId,
+			NormalizedTree, RevisionId, SourceNodeRef, SourceSet, StructuralConflict, TreeNode,
+		};
+		let chain_input = |revision: u16| {
+			let tree = NormalizedTree::from_root(TreeNode {
+				kind: "clausewitz.control_flow.chain:complete".to_string(),
+				value: None,
+				anchor: None,
+				signature: None,
+				child_order: ChildOrder::Ordered,
+				child_cardinality: ChildCardinality::Many,
+				children: Vec::new(),
+			})
+			.unwrap();
+			SourceNodeRef::Node {
+				input: MergeInputId::from_tree(RevisionId::new(revision), &tree),
+				node: crate::merge::kernel::NodeId::new(0),
+			}
+		};
+		let conflict = |detail: &str, candidates: Vec<SourceNodeRef>| StructuralConflict {
+			id: ConflictNodeId::derive([], ConflictKind::Policy, None, None, &[], &[]),
+			kind: ConflictKind::Policy,
+			parent: None,
+			base: None,
+			revisions: SourceSet::default(),
+			candidates,
+			semantic_path: Vec::new(),
+			detail: detail.to_string(),
+		};
+		// A scattered chain with every contributor's chain as a candidate:
+		// the mod loaded last wins whole — keeping both would scatter it again.
+		let scattered = conflict(
+			"merged control-flow chain is no chain the game can read (`else` at child 0 heads the chain); every contributor's whole chain stands as a candidate",
+			vec![chain_input(1), chain_input(2)],
+		);
+		match super::default_choice(&scattered, &[]) {
+			Some(super::DefaultChoice::LoadOrder(changes)) => assert_eq!(changes.len(), 2),
+			_ => panic!("a scattered chain defaults to one whole chain"),
+		}
+		// A branch-wise rewrite that declined: the kernel's whole-chain merge
+		// stands, recorded, instead of blocking the unit.
+		let declined = conflict(
+			"1 control-flow finding(s) require review: d/potential: a replaced chain's branch body conflicts with another revision's edit; the chain merges as written",
+			Vec::new(),
+		);
+		assert!(matches!(
+			super::default_choice(&declined, &[]),
+			Some(super::DefaultChoice::KeepEvery)
+		));
+		// The same finding about an output orphan (real damage in the merged
+		// text) still has no default and blocks for review — alone or folded
+		// into the same report with the declined rewrite.
+		let orphan = conflict(
+			"1 control-flow finding(s) require review: output:else@2",
+			Vec::new(),
+		);
+		assert!(super::default_choice(&orphan, &[]).is_none());
+		let folded = conflict(
+			"2 control-flow finding(s) require review: d/potential: a replaced chain's branch body conflicts with another revision's edit; the chain merges as written, output:else@2",
+			Vec::new(),
+		);
+		assert!(super::default_choice(&folded, &[]).is_none());
+	}
+
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::{Path, PathBuf};
 

@@ -768,6 +768,16 @@ fn required_slot_nway_child(
 	);
 	conflict.semantic_path = class_common_policy_path(base, revisions, parent_class);
 	plan.conflicts.push(conflict);
+	// The losing values stay live classes this return never materializes, so
+	// they and everything under them would surface as one unreachable report
+	// per class. The slot conflict above already carries the choice between
+	// the values; the losers leave the reporting the same way the synthesized
+	// branch's do.
+	for candidate in &candidates {
+		if *candidate != tentative {
+			plan.policy_excluded.insert(*candidate);
+		}
+	}
 	vec![tentative]
 }
 
@@ -1530,7 +1540,9 @@ fn replaced_in(
 	})
 }
 
-const CONTROL_FLOW_CHAIN: &str = "clausewitz.control_flow.chain:";
+/// The kind prefix of a control-flow chain node — an `if`/`else_if`/`else`
+/// run the adapter groups into one node.
+pub const CONTROL_FLOW_CHAIN: &str = "clausewitz.control_flow.chain:";
 
 /// The anchor namespace of a statement the schema lets a block repeat, such
 /// as a trigger in an `OR` or an effect in an effect block.

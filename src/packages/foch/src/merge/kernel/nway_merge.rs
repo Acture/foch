@@ -14,6 +14,114 @@ use crate::merge::kernel::{
 	StructuralConflict, StructuralConflictDraft, TreeError, TreeNode,
 };
 
+/// The kinds the adapter gives a control-flow chain's branches. The strings
+/// are the adapter-kernel contract (as `CONTROL_FLOW_CHAIN` in `nway.rs`);
+/// the kernel re-checks them so a merged chain is still a chain the game
+/// can read before the tree reaches the writer.
+const CHAIN_KIND_OPAQUE: &str = "clausewitz.control_flow.chain:opaque";
+const GUARDED_BRANCH_KIND_PREFIX: &str = "clausewitz.control_flow.guarded_branch:";
+const ELSE_BRANCH_KIND: &str = "clausewitz.control_flow.else_branch";
+const COMMENT_KIND: &str = "clausewitz.comment";
+
+/// A subtree the plan resolved whole — a delete-modify kept one revision's
+/// node, a review pick selected a subtree — already carries its choice as the
+/// conflict that made the selection. Live classes other revisions parented
+/// into that subtree are the variants the choice set aside: the builder's
+/// clone emits only the selected revision's nodes, so they would surface as
+/// one unreachable report per class. They leave the reporting the way the
+/// chosen subtree stays: silently, with the selection's own conflict above.
+fn exclude_dropped_subtree_variants(
+	base: &NormalizedTree,
+	revisions: &[MergeRevision<'_>],
+	correspondence: &NWayCorrespondence,
+	plan: &mut crate::merge::kernel::NWaySelectionPlan,
+) {
+	let selected_subtrees: Vec<(ClassId, RevisionNode)> = plan
+		.classes
+		.iter()
+		.filter(|(_, selection)| selection.subtree_selected && selection.selected.is_some())
+		.filter_map(|(class, selection)| selection.selected.map(|source| (*class, source)))
+		.collect();
+	for (class, source) in selected_subtrees {
+		// The builder's clone emits the classes of the nodes physically
+		// inside the SELECTED revision's subtree — not every member's, so a
+		// class another revision matched under this class but the selected
+		// subtree does not hold is a variant the choice set aside.
+		let tree = tree_for_revision(base, revisions, source.revision);
+		let mut inside = BTreeSet::new();
+		let mut pending: Vec<_> = tree
+			.node(source.node)
+			.expect("a selected source node exists")
+			.children
+			.clone();
+		while let Some(node) = pending.pop() {
+			inside.insert(
+				correspondence
+					.classes
+					.class_of(RevisionNode::new(source.revision, node)),
+			);
+			pending.extend(
+				tree.node(node)
+					.expect("a listed node exists")
+					.children
+					.clone(),
+			);
+		}
+		let dropped = plan
+			.classes
+			.iter()
+			.filter(|(other, selection)| {
+				*other != &class && selection.parent == Some(class) && !inside.contains(other)
+			})
+			.map(|(other, _)| *other)
+			.collect::<Vec<_>>();
+		for other in dropped {
+			plan.policy_excluded.insert(other);
+		}
+	}
+}
+
+/// Why the merged children of a control-flow chain cannot spell a chain: the
+/// first non-comment child must be a guarded branch, `else` at most once and
+/// last, and comments alone are no chain. These are the rules the writer
+/// applies when the tree is denormalized; checking them here catches a merge
+/// that scattered a chain's branches — an `else` whose `if` a deletion took,
+/// a branch re-parented into another chain — while every contributor's whole
+/// chain is still at hand as a review candidate.
+fn chain_invariant_violation(kind: &str, children: &[TreeNode]) -> Option<String> {
+	if !kind.starts_with(crate::merge::kernel::nway::CONTROL_FLOW_CHAIN)
+		|| kind == CHAIN_KIND_OPAQUE
+	{
+		return None;
+	}
+	let mut guarded = 0usize;
+	let mut saw_else = false;
+	for (position, child) in children.iter().enumerate() {
+		if child.kind == COMMENT_KIND {
+			continue;
+		}
+		if child.kind.starts_with(GUARDED_BRANCH_KIND_PREFIX) {
+			if saw_else {
+				return Some(format!(
+					"guarded branch at child {position} follows the `else`"
+				));
+			}
+			guarded += 1;
+		} else if child.kind == ELSE_BRANCH_KIND {
+			if guarded == 0 {
+				return Some(format!("`else` at child {position} heads the chain"));
+			}
+			if saw_else {
+				return Some(format!("second `else` at child {position}"));
+			}
+			saw_else = true;
+		} else {
+			return Some(format!("child {position} is no chain branch"));
+		}
+	}
+	(guarded == 0).then(|| "the chain holds no guarded branch".to_string())
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum NWayMergeError {
 	#[error(transparent)]
@@ -66,6 +174,7 @@ pub fn n_way_merge_with_policy_and_resolutions(
 		.selection_with_policy_and_overrides_profiled(base, revisions, policy, &overrides);
 	record_match_ambiguities(base, revisions, &correspondence, &mut plan.conflicts);
 	record_rejected_links(base, revisions, &correspondence, &mut plan.conflicts);
+	exclude_dropped_subtree_variants(base, revisions, &correspondence, &mut plan);
 
 	let root_class = correspondence
 		.classes
@@ -211,8 +320,17 @@ fn suppress_required_slot_subconflicts(
 			)
 			.collect::<BTreeSet<_>>();
 		!slots.iter().any(|(path, slot_classes)| {
-			*path == conflict.semantic_path
-				&& affected.iter().any(|class| slot_classes.contains(class))
+			// A conflict at the slot's own path among the slot's values is the
+			// same choice twice; a Policy conflict deeper under the slot rides
+			// on classes the slot's tentative child dropped, so the slot is
+			// the one place its resolution belongs.
+			if *path == conflict.semantic_path {
+				affected.iter().any(|class| slot_classes.contains(class))
+			} else {
+				conflict.kind == ConflictKind::Policy
+					&& conflict.semantic_path.len() > path.len()
+					&& conflict.semantic_path[..path.len()] == *path
+			}
 		})
 	});
 }
@@ -741,6 +859,24 @@ impl<'a, 'tree> NWayTreeBuilder<'a, 'tree> {
 				.collect()
 		};
 		self.visiting.remove(&class);
+		// The kernel matches a chain's branches as independent classes, so a
+		// deletion or re-parenting among them can scatter a chain no script
+		// can spell. Every contributor's whole chain is still at hand here:
+		// report the chain as a pickable conflict instead of letting the
+		// writer reject the whole tree with nothing to choose from.
+		if let Some(violation) = chain_invariant_violation(&selected_node.kind, &children) {
+			self.conflicts.push(class_conflict(
+				ConflictKind::Policy,
+				class,
+				selection.parent,
+				self.base,
+				self.revisions,
+				self.correspondence,
+				format!(
+					"merged control-flow chain is no chain the game can read ({violation}); every contributor's whole chain stands as a candidate"
+				),
+			));
+		}
 		TreeNode {
 			kind: selected_node.kind,
 			value: selection
@@ -1298,6 +1434,89 @@ fn synthetic_block(key: &str, order: ChildOrder, children: Vec<TreeNode>) -> Tre
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_scattered_chain_reports_its_invariant_before_the_writer_sees_it() {
+		let chain = |children: &[(&str, &str)]| TreeNode {
+			kind: format!("{}complete", crate::merge::kernel::nway::CONTROL_FLOW_CHAIN),
+			value: None,
+			anchor: None,
+			signature: None,
+			child_order: ChildOrder::Ordered,
+			child_cardinality: ChildCardinality::Many,
+			children: children
+				.iter()
+				.map(|(kind, _)| TreeNode {
+					kind: (*kind).to_string(),
+					value: None,
+					anchor: None,
+					signature: None,
+					child_order: ChildOrder::Ordered,
+					child_cardinality: ChildCardinality::Many,
+					children: Vec::new(),
+				})
+				.collect(),
+		};
+		let guarded = "clausewitz.control_flow.guarded_branch:if{a}";
+		let else_branch = "clausewitz.control_flow.else_branch";
+		// A chain the writer accepts: guarded first, `else` once and last.
+		let whole = chain(&[(guarded, ""), (else_branch, "")]);
+		assert_eq!(
+			chain_invariant_violation(&whole.kind, &whole.children),
+			None
+		);
+		// An `else` whose `if` a deletion took heads the chain.
+		let orphan = chain(&[(else_branch, "")]);
+		assert_eq!(
+			chain_invariant_violation(&orphan.kind, &orphan.children),
+			Some("`else` at child 0 heads the chain".to_string())
+		);
+		// Comments never count as branches; two `else` never spell a chain.
+		let doubled = chain(&[
+			(guarded, ""),
+			(else_branch, ""),
+			(COMMENT_KIND, ""),
+			(else_branch, ""),
+		]);
+		assert_eq!(
+			chain_invariant_violation(&doubled.kind, &doubled.children),
+			Some("second `else` at child 3".to_string())
+		);
+		// Guarded after `else`, no guarded at all, and a non-branch child.
+		assert_eq!(
+			chain_invariant_violation(
+				&chain(&[(guarded, ""), (else_branch, ""), (guarded, "")]).kind,
+				&chain(&[(guarded, ""), (else_branch, ""), (guarded, "")]).children
+			),
+			Some("guarded branch at child 2 follows the `else`".to_string())
+		);
+		assert_eq!(
+			chain_invariant_violation(
+				&chain(&[(COMMENT_KIND, "")]).kind,
+				&chain(&[(COMMENT_KIND, "")]).children
+			),
+			Some("the chain holds no guarded branch".to_string())
+		);
+		assert_eq!(
+			chain_invariant_violation(
+				&chain(&[(guarded, ""), ("clausewitz.statement.key", "")]).kind,
+				&chain(&[(guarded, ""), ("clausewitz.statement.key", "")]).children
+			),
+			Some("child 1 is no chain branch".to_string())
+		);
+		// An opaque chain is the adapter's verdict, not the kernel's to check.
+		let mut opaque = chain(&[(else_branch, "")]);
+		opaque.kind = format!("{}opaque", crate::merge::kernel::nway::CONTROL_FLOW_CHAIN);
+		assert_eq!(
+			chain_invariant_violation(&opaque.kind, &opaque.children),
+			None
+		);
+		// Only chains are checked.
+		assert_eq!(
+			chain_invariant_violation("clausewitz.statement.key", &whole.children),
+			None
+		);
+	}
 
 	#[test]
 	fn compatible_exact_selections_union_their_contributors() {

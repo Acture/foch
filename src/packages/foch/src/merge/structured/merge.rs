@@ -218,27 +218,26 @@ pub(super) fn merge_clausewitz_files_with_context(
 	entity_transform: Option<&dyn EntityTransform>,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
 	let entity_transform = entity_transform.filter(|transform| transform.applies_to(&base.path));
-	let resolved_chains = super::trigger_cases::resolve_replaced_trigger_chains(
-		base,
-		revisions,
-		&mut |branch_base, branch_revisions| {
-			let Ok(outcome) = merge_clausewitz_files_with_context(
-				branch_base,
-				branch_revisions,
-				policies,
-				schema,
-				false,
-				&[],
-				None,
-			) else {
-				return Ok(None);
-			};
-			Ok(outcome
-				.conflicts()
-				.is_empty()
-				.then_some(outcome.tentative_ast))
-		},
-	)?;
+	let (resolved_chains, chain_branch_conflicts) =
+		super::trigger_cases::resolve_replaced_trigger_chains(
+			base,
+			revisions,
+			&mut |branch_base, branch_revisions| {
+				let outcome = merge_clausewitz_files_with_context(
+					branch_base,
+					branch_revisions,
+					policies,
+					schema,
+					false,
+					&[],
+					None,
+				)?;
+				Ok(outcome
+					.conflicts()
+					.is_empty()
+					.then_some(outcome.tentative_ast))
+			},
+		)?;
 	let original_revisions = revisions;
 	let resolved_revisions = resolved_chains
 		.as_ref()
@@ -284,7 +283,7 @@ pub(super) fn merge_clausewitz_files_with_context(
 		.flat_map(|file| super::control_flow::orphan_paths(&file.statements))
 		.map(|path| unindexed_path(&path))
 		.collect::<BTreeSet<_>>();
-	let mut control_flow_findings = BTreeSet::new();
+	let mut control_flow_findings = chain_branch_conflicts.into_iter().collect::<BTreeSet<_>>();
 	let merged_trivia = merge_trivia_n_way(&base_trivia, &revision_trivia);
 	charge(KernelStep::JoinCanonicalize, started);
 	let started = Instant::now();
@@ -348,15 +347,27 @@ pub(super) fn merge_clausewitz_files_with_context(
 			// branch whose `limit` one revision deleted with the chain while
 			// another edited the branch. That is diverging intent to review,
 			// not an engine failure; the highest-precedence revision stands in
-			// as the preview.
-			kernel.push_conflict(StructuralConflictDraft::new(
-				ConflictKind::Policy,
-				None,
-				None,
-				SourceSet::default(),
-				Vec::new(),
-				format!("merged tree cannot be rendered: {error}"),
-			));
+			// as the preview. A scattered control-flow chain already carries
+			// its own conflict with every contributor's chain as candidates,
+			// so only other render failures add this candidate-less report.
+			// The same error text is the tie: a chain the kernel already
+			// reported produces exactly this chain-shaped render error, while
+			// any other malformed node fails with words of its own.
+			let chain_already_reported = error.to_string().contains("control-flow chain")
+				&& kernel
+					.conflicts
+					.iter()
+					.any(|conflict| conflict.detail.contains("control-flow chain is no chain"));
+			if !chain_already_reported {
+				kernel.push_conflict(StructuralConflictDraft::new(
+					ConflictKind::Policy,
+					None,
+					None,
+					SourceSet::default(),
+					Vec::new(),
+					format!("merged tree cannot be rendered: {error}"),
+				));
+			}
 			revision_files
 				.last()
 				.map_or_else(|| base.clone(), |revision| (*revision).clone())
