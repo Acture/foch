@@ -106,7 +106,7 @@ pub struct PluginImportArgs {
 
 #[derive(Parser, Debug)]
 pub struct PluginInstallArgs {
-	/// owner/repo, a github.com URL, or a built-in plugin id.
+	/// owner/repo[@tag|@latest], a github.com URL, or a built-in plugin id.
 	#[arg(value_name = "SPEC")]
 	pub spec: Option<String>,
 	/// Install every registered GitHub release.
