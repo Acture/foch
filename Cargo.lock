@@ -1346,6 +1346,7 @@ dependencies = [
  "encoding_rs",
  "filetime",
  "flate2",
+ "foch-plugin-sdk",
  "globset",
  "jomini",
  "keyvalues-parser",
@@ -1441,7 +1442,7 @@ version = "0.0.2"
 dependencies = [
  "cc",
  "foch",
- "foch-plugin-abi",
+ "foch-plugin-sdk",
  "foch-runner",
  "serde",
  "serde_json",
@@ -1466,14 +1467,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "foch-plugin-abi"
-version = "0.0.2"
+name = "foch-plugin-sdk"
+version = "0.0.1"
 
 [[package]]
 name = "foch-plugin-trade-blackhole"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
- "foch-plugin-abi",
+ "foch-plugin-sdk",
  "serde",
  "serde_json",
 ]

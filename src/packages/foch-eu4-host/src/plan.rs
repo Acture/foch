@@ -176,7 +176,7 @@ pub fn parse(text: &str) -> Result<Plan, String> {
 			));
 		}
 		phase = plugin.phase;
-		if plugin.kind == Kind::Native && plugin.abi_major != Some(foch_plugin_abi::ABI_MAJOR) {
+		if plugin.kind == Kind::Native && plugin.abi_major != Some(foch_plugin_sdk::ABI_MAJOR) {
 			return Err(format!(
 				"{}: unsupported or missing native ABI major",
 				plugin.id
@@ -288,7 +288,7 @@ pub(crate) const FIXTURE: &str = r#"{
 			"config_json": "{\"greeting\":\"hi\"}",
 			"dirs": { "data": "C:\\data", "log": "C:\\rt\\plugins\\logs" },
 			"status": null,
-			"abi_major": 1
+			"abi_major": 0
 		}
 	]
 }"#;

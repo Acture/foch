@@ -1,16 +1,22 @@
-//! Rust definitions of the Foch native plugin interface, ABI 1.0.
+//! The Foch native plugin SDK: one small crate a plugin builds against,
+//! published so plugins compile standalone and also drop into the Foch
+//! workspace unchanged.
 //!
 //! `include/foch_plugin.h` is the normative C definition; these types mirror
 //! it field for field so a Rust plugin and the Rust host share one layout. A
 //! plugin exports [`ENTRY`] with the [`GetApi`] signature. See the header for
 //! the ownership, threading and versioning rules.
+//!
+//! The ABI version is the interface contract, independent of the crate
+//! version: major 0 marks the unstable era where host and plugins ship
+//! together.
 
 #![no_std]
 
 use core::ffi::c_void;
 
-pub const ABI_MAJOR: u32 = 1;
-pub const ABI_MINOR: u32 = 0;
+pub const ABI_MAJOR: u32 = 0;
+pub const ABI_MINOR: u32 = 1;
 
 /// The one export every native plugin provides.
 pub const ENTRY: &str = "foch_plugin_get_api";

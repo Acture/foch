@@ -720,7 +720,7 @@ mod tests {
 	fn installed_store_directory_links_cannot_import_external_artifacts() {
 		use foch::plugin::{self, store::ArchiveEntry};
 		let outside = tempfile::tempdir().unwrap();
-		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=0\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
 		let mut dll = vec![0; 0x80];
 		dll[..2].copy_from_slice(b"MZ");
 		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
@@ -807,7 +807,7 @@ mod tests {
 		use foch::plugin::{self, store::ArchiveEntry};
 		let source = tempfile::tempdir().unwrap();
 		let output = tempfile::tempdir().unwrap();
-		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=0\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
 		let mut dll = vec![0; 0x80];
 		dll[..2].copy_from_slice(b"MZ");
 		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
@@ -855,7 +855,7 @@ mod tests {
 		use foch::plugin::{self, store::ArchiveEntry};
 		let outside = tempfile::tempdir().unwrap();
 		let output = tempfile::tempdir().unwrap();
-		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=0\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
 		let mut dll = vec![0; 0x80];
 		dll[..2].copy_from_slice(b"MZ");
 		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
@@ -915,7 +915,7 @@ mod tests {
 		use foch::plugin::{self, store::ArchiveEntry};
 		let source = tempfile::tempdir().unwrap();
 		let output = tempfile::tempdir().unwrap();
-		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
+		let manifest = plugin::Manifest::parse("schema=1\n[plugin]\nid=\"fixture\"\nname=\"Fixture\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=0\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"fixture.dll\"").unwrap();
 		let mut manifest = manifest;
 		manifest.writes.push(plugin::manifest::WriteKind::FontCache);
 		let mut dll = vec![0; 0x80];

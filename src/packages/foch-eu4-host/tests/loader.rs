@@ -50,7 +50,7 @@ fn fixtures() -> &'static TempDir {
 				.arg(format!("/DFIXTURE_NAME=\"{name}\""))
 				.arg(format!(
 					"/I{}",
-					package.join("../foch-plugin-abi/include").display()
+					package.join("../foch-plugin-sdk/include").display()
 				))
 				.arg(package.join("tests/fixtures").join(source))
 				.arg(format!("/Fo{name}.obj"))
@@ -118,7 +118,7 @@ impl Runtime {
 		fs::copy(fixtures().path().join(format!("{name}.dll")), &path).unwrap();
 		json!({"id":name, "version":"0.1.0", "kind":kind, "phase":phase,
 			"path":path.to_str().unwrap(), "config_json":"{\"greeting\":\"hi\"}",
-			"abi_major":if kind == "native" {Some(1)} else {None}})
+			"abi_major":if kind == "native" {Some(0)} else {None}})
 	}
 	fn plan(&self, plugins: Vec<Value>) {
 		fs::write(
@@ -676,7 +676,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 		} else {
 			"[config.greeting]\ntype=\"string\"\ndefault=\"hi\"\n"
 		};
-		let manifest = Manifest::parse(&format!("schema=1\n[plugin]\nid=\"{id}\"\nname=\"{id}\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"=1.37.5\"\nabi_major=1\n[entry]\nkind=\"{kind}\"\nphase=\"{phase}\"\npath=\"plugins/{name}.dll\"\n{status}")).unwrap();
+		let manifest = Manifest::parse(&format!("schema=1\n[plugin]\nid=\"{id}\"\nname=\"{id}\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"=1.37.5\"\nabi_major=0\n[entry]\nkind=\"{kind}\"\nphase=\"{phase}\"\npath=\"plugins/{name}.dll\"\n{status}")).unwrap();
 		let package = plugin::store::adapt(
 			manifest,
 			vec![ArchiveEntry {

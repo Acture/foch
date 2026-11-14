@@ -86,7 +86,8 @@ impl HostPlan {
 				|| !names.insert(name.to_string())
 				|| plugin.phase < phase
 				|| plugin.phase == Phase::ProcessAttach
-				|| (plugin.kind == Kind::Native && plugin.abi_major != Some(1))
+				|| (plugin.kind == Kind::Native
+					&& plugin.abi_major != Some(foch_plugin_sdk::ABI_MAJOR))
 				|| plugin.sha256.len() != 64
 				|| !plugin.sha256.bytes().all(|b| b.is_ascii_hexdigit())
 				|| !serde_json::from_str::<Value>(&plugin.config_json)
@@ -919,7 +920,7 @@ mod tests {
 					config_json: "{}".into(),
 					dirs: BTreeMap::new(),
 					status: None,
-					abi_major: Some(1),
+					abi_major: Some(foch_plugin_sdk::ABI_MAJOR),
 				})
 				.collect(),
 		};
@@ -1357,7 +1358,7 @@ adapter = { ini = "config.ini", section = "options", key = "flag" }
 				config_json: "{}".into(),
 				dirs: BTreeMap::new(),
 				status: None,
-				abi_major: Some(1),
+				abi_major: Some(foch_plugin_sdk::ABI_MAJOR),
 			}],
 		};
 		assert!(wire_bytes(&plan).is_ok());

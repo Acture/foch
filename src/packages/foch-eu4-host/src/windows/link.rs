@@ -10,7 +10,7 @@ use crate::{
 	pattern::{self, Found, Pattern},
 	prologue,
 };
-use foch_plugin_abi as abi;
+use foch_plugin_sdk as abi;
 use std::{
 	ffi::c_void,
 	mem::{align_of, size_of},

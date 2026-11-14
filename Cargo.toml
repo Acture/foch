@@ -5,7 +5,7 @@ members = [
 	"src/packages/foch-annotation",
 	"src/packages/foch-lsp",
 	"src/packages/foch-runner",
-	"src/packages/foch-plugin-abi",
+	"src/packages/foch-plugin-sdk",
 	"src/packages/foch-eu4-host",
 	"plugins/eu4-dynamic-trade-blackhole",
 	"src/packages/foch-test",
@@ -24,6 +24,11 @@ homepage = "https://github.com/Acture/foch"
 repository = "https://github.com/Acture/foch"
 keywords = ["paradox", "eu4", "modding", "lsp", "static-analysis"]
 categories = ["command-line-utilities", "development-tools"]
+
+# Inside this workspace the SDK resolves to the local member; a standalone
+# plugin clone pulls the same crate from crates.io.
+[patch.crates-io]
+foch-plugin-sdk = { path = "src/packages/foch-plugin-sdk" }
 
 [workspace.dependencies]
 # Published crates resolve these from the registry, so each path dependency

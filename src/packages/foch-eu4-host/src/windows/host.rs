@@ -5,7 +5,7 @@ use super::{
 	query::{executable, readable},
 };
 use crate::plan::{self, Kind, Phase, Plan, PlannedPlugin, StatusMode};
-use foch_plugin_abi::{self as abi, FochHostApi, FochStatus, FochStr};
+use foch_plugin_sdk::{self as abi, FochHostApi, FochStatus, FochStr};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -935,7 +935,7 @@ mod tests {
 		let plan: Plan = serde_json::from_value(json!({
 			"format":1, "run_id":"pending", "events":r"C:\runtime\foch-host\events.jsonl",
 			"plugins":[{"id":"pending", "version":"1.0.0", "kind":"native",
-				"phase":"entry", "path":r"C:\runtime\pending.dll", "abi_major":1}]
+				"phase":"entry", "path":r"C:\runtime\pending.dll", "abi_major":0}]
 		}))
 		.unwrap();
 		let runtime = Box::leak(Box::new(Runtime {
