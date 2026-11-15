@@ -719,7 +719,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 	let selected = deployment::resolve(&game, &store, &selections).unwrap();
 	fs::write(&linked_source, "changed").unwrap();
 	assert!(deployment::resolve(&game, &store, &selections).is_err());
-	let layer = foch_runner::runtime::RuntimeLayer::prepare(
+	let layer = foch_eu4_host::runner::runtime::RuntimeLayer::prepare(
 		source.path(),
 		&output.path().join("rt"),
 		"wire-run",

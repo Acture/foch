@@ -1399,8 +1399,8 @@ dependencies = [
  "dirs",
  "foch",
  "foch-annotation",
+ "foch-eu4-host",
  "foch-lsp",
- "foch-runner",
  "foch-test",
  "keyvalues-parser",
  "libc",
@@ -1443,7 +1443,7 @@ dependencies = [
  "cc",
  "foch",
  "foch-plugin-sdk",
- "foch-runner",
+ "foch-test",
  "serde",
  "serde_json",
  "sha2",
@@ -1477,19 +1477,6 @@ dependencies = [
  "foch-plugin-sdk",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "foch-runner"
-version = "0.0.2"
-dependencies = [
- "foch",
- "foch-test",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

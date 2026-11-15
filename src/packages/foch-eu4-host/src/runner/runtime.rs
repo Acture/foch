@@ -4,7 +4,7 @@
 //! runtime/state paths. Game and native plugin code retains the user's file
 //! permissions, including writes through those shared links.
 
-use crate::{layout, platform};
+use super::{layout, platform};
 use foch::plugin::store;
 use sha2::{Digest, Sha256};
 use std::{
@@ -284,7 +284,7 @@ mod tests {
 				);
 			}
 			let directory = layer.directory.clone();
-			crate::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
+			crate::runner::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
 			assert!(
 				!directory.exists(),
 				"source player marker retained a test layer"
@@ -543,7 +543,7 @@ mod tests {
 		let directory = layer.directory.clone();
 		let result: io::Result<()> = layer.retain_after(|directory| {
 			assert!(directory.join("foch-player-runtime").is_file());
-			crate::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
+			crate::runner::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
 			assert!(directory.is_dir());
 			Err(io::Error::other("startup or PID bookkeeping failed"))
 		});
@@ -562,7 +562,7 @@ mod tests {
 		let mut layer = RuntimeLayer::prepare(source.path(), output.path(), "handoff").unwrap();
 		layer.retain_after(|_| Ok(())).unwrap();
 		drop(layer);
-		crate::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
+		crate::runner::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
 		assert!(directory.is_dir());
 		platform::remove_layer(&directory);
 	}
@@ -574,7 +574,7 @@ mod tests {
 		let mut layer = RuntimeLayer::prepare(source.path(), output.path(), "player").unwrap();
 		let directory = layer.retain().unwrap();
 		drop(layer);
-		crate::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
+		crate::runner::sweep_runtime_base(output.path(), std::time::Duration::ZERO);
 		assert!(directory.exists());
 		platform::remove_layer(&directory);
 		assert!(!directory.exists());
