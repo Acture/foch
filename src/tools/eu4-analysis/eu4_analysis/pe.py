@@ -142,16 +142,20 @@ def read_binary(path: Path) -> PEImage:
 		entries[begin] = max(entries.get(begin, 0), end)
 	if not starts:
 		raise ValueError("empty .pdata function table")
-	ordered: tuple[int, ...] = tuple(sorted(starts))
+	# Function bounds live in loaded-image space, matching read_dispatched;
+	# byte-level scans stay in RVA space and cross over through
+	# address_bias, which the Ghidra session sets to the image base.
+	ordered: tuple[int, ...] = tuple(sorted(start + image_base for start in starts))
+	ends = {start + image_base: end + image_base for start, end in entries.items()}
 	return PEImage(
 		path.resolve(),
 		hashlib.sha256(data).hexdigest(),
 		ordered,
-		text.rva + max(text.virtual_size, text.file_size),
+		text.rva + image_base + max(text.virtual_size, text.file_size),
 		image_base,
 		sections,
 		data,
-		entries,
+		ends,
 	)
 
 
@@ -198,6 +202,37 @@ def _lea_targets(image: PEImage, targets: frozenset[int]) -> tuple[int, ...]:
 	return tuple(insns)
 
 
+def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
+	"""Handler begins found in the static registration tables.
+
+	Effect families register through initialized data: a qword holding the
+	keyword string's address sits in a table entry whose neighborhood
+	carries the handler's code address (verified against EU4 1.37.5, whose
+	effect table reads {kind, name, 0, parameter text, 0, 0, tooltip,
+	handler}). A window of qwords around each pointer hit is scanned for
+	values that are recorded function begins; only unambiguous hits —
+	exactly one — are returned, never guesses.
+	"""
+	text = next((s for s in image.sections if s.name == ".text"), None)
+	if text is None:
+		return ()
+	text_begin = text.rva + image.image_base
+	text_end = text.rva + max(text.virtual_size, text.file_size) + image.image_base
+	starts = set(image.function_starts)
+	handlers: list[int] = []
+	for rva in keyword_rvas(image, keyword):
+		needle = struct.pack("<Q", image.image_base + rva)
+		position = image.data.find(needle)
+		while position != -1:
+			for offset in range(-8, 0x40, 8):
+				value = struct.unpack_from("<Q", image.data, position + offset)[0]
+				if text_begin <= value < text_end and value in starts:
+					handlers.append(value)
+			position = image.data.find(needle, position + 1)
+	unique = set(handlers)
+	return tuple(sorted(unique)) if len(unique) == 1 else ()
+
+
 def keyword_reference_functions(image: PEImage, keyword: str) -> tuple[tuple[int, int], ...]:
 	"""Functions whose code references the keyword string, begin/end pairs.
 
@@ -215,15 +250,15 @@ def keyword_reference_functions(image: PEImage, keyword: str) -> tuple[tuple[int
 	text_end = text.rva + max(text.virtual_size, text.file_size)
 	functions: list[tuple[int, int]] = []
 	for insn in _lea_targets(image, targets):
-		address = insn + image.address_bias
+		address = insn + image.image_base
 		index: int = bisect.bisect_right(image.function_starts, address) - 1
 		if index < 0:
 			continue
 		begin: int = image.function_starts[index]
 		end = image.function_end(begin)
 		if (
-			begin >= text.rva + image.address_bias
-			and address < end <= text_end + image.address_bias
+			begin >= text.rva + image.image_base
+			and address < end <= text_end + image.image_base
 		):
 			functions.append((begin, end))
 	return tuple(dict.fromkeys(functions))

@@ -61,8 +61,8 @@ class GhidraSession:
 		launcher: HeadlessPyGhidraLauncher = HeadlessPyGhidraLauncher(
 			install_dir=self.installation
 		)
-		if launcher.app_info.version != "12.1.3":
-			raise ValueError("this backend requires Ghidra 12.1.3")
+		if launcher.app_info.version not in ("12.1.3", "12.2"):
+			raise ValueError("this backend requires Ghidra 12.1.3 or 12.2")
 		if not pyghidra.started():
 			launcher.add_vmargs(
 				"-Xmx2G",
@@ -212,7 +212,10 @@ class GhidraSession:
 					body,
 					SourceType.IMPORTED,
 				)
-			elif not loaded_function.getBody().equals(body):
+			elif not body.contains(loaded_function.getBody()):
+				# Hot-patched functions disassemble to a body smaller than
+				# the .pdata record; a body inside the metadata range is still
+				# bounded evidence. Only a body that escapes it refuses.
 				raise ValueError(
 					"saved function range differs from binary metadata; use a fresh workspace"
 				)
