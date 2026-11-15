@@ -192,7 +192,6 @@ pub struct TestArgs {
 		conflicts_with_all = [
 			"collect_only",
 			"no_run",
-			"game_path",
 			"eu4_user_dir",
 			"isolate",
 			"with_plugins"
@@ -227,7 +226,8 @@ pub struct TestArgs {
 	/// Describe annotations and parameters without a game installation.
 	#[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "NAME", conflicts_with_all = ["collect_only", "out", "filter"])]
 	pub api: Option<String>,
-	/// EU4 install to launch; defaults to the configured or Steam install.
+	/// EU4 install to launch, or — with --offline — to seed starting state
+	/// from its history files; defaults to the configured or Steam install.
 	#[arg(long, value_name = "PATH")]
 	pub game_path: Option<PathBuf>,
 	/// Real EU4 user directory to guard; defaults to

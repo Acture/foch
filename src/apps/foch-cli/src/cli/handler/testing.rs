@@ -6,7 +6,7 @@
 
 use super::HandlerResult;
 use crate::cli::arg::{CheckOutputFormat, TestArgs};
-use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
+use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
 use foch::input::load_config_read_only;
 use foch_annotation::builtin::SCHEMAS;
 use foch_annotation::value::scalar;
@@ -23,7 +23,7 @@ use foch_test::{
 	group, interpret, judge, lint, reconcile,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -107,11 +107,11 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 		.as_ref()
 		.map(
 			|playset| -> std::result::Result<foch_runtime::runner::HostLaunch, String> {
-				let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-				let directory = executable
-					.parent()
+				let directory = std::env::current_exe()
+					.ok()
+					.and_then(|exe| exe.parent().map(Path::to_path_buf))
 					.ok_or("foch executable has no parent directory")?;
-				let host_dll = foch_runtime::host::resolve(directory, None)
+				let host_dll = foch_runtime::host::resolve(&directory, None)
 					.map_err(|error| error.to_string())?;
 				Ok(foch_runtime::runner::HostLaunch {
 					playset: playset.clone(),
@@ -229,10 +229,84 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	Ok(report.exit_code())
 }
 
+/// Starting state from the game's own history files: the countries that
+/// exist at the bookmark and their scripted religion, culture, government
+/// and rank. Missing installs seed nothing — the model then runs on the
+/// countries a case names and unwritten slots refuse.
+fn seed_from_game(args: &TestArgs) -> Result<Option<foch_test::SeedFacts>> {
+	// Explicit opt-in: seeding only reads an install the author named.
+	let Some(game_path) = args.game_path.as_deref() else {
+		return Ok(None);
+	};
+	let config = load_config_read_only()?;
+	let game_root = match foch_runtime::runner::locate_game(&config, Some(game_path)) {
+		Ok(root) => root,
+		Err(_) => return Ok(None),
+	};
+	let history = game_root.join("history/countries");
+	let mut tags = BTreeSet::new();
+	let mut countries = BTreeMap::new();
+	let entries = match fs::read_dir(&history) {
+		Ok(entries) => entries,
+		Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+		Err(err) => return Err(err.into()),
+	};
+	for entry in entries.flatten() {
+		let name = entry.file_name();
+		let Some(file) = name.to_str() else {
+			continue;
+		};
+		let Some(stem) = file.strip_suffix(".txt") else {
+			continue;
+		};
+		let Ok(tag) = foch_test::Tag::parse(stem.split_once(' ').map_or(stem, |(tag, _)| tag))
+		else {
+			continue;
+		};
+		// Some histories carry non-UTF-8 bytes in comments; read lossily so
+		// the scripted fields still parse.
+		let Ok(bytes) = fs::read(entry.path()) else {
+			continue;
+		};
+		let text = String::from_utf8_lossy(&bytes);
+		let parsed =
+			parse_clausewitz_content(foch::model::GamePath::new("history.txt").unwrap(), &text);
+		let mut seeded = foch_test::SeededCountry::default();
+		for statement in &parsed.ast.statements {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				continue;
+			};
+			let scalar = || {
+				matches!(value, AstValue::Scalar { .. }).then(|| scalar(value).unwrap_or_default())
+			};
+			match key.as_str() {
+				"religion" => seeded.religion = scalar(),
+				"primary_culture" => seeded.culture = scalar(),
+				"government" => seeded.government = scalar(),
+				"government_rank" => {
+					seeded.government_rank = scalar().and_then(|text| text.parse().ok())
+				}
+				_ => {}
+			}
+		}
+		tags.insert(tag.clone());
+		countries.insert(tag, seeded);
+	}
+	Ok(Some(foch_test::SeedFacts { tags, countries }))
+}
+
 /// `--offline`: interpret the planned cases against the embedded semantics
-/// catalog. No game, no Steam, no base data; modeled semantics only.
+/// catalog. No game launch, no Steam login; modeled semantics only, seeded
+/// from the game's history files when an install is reachable.
 fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 	let run_id = new_run_id()?;
+	let seed = seed_from_game(args)?;
+	if let Some(seed) = &seed {
+		eprintln!(
+			"seeded {} countries from the game's history files",
+			seed.tags.len()
+		);
+	}
 	let interpretation = interpret(
 		&planned.plan,
 		&project_facts(),
@@ -241,6 +315,7 @@ fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 			run_id: run_id.clone(),
 			mod_name: planned.mod_name.clone(),
 			observe: !args.no_observe,
+			seed,
 		},
 	);
 	let requested_output = match &args.out {

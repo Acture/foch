@@ -40,10 +40,11 @@ pub use compile::{Bundle, RunContext, RunnerCapabilities, check_capabilities, co
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, blocks_run};
 pub use interpret::{
 	EvidenceStatus, InterpretOptions, Interpretation, InterpretedCase, Observation, Observed,
-	Outcome, SemanticsCatalog, interpret,
+	Outcome, SeedFacts, SeededCountry, SemanticsCatalog, interpret,
 };
 pub use judge::{CaseResult, RunArtifacts, RunnerExit, Status, Timing, judge, reconcile};
 pub use lint::{Footprint, LintResult, ProjectFacts, lint};
+pub use model::Tag;
 pub use plan::{ExpandOptions, Expanded, GroupOptions, Plan, expand, group};
 pub use report::Report;
 pub use select::Selector;
