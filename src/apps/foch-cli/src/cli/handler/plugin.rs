@@ -346,6 +346,7 @@ fn resolve_requested(
 	id: &str,
 	version: Option<&str>,
 	catalog: &BTreeMap<String, BTreeMap<Version, plugin::Manifest>>,
+	store_root: &std::path::Path,
 ) -> Result<(String, Option<Version>), Box<dyn std::error::Error>> {
 	let (id, mut reference) = match id.rsplit_once('@') {
 		// Ids cannot contain '@', so any split belongs to the reference.
@@ -368,20 +369,35 @@ fn resolve_requested(
 		if let Ok(version) = Version::parse(tag) {
 			requested = Some(version);
 		} else if reference.len() >= 7 && reference.bytes().all(|b| b.is_ascii_hexdigit()) {
-			// A content-hash reference: match the installed version's
-			// build-metadata suffix.
-			let matched = versions
-				.keys()
-				.find(|version| {
-					version.build.as_str().len() >= reference.len()
-						&& version.build.as_str().ends_with(&reference)
-				})
-				.ok_or_else(|| {
-					std::io::Error::other(format!(
-						"no installed version of {id} matches hash {reference}"
+			// A content-hash reference: the store's version directories
+			// carry `<version>+<hash>` names, and the pin is the plain
+			// manifest version the matching directory installs.
+			let plugin_dir = store_root.join(&id);
+			let mut matched = None;
+			for entry in std::fs::read_dir(&plugin_dir)
+				.map_err(|_| std::io::Error::other(format!("no plugin with id {id} is installed")))?
+				.flatten()
+			{
+				let name = entry.file_name().to_string_lossy().into_owned();
+				let Some((plain, hash)) = name.split_once('+') else {
+					continue;
+				};
+				if hash.starts_with(&reference)
+					&& let Ok(version) = Version::parse(plain)
+					&& versions.contains_key(&version)
+					&& matched.replace(version).is_some()
+				{
+					return Err(std::io::Error::other(format!(
+						"hash {reference} matches several installed versions of {id}"
 					))
-				})?;
-			requested = Some(matched.clone());
+					.into());
+				}
+			}
+			requested = Some(matched.ok_or_else(|| {
+				std::io::Error::other(format!(
+					"no installed version of {id} matches hash {reference}"
+				))
+			})?);
 		} else {
 			return Err(std::io::Error::other(format!(
 				"reference {reference:?} is neither a version tag nor a hash"
@@ -397,7 +413,8 @@ fn set_enabled(args: &PluginToggleArgs, enabled: bool) -> HandlerResult {
 	let (catalog, _) = catalog_with_builtins(&store_root);
 
 	let path = plugin::paths::selections_path()?;
-	let (id, requested) = resolve_requested(&args.id, args.version.as_deref(), &catalog)?;
+	let (id, requested) =
+		resolve_requested(&args.id, args.version.as_deref(), &catalog, &store_root)?;
 	let args = PluginToggleArgs {
 		id,
 		version: None,
