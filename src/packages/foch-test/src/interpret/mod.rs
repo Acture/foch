@@ -109,24 +109,18 @@ const CHEATS: &[(&str, &str)] = &[
 	("manpower", "manpower"),
 ];
 
-/// Simulation toggles the model cannot see: they change how the game
-/// environment behaves, not any state the authored script reads, so the
-/// offline layer runs them as a no-op with a note and the runner passes
-/// the line to the console verbatim. Whether they make an assertion
-/// non-deterministic is the author's judgement, not the layer's.
-const PASSTHROUGH_CHEATS: &[&str] = &["yesman", "fow", "ti", "observe", "ai", "spectate", "helium"];
-
 /// What a cheat step does in the model.
 pub(crate) enum CheatKind {
 	/// Adds to a numeric slot.
 	Mapped { slot: &'static str, amount: f64 },
-	/// Runs as a no-op; the console owns the real behavior.
-	Passthrough { name: &'static str },
+	/// Runs as a no-op in the model; the console owns the real behavior —
+	/// including rejecting names it does not know, where the author sees it.
+	Passthrough { name: String },
 }
 
-/// Classify a cheat command line for collection and the model. Unknown
-/// names refuse: that is typo protection, the same treatment an unknown
-/// effect gets.
+/// Classify a cheat command line. Mapped commands change numeric slots;
+/// everything else passes through: the framework does not gatekeep the
+/// console's command set.
 pub(crate) fn cheat_kind(command: &str) -> Result<CheatKind, String> {
 	let mut parts = command.split_whitespace();
 	let name = parts.next().unwrap_or_default();
@@ -142,18 +136,9 @@ pub(crate) fn cheat_kind(command: &str) -> Result<CheatKind, String> {
 		}
 		return Ok(CheatKind::Mapped { slot, amount });
 	}
-	if let Some(found) = PASSTHROUGH_CHEATS.iter().find(|cheat| **cheat == name) {
-		return Ok(CheatKind::Passthrough { name: found });
-	}
-	Err(format!(
-		"cheat \"{command}\": {name} is not a console command this framework knows; 		 mapped: {}, passthrough: {}",
-		CHEATS
-			.iter()
-			.map(|(cheat, _)| *cheat)
-			.collect::<Vec<_>>()
-			.join(", "),
-		PASSTHROUGH_CHEATS.join(", ")
-	))
+	Ok(CheatKind::Passthrough {
+		name: name.to_string(),
+	})
 }
 
 /// The slot an effect key adds to.
@@ -845,8 +830,9 @@ impl<'a> Interpreter<'a> {
 						);
 					}
 					Ok(CheatKind::Passthrough { name }) => {
-						// The model has no AI or fog to toggle; the note says
-						// so, the runner passes the line through.
+						// The model has no AI, fog or console to run it on;
+						// the note says so, the runner passes the line
+						// through and the game answers for itself.
 						world.note(
 							&case.start.tag,
 							Observed::SlotSet {
@@ -1080,11 +1066,9 @@ impl<'a> Interpreter<'a> {
 				Step::TakeDecision { name, span } => {
 					self.scan_decision(name, span, scope, &mut seen, reasons);
 				}
-				Step::Cheat { command, span } => {
-					if let Err(reason) = cheat_kind(command) {
-						reasons.push(format!("{span}: {reason}"));
-					}
-				}
+				// Cheats pass the scan unmolested; mapped commands that
+				// are malformed surface at execution with the reason.
+				Step::Cheat { .. } => {}
 				Step::AdvanceDays { .. } => {}
 			}
 		}
@@ -3705,26 +3689,52 @@ test = {
 	}
 
 	#[test]
-	fn a_mistyped_cheat_refuses_at_collection() {
-		let sources = [file(
-			"tests/scenario.txt",
-			SourceKind::TestsDir,
-			r#"test = {
-	name = typo
+	fn an_unmapped_cheat_name_passes_through() {
+		const CASES: &str = r#"test = {
+	name = any_command
 	time = 1444.11.11
 	tag = SWE
 	cheat = "casg 500"
-	expect = { always = yes }
-}"#,
-		)];
+	effect = { set_country_flag = ready }
+	expect = { has_country_flag = ready }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
 		let collection = collect(&sources);
 		assert!(
-			collection
-				.diagnostics
-				.iter()
-				.any(|diagnostic| diagnostic.message.contains("casg is not a console command")),
+			collection.diagnostics.is_empty(),
 			"{:#?}",
 			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: true,
+			},
+		);
+		let any_command = case(&result, "any_command");
+		assert_eq!(any_command.outcome, Outcome::Pass, "{:#?}", any_command);
+		assert!(
+			any_command.trace.iter().any(|observation| matches!(
+				&observation.event,
+				Observed::SlotSet { slot, value }
+					if slot == "cheat" && value.contains("casg passes through")
+			)),
+			"{:#?}",
+			any_command.trace
 		);
 	}
 

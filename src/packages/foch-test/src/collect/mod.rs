@@ -346,13 +346,10 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			span: span(),
 		},
 		("take_decision", Some(Value::Text(name))) => Step::TakeDecision { name, span: span() },
-		("cheat", Some(Value::Text(command))) => {
-			crate::interpret::cheat_kind(&command)?;
-			Step::Cheat {
-				command,
-				span: span(),
-			}
-		}
+		("cheat", Some(Value::Text(command))) => Step::Cheat {
+			command,
+			span: span(),
+		},
 		_ => unreachable!("step types are fixed by the schema"),
 	}))
 }
