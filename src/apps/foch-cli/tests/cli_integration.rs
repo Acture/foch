@@ -1215,7 +1215,7 @@ fn run_foch_with_env(
 fn plugin_import_preserves_known_game_and_package_inputs_but_allows_offline_imports() {
 	fn write_package(root: &Path) {
 		fs::create_dir_all(root).unwrap();
-		fs::write(root.join("foch-plugin.toml"), "schema=1\n[plugin]\nid=\"dev.foch.sample\"\nname=\"Sample\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"sample.dll\"").unwrap();
+		fs::write(root.join("foch-plugin.toml"), "schema=1\n[plugin]\nid=\"dev.foch.sample\"\nname=\"Sample\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=0\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"sample.dll\"").unwrap();
 		let mut dll = vec![0; 0x80];
 		dll[..2].copy_from_slice(b"MZ");
 		dll[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
@@ -1297,7 +1297,7 @@ fn plugin_disable_preserves_existing_choices_when_installed_versions_are_ambiguo
 	use foch::plugin::{selection, store};
 	let scratch = TempDir::new().unwrap();
 	let id = "dev.foch.sample";
-	let manifest = "schema=1\n[plugin]\nid=\"dev.foch.sample\"\nname=\"Sample\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=1\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"sample.dll\"";
+	let manifest = "schema=1\n[plugin]\nid=\"dev.foch.sample\"\nname=\"Sample\"\nversion=\"1.0.0\"\n[target]\ngame=\"eu4\"\nplatform=\"windows-x86_64\"\ngame_versions=\"*\"\nabi_major=0\n[entry]\nkind=\"native\"\nphase=\"entry\"\npath=\"sample.dll\"";
 	for index in 0..2 {
 		let package = scratch.path().join(format!("package-{index}"));
 		fs::create_dir(&package).unwrap();
@@ -1504,7 +1504,7 @@ fn plugin_status_rejects_external_event_files_and_invalid_plans() {
 		"events":foch::plugin::deployment::path_text(&own_events).unwrap(),
 		"plugins":[{"id":"sample", "version":"1.0.0", "kind":"native", "phase":"entry",
 			"path":r"C:\runtime\sample.dll", "sha256":"a".repeat(64),
-			"config_json":"{}", "dirs":{}, "status":null, "abi_major":1}]});
+			"config_json":"{}", "dirs":{}, "status":null, "abi_major":0}]});
 	let args = [
 		"plugin",
 		"status",
@@ -1618,7 +1618,7 @@ version = "1.0.0"
 platform = "windows-x86_64"
 game = "eu4"
 game_versions = "*"
-abi_major = 1
+abi_major = 0
 [entry]
 kind = "native"
 path = "sample.dll"

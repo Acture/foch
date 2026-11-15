@@ -1,0 +1,42 @@
+[package]
+name = "foch-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "The EU4 host: the in-game DLL plugin loader and the out-of-process test runner"
+readme = "../../apps/foch-cli/README.md"
+# The published crate carries its sources and license texts only; the
+# loader fixtures and tests stay in the repository.
+include = [
+	"/src/**",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }
+foch.workspace = true
+foch-test.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+	"Win32_System_LibraryLoader",
+	"Win32_System_Memory",
+	"Win32_System_Diagnostics_Debug",
+	"Win32_System_IO",
+	"Win32_System_Ioctl",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+cc = "1.2"

@@ -4,16 +4,15 @@ members = [
 	"src/packages/foch",
 	"src/packages/foch-annotation",
 	"src/packages/foch-lsp",
-	"src/packages/foch-runner",
-	"src/packages/foch-plugin-abi",
-	"src/packages/foch-eu4-host",
-	"src/packages/foch-plugin-trade-blackhole",
+	"src/packages/foch-plugin-sdk",
+	"src/packages/foch-runtime",
+	"plugins/eu4-dynamic-trade-blackhole",
 	"src/packages/foch-test",
 	"src/apps/foch-cli",
 	"src/apps/foch-desktop/src-tauri",
 	"src/packages/tree-sitter-paradox",
 ]
-default-members = ["src/packages/foch", "src/packages/foch-annotation", "src/packages/foch-lsp", "src/packages/foch-runner", "src/packages/foch-test", "src/apps/foch-cli"]
+default-members = ["src/packages/foch", "src/packages/foch-annotation", "src/packages/foch-lsp", "src/packages/foch-test", "src/apps/foch-cli"]
 
 [workspace.package]
 version = "0.0.2"
@@ -25,13 +24,18 @@ repository = "https://github.com/Acture/foch"
 keywords = ["paradox", "eu4", "modding", "lsp", "static-analysis"]
 categories = ["command-line-utilities", "development-tools"]
 
+# Inside this workspace the SDK resolves to the local member; a standalone
+# plugin clone pulls the same crate from crates.io.
+[patch.crates-io]
+foch-plugin-sdk = { path = "src/packages/foch-plugin-sdk" }
+
 [workspace.dependencies]
+foch-runtime = { path = "src/packages/foch-runtime", version = "=0.0.2" }
 # Published crates resolve these from the registry, so each path dependency
 # pins exactly the version its path package declares.
 foch = { path = "src/packages/foch", version = "=0.0.2" }
 foch-annotation = { path = "src/packages/foch-annotation", version = "=0.0.2" }
 foch-lsp = { path = "src/packages/foch-lsp", version = "=0.0.2" }
-foch-runner = { path = "src/packages/foch-runner", version = "=0.0.2" }
 foch-test = { path = "src/packages/foch-test", version = "=0.0.2" }
 tree-sitter-paradox = { path = "src/packages/tree-sitter-paradox", version = "=0.3.0" }
 bincode = "1.3.3"

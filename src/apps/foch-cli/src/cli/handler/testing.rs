@@ -10,7 +10,7 @@ use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_c
 use foch::input::load_config_read_only;
 use foch_annotation::builtin::SCHEMAS;
 use foch_annotation::value::scalar;
-use foch_runner::{DependencyMod, Installation, RunOptions};
+use foch_runtime::runner::{DependencyMod, Installation, RunOptions};
 use foch_test::judge::CaseResult;
 use foch_test::model::RunId;
 use foch_test::plan::{IgnoredMode, Isolation, Plan, SessionId};
@@ -53,7 +53,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 			IgnoredMode::Exclude
 		},
 	};
-	let capabilities = foch_runner::capabilities();
+	let capabilities = foch_runtime::runner::capabilities();
 	let planned = plan(
 		&args.path,
 		&selection,
@@ -90,7 +90,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	}
 
 	let config = load_config_read_only()?;
-	let game_root = foch_runner::locate_game(&config, args.game_path.as_deref())?;
+	let game_root = foch_runtime::runner::locate_game(&config, args.game_path.as_deref())?;
 	let real_user_dir = args.eu4_user_dir.clone().or_else(default_eu4_user_dir);
 	// Load the mod's declared dependencies (resolved against installed mods)
 	// so content that relies on them works; unresolved ones are reported.
@@ -106,20 +106,20 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 		.with_plugins
 		.as_ref()
 		.map(
-			|playset| -> std::result::Result<foch_runner::HostLaunch, String> {
+			|playset| -> std::result::Result<foch_runtime::runner::HostLaunch, String> {
 				let host_dll = std::env::current_exe()
 					.ok()
-					.and_then(|exe| exe.parent().map(|dir| dir.join("foch_eu4_host.dll")))
+					.and_then(|exe| exe.parent().map(|dir| dir.join("foch_runtime.dll")))
 					.filter(|path| path.is_file())
 					.ok_or_else(|| {
 						format!(
-							"cannot find foch_eu4_host.dll beside {}; build foch-eu4-host",
+							"cannot find foch_runtime.dll beside {}; build foch-runtime",
 							std::env::current_exe()
 								.map(|exe| exe.display().to_string())
 								.unwrap_or_default()
 						)
 					})?;
-				Ok(foch_runner::HostLaunch {
+				Ok(foch_runtime::runner::HostLaunch {
 					playset: playset.clone(),
 					host_dll,
 				})
@@ -143,7 +143,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	let runtime_base = fs::canonicalize(std::env::temp_dir())?.join("foch-rt");
 	fs::create_dir_all(&runtime_base)?;
 	// Clear layers a previously killed run could not tear down itself.
-	foch_runner::sweep_runtime_base(&runtime_base, STALE_LAYER_GRACE);
+	foch_runtime::runner::sweep_runtime_base(&runtime_base, STALE_LAYER_GRACE);
 	let installation = Installation {
 		game_root: game_root.clone(),
 		runtime_base,
@@ -245,7 +245,7 @@ fn seed_from_game(args: &TestArgs) -> Result<Option<foch_test::SeedFacts>> {
 		return Ok(None);
 	};
 	let config = load_config_read_only()?;
-	let game_root = match foch_runner::locate_game(&config, Some(game_path)) {
+	let game_root = match foch_runtime::runner::locate_game(&config, Some(game_path)) {
 		Ok(root) => root,
 		Err(_) => return Ok(None),
 	};
@@ -1110,7 +1110,7 @@ fn run_one_session(
 	// Write the full bundle (test layer, commands, manifest) for inspection;
 	// the runner reuses the test layer it leaves in `directory`.
 	materialize(bundle, source_root, directory)?;
-	let outcome = foch_runner::run_session(
+	let outcome = foch_runtime::runner::run_session(
 		bundle,
 		source_root,
 		dependencies,

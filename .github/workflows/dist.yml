@@ -145,7 +145,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize public build submodules
-        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config plugins/eu4-dynamic-trade-blackhole
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -241,7 +241,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize public build submodules
-        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config plugins/eu4-dynamic-trade-blackhole
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -332,7 +332,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize public build submodules
-        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config plugins/eu4-dynamic-trade-blackhole
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master

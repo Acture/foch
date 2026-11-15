@@ -350,12 +350,10 @@ pub enum Installed {
 pub fn install(store_root: &Path, package: &ValidatedPackage) -> io::Result<Installed> {
 	fs::create_dir_all(store_root)?;
 	let root = store_root.canonicalize()?;
+	// `owner/plugin` ids nest one directory deeper than flat ids, so
+	// the parent chain is created recursively.
 	let parent = plugin_dir(&root, &package.manifest.plugin.id);
-	match fs::create_dir(&parent) {
-		Ok(()) => {}
-		Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-		Err(error) => return Err(error),
-	}
+	fs::create_dir_all(&parent)?;
 	let parent = checked_directory(&parent, &root)?;
 	let destination = parent.join(package.version_dir_name());
 	match fs::symlink_metadata(&destination) {
@@ -455,26 +453,70 @@ pub fn catalog_with_defaults(
 }
 
 /// Preserve installed directory identities for frozen runtime deployment.
+/// The dotted base of a version directory name is numeric
+/// (`0.1.0`), which distinguishes version directories from owner
+/// namespace children.
+fn base_is_numeric(base: &str) -> bool {
+	base.split('.')
+		.all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
 pub fn installed_versions(store_root: &Path) -> (Vec<InstalledVersion>, Vec<String>) {
 	let mut versions = Vec::new();
 	let mut problems = Vec::new();
 	let Ok(root) = store_root.canonicalize() else {
 		return (versions, problems);
 	};
-	let Ok(plugin_dirs) = fs::read_dir(&root) else {
+	let Ok(first_level) = fs::read_dir(&root) else {
 		return (versions, problems);
 	};
-	for plugin_entry in plugin_dirs.flatten() {
-		if !plugin_entry
+	// `owner/plugin` ids nest one directory deeper than flat ids: a
+	// first-level directory whose children are not version directories
+	// is an owner namespace, and its children are the plugin dirs.
+	let looks_like_version = |name: &str| {
+		!name.starts_with('.')
+			&& name
+				.split('+')
+				.next()
+				.is_some_and(|base| base.split('.').count() >= 2)
+			&& base_is_numeric(name.split('+').next().unwrap_or(""))
+	};
+	let mut plugin_dirs: Vec<PathBuf> = Vec::new();
+	for entry in first_level.flatten() {
+		if !entry
 			.file_type()
 			.is_ok_and(|kind| kind.is_dir() || kind.is_symlink())
 		{
 			continue;
 		}
-		let plugin_dir = match checked_directory(&plugin_entry.path(), &root) {
+		let dir = entry.path();
+		let child_names = fs::read_dir(&dir)
+			.map(|entries| {
+				entries
+					.flatten()
+					.map(|child| child.file_name().to_string_lossy().into_owned())
+					.collect::<Vec<_>>()
+			})
+			.unwrap_or_default();
+		if child_names.iter().any(|name| looks_like_version(name)) {
+			plugin_dirs.push(dir);
+		} else {
+			for child in child_names {
+				plugin_dirs.push(dir.join(child));
+			}
+		}
+	}
+	for plugin_entry_path in plugin_dirs {
+		if !plugin_entry_path
+			.symlink_metadata()
+			.is_ok_and(|meta| meta.is_dir() || meta.file_type().is_symlink())
+		{
+			continue;
+		}
+		let plugin_dir = match checked_directory(&plugin_entry_path, &root) {
 			Ok(path) => path,
 			Err(error) => {
-				problems.push(format!("{}: {error}", plugin_entry.path().display()));
+				problems.push(format!("{}: {error}", plugin_entry_path.display()));
 				continue;
 			}
 		};

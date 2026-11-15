@@ -69,10 +69,11 @@ pub struct Manifest {
 	pub status: Option<StatusRule>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 pub struct PluginMeta {
-	/// Stable, reverse-domain id. Never changes across versions.
+	/// Stable identity: the explicit `id` field, or `<owner>/<repo>`
+	/// derived from `repository` when the manifest carries no id. Never
+	/// changes across versions.
 	pub id: String,
 	pub name: String,
 	pub version: Version,
@@ -82,6 +83,86 @@ pub struct PluginMeta {
 	pub license: Option<String>,
 	#[serde(default)]
 	pub description: Option<String>,
+	/// The plugin's source repository; the identity derives from it when
+	/// `id` is absent. Accepts `https://host/owner/repo[.git]` and the
+	/// ssh form `git@host:owner/repo[.git]`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub repository: Option<String>,
+}
+
+/// `<owner>/<repo>` from a repository URL, the identity a manifest
+/// without an explicit `id` carries.
+pub fn id_from_repository(repository: &str) -> Result<String, String> {
+	let mut rest = repository.trim().trim_end_matches(".git");
+	if let Some((_, after)) = rest.split_once("://") {
+		rest = after;
+	} else if let Some((_, after)) = rest.split_once(':') {
+		// The ssh form, `git@host:owner/repo`.
+		rest = after;
+	}
+	let mut segments: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+	// A full URL carries its host first (`github.com/owner/repo`); the
+	// ssh remainder and bare paths are already `owner/repo`.
+	if segments.first().is_some_and(|first| first.contains('.')) {
+		if segments.len() < 3 {
+			return Err(format!(
+				"repository {repository:?} carries no <owner>/<repo> path to derive the id from"
+			));
+		}
+		segments.remove(0);
+	}
+	if segments.len() != 2 {
+		return Err(format!(
+			"repository {repository:?} carries no <owner>/<repo> path to derive the id from"
+		));
+	}
+	let (owner, repo) = (segments[0], segments[1]);
+	if [owner, repo].iter().any(|part| {
+		part.is_empty()
+			|| part.starts_with('.')
+			|| part.ends_with('.')
+			|| !part
+				.bytes()
+				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+	}) {
+		return Err(format!("repository {repository:?} derives an invalid id"));
+	}
+	Ok(format!("{owner}/{repo}"))
+}
+
+impl<'de> Deserialize<'de> for PluginMeta {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		#[derive(Deserialize)]
+		#[serde(deny_unknown_fields)]
+		struct Raw {
+			id: Option<String>,
+			name: String,
+			version: Version,
+			#[serde(default)]
+			authors: Vec<String>,
+			#[serde(default)]
+			license: Option<String>,
+			#[serde(default)]
+			description: Option<String>,
+			#[serde(default)]
+			repository: Option<String>,
+		}
+		let raw = Raw::deserialize(deserializer)?;
+		let id = match raw.id {
+			Some(id) => id,
+			None => id_from_repository(raw.repository.as_deref().unwrap_or(""))
+				.map_err(serde::de::Error::custom)?,
+		};
+		Ok(PluginMeta {
+			id,
+			name: raw.name,
+			version: raw.version,
+			authors: raw.authors,
+			license: raw.license,
+			description: raw.description,
+			repository: raw.repository,
+		})
+	}
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -296,17 +377,26 @@ impl Manifest {
 			return Err(ManifestError::UnsupportedSchema(self.schema));
 		}
 		let id = &self.plugin.id;
+		// Ids are `owner/plugin` style (derived from a repository) or a
+		// plain identifier; each `/`-separated segment must be a safe
+		// identifier, so the id stays a safe relative store path.
+		let valid_segment = |segment: &str| {
+			!segment.is_empty()
+				&& !segment.starts_with('.')
+				&& !segment.ends_with('.')
+				&& segment
+					.bytes()
+					.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+		};
 		if id.is_empty()
 			|| id.len() > 256
-			|| id.starts_with('.')
-			|| id.ends_with('.')
-			|| !id
-				.bytes()
-				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+			|| id.starts_with('/')
+			|| id.ends_with('/')
+			|| !id.split('/').all(valid_segment)
 			|| super::store::safe_relative(id).is_err()
 		{
 			return Err(ManifestError::Invalid(
-				"plugin id must be a safe identifier of 1..256 ASCII bytes".into(),
+				"plugin id must be `/`-separated safe identifiers of 1..256 ASCII bytes".into(),
 			));
 		}
 		if !self.entry.path.to_ascii_lowercase().ends_with(".dll") {
@@ -450,6 +540,52 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn repository_derives_the_identity_when_id_is_absent() {
+		for (repository, id) in [
+			(
+				"https://github.com/Acture/eu4-dynamic-trade-blackhole",
+				"Acture/eu4-dynamic-trade-blackhole",
+			),
+			(
+				"https://github.com/Acture/eu4-dynamic-trade-blackhole.git",
+				"Acture/eu4-dynamic-trade-blackhole",
+			),
+			(
+				"git@github.com:Acture/eu4-dynamic-trade-blackhole.git",
+				"Acture/eu4-dynamic-trade-blackhole",
+			),
+		] {
+			assert_eq!(id_from_repository(repository).unwrap(), id);
+		}
+		assert!(id_from_repository("https://github.com/Acture").is_err());
+		assert!(id_from_repository("not a url").is_err());
+	}
+
+	#[test]
+	fn a_manifest_without_id_or_repository_is_rejected() {
+		let text = UNICODE.replace(
+			"id = \"io.github.yozoratempest.eu4-unicode-patch\"
+",
+			"",
+		);
+		let Err(error) = toml::from_str::<Manifest>(&text) else {
+			panic!("identity-less manifest accepted");
+		};
+		assert!(error.to_string().contains("derive"));
+	}
+
+	#[test]
+	fn owner_slash_ids_validate_and_bad_segments_do_not() {
+		let mut manifest: Manifest = toml::from_str(UNICODE).unwrap();
+		manifest.plugin.id = "Acture/eu4-dynamic-trade-blackhole".to_string();
+		assert!(manifest.validate().is_ok());
+		for bad in ["a//b", "/a", "a/", "a/./b", "a/../b", "a/ b"] {
+			manifest.plugin.id = bad.to_string();
+			assert!(manifest.validate().is_err(), "{bad:?} accepted");
+		}
+	}
 
 	const UNICODE: &str = r#"
 schema = 1
