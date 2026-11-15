@@ -403,6 +403,10 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			span: span(),
 		},
 		("take_decision", Some(Value::Text(name))) => Step::TakeDecision { name, span: span() },
+		("cheat", Some(Value::Text(command))) => Step::Cheat {
+			command,
+			span: span(),
+		},
 		_ => unreachable!("step types are fixed by the schema"),
 	}))
 }
@@ -411,9 +415,9 @@ fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<V
 	match key {
 		"expect_receipt" => Ok(None),
 		"effect" | "expect" | "advance_days" => typed(file, key, value).map(Some),
-		"take_decision" => parse_value(&file.path, &file.text, value, ValueType::Text)
+		"take_decision" | "cheat" => parse_value(&file.path, &file.text, value, ValueType::Text)
 			.map(Some)
-			.map_err(|message| format!("take_decision: {message}")),
+			.map_err(|message| format!("{key}: {message}")),
 		"fire" => parse_value(&file.path, &file.text, value, ValueType::EventId)
 			.map(Some)
 			.map_err(|message| format!("fire: {message}")),

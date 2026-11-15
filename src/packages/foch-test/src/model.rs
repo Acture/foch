@@ -289,6 +289,12 @@ pub enum Step {
 	Expect {
 		clauses: Vec<Clause>,
 	},
+	/// Apply a collected decision: its `allow` gates the step and its
+	/// `effect` block runs in the case's country scope.
+	TakeDecision {
+		name: String,
+		span: SourceSpan,
+	},
 	/// Expect a plugin receipt: a `FOCH_RECEIPT/1` message the plugin
 	/// reported through the host log channel during this session. The
 	/// engine never sees this; the judge matches it against the session's
@@ -300,10 +306,9 @@ pub enum Step {
 		fields: Vec<(String, String)>,
 		span: SourceSpan,
 	},
-	/// Apply a collected decision: its `allow` gates the step and its
-	/// `effect` block runs in the case's country scope.
-	TakeDecision {
-		name: String,
+	/// Run a console cheat command as setup (`cash 500`, `adm 100`, ...).
+	Cheat {
+		command: String,
 		span: SourceSpan,
 	},
 }
@@ -345,6 +350,8 @@ pub struct TestCase {
 
 impl TestCase {
 	/// A case without any expectation only proves that its steps completed.
+	/// Plugin receipts are expectations too: they assert what a loaded
+	/// plugin actually did during the session.
 	pub fn is_smoke(&self) -> bool {
 		!self
 			.steps
@@ -373,6 +380,8 @@ impl TestCase {
 						clauses.iter().map(|clause| clause.text.as_str()).collect();
 					format!("expect {}", clauses.join("\n"))
 				}
+				Step::TakeDecision { name, .. } => format!("take_decision {name}"),
+				Step::Cheat { command, .. } => format!("cheat {command}"),
 				Step::ExpectReceipt { plugin, fields, .. } => format!(
 					"expect_receipt {plugin} {}",
 					fields
@@ -381,7 +390,6 @@ impl TestCase {
 						.collect::<Vec<_>>()
 						.join(" ")
 				),
-				Step::TakeDecision { name, .. } => format!("take_decision {name}"),
 			})
 			.collect();
 		let identity = Identity {

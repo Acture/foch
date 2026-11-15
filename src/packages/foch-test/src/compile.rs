@@ -298,13 +298,20 @@ pub fn compile(
 			}
 		}
 		let mut pending_days: Option<u32> = None;
+		let mut cheats: Vec<String> = Vec::new();
 		for (step_index, step) in case.steps.iter().enumerate() {
 			let step_index = step_index as u32;
 			match step {
+				// A decision step is refused by the second match below with a
+				// clean CompileError instead of panicking here.
+				Step::TakeDecision { .. } => {}
+				Step::Cheat { command, .. } => {
+					cheats.push(command.clone());
+					continue;
+				}
+				// Receipts are judged from the host event stream, not the
+				// engine log; the generated script stays untouched.
 				Step::ExpectReceipt { .. } => {}
-				// Receipts are judged from the host event stream, not
-				// the engine log; the generated script stays untouched.
-				Step::TakeDecision { .. } => unreachable!("refused before writing"),
 				Step::AdvanceDays { days, .. } => {
 					*pending_days.get_or_insert(0) += days;
 					continue;
@@ -313,7 +320,6 @@ pub fn compile(
 				_ => {}
 			}
 			match step {
-				Step::ExpectReceipt { .. } => {}
 				Step::Effect { block } => writer.body.push_str(&native(block)?),
 				Step::Fire { event, span } => {
 					writer.fire(event);
@@ -335,6 +341,8 @@ pub fn compile(
 					}
 				}
 				Step::AdvanceDays { .. } => unreachable!("handled above"),
+				Step::Cheat { .. } => {}
+				Step::ExpectReceipt { .. } => {}
 				Step::TakeDecision { name, span } => {
 					return Err(fail(
 						Some(span),

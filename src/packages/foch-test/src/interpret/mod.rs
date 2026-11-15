@@ -109,17 +109,124 @@ const EVENT_META_KEYS: &[&str] = &[
 	"is_triggered_only",
 ];
 
+/// Player-facing numeric country stats, as (effect key, trigger key). The
+/// model starts every slot at `0`, adds accumulate, and the trigger family
+/// compares `>=`. The starting value is a modeling choice recorded in the
+/// catalog facts and in every trace: whether it matches the game's own
+/// start is the author's judgement until a base-snapshot seed lands.
+const NUMBER_SLOTS: &[(&str, &str)] = &[
+	("add_adm_power", "adm_power"),
+	("add_dip_power", "dip_power"),
+	("add_mil_power", "mil_power"),
+	("add_treasury", "treasury"),
+	("add_stability", "stability"),
+	("add_prestige", "prestige"),
+	("add_legitimacy", "legitimacy"),
+	("add_republican_tradition", "republican_tradition"),
+	("add_devotion", "devotion"),
+	("add_horde_unity", "horde_unity"),
+	("add_absolutism", "absolutism"),
+	("add_army_tradition", "army_tradition"),
+	("add_navy_tradition", "navy_tradition"),
+	("add_manpower", "manpower"),
+];
+
+/// Console cheat commands the model maps to numeric slots, as (command,
+/// slot). Only these are accepted; simulation toggles (`fow`, `ti`,
+/// `yesman`, `observe`) and out-of-model cheats refuse with the reason.
+/// The built-in runner passes the raw line to the game console instead.
+const CHEATS: &[(&str, &str)] = &[
+	("cash", "treasury"),
+	("adm", "adm_power"),
+	("dip", "dip_power"),
+	("mil", "mil_power"),
+	("prestige", "prestige"),
+	("stability", "stability"),
+	("manpower", "manpower"),
+];
+
+/// What a cheat step does in the model.
+pub(crate) enum CheatKind {
+	/// Adds to a numeric slot.
+	Mapped { slot: &'static str, amount: f64 },
+	/// Runs as a no-op in the model; the console owns the real behavior —
+	/// including rejecting names it does not know, where the author sees it.
+	Passthrough { name: String },
+}
+
+/// Classify a cheat command line. Mapped commands change numeric slots;
+/// everything else passes through: the framework does not gatekeep the
+/// console's command set.
+pub(crate) fn cheat_kind(command: &str) -> Result<CheatKind, String> {
+	let mut parts = command.split_whitespace();
+	let name = parts.next().unwrap_or_default();
+	if let Some((_, slot)) = CHEATS.iter().find(|(cheat, _)| *cheat == name) {
+		let amount = parts
+			.next()
+			.and_then(|text| text.parse::<f64>().ok())
+			.ok_or_else(|| format!("cheat \"{command}\": needs a number"))?;
+		if parts.next().is_some() {
+			return Err(format!(
+				"cheat \"{command}\": expected one command and one number"
+			));
+		}
+		return Ok(CheatKind::Mapped { slot, amount });
+	}
+	Ok(CheatKind::Passthrough {
+		name: name.to_string(),
+	})
+}
+
+/// The slot an effect key adds to.
+fn number_effect(key: &str) -> Option<&'static str> {
+	NUMBER_SLOTS
+		.iter()
+		.find(|(effect, _)| *effect == key)
+		.map(|(_, trigger)| *trigger)
+}
+
+/// The slot a trigger key compares.
+fn number_trigger(key: &str) -> Option<&'static str> {
+	NUMBER_SLOTS
+		.iter()
+		.find(|(_, trigger)| *trigger == key)
+		.map(|(_, trigger)| *trigger)
+}
+
 /// The scope aliases the model resolves.
 const ALIASES: &[&str] = &["THIS", "ROOT", "PREV", "FROM"];
 
 /// Identity of one offline run, mirroring [`crate::compile::RunContext`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InterpretOptions {
 	pub run_id: RunId,
 	/// Mod under test; recorded so a result file is readable on its own.
 	pub mod_name: String,
 	/// Record each case's run trace (observer mode).
 	pub observe: bool,
+	/// Starting state from the game's history files, when a game install is
+	/// available; without it the model world is only the countries a case
+	/// names and unwritten slots refuse.
+	pub seed: Option<SeedFacts>,
+}
+
+/// Starting state the caller supplies from the game's own history files:
+/// the countries existing at the bookmark and their religion, culture,
+/// government and rank. Numeric stats stay at the modeled 0 — the history
+/// files do not carry them; engine defaults are not foch's to invent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SeedFacts {
+	pub tags: BTreeSet<Tag>,
+	pub countries: BTreeMap<Tag, SeededCountry>,
+}
+
+/// A country's scripted starting slots; `None` stays unknown until written.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SeededCountry {
+	pub religion: Option<String>,
+	pub culture: Option<String>,
+	pub government: Option<String>,
+	pub government_rank: Option<i64>,
 }
 
 /// One case's offline verdict. Deliberately not a [`crate::judge::Status`].
@@ -393,6 +500,7 @@ pub fn interpret(
 			.map(|decision| (decision.name.as_str(), decision))
 			.collect(),
 		observe: options.observe,
+		seed: options.seed.as_ref(),
 	};
 	Interpretation {
 		layer: LAYER,
@@ -432,9 +540,12 @@ struct World {
 	cultures: BTreeMap<Tag, String>,
 	governments: BTreeMap<Tag, String>,
 	government_ranks: BTreeMap<Tag, i64>,
-	/// Every country the case has named: the model world `every_country`
-	/// iterates. It is not the full game country set.
+	/// The model world `every_country` iterates: the countries the case has
+	/// named, or — when a seed is supplied — every country existing at the
+	/// bookmark per the game's own history files.
 	named: BTreeSet<Tag>,
+	/// Player-facing numeric stats; absent entries read as the modeled 0.
+	numbers: BTreeMap<Tag, BTreeMap<&'static str, f64>>,
 	/// Observer mode: the run trace, recorded only when asked for.
 	trace: Vec<Observation>,
 	recording: bool,
@@ -591,6 +702,8 @@ struct Interpreter<'a> {
 	scripted_triggers: BTreeMap<&'a str, &'a ScriptedDef>,
 	/// The mod's decisions, applied by `take_decision` steps.
 	decisions: BTreeMap<&'a str, &'a DecisionInfo>,
+	/// Starting state from the game's history files, when supplied.
+	seed: Option<&'a SeedFacts>,
 	/// Observer mode: record each case's run trace.
 	observe: bool,
 }
@@ -667,9 +780,29 @@ impl<'a> Interpreter<'a> {
 			governments: BTreeMap::new(),
 			government_ranks: BTreeMap::new(),
 			named: BTreeSet::from([case.start.tag.clone()]),
+			numbers: BTreeMap::new(),
 			trace: Vec::new(),
 			recording: self.observe,
 		};
+		if let Some(seed) = self.seed {
+			// The seeded world is the countries existing at the bookmark;
+			// every_country iterates it instead of the case's named set.
+			for (tag, country) in &seed.countries {
+				if let Some(religion) = &country.religion {
+					world.religions.insert(tag.clone(), religion.clone());
+				}
+				if let Some(culture) = &country.culture {
+					world.cultures.insert(tag.clone(), culture.clone());
+				}
+				if let Some(government) = &country.government {
+					world.governments.insert(tag.clone(), government.clone());
+				}
+				if let Some(rank) = country.government_rank {
+					world.government_ranks.insert(tag.clone(), rank);
+				}
+			}
+			world.named.extend(seed.tags.iter().cloned());
+		}
 		world.note(&case.start.tag, Observed::CaseStart);
 		let root = ScopeCtx::start(&case.start.tag);
 		let mut failures = Vec::new();
@@ -733,6 +866,7 @@ impl<'a> Interpreter<'a> {
 				Step::AdvanceDays { .. } => "advance_days",
 				Step::Expect { .. } => "expect",
 				Step::TakeDecision { .. } => "take_decision",
+				Step::Cheat { .. } => "cheat",
 				Step::ExpectReceipt { .. } => "expect_receipt",
 			};
 			world.note(
@@ -788,6 +922,43 @@ impl<'a> Interpreter<'a> {
 						);
 					}
 				}
+				Step::Cheat { command, .. } => match cheat_kind(command) {
+					Ok(CheatKind::Mapped { slot, amount }) => {
+						let current = {
+							let slots = world.numbers.entry(case.start.tag.clone()).or_default();
+							let value = slots.entry(slot).or_insert(0.0);
+							*value += amount;
+							*value
+						};
+						world.note(
+							&case.start.tag,
+							Observed::SlotSet {
+								slot: slot.into(),
+								value: current.to_string(),
+							},
+						);
+					}
+					Ok(CheatKind::Passthrough { name }) => {
+						// The model has no AI, fog or console to run it on;
+						// the note says so, the runner passes the line
+						// through and the game answers for itself.
+						world.note(
+							&case.start.tag,
+							Observed::SlotSet {
+								slot: "cheat".into(),
+								value: format!("{name} passes through to the console"),
+							},
+						);
+					}
+					Err(reason) => {
+						return unsupported(
+							vec![reason],
+							failures,
+							passed,
+							std::mem::take(&mut world.trace),
+						);
+					}
+				},
 				Step::TakeDecision { name, .. } => {
 					if let Err(reason) = self.take_decision(&mut world, &root, name) {
 						return unsupported(
@@ -1028,6 +1199,9 @@ impl<'a> Interpreter<'a> {
 				Step::TakeDecision { name, span } => {
 					self.scan_decision(name, span, scope, &mut seen, reasons);
 				}
+				// Cheats pass the scan unmolested; mapped commands that
+				// are malformed surface at execution with the reason.
+				Step::Cheat { .. } => {}
 				Step::ExpectReceipt { span, .. } => {
 					reasons.push(format!(
 						"{span}: plugin receipts need a real game session; \
@@ -1741,6 +1915,31 @@ impl<'a> Interpreter<'a> {
 					},
 				);
 			}
+			other if number_effect(other).is_some() => {
+				let amount = match value {
+					AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} => text
+						.parse::<f64>()
+						.map_err(|_| format!("{where_}: {other} needs a number"))?,
+					_ => return Err(format!("{where_}: {other} needs a number")),
+				};
+				let slot = number_effect(other).expect("checked above");
+				let current = {
+					let slots = world.numbers.entry(ctx.current.clone()).or_default();
+					let value = slots.entry(slot).or_insert(0.0);
+					*value += amount;
+					*value
+				};
+				world.note(
+					&ctx.current,
+					Observed::SlotSet {
+						slot: slot.into(),
+						value: current.to_string(),
+					},
+				);
+			}
 			"declare_war_with_cb" => {
 				let AstValue::Block { items, .. } = value else {
 					return Err(format!("{where_}: declare_war_with_cb needs who = ..."));
@@ -2093,6 +2292,25 @@ impl<'a> Interpreter<'a> {
 					name_of(value).ok_or_else(|| format!("{where_}: tag needs a country tag"))?;
 				ctx.current.as_str() == wanted
 			}
+			other if number_trigger(other).is_some() => {
+				let wanted = match value {
+					AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} => text
+						.parse::<f64>()
+						.map_err(|_| format!("{where_}: {other} needs a number"))?,
+					_ => return Err(format!("{where_}: {other} needs a number")),
+				};
+				let slot = number_trigger(other).expect("checked above");
+				let observed = world
+					.numbers
+					.get(&ctx.current)
+					.and_then(|slots| slots.get(slot))
+					.copied()
+					.unwrap_or(0.0);
+				observed >= wanted
+			}
 			"offensive_war_with" | "defensive_war_with" => {
 				let other = Tag::parse(
 					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
@@ -2274,6 +2492,23 @@ impl<'a> Interpreter<'a> {
 			let AstStatement::Assignment { key, value, .. } = &statement else {
 				continue;
 			};
+			if let Some(slot) = number_trigger(key)
+				&& let AstValue::Scalar {
+					value: ScalarValue::Number(text),
+					..
+				} = value && let Ok(wanted) = text.parse::<f64>()
+			{
+				let observed = world
+					.numbers
+					.get(&ctx.current)
+					.and_then(|slots| slots.get(slot))
+					.copied()
+					.unwrap_or(0.0);
+				return format!(
+					"the model has {slot} = {observed} on {}, expected at least {wanted}",
+					ctx.current
+				);
+			}
 			let AstValue::Scalar { value, .. } = value else {
 				if key == "check_variable"
 					&& let Some((which, wanted)) = variable_args(value)
@@ -2516,6 +2751,7 @@ mod tests {
 				run_id: RunId::parse("run-1").unwrap(),
 				mod_name: "Offline Mod".into(),
 				observe: false,
+				seed: None,
 			},
 		)
 	}
@@ -3426,9 +3662,12 @@ country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = 
 	fn unmodeled_primitives_refuse_with_all_reasons() {
 		let facts = ProjectFacts {
 			effects: Some(
-				["add_adm_power".to_string(), "every_country".to_string()]
-					.into_iter()
-					.collect(),
+				[
+					"add_ruler_personality".to_string(),
+					"every_country".to_string(),
+				]
+				.into_iter()
+				.collect(),
 			),
 			triggers: Some(["is_at_war".to_string()].into_iter().collect()),
 			..ProjectFacts::default()
@@ -3437,7 +3676,7 @@ country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = 
 			"events/cases.txt",
 			SourceKind::Inline,
 			r#"namespace = cases
-#test(time=1444.11.11, tag=SWE, name=numeric, effect={ add_adm_power = 50 }, expect={ adm_power = 50 })
+#test(time=1444.11.11, tag=SWE, name=numeric, effect={ add_ruler_personality = x }, expect={ adm_power = 50 })
 country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = {} }
 #test(time=1444.11.11, tag=SWE, name=war, expect={ is_at_war = yes })
 country_event = { id = cases.2 hidden = yes is_triggered_only = yes immediate = {} }
@@ -3452,25 +3691,18 @@ country_event = { id = cases.3 hidden = yes is_triggered_only = yes immediate = 
 			numeric
 				.unsupported
 				.iter()
-				.any(|reason| reason.contains("add_adm_power is a known game effect")),
+				.any(|reason| reason.contains("add_ruler_personality is a known game effect")),
 			"{:#?}",
 			numeric.unsupported
 		);
-		assert!(
-			numeric
-				.unsupported
-				.iter()
-				.any(|reason| reason.contains("adm_power is not a known trigger")),
-			"{:#?}",
-			numeric.unsupported
-		);
+		// adm_power is a modeled numeric trigger now; only the effect refuses.
 		// every_country is modeled over the case's named world: this one
 		// runs (it has no expectation, so it is a smoke), and the war case
 		// now fails on its own clause instead of refusing.
 		assert_eq!(case(&result, "iteration").outcome, Outcome::Smoke);
 		assert_eq!(case(&result, "war").outcome, Outcome::Fail);
 		assert_eq!(result.summary().unsupported, 1);
-		assert_eq!(result.exit_code(), 1, "the numeric case still refuses");
+		assert_eq!(result.exit_code(), 1, "the personality case still refuses");
 	}
 
 	#[test]
@@ -3977,6 +4209,7 @@ test = {
 				run_id: RunId::parse("run-1").unwrap(),
 				mod_name: "Offline Mod".into(),
 				observe: true,
+				seed: None,
 			},
 		);
 		let trace = &case(&observed, "observed").trace;
@@ -4057,6 +4290,79 @@ test = {
 		);
 		let diplomacy = case(&result, "diplomacy");
 		assert_eq!(diplomacy.outcome, Outcome::Pass, "{:#?}", diplomacy);
+	}
+
+	#[test]
+	fn a_seed_decides_unwritten_reads_and_the_world() {
+		const CASES: &str = r#"test = {
+	name = seeded_read
+	time = 1444.11.11
+	tag = SWE
+	expect = { religion = catholic primary_culture = swedish NOT = { religion = protestant } }
+}
+test = {
+	name = seeded_world
+	time = 1444.11.11
+	tag = SWE
+	effect = { every_country = { limit = { religion = catholic } set_country_flag = catholic_seen } }
+	expect = { has_country_flag = catholic_seen DAN = { has_country_flag = catholic_seen } NOR = { NOT = { has_country_flag = catholic_seen } } }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let seed = SeedFacts {
+			tags: ["SWE", "DAN", "NOR"]
+				.iter()
+				.map(|tag| Tag::parse(tag).unwrap())
+				.collect(),
+			countries: [
+				("SWE", "catholic", "swedish"),
+				("DAN", "catholic", "danish"),
+				("NOR", "protestant", "norwegian"),
+			]
+			.iter()
+			.map(|(tag, religion, culture)| {
+				(
+					Tag::parse(tag).unwrap(),
+					SeededCountry {
+						religion: Some((*religion).into()),
+						culture: Some((*culture).into()),
+						government: None,
+						government_rank: None,
+					},
+				)
+			})
+			.collect(),
+		};
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: false,
+				seed: Some(seed),
+			},
+		);
+		let seeded_read = case(&result, "seeded_read");
+		assert_eq!(seeded_read.outcome, Outcome::Pass, "{:#?}", seeded_read);
+		let world = case(&result, "seeded_world");
+		assert_eq!(world.outcome, Outcome::Pass, "{:#?}", world);
 	}
 
 	#[test]
@@ -4164,6 +4470,164 @@ test = {
 			blocked.unsupported[0].contains("not allowed"),
 			"{:#?}",
 			blocked.unsupported
+		);
+	}
+
+	#[test]
+	fn numeric_slots_start_at_zero_and_accumulate() {
+		const CASES: &str = r#"test = {
+	name = treasury_run
+	time = 1444.11.11
+	tag = SWE
+	effect = { add_adm_power = 50 add_treasury = 25.5 add_treasury = 10 add_stability = 1 }
+	expect = {
+		adm_power = 50
+		treasury = 35
+		stability = 1
+		NOT = { prestige = 1 }
+	}
+}
+test = {
+	name = below_threshold
+	time = 1444.11.11
+	tag = SWE
+	effect = { add_prestige = 30 }
+	expect = { prestige = 50 }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let run = case(&result, "treasury_run");
+		assert_eq!(run.outcome, Outcome::Pass, "{:#?}", run);
+		let below = case(&result, "below_threshold");
+		assert_eq!(below.outcome, Outcome::Fail);
+		assert_eq!(
+			below.failures[0].message,
+			"the model has prestige = 30 on SWE, expected at least 50"
+		);
+	}
+
+	#[test]
+	fn cheat_commands_map_to_slots_offline() {
+		const CASES: &str = r#"test = {
+	name = cheat_run
+	time = 1444.11.11
+	tag = SWE
+	cheat = "cash 500"
+	cheat = "adm 100"
+	effect = { add_prestige = 10 }
+	expect = { treasury = 500 adm_power = 100 prestige = 10 }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let run = case(&result, "cheat_run");
+		assert_eq!(run.outcome, Outcome::Pass, "{:#?}", run);
+	}
+
+	#[test]
+	fn simulation_toggles_pass_through_with_a_note() {
+		const CASES: &str = r#"test = {
+	name = toggled
+	time = 1444.11.11
+	tag = SWE
+	cheat = "yesman"
+	effect = { set_country_flag = ready }
+	expect = { has_country_flag = ready }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: true,
+				seed: None,
+			},
+		);
+		let toggled = case(&result, "toggled");
+		assert_eq!(toggled.outcome, Outcome::Pass, "{:#?}", toggled);
+		assert!(
+			toggled.trace.iter().any(|observation| matches!(
+				&observation.event,
+				Observed::SlotSet { slot, value }
+					if slot == "cheat" && value.contains("yesman passes through")
+			)),
+			"{:#?}",
+			toggled.trace
+		);
+	}
+
+	#[test]
+	fn an_unmapped_cheat_name_passes_through() {
+		const CASES: &str = r#"test = {
+	name = any_command
+	time = 1444.11.11
+	tag = SWE
+	cheat = "casg 500"
+	effect = { set_country_flag = ready }
+	expect = { has_country_flag = ready }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: true,
+				seed: None,
+			},
+		);
+		let any_command = case(&result, "any_command");
+		assert_eq!(any_command.outcome, Outcome::Pass, "{:#?}", any_command);
+		assert!(
+			any_command.trace.iter().any(|observation| matches!(
+				&observation.event,
+				Observed::SlotSet { slot, value }
+					if slot == "cheat" && value.contains("casg passes through")
+			)),
+			"{:#?}",
+			any_command.trace
 		);
 	}
 
