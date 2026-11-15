@@ -337,8 +337,6 @@ impl CaseFields {
 fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, String> {
 	let span = || SourceSpan::from_parser(&file.path, value.span());
 	Ok(Some(match (key, typed_step(file, key, value)?) {
-		// Receipt expectations: a plain block of key = value fields, parsed
-		// here because the schema has no such parameter type.
 		("expect_receipt", _) => {
 			let AstValue::Block { items, .. } = value else {
 				return Err("expect_receipt must be a block".into());
@@ -347,11 +345,13 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			let mut fields: Vec<(String, String)> = Vec::new();
 			for item in items {
 				let AstStatement::Assignment { key, value, .. } = item else {
+					// Comments are fine; a bare item drops a constraint the
+					// author wrote, so it is a collection error.
 					if matches!(item, AstStatement::Comment { .. }) {
 						continue;
 					}
 					return Err(
-							"expect_receipt holds an entry without a key; every constraint must be key = value"
+						"expect_receipt holds an entry without a key; every constraint 						 must be key = value"
 							.into(),
 					);
 				};
@@ -372,7 +372,8 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 					plugin = Some(text.clone());
 				} else if let Some(previous) = fields.iter().find(|(existing, _)| existing == key) {
 					return Err(format!(
-						"expect_receipt field {key} is given twice ({:?} and {:?}); conflicting correlation constraints cannot be honored",
+						"expect_receipt field {key} is given twice ({:?} and {:?}); \
+						 conflicting correlation constraints cannot be honored",
 						previous.1, text,
 					));
 				} else {
@@ -381,10 +382,14 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			}
 			let plugin =
 				plugin.ok_or_else(|| "expect_receipt needs a plugin = ... field".to_string())?;
+			// Correlation is mandatory: the receipt must name the case it
+			// belongs to and carry a request token the fixture issued with
+			// the command. Without both, a same-session receipt for another
+			// case could satisfy this step.
 			for required in ["case", "request"] {
 				if !fields.iter().any(|(key, _)| key == required) {
 					return Err(format!(
-						"expect_receipt needs a {required} = ... field correlating it to one command of this case"
+						"expect_receipt needs a {required} = ... field correlating it to 						 one command of this case"
 					));
 				}
 			}
@@ -413,6 +418,7 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 
 fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Value>, String> {
 	match key {
+		// expect_receipt has its own block shape; step() parses it.
 		"expect_receipt" => Ok(None),
 		"effect" | "expect" | "advance_days" => typed(file, key, value).map(Some),
 		"take_decision" | "cheat" => parse_value(&file.path, &file.text, value, ValueType::Text)
