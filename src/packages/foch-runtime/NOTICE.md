@@ -1,1 +1,1 @@
-../../NOTICE.md
+../../../NOTICE.md
