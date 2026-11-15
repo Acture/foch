@@ -7,6 +7,15 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "The EU4 host: the in-game DLL plugin loader and the out-of-process test runner"
+readme = "../../apps/foch-cli/README.md"
+# The published crate carries its sources and license texts only; the
+# loader fixtures and tests stay in the repository.
+include = [
+	"/src/**",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
