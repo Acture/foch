@@ -109,34 +109,51 @@ const CHEATS: &[(&str, &str)] = &[
 	("manpower", "manpower"),
 ];
 
-/// The parsed form of a cheat step: `command amount`.
-fn parse_cheat(command: &str) -> Result<(&'static str, f64), String> {
+/// Simulation toggles the model cannot see: they change how the game
+/// environment behaves, not any state the authored script reads, so the
+/// offline layer runs them as a no-op with a note and the runner passes
+/// the line to the console verbatim. Whether they make an assertion
+/// non-deterministic is the author's judgement, not the layer's.
+const PASSTHROUGH_CHEATS: &[&str] = &["yesman", "fow", "ti", "observe", "ai", "spectate", "helium"];
+
+/// What a cheat step does in the model.
+pub(crate) enum CheatKind {
+	/// Adds to a numeric slot.
+	Mapped { slot: &'static str, amount: f64 },
+	/// Runs as a no-op; the console owns the real behavior.
+	Passthrough { name: &'static str },
+}
+
+/// Classify a cheat command line for collection and the model. Unknown
+/// names refuse: that is typo protection, the same treatment an unknown
+/// effect gets.
+pub(crate) fn cheat_kind(command: &str) -> Result<CheatKind, String> {
 	let mut parts = command.split_whitespace();
 	let name = parts.next().unwrap_or_default();
-	let slot = CHEATS
-		.iter()
-		.find(|(cheat, _)| *cheat == name)
-		.map(|(_, slot)| *slot)
-		.ok_or_else(|| {
-			format!(
-				"cheat \"{command}\": {name} is not a mapped cheat; the model knows {}",
-				CHEATS
-					.iter()
-					.map(|(cheat, _)| *cheat)
-					.collect::<Vec<_>>()
-					.join(", ")
-			)
-		})?;
-	let amount = parts
-		.next()
-		.and_then(|text| text.parse::<f64>().ok())
-		.ok_or_else(|| format!("cheat \"{command}\": needs a number"))?;
-	if parts.next().is_some() {
-		return Err(format!(
-			"cheat \"{command}\": expected one command and one number"
-		));
+	if let Some((_, slot)) = CHEATS.iter().find(|(cheat, _)| *cheat == name) {
+		let amount = parts
+			.next()
+			.and_then(|text| text.parse::<f64>().ok())
+			.ok_or_else(|| format!("cheat \"{command}\": needs a number"))?;
+		if parts.next().is_some() {
+			return Err(format!(
+				"cheat \"{command}\": expected one command and one number"
+			));
+		}
+		return Ok(CheatKind::Mapped { slot, amount });
 	}
-	Ok((slot, amount))
+	if let Some(found) = PASSTHROUGH_CHEATS.iter().find(|cheat| **cheat == name) {
+		return Ok(CheatKind::Passthrough { name: found });
+	}
+	Err(format!(
+		"cheat \"{command}\": {name} is not a console command this framework knows; 		 mapped: {}, passthrough: {}",
+		CHEATS
+			.iter()
+			.map(|(cheat, _)| *cheat)
+			.collect::<Vec<_>>()
+			.join(", "),
+		PASSTHROUGH_CHEATS.join(", ")
+	))
 }
 
 /// The slot an effect key adds to.
@@ -811,8 +828,8 @@ impl<'a> Interpreter<'a> {
 						);
 					}
 				}
-				Step::Cheat { command, .. } => match parse_cheat(command) {
-					Ok((slot, amount)) => {
+				Step::Cheat { command, .. } => match cheat_kind(command) {
+					Ok(CheatKind::Mapped { slot, amount }) => {
 						let current = {
 							let slots = world.numbers.entry(case.start.tag.clone()).or_default();
 							let value = slots.entry(slot).or_insert(0.0);
@@ -824,6 +841,17 @@ impl<'a> Interpreter<'a> {
 							Observed::SlotSet {
 								slot: slot.into(),
 								value: current.to_string(),
+							},
+						);
+					}
+					Ok(CheatKind::Passthrough { name }) => {
+						// The model has no AI or fog to toggle; the note says
+						// so, the runner passes the line through.
+						world.note(
+							&case.start.tag,
+							Observed::SlotSet {
+								slot: "cheat".into(),
+								value: format!("{name} passes through to the console"),
 							},
 						);
 					}
@@ -1053,7 +1081,7 @@ impl<'a> Interpreter<'a> {
 					self.scan_decision(name, span, scope, &mut seen, reasons);
 				}
 				Step::Cheat { command, span } => {
-					if let Err(reason) = parse_cheat(command) {
+					if let Err(reason) = cheat_kind(command) {
 						reasons.push(format!("{span}: {reason}"));
 					}
 				}
@@ -3627,25 +3655,76 @@ test = {
 	}
 
 	#[test]
-	fn unmapped_cheats_refuse_with_the_known_list() {
+	fn simulation_toggles_pass_through_with_a_note() {
 		const CASES: &str = r#"test = {
-	name = bad_cheat
+	name = toggled
 	time = 1444.11.11
 	tag = SWE
-	cheat = "fow"
-	expect = { always = yes }
+	cheat = "yesman"
+	effect = { set_country_flag = ready }
+	expect = { has_country_flag = ready }
 }"#;
-		let result = interpret_sources(
-			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
 			&ProjectFacts::default(),
 			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: true,
+			},
 		);
-		let bad = case(&result, "bad_cheat");
-		assert_eq!(bad.outcome, Outcome::Unsupported);
+		let toggled = case(&result, "toggled");
+		assert_eq!(toggled.outcome, Outcome::Pass, "{:#?}", toggled);
 		assert!(
-			bad.unsupported[0].contains("fow is not a mapped cheat"),
+			toggled.trace.iter().any(|observation| matches!(
+				&observation.event,
+				Observed::SlotSet { slot, value }
+					if slot == "cheat" && value.contains("yesman passes through")
+			)),
 			"{:#?}",
-			bad.unsupported
+			toggled.trace
+		);
+	}
+
+	#[test]
+	fn a_mistyped_cheat_refuses_at_collection() {
+		let sources = [file(
+			"tests/scenario.txt",
+			SourceKind::TestsDir,
+			r#"test = {
+	name = typo
+	time = 1444.11.11
+	tag = SWE
+	cheat = "casg 500"
+	expect = { always = yes }
+}"#,
+		)];
+		let collection = collect(&sources);
+		assert!(
+			collection
+				.diagnostics
+				.iter()
+				.any(|diagnostic| diagnostic.message.contains("casg is not a console command")),
+			"{:#?}",
+			collection.diagnostics
 		);
 	}
 
