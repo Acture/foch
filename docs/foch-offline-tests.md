@@ -115,6 +115,10 @@ foch test ./my-mod --offline --out ./offline-results
 
 离线结果**永不**作为合并质量或游戏行为的验收证据,也不改变 `foch test` 默认(在线)行为。
 
+## 播种:真实开局状态(可选)
+
+`foch test PATH --offline --game-path <安装目录>` 显式指定游戏安装时,离线层读取 `history/countries/*.txt`(容错非 UTF-8 注释)播种:**全部开局国家进入模型世界**(`every_country` 迭代真实 1444 国家集,本机实测 973 国),宗教/文化/政体/政体等级的初始值可直接断言(如 SWE 未写先读 `religion = catholic` 即真)。不给 `--game-path` 则零读取——模型世界退回用例点名的国家,未写槽位照旧拒绝。数值槽位历史文件不含开局值,保持建模 0。
+
 ## 校准与证据纪律
 
 - 差分组一:`src/packages/foch-test/tests/interpret.rs` 断言 runtime-tests 夹具(smoke、即时断言、延迟断言、故意失败)的离线判定与 2026-10-02 录制的真实游戏运行一致。

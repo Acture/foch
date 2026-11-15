@@ -161,13 +161,36 @@ fn number_trigger(key: &str) -> Option<&'static str> {
 const ALIASES: &[&str] = &["THIS", "ROOT", "PREV", "FROM"];
 
 /// Identity of one offline run, mirroring [`crate::compile::RunContext`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InterpretOptions {
 	pub run_id: RunId,
 	/// Mod under test; recorded so a result file is readable on its own.
 	pub mod_name: String,
 	/// Record each case's run trace (observer mode).
 	pub observe: bool,
+	/// Starting state from the game's history files, when a game install is
+	/// available; without it the model world is only the countries a case
+	/// names and unwritten slots refuse.
+	pub seed: Option<SeedFacts>,
+}
+
+/// Starting state the caller supplies from the game's own history files:
+/// the countries existing at the bookmark and their religion, culture,
+/// government and rank. Numeric stats stay at the modeled 0 — the history
+/// files do not carry them; engine defaults are not foch's to invent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SeedFacts {
+	pub tags: BTreeSet<Tag>,
+	pub countries: BTreeMap<Tag, SeededCountry>,
+}
+
+/// A country's scripted starting slots; `None` stays unknown until written.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SeededCountry {
+	pub religion: Option<String>,
+	pub culture: Option<String>,
+	pub government: Option<String>,
+	pub government_rank: Option<i64>,
 }
 
 /// One case's offline verdict. Deliberately not a [`crate::judge::Status`].
@@ -432,6 +455,7 @@ pub fn interpret(
 			.map(|decision| (decision.name.as_str(), decision))
 			.collect(),
 		observe: options.observe,
+		seed: options.seed.as_ref(),
 	};
 	Interpretation {
 		layer: LAYER,
@@ -471,8 +495,9 @@ struct World {
 	cultures: BTreeMap<Tag, String>,
 	governments: BTreeMap<Tag, String>,
 	government_ranks: BTreeMap<Tag, i64>,
-	/// Every country the case has named: the model world `every_country`
-	/// iterates. It is not the full game country set.
+	/// The model world `every_country` iterates: the countries the case has
+	/// named, or — when a seed is supplied — every country existing at the
+	/// bookmark per the game's own history files.
 	named: BTreeSet<Tag>,
 	/// Player-facing numeric stats; absent entries read as the modeled 0.
 	numbers: BTreeMap<Tag, BTreeMap<&'static str, f64>>,
@@ -629,6 +654,8 @@ struct Interpreter<'a> {
 	scripted: BTreeMap<&'a str, &'a ScriptedDef>,
 	/// The mod's decisions, applied by `take_decision` steps.
 	decisions: BTreeMap<&'a str, &'a DecisionInfo>,
+	/// Starting state from the game's history files, when supplied.
+	seed: Option<&'a SeedFacts>,
 	/// Observer mode: record each case's run trace.
 	observe: bool,
 }
@@ -709,6 +736,25 @@ impl<'a> Interpreter<'a> {
 			trace: Vec::new(),
 			recording: self.observe,
 		};
+		if let Some(seed) = self.seed {
+			// The seeded world is the countries existing at the bookmark;
+			// every_country iterates it instead of the case's named set.
+			for (tag, country) in &seed.countries {
+				if let Some(religion) = &country.religion {
+					world.religions.insert(tag.clone(), religion.clone());
+				}
+				if let Some(culture) = &country.culture {
+					world.cultures.insert(tag.clone(), culture.clone());
+				}
+				if let Some(government) = &country.government {
+					world.governments.insert(tag.clone(), government.clone());
+				}
+				if let Some(rank) = country.government_rank {
+					world.government_ranks.insert(tag.clone(), rank);
+				}
+			}
+			world.named.extend(seed.tags.iter().cloned());
+		}
 		world.note(&case.start.tag, Observed::CaseStart);
 		let root = ScopeCtx::start(&case.start.tag);
 		let mut failures = Vec::new();
@@ -2567,6 +2613,7 @@ mod tests {
 				run_id: RunId::parse("run-1").unwrap(),
 				mod_name: "Offline Mod".into(),
 				observe: false,
+				seed: None,
 			},
 		)
 	}
@@ -3392,6 +3439,7 @@ test = {
 				run_id: RunId::parse("run-1").unwrap(),
 				mod_name: "Offline Mod".into(),
 				observe: true,
+				seed: None,
 			},
 		);
 		let trace = &case(&observed, "observed").trace;
@@ -3472,6 +3520,79 @@ test = {
 		);
 		let diplomacy = case(&result, "diplomacy");
 		assert_eq!(diplomacy.outcome, Outcome::Pass, "{:#?}", diplomacy);
+	}
+
+	#[test]
+	fn a_seed_decides_unwritten_reads_and_the_world() {
+		const CASES: &str = r#"test = {
+	name = seeded_read
+	time = 1444.11.11
+	tag = SWE
+	expect = { religion = catholic primary_culture = swedish NOT = { religion = protestant } }
+}
+test = {
+	name = seeded_world
+	time = 1444.11.11
+	tag = SWE
+	effect = { every_country = { limit = { religion = catholic } set_country_flag = catholic_seen } }
+	expect = { has_country_flag = catholic_seen DAN = { has_country_flag = catholic_seen } NOR = { NOT = { has_country_flag = catholic_seen } } }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let seed = SeedFacts {
+			tags: ["SWE", "DAN", "NOR"]
+				.iter()
+				.map(|tag| Tag::parse(tag).unwrap())
+				.collect(),
+			countries: [
+				("SWE", "catholic", "swedish"),
+				("DAN", "catholic", "danish"),
+				("NOR", "protestant", "norwegian"),
+			]
+			.iter()
+			.map(|(tag, religion, culture)| {
+				(
+					Tag::parse(tag).unwrap(),
+					SeededCountry {
+						religion: Some((*religion).into()),
+						culture: Some((*culture).into()),
+						government: None,
+						government_rank: None,
+					},
+				)
+			})
+			.collect(),
+		};
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: false,
+				seed: Some(seed),
+			},
+		);
+		let seeded_read = case(&result, "seeded_read");
+		assert_eq!(seeded_read.outcome, Outcome::Pass, "{:#?}", seeded_read);
+		let world = case(&result, "seeded_world");
+		assert_eq!(world.outcome, Outcome::Pass, "{:#?}", world);
 	}
 
 	#[test]
@@ -3673,6 +3794,7 @@ test = {
 				run_id: RunId::parse("run-1").unwrap(),
 				mod_name: "Offline Mod".into(),
 				observe: true,
+				seed: None,
 			},
 		);
 		let toggled = case(&result, "toggled");
@@ -3723,6 +3845,7 @@ test = {
 				run_id: RunId::parse("run-1").unwrap(),
 				mod_name: "Offline Mod".into(),
 				observe: true,
+				seed: None,
 			},
 		);
 		let any_command = case(&result, "any_command");

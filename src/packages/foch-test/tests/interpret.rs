@@ -48,6 +48,7 @@ fn interpret_fixture() -> foch_test::Interpretation {
 			run_id: RunId::parse("run-1").unwrap(),
 			mod_name: "foch-framework-example".into(),
 			observe: false,
+			seed: None,
 		},
 	)
 }
@@ -199,6 +200,7 @@ fn interpret_corpus() -> foch_test::Interpretation {
 			run_id: RunId::parse("run-1").unwrap(),
 			mod_name: "Reform Mod".into(),
 			observe: false,
+			seed: None,
 		},
 	)
 }

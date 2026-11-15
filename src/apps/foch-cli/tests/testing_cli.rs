@@ -508,11 +508,6 @@ fn offline_refuses_runner_only_flags() {
 	assert!(!output.status.success());
 	let output = run(
 		dir.path(),
-		&["test", "mod", "--offline", "--game-path", "X:/eu4"],
-	);
-	assert!(!output.status.success());
-	let output = run(
-		dir.path(),
 		&["test", "mod", "--offline", "--with-plugins", "example"],
 	);
 	assert!(!output.status.success());
