@@ -64,6 +64,13 @@ pub const TEST_PARAMS: &[ParamSchema] = &[
 		example: "{ has_country_flag = reform_done }",
 	},
 	ParamSchema {
+		name: "cheat",
+		value_type: ValueType::Text,
+		required: false,
+		description: "Console cheat command run as setup, such as cash 500 or adm 100. The built-in runner passes it to the game console; the offline model applies the mapped state change.",
+		example: "\"cash 500\"",
+	},
+	ParamSchema {
 		name: "use",
 		value_type: ValueType::Identifiers,
 		required: false,

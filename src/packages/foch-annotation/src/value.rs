@@ -350,10 +350,19 @@ fn native_block(path: &RelPath, source: &str, value: &AstValue) -> Result<Native
 	let AstValue::Block { items, span } = value else {
 		return Err("expected a native EU4 block".into());
 	};
-	if !items
-		.iter()
-		.any(|item| matches!(item, AstStatement::Assignment { .. }))
-	{
+	let native = |item: &AstStatement| match item {
+		AstStatement::Assignment { .. } => true,
+		// A bare identifier names a scripted effect.
+		AstStatement::Item {
+			value: AstValue::Scalar {
+				value: ScalarValue::Identifier(_),
+				..
+			},
+			..
+		} => true,
+		_ => false,
+	};
+	if !items.iter().any(native) {
 		return Err("block must contain native EU4 statements".into());
 	}
 	Ok(NativeBlock {
@@ -376,6 +385,21 @@ fn clauses(path: &RelPath, source: &str, value: &AstValue) -> Result<Vec<Clause>
 				text: source[span.start.offset..span.end.offset].trim().into(),
 				span: SourceSpan::from_parser(path, span),
 			}),
+			AstStatement::Item {
+				value:
+					AstValue::Scalar {
+						value: ScalarValue::Identifier(name),
+						span,
+					},
+				..
+			} => {
+				// A bare identifier names a scripted trigger; EU4 reads it as
+				// its own conjunctive condition.
+				clauses.push(Clause {
+					text: name.clone(),
+					span: SourceSpan::from_parser(path, span),
+				});
+			}
 			AstStatement::Item { .. } => {
 				return Err("block must contain native key = value conditions".into());
 			}

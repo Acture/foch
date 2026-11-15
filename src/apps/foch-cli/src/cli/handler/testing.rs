@@ -6,7 +6,7 @@
 
 use super::HandlerResult;
 use crate::cli::arg::{CheckOutputFormat, TestArgs};
-use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
+use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
 use foch::input::load_config_read_only;
 use foch_annotation::builtin::SCHEMAS;
 use foch_annotation::value::scalar;
@@ -17,12 +17,13 @@ use foch_test::plan::{IgnoredMode, Isolation, Plan, SessionId};
 use foch_test::report::EnvironmentRecord;
 use foch_test::select::{Expr, NodeIdPattern};
 use foch_test::{
-	Bundle, Diagnostic, ExpandOptions, GroupOptions, ProjectFacts, RelPath, Report, RunArtifacts,
-	RunContext, Selector, SourceFile, SourceKind, Status, blocks_run, check_capabilities, collect,
-	compile, expand, group, judge, lint, reconcile,
+	Bundle, Diagnostic, ExpandOptions, GroupOptions, InterpretOptions, Interpretation, Outcome,
+	ProjectFacts, RelPath, Report, RunArtifacts, RunContext, Selector, SemanticsCatalog,
+	SourceFile, SourceKind, Status, blocks_run, check_capabilities, collect, compile, expand,
+	group, interpret, judge, lint, reconcile,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -68,6 +69,9 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	if planned.plan.cases.is_empty() {
 		print_collection(&planned, args.format)?;
 		return Ok(1);
+	}
+	if args.offline {
+		return interpret_report(args, &planned);
 	}
 	if args.no_run {
 		return write_bundles(args, &planned);
@@ -231,6 +235,226 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	Ok(report.exit_code())
 }
 
+/// Starting state from the game's own history files: the countries that
+/// exist at the bookmark and their scripted religion, culture, government
+/// and rank. Missing installs seed nothing — the model then runs on the
+/// countries a case names and unwritten slots refuse.
+fn seed_from_game(args: &TestArgs) -> Result<Option<foch_test::SeedFacts>> {
+	// Explicit opt-in: seeding only reads an install the author named.
+	let Some(game_path) = args.game_path.as_deref() else {
+		return Ok(None);
+	};
+	let config = load_config_read_only()?;
+	let game_root = match foch_runtime::runner::locate_game(&config, Some(game_path)) {
+		Ok(root) => root,
+		Err(_) => return Ok(None),
+	};
+	let history = game_root.join("history/countries");
+	let mut tags = BTreeSet::new();
+	let mut countries = BTreeMap::new();
+	let entries = match fs::read_dir(&history) {
+		Ok(entries) => entries,
+		Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+		Err(err) => return Err(err.into()),
+	};
+	for entry in entries.flatten() {
+		let name = entry.file_name();
+		let Some(file) = name.to_str() else {
+			continue;
+		};
+		let Some(stem) = file.strip_suffix(".txt") else {
+			continue;
+		};
+		let Ok(tag) = foch_test::Tag::parse(stem.split_once(' ').map_or(stem, |(tag, _)| tag))
+		else {
+			continue;
+		};
+		// Some histories carry non-UTF-8 bytes in comments; read lossily so
+		// the scripted fields still parse.
+		let Ok(bytes) = fs::read(entry.path()) else {
+			continue;
+		};
+		let text = String::from_utf8_lossy(&bytes);
+		let parsed =
+			parse_clausewitz_content(foch::model::GamePath::new("history.txt").unwrap(), &text);
+		let mut seeded = foch_test::SeededCountry::default();
+		for statement in &parsed.ast.statements {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				continue;
+			};
+			let scalar = || {
+				matches!(value, AstValue::Scalar { .. }).then(|| scalar(value).unwrap_or_default())
+			};
+			match key.as_str() {
+				"religion" => seeded.religion = scalar(),
+				"primary_culture" => seeded.culture = scalar(),
+				"government" => seeded.government = scalar(),
+				"government_rank" => {
+					seeded.government_rank = scalar().and_then(|text| text.parse().ok())
+				}
+				_ => {}
+			}
+		}
+		tags.insert(tag.clone());
+		countries.insert(tag, seeded);
+	}
+	Ok(Some(foch_test::SeedFacts { tags, countries }))
+}
+
+/// `--offline`: interpret the planned cases against the embedded semantics
+/// catalog. No game launch, no Steam login; modeled semantics only, seeded
+/// from the game's history files when an install is reachable.
+fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
+	let run_id = new_run_id()?;
+	let seed = seed_from_game(args)?;
+	if let Some(seed) = &seed {
+		eprintln!(
+			"seeded {} countries from the game's history files",
+			seed.tags.len()
+		);
+	}
+	let interpretation = interpret(
+		&planned.plan,
+		&project_facts(),
+		&SemanticsCatalog::embedded(),
+		&InterpretOptions {
+			run_id: run_id.clone(),
+			mod_name: planned.mod_name.clone(),
+			observe: !args.no_observe,
+			seed,
+		},
+	);
+	let requested_output = match &args.out {
+		Some(output) => output.clone(),
+		None => {
+			fs::canonicalize(std::env::temp_dir())?.join(format!("foch-tests-offline-{run_id}"))
+		}
+	};
+	let output = prepare_output(&requested_output, &planned.root)?;
+	#[derive(Serialize)]
+	struct OfflineRunView<'a> {
+		source_root: &'a Path,
+		output: &'a Path,
+		success: bool,
+		#[serde(flatten)]
+		interpretation: &'a Interpretation,
+	}
+	let view = OfflineRunView {
+		source_root: &planned.root,
+		output: &output,
+		success: interpretation.exit_code() == 0,
+		interpretation: &interpretation,
+	};
+	write_new(
+		&output.join("result.json"),
+		&serde_json::to_vec_pretty(&view)?,
+	)?;
+	write_new(
+		&output.join("junit.xml"),
+		interpretation.to_junit().as_bytes(),
+	)?;
+	if args.format == CheckOutputFormat::Json {
+		print_json(&view)?;
+	} else {
+		print_interpreted(&interpretation, &output);
+	}
+	Ok(interpretation.exit_code())
+}
+
+fn print_interpreted(interpretation: &Interpretation, output: &Path) {
+	println!(
+		"offline layer: modeled semantics only, not game evidence (evidence: {})",
+		evidence_label(&interpretation.evidence)
+	);
+	for case in &interpretation.results {
+		println!(
+			"{}\t{}\t{}\t{} {}",
+			outcome_label(case.outcome),
+			case.origin,
+			case.node,
+			case.start.date,
+			case.start.tag,
+		);
+		for reason in &case.unsupported {
+			println!("  {reason}");
+		}
+		for failure in &case.failures {
+			println!("  {}: {}", failure.check, failure.message);
+		}
+		for note in &case.notes {
+			println!("  {note}");
+		}
+		for observation in &case.trace {
+			println!(
+				"  trace {} {}  {}",
+				observation.date,
+				observation.scope,
+				observation_label(&observation.event)
+			);
+		}
+	}
+	let summary = interpretation.summary();
+	println!(
+		"{} pass, {} smoke, {} failed, {} setup errors, {} unsupported (offline), {} skipped",
+		summary.pass,
+		summary.smoke,
+		summary.fail,
+		summary.setup_error,
+		summary.unsupported,
+		summary.skipped + summary.ignored,
+	);
+	println!("Artifacts: {}", output.display());
+}
+
+/// One observer-mode trace line, without the leading date and scope.
+fn observation_label(observation: &foch_test::Observed) -> String {
+	match observation {
+		foch_test::Observed::CaseStart => "case start".into(),
+		foch_test::Observed::Step { index, kind } => format!("step {index} {kind}"),
+		foch_test::Observed::EventFired { event } => format!("fire {event}"),
+		foch_test::Observed::EventScheduled { event, due } => format!("schedule {event} for {due}"),
+		foch_test::Observed::EventDelivered { event } => format!("deliver {event}"),
+		foch_test::Observed::CountryFlagSet { flag } => format!("set flag {flag}"),
+		foch_test::Observed::CountryFlagCleared { flag } => format!("clear flag {flag}"),
+		foch_test::Observed::GlobalFlagSet { flag } => format!("set global flag {flag}"),
+		foch_test::Observed::GlobalFlagCleared { flag } => format!("clear global flag {flag}"),
+		foch_test::Observed::VariableSet { which, value } => {
+			format!("{which} = {value}")
+		}
+		foch_test::Observed::SlotSet { slot, value } => format!("{slot} = {value}"),
+		foch_test::Observed::WarChanged { with, at_war } => {
+			let verb = if *at_war {
+				"declare war on"
+			} else {
+				"peace with"
+			};
+			format!("{verb} {with}")
+		}
+		foch_test::Observed::AllianceChanged { with, allied } => {
+			let verb = if *allied {
+				"ally"
+			} else {
+				"break alliance with"
+			};
+			format!("{verb} {with}")
+		}
+	}
+}
+
+fn outcome_label(outcome: Outcome) -> String {
+	serde_json::to_value(outcome)
+		.ok()
+		.and_then(|value| value.as_str().map(str::to_uppercase))
+		.unwrap_or_else(|| format!("{outcome:?}"))
+}
+
+fn evidence_label(evidence: &foch_test::EvidenceStatus) -> &'static str {
+	match evidence {
+		foch_test::EvidenceStatus::Unpinned => "unpinned; no decompiled handler batch has run yet",
+		foch_test::EvidenceStatus::Pinned => "pinned to decompiled handlers",
+	}
+}
+
 /// `--no-run`: write every session's bundle without launching the game.
 fn write_bundles(args: &TestArgs, planned: &Planned) -> HandlerResult {
 	let run_id = new_run_id()?;
@@ -341,6 +565,12 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 		// (and tests/events/ helper events) rather than inline annotations.
 		let kind = if relative == "tests" || relative.starts_with("tests/") {
 			SourceKind::TestsDir
+		} else if relative.starts_with("common/scripted_triggers/")
+			|| relative.starts_with("common/scripted_effects/")
+		{
+			SourceKind::Scripted
+		} else if relative.starts_with("common/decisions/") {
+			SourceKind::Decisions
 		} else {
 			SourceKind::Inline
 		};
@@ -403,6 +633,8 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 				alone_reasons: BTreeMap::new(),
 				events: Vec::new(),
 				helpers: Vec::new(),
+				scripted: Vec::new(),
+				decisions: Vec::new(),
 			}
 		}
 	};
@@ -565,6 +797,8 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 		// the file itself is selected by node pattern.
 		let mut files = event_files(&root)?;
 		files.extend(tests_files(&root)?);
+		files.extend(scripted_files(&root)?);
+		files.extend(directory_files(&root, "common/decisions")?);
 		if !files.contains(&path) {
 			files.push(path);
 		}
@@ -582,7 +816,46 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 	};
 	let mut files = event_files(&root)?;
 	files.extend(tests_files(&root)?);
+	files.extend(scripted_files(&root)?);
+	files.extend(directory_files(&root, "common/decisions")?);
 	Ok((root, files))
+}
+
+/// `.txt` files under the mod's scripted definition directories. The game
+/// loads these, so they carry plain top-level `name = { ... }` definitions.
+fn scripted_files(root: &Path) -> Result<Vec<PathBuf>> {
+	let mut files = Vec::new();
+	for name in ["common/scripted_triggers", "common/scripted_effects"] {
+		files.extend(directory_files(root, name)?);
+	}
+	Ok(files)
+}
+
+/// `.txt` files below one mod content directory, refusing symlinks.
+fn directory_files(root: &Path, name: &str) -> Result<Vec<PathBuf>> {
+	let mut files = Vec::new();
+	{
+		let directory = root.join(name);
+		match fs::symlink_metadata(&directory) {
+			Ok(metadata) if metadata.file_type().is_symlink() => {
+				return Err(format!("{name} directory must not be a symlink").into());
+			}
+			Ok(_) => {
+				for entry in WalkDir::new(directory).follow_links(false) {
+					let entry = entry?;
+					if entry.file_type().is_file()
+						&& entry.path().extension().and_then(|v| v.to_str()) == Some("txt")
+					{
+						files.push(entry.into_path());
+					}
+				}
+			}
+			Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+			Err(err) => return Err(err.into()),
+		}
+	}
+	files.sort();
+	Ok(files)
 }
 
 /// `.txt` files under the mod's `tests/` directory. The game does not load

@@ -185,6 +185,17 @@ pub struct TestArgs {
 	/// launching the game, like `cargo test --no-run`.
 	#[arg(long)]
 	pub no_run: bool,
+	/// Interpret the planned cases against the offline model instead of
+	/// launching the game. Modeled semantics only; never game evidence.
+	#[arg(
+		long,
+		conflicts_with_all = ["collect_only", "no_run", "eu4_user_dir", "isolate", "with_plugins"]
+	)]
+	pub offline: bool,
+	/// With --offline: skip the run trace (observer mode records it by
+	/// default, showing what the model did step by step).
+	#[arg(long, requires = "offline")]
+	pub no_observe: bool,
 	/// Keyword expression over node IDs, such as "reform and not slow".
 	#[arg(short = 'k', value_name = "EXPRESSION")]
 	pub filter: Option<String>,
@@ -209,7 +220,8 @@ pub struct TestArgs {
 	/// Describe annotations and parameters without a game installation.
 	#[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "NAME", conflicts_with_all = ["collect_only", "out", "filter"])]
 	pub api: Option<String>,
-	/// EU4 install to launch; defaults to the configured or Steam install.
+	/// EU4 install to launch, or — with --offline — to seed starting state
+	/// from its history files; defaults to the configured or Steam install.
 	#[arg(long, value_name = "PATH")]
 	pub game_path: Option<PathBuf>,
 	/// Real EU4 user directory to guard; defaults to
