@@ -100,7 +100,7 @@ impl Runtime {
 			.unwrap()
 			.parent()
 			.unwrap()
-			.join("foch_eu4_host.dll");
+			.join("foch_runtime.dll");
 		assert!(dll.is_file(), "host artifact missing: {}", dll.display());
 		fs::copy(dll, temp.path().join("VERSION.dll")).unwrap();
 		fs::copy(
@@ -719,7 +719,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 	let selected = deployment::resolve(&game, &store, &selections).unwrap();
 	fs::write(&linked_source, "changed").unwrap();
 	assert!(deployment::resolve(&game, &store, &selections).is_err());
-	let layer = foch_eu4_host::runner::runtime::RuntimeLayer::prepare(
+	let layer = foch_runtime::runner::runtime::RuntimeLayer::prepare(
 		source.path(),
 		&output.path().join("rt"),
 		"wire-run",
@@ -729,7 +729,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 		.unwrap()
 		.parent()
 		.unwrap()
-		.join("foch_eu4_host.dll");
+		.join("foch_runtime.dll");
 	fs::copy(dll, layer.directory.join("VERSION.dll")).unwrap();
 	let prepared = selected
 		.stage(
@@ -741,7 +741,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 		.unwrap();
 	let wire = serde_json::to_string(&prepared.plan).unwrap();
 	prepared.plan.validate().unwrap();
-	let parsed = foch_eu4_host::plan::parse(&wire).unwrap();
+	let parsed = foch_runtime::plan::parse(&wire).unwrap();
 	assert_eq!(
 		parsed
 			.plugins
@@ -775,7 +775,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 			"management accepted case {change}"
 		);
 		assert!(
-			foch_eu4_host::plan::parse(&invalid.to_string()).is_err(),
+			foch_runtime::plan::parse(&invalid.to_string()).is_err(),
 			"host accepted case {change}"
 		);
 	}

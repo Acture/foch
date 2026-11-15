@@ -1,5 +1,5 @@
 [package]
-name = "foch-eu4-host"
+name = "foch-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -570,7 +570,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	if !cfg!(all(windows, target_arch = "x86_64")) {
 		return Err("plugin launch requires Windows x64".into());
 	}
-	let game_root = foch_eu4_host::runner::locate_game(config, args.plan.game_path.as_deref())?;
+	let game_root = foch_runtime::runner::locate_game(config, args.plan.game_path.as_deref())?;
 	let raw_version = detect_game_version(&game_root).ok_or("could not detect the EU4 version")?;
 	let game = GameIdentity {
 		game: "eu4".into(),
@@ -585,11 +585,11 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		std::env::current_exe()?
 			.parent()
 			.unwrap()
-			.join("foch_eu4_host.dll"),
+			.join("foch_runtime.dll"),
 	);
 	let host_bytes = std::fs::read(&host).map_err(|error| {
 		format!(
-			"cannot read host {}: {error}; build foch-eu4-host and pass --host-dll",
+			"cannot read host {}: {error}; build foch-runtime and pass --host-dll",
 			host.display()
 		)
 	})?;
@@ -607,11 +607,11 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 			.as_nanos()
 	);
 	let mut layer =
-		foch_eu4_host::runner::runtime::RuntimeLayer::prepare(&game_root, &runtime_base, &run_id)?;
+		foch_runtime::runner::runtime::RuntimeLayer::prepare(&game_root, &runtime_base, &run_id)?;
 	let directory = layer.directory.clone();
 	write_host_dll(&directory, &host_bytes)?;
 	let data_root = foch::game::eu4::base::snapshot::data_root();
-	foch_eu4_host::runner::runtime::ensure_outside_game(&game_root, &data_root)?;
+	foch_runtime::runner::runtime::ensure_outside_game(&game_root, &data_root)?;
 	let prepared = deployment.stage(&directory, &data_root, &run_id, &game_root)?;
 	if let Some(cache) =
 		deployment.prepare_font_cache(&data_root, &layer.fonts_sha256, &game_root)?
@@ -625,7 +625,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 			dirs::document_dir().map(|path| path.join("Paradox Interactive/Europa Universalis IV"))
 		})
 		.ok_or("could not locate the EU4 user directory; pass --user-dir")?;
-	foch_eu4_host::runner::runtime::ensure_outside_game(&game_root, &user_dir)?;
+	foch_runtime::runner::runtime::ensure_outside_game(&game_root, &user_dir)?;
 	std::fs::create_dir_all(&user_dir)?;
 	let user_dir = PathBuf::from(plugin::deployment::path_text(&user_dir.canonicalize()?)?);
 	plugin::store::replace_package_file(
@@ -649,7 +649,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 			return Ok(None);
 		}
 		let mut child =
-			foch_eu4_host::runner::runtime::spawn_player(directory, &user_dir, &args.game_args)?;
+			foch_runtime::runner::runtime::spawn_player(directory, &user_dir, &args.game_args)?;
 		record["pid"] = child.id().into();
 		let recorded = serde_json::to_vec_pretty(&record)
 			.map_err(std::io::Error::other)
@@ -724,7 +724,7 @@ mod tests {
 		std::fs::create_dir(&game).unwrap();
 		let external = scratch.path().join("external.dll");
 		std::fs::write(&external, b"external bytes").unwrap();
-		let layer = foch_eu4_host::runner::runtime::RuntimeLayer::prepare(
+		let layer = foch_runtime::runner::runtime::RuntimeLayer::prepare(
 			&game,
 			&scratch.path().join("runtimes"),
 			"host-staging",
@@ -766,7 +766,7 @@ mod tests {
 		);
 		// Preparing this empty fixture creates an ordinary directory link
 		// (a native junction on Windows) without launching any executable.
-		let layer = foch_eu4_host::runner::runtime::RuntimeLayer::prepare(
+		let layer = foch_runtime::runner::runtime::RuntimeLayer::prepare(
 			&package,
 			&scratch.path().join("runtimes"),
 			"linked-package",

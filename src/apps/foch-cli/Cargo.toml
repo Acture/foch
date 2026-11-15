@@ -28,7 +28,7 @@ dirs.workspace = true
 foch.workspace = true
 foch-annotation.workspace = true
 foch-lsp.workspace = true
-foch-eu4-host.workspace = true
+foch-runtime.workspace = true
 foch-test.workspace = true
 crossterm = { version = "0.29.0", features = ["osc52"] }
 ratatui = "0.30.0"

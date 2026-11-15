@@ -75,7 +75,7 @@ pub struct RunOptions {
 pub struct HostLaunch {
 	/// The playset whose enabled plugins stage into each session.
 	pub playset: String,
-	/// The `foch_eu4_host.dll` to deploy as the layer's `VERSION.dll`.
+	/// The `foch_runtime.dll` to deploy as the layer's `VERSION.dll`.
 	pub host_dll: PathBuf,
 }
 
@@ -490,7 +490,7 @@ fn stage_host(
 		.map_err(|error| io::Error::other(format!("plugin plan: {error}")))?;
 	let host_bytes = fs::read(&host.host_dll).map_err(|error| {
 		io::Error::other(format!(
-			"cannot read host {}: {error}; build foch-eu4-host and pass its path",
+			"cannot read host {}: {error}; build foch-runtime and pass its path",
 			host.host_dll.display()
 		))
 	})?;

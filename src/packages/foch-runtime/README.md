@@ -1,6 +1,6 @@
 # EU4 DLL host
 
-This unpublished Rust package builds the Windows x64 `foch_eu4_host.dll`.
+This unpublished Rust package builds the Windows x64 `foch_runtime.dll`.
 Deploy it as **`VERSION.dll` in a Foch-owned runtime layer**, beside that
 layer's `eu4.exe`. It executes a frozen launch plan; it does not install
 packages, choose versions, scan DLL directories, or alter the game installation.
@@ -36,12 +36,12 @@ names no dependency and no conflict. `plugin64.dll` has no status export, so a
 load is reported unknown rather than active.
 
 ```powershell
-cargo build -p foch-cli -p foch-eu4-host --release --locked
+cargo build -p foch-cli -p foch-runtime --release --locked
 foch plugin install --all
 foch plugin enable io.github.yozoratempest.eu4-unicode-patch --playset default --version 0.1.15
 foch plugin enable io.github.yozoratempest.eu4-menu-patch --playset default --version 0.1.4-experimental
 foch plugin plan --playset default --game-path "G:/SteamLibrary/steamapps/common/Europa Universalis IV"
-foch plugin launch --playset default --host-dll ./target/release/foch_eu4_host.dll
+foch plugin launch --playset default --host-dll ./target/release/foch_runtime.dll
 foch plugin status --run-dir "<runtime directory printed by launch>"
 ```
 
@@ -95,7 +95,7 @@ through independent temporary files; use `Selections::update` for mutations.
 `--runtime-base` chooses a short local directory; `--user-dir` chooses a game
 profile (default: the player's usual EU4 directory). Extra game arguments follow
 `--`. Without `--host-dll`, launch looks beside the `foch` executable for
-`foch_eu4_host.dll`. Both `launch` and `status` support `--format json`.
+`foch_runtime.dll`. Both `launch` and `status` support `--format json`.
 Launch creates `VERSION.dll` exclusively and writes through its new handle;
 existing entries fail preparation without truncating an external hard-link target.
 
@@ -182,12 +182,12 @@ equate a successful DLL load with an active plugin.
 ## Build and verification
 
 ```powershell
-cargo build -p foch-eu4-host --release --locked
-cargo test -p foch-eu4-host -p foch-plugin-abi --locked
-cargo clippy -p foch-eu4-host -p foch-plugin-abi --all-targets --locked -- -D warnings
+cargo build -p foch-runtime --release --locked
+cargo test -p foch-runtime -p foch-plugin-abi --locked
+cargo clippy -p foch-runtime -p foch-plugin-abi --all-targets --locked -- -D warnings
 ```
 
-On Windows x64 the build artifact is `target/release/foch_eu4_host.dll`.
+On Windows x64 the build artifact is `target/release/foch_runtime.dll`.
 Rename/copy it to `VERSION.dll` only during runtime-layer preparation. The host
 and SDK remain outside the crates.io dependency closure of `foch-cli`.
 Other platforms build the portable plan/pattern library, without a Windows

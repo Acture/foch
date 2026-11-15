@@ -31,7 +31,7 @@ analysis identity no longer matches.
 See [merge design](merge-design.md), [architecture](architecture.md),
 [known issues](known-issues.md), [LSP preview](lsp-0.1-preview.md),
 [runtime tests](foch-runtime-tests.md) and the
-[plugin host](../src/packages/foch-eu4-host/README.md).
+[plugin host](../src/packages/foch-runtime/README.md).
 
 ## Current local quality checks
 

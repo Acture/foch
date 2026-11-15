@@ -5,7 +5,7 @@ members = [
 	"src/packages/foch-annotation",
 	"src/packages/foch-lsp",
 	"src/packages/foch-plugin-sdk",
-	"src/packages/foch-eu4-host",
+	"src/packages/foch-runtime",
 	"plugins/eu4-dynamic-trade-blackhole",
 	"src/packages/foch-test",
 	"src/apps/foch-cli",
@@ -30,7 +30,7 @@ categories = ["command-line-utilities", "development-tools"]
 foch-plugin-sdk = { path = "src/packages/foch-plugin-sdk" }
 
 [workspace.dependencies]
-foch-eu4-host = { path = "src/packages/foch-eu4-host", version = "=0.0.2" }
+foch-runtime = { path = "src/packages/foch-runtime", version = "=0.0.2" }
 # Published crates resolve these from the registry, so each path dependency
 # pins exactly the version its path package declares.
 foch = { path = "src/packages/foch", version = "=0.0.2" }
