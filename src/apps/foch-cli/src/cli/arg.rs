@@ -106,7 +106,7 @@ pub struct PluginImportArgs {
 
 #[derive(Parser, Debug)]
 pub struct PluginInstallArgs {
-	/// owner/repo, a github.com URL, or a built-in plugin id.
+	/// owner/repo[@tag|@latest], a github.com URL, or a built-in plugin id.
 	#[arg(value_name = "SPEC")]
 	pub spec: Option<String>,
 	/// Install every registered GitHub release.
@@ -143,7 +143,7 @@ pub struct PluginPlanArgs {
 pub struct PluginLaunchArgs {
 	#[command(flatten)]
 	pub plan: PluginPlanArgs,
-	/// Built foch_eu4_host.dll; defaults to the directory containing foch.
+	/// Built foch_runtime.dll; defaults to the directory containing foch.
 	#[arg(long, value_name = "DLL")]
 	pub host_dll: Option<PathBuf>,
 	/// Short directory for new runtime layers; defaults to the temp foch-rt.

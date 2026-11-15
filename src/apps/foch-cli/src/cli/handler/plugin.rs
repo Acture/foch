@@ -187,18 +187,29 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 }
 
 fn install_plugins(args: &PluginInstallArgs, config: &Config) -> HandlerResult {
-	let releases: Vec<&plugin::github::Release> = match (args.spec.as_deref(), args.all) {
-		(Some(spec), false) => vec![plugin::github::resolve(spec)?],
-		(None, true) => plugin::github::releases().iter().collect(),
+	let data_root = data_root();
+	let game_root = resolve_game_root(config, &Eu4);
+	match (args.spec.as_deref(), args.all) {
+		(Some(spec), false) => {
+			// Registry adapters first; any other owner/repo spec resolves
+			// its release dynamically with gh.
+			if let Ok(release) = plugin::github::resolve(spec) {
+				install_release(release, &data_root, game_root.as_deref())?;
+			} else {
+				let (repo, reference) = plugin::github::split_install_spec(spec)?;
+				let dynamic = plugin::github::resolve_dynamic(&repo, reference.as_deref())?;
+				install_dynamic_release(&dynamic, &data_root, game_root.as_deref())?;
+			}
+		}
+		(None, true) => {
+			for release in plugin::github::releases() {
+				install_release(release, &data_root, game_root.as_deref())?;
+			}
+		}
 		(Some(_), true) => {
 			return Err("pass a plugin spec or --all, not both".into());
 		}
 		(None, false) => return Err("pass a plugin spec or --all".into()),
-	};
-	let data_root = data_root();
-	let game_root = resolve_game_root(config, &Eu4);
-	for release in releases {
-		install_release(release, &data_root, game_root.as_deref())?;
 	}
 	Ok(0)
 }
@@ -208,9 +219,47 @@ fn install_release(
 	data_root: &Path,
 	game_root: Option<&Path>,
 ) -> HandlerResult {
+	install_from(
+		&release.repo,
+		&release.tag,
+		&release.asset,
+		data_root,
+		game_root,
+		|bytes| plugin::github::package_from_zip(bytes, release),
+	)
+}
+
+fn install_dynamic_release(
+	release: &plugin::github::DynamicRelease,
+	data_root: &Path,
+	game_root: Option<&Path>,
+) -> HandlerResult {
+	install_from(
+		&release.repo,
+		&release.tag,
+		&release.asset,
+		data_root,
+		game_root,
+		plugin::github::package_from_own_zip,
+	)
+}
+
+fn install_from(
+	repo: &str,
+	tag: &str,
+	asset_name: &str,
+	data_root: &Path,
+	game_root: Option<&Path>,
+	package: impl FnOnce(&[u8]) -> Result<plugin::store::ValidatedPackage, plugin::github::GithubError>,
+) -> HandlerResult {
 	let download_dir = fresh_download_dir()?;
 	let gh = std::process::Command::new("gh")
-		.args(plugin::github::download_args(release, &download_dir.0))
+		.args(plugin::github::download_args(
+			repo,
+			tag,
+			asset_name,
+			&download_dir.0,
+		))
 		.output()
 		.map_err(|error| -> Box<dyn std::error::Error> {
 			if error.kind() == std::io::ErrorKind::NotFound {
@@ -221,20 +270,13 @@ fn install_release(
 		})?;
 	if !gh.status.success() {
 		let stderr = String::from_utf8_lossy(&gh.stderr);
-		return Err(format!(
-			"gh release download failed for {}@{}: {stderr}",
-			release.repo, release.tag
-		)
-		.into());
+		return Err(format!("gh release download failed for {repo}@{tag}: {stderr}").into());
 	}
-	let asset = download_dir.0.join(&release.asset);
+	let asset = download_dir.0.join(asset_name);
 	let bytes = store::read_package_file(&asset).map_err(|_| {
-		std::io::Error::other(format!(
-			"gh did not write {} for {}@{}",
-			release.asset, release.repo, release.tag
-		))
+		std::io::Error::other(format!("gh did not write {asset_name} for {repo}@{tag}"))
 	})?;
-	let validated = plugin::github::package_from_zip(&bytes, release)?;
+	let validated = package(&bytes)?;
 	let destination = store::version_dir(&data_root.join("plugins/store"), &validated);
 	for source in std::iter::once(download_dir.0.as_path()).chain(game_root) {
 		plugin::deployment::ensure_outside_game(source, data_root)?;
@@ -246,17 +288,13 @@ fn install_release(
 	match plugin::install(&store_root, &validated)? {
 		plugin::Installed::New(path) => {
 			println!(
-				"Installed {id} {version} from {}@{} into {}",
-				release.repo,
-				release.tag,
+				"Installed {id} {version} from {repo}@{tag} into {}",
 				path.display()
 			);
 		}
 		plugin::Installed::AlreadyPresent(path) => {
 			println!(
-				"{id} {version} from {}@{} is already in the store ({})",
-				release.repo,
-				release.tag,
+				"{id} {version} from {repo}@{tag} is already in the store ({})",
 				path.display()
 			);
 		}
@@ -300,12 +338,89 @@ fn fresh_download_dir() -> std::io::Result<DownloadDir> {
 	))
 }
 
+/// Split a `plugin[@tag-or-hash]` reference: `Acture/x@v0.1.0` pins the
+/// version the tag names, `Acture/x@18304ae4` the installed version
+/// whose content hash matches. A bare `--version` argument may carry
+/// the same `@`-less forms.
+fn resolve_requested(
+	id: &str,
+	version: Option<&str>,
+	catalog: &BTreeMap<String, BTreeMap<Version, plugin::Manifest>>,
+	store_root: &std::path::Path,
+) -> Result<(String, Option<Version>), Box<dyn std::error::Error>> {
+	let (id, mut reference) = match id.rsplit_once('@') {
+		// Ids cannot contain '@', so any split belongs to the reference.
+		Some((id, reference)) => (id.to_string(), Some(reference.to_string())),
+		None => (id.to_string(), None),
+	};
+	if let Some(version) = version
+		&& reference.is_none()
+	{
+		reference = Some(version.to_string());
+	}
+	let mut requested = None;
+	if reference.as_deref().is_some_and(|r| r != "latest")
+		&& let Some(reference) = reference
+	{
+		let versions = catalog
+			.get(&id)
+			.ok_or_else(|| std::io::Error::other(format!("no plugin with id {id} is installed")))?;
+		let tag = reference.strip_prefix('v').unwrap_or(&reference);
+		if let Ok(version) = Version::parse(tag) {
+			requested = Some(version);
+		} else if reference.len() >= 7 && reference.bytes().all(|b| b.is_ascii_hexdigit()) {
+			// A content-hash reference: the store's version directories
+			// carry `<version>+<hash>` names, and the pin is the plain
+			// manifest version the matching directory installs.
+			let plugin_dir = store_root.join(&id);
+			let mut matched = None;
+			for entry in std::fs::read_dir(&plugin_dir)
+				.map_err(|_| std::io::Error::other(format!("no plugin with id {id} is installed")))?
+				.flatten()
+			{
+				let name = entry.file_name().to_string_lossy().into_owned();
+				let Some((plain, hash)) = name.split_once('+') else {
+					continue;
+				};
+				if hash.starts_with(&reference)
+					&& let Ok(version) = Version::parse(plain)
+					&& versions.contains_key(&version)
+					&& matched.replace(version).is_some()
+				{
+					return Err(std::io::Error::other(format!(
+						"hash {reference} matches several installed versions of {id}"
+					))
+					.into());
+				}
+			}
+			requested = Some(matched.ok_or_else(|| {
+				std::io::Error::other(format!(
+					"no installed version of {id} matches hash {reference}"
+				))
+			})?);
+		} else {
+			return Err(std::io::Error::other(format!(
+				"reference {reference:?} is neither a version tag nor a hash"
+			))
+			.into());
+		}
+	}
+	Ok((id, requested))
+}
+
 fn set_enabled(args: &PluginToggleArgs, enabled: bool) -> HandlerResult {
 	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let (catalog, _) = catalog_with_builtins(&store_root);
 
 	let path = plugin::paths::selections_path()?;
-	let requested = args.version.as_deref().map(Version::parse).transpose()?;
+	let (id, requested) =
+		resolve_requested(&args.id, args.version.as_deref(), &catalog, &store_root)?;
+	let args = PluginToggleArgs {
+		id,
+		version: None,
+		playset: args.playset.clone(),
+	};
+	let args = &args;
 	let version = Selections::update(&path, |selections| {
 		let mut chosen = selections.for_playset(&args.playset);
 		// Disabling an existing choice must remain possible after its installed
@@ -455,7 +570,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	if !cfg!(all(windows, target_arch = "x86_64")) {
 		return Err("plugin launch requires Windows x64".into());
 	}
-	let game_root = foch_runner::locate_game(config, args.plan.game_path.as_deref())?;
+	let game_root = foch_runtime::runner::locate_game(config, args.plan.game_path.as_deref())?;
 	let raw_version = detect_game_version(&game_root).ok_or("could not detect the EU4 version")?;
 	let game = GameIdentity {
 		game: "eu4".into(),
@@ -470,11 +585,11 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		std::env::current_exe()?
 			.parent()
 			.unwrap()
-			.join("foch_eu4_host.dll"),
+			.join("foch_runtime.dll"),
 	);
 	let host_bytes = std::fs::read(&host).map_err(|error| {
 		format!(
-			"cannot read host {}: {error}; build foch-eu4-host and pass --host-dll",
+			"cannot read host {}: {error}; build foch-runtime and pass --host-dll",
 			host.display()
 		)
 	})?;
@@ -492,11 +607,11 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 			.as_nanos()
 	);
 	let mut layer =
-		foch_runner::runtime::RuntimeLayer::prepare(&game_root, &runtime_base, &run_id)?;
+		foch_runtime::runner::runtime::RuntimeLayer::prepare(&game_root, &runtime_base, &run_id)?;
 	let directory = layer.directory.clone();
 	write_host_dll(&directory, &host_bytes)?;
 	let data_root = foch::game::eu4::base::snapshot::data_root();
-	foch_runner::runtime::ensure_outside_game(&game_root, &data_root)?;
+	foch_runtime::runner::runtime::ensure_outside_game(&game_root, &data_root)?;
 	let prepared = deployment.stage(&directory, &data_root, &run_id, &game_root)?;
 	if let Some(cache) =
 		deployment.prepare_font_cache(&data_root, &layer.fonts_sha256, &game_root)?
@@ -510,7 +625,7 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 			dirs::document_dir().map(|path| path.join("Paradox Interactive/Europa Universalis IV"))
 		})
 		.ok_or("could not locate the EU4 user directory; pass --user-dir")?;
-	foch_runner::runtime::ensure_outside_game(&game_root, &user_dir)?;
+	foch_runtime::runner::runtime::ensure_outside_game(&game_root, &user_dir)?;
 	std::fs::create_dir_all(&user_dir)?;
 	let user_dir = PathBuf::from(plugin::deployment::path_text(&user_dir.canonicalize()?)?);
 	plugin::store::replace_package_file(
@@ -533,7 +648,8 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		if args.prepare_only {
 			return Ok(None);
 		}
-		let mut child = foch_runner::runtime::spawn_player(directory, &user_dir, &args.game_args)?;
+		let mut child =
+			foch_runtime::runner::runtime::spawn_player(directory, &user_dir, &args.game_args)?;
 		record["pid"] = child.id().into();
 		let recorded = serde_json::to_vec_pretty(&record)
 			.map_err(std::io::Error::other)
@@ -608,7 +724,7 @@ mod tests {
 		std::fs::create_dir(&game).unwrap();
 		let external = scratch.path().join("external.dll");
 		std::fs::write(&external, b"external bytes").unwrap();
-		let layer = foch_runner::runtime::RuntimeLayer::prepare(
+		let layer = foch_runtime::runner::runtime::RuntimeLayer::prepare(
 			&game,
 			&scratch.path().join("runtimes"),
 			"host-staging",
@@ -650,7 +766,7 @@ mod tests {
 		);
 		// Preparing this empty fixture creates an ordinary directory link
 		// (a native junction on Windows) without launching any executable.
-		let layer = foch_runner::runtime::RuntimeLayer::prepare(
+		let layer = foch_runtime::runner::runtime::RuntimeLayer::prepare(
 			&package,
 			&scratch.path().join("runtimes"),
 			"linked-package",

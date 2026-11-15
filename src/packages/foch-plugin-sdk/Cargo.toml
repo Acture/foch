@@ -1,0 +1,24 @@
+[package]
+name = "foch-plugin-sdk"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.95"
+license.workspace = true
+readme = "../../apps/foch-cli/README.md"
+homepage.workspace = true
+repository.workspace = true
+description = "The Foch native plugin SDK: the host ABI plus the shared services a plugin builds against"
+keywords = ["paradox", "eu4", "modding", "plugin", "dll"]
+categories = ["game-development", "development-tools"]
+publish = true
+include = [
+	"/src/**",
+	"/include/**",
+	"/LICENSE",
+	"/LICENSE-MERGIRAF.txt",
+	"/NOTICE.md",
+]
+
+[lib]
+# The crate must build for the DLL target and for test binaries alike.
+crate-type = ["rlib"]
