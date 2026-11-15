@@ -95,6 +95,50 @@ const NUMBER_SLOTS: &[(&str, &str)] = &[
 	("add_manpower", "manpower"),
 ];
 
+/// Console cheat commands the model maps to numeric slots, as (command,
+/// slot). Only these are accepted; simulation toggles (`fow`, `ti`,
+/// `yesman`, `observe`) and out-of-model cheats refuse with the reason.
+/// The built-in runner passes the raw line to the game console instead.
+const CHEATS: &[(&str, &str)] = &[
+	("cash", "treasury"),
+	("adm", "adm_power"),
+	("dip", "dip_power"),
+	("mil", "mil_power"),
+	("prestige", "prestige"),
+	("stability", "stability"),
+	("manpower", "manpower"),
+];
+
+/// The parsed form of a cheat step: `command amount`.
+fn parse_cheat(command: &str) -> Result<(&'static str, f64), String> {
+	let mut parts = command.split_whitespace();
+	let name = parts.next().unwrap_or_default();
+	let slot = CHEATS
+		.iter()
+		.find(|(cheat, _)| *cheat == name)
+		.map(|(_, slot)| *slot)
+		.ok_or_else(|| {
+			format!(
+				"cheat \"{command}\": {name} is not a mapped cheat; the model knows {}",
+				CHEATS
+					.iter()
+					.map(|(cheat, _)| *cheat)
+					.collect::<Vec<_>>()
+					.join(", ")
+			)
+		})?;
+	let amount = parts
+		.next()
+		.and_then(|text| text.parse::<f64>().ok())
+		.ok_or_else(|| format!("cheat \"{command}\": needs a number"))?;
+	if parts.next().is_some() {
+		return Err(format!(
+			"cheat \"{command}\": expected one command and one number"
+		));
+	}
+	Ok((slot, amount))
+}
+
 /// The slot an effect key adds to.
 fn number_effect(key: &str) -> Option<&'static str> {
 	NUMBER_SLOTS
@@ -726,6 +770,7 @@ impl<'a> Interpreter<'a> {
 				Step::AdvanceDays { .. } => "advance_days",
 				Step::Expect { .. } => "expect",
 				Step::TakeDecision { .. } => "take_decision",
+				Step::Cheat { .. } => "cheat",
 			};
 			world.note(
 				&case.start.tag,
@@ -766,6 +811,31 @@ impl<'a> Interpreter<'a> {
 						);
 					}
 				}
+				Step::Cheat { command, .. } => match parse_cheat(command) {
+					Ok((slot, amount)) => {
+						let current = {
+							let slots = world.numbers.entry(case.start.tag.clone()).or_default();
+							let value = slots.entry(slot).or_insert(0.0);
+							*value += amount;
+							*value
+						};
+						world.note(
+							&case.start.tag,
+							Observed::SlotSet {
+								slot: slot.into(),
+								value: current.to_string(),
+							},
+						);
+					}
+					Err(reason) => {
+						return unsupported(
+							vec![reason],
+							failures,
+							passed,
+							std::mem::take(&mut world.trace),
+						);
+					}
+				},
 				Step::TakeDecision { name, .. } => {
 					if let Err(reason) = self.take_decision(&mut world, &root, name) {
 						return unsupported(
@@ -981,6 +1051,11 @@ impl<'a> Interpreter<'a> {
 				}
 				Step::TakeDecision { name, span } => {
 					self.scan_decision(name, span, scope, &mut seen, reasons);
+				}
+				Step::Cheat { command, span } => {
+					if let Err(reason) = parse_cheat(command) {
+						reasons.push(format!("{span}: {reason}"));
+					}
 				}
 				Step::AdvanceDays { .. } => {}
 			}
@@ -3528,6 +3603,49 @@ test = {
 		assert_eq!(
 			below.failures[0].message,
 			"the model has prestige = 30 on SWE, expected at least 50"
+		);
+	}
+
+	#[test]
+	fn cheat_commands_map_to_slots_offline() {
+		const CASES: &str = r#"test = {
+	name = cheat_run
+	time = 1444.11.11
+	tag = SWE
+	cheat = "cash 500"
+	cheat = "adm 100"
+	effect = { add_prestige = 10 }
+	expect = { treasury = 500 adm_power = 100 prestige = 10 }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let run = case(&result, "cheat_run");
+		assert_eq!(run.outcome, Outcome::Pass, "{:#?}", run);
+	}
+
+	#[test]
+	fn unmapped_cheats_refuse_with_the_known_list() {
+		const CASES: &str = r#"test = {
+	name = bad_cheat
+	time = 1444.11.11
+	tag = SWE
+	cheat = "fow"
+	expect = { always = yes }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let bad = case(&result, "bad_cheat");
+		assert_eq!(bad.outcome, Outcome::Unsupported);
+		assert!(
+			bad.unsupported[0].contains("fow is not a mapped cheat"),
+			"{:#?}",
+			bad.unsupported
 		);
 	}
 

@@ -295,6 +295,11 @@ pub enum Step {
 		name: String,
 		span: SourceSpan,
 	},
+	/// Run a console cheat command as setup (`cash 500`, `adm 100`, ...).
+	Cheat {
+		command: String,
+		span: SourceSpan,
+	},
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -363,6 +368,7 @@ impl TestCase {
 					format!("expect {}", clauses.join("\n"))
 				}
 				Step::TakeDecision { name, .. } => format!("take_decision {name}"),
+				Step::Cheat { command, .. } => format!("cheat {command}"),
 			})
 			.collect();
 		let identity = Identity {

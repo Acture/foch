@@ -298,10 +298,14 @@ pub fn compile(
 			}
 		}
 		let mut pending_days: Option<u32> = None;
+		let mut cheats: Vec<String> = Vec::new();
 		for (step_index, step) in case.steps.iter().enumerate() {
 			let step_index = step_index as u32;
 			match step {
 				Step::TakeDecision { .. } => unreachable!("refused before writing"),
+				Step::Cheat { command, .. } => {
+					cheats.push(command.clone());
+				}
 				Step::AdvanceDays { days, .. } => {
 					*pending_days.get_or_insert(0) += days;
 					continue;
@@ -331,6 +335,7 @@ pub fn compile(
 					}
 				}
 				Step::AdvanceDays { .. } => unreachable!("handled above"),
+				Step::Cheat { .. } => unreachable!("collected above"),
 				Step::TakeDecision { name, span } => {
 					return Err(fail(
 						Some(span),
