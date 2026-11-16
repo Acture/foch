@@ -20,10 +20,16 @@ include = [
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["runner"]
+# The out-of-process test runner drags the analysis crates; plugins
+# consume the data plane alone with default-features = false.
+runner = ["dep:foch", "dep:foch-test"]
+
 [dependencies]
 foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }
-foch.workspace = true
-foch-test.workspace = true
+foch = { workspace = true, optional = true }
+foch-test = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
