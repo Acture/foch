@@ -111,6 +111,28 @@ fn defensive_pact_joins_exact_matching_war_with_target_as_secondary_enemy() {
 }
 
 #[test]
+fn directed_defense_never_calls_a_join_for_unrelated_or_friendly_target_wars() {
+	let mut state = world();
+	let mut book = accepted(&state, Scope::Defense, false);
+	state.day = 101;
+	let unrelated = war(10, ENG, FRA);
+	let mut friendly_target = war(11, ENG, FRA);
+	friendly_target.defenders.push(HAB);
+	let mut departed_target = war(12, HAB, FRA);
+	departed_target.attackers = vec![ENG];
+	let mut bridge = Bridge::default();
+	for defensive_war in [unrelated, friendly_target, departed_target] {
+		state.revision += 1;
+		// A separate war involving the named target does not broaden the pact
+		// into all of FRA's defensive wars. HAB must actually oppose FRA in
+		// the exact war being considered, even if HAB originally declared it.
+		state.wars = vec![defensive_war, war(20, HAB, DAN)];
+		assert!(book.process(&state, &mut bridge).unwrap().is_empty());
+		assert!(bridge.joins.is_empty());
+	}
+}
+
+#[test]
 fn scope_and_reciprocity_are_explicit_and_existing_wars_are_excluded() {
 	for (scope, reciprocal, expected) in [
 		(Scope::Defense, false, 0),

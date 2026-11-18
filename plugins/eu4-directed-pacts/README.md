@@ -44,6 +44,14 @@ create two obligations. Pending and active overlapping obligations are rejected.
 Signatories require verified independent foreign policy. A missing country or
 changed tag ends the pact. Existing wars at acceptance are excluded.
 
+Attack cooperation and defense cooperation each name one target country.
+For example, FRA and SWE can agree to cooperate defensively against HAB.
+That agreement covers only a qualifying defensive war in which HAB actually
+fights on the opposing side. An ENG attack on FRA without HAB does not trigger
+it, even if HAB is fighting a separate war elsewhere. HAB fighting alongside
+FRA does not trigger it either. Fulfillment selects that exact war; it never
+joins all of FRA's defensive wars.
+
 Attack terms match wars personally declared by the beneficiary. Defense terms
 match wars declared directly on it. The target must currently participate on
 the opposite side, and may be a secondary participant. Wars involving the
