@@ -544,9 +544,11 @@ fn offline_conflicts_with_plugins_as_a_flag_error() {
 #[test]
 fn unmapped_step_kinds_are_rejected_cleanly_at_collection() {
 	// The review repro: cheat / take_decision in a tests/ block must never
-	// panic the compile path. The core candidate has no such steps, so the
-	// collector refuses the keys before any plan exists; --no-run exits with
-	// the diagnostics instead of unwinding.
+	// panic the compile path. This branch collects both as steps, so the
+	// collection-level refusal lives on the merged core; here the invariant
+	// is the one that survived the review: the online runner stops with a
+	// clean CompileError — take_decision names --offline — and nothing
+	// panics.
 	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
 	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
 	fs::write(
@@ -562,7 +564,7 @@ fn unmapped_step_kinds_are_rejected_cleanly_at_collection() {
 	let output = run(dir.path(), &["test", "mod", "--no-run"]);
 	assert!(
 		!output.status.success(),
-		"the unknown keys stop the run: {}",
+		"the decision step stops the online run: {}",
 		String::from_utf8_lossy(&output.stdout)
 	);
 	let text = format!(
@@ -570,8 +572,10 @@ fn unmapped_step_kinds_are_rejected_cleanly_at_collection() {
 		String::from_utf8_lossy(&output.stdout),
 		String::from_utf8_lossy(&output.stderr)
 	);
-	assert!(text.contains("unknown test key cheat"), "{text}");
-	assert!(text.contains("unknown test key take_decision"), "{text}");
+	assert!(
+		text.contains("cannot take decisions yet") && text.contains("--offline"),
+		"{text}"
+	);
 	assert!(!text.contains("panicked"), "{text}");
 }
 
