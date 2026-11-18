@@ -579,8 +579,8 @@ mod tests {
 
 	#[test]
 	fn the_entry_point_rejects_other_abi_majors() {
-		assert!(foch_plugin_get_api(2).is_null());
-		assert!(!foch_plugin_get_api(1).is_null());
+		assert!(foch_plugin_get_api(ABI_MAJOR + 1).is_null());
+		assert!(!foch_plugin_get_api(ABI_MAJOR).is_null());
 	}
 
 	#[test]
@@ -630,22 +630,5 @@ mod tests {
 		command[0x1c..0x20].copy_from_slice(&1000i32.to_le_bytes());
 		unsafe { detour::tribute_executor(command.as_mut_ptr(), 0) };
 		assert_eq!(SEEN.load(Ordering::SeqCst), 1000);
-	}
-}
-
-#[cfg(test)]
-mod unused_marker_removed {
-	use super::*;
-
-	#[test]
-	fn the_entry_point_rejects_other_abi_majors() {
-		assert!(foch_plugin_get_api(2).is_null());
-		assert!(!foch_plugin_get_api(1).is_null());
-	}
-
-	#[test]
-	fn the_api_table_is_sized_and_claims_no_caps() {
-		assert_eq!(PLUGIN_API.size, std::mem::size_of::<FochPluginApi>() as u32);
-		assert_eq!(PLUGIN_API.caps, 0);
 	}
 }

@@ -64,12 +64,12 @@ fn artifacts() -> &'static Artifacts {
 	BUILD.get_or_init(|| {
 		let status = Command::new(env!("CARGO"))
 			.current_dir(workspace())
-			.args(["build", "-p", "foch-eu4-host", "-p", "foch-eu4-tribute"])
+			.args(["build", "-p", "foch-runtime-host", "-p", "foch-eu4-tribute"])
 			.status()
 			.expect("cargo build");
 		assert!(status.success());
 		let target = workspace().join("target/debug");
-		let host = target.join("foch_eu4_host.dll");
+		let host = target.join("foch_runtime_host.dll");
 		let plugin = target.join("foch_eu4_tribute.dll");
 		assert!(host.is_file(), "missing {}", host.display());
 		assert!(plugin.is_file(), "missing {}", plugin.display());
@@ -80,7 +80,7 @@ fn artifacts() -> &'static Artifacts {
 		// initialization path; the payload object adds the pattern bytes.
 		let game_c = root.path().join("game.c");
 		fs::copy(
-			workspace().join("src/packages/foch-eu4-host/tests/fixtures/game.c"),
+			workspace().join("src/packages/foch-runtime-host/tests/fixtures/game.c"),
 			&game_c,
 		)
 		.unwrap();
@@ -90,7 +90,7 @@ fn artifacts() -> &'static Artifacts {
 		// initialization path; the payload object adds the pattern bytes.
 		let game_c = root.path().join("game.c");
 		fs::copy(
-			workspace().join("src/packages/foch-eu4-host/tests/fixtures/game.c"),
+			workspace().join("src/packages/foch-runtime-host/tests/fixtures/game.c"),
 			&game_c,
 		)
 		.unwrap();
@@ -110,7 +110,9 @@ fn artifacts() -> &'static Artifacts {
 			String::from_utf8_lossy(&output.stdout),
 			String::from_utf8_lossy(&output.stderr)
 		);
-		let output = tool
+		// game.c now references the assembly-defined fixture sites, so the
+		// payload object and the assembly are both linked into the fixtures.
+		let payload = tool
 			.to_command()
 			.current_dir(root.path())
 			.args(["/nologo", "/W4", "/utf-8", "/c"])
@@ -119,14 +121,29 @@ fn artifacts() -> &'static Artifacts {
 			.output()
 			.unwrap();
 		assert!(
-			output.status.success(),
+			payload.status.success(),
 			"payload.obj: {} {}",
-			String::from_utf8_lossy(&output.stdout),
-			String::from_utf8_lossy(&output.stderr)
+			String::from_utf8_lossy(&payload.stdout),
+			String::from_utf8_lossy(&payload.stderr)
+		);
+		let ml = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "ml64.exe")
+			.expect("Windows DLL integration tests require the MSVC assembler");
+		let assembled = ml
+			.to_command()
+			.current_dir(root.path())
+			.args(["/nologo", "/c", "/Fosites.obj"])
+			.arg(workspace().join("src/packages/foch-runtime-host/tests/fixtures/sites.asm"))
+			.output()
+			.unwrap();
+		assert!(
+			assembled.status.success(),
+			"sites: {} {}",
+			String::from_utf8_lossy(&assembled.stdout),
+			String::from_utf8_lossy(&assembled.stderr)
 		);
 		for (name, objects) in [
-			("eu4_plain", "game.obj"),
-			("eu4_patterns", "game.obj payload.obj"),
+			("eu4_plain", "game.obj sites.obj"),
+			("eu4_patterns", "game.obj payload.obj sites.obj"),
 		] {
 			let output = tool
 				.to_command()
@@ -188,7 +205,7 @@ fn runtime(with_patterns: bool) -> TempDir {
 				"phase": "entry",
 				"path": plugin_path,
 				"config_json": "{\"enabled\":true,\"global_percent\":50,\"tag_overrides\":\"{}\"}",
-				"abi_major": 1
+				"abi_major": 0
 			}]
 		}))
 		.unwrap(),
