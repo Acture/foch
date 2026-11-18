@@ -103,3 +103,41 @@ fn malformed_weights_are_refused_not_panicked() {
 		assert!(GeneralGnn::from_json(text).is_none(), "must refuse: {text}");
 	}
 }
+
+#[test]
+fn shape_and_json_malformations_from_the_external_review_are_refused() {
+	let text = std::fs::read_to_string("tests/data/parity.json").expect("fixture readable");
+	let root: serde_json::Value = serde_json::from_str(&text).expect("fixture parses");
+	let weights = root.get("weights").cloned().unwrap_or(root);
+
+	// Shrink one weight matrix's rows by one column, exactly as the
+	// external review did: the divisor stays aligned, so only the
+	// dimension-chain checks can catch it.
+	let shrink = |key: &str| -> String {
+		let mut w = weights.clone();
+		let matrix = w.get_mut(key).expect(key).as_array_mut().expect(key);
+		for row in matrix {
+			row.as_array_mut().expect("row").pop();
+		}
+		w.to_string()
+	};
+	for key in ["gat1.lin_r.weight", "gat2.lin_r.weight", "head.2.weight"] {
+		let mutated = shrink(key);
+		assert!(
+			GeneralGnn::from_json(&mutated).is_none(),
+			"{key} shrank silently"
+		);
+	}
+
+	// A truncated document is not JSON.
+	let truncated = text.trim_end().strip_suffix('}').expect("brace");
+	assert!(
+		GeneralGnn::from_json(truncated).is_none(),
+		"truncated JSON accepted"
+	);
+
+	// Legal JSON that carries no weights at all: refused for missing
+	// fields, not for parseability.
+	assert!(GeneralGnn::from_json("{ }").is_none());
+	assert!(GeneralGnn::from_json("{\"weights\": {}}").is_none());
+}

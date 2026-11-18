@@ -116,8 +116,13 @@ impl GatV2 {
 		if self.bias.len() != self.channels() || !self.bias.iter().all(|v| v.is_finite()) {
 			return None;
 		}
-		// Both projections must produce every head's channels.
-		(self.lin_l.out == self.att.len() && self.lin_r.out == self.att.len()).then_some(())
+		// Both projections see the same node features and must produce
+		// every head's channels — a mismatched lin_r width would zip
+		// silently and score wrong instead of refusing.
+		(self.lin_l.out == self.att.len()
+			&& self.lin_r.out == self.att.len()
+			&& self.lin_l.input == self.lin_r.input)
+			.then_some(())
 	}
 
 	/// `nodes` is `[n][input]` row-major; `edges` DIRECTED (src, dst).
@@ -187,6 +192,42 @@ impl GatV2 {
 	}
 }
 
+/// Structural descriptor of a JSON number tree: (nesting depth, leaf
+/// count). Siblings must share it — a ragged `[[30], [26]]` refuses
+/// instead of flattening into a silently wrong matrix.
+fn shape(value: &serde_json::Value) -> Option<(u8, usize)> {
+	match value {
+		serde_json::Value::Number(_) => Some((0, 1)),
+		serde_json::Value::Array(items) => {
+			let described: Vec<(u8, usize)> = items.iter().map(shape).collect::<Option<_>>()?;
+			let first = *described.first()?;
+			if described.iter().any(|d| *d != first) {
+				return None;
+			}
+			Some((first.0 + 1, first.1 * described.len()))
+		}
+		_ => None,
+	}
+}
+
+/// Flatten a structurally validated number tree in row-major order.
+/// torch tensors arrive 2-deep (`[out][in]`) except the attention
+/// vector, which is 3-deep (`[1][heads][channels]`); both flatten to
+/// the layout the forward pass slices.
+fn numbers(value: &serde_json::Value) -> Option<Vec<f32>> {
+	match value {
+		serde_json::Value::Number(n) => n.as_f64().map(|f| vec![f as f32]),
+		serde_json::Value::Array(items) => {
+			let mut out = Vec::with_capacity(items.len());
+			for item in items {
+				out.extend(numbers(item)?);
+			}
+			Some(out)
+		}
+		_ => None,
+	}
+}
+
 /// The loaded province-graph policy.
 pub struct GeneralGnn {
 	gat1: GatV2,
@@ -205,16 +246,24 @@ fn relu_grid(values: &[f32]) -> Vec<f32> {
 
 impl GeneralGnn {
 	/// Parse and validate the exported weight JSON: an object of nested
-	/// number arrays. Malformed weights — missing fields, empty or
-	/// non-divisible shapes, non-finite values, or layers whose widths
-	/// do not chain (`gat2` input must equal `gat1`'s output width,
-	/// the head must take three `gat2`-width blocks, the query must
-	/// start at `RULES`) — yield `None`, never a panic.
+	/// number arrays, either at the root (the exporter's format) or
+	/// under a `"weights"` key (the fixture format). The whole document
+	/// must be valid JSON — a truncated file is refused, while legally
+	/// whitespace-only-but-empty objects simply lack the fields.
+	/// Malformed weights — missing fields, empty or non-divisible
+	/// shapes, non-finite values, or layers whose widths do not chain
+	/// (`gat2` input must equal `gat1`'s output width, both
+	/// projections must share an input width, the head must take three
+	/// `gat2`-width blocks and end in one output, the query must start
+	/// at `RULES`) — yield `None`, never a panic and never a silently
+	/// zip-truncated wrong score.
 	pub fn from_json(text: &str) -> Option<Self> {
+		let root: serde_json::Value = serde_json::from_str(text).ok()?;
+		let container = root.get("weights").unwrap_or(&root);
 		let field = |name: &str| -> Option<Vec<f32>> {
-			let key = format!("\"{name}\":");
-			let start = text.find(&key)? + key.len();
-			parse_array(&text[start..])
+			let value = container.get(name)?;
+			shape(value)?; // ragged or non-numeric trees refuse here
+			numbers(value)
 		};
 		let gnn = Self {
 			gat1: GatV2::parse(&field, "gat1")?,
@@ -234,6 +283,7 @@ impl GeneralGnn {
 			&& self.query2.input == self.query1.out
 			&& self.query2.out == self.gat2.channels()
 			&& self.head1.input == self.gat2.channels() * 3
+			&& self.head2.input == self.head1.out
 			&& self.head2.out == 1
 	}
 
@@ -291,36 +341,6 @@ impl GeneralGnn {
 			.map(|(index, _)| index)
 			.unwrap_or(0)
 	}
-}
-
-/// Parse one `[...]` of nested numbers into a flat list.
-fn parse_array(text: &str) -> Option<Vec<f32>> {
-	let mut depth = 0;
-	let mut values = Vec::new();
-	let mut number = String::new();
-	for character in text.chars() {
-		match character {
-			'[' => depth += 1,
-			']' => {
-				depth -= 1;
-				if depth == 0 {
-					break;
-				}
-			}
-			'0'..='9' | '-' | '+' | '.' | 'e' | 'E' => number.push(character),
-			',' | ' ' | '\n' | '\t' | '\r' => {
-				if !number.is_empty() {
-					values.push(number.parse().ok()?);
-					number.clear();
-				}
-			}
-			_ => return None,
-		}
-	}
-	if !number.is_empty() {
-		values.push(number.parse().ok()?);
-	}
-	Some(values)
 }
 
 #[cfg(test)]

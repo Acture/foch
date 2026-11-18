@@ -6,9 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Pure-Rust forward pass of the province-graph GNN (GeneralGnn) with parity fixtures against the PyTorch reference"
+description = "Pure-Rust forward pass of the province-graph GNN (GeneralGnn), serde_json-parsed weights, parity fixtures against the PyTorch reference"
 publish = false
+
+[dependencies]
+serde_json.workspace = true
 
 [dev-dependencies]
 serde.workspace = true
-serde_json.workspace = true
