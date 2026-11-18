@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-pub use pins::{EvidenceStatus, SemanticsCatalog};
+pub use pins::{EvidenceStatus, HandlerPin, SemanticsCatalog};
 
 /// Marks every offline result, in JSON and in reports, as its own layer.
 pub const LAYER: &str = "offline";
@@ -50,6 +50,41 @@ const MAX_EVENT_DELIVERIES: usize = 4096;
 /// Upper bound of nested scripted-trigger inlining, so mutually inlining
 /// definitions cannot recurse forever.
 const MAX_SCRIPTED_DEPTH: u32 = 256;
+
+/// The primitive names the interpreter implements itself, by context.
+/// Static on purpose: a catalog that omits an entry cannot un-make a
+/// builtin, so a scripted definition never shadows one and a missing entry
+/// still refuses at the gate below. Keep in sync with the match arms of
+/// `exec_assignment` and `eval_assignment`; the structural passthroughs
+/// (`EFFECT_CONTROL`/`CONDITION_CONTROL`) are not catalog primitives and
+/// are not listed here.
+const BUILTIN_EFFECTS: &[&str] = &[
+	"change_variable",
+	"clr_country_flag",
+	"clr_global_flag",
+	"country_event",
+	"log",
+	"random",
+	"set_country_flag",
+	"set_global_flag",
+	"set_variable",
+];
+const BUILTIN_TRIGGERS: &[&str] = &[
+	"always",
+	"check_variable",
+	"has_country_flag",
+	"has_global_flag",
+	"has_variable",
+	"tag",
+];
+
+/// Whether `key` names a builtin primitive in this context.
+fn builtin(key: &str, context: Context) -> bool {
+	match context {
+		Context::Effect => BUILTIN_EFFECTS.contains(&key),
+		Context::Condition => BUILTIN_TRIGGERS.contains(&key),
+	}
+}
 
 /// Blocks that structure effects without changing scope.
 const EFFECT_CONTROL: &[&str] = &[
@@ -1088,9 +1123,9 @@ impl<'a> Interpreter<'a> {
 			// A scripted name that collides with a catalog primitive would
 			// resolve differently in the scan and in execution; refuse the
 			// call so the verdict cannot outrun the evidence.
-			if self.catalog.primitives.contains_key(key) {
+			if builtin(key, context) || self.catalog.primitives.contains_key(key) {
 				reasons.push(format!(
-					"{where_}: scripted {} {key} collides with a catalog primitive; 					 rename the definition",
+					"{where_}: scripted {} {key} collides with a modeled primitive; 					 rename the definition",
 					Self::kind_word(context)
 				));
 				return;
@@ -1161,9 +1196,9 @@ impl<'a> Interpreter<'a> {
 		reasons: &mut Vec<String>,
 	) {
 		if let Some(definition) = self.scripted_in(name, context) {
-			if self.catalog.primitives.contains_key(name) {
+			if builtin(name, context) || self.catalog.primitives.contains_key(name) {
 				reasons.push(format!(
-					"{where_}: scripted {} {name} collides with a catalog primitive; 					 rename the definition",
+					"{where_}: scripted {} {name} collides with a modeled primitive; 					 rename the definition",
 					Self::kind_word(context)
 				));
 				return;
@@ -1466,11 +1501,13 @@ impl<'a> Interpreter<'a> {
 			return self.exec_statements(world, &ctx.enter(&tag), items, where_, visited);
 		}
 		// The primitive that actually runs honors the handler gate; the scan
-		// is not the only line of defense.
-		if self.catalog.primitives.contains_key(key)
-			&& let Err(reason) = self.catalog.permits(key)
-		{
-			return Err(format!("{where_}: {reason}"));
+		// is not the only line of defense. The static table decides what is
+		// a builtin, so a catalog that omits the entry refuses here instead
+		// of silently running the arm.
+		if builtin(key, Context::Effect) {
+			self.catalog
+				.permits(key)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
 		}
 		match key {
 			"set_country_flag" | "clr_country_flag" => {
@@ -1699,11 +1736,12 @@ impl<'a> Interpreter<'a> {
 			return self.eval_statements(world, &ctx.enter(&tag), items, where_, depth + 1);
 		}
 		// Same gate as execution: the trigger that actually decides honors
-		// the handler evidence, not only the scan that approved the plan.
-		if self.catalog.primitives.contains_key(key)
-			&& let Err(reason) = self.catalog.permits(key)
-		{
-			return Err(format!("{where_}: {reason}"));
+		// the handler evidence, not only the scan that approved the plan —
+		// and a catalog omitting the entry refuses instead of deciding.
+		if builtin(key, Context::Condition) {
+			self.catalog
+				.permits(key)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
 		}
 		let country = world.country(&ctx.current);
 		Ok(match key {
@@ -2362,6 +2400,92 @@ test = {
 			"{:#?}",
 			case(&result, "mixed_and")
 		);
+	}
+
+	/// A pinned catalog built from the embedded seed with synthetic
+	/// handlers, minus one primitive — the partial-catalog shape of the
+	/// external review repro.
+	fn pinned_without(name: &str) -> SemanticsCatalog {
+		let mut catalog = SemanticsCatalog::embedded();
+		catalog.status = EvidenceStatus::Pinned;
+		catalog.game_version = Some("synthetic".into());
+		catalog.binary_sha256 = Some("0".repeat(64));
+		for primitive in catalog.primitives.values_mut() {
+			primitive.handler = Some(HandlerPin {
+				symbol: "synthetic".into(),
+				address: 1,
+				end: 2,
+				pseudocode_sha256: "0".repeat(64),
+			});
+		}
+		catalog.primitives.remove(name);
+		catalog
+	}
+
+	#[test]
+	fn an_omitted_catalog_primitive_cannot_run_through_a_scripted_shadow() {
+		// The review repro: with `always` removed from a pinned catalog, a
+		// scripted trigger named `always` made the scan resolve the call as
+		// the scripted body while evaluation ran the builtin arm and the
+		// case passed with pinned evidence. The builtin table is static, so
+		// the missing entry cannot un-make the builtin: the call collides in
+		// the scan and the executed builtin would refuse at the gate anyway.
+		const SHADOW: &str = "always = { tag = DAN }";
+		const CASES: &str = r#"test = {
+	name = missing_gate
+	time = 1444.11.11
+	tag = SWE
+	expect = { always = yes }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/shadow.txt",
+				SourceKind::Scripted,
+				SHADOW,
+			),
+			file("tests/repro.txt", SourceKind::TestsDir, CASES),
+		];
+		let catalog = pinned_without("always");
+		let result = interpret_sources(&sources, &ProjectFacts::default(), &catalog);
+		assert_eq!(result.evidence, EvidenceStatus::Pinned);
+		let verdict = case(&result, "missing_gate");
+		assert_ne!(verdict.outcome, Outcome::Pass, "{verdict:#?}");
+		assert!(
+			verdict.unsupported[0].contains("collides"),
+			"{:#?}",
+			verdict.unsupported
+		);
+	}
+
+	#[test]
+	fn a_partial_catalog_still_supports_unrelated_cases_and_legal_scripted() {
+		// The same partial catalog (still missing `always`) runs a case that
+		// never touches the omitted primitive, including a legal scripted
+		// pair that collides with nothing.
+		const CASES: &str = r#"test = {
+	name = untouched
+	time = 1444.11.11
+	tag = SWE
+	effect = { prep }
+	expect = { is_ready }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_effects/prep.txt",
+				SourceKind::Scripted,
+				"prep = { set_country_flag = ready }",
+			),
+			file(
+				"common/scripted_triggers/ready.txt",
+				SourceKind::Scripted,
+				"is_ready = { has_country_flag = ready }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let catalog = pinned_without("always");
+		let result = interpret_sources(&sources, &ProjectFacts::default(), &catalog);
+		let verdict = case(&result, "untouched");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{verdict:#?}");
 	}
 
 	#[test]
