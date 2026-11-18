@@ -812,6 +812,10 @@ struct SessionRecord {
 	launch: String,
 	/// The plugin host's events file, when plugins were loaded.
 	host_events: Option<PathBuf>,
+	/// The OS process id of the launched game, captured at spawn.
+	launch_pid: u32,
+	/// The Windows session the game ran in; `None` when unavailable.
+	launch_session_id: Option<u32>,
 	#[serde(flatten)]
 	exit: foch_test::RunnerExit,
 }
@@ -867,6 +871,8 @@ fn run_one_session(
 			.collect(),
 		launch: outcome.launch_detail,
 		host_events: outcome.host_events,
+		launch_pid: outcome.launch_pid,
+		launch_session_id: outcome.launch_session_id,
 		exit: outcome.exit,
 	};
 	Ok((record, results))
