@@ -1662,17 +1662,53 @@ impl<'a> Interpreter<'a> {
 				};
 				let mut verdicts = Vec::new();
 				for statement in items {
-					let AstStatement::Assignment { key, value, .. } = statement else {
-						continue;
-					};
-					verdicts.push(self.eval_assignment(
-						world,
-						ctx,
-						key,
-						value,
-						where_,
-						depth + 1,
-					)?);
+					match statement {
+						AstStatement::Assignment { key, value, .. } => {
+							verdicts.push(self.eval_assignment(
+								world,
+								ctx,
+								key,
+								value,
+								where_,
+								depth + 1,
+							)?);
+						}
+						AstStatement::Item {
+							value:
+								AstValue::Scalar {
+									value: ScalarValue::Identifier(name),
+									..
+								},
+							..
+						} => {
+							// A bare identifier names a scripted trigger; EU4
+							// reads it as its own conjunctive condition.
+							let definition =
+								self.scripted_in(name, Context::Condition).ok_or_else(|| {
+									format!(
+										"{where_}: {name} reached evaluation without 											 passing the scan"
+									)
+								})?;
+							verdicts.push(self.eval_statements(
+								world,
+								ctx,
+								&parse(&definition.body),
+								&definition.origin,
+								depth + 1,
+							)?);
+						}
+						AstStatement::Comment { .. } => {}
+						other => {
+							return Err(format!(
+								"{where_}: {key} cannot evaluate {other:?} inside a logic block"
+							));
+						}
+					}
+				}
+				if verdicts.is_empty() {
+					return Err(format!(
+						"{where_}: {key} with no conditions cannot be decided offline"
+					));
 				}
 				match key {
 					"OR" => verdicts.iter().any(|&holds| holds),
@@ -2178,6 +2214,82 @@ mod tests {
 		);
 		let after = case(&result, "after_due");
 		assert_eq!(after.outcome, Outcome::Pass, "{:#?}", after.failures);
+	}
+
+	#[test]
+	fn logic_blocks_evaluate_bare_scripted_triggers() {
+		// A bare identifier inside AND/OR/NOT names a scripted trigger; the
+		// review counterexample: AND = { is_false } passed vacuously and
+		// OR = { is_true } failed, both from skipping the bare items.
+		const CASES: &str = r#"test = {
+	name = and_false
+	time = 1444.11.11
+	tag = SWE
+	expect = { AND = { is_false } }
+}
+test = {
+	name = or_true
+	time = 1444.11.11
+	tag = SWE
+	expect = { OR = { is_true } }
+}
+test = {
+	name = not_false
+	time = 1444.11.11
+	tag = SWE
+	expect = { NOT = { is_false } }
+}
+test = {
+	name = mixed_and
+	time = 1444.11.11
+	tag = SWE
+	effect = { set_country_flag = ready }
+	expect = { AND = { has_country_flag = ready is_true } }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/false.txt",
+				SourceKind::Scripted,
+				"is_false = { always = no }",
+			),
+			file(
+				"common/scripted_triggers/true.txt",
+				SourceKind::Scripted,
+				"is_true = { always = yes }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(
+			&sources,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		assert_eq!(case(&result, "and_false").outcome, Outcome::Fail);
+		assert_eq!(case(&result, "or_true").outcome, Outcome::Pass);
+		assert_eq!(case(&result, "not_false").outcome, Outcome::Pass);
+		assert_eq!(
+			case(&result, "mixed_and").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "mixed_and")
+		);
+	}
+
+	#[test]
+	fn an_empty_logic_block_is_not_vacuously_true() {
+		const CASES: &str = r#"test = {
+	name = empty_and
+	time = 1444.11.11
+	tag = SWE
+	expect = { AND = { } }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "empty_and");
+		assert_eq!(verdict.outcome, Outcome::Unsupported, "{:#?}", verdict);
 	}
 
 	#[test]
