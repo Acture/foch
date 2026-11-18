@@ -317,6 +317,47 @@ jobs:
           path: ${{ runner.temp }}/foch-winget-smoke/logs
           if-no-files-found: ignore
 
+  runtime-host:
+    name: Optional DLL host (win32-x64)
+    needs: metadata
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialize public build submodules
+        run: git submodule update --init --recursive src/packages/tree-sitter-paradox src/packages/foch/vendor/cwtools-eu4-config plugins/eu4-dynamic-trade-blackhole
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.95.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: python -m pip install uv==0.12.17
+
+      - name: Build the independent host DLL
+        run: cargo build --locked --release -p foch-runtime-host
+
+      - name: Validate and bundle the compatible distribution filename
+        run: uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev runtime-host bundle --host target/release/foch_runtime_host.dll --out release
+
+      - name: Upload the optional host bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-host-win32-x64
+          path: release/foch-runtime-host-*-win32-x64.zip
+          if-no-files-found: error
+
   third-party-licenses:
     name: Third-party licenses match Cargo.lock
     runs-on: ubuntu-24.04

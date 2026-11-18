@@ -2,8 +2,9 @@
 //!
 //! Plugins build their policies on these views instead of carrying
 //! their own offset tables and pointer walkers. The layout is pinned to
-//! one build (see [`layout`]); every read passes a plausibility gate
-//! ([`Memory`]) so a drift degrades into `None` instead of a crash.
+//! one build (see [`layout`]). [`Memory`] uses checked kernel copies on Windows;
+//! complete readable ranges can still hold the wrong object or stale state.
+//! Callers must establish identity, type, lifetime and game-thread stability.
 
 pub mod game;
 pub mod layout;
@@ -14,6 +15,11 @@ pub use game::{Countries, CountryView, Eu4Game, NodeView, Province, TradeNodes};
 pub use memory::{Memory, is_key_byte, is_name_byte, read_sso};
 pub use routes::{RouteMutation, live_order};
 
+/// A host-computed executable digest must match before using the pinned layout.
+pub fn supports_build(exe_sha256: &str) -> bool {
+	exe_sha256 == layout::EXPECTED_EXE_SHA256
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -23,11 +29,12 @@ mod tests {
 		let memory = Memory;
 		assert_eq!(memory.read_qword(0x1000), None);
 		assert_eq!(memory.read_qword(8), None); // aligned but below the gate
-		assert_eq!(memory.write_i32(0x20, 1), None);
+		assert_eq!(unsafe { memory.write_i32(0x20, 1) }, None);
 	}
 
 	/// Build a fake in-process object so the pointer-walking readers can
 	/// be tested against real (aligned, plausible) addresses.
+	#[cfg(windows)]
 	fn scratch(qwords: usize) -> (Vec<u64>, usize) {
 		let mut buffer = vec![0_u64; qwords];
 		let address = buffer.as_mut_ptr() as usize;
@@ -36,6 +43,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(windows)]
 	fn sso_keys_read_inline_and_pointer_forms() {
 		let memory = Memory;
 		let (mut buffer, address) = scratch(6);
@@ -61,6 +69,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(windows)]
 	fn sso_reads_reject_implausible_lengths_and_charsets() {
 		let memory = Memory;
 		let (mut buffer, address) = scratch(6);

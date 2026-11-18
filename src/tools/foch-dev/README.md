@@ -2,8 +2,9 @@
 
 One internal Python package owns repository contracts, CWT snapshot hashing,
 diagnostic check workflows and release packaging checks. It depends on
-`jsonschema` and `pyyaml` for WinGet manifest validation, and installs no
-additional executable. Its APIs are importable; `python -m foch_dev` is the
+`jsonschema` and `pyyaml` for WinGet manifest validation and a pinned `pefile`
+reader for DLL artifact inspection. It installs no additional executable.
+Its APIs are importable; `python -m foch_dev` is the
 operator entrypoint. It is not the Workshop merge-quality acceptance harness.
 
 From the Foch repository root:
@@ -16,6 +17,8 @@ uv run --locked --project src/tools/foch-dev python -m foch_dev crate-smoke
 uv run --locked --project src/tools/foch-dev python -m foch_dev version --tag v0.0.1
 uv run --locked --project src/tools/foch-dev python -m foch_dev release preflight --tag v0.0.1
 uv run --locked --project src/tools/foch-dev python -m foch_dev release unpublished
+uv run --locked --project src/tools/foch-dev python -m foch_dev runtime-host check --host target/debug/foch_runtime_host.dll --plugin target/debug/foch_plugin_trade_blackhole.dll
+uv run --locked --project src/tools/foch-dev python -m foch_dev runtime-host bundle --host target/debug/foch_runtime_host.dll --out target/host-bundle
 ```
 
 `--project` preserves the caller's working directory. Commands needing a
@@ -25,6 +28,11 @@ Git metadata or private notes. `schema-hash --schema-root /path/to/config`
 also works without a checkout; repeat `--schema-root` to hash several rule
 directories in the order the build compiles them (the vendored config, then
 `src/packages/foch/src/game/eu4/cwt_supplement`).
+
+`runtime-host` inspects PE exports without loading DLLs. The optional host
+bundle maps the independently built `foch_runtime_host.dll` to the compatible
+distribution name `foch_runtime.dll`, includes license texts and checksums,
+and refuses to overwrite an existing archive. It does not alter CLI wheels.
 
 For a maintainer-run diagnostic against installed mods:
 
@@ -48,7 +56,8 @@ Fewer diagnostic findings alone do not establish merge correctness.
 The published crates are `foch-cli` and every workspace crate its normal and
 build dependencies reach, short of the externally released
 `tree-sitter-paradox`: today `foch`, `foch-annotation`, `foch-lsp`,
-`foch-runner` and `foch-test`. `check`, `crate-smoke` and `release` derive that
+`foch-plugin-sdk`, `foch-runtime` and `foch-test`. The independent DLL host and
+gameplay plugin crates remain unpublished. `check`, `crate-smoke` and `release` derive that
 set from `cargo metadata`; `check` requires exactly those crates to be
 publishable and every path dependency they build from pinned at its exact
 version.

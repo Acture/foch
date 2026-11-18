@@ -78,31 +78,48 @@ impl RouteMutation {
 	}
 
 	/// Set one vanilla edge slot and rewrite the live arrays.
-	pub fn set_closed(&mut self, memory: &Memory, edge: usize, closed: bool) -> Option<()> {
+	///
+	/// # Safety
+	///
+	/// The rewrite writes the route and steering arrays whose addresses
+	/// [`capture`](Self::capture) was given — capture is a read, so the
+	/// provenance contract lands here. The caller must guarantee those
+	/// arrays are still alive and engine-owned, that the call runs on
+	/// the engine thread where the route tables are stable, and that no
+	/// Rust reference or validity invariant aliases them.
+	pub unsafe fn set_closed(&mut self, memory: &Memory, edge: usize, closed: bool) -> Option<()> {
 		let flag = self.closed.get_mut(edge)?;
 		*flag = closed;
 		self.apply(memory)
 	}
 
+	/// Called only from the unsafe [`set_closed`](Self::set_closed)
+	/// boundary, which carries the liveness/thread/no-alias contract.
 	fn apply(&self, memory: &Memory) -> Option<()> {
-		let stride = route::SIZE;
-		for (live_slot, vanilla_slot) in live_order(&self.closed).iter().enumerate() {
-			let source = vanilla_slot * stride;
-			let target = self.routes_begin + live_slot * stride;
-			memory.write_bytes(target, &self.original_routes[source..source + stride])?;
-			if let (Some(weights_begin), value) = (
-				self.weights_begin,
-				self.original_weights.get(*vanilla_slot).copied(),
-			) {
-				let Some(value) = value else { continue };
-				memory.write_i32(weights_begin + live_slot * 4, value)?;
+		// SAFETY: every address below was captured from the engine's own
+		// route and steering vectors (never caller-supplied), the writes
+		// stay inside the captured original capacity, and the caller
+		// runs on the game thread where the route tables are stable.
+		unsafe {
+			let stride = route::SIZE;
+			for (live_slot, vanilla_slot) in live_order(&self.closed).iter().enumerate() {
+				let source = vanilla_slot * stride;
+				let target = self.routes_begin + live_slot * stride;
+				memory.write_bytes(target, &self.original_routes[source..source + stride])?;
+				if let (Some(weights_begin), value) = (
+					self.weights_begin,
+					self.original_weights.get(*vanilla_slot).copied(),
+				) {
+					let Some(value) = value else { continue };
+					memory.write_i32(weights_begin + live_slot * 4, value)?;
+				}
 			}
+			// The paired steering-weight vector's end is left untouched:
+			// the engine walks the weights by the route count, and the
+			// parked tail keeps observe-side permutation recovery simple.
+			let open_count = self.closed.iter().filter(|c| !**c).count();
+			let new_end = self.routes_begin + open_count * stride;
+			memory.write_qword(self.def + def::ROUTES_END, new_end as u64)
 		}
-		// The paired steering-weight vector's end is left untouched: the
-		// engine walks the weights by the route count, and the parked
-		// tail keeps observe-side permutation recovery simple.
-		let open_count = self.closed.iter().filter(|c| !**c).count();
-		let new_end = self.routes_begin + open_count * stride;
-		memory.write_qword(self.def + def::ROUTES_END, new_end as u64)
 	}
 }

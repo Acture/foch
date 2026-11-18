@@ -581,21 +581,14 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 	let selected = selections.for_playset(&args.plan.playset).to_selections();
 	let store_root = plugin::paths::checked_store_root(&data_root())?;
 	let deployment = plugin::deployment::resolve(&game, &store_root, &selected)?;
-	let host = args.host_dll.clone().unwrap_or(
-		std::env::current_exe()?
+	let executable = std::env::current_exe()?;
+	let host = foch_runtime::host::resolve(
+		executable
 			.parent()
-			.unwrap()
-			.join("foch_runtime.dll"),
-	);
-	let host_bytes = std::fs::read(&host).map_err(|error| {
-		format!(
-			"cannot read host {}: {error}; build foch-runtime and pass --host-dll",
-			host.display()
-		)
-	})?;
-	if store::pe_machine(&host_bytes) != Some(store::MACHINE_AMD64) {
-		return Err("host DLL is not an AMD64 PE image".into());
-	}
+			.ok_or("foch executable has no parent directory")?,
+		args.host_dll.as_deref(),
+	)?;
+	let host_bytes = foch_runtime::host::read(&host)?;
 	let runtime_base = args
 		.runtime_base
 		.clone()

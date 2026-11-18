@@ -219,19 +219,36 @@ impl CountryView {
 	/// Add to the treasury, mirroring the game's own ChangeTreasury:
 	/// the clamp, and the player's treasury-label refresh through the
 	/// UI controller's dirty bit.
-	pub fn pay(&self, memory: &Memory, context: usize, amount: i64) -> Option<()> {
+	///
+	/// # Safety
+	///
+	/// This writes two engine-owned targets: the treasury field at this
+	/// view's address (reached through the country registry) and, when
+	/// the caller's `context` resolves a UI controller, its flag word —
+	/// so `context` must be the real game context, and the caller must
+	/// guarantee both objects are still alive, that the call runs on the
+	/// engine thread where the structures are stable, and that no Rust
+	/// reference or validity invariant aliases either target.
+	pub unsafe fn pay(&self, memory: &Memory, context: usize, amount: i64) -> Option<()> {
 		let treasury = self.treasury()? as i64;
 		let updated = treasury
 			.saturating_add(amount)
 			.clamp(-country::TREASURY_CLAMP, country::TREASURY_CLAMP);
-		memory.write_i32(self.address + country::TREASURY, updated as i32)?;
+		// SAFETY: the target is the engine's own treasury field reached
+		// through the validated country registry — no Rust object
+		// aliases it — and the caller runs on the game thread.
+		unsafe { memory.write_i32(self.address + country::TREASURY, updated as i32) }?;
 		if let Some(controller) = memory.read_ptr(context + super::layout::ui::CONTROLLER)
 			&& let Some(flags) = memory.read_i32(controller + super::layout::ui::FLAGS)
 		{
-			memory.write_i32(
-				controller + super::layout::ui::FLAGS,
-				flags | super::layout::ui::TREASURY_DIRTY,
-			)?;
+			// SAFETY: the UI controller's flag word, same provenance and
+			// thread contract as the treasury write above.
+			unsafe {
+				memory.write_i32(
+					controller + super::layout::ui::FLAGS,
+					flags | super::layout::ui::TREASURY_DIRTY,
+				)
+			}?;
 		}
 		Some(())
 	}

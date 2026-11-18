@@ -75,7 +75,7 @@ pub struct RunOptions {
 pub struct HostLaunch {
 	/// The playset whose enabled plugins stage into each session.
 	pub playset: String,
-	/// The `foch_runtime.dll` to deploy as the layer's `VERSION.dll`.
+	/// The independent host DLL to deploy as the layer's `VERSION.dll`.
 	pub host_dll: PathBuf,
 }
 
@@ -488,15 +488,7 @@ fn stage_host(
 	runtime::ensure_outside_game(&installation.game_root, &data_root)?;
 	let deployment = plugin::deployment::resolve(&game, &store_root, &selected)
 		.map_err(|error| io::Error::other(format!("plugin plan: {error}")))?;
-	let host_bytes = fs::read(&host.host_dll).map_err(|error| {
-		io::Error::other(format!(
-			"cannot read host {}: {error}; build foch-runtime and pass its path",
-			host.host_dll.display()
-		))
-	})?;
-	if store::pe_machine(&host_bytes) != Some(store::MACHINE_AMD64) {
-		return Err(io::Error::other("host DLL is not an AMD64 PE image"));
-	}
+	let host_bytes = crate::host::read(&host.host_dll)?;
 	store::create_package_file(&runtime.directory.join("VERSION.dll"), &host_bytes)?;
 	let prepared = deployment
 		.stage(

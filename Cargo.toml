@@ -6,6 +6,7 @@ members = [
 	"src/packages/foch-lsp",
 	"src/packages/foch-plugin-sdk",
 	"src/packages/foch-runtime",
+	"src/packages/foch-runtime-host",
 	"plugins/eu4-dynamic-trade-blackhole",
 	"src/packages/foch-test",
 	"src/apps/foch-cli",

@@ -5,6 +5,10 @@
 //! and live-verified from automated sessions; see the plugin's
 //! reverse-engineering record for the derivations.
 
+/// Exact executable identity used by every consumer of this pinned layout.
+pub const EXPECTED_EXE_SHA256: &str =
+	"c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e";
+
 /// Hook target: the economy update that ends by recalculating every
 /// trade node (`... CTradeNodeDataBase::UpdateAll(ctx + 0x2198)`), at
 /// image+0x75d690. Its prologue tiles exactly the 14 whole bytes the
