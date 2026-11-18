@@ -1437,6 +1437,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-eu4-state"
+version = "0.0.2"
+dependencies = [
+ "foch-runtime",
+]
+
+[[package]]
 name = "foch-lsp"
 version = "0.0.2"
 dependencies = [
