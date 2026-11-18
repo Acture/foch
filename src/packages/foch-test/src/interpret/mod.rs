@@ -1334,13 +1334,19 @@ impl<'a> Interpreter<'a> {
 						return Err(format!("{where_}: if must be a block"));
 					};
 					let mut chain = index + 1;
-					while chain < statements.len()
-						&& matches!(
-							&statements[chain],
+					// Comments between the branches are not chain
+					// terminators; any other statement ends the chain and
+					// keeps its own turn.
+					while chain < statements.len() {
+						match &statements[chain] {
 							AstStatement::Assignment { key, .. }
-								if key == "else_if" || key == "else"
-						) {
-						chain += 1;
+								if key == "else_if" || key == "else" =>
+							{
+								chain += 1;
+							}
+							AstStatement::Comment { .. } => chain += 1,
+							_ => break,
+						}
 					}
 					self.exec_conditional(
 						world,
@@ -2299,6 +2305,71 @@ test = {
 			"{:#?}",
 			case(&result, "mixed_and")
 		);
+	}
+
+	#[test]
+	fn a_comment_does_not_break_an_if_else_chain() {
+		// A comment line between the branches is not a chain terminator;
+		// the else must still belong to the if when it executes.
+		const CASES: &str = r#"test = {
+	name = then_ran
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		if = { limit = { always = yes } set_country_flag = good }
+		# a comment between the branches
+		else = { set_country_flag = bad }
+	}
+	expect = { has_country_flag = good NOT = { has_country_flag = bad } }
+}
+test = {
+	name = else_ran
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		if = { limit = { always = no } set_country_flag = good }
+		# a comment between the branches
+		else = { set_country_flag = bad }
+	}
+	expect = { NOT = { has_country_flag = good } has_country_flag = bad }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		for name in ["then_ran", "else_ran"] {
+			let verdict = case(&result, name);
+			assert_eq!(verdict.outcome, Outcome::Pass, "{name}: {verdict:#?}");
+		}
+	}
+
+	#[test]
+	fn comments_across_an_else_if_chain_keep_their_branches() {
+		const CASES: &str = r#"test = {
+	name = middle_branch
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		if = { limit = { always = no } set_country_flag = first }
+		# why not
+		else_if = { limit = { always = yes } set_country_flag = middle }
+		# fallback
+		else = { set_country_flag = last }
+	}
+	expect = {
+		NOT = { has_country_flag = first }
+		has_country_flag = middle
+		NOT = { has_country_flag = last }
+	}
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "middle_branch");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict);
 	}
 
 	#[test]
