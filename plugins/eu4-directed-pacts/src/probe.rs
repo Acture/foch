@@ -50,6 +50,20 @@ pub(super) struct Request {
 	flag: Option<(String, String)>,
 }
 
+impl Request {
+	fn correlation_at(&self, observation: usize) -> Result<Correlation, String> {
+		let base = self
+			.correlation
+			.request()
+			.parse::<u64>()
+			.map_err(|error| error.to_string())?;
+		let number = base
+			.checked_add(u64::try_from(observation).map_err(|error| error.to_string())?)
+			.ok_or("diagnostic request range overflows")?;
+		Correlation::new(self.correlation.case(), &number.to_string())
+	}
+}
+
 pub(super) fn configuration(bytes: &[u8]) -> Result<Option<Request>, String> {
 	let config: Config = if bytes.is_empty() {
 		Config::default()
@@ -104,11 +118,14 @@ pub(super) fn configuration(bytes: &[u8]) -> Result<Option<Request>, String> {
 		}
 		Some((country.to_string(), name.to_string()))
 	};
-	Ok(Some(Request {
+	let request = Request {
 		correlation,
 		wars,
 		flag,
-	}))
+	};
+	let count = request.wars.len() + usize::from(request.flag.is_some());
+	request.correlation_at(count - 1)?; // Refuse the whole range before any hook.
+	Ok(Some(request))
 }
 
 struct Probe {
@@ -174,7 +191,9 @@ fn messages(request: &Request, rosters: &[WarRoster]) -> Result<Option<Vec<Strin
 	}
 	selected
 		.into_iter()
-		.map(|war| {
+		.enumerate()
+		.map(|(index, war)| {
+			let correlation = request.correlation_at(index)?;
 			let tags = |countries: &[foch_runtime::war::eu4::CountryRef]| {
 				let mut names: Vec<_> = countries
 					.iter()
@@ -186,8 +205,8 @@ fn messages(request: &Request, rosters: &[WarRoster]) -> Result<Option<Vec<Strin
 			let payload: BTreeMap<&str, String> = [
 				("type", "war_roster".into()),
 				("status", "observed".into()),
-				("case", request.correlation.case().into()),
-				("request", request.correlation.request().into()),
+				("case", correlation.case().into()),
+				("request", correlation.request().into()),
 				("original_attacker", war.original_attacker.tag.clone()),
 				("original_defender", war.original_defender.tag.clone()),
 				("attackers", tags(&war.attackers)),
@@ -225,11 +244,12 @@ fn flag_message(
 		[flag] => *flag,
 		_ => return Err("duplicate observed flag names".into()),
 	};
+	let correlation = request.correlation_at(request.wars.len())?;
 	let payload: BTreeMap<&str, String> = [
 		("type", "country_flag".into()),
 		("status", "observed".into()),
-		("case", request.correlation.case().into()),
-		("request", request.correlation.request().into()),
+		("case", correlation.case().into()),
+		("request", correlation.request().into()),
 		("country", flags.country_tag.clone()),
 		("flag", flag.name.clone()),
 		("set_at_hours", flag.set_at_hours.to_string()),
@@ -387,12 +407,25 @@ mod tests {
 		assert!(configuration(b"").unwrap().is_none());
 		for text in [
 			r#"{"read_only_roster_probe":true,"probe_request":"0"}"#,
+			r#"{"read_only_roster_probe":true,"probe_request":"18446744073709551615"}"#,
+			r#"{"read_only_roster_probe":true,"probe_request":"18446744073709551614","probe_country_flag":"FRA:flag"}"#,
 			r#"{"read_only_roster_probe":true,"probe_wars":"FRA:FRA"}"#,
 			r#"{"read_only_roster_probe":true,"probe_wars":"HAB:FRA,HAB:FRA"}"#,
 			r#"{"force_join":true}"#,
 		] {
 			assert!(configuration(text.as_bytes()).is_err());
 		}
+		let last_two = configuration(
+			br#"{"read_only_roster_probe":true,"probe_request":"18446744073709551614"}"#,
+		)
+		.unwrap()
+		.unwrap();
+		let observed = messages(&last_two, &[war("HAB"), war("ENG")])
+			.unwrap()
+			.unwrap();
+		let last: serde_json::Value =
+			serde_json::from_str(observed[1].strip_prefix("FOCH_RECEIPT/1 ").unwrap()).unwrap();
+		assert_eq!(last["request"], u64::MAX.to_string());
 	}
 	#[test]
 	fn flag_receipt_requires_the_requested_real_country_and_exact_observed_flag() {
@@ -434,6 +467,7 @@ mod tests {
 			("day", "123"),
 			("set_at_hours", "456"),
 			("native_calls", "0"),
+			("request", "3"),
 		] {
 			assert_eq!(json[key], expected);
 		}
@@ -463,12 +497,13 @@ mod tests {
 			.unwrap()
 			.unwrap();
 		assert_eq!(observed.len(), 2);
-		for message in observed {
+		for (index, message) in observed.into_iter().enumerate() {
 			let json: serde_json::Value =
 				serde_json::from_str(message.strip_prefix("FOCH_RECEIPT/1 ").unwrap()).unwrap();
 			assert_eq!(json["native_calls"], "0");
 			assert_eq!(json["type"], "war_roster");
 			assert_eq!(json["status"], "observed");
+			assert_eq!(json["request"], (index + 1).to_string());
 			assert!(
 				json.as_object()
 					.unwrap()
