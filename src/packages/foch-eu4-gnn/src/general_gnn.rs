@@ -193,8 +193,8 @@ impl GatV2 {
 }
 
 /// Structural descriptor of a JSON number tree: (nesting depth, leaf
-/// count). Siblings must share it — a ragged `[[30], [26]]` refuses
-/// instead of flattening into a silently wrong matrix.
+/// count). Sibling subtrees must share both; `[[0, 0], [0]]` is refused.
+/// Layer dimensions are checked after row-major flattening.
 fn shape(value: &serde_json::Value) -> Option<(u8, usize)> {
 	match value {
 		serde_json::Value::Number(_) => Some((0, 1)),
