@@ -15,10 +15,16 @@
 //! passed. Sharing a game session between cases is an optimization decided by
 //! [`group`](plan::group) from each case's declared needs and its estimated
 //! footprint; a case's verdict must not depend on it.
+//!
+//! [`interpret`](interpret::interpret) is the offline layer: the same plan
+//! executed against a small model whose primitives are pinned to decompiled
+//! handler functions by [`interpret::SemanticsCatalog`]. Its results are
+//! separate types and never game evidence.
 
 pub mod collect;
 pub mod compile;
 pub mod diagnostic;
+pub mod interpret;
 pub mod judge;
 pub mod lint;
 pub mod model;
@@ -30,6 +36,10 @@ pub mod source;
 pub use collect::{Collection, collect};
 pub use compile::{Bundle, RunContext, RunnerCapabilities, check_capabilities, compile};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, blocks_run};
+pub use interpret::{
+	EvidenceStatus, InterpretOptions, Interpretation, InterpretedCase, Observation, Observed,
+	Outcome, SemanticsCatalog, interpret,
+};
 pub use judge::{CaseResult, RunArtifacts, RunnerExit, Status, Timing, judge, reconcile};
 pub use lint::{Footprint, LintResult, ProjectFacts, lint};
 pub use plan::{ExpandOptions, Expanded, GroupOptions, Plan, expand, group};

@@ -408,3 +408,107 @@ fn input_symlinks_are_never_followed() {
 		.success()
 	);
 }
+
+#[test]
+fn offline_interprets_without_a_game_installation() {
+	let dir = fixture();
+	let out = dir.path().join("offline-results");
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--offline",
+			"--format",
+			"json",
+			"--out",
+			out.to_str().unwrap(),
+		],
+	);
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	assert_eq!(report["layer"], "offline");
+	assert_eq!(report["evidence"], "unpinned");
+	let outcomes: Vec<_> = report["results"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|result| result["outcome"].as_str().unwrap())
+		.collect();
+	assert_eq!(outcomes, ["smoke", "pass"]);
+	let results =
+		serde_json::from_str::<Value>(&fs::read_to_string(out.join("result.json")).unwrap())
+			.unwrap();
+	assert_eq!(results["layer"], "offline");
+	let junit = fs::read_to_string(out.join("junit.xml")).unwrap();
+	assert!(
+		junit.contains("<testsuite name=\"foch-offline\""),
+		"{junit}"
+	);
+	// The offline layer never initializes Foch's global data.
+	assert!(!dir.path().join("global-data").exists());
+}
+
+#[test]
+fn offline_failures_report_modeled_observations() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/events")).unwrap();
+	fs::write(
+		dir.path().join("mod/events/cases.txt"),
+		"namespace = offline\n#test(time=1444.11.11, tag=SWE, name=\"contradiction\", expect={ always = no })\ncountry_event = { id = offline.1 hidden = yes is_triggered_only = yes immediate = {} }\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--offline",
+			"--out",
+			dir.path().join("results").to_str().unwrap(),
+		],
+	);
+	assert!(
+		!output.status.success(),
+		"a failed model expectation is a failing run"
+	);
+	let text = String::from_utf8_lossy(&output.stdout);
+	assert!(text.contains("offline layer"), "{text}");
+	assert!(text.contains("FAIL"), "{text}");
+	assert!(text.contains("always = no"), "{text}");
+}
+
+#[test]
+fn offline_is_not_bound_to_the_runners_start_dates() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/events")).unwrap();
+	// A start date the built-in runner refuses online; the model has no
+	// launch and no start-date capability to check.
+	fs::write(
+		dir.path().join("mod/events/future.txt"),
+		"namespace = future\n#test(time=1500.1.1, tag=SWE, name=smoke)\ncountry_event = { id = future.1 hidden = yes is_triggered_only = yes }\n",
+	)
+	.unwrap();
+	let output = run(dir.path(), &["test", "mod", "--offline"]);
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+}
+
+#[test]
+fn offline_refuses_runner_only_flags() {
+	let dir = fixture();
+	let output = run(dir.path(), &["test", "mod", "--offline", "--no-run"]);
+	assert!(!output.status.success());
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--game-path", "X:/eu4"],
+	);
+	assert!(!output.status.success());
+}
