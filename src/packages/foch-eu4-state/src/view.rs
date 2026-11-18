@@ -9,15 +9,14 @@
 //! wired yet; the caller contract is exactly this constructor.
 //!
 //! Verified fields (province array, tax, manpower, country registry)
-//! use the shared layout's constants directly; everything else goes
+//! go through the shared dataplane views; everything else goes
 //! through [`crate::candidates`] and stays `Option`-gated — a `None`
 //! is *unknown*, never a zero filling the plane. A `Some` from a
 //! candidate is still not live verification. The owner field carries
 //! a country **index** (bits 32..48 of its packed qword), not a tag;
 //! tags decode through the live country registry.
 
-use foch_runtime::dataplane::Memory;
-use foch_runtime::dataplane::layout::province as shared;
+use foch_runtime::dataplane::{Eu4Game, Memory, Province};
 
 use crate::candidates;
 
@@ -41,17 +40,17 @@ impl VerifiedGame {
 	}
 
 	/// The address of one province row, from the shared verified
-	/// layout. All arithmetic is checked: an id or context near
+	/// province view. All arithmetic is checked: an id or context near
 	/// `usize::MAX` yields `None`, never a wrap.
 	pub fn province_address(&self, id: u32) -> Option<usize> {
-		let array = self
-			.memory
-			.read_ptr(self.context.checked_add(shared::CPROVINCES)?)?;
-		array.checked_add(
-			usize::try_from(id)
-				.ok()?
-				.checked_mul(shared::CPROVINCE_SIZE)?,
-		)
+		// Province records hang off the game context. Image-base globals are
+		// not consulted on this path.
+		let game = Eu4Game {
+			memory: self.memory,
+			exe_base: 0,
+			context: self.context,
+		};
+		Some(game.province(id)?.raw_address())
 	}
 
 	/// The owner's country index from the packed owner qword (bits
@@ -80,10 +79,8 @@ impl VerifiedGame {
 	/// production is a candidate, so any failed read makes the whole
 	/// column unknown.
 	pub fn development(&self, province: usize) -> Option<f32> {
-		let tax = self.memory.read_i32(province.checked_add(shared::TAX)?)?;
-		let manpower = self
-			.memory
-			.read_i32(province.checked_add(shared::MANPOWER)?)?;
+		let tax = Province::tax_at(&self.memory, province)?;
+		let manpower = Province::manpower_at(&self.memory, province)?;
 		let production = self
 			.memory
 			.read_i32(province.checked_add(candidates::province::BASE_PRODUCTION)?)?;
@@ -165,7 +162,7 @@ mod tests {
 		// The checked walk under the accepted digest — taken from the
 		// shared crate, not hardcoded here: MAX context / MAX id must
 		// return None, not wrap or panic.
-		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let expected = foch_runtime::dataplane::pinned_exe_sha256();
 		let Some(game) = VerifiedGame::new(memory, usize::MAX, expected) else {
 			panic!("shared pinned digest must open the gate");
 		};

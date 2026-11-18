@@ -1,0 +1,21 @@
+namespace = foch_dp_probe
+
+# The explicit read diagnostic waits for both wars, then observes them on
+# the pinned monthly callback. Native assertions establish both actual
+# wars independently of the plugin's read receipts.
+#test(time=1444.11.11, tag=FRA, name=two_rosters, session=alone, advance_days=35,
+# expect={ is_in_war = { attacker_leader = HAB defender_leader = FRA }
+# is_in_war = { attacker_leader = ENG defender_leader = FRA } })
+country_event = {
+	id = foch_dp_probe.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+		ENG = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}
