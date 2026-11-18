@@ -1084,6 +1084,16 @@ impl<'a> Interpreter<'a> {
 			return;
 		}
 		if let Some(definition) = self.scripted_in(key, context) {
+			// A scripted name that collides with a catalog primitive would
+			// resolve differently in the scan and in execution; refuse the
+			// call so the verdict cannot outrun the evidence.
+			if self.catalog.primitives.contains_key(key) {
+				reasons.push(format!(
+					"{where_}: scripted {} {key} collides with a catalog primitive; 					 rename the definition",
+					Self::kind_word(context)
+				));
+				return;
+			}
 			// A scripted definition inlines its body; the kind must fit the
 			// block. Cycles are caught at execution, as event chains are.
 			// The call's operand is validated before the dedup so every call
@@ -1150,6 +1160,13 @@ impl<'a> Interpreter<'a> {
 		reasons: &mut Vec<String>,
 	) {
 		if let Some(definition) = self.scripted_in(name, context) {
+			if self.catalog.primitives.contains_key(name) {
+				reasons.push(format!(
+					"{where_}: scripted {} {name} collides with a catalog primitive; 					 rename the definition",
+					Self::kind_word(context)
+				));
+				return;
+			}
 			if !seen.insert(format!("scripted:{}:{name}", Self::kind_word(context))) {
 				return;
 			}
@@ -1447,6 +1464,13 @@ impl<'a> Interpreter<'a> {
 			};
 			return self.exec_statements(world, &ctx.enter(&tag), items, where_, visited);
 		}
+		// The primitive that actually runs honors the handler gate; the scan
+		// is not the only line of defense.
+		if self.catalog.primitives.contains_key(key)
+			&& let Err(reason) = self.catalog.permits(key)
+		{
+			return Err(format!("{where_}: {reason}"));
+		}
 		match key {
 			"set_country_flag" | "clr_country_flag" => {
 				let flag =
@@ -1672,6 +1696,13 @@ impl<'a> Interpreter<'a> {
 				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
 			};
 			return self.eval_statements(world, &ctx.enter(&tag), items, where_, depth + 1);
+		}
+		// Same gate as execution: the trigger that actually decides honors
+		// the handler evidence, not only the scan that approved the plan.
+		if self.catalog.primitives.contains_key(key)
+			&& let Err(reason) = self.catalog.permits(key)
+		{
+			return Err(format!("{where_}: {reason}"));
 		}
 		let country = world.country(&ctx.current);
 		Ok(match key {
@@ -2330,6 +2361,86 @@ test = {
 			"{:#?}",
 			case(&result, "mixed_and")
 		);
+	}
+
+	#[test]
+	fn a_scripted_name_cannot_shadow_a_catalog_primitive() {
+		// A scripted trigger named after a catalog primitive resolves as the
+		// scripted body in the scan but as the primitive in evaluation: with
+		// `always = { always = no }` defined, `expect = { always = yes }`
+		// passed although the definition the scan approved evaluates false.
+		// The assignment-form effect twin of this shadow is refused by the
+		// bare-call rule and stays refused here.
+		let text = r#"{
+			"format": 1,
+			"status": "pinned",
+			"game_version": "1.37.5",
+			"binary_sha256": "abc",
+			"primitives": {
+				"always": {
+					"kind": "trigger",
+					"facts": {},
+					"handler": {
+						"symbol": "CDebug::Always",
+						"address": 16,
+						"end": 64,
+						"pseudocode_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+					}
+				},
+				"set_country_flag": {
+					"kind": "effect",
+					"facts": {},
+					"handler": null
+				},
+				"has_country_flag": {
+					"kind": "trigger",
+					"facts": {},
+					"handler": {
+						"symbol": "CCountry::HasFlag",
+						"address": 80,
+						"end": 128,
+						"pseudocode_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+					}
+				}
+			}
+		}"#;
+		let pinned = SemanticsCatalog::parse(text).unwrap();
+		const CASES: &str = r#"test = {
+	name = trigger_shadow
+	time = 1444.11.11
+	tag = SWE
+	expect = { always = yes }
+}
+test = {
+	name = effect_shadow
+	time = 1444.11.11
+	tag = SWE
+	effect = { set_country_flag = x }
+	expect = { has_country_flag = x }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/always.txt",
+				SourceKind::Scripted,
+				"always = { always = no }",
+			),
+			file(
+				"common/scripted_effects/shadow.txt",
+				SourceKind::Scripted,
+				"set_country_flag = { set_country_flag = x }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(&sources, &ProjectFacts::default(), &pinned);
+		for name in ["trigger_shadow", "effect_shadow"] {
+			let verdict = case(&result, name);
+			assert_ne!(verdict.outcome, Outcome::Pass, "{name}: {verdict:#?}");
+			assert!(
+				verdict.unsupported[0].contains("collides"),
+				"{name}: {:#?}",
+				verdict.unsupported
+			);
+		}
 	}
 
 	#[test]
