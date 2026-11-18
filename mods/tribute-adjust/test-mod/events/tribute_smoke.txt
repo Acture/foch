@@ -1,0 +1,18 @@
+namespace = tribute_smoke
+
+#mark(tribute)
+#test(time=1444.11.11, tag=MNG, name="tributaries pay through the scaled settlement",
+#     advance_days=35,
+#     expect={
+#         KOR = { is_subject_of_type = tributary_state }
+#     })
+country_event = {
+	id = tribute_smoke.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

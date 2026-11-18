@@ -1,0 +1,53 @@
+schema = 1
+
+[plugin]
+id = "dev.foch.eu4-tribute-adjust"
+name = "Tribute Adjust"
+version = "0.1.0"
+authors = ["acturea"]
+license = "AGPL-3.0-only"
+description = "Scales each subject nation's tribute to its overlord by a configurable percentage, per subject kind with per-tag overrides. In-game slider panel (Ctrl+Shift+T)."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+# Signatures are only maintained for this exact build; a refusal on any other
+# version is the intended behavior, not a bug.
+game_versions = "1.37.5"
+abi_major = 1
+
+[entry]
+kind = "native"
+path = "foch_eu4_tribute.dll"
+phase = "entry"
+
+[lifecycle]
+restart_required = true
+
+# The per-kind and per-tag values live in the runtime config the plugin reads
+# and the slider panel edits; the manifest schema only carries bool/int/string
+# fields, so `tag_overrides` is a JSON object encoded as a string:
+# {"FRA": 150, "MUG": 50} — percent, applied on top of everything else.
+[config.enabled]
+type = "bool"
+default = true
+description = "Master switch. When false every coefficient behaves as 100%."
+
+[config.global_percent]
+type = "int"
+default = 100
+min = 0
+max = 200
+description = "Percentage applied to every subject's tribute before kind and tag refinements (kind and tag values replace it, they do not stack)."
+
+[config.vassal_percent]
+type = "int"
+default = 100
+min = 0
+max = 200
+description = "Percentage applied to the engine's vassal-income share constant (0.4f base). 100 leaves it untouched."
+
+[config.tag_overrides]
+type = "string"
+default = "{}"
+description = "JSON object of tag -> percent, replacing the kind coefficient for that subject tag, e.g. {\"FRA\":150,\"MUG\":50}."

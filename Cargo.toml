@@ -15,6 +15,7 @@ members = [
 	"src/apps/foch-cli",
 	"src/apps/foch-desktop/src-tauri",
 	"src/packages/tree-sitter-paradox",
+	"mods/tribute-adjust",
 ]
 default-members = ["src/packages/foch", "src/packages/foch-annotation", "src/packages/foch-lsp", "src/packages/foch-test", "src/apps/foch-cli"]
 

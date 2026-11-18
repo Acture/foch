@@ -1,0 +1,17 @@
+namespace = subject_probe
+
+#test(time=1444.11.11, tag=DAN, name="junior partner pays through subject income",
+#     ai=on, advance_days=60,
+#     expect={
+#         NOR = { is_subject_of_type = personal_union }
+#     })
+country_event = {
+	id = subject_probe.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

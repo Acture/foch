@@ -1,0 +1,17 @@
+namespace = income_probe
+
+#test(time=1444.11.11, tag=MNG, name="treasury ge 155", ai=on, advance_days=60, expect={ treasury = 155 })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 165", ai=on, advance_days=60, expect={ treasury = 165 })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 175", ai=on, advance_days=60, expect={ treasury = 175 })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 185", ai=on, advance_days=60, expect={ treasury = 185 })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 195", ai=on, advance_days=60, expect={ treasury = 195 })
+country_event = {
+	id = income_probe.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

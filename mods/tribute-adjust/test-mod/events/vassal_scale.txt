@@ -1,0 +1,18 @@
+namespace = vassal_scale
+
+#test(time=1444.11.11, tag=ENG, name="eng off lo", ai=off, advance_days=60,
+#     effect={ release = WAL },
+#     expect={ treasury = 79.5 })
+#test(time=1444.11.11, tag=ENG, name="eng off hi", ai=off, advance_days=60,
+#     effect={ release = WAL },
+#     expect={ treasury = 79.8 })
+country_event = {
+	id = vassal_scale.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

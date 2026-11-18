@@ -1,0 +1,3 @@
+zzz_vassal_bonus = {
+	vassal_income = 0.5
+}
