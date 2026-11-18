@@ -745,9 +745,16 @@ impl<'a> Interpreter<'a> {
 	/// scheduling order within a date.
 	fn advance(&self, world: &mut World, days: u32) -> Result<(), String> {
 		let new_date = world.date.add_days(days)?;
-		while let Some((due, batch)) = world.scheduled.pop_first()
+		// Peek before removing: an event scheduled past the new date stays
+		// scheduled for a later advance. Popping first would drop exactly
+		// that not-yet-due event.
+		while let Some((&due, _)) = world.scheduled.first_key_value()
 			&& due <= new_date
 		{
+			let (_, batch) = world
+				.scheduled
+				.pop_first()
+				.expect("the peeked earliest entry exists");
 			world.date = due;
 			for (event, ctx) in batch {
 				world.deliveries += 1;
@@ -2145,6 +2152,44 @@ mod tests {
 		);
 		let after = case(&result, "after_due");
 		assert_eq!(after.outcome, Outcome::Pass, "{:#?}", after.failures);
+	}
+
+	#[test]
+	fn a_not_yet_due_event_survives_an_advance_that_ends_earlier() {
+		// days = 2 split across two advance_days = 1 steps: the first
+		// advance ends before the event is due, so the flag must still be
+		// absent (NOT holds), and the second advance delivers it. Popping
+		// the earliest entry before comparing dates drops exactly this
+		// event on the first advance.
+		const TIMER: &str = r#"country_event = {
+	id = cases.4
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { country_event = { id = cases.1 days = 2 } }
+	option = { name = OK }
+}"#;
+		const SPLIT: &str = r#"test = {
+	name = split_advance
+	time = 1444.11.11
+	tag = SWE
+	fire = cases.4
+	advance_days = 1
+	expect = { NOT = { has_country_flag = called } }
+	advance_days = 1
+	expect = { has_country_flag = called }
+}"#;
+		let result = scenario(
+			&format!(
+				"{EVENT}
+{TIMER}"
+			),
+			SPLIT,
+		);
+		let verdict = case(&result, "split_advance");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict.failures);
 	}
 
 	#[test]
