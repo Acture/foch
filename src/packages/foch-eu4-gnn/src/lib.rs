@@ -1,4 +1,5 @@
-//! The province-graph GNN as a dependency-free Rust crate.
+//! The province-graph GNN forward pass in pure Rust; weight
+//! documents parse through serde_json.
 //!
 //! [`general_gnn::GeneralGnn`] is the pure forward pass: weights in as
 //! JSON (serde_json-parsed and fully validated, refusing malformed input), province-plane

@@ -141,3 +141,59 @@ fn shape_and_json_malformations_from_the_external_review_are_refused() {
 	assert!(GeneralGnn::from_json("{ }").is_none());
 	assert!(GeneralGnn::from_json("{\"weights\": {}}").is_none());
 }
+
+#[test]
+fn empty_linear_guards_are_reached_from_the_full_model() {
+	// Empty-out single tensors of the COMPLETE fixture so the refusal
+	// provably comes from the empty-shape guards, not from a document
+	// that is missing keys earlier in the chain.
+	let text = std::fs::read_to_string("tests/data/parity.json").expect("fixture readable");
+	let root: serde_json::Value = serde_json::from_str(&text).expect("fixture parses");
+	let weights = root.get("weights").cloned().unwrap_or(root);
+	let emptied = |key: &str| -> String {
+		let mut w = weights.clone();
+		w[key] = serde_json::json!([]);
+		serde_json::to_string(&w).expect("serialize")
+	};
+	for key in [
+		"gat1.lin_l.bias",
+		"gat1.lin_r.bias",
+		"gat2.lin_l.bias",
+		"gat2.lin_r.bias",
+		"query.0.bias",
+		"head.0.bias",
+		"head.2.bias",
+		"gat1.bias",
+		"gat2.bias",
+		"gat1.att",
+		"gat1.lin_l.weight",
+		"gat1.lin_r.weight",
+		"head.0.weight",
+		"head.2.weight",
+	] {
+		assert!(
+			GeneralGnn::from_json(&emptied(key)).is_none(),
+			"{key}: [] accepted"
+		);
+	}
+}
+
+#[test]
+fn complete_weights_parse_from_both_document_shapes() {
+	let text = std::fs::read_to_string("tests/data/parity.json").expect("fixture readable");
+	let root: serde_json::Value = serde_json::from_str(&text).expect("fixture parses");
+	let weights = root.get("weights").cloned().unwrap_or(root);
+
+	// The exporter's format: the weight object at the root, pretty.
+	let flat = serde_json::to_string_pretty(&weights).expect("serialize");
+	assert!(
+		GeneralGnn::from_json(&flat).is_some(),
+		"flat pretty export refused"
+	);
+	// The fixture's format: the same weights under a "weights" key.
+	let wrapped = serde_json::json!({ "weights": weights }).to_string();
+	assert!(
+		GeneralGnn::from_json(&wrapped).is_some(),
+		"wrapped weights refused"
+	);
+}
