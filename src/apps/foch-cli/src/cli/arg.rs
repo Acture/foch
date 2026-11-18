@@ -189,7 +189,14 @@ pub struct TestArgs {
 	/// launching the game. Modeled semantics only; never game evidence.
 	#[arg(
 		long,
-		conflicts_with_all = ["collect_only", "no_run", "game_path", "eu4_user_dir", "isolate"]
+		conflicts_with_all = [
+			"collect_only",
+			"no_run",
+			"game_path",
+			"eu4_user_dir",
+			"isolate",
+			"with_plugins"
+		]
 	)]
 	pub offline: bool,
 	/// With --offline: skip the run trace (observer mode records it by

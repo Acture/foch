@@ -502,6 +502,46 @@ fn offline_is_not_bound_to_the_runners_start_dates() {
 }
 
 #[test]
+fn offline_conflicts_with_plugins_as_a_flag_error() {
+	// --offline silently ignored --with-plugins and interpreted the run; the
+	// combination must be a clap conflict before any playset or host is
+	// resolved, in either flag order.
+	let dir = fixture();
+	for args in [
+		vec![
+			"test",
+			"mod",
+			"--offline",
+			"--with-plugins",
+			"nonexistent_playset",
+		],
+		vec![
+			"test",
+			"mod",
+			"--with-plugins",
+			"nonexistent_playset",
+			"--offline",
+		],
+	] {
+		let output = run(dir.path(), &args);
+		assert!(
+			!output.status.success(),
+			"{args:?} must not run: {}",
+			String::from_utf8_lossy(&output.stdout)
+		);
+		let text = format!(
+			"{}{}",
+			String::from_utf8_lossy(&output.stdout),
+			String::from_utf8_lossy(&output.stderr)
+		);
+		assert!(
+			text.contains("--offline") && text.contains("--with-plugins"),
+			"the conflict names both flags: {text}"
+		);
+	}
+}
+
+#[test]
 fn unmapped_step_kinds_are_rejected_cleanly_at_collection() {
 	// The review repro: cheat / take_decision in a tests/ block must never
 	// panic the compile path. The core candidate has no such steps, so the
