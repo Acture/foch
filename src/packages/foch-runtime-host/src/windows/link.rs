@@ -6,7 +6,7 @@
 
 use super::{gate, query};
 use crate::{
-	image::{self, GATE_BYTES},
+	image,
 	pattern::{self, Found, Pattern},
 	prologue,
 };
@@ -26,6 +26,8 @@ use windows_sys::Win32::System::{
 	Threading::{ExitProcess, GetCurrentProcess},
 };
 
+const JUMP_BYTES: usize = prologue::MIN_STEAL;
+
 const HOOK_MAGIC: u64 = 0xF0C4_4800_4E00_0001;
 const PATCH_MAGIC: u64 = 0xF0C4_4800_4E00_0002;
 
@@ -39,7 +41,7 @@ pub(super) struct Linker {
 
 struct Site {
 	target: usize,
-	original: [u8; GATE_BYTES],
+	original: Vec<u8>,
 	installed: bool,
 	trampoline: usize,
 	head: usize,
@@ -97,10 +99,10 @@ impl Linker {
 			return abi::result::E_INVALID;
 		}
 		let target = target as usize;
-		if !query::readable(target as *const u8, GATE_BYTES) {
+		if !query::readable(target as *const u8, JUMP_BYTES) {
 			return abi::result::E_INVALID;
 		}
-		if !image::fits_page(target, GATE_BYTES, self.page_size) {
+		if !image::fits_page(target, JUMP_BYTES, self.page_size) {
 			return abi::result::E_UNSUPPORTED;
 		}
 		let Some(seq) = self.seq.checked_add(1) else {
@@ -109,15 +111,24 @@ impl Linker {
 		if let Some(index) = self.sites.iter().position(|site| site.target == target) {
 			return self.push_hook(index, detour as usize, priority, seq, next, hook);
 		}
-		let Some(original) = read_array(target) else {
-			return abi::result::E_INVALID;
-		};
-		if !prologue::can_steal(&original) {
-			return abi::result::E_UNSUPPORTED;
-		}
-		if self.overlaps_hook(target, GATE_BYTES) || self.overlaps_patch(target, GATE_BYTES) {
+		if self.overlaps_hook(target, JUMP_BYTES) || self.overlaps_patch(target, JUMP_BYTES) {
 			return abi::result::E_CONFLICT;
 		}
+		let Some(prefix) = hook_prefix(target, self.page_size) else {
+			return abi::result::E_INVALID;
+		};
+		let Some(stolen) = prologue::steal_len(&prefix) else {
+			return abi::result::E_UNSUPPORTED;
+		};
+		if !image::fits_page(target, stolen, self.page_size)
+			|| !query::executable((target + stolen - 1) as *const c_void)
+		{
+			return abi::result::E_UNSUPPORTED;
+		}
+		if self.overlaps_hook(target, stolen) || self.overlaps_patch(target, stolen) {
+			return abi::result::E_CONFLICT;
+		}
+		let original = prefix[..stolen].to_vec();
 		self.sites.push(Site {
 			target,
 			original,
@@ -261,7 +272,7 @@ impl Linker {
 	fn overlaps_hook(&self, address: usize, len: usize) -> bool {
 		self.sites
 			.iter()
-			.any(|site| ranges_overlap(site.target, GATE_BYTES, address, len))
+			.any(|site| ranges_overlap(site.target, site.original.len(), address, len))
 	}
 
 	fn overlaps_patch(&self, address: usize, len: usize) -> bool {
@@ -318,20 +329,20 @@ pub(super) fn find_in_module(exe_size: usize, text: &str, address: *mut *mut c_v
 }
 
 fn install(site: &mut Site) -> i32 {
-	let Some(current) = read_array(site.target) else {
+	let Some(current) = read_bytes(site.target, site.original.len()) else {
 		return abi::result::E_INVALID;
 	};
 	if current != site.original {
 		return abi::result::E_CONFLICT;
 	}
-	let trampoline = allocate(GATE_BYTES + GATE_BYTES, PAGE_EXECUTE_READWRITE);
+	let stolen = site.original.len();
+	let trampoline = allocate(stolen + JUMP_BYTES, PAGE_EXECUTE_READWRITE);
 	let stub = allocate(16, PAGE_EXECUTE_READWRITE);
 	if trampoline.is_null() || stub.is_null() {
 		return abi::result::E_MEMORY;
 	}
-	let mut body = [0u8; GATE_BYTES + GATE_BYTES];
-	body[..GATE_BYTES].copy_from_slice(&site.original);
-	body[GATE_BYTES..].copy_from_slice(&absolute_jump(site.target + GATE_BYTES));
+	let mut body = site.original.clone();
+	body.extend_from_slice(&absolute_jump(site.target + stolen));
 	unsafe { std::ptr::copy_nonoverlapping(body.as_ptr(), trampoline, body.len()) };
 	let mut stub_bytes = [0u8; 16];
 	// jmp qword ptr [rip+2] lands on the aligned head cell at stub+8.
@@ -346,8 +357,9 @@ fn install(site: &mut Site) -> i32 {
 	site.head = head;
 	site.installed = true;
 	relink(site);
-	let jump = absolute_jump(stub as usize);
-	match write_region(site.target as *mut u8, &jump) {
+	let mut redirect = vec![0x90; stolen];
+	redirect[..JUMP_BYTES].copy_from_slice(&absolute_jump(stub as usize));
+	match write_region(site.target as *mut u8, &redirect) {
 		Ok(()) => abi::result::OK,
 		Err(WriteFault::Intact) => {
 			site.installed = false;
@@ -429,11 +441,26 @@ fn ranges_overlap(left: usize, left_len: usize, right: usize, right_len: usize) 
 		&& right < left.saturating_add(left_len)
 }
 
-fn read_array(address: usize) -> Option<[u8; GATE_BYTES]> {
-	let bytes = read_bytes(address, GATE_BYTES)?;
-	let mut array = [0u8; GATE_BYTES];
-	array.copy_from_slice(&bytes);
-	Some(array)
+// Never require the maximum window to be readable: a valid 14-byte entry
+// at a page end remains usable even when the next page is inaccessible.
+fn hook_prefix(address: usize, page_size: usize) -> Option<Vec<u8>> {
+	let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+	if unsafe {
+		VirtualQuery(
+			address as *const c_void,
+			&mut info,
+			size_of::<MEMORY_BASIC_INFORMATION>(),
+		)
+	} == 0
+	{
+		return None;
+	}
+	let region_end = (info.BaseAddress as usize).checked_add(info.RegionSize)?;
+	let available = region_end
+		.checked_sub(address)?
+		.min(page_size - address % page_size)
+		.min(prologue::MAX_STEAL);
+	read_bytes(address, available)
 }
 
 fn read_bytes(address: usize, len: usize) -> Option<Vec<u8>> {
@@ -446,8 +473,8 @@ fn read_bytes(address: usize, len: usize) -> Option<Vec<u8>> {
 	Some(bytes)
 }
 
-fn absolute_jump(dest: usize) -> [u8; GATE_BYTES] {
-	let mut bytes = [0u8; GATE_BYTES];
+fn absolute_jump(dest: usize) -> [u8; JUMP_BYTES] {
+	let mut bytes = [0u8; JUMP_BYTES];
 	bytes[..6].copy_from_slice(&[0xFF, 0x25, 0x00, 0x00, 0x00, 0x00]);
 	bytes[6..].copy_from_slice(&dest.to_le_bytes());
 	bytes
@@ -658,12 +685,12 @@ mod tests {
 
 	fn write_pair(mem: *mut u8, first: *const AtomicU64, second: *const AtomicU64) {
 		write_inc(mem, 0, first);
-		write_inc(mem, GATE_BYTES, second);
-		unsafe { mem.add(GATE_BYTES * 2).write(0xC3) };
+		write_inc(mem, JUMP_BYTES, second);
+		unsafe { mem.add(JUMP_BYTES * 2).write(0xC3) };
 	}
 
 	fn write_inc(mem: *mut u8, at: usize, counter: *const AtomicU64) {
-		let bytes = unsafe { std::slice::from_raw_parts_mut(mem.add(at), GATE_BYTES) };
+		let bytes = unsafe { std::slice::from_raw_parts_mut(mem.add(at), JUMP_BYTES) };
 		bytes[0] = 0x48;
 		bytes[1] = 0xB8;
 		bytes[2..10].copy_from_slice(&(counter as usize).to_le_bytes());
@@ -686,9 +713,10 @@ mod tests {
 		C2.store(0, Ordering::Release);
 		let target = code(64);
 		write_pair(target, &C1, &C2);
-		assert!(prologue::can_steal(unsafe {
-			std::slice::from_raw_parts(target, GATE_BYTES)
-		}));
+		assert_eq!(
+			prologue::steal_len(unsafe { std::slice::from_raw_parts(target, JUMP_BYTES) }),
+			Some(JUMP_BYTES)
+		);
 		let mut linker = Linker::new();
 		linker.open_init(true);
 		let mut next_lo = std::ptr::null();
@@ -835,7 +863,7 @@ mod tests {
 		let crossed = allocate(page * 2, PAGE_EXECUTE_READWRITE);
 		assert!(!crossed.is_null());
 		let target = unsafe { crossed.add(page - 7) };
-		unsafe { std::ptr::write_bytes(target, 0x90, GATE_BYTES) };
+		unsafe { std::ptr::write_bytes(target, 0x90, JUMP_BYTES) };
 		assert_eq!(
 			linker.hook_create(
 				target.cast(),
@@ -892,23 +920,23 @@ mod tests {
 		);
 		assert_eq!(
 			linker.patch_create(
-				unsafe { mem.add(GATE_BYTES) }.cast(),
+				unsafe { mem.add(JUMP_BYTES) }.cast(),
 				bytes.as_ptr(),
 				bytes.len(),
 				&mut patch
 			),
 			abi::result::OK
 		);
-		assert_eq!(unsafe { *mem.add(GATE_BYTES) }, 0x48);
+		assert_eq!(unsafe { *mem.add(JUMP_BYTES) }, 0x48);
 		assert_eq!(linker.patch_set_enabled(patch, 1), abi::result::OK);
-		assert_eq!(unsafe { *mem.add(GATE_BYTES) }, 0xCC);
+		assert_eq!(unsafe { *mem.add(JUMP_BYTES) }, 0xCC);
 		assert_eq!(linker.patch_set_enabled(patch, 0), abi::result::OK);
-		assert_eq!(unsafe { *mem.add(GATE_BYTES) }, 0x48);
+		assert_eq!(unsafe { *mem.add(JUMP_BYTES) }, 0x48);
 
 		let mut again = std::ptr::null_mut();
 		assert_eq!(
 			linker.patch_create(
-				unsafe { mem.add(GATE_BYTES) }.cast(),
+				unsafe { mem.add(JUMP_BYTES) }.cast(),
 				bytes.as_ptr(),
 				1,
 				&mut again
@@ -941,19 +969,20 @@ mod tests {
 	#[test]
 	fn partial_writes_restore_bytes_and_protection() {
 		for (fail_protect, fail_flush) in [(0, 1), (2, 0), (1, 0)] {
-			let original = [0x90u8; 4];
+			let original = [0x41u8; 17];
 			let mut memory = original;
 			let mut protections = Vec::new();
 			let mut flushes = 0;
 			let result = write_with(
 				memory.as_mut_ptr(),
-				&[0xCC; 4],
+				&[0xCC; 17],
 				&mut |_, protection, old| {
 					protections.push(protection);
 					unsafe { old.write(0x20) };
 					protections.len() != fail_protect
 				},
-				&mut |_, _| {
+				&mut |_, len| {
+					assert_eq!(len, 17);
 					flushes += 1;
 					flushes != fail_flush
 				},
@@ -964,6 +993,262 @@ mod tests {
 				assert_eq!(flushes, 2);
 				assert_eq!(protections.last(), Some(&0x20));
 			}
+		}
+	}
+
+	#[test]
+	fn variable_windows_copy_complete_instructions_and_keep_chain_order() {
+		use std::sync::atomic::AtomicUsize;
+		static HI: AtomicUsize = AtomicUsize::new(0);
+		static LO: AtomicUsize = AtomicUsize::new(0);
+		static SEEN: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+		unsafe fn next(cell: usize, a: u64, b: u64) -> u64 {
+			let ptr = unsafe { *(cell as *const *const c_void) };
+			let f: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { std::mem::transmute(ptr) };
+			unsafe { f(a, b) }
+		}
+		unsafe extern "C" fn hi(a: u64, b: u64) -> u64 {
+			SEEN.lock().unwrap().push(b'H');
+			unsafe { next(HI.load(Ordering::Acquire), a, b) + 100 }
+		}
+		unsafe extern "C" fn lo(a: u64, b: u64) -> u64 {
+			SEEN.lock().unwrap().push(b'L');
+			unsafe { next(LO.load(Ordering::Acquire), a, b) + 10 }
+		}
+		for len in [14, 15, 17, 18, 28] {
+			let mut original = match len {
+				14 | 15 => {
+					let mut bytes = vec![0x90; len - 3];
+					bytes.extend([0x48, 0x89, 0xC8]); // mov rax,rcx
+					bytes
+				}
+				17 => {
+					// The caller supplies the normal Windows x64 home area.
+					let mut bytes = vec![0x48, 0x89, 0x4C, 0x24, 0x08];
+					bytes.extend([0x90; 7]);
+					bytes.extend([0x48, 0x8B, 0x44, 0x24, 0x08]);
+					bytes
+				}
+				18 => {
+					let mut bytes = vec![0x90; 13];
+					bytes.extend([0x48, 0x8D, 0x44, 0x21, 0]); // lea rax,[rcx]
+					bytes
+				}
+				28 => {
+					let mut bytes = vec![0x90; 13];
+					bytes.extend([0x2E; 5]);
+					bytes.extend([0x48, 0xB8, 7, 0, 0, 0, 0, 0, 0, 0]);
+					bytes
+				}
+				_ => unreachable!(),
+			};
+			assert_eq!(prologue::steal_len(&original), Some(len));
+			original.extend([0x48, 0x03, 0xC2, 0xC3]); // add rax,rdx; ret
+			let target = code(64);
+			unsafe { std::ptr::copy_nonoverlapping(original.as_ptr(), target, original.len()) };
+			let f: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { std::mem::transmute(target) };
+			assert_eq!(unsafe { f(7, 11) }, 18);
+			let mut linker = Linker::new();
+			linker.open_init(true);
+			let mut low = std::ptr::null_mut();
+			let mut high = std::ptr::null_mut();
+			let mut cell = std::ptr::null();
+			assert_eq!(
+				linker.hook_create(target.cast(), lo as *mut c_void, 0, &mut cell, &mut low),
+				abi::result::OK
+			);
+			LO.store(cell as usize, Ordering::Release);
+			assert_eq!(linker.hook_set_enabled(low, 1), abi::result::OK);
+			assert_eq!(
+				linker.hook_create(target.cast(), hi as *mut c_void, 10, &mut cell, &mut high),
+				abi::result::OK
+			);
+			HI.store(cell as usize, Ordering::Release);
+			assert_eq!(linker.hook_set_enabled(high, 1), abi::result::OK);
+			let site = &linker.sites[0];
+			assert_eq!(site.original, original[..len]);
+			assert_eq!(
+				unsafe { std::slice::from_raw_parts(site.trampoline as *const u8, len) },
+				&original[..len]
+			);
+			assert_eq!(
+				read_bytes(site.trampoline + len, JUMP_BYTES).unwrap(),
+				absolute_jump(target as usize + len)
+			);
+			assert_eq!(
+				read_bytes(target as usize + JUMP_BYTES, len - JUMP_BYTES).unwrap(),
+				vec![0x90; len - JUMP_BYTES]
+			);
+			SEEN.lock().unwrap().clear();
+			assert_eq!(unsafe { f(7, 11) }, 128);
+			assert_eq!(*SEEN.lock().unwrap(), b"HL");
+			assert_eq!(linker.hook_set_enabled(high, 0), abi::result::OK);
+			SEEN.lock().unwrap().clear();
+			assert_eq!(unsafe { f(7, 11) }, 28);
+			assert_eq!(*SEEN.lock().unwrap(), b"L");
+			assert_eq!(linker.hook_set_enabled(low, 0), abi::result::OK);
+			assert_eq!(unsafe { f(7, 11) }, 18);
+			assert_eq!(unsafe { *target }, 0xFF);
+		}
+	}
+
+	#[test]
+	fn the_whole_stolen_span_is_reserved_and_checked_for_drift() {
+		let make_target = || {
+			let target = code(64);
+			unsafe {
+				std::ptr::write_bytes(target, 0x90, 64);
+				std::ptr::copy_nonoverlapping(
+					[0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0].as_ptr(),
+					target.add(7),
+					10,
+				);
+			}
+			target // first complete boundary at 17
+		};
+		let target = make_target();
+		let mut linker = Linker::new();
+		linker.open_init(true);
+		let mut next = std::ptr::null();
+		let mut hook = std::ptr::null_mut();
+		let mut patch = std::ptr::null_mut();
+		let bytes = [0xCC];
+		assert_eq!(
+			linker.hook_create(
+				target.cast(),
+				detour_lo as *mut c_void,
+				0,
+				&mut next,
+				&mut hook
+			),
+			abi::result::OK
+		);
+		assert_eq!(
+			linker.patch_create(
+				unsafe { target.add(16) }.cast(),
+				bytes.as_ptr(),
+				1,
+				&mut patch
+			),
+			abi::result::E_CONFLICT
+		);
+		let mut adjacent = std::ptr::null_mut();
+		assert_eq!(
+			linker.hook_create(
+				unsafe { target.add(16) }.cast(),
+				detour_lo as *mut c_void,
+				0,
+				&mut next,
+				&mut adjacent
+			),
+			abi::result::E_CONFLICT
+		);
+		unsafe { target.add(16).write(2) };
+		assert_eq!(linker.hook_set_enabled(hook, 1), abi::result::E_CONFLICT);
+		assert_eq!(unsafe { *target.add(16) }, 2);
+		let installed = make_target();
+		assert_eq!(
+			linker.hook_create(
+				installed.cast(),
+				detour_lo as *mut c_void,
+				0,
+				&mut next,
+				&mut hook
+			),
+			abi::result::OK
+		);
+		assert_eq!(linker.hook_set_enabled(hook, 1), abi::result::OK);
+		assert_eq!(unsafe { *installed.add(16) }, 0x90);
+		assert_eq!(
+			linker.patch_create(
+				unsafe { installed.add(16) }.cast(),
+				bytes.as_ptr(),
+				1,
+				&mut patch
+			),
+			abi::result::E_CONFLICT
+		);
+		assert_eq!(
+			linker.hook_create(
+				unsafe { installed.add(16) }.cast(),
+				detour_lo as *mut c_void,
+				0,
+				&mut next,
+				&mut adjacent
+			),
+			abi::result::E_CONFLICT
+		);
+		let target = make_target();
+		assert_eq!(
+			linker.patch_create(
+				unsafe { target.add(16) }.cast(),
+				bytes.as_ptr(),
+				1,
+				&mut patch
+			),
+			abi::result::OK
+		);
+		assert_eq!(
+			linker.hook_create(
+				target.cast(),
+				detour_lo as *mut c_void,
+				0,
+				&mut next,
+				&mut hook
+			),
+			abi::result::E_CONFLICT
+		);
+	}
+
+	#[test]
+	fn page_end_14_bytes_work_and_longer_crossing_spans_are_refused() {
+		use windows_sys::Win32::System::Memory::PAGE_NOACCESS;
+		let mut linker = Linker::new();
+		linker.open_init(true);
+		let page = linker.page_size;
+		let memory = code(page * 2);
+		unsafe { std::ptr::write_bytes(memory, 0x90, page * 2) };
+		let mut old = 0;
+		assert_ne!(
+			unsafe { VirtualProtect(memory.add(page).cast(), page, PAGE_NOACCESS, &mut old) },
+			0
+		);
+		let target = unsafe { memory.add(page - 14) };
+		let mut next = std::ptr::null();
+		let mut hook = std::ptr::null_mut();
+		assert_eq!(
+			linker.hook_create(
+				target.cast(),
+				detour_lo as *mut c_void,
+				0,
+				&mut next,
+				&mut hook
+			),
+			abi::result::OK
+		);
+		assert_eq!(linker.hook_set_enabled(hook, 1), abi::result::OK);
+		for len in [15, 17] {
+			let memory = code(page * 2);
+			unsafe { std::ptr::write_bytes(memory, 0x90, page * 2) };
+			let target = unsafe { memory.add(page - 14) };
+			unsafe {
+				std::ptr::copy_nonoverlapping(
+					[0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0].as_ptr(),
+					target.add(len - 10),
+					10,
+				);
+			}
+			assert_eq!(
+				linker.hook_create(
+					target.cast(),
+					detour_lo as *mut c_void,
+					0,
+					&mut next,
+					&mut hook
+				),
+				abi::result::E_UNSUPPORTED
+			);
+			assert_eq!(unsafe { *target }, 0x90);
 		}
 	}
 
@@ -1006,6 +1291,49 @@ mod tests {
 			assert!(address.is_null());
 		} else {
 			assert!(!address.is_null());
+		}
+	}
+
+	#[test]
+	fn decoder_rejections_leave_targets_unchanged() {
+		unsafe extern "C" fn detour() -> u64 {
+			99
+		}
+		let mut mixed = vec![0x90; 11];
+		mixed.extend([0x66, 0x48, 0xC7, 0xC0, 7, 0, 0, 0, 0xC3]);
+		let mut transaction = vec![0x90; 9];
+		transaction.extend([0xC7, 0xF8, 0x10, 0, 0, 0]);
+		for (index, bytes) in [mixed, transaction].into_iter().enumerate() {
+			let target = code(4096);
+			assert_eq!(write_owned(target as usize, &bytes), abi::result::OK);
+			let original: unsafe extern "C" fn() -> u64 = unsafe { std::mem::transmute(target) };
+			if index == 0 {
+				assert_eq!(unsafe { original() }, 7);
+			}
+			let mut linker = Linker::new();
+			linker.open_init(true);
+			let mut next = std::ptr::null();
+			let mut hook = std::ptr::null_mut();
+			assert_eq!(
+				linker.hook_create(
+					target.cast(),
+					detour as *const () as *mut c_void,
+					1,
+					&mut next,
+					&mut hook
+				),
+				abi::result::E_UNSUPPORTED
+			);
+			assert!(next.is_null() && hook.is_null());
+			assert!(linker.sites.is_empty());
+			assert_eq!(
+				unsafe { std::slice::from_raw_parts(target, bytes.len()) },
+				bytes.as_slice()
+			);
+			if index == 0 {
+				assert_eq!(unsafe { original() }, 7);
+			}
+			// XBEGIN is never executed: these tests also work without TSX.
 		}
 	}
 }
