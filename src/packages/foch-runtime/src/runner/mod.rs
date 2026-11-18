@@ -338,21 +338,13 @@ pub fn run_session(
 		return Err(error);
 	}
 	let (exit, termination) = watch(&mut process, bundle, &log, options.timeout, &options.cancel);
-	// The termination account is diagnostics: a failure to persist it warns
-	// but never unwinds a finished session, so the guarded-profile check and
-	// log collection below always run.
-	let record = serde_json::json!({
-		"pid": identity.pid,
-		"session_id": identity.session_id,
-		"launch": launch_detail,
-		"working_dir": launch.working_dir,
-		"args": launch.args.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>(),
-		"stdout_stderr": "not-captured",
-		"termination": termination,
-	});
-	if let Err(error) = write_diagnostics(&diagnostics_path, &record) {
-		eprintln!("warning: could not persist launch termination diagnostics: {error}");
-	}
+	// The termination account is diagnostics in its own sidecar: rewriting
+	// the launch record would truncate the only copy of the launch evidence
+	// when the rewrite fails partway (a full disk strikes after the truncate,
+	// not before). A persistence failure warns but never unwinds a finished
+	// session, so the guarded-profile check and log collection below always
+	// run.
+	persist_termination(session_dir, &termination);
 	let timing = Timing {
 		wall_ms: started.elapsed().as_millis() as u64,
 		..Timing::default()
@@ -432,8 +424,10 @@ fn watch(
 		{
 			process.stop();
 			// A semantic success: the cases finished, and the runner stops
-			// the process. The underlying record after the stop is still
-			// written out, kill code and all.
+			// the process. The record read back after the stop is written out
+			// as the OS reports it — for a still-alive child that is the kill,
+			// and a natural exit that lands between the poll and the stop
+			// keeps its own code and verdict.
 			return (
 				RunnerExit::Success,
 				TerminationDetail::stopped("end-stop", process),
@@ -452,7 +446,8 @@ fn watch(
 	}
 }
 
-/// How the process actually ended, persisted with the launch diagnostics.
+/// How the process actually ended, persisted in the termination sidecar
+/// beside the launch record.
 #[derive(serde::Serialize)]
 struct TerminationDetail {
 	/// One of `natural-exit`, `end-stop`, `timeout`, `cancel`.
@@ -460,13 +455,17 @@ struct TerminationDetail {
 	/// The exit code when the OS reports one; `None` for signal deaths and
 	/// runner-driven kills that report none.
 	code: Option<i32>,
-	/// Whether the OS calls the final state a success; a kill is not.
+	/// Whether the OS calls the final state a success. A still-alive child
+	/// that is stopped reports its kill; a natural exit landing between the
+	/// last poll and the stop keeps its own — usually false after a stop,
+	/// never promised.
 	success: Option<bool>,
 }
 
 impl TerminationDetail {
 	/// The detail after the runner stopped the process itself: read back
-	/// what the OS now reports for the killed child.
+	/// what the OS now reports — the kill for a child that was alive, or the
+	/// natural exit that landed in between.
 	fn stopped(cause: &'static str, process: &mut platform::GameProcess) -> Self {
 		let record = process.exited();
 		Self {
@@ -501,9 +500,27 @@ fn write_diagnostics(path: &Path, record: &serde_json::Value) -> io::Result<()> 
 	fs::write(path, serde_json::to_vec_pretty(record).unwrap_or_default())
 }
 
+/// Persist the termination account in its own sidecar beside — never into —
+/// the launch record, keeping the launch evidence immutable: rewriting the
+/// launch file would destroy it when the rewrite fails after the truncate
+/// (a full disk strikes mid-write). Best effort: a failure here warns and the
+/// finished session still unwinds normally (guard check, host-event salvage,
+/// log collection); the launch record is what must survive.
+fn persist_termination(session_dir: &Path, termination: &TerminationDetail) {
+	let sidecar = session_dir.join("termination-diagnostics.json");
+	let result = serde_json::to_value(termination)
+		.map_err(io::Error::other)
+		.and_then(|record| write_diagnostics(&sidecar, &record));
+	if let Err(error) = result {
+		eprintln!("warning: could not persist launch termination diagnostics: {error}");
+	}
+}
+
 /// Copy the host's events out of the runtime layer (which is about to be
-/// removed) beside the session's other logs. Best effort: when a byte cannot
-/// be moved, the original path stays so the caller still has the only copy.
+/// removed) beside the session's other logs. Best effort: the runtime layer
+/// is deleted on drop, so a move that fails here loses the evidence anyway —
+/// the returned path is where the bytes were last seen, not a guarantee they
+/// are still there.
 fn keep_host_events(source: &Path, session_dir: &Path) -> PathBuf {
 	let kept = session_dir.join("foch-host-events.jsonl");
 	match fs::read(source) {
@@ -768,8 +785,42 @@ mod launch_diagnostics {
 	// missing game log stays a runner-level runtime error — never a pass.
 
 	use super::platform::{self, LaunchSpec};
+	use foch_test::compile::{Launch, Requirements};
+	use foch_test::model::{AiMode, CaseIndex, GameDate, RunId, Tag};
+	use foch_test::plan::SessionId;
 	use std::path::PathBuf;
 	use std::time::Duration;
+
+	/// The smallest bundle `watch` accepts: one case, its END marker derived
+	/// from `marker_prefix`.
+	fn one_case_bundle() -> Bundle {
+		let date = GameDate::parse("1444.11.11").unwrap();
+		Bundle {
+			protocol: 2,
+			run_id: RunId::parse("run-1").unwrap(),
+			mod_name: "demo".into(),
+			session: SessionId(0),
+			cases: vec![CaseIndex(0)],
+			marker_prefix: "FOCH_TEST_V2 run-1 abc123".into(),
+			namespace: "foch_test_demo_abc123".into(),
+			test_mod_name: "demo tests [abc123]".into(),
+			files: BTreeMap::new(),
+			launch: Launch {
+				args: vec!["-start_tag=SWE".into()],
+				ai: AiMode::Off,
+				player: Tag::parse("SWE").unwrap(),
+				start_date: date,
+				end_date: date,
+			},
+			checks: Vec::new(),
+			windows: Vec::new(),
+			requires: Requirements {
+				start_date: date,
+				ai_off: false,
+				shared_session: false,
+			},
+		}
+	}
 
 	fn fake_child(exit_code: i32) -> LaunchSpec {
 		let program = if cfg!(windows) { "cmd" } else { "sh" };
@@ -840,7 +891,10 @@ mod launch_diagnostics {
 		);
 		process.stop();
 		let record = process.exited().expect("stop() reaps the child");
-		assert!(!record.success, "a kill is never a pass");
+		assert!(
+			!record.success,
+			"this controlled stop of a live child is a kill, not a pass"
+		);
 	}
 
 	/// The runner maps a clean process exit with no game log to a runtime
@@ -950,39 +1004,6 @@ mod launch_diagnostics {
 	/// reports after the runner-driven stop.
 	#[test]
 	fn watch_records_every_termination_cause_with_the_real_exit_record() {
-		use foch_test::compile::{Launch, Requirements};
-		use foch_test::model::{AiMode, CaseIndex, GameDate, RunId, Tag};
-		use foch_test::plan::SessionId;
-
-		fn one_case_bundle() -> Bundle {
-			let date = GameDate::parse("1444.11.11").unwrap();
-			Bundle {
-				protocol: 2,
-				run_id: RunId::parse("run-1").unwrap(),
-				mod_name: "demo".into(),
-				session: SessionId(0),
-				cases: vec![CaseIndex(0)],
-				marker_prefix: "FOCH_TEST_V2 run-1 abc123".into(),
-				namespace: "foch_test_demo_abc123".into(),
-				test_mod_name: "demo tests [abc123]".into(),
-				files: BTreeMap::new(),
-				launch: Launch {
-					args: vec!["-start_tag=SWE".into()],
-					ai: AiMode::Off,
-					player: Tag::parse("SWE").unwrap(),
-					start_date: date,
-					end_date: date,
-				},
-				checks: Vec::new(),
-				windows: Vec::new(),
-				requires: Requirements {
-					start_date: date,
-					ai_off: false,
-					shared_session: false,
-				},
-			}
-		}
-
 		let scratch = tempfile::tempdir().unwrap();
 		let log = scratch.path().join("game.log");
 		let cancel = AtomicBool::new(false);
@@ -1020,20 +1041,20 @@ mod launch_diagnostics {
 		assert_eq!(
 			detail.success,
 			Some(false),
-			"a runner-driven kill is never a success"
+			"the stop of this still-alive child is a kill, not a success"
 		);
-		// The termination account persists the way run_session rewrites the
-		// record after watch: the cause and the honest kill record are
-		// readable back from the session directory.
-		let mut persisted = serde_json::json!({ "pid": idle.identity().pid });
-		persisted["termination"] = serde_json::to_value(&detail).unwrap();
-		let diagnostics = scratch.path().join("termination.json");
-		write_diagnostics(&diagnostics, &persisted).unwrap();
-		let read =
-			serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&diagnostics).unwrap())
-				.unwrap();
-		assert_eq!(read["termination"]["cause"], "end-stop");
-		assert_eq!(read["termination"]["success"], false);
+		// The termination account persists through the production sidecar:
+		// the cause and the record the OS reported are readable back from
+		// the session directory.
+		let session = scratch.path().join("session");
+		fs::create_dir(&session).unwrap();
+		persist_termination(&session, &detail);
+		let read = serde_json::from_str::<serde_json::Value>(
+			&fs::read_to_string(session.join("termination-diagnostics.json")).unwrap(),
+		)
+		.unwrap();
+		assert_eq!(read["cause"], "end-stop");
+		assert_eq!(read["success"], false);
 
 		// Timeout: nothing ends the idle child before the deadline.
 		fs::remove_file(&log).unwrap();
@@ -1062,6 +1083,87 @@ mod launch_diagnostics {
 		assert_eq!(exit, RunnerExit::Cancelled);
 		assert_eq!(detail.cause, "cancel");
 		assert_eq!(detail.success, Some(false));
+	}
+
+	/// A failed termination persist must never cost the launch record: the
+	/// production sequence is initial launch persist (succeeds) → real
+	/// `watch` → `persist_termination`, here failing on a directory-occupied
+	/// sidecar. The launch record survives byte-for-byte and parses, and the
+	/// session still unwinds — the guard restores what the game rewrote and
+	/// the child is reaped. Fake profile, fake child; the real one is never
+	/// touched.
+	#[test]
+	fn a_failed_termination_persist_keeps_the_launch_record_intact() {
+		let scratch = tempfile::tempdir().unwrap();
+
+		// The production initial launch record, built off a real spawn.
+		let launch = idle_spec();
+		let mut process = platform::spawn(&launch).unwrap();
+		let identity = process.identity();
+		let record = serde_json::json!({
+			"pid": identity.pid,
+			"session_id": identity.session_id,
+			"launch": launch.detail(),
+			"working_dir": launch.working_dir,
+			"args": launch.args.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>(),
+			"stdout_stderr": "not-captured",
+		});
+		let session = scratch.path().join("session");
+		fs::create_dir(&session).unwrap();
+		let launch_record = session.join("launch-diagnostics.json");
+		write_diagnostics(&launch_record, &record).unwrap();
+		let persisted = fs::read(&launch_record).unwrap();
+
+		// A guarded profile the game rewrites before the session ends.
+		let profile = scratch.path().join("profile");
+		fs::create_dir(&profile).unwrap();
+		let guarded = profile.join("settings.txt");
+		fs::write(&guarded, "original\n").unwrap();
+		let guard = ProfileGuard::capture(&profile);
+		fs::write(&guarded, "rewritten by the game\n").unwrap();
+
+		// The real watch path: nothing ends the child before the deadline.
+		let log = scratch.path().join("game.log");
+		let cancel = AtomicBool::new(false);
+		let (exit, detail) = watch(
+			&mut process,
+			&one_case_bundle(),
+			&log,
+			Duration::from_millis(500),
+			&cancel,
+		);
+		assert_eq!(exit, RunnerExit::TimedOut { seconds: 0 });
+		assert_eq!(detail.cause, "timeout");
+
+		// Controlled I/O failure: the termination sidecar is a directory.
+		fs::create_dir_all(session.join("termination-diagnostics.json")).unwrap();
+		persist_termination(&session, &detail);
+
+		// The launch evidence is intact byte-for-byte and still parses.
+		let after = fs::read(&launch_record).unwrap();
+		assert_eq!(
+			after, persisted,
+			"a failed termination persist must not touch the launch record"
+		);
+		let parsed: serde_json::Value = serde_json::from_slice(&after).unwrap();
+		assert_eq!(parsed["pid"], identity.pid);
+		assert_eq!(parsed["launch"], launch.detail());
+
+		// And the finished session still unwinds: child reaped, guard restored.
+		assert!(
+			process.exited().is_some(),
+			"watch stopped and waited the child"
+		);
+		let untouched = guard.verify_and_restore();
+		assert!(
+			!untouched,
+			"the guard honestly reports that the game touched the profile"
+		);
+		assert_eq!(
+			fs::read_to_string(&guarded).unwrap(),
+			"original\n",
+			"the guarded file is restored after the failed persist"
+		);
 	}
 
 	/// A single owned child that stays alive until something stops it: the
