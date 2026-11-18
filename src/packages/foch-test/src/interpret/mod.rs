@@ -2,9 +2,10 @@
 //! model of EU4 semantics instead of launching the game.
 //!
 //! The model is organized by [`pins::SemanticsCatalog`]: every primitive the
-//! interpreter executes is an entry whose semantics are pinned to a
-//! decompiled handler function, and a pinned catalog refuses anything whose
-//! evidence is missing. The interpreter is an author-feedback layer, like a
+//! interpreter executes is a catalog entry. A `pinned` catalog additionally
+//! ties each entry to a decompiled handler function and refuses anything
+//! whose evidence is missing; the embedded seed is `unpinned`, and every
+//! result records that its semantics are not evidence-backed. The interpreter is an author-feedback layer, like a
 //! compiler's, not a verification oracle: cases using anything outside the
 //! modeled set are refused with all of their reasons at once, never
 //! approximated, mirroring how [`crate::compile::check_capabilities`]

@@ -1,20 +1,20 @@
 //! The semantics catalog: which primitives the offline model may execute,
-//! pinned to the decompiled handler functions that define them.
+//! the facts the model implements for each, and what evidence backs them.
 //!
-//! `semantics.json` is the single source shared by the interpreter and the
-//! `eu4_analysis semantics` extractor. A primitive entry carries the facts
-//! the model implements and, once a decompilation batch has run against the
-//! symbol-bearing EU4 executable, the handler pin (address, symbol,
-//! pseudocode digest). Until then the catalog is `unpinned`: the model still
-//! interprets, but every result records that its semantics are not yet
-//! evidence-backed. In a `pinned` catalog a primitive without its handler is
-//! refused, never guessed.
+//! `semantics.json` is the single source the interpreter reads. A primitive
+//! entry carries the modeled facts and, once a reviewed decompilation batch
+//! has run against the symbol-bearing EU4 executable, the handler pin
+//! (address, symbol, pseudocode digest). Until such a batch exists the
+//! catalog is `unpinned`: the model still interprets, but every result
+//! records that its semantics are not evidence-backed. In a `pinned` catalog
+//! a primitive without its handler is refused, never guessed.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The embedded catalog seed. Replace it with a `pinned` file produced by
-/// `python -m eu4_analysis semantics` after review.
+/// The embedded catalog seed, `unpinned`. Replacing it with a `pinned`
+/// file requires decompilation tooling and a manual review that do not
+/// exist yet; no extraction command is wired today.
 pub const EMBEDDED: &str = include_str!("semantics.json");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
