@@ -1,0 +1,43 @@
+test = {
+	name = two_rosters
+	time = 1444.11.11
+	tag = FRA
+	session = alone
+	fire = foch_dp_probe.1
+	advance_days = 35
+	expect = {
+		is_in_war = { attacker_leader = HAB defender_leader = FRA }
+		is_in_war = { attacker_leader = ENG defender_leader = FRA }
+		has_country_flag = foch_dp_roster_flag
+	}
+	expect_receipt = {
+		plugin = dev.foch.directed-pacts.roster-probe
+		type = war_roster
+		case = two_rosters
+		request = "1"
+		status = observed
+		original_attacker = HAB
+		original_defender = FRA
+		native_calls = "0"
+	}
+	expect_receipt = {
+		plugin = dev.foch.directed-pacts.roster-probe
+		type = war_roster
+		case = two_rosters
+		request = "2"
+		status = observed
+		original_attacker = ENG
+		original_defender = FRA
+		native_calls = "0"
+	}
+	expect_receipt = {
+		plugin = dev.foch.directed-pacts.roster-probe
+		type = country_flag
+		case = two_rosters
+		request = "3"
+		status = observed
+		country = FRA
+		flag = foch_dp_roster_flag
+		native_calls = "0"
+	}
+}

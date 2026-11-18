@@ -19,8 +19,8 @@ pairs. No observations are emitted until every requested pair exists, and
 ambiguous matches fail the diagnostic. This mode never calls a war-entry or
 flag-writing function.
 
-For the probe fixture, set `probe_case = "two_rosters"` and optionally
-`probe_country_flag = "FRA:foch_dp_roster_flag"`. The fixture sets that flag
+For the probe fixture, set `probe_case = "two_rosters"`, `probe_request = "1"`
+and `probe_country_flag = "FRA:foch_dp_roster_flag"`. The fixture sets that flag
 using a game script effect. With this option the diagnostic waits for the
 flag too, then emits its actual name, country and stored hour value, plus the
 campaign GUID and day read from the game context. These candidate fields
@@ -28,6 +28,14 @@ remain unverified in a game session; the GUID alone does not identify a save
 or prove persistence. The flag option defaults to empty (disabled), accepts
 one requested war principal and a flag key of at most 64 bytes, and provides
 no flag mutation or command consumption.
+
+`probe_request` is the first observation number. Each configured war uses a
+distinct consecutive number, followed by the optional flag observation. The
+fixture's `tests/probe.txt` requires three `expect_receipt` results with request
+numbers `1`, `2` and `3` from the actual diagnostic plugin identity. It also
+keeps both game war assertions and the game flag assertion. Missing or refused
+plugins cannot satisfy these receipt checks; a read receipt still does not
+prove war entry or save persistence.
 
 Package the diagnostic with the normal package tool's `--roster-probe` switch.
 It uses a separate manifest and `eu4_directed_pacts_roster_probe.dll` filename;
