@@ -786,11 +786,28 @@ impl<'a> Interpreter<'a> {
 		event: &EventId,
 		visited: &mut BTreeSet<String>,
 	) -> Result<(), String> {
+		// The visited set is the active delivery stack, not a history: an
+		// event already delivering in this chain is a cycle, while the same
+		// id fired again after its delivery returned runs again.
 		if !visited.insert(event.to_string()) {
 			return Err(format!(
 				"event {event} fires itself through immediate blocks; the model refuses the cycle"
 			));
 		}
+		let result = self.deliver_event(world, ctx, event, visited);
+		visited.remove(&event.to_string());
+		result
+	}
+
+	/// Run one collected event's `immediate` block in `ctx`; the caller owns
+	/// the cycle bookkeeping.
+	fn deliver_event(
+		&self,
+		world: &mut World,
+		ctx: &ScopeCtx,
+		event: &EventId,
+		visited: &mut BTreeSet<String>,
+	) -> Result<(), String> {
 		let info = self
 			.events
 			.get(event)
@@ -1273,18 +1290,22 @@ impl<'a> Interpreter<'a> {
 							"{where_}: {name} reached execution without passing the offline scan"
 						)
 					})?;
+					// Active call stack: inlining itself is a cycle; a later
+					// second call after returning runs again.
 					if !visited.insert(format!("scripted:{name}")) {
 						return Err(format!(
 							"{where_}: {name} inlines itself through scripted definitions; the 							 model refuses the cycle"
 						));
 					}
-					self.exec_statements(
+					let result = self.exec_statements(
 						world,
 						ctx,
 						&parse(&definition.body),
 						&definition.origin,
 						visited,
-					)?;
+					);
+					visited.remove(&format!("scripted:{name}"));
+					result?;
 					index += 1;
 				}
 				AstStatement::Item { .. } => {
@@ -1494,18 +1515,23 @@ impl<'a> Interpreter<'a> {
 			}
 			other => {
 				if let Some(definition) = self.scripted_in(other, Context::Effect) {
+					// Active call stack: a definition inlining itself is a
+					// cycle; the same definition called again after returning
+					// runs again.
 					if !visited.insert(format!("scripted:{other}")) {
 						return Err(format!(
 							"{where_}: {other} inlines itself through scripted definitions; the 							 model refuses the cycle"
 						));
 					}
-					return self.exec_statements(
+					let result = self.exec_statements(
 						world,
 						ctx,
 						&parse(&definition.body),
 						&definition.origin,
 						visited,
 					);
+					visited.remove(&format!("scripted:{other}"));
+					return result;
 				}
 				return Err(format!(
 					"{where_}: {key} reached execution without passing the offline scan"
@@ -2152,6 +2178,157 @@ mod tests {
 		);
 		let after = case(&result, "after_due");
 		assert_eq!(after.outcome, Outcome::Pass, "{:#?}", after.failures);
+	}
+
+	#[test]
+	fn sequential_same_id_events_are_not_a_cycle() {
+		// Firing B twice in a row from one immediate block is legal script;
+		// only an event already delivering in the current chain is a cycle.
+		const DOUBLE: &str = r#"country_event = {
+	id = cases.9
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { country_event = { id = cases.10 } country_event = { id = cases.10 } }
+	option = { name = OK }
+}"#;
+		const TICK: &str = r#"country_event = {
+	id = cases.10
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { change_variable = { which = ticks value = 1 } }
+	option = { name = OK }
+}"#;
+		const CASES: &str = r#"test = {
+	name = double_fire
+	time = 1444.11.11
+	tag = SWE
+	fire = cases.9
+	expect = { check_variable = { which = ticks value = 2 } }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"events/cases.txt",
+					SourceKind::Inline,
+					&format!(
+						"namespace = cases
+{DOUBLE}
+{TICK}"
+					),
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "double_fire");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict);
+	}
+
+	#[test]
+	fn a_self_firing_event_is_still_refused() {
+		const LOOP: &str = r#"country_event = {
+	id = cases.11
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { country_event = { id = cases.11 } }
+	option = { name = OK }
+}"#;
+		const CASES: &str = r#"test = {
+	name = self_fire
+	time = 1444.11.11
+	tag = SWE
+	fire = cases.11
+	expect = { always = yes }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"events/cases.txt",
+					SourceKind::Inline,
+					&format!(
+						"namespace = cases
+{LOOP}"
+					),
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "self_fire");
+		assert_eq!(verdict.outcome, Outcome::Unsupported);
+		assert!(
+			verdict.unsupported[0].contains("refuses the cycle"),
+			"{:#?}",
+			verdict.unsupported
+		);
+	}
+
+	#[test]
+	fn sequential_scripted_calls_are_not_a_cycle() {
+		// Calling one scripted effect twice from one block runs both; only a
+		// definition inlining itself is a cycle.
+		const CASES: &str = r#"test = {
+	name = twice
+	time = 1444.11.11
+	tag = SWE
+	effect = { tick tick }
+	expect = { check_variable = { which = ticks value = 2 } }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"common/scripted_effects/tick.txt",
+					SourceKind::Scripted,
+					"tick = { change_variable = { which = ticks value = 1 } }",
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "twice");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict);
+	}
+
+	#[test]
+	fn a_self_inlining_scripted_effect_is_still_refused() {
+		const CASES: &str = r#"test = {
+	name = self_inline
+	time = 1444.11.11
+	tag = SWE
+	effect = { spin }
+	expect = { always = yes }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"common/scripted_effects/spin.txt",
+					SourceKind::Scripted,
+					"spin = { spin }",
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "self_inline");
+		assert_eq!(verdict.outcome, Outcome::Unsupported);
+		assert!(
+			verdict.unsupported[0].contains("refuses the cycle"),
+			"{:#?}",
+			verdict.unsupported
+		);
 	}
 
 	#[test]
