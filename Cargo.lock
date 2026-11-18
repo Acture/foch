@@ -1459,6 +1459,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-plugin-directed-pacts"
+version = "0.0.1"
+dependencies = [
+ "foch-plugin-sdk",
+ "foch-runtime",
+ "foch-test",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "foch-plugin-sdk"
 version = "0.0.1"
 

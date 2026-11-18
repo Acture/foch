@@ -7,3 +7,4 @@ pub mod pattern;
 pub mod plan;
 #[cfg(feature = "runner")]
 pub mod runner;
+pub mod war;

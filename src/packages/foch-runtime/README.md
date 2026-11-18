@@ -16,6 +16,14 @@ failure. Neither reads nor writes establish object type, lifetime or allocation
 bounds. Plugins must verify executable identity, thread, object bounds and
 access contracts before using live game state.
 
+The war module defines a provider contract, including exact war identity,
+side and eligibility/entry requests. A native war provider is not yet
+implemented, and the directed-pacts DLL currently refuses gameplay activation.
+The read-only EU4 adapter reads original principals, current participants and
+the entering country's subject/truce fields through shared Memory. These
+fields are not yet verified in game sessions, and those checks alone do not
+establish permission to join a war.
+
 See [DLL deployment](../foch-runtime-host/README.md) for host build, installation
 and artifact validation commands, and [runtime tests](../../../docs/foch-runtime-tests.md)
 for test annotations and runner usage.
