@@ -100,8 +100,9 @@ impl Runtime {
 			.unwrap()
 			.parent()
 			.unwrap()
-			.join("foch_runtime.dll");
+			.join("foch_runtime_host.dll");
 		assert!(dll.is_file(), "host artifact missing: {}", dll.display());
+		foch_runtime::host::validate_host(&fs::read(&dll).unwrap()).unwrap();
 		fs::copy(dll, temp.path().join("VERSION.dll")).unwrap();
 		fs::copy(
 			fixtures().path().join("native.dll"),
@@ -729,7 +730,7 @@ fn management_stages_a_wire_plan_that_the_real_host_executes() {
 		.unwrap()
 		.parent()
 		.unwrap()
-		.join("foch_runtime.dll");
+		.join("foch_runtime_host.dll");
 	fs::copy(dll, layer.directory.join("VERSION.dll")).unwrap();
 	let prepared = selected
 		.stage(

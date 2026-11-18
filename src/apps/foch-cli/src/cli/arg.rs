@@ -143,7 +143,7 @@ pub struct PluginPlanArgs {
 pub struct PluginLaunchArgs {
 	#[command(flatten)]
 	pub plan: PluginPlanArgs,
-	/// Built foch_runtime.dll; defaults to the directory containing foch.
+	/// Host DLL path; finds the distribution or development host beside foch by default.
 	#[arg(long, value_name = "DLL")]
 	pub host_dll: Option<PathBuf>,
 	/// Short directory for new runtime layers; defaults to the temp foch-rt.
