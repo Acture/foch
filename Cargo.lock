@@ -1437,6 +1437,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-eu4-gnn"
+version = "0.0.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "foch-eu4-state"
 version = "0.0.2"
 dependencies = [

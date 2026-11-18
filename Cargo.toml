@@ -8,6 +8,7 @@ members = [
 	"src/packages/foch-runtime",
 	"src/packages/foch-runtime-host",
 	"src/packages/foch-eu4-state",
+	"src/packages/foch-eu4-gnn",
 	"plugins/eu4-dynamic-trade-blackhole",
 	"plugins/eu4-directed-pacts",
 	"src/packages/foch-test",
