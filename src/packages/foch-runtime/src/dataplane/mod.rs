@@ -6,11 +6,13 @@
 //! complete readable ranges can still hold the wrong object or stale state.
 //! Callers must establish identity, type, lifetime and game-thread stability.
 
+pub mod flags;
 pub mod game;
 pub mod layout;
 pub mod memory;
 pub mod routes;
 
+pub use flags::{CountryFlag, CountryFlags, FlagReadError};
 pub use game::{Countries, CountryView, Eu4Game, NodeView, Province, TradeNodes};
 pub use memory::{Memory, is_key_byte, is_name_byte, read_sso};
 pub use routes::{RouteMutation, live_order};

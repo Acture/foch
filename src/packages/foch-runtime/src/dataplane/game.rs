@@ -210,6 +210,25 @@ impl CountryView {
 		Self::tag_at(&self.memory, self.address)
 	}
 
+	/// Read candidate country-flag fields, using the actual host's executable
+	/// digest. These fields have static evidence and are not game-validated.
+	/// Successful empty flags differ from unsupported, unreadable or inconsistent
+	/// snapshots. Names are bounded to the shared SSO reader's 64-byte limit.
+	/// No setting, removal, command consumption or save-payload writing is exposed.
+	///
+	/// # Safety
+	/// The caller supplies the real host's image base and computed digest and
+	/// holds this registry-derived country, its flag vectors and the global name
+	/// table live and stable on the game thread throughout the read. Two matching
+	/// samples detect some races but cannot establish lifetime, type or atomicity.
+	pub unsafe fn flags(
+		&self,
+		exe_base: usize,
+		host_exe_sha256: &str,
+	) -> Result<super::CountryFlags, super::FlagReadError> {
+		super::flags::read(&self.memory, self.address, exe_base, host_exe_sha256)
+	}
+
 	/// The treasury (int32, thousandths; the game's own clamp is
 	/// +/-1e9).
 	pub fn treasury(&self) -> Option<i32> {
