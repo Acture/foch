@@ -5,7 +5,8 @@ namespace = foch_dp_probe
 # wars independently of the plugin's read receipts.
 #test(time=1444.11.11, tag=FRA, name=two_rosters, session=alone, advance_days=35,
 # expect={ is_in_war = { attacker_leader = HAB defender_leader = FRA }
-# is_in_war = { attacker_leader = ENG defender_leader = FRA } })
+# is_in_war = { attacker_leader = ENG defender_leader = FRA }
+# has_country_flag = foch_dp_roster_flag })
 country_event = {
 	id = foch_dp_probe.1
 	title = none
@@ -14,6 +15,7 @@ country_event = {
 	hidden = yes
 	is_triggered_only = yes
 	immediate = {
+		set_country_flag = foch_dp_roster_flag
 		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
 		ENG = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
 	}

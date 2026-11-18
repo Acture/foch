@@ -2,7 +2,10 @@
 
 use crate::receipt::Correlation;
 use foch_plugin_sdk::{FochHostApi, FochStr, log, result};
-use foch_runtime::{dataplane::Eu4Game, war::eu4::WarRoster};
+use foch_runtime::{
+	dataplane::{CountryFlags, Eu4Game},
+	war::eu4::{CampaignStamp, WarRoster},
+};
 use serde::Deserialize;
 use std::{
 	collections::BTreeMap,
@@ -27,6 +30,7 @@ struct Config {
 	probe_case: String,
 	probe_request: String,
 	probe_wars: String,
+	probe_country_flag: String,
 }
 impl Default for Config {
 	fn default() -> Self {
@@ -35,6 +39,7 @@ impl Default for Config {
 			probe_case: "roster".into(),
 			probe_request: "1".into(),
 			probe_wars: "HAB:FRA,ENG:FRA".into(),
+			probe_country_flag: String::new(),
 		}
 	}
 }
@@ -42,6 +47,7 @@ impl Default for Config {
 pub(super) struct Request {
 	correlation: Correlation,
 	wars: Vec<(String, String)>,
+	flag: Option<(String, String)>,
 }
 
 pub(super) fn configuration(bytes: &[u8]) -> Result<Option<Request>, String> {
@@ -76,7 +82,33 @@ pub(super) fn configuration(bytes: &[u8]) -> Result<Option<Request>, String> {
 		}
 		wars.push(pair);
 	}
-	Ok(Some(Request { correlation, wars }))
+	let flag = if config.probe_country_flag.is_empty() {
+		None
+	} else {
+		let (country, name) = config
+			.probe_country_flag
+			.split_once(':')
+			.ok_or("flag probe requires COUNTRY:FLAG")?;
+		if !wars
+			.iter()
+			.any(|(attacker, defender)| country == attacker || country == defender)
+			|| name.is_empty()
+			|| name.len() > 64
+			|| !name
+				.bytes()
+				.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+		{
+			return Err(
+				"flag probe requires one requested war principal and a 1..64 byte flag key".into(),
+			);
+		}
+		Some((country.to_string(), name.to_string()))
+	};
+	Ok(Some(Request {
+		correlation,
+		wars,
+		flag,
+	}))
 }
 
 struct Probe {
@@ -172,6 +204,45 @@ fn messages(request: &Request, rosters: &[WarRoster]) -> Result<Option<Vec<Strin
 		.map(Some)
 }
 
+fn flag_message(
+	request: &Request,
+	stamp: &CampaignStamp,
+	flags: &CountryFlags,
+) -> Result<Option<String>, String> {
+	let Some((country, name)) = &request.flag else {
+		return Ok(None);
+	};
+	if flags.country_tag != *country {
+		return Err("flag snapshot is from another actual country".into());
+	}
+	let matching: Vec<_> = flags
+		.flags
+		.iter()
+		.filter(|flag| flag.name == *name)
+		.collect();
+	let flag = match matching.as_slice() {
+		[] => return Ok(None),
+		[flag] => *flag,
+		_ => return Err("duplicate observed flag names".into()),
+	};
+	let payload: BTreeMap<&str, String> = [
+		("type", "country_flag".into()),
+		("status", "observed".into()),
+		("case", request.correlation.case().into()),
+		("request", request.correlation.request().into()),
+		("country", flags.country_tag.clone()),
+		("flag", flag.name.clone()),
+		("set_at_hours", flag.set_at_hours.to_string()),
+		("campaign", stamp.campaign.clone()),
+		("day", stamp.day.to_string()),
+		("native_calls", "0".into()),
+	]
+	.into();
+	serde_json::to_string(&payload)
+		.map(|json| Some(format!("FOCH_RECEIPT/1 {json}")))
+		.map_err(|error| error.to_string())
+}
+
 fn observe(probe: &Probe, context: usize) -> Result<(), String> {
 	if probe.emitted.load(Ordering::Acquire) {
 		return Ok(());
@@ -200,10 +271,36 @@ fn observe(probe: &Probe, context: usize) -> Result<(), String> {
 			}
 		}
 	}
-	let Some(messages) = messages(&probe.request, &rosters)? else {
+	let Some(mut messages) = messages(&probe.request, &rosters)? else {
 		return Ok(());
 	};
 	let host = unsafe { &*(probe.host as *const FochHostApi) };
+	if let Some((tag, _)) = &probe.request.flag {
+		// Reuse identities already reconciled against Countries above. The flag
+		// diagnostic is restricted to one of the requested war's principals.
+		let indices: std::collections::BTreeSet<_> = rosters
+			.iter()
+			.flat_map(|war| [&war.original_attacker, &war.original_defender])
+			.filter(|country| country.tag == *tag)
+			.map(|country| country.id)
+			.collect();
+		if indices.len() != 1 {
+			return Err("flag country identity is absent or ambiguous".into());
+		}
+		let country = countries
+			.country(indices.first().unwrap().0 as usize)
+			.ok_or("flag country is unavailable")?;
+		let digest = unsafe { host.exe_sha256.as_str() }.unwrap_or("");
+		// SAFETY: the same synchronous callback/context and registry objects as
+		// the roster read; no native pointers survive this callback.
+		let flags =
+			unsafe { game.country_flags(&country, digest) }.map_err(|error| error.to_string())?;
+		let stamp = unsafe { game.campaign_stamp() }?;
+		let Some(message) = flag_message(&probe.request, &stamp, &flags)? else {
+			return Ok(());
+		};
+		messages.push(message);
+	}
 	for message in messages {
 		unsafe { (host.log)(host, log::INFO, FochStr::from_str(&message)) };
 	}
@@ -294,6 +391,64 @@ mod tests {
 			r#"{"read_only_roster_probe":true,"probe_wars":"HAB:FRA,HAB:FRA"}"#,
 			r#"{"force_join":true}"#,
 		] {
+			assert!(configuration(text.as_bytes()).is_err());
+		}
+	}
+	#[test]
+	fn flag_receipt_requires_the_requested_real_country_and_exact_observed_flag() {
+		use foch_runtime::{
+			dataplane::{CountryFlag, CountryFlags},
+			war::eu4::CampaignStamp,
+		};
+		let request = configuration(
+			br#"{"read_only_roster_probe":true,"probe_country_flag":"FRA:foch_dp_roster_flag"}"#,
+		)
+		.unwrap()
+		.unwrap();
+		let stamp = CampaignStamp {
+			campaign: "stored-guid".into(),
+			day: 123,
+		};
+		let mut flags = CountryFlags {
+			country_tag: "FRA".into(),
+			flags: vec![],
+		};
+		assert!(flag_message(&request, &stamp, &flags).unwrap().is_none());
+		flags.flags.push(CountryFlag {
+			name: "unrelated".into(),
+			set_at_hours: 10,
+		});
+		assert!(flag_message(&request, &stamp, &flags).unwrap().is_none());
+		flags.flags.push(CountryFlag {
+			name: "foch_dp_roster_flag".into(),
+			set_at_hours: 456,
+		});
+		let message = flag_message(&request, &stamp, &flags).unwrap().unwrap();
+		let json: serde_json::Value =
+			serde_json::from_str(message.strip_prefix("FOCH_RECEIPT/1 ").unwrap()).unwrap();
+		for (key, expected) in [
+			("type", "country_flag"),
+			("country", "FRA"),
+			("flag", "foch_dp_roster_flag"),
+			("campaign", "stored-guid"),
+			("day", "123"),
+			("set_at_hours", "456"),
+			("native_calls", "0"),
+		] {
+			assert_eq!(json[key], expected);
+		}
+		assert!(
+			json.as_object()
+				.unwrap()
+				.values()
+				.all(|value| value.is_string())
+		);
+		flags.country_tag = "SWE".into();
+		assert!(flag_message(&request, &stamp, &flags).is_err());
+		for value in ["FRA:", "SWE:flag", "FRA:two:flags", "FRA:flag with spaces"] {
+			let text =
+				serde_json::json!({"read_only_roster_probe":true,"probe_country_flag":value})
+					.to_string();
 			assert!(configuration(text.as_bytes()).is_err());
 		}
 	}

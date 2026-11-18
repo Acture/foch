@@ -41,3 +41,8 @@ default = "1"
 [config.probe_wars]
 type = "string"
 default = "HAB:FRA,ENG:FRA"
+
+[config.probe_country_flag]
+type = "string"
+default = ""
+description = "Optional COUNTRY:FLAG observation from one requested war principal; never consumes flags."
