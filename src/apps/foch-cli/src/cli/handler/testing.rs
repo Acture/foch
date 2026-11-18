@@ -839,6 +839,13 @@ fn run_one_session(
 		installation,
 		options,
 	)?;
+	// The runner preserves the plugin host's event stream beside the
+	// session's logs; receipts are judged from that copy, against the
+	// launch identity the runner actually stamped into the host plan.
+	let host_events = outcome
+		.host_events
+		.as_deref()
+		.and_then(|path| std::fs::read_to_string(path).ok());
 	let results = judge(
 		bundle,
 		plan,
@@ -848,6 +855,8 @@ fn run_one_session(
 			exit: outcome.exit.clone(),
 			timing: outcome.timing,
 			profile_untouched: outcome.profile_untouched,
+			host_events: host_events.as_deref(),
+			host_launch_id: outcome.host_launch_id.as_deref(),
 		},
 	);
 	let record = SessionRecord {

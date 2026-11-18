@@ -258,6 +258,63 @@ impl CaseFields {
 fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, String> {
 	let span = || SourceSpan::from_parser(&file.path, value.span());
 	Ok(Some(match (key, typed_step(file, key, value)?) {
+		// Receipt expectations: a plain block of key = value fields, parsed
+		// here because the schema has no such parameter type.
+		("expect_receipt", _) => {
+			let AstValue::Block { items, .. } = value else {
+				return Err("expect_receipt must be a block".into());
+			};
+			let mut plugin: Option<String> = None;
+			let mut fields: Vec<(String, String)> = Vec::new();
+			for item in items {
+				let AstStatement::Assignment { key, value, .. } = item else {
+					if matches!(item, AstStatement::Comment { .. }) {
+						continue;
+					}
+					return Err(
+							"expect_receipt holds an entry without a key; every constraint must be key = value"
+							.into(),
+					);
+				};
+				let AstValue::Scalar {
+					value:
+						ScalarValue::Identifier(text)
+						| ScalarValue::String(text)
+						| ScalarValue::Number(text),
+					..
+				} = value
+				else {
+					return Err(format!("expect_receipt field {key} needs a plain value"));
+				};
+				if key == "plugin" {
+					if plugin.is_some() {
+						return Err("expect_receipt names plugin twice".into());
+					}
+					plugin = Some(text.clone());
+				} else if let Some(previous) = fields.iter().find(|(existing, _)| existing == key) {
+					return Err(format!(
+						"expect_receipt field {key} is given twice ({:?} and {:?}); conflicting correlation constraints cannot be honored",
+						previous.1, text,
+					));
+				} else {
+					fields.push((key.clone(), text.clone()));
+				}
+			}
+			let plugin =
+				plugin.ok_or_else(|| "expect_receipt needs a plugin = ... field".to_string())?;
+			for required in ["case", "request"] {
+				if !fields.iter().any(|(key, _)| key == required) {
+					return Err(format!(
+						"expect_receipt needs a {required} = ... field correlating it to one command of this case"
+					));
+				}
+			}
+			Step::ExpectReceipt {
+				plugin,
+				fields,
+				span: span(),
+			}
+		}
 		(_, None) => return Ok(None),
 		("effect", Some(Value::Effects(block))) => Step::Effect { block },
 		("expect", Some(Value::Conditions(clauses))) => Step::Expect { clauses },
@@ -272,6 +329,7 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 
 fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Value>, String> {
 	match key {
+		"expect_receipt" => Ok(None),
 		"effect" | "expect" | "advance_days" => typed(file, key, value).map(Some),
 		"fire" => parse_value(&file.path, &file.text, value, ValueType::EventId)
 			.map(Some)

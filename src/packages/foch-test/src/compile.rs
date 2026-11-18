@@ -301,6 +301,9 @@ pub fn compile(
 		for (step_index, step) in case.steps.iter().enumerate() {
 			let step_index = step_index as u32;
 			match step {
+				Step::ExpectReceipt { .. } => {}
+				// Receipts are judged from the host event stream, not
+				// the engine log; the generated script stays untouched.
 				Step::AdvanceDays { days, .. } => {
 					*pending_days.get_or_insert(0) += days;
 					continue;
@@ -309,6 +312,7 @@ pub fn compile(
 				_ => {}
 			}
 			match step {
+				Step::ExpectReceipt { .. } => {}
 				Step::Effect { block } => writer.body.push_str(&native(block)?),
 				Step::Fire { event, span } => {
 					writer.fire(event);

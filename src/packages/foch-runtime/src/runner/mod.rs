@@ -145,6 +145,11 @@ pub struct SessionOutcome {
 	pub launch_detail: String,
 	/// The plugin host's events file, when [`RunOptions::host`] staged one.
 	pub host_events: Option<PathBuf>,
+	/// The identity stamped into this launch's host plan. One unique value
+	/// per actual launch: re-running the same bundle produces a new one, so
+	/// receipt judging binds to what really ran, never to the compiled
+	/// bundle alone. `None` when no host was staged.
+	pub host_launch_id: Option<String>,
 }
 
 /// What this built-in runner can provide, as verified against a real game.
@@ -255,9 +260,22 @@ pub fn run_session(
 	if let Some(message) = runtime.budget_error() {
 		return Err(io::Error::other(message));
 	}
-	let host_events = match &options.host {
-		Some(host) => Some(stage_host(&runtime, installation, host, &bundle.namespace)?),
-		None => None,
+	// One unique identity per actual launch: the compiled namespace is
+	// deterministic across re-runs, so it cannot distinguish them.
+	let launch_id = format!(
+		"{}_{:x}",
+		bundle.namespace,
+		std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_nanos()
+	);
+	let (host_events, host_launch_id) = match &options.host {
+		Some(host) => {
+			let events = stage_host(&runtime, installation, host, &launch_id)?;
+			(Some(events), Some(launch_id))
+		}
+		None => (None, None),
 	};
 	let user_dir = session_dir.join("userdir");
 	let real_settings = installation
@@ -316,6 +334,7 @@ pub fn run_session(
 		profile_untouched,
 		launch_detail,
 		host_events,
+		host_launch_id,
 	};
 	// `runtime` is dropped here, which removes the layer.
 	Ok(outcome)

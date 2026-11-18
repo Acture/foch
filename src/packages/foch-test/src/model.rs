@@ -275,10 +275,31 @@ pub struct Start {
 #[serde(tag = "step", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Step {
-	Effect { block: NativeBlock },
-	Fire { event: EventId, span: SourceSpan },
-	AdvanceDays { days: u32, span: SourceSpan },
-	Expect { clauses: Vec<Clause> },
+	Effect {
+		block: NativeBlock,
+	},
+	Fire {
+		event: EventId,
+		span: SourceSpan,
+	},
+	AdvanceDays {
+		days: u32,
+		span: SourceSpan,
+	},
+	Expect {
+		clauses: Vec<Clause>,
+	},
+	/// Expect a plugin receipt: a `FOCH_RECEIPT/1` message the plugin
+	/// reported through the host log channel during this session. The
+	/// engine never sees this; the judge matches it against the session's
+	/// preserved host event stream.
+	ExpectReceipt {
+		/// Host-stamped plugin identity to match.
+		plugin: String,
+		/// Required payload fields, matched as exact strings.
+		fields: Vec<(String, String)>,
+		span: SourceSpan,
+	},
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -322,7 +343,7 @@ impl TestCase {
 		!self
 			.steps
 			.iter()
-			.any(|step| matches!(step, Step::Expect { .. }))
+			.any(|step| matches!(step, Step::Expect { .. } | Step::ExpectReceipt { .. }))
 	}
 
 	pub(crate) fn compute_content_id(&mut self) {
@@ -346,6 +367,14 @@ impl TestCase {
 						clauses.iter().map(|clause| clause.text.as_str()).collect();
 					format!("expect {}", clauses.join("\n"))
 				}
+				Step::ExpectReceipt { plugin, fields, .. } => format!(
+					"expect_receipt {plugin} {}",
+					fields
+						.iter()
+						.map(|(key, value)| format!("{key}={value}"))
+						.collect::<Vec<_>>()
+						.join(" ")
+				),
 			})
 			.collect();
 		let identity = Identity {
