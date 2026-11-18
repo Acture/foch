@@ -1074,6 +1074,24 @@ impl<'a> Interpreter<'a> {
 		if let Some(definition) = self.scripted_in(key, context) {
 			// A scripted definition inlines its body; the kind must fit the
 			// block. Cycles are caught at execution, as event chains are.
+			// The call's operand is validated before the dedup so every call
+			// site is checked, not only the first.
+			match context {
+				Context::Condition => {
+					// A trigger call is bare, `= yes`, or `= no` (negated);
+					// any other operand is not a call the model can read.
+					if boolean(value).is_none() {
+						reasons.push(format!(
+							"{where_}: scripted trigger {key} is called with an operand 							 the model does not read; use a bare call, = yes or = no"
+						));
+					}
+				}
+				Context::Effect => {
+					reasons.push(format!(
+						"{where_}: scripted effect {key} is called bare, without = ..."
+					));
+				}
+			}
 			if !seen.insert(format!("scripted:{key}")) {
 				return;
 			}
@@ -1720,13 +1738,21 @@ impl<'a> Interpreter<'a> {
 			}
 			other => {
 				if let Some(definition) = self.scripted_in(other, Context::Condition) {
-					return self.eval_statements(
+					// `= yes` affirms the scripted trigger's body, `= no`
+					// negates it; any other operand is refused.
+					let Some(operand) = boolean(value) else {
+						return Err(format!(
+							"{where_}: scripted trigger {other} is called with an operand 							 the model does not read"
+						));
+					};
+					let holds = self.eval_statements(
 						world,
 						ctx,
 						&parse(&definition.body),
 						&definition.origin,
 						depth + 1,
-					);
+					)?;
+					return Ok(if operand { holds } else { !holds });
 				}
 				return Err(format!(
 					"{where_}: {key} reached evaluation without passing the offline scan"
@@ -2272,6 +2298,96 @@ test = {
 			Outcome::Pass,
 			"{:#?}",
 			case(&result, "mixed_and")
+		);
+	}
+
+	#[test]
+	fn a_scripted_trigger_call_honors_its_yes_no_operand() {
+		// is_ready = no negates the scripted trigger; treating every call
+		// as the bare form read `no` as `yes` and passed the wrong verdict.
+		const CASES: &str = r#"test = {
+	name = refused
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_ready = no }
+}
+test = {
+	name = granted
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_ready = yes }
+}
+test = {
+	name = false_negated
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_false = no }
+}
+test = {
+	name = false_affirmed
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_false = yes }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/ready.txt",
+				SourceKind::Scripted,
+				"is_ready = { always = yes }",
+			),
+			file(
+				"common/scripted_triggers/false.txt",
+				SourceKind::Scripted,
+				"is_false = { always = no }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(
+			&sources,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		assert_eq!(
+			case(&result, "refused").outcome,
+			Outcome::Fail,
+			"is_ready = no must not pass as if it were yes"
+		);
+		assert_eq!(case(&result, "granted").outcome, Outcome::Pass);
+		assert_eq!(
+			case(&result, "false_negated").outcome,
+			Outcome::Pass,
+			"negating an always-no trigger holds"
+		);
+		assert_eq!(case(&result, "false_affirmed").outcome, Outcome::Fail);
+	}
+
+	#[test]
+	fn a_scripted_trigger_with_an_unmodeled_operand_is_refused() {
+		const CASES: &str = r#"test = {
+	name = odd_operand
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_ready = maybe }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/ready.txt",
+				SourceKind::Scripted,
+				"is_ready = { always = yes }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(
+			&sources,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "odd_operand");
+		assert_eq!(verdict.outcome, Outcome::Unsupported, "{:#?}", verdict);
+		assert!(
+			verdict.unsupported[0].contains("= yes or = no"),
+			"{:#?}",
+			verdict.unsupported
 		);
 	}
 
