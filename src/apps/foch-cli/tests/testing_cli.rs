@@ -502,6 +502,67 @@ fn offline_is_not_bound_to_the_runners_start_dates() {
 }
 
 #[test]
+fn unmapped_step_kinds_are_rejected_cleanly_at_collection() {
+	// The review repro: cheat / take_decision in a tests/ block must never
+	// panic the compile path. The core candidate has no such steps, so the
+	// collector refuses the keys before any plan exists; --no-run exits with
+	// the diagnostics instead of unwinding.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = { name = cheaty time = 1444.11.11 tag = SWE cheat = "cash 500" expect = { always = yes } }"#,
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/b.txt"),
+		r#"test = { name = decided time = 1444.11.11 tag = SWE take_decision = my_decision expect = { always = yes } }"#,
+	)
+	.unwrap();
+	let output = run(dir.path(), &["test", "mod", "--no-run"]);
+	assert!(
+		!output.status.success(),
+		"the unknown keys stop the run: {}",
+		String::from_utf8_lossy(&output.stdout)
+	);
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(text.contains("unknown test key cheat"), "{text}");
+	assert!(text.contains("unknown test key take_decision"), "{text}");
+	assert!(!text.contains("panicked"), "{text}");
+}
+
+#[test]
+fn offline_refuses_plugin_receipt_steps() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = { name = rosy time = 1444.11.11 tag = SWE effect = { set_country_flag = done } expect_receipt = { plugin = dev.foch.x case = rosy request = 1 status = passed } }"#,
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		!output.status.success(),
+		"an all-unsupported offline run exits nonzero: {}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(text.contains("receipts need a real game session"), "{text}");
+	assert!(!text.contains("panicked"), "{text}");
+}
+
+#[test]
 fn offline_refuses_runner_only_flags() {
 	let dir = fixture();
 	let output = run(dir.path(), &["test", "mod", "--offline", "--no-run"]);
