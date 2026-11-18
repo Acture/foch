@@ -32,6 +32,7 @@ def lea_r8(target_rva: int, insn_rva: int) -> bytes:
 def build_pe(
 	keywords: tuple[str, ...],
 	*text_functions: tuple[int, bytes],
+	extra_rdata: bytes = b"",
 ) -> bytes:
 	"""A minimal x64 PE with .text, .rdata (keywords) and .pdata functions.
 
@@ -51,6 +52,7 @@ def build_pe(
 	for keyword in keywords:
 		keyword_rvas[keyword] = RDATA_RVA + len(rdata)
 		rdata.extend(keyword.encode("ascii") + b"\0")
+	rdata.extend(extra_rdata)
 
 	pdata: bytearray = bytearray()
 	for begin, end in functions:
@@ -126,8 +128,8 @@ class ReadPE(unittest.TestCase):
 			path.write_bytes(blob)
 			image = read_binary(path)
 		self.assertIsInstance(image, PEImage)
-		self.assertEqual(image.function_starts, (TEXT_RVA,))
-		self.assertEqual(image.function_end(TEXT_RVA), TEXT_RVA + len(code) + 0x10)
+		self.assertEqual(image.function_starts, (IMAGE_BASE + TEXT_RVA,))
+		self.assertEqual(image.function_end(IMAGE_BASE + TEXT_RVA), IMAGE_BASE + TEXT_RVA + len(code) + 0x10)
 		self.assertEqual(image.image_base, IMAGE_BASE)
 
 	def test_non_pe_binaries_are_rejected(self) -> None:
@@ -136,6 +138,88 @@ class ReadPE(unittest.TestCase):
 			path.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 64)
 			with self.assertRaises(ValueError):
 				read_binary(path)
+
+
+class TableHandlers(unittest.TestCase):
+	def test_a_table_entry_pins_its_handler(self) -> None:
+		"""The effect-table shape: {kind, name, 0, param, 0, 0, tooltip, fn}."""
+		from eu4_analysis.pe import table_handlers
+
+		# A data table entry pointing at the keyword string and the handler.
+		entry = struct.pack(
+			"<QQQQQQQQ",
+			1,
+			IMAGE_BASE + RDATA_RVA,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x40,
+			0,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x80,
+			IMAGE_BASE + TEXT_RVA + 0x100,
+		)
+		# layout: text(code at TEXT_RVA), rdata(keyword + two more strings +
+		# the table at +0xC0), pdata. The handler must itself be a .pdata
+		# function start, so the builder gets a second text function.
+		code = b"\x90" * 0x110
+		blob = build_pe(
+			("set_country_flag",),
+			(TEXT_RVA, code),
+			(TEXT_RVA + 0x110, b"\x90" * 0x20),
+			extra_rdata=entry.replace(
+				struct.pack("<Q", IMAGE_BASE + TEXT_RVA + 0x100),
+				struct.pack("<Q", IMAGE_BASE + TEXT_RVA + 0x110),
+			),
+		)
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_binary(path)
+		self.assertEqual(
+			table_handlers(image, "set_country_flag"),
+			(IMAGE_BASE + TEXT_RVA + 0x110,),
+		)
+
+	def test_two_pointer_hits_naming_the_same_handler_still_pin(self) -> None:
+		"""Two table entries naming the same handler agree; that is one."""
+		from eu4_analysis.pe import table_handlers
+
+		entry = struct.pack(
+			"<QQQQQQQQ",
+			1,
+			IMAGE_BASE + RDATA_RVA,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x40,
+			0,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x80,
+			IMAGE_BASE + TEXT_RVA + 0x110,
+		)
+		second = struct.pack(
+			"<QQQQQQQQ",
+			1,
+			IMAGE_BASE + RDATA_RVA,
+			0,
+			0,
+			0,
+			0,
+			IMAGE_BASE + TEXT_RVA + 0x110,
+			0,
+		)
+		code = b"\x90" * 0x110
+		blob = build_pe(
+			("set_country_flag",),
+			(TEXT_RVA, code),
+			(TEXT_RVA + 0x110, b"\x90" * 0x20),
+			extra_rdata=entry + second,
+		)
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_binary(path)
+		self.assertEqual(
+			table_handlers(image, "set_country_flag"),
+			(IMAGE_BASE + TEXT_RVA + 0x110,),
+		)
 
 
 class KeywordReferences(unittest.TestCase):
@@ -147,7 +231,10 @@ class KeywordReferences(unittest.TestCase):
 			path.write_bytes(blob)
 			image = read_binary(path)
 		functions = keyword_reference_functions(image, "set_country_flag")
-		self.assertEqual(functions, ((TEXT_RVA, TEXT_RVA + len(code) + 0x10),))
+		self.assertEqual(
+			functions,
+			((IMAGE_BASE + TEXT_RVA, IMAGE_BASE + TEXT_RVA + len(code) + 0x10),),
+		)
 		self.assertEqual(keyword_reference_functions(image, "absent"), ())
 
 	def test_lea_forms_that_do_not_target_the_string_are_ignored(self) -> None:

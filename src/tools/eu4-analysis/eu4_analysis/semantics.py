@@ -99,9 +99,16 @@ def keyword_of(argument: object) -> str | None:
 def locate(analysis: PinAnalysis, name: str, patterns: tuple[str, ...]) -> Function | None:
 	"""The handler registered under `name`, or None.
 
-	A registration call passes the keyword string and the handler together;
-	the handler appears as a plain address argument of the same call.
+	On a PE image the static registration tables name the handler directly;
+	otherwise a registration call passes the keyword string and the handler
+	together, and the handler appears as a plain address argument of the
+	same call.
 	"""
+	image = getattr(analysis, "image", None)
+	if isinstance(image, pe.PEImage):
+		for begin in pe.table_handlers(image, name):
+			# The table entry is the evidence: the handler itself.
+			return Function(begin, image.function_end(begin), (f"sub_{begin:x}",))
 	for function in registration_functions(analysis, name, patterns):
 		evidence = analysis.inspect(function, pseudocode=False)
 		for call in trace(evidence).calls:
@@ -135,8 +142,18 @@ def registration_functions(
 		return symbolic
 	image = getattr(analysis, "image", None)
 	if isinstance(image, pe.PEImage):
+		# The static registration tables hand the handler over directly;
+		# code-reference tracing is the fallback. Both return loaded-image
+		# addresses, the space Ghidra addresses use.
+		handlers = pe.table_handlers(image, name)
+		if handlers:
+			return tuple(
+				Function(begin, image.function_end(begin), (f"sub_{begin:x}",))
+				for begin in handlers
+			)
 		return tuple(
-			Function(begin, end, (f"sub_{begin:x}",)) for begin, end in pe.keyword_reference_functions(image, name)
+			Function(begin, end, (f"sub_{begin:x}",))
+			for begin, end in pe.keyword_reference_functions(image, name)
 		)
 	return ()
 
@@ -172,8 +189,14 @@ def pin_catalog(
 			missing.append(name)
 			LOGGER.warning("No handler found for %s (%s)", name, primitive["kind"])
 			continue
-		primitive["handler"] = pin(analysis, handler)
-		LOGGER.info("Pinned %s to %#x", name, handler.address)
+		try:
+				primitive["handler"] = pin(analysis, handler)
+				LOGGER.info("Pinned %s to %#x", name, handler.address)
+		except (ValueError, RuntimeError) as error:
+			# A batch boundary retains bounded-analysis failures and
+			# continues with the other primitives.
+			missing.append(name)
+			LOGGER.warning("Could not analyze %s: %s", name, error)
 	if missing:
 		catalog["status"] = "unpinned"
 	else:

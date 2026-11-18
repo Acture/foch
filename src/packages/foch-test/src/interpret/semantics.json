@@ -1,7 +1,7 @@
 {
   "format": 1,
   "status": "unpinned",
-  "game_version": null,
+  "game_version": "1.37.5",
   "binary_sha256": null,
   "primitives": {
     "set_country_flag": {
@@ -9,14 +9,24 @@
       "facts": {
         "storage": "country flag set"
       },
-      "handler": null
+      "handler": {
+        "address": 5383986448,
+        "end": 5383986892,
+        "pseudocode_sha256": "d7e08b69f148a3546a97af2860fecba83c277cacbf5d639059f3a8178ff1405f",
+        "symbol": "sub_140e91d10"
+      }
     },
     "clr_country_flag": {
       "kind": "effect",
       "facts": {
         "storage": "country flag set"
       },
-      "handler": null
+      "handler": {
+        "address": 5383986896,
+        "end": 5383987334,
+        "pseudocode_sha256": "e0865eb8daf16e38642b21eebcc265d8ec2087c4a86beb18a02dda5f71011217",
+        "symbol": "sub_140e91ed0"
+      }
     },
     "set_global_flag": {
       "kind": "effect",
@@ -113,7 +123,12 @@
       "facts": {
         "behavior": "current scope tag equality"
       },
-      "handler": null
+      "handler": {
+        "address": 5383823792,
+        "end": 5383824453,
+        "pseudocode_sha256": "3d375fa0c70fe44d0c1c3e54c6ab0d9e980d4dfee3fd57c4bbc7694364bdf252",
+        "symbol": "sub_140e6a1b0"
+      }
     },
     "declare_war_with_cb": {
       "kind": "effect",

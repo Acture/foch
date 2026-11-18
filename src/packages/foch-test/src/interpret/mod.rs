@@ -1206,7 +1206,7 @@ impl<'a> Interpreter<'a> {
 					reasons.push(format!(
 						"{span}: plugin receipts need a real game session; \
 						 run this case with --with-plugins instead of --offline"
-						));
+					));
 				}
 				Step::AdvanceDays { .. } => {}
 			}

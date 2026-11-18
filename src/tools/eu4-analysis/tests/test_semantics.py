@@ -137,24 +137,26 @@ class LocateHandlers(unittest.TestCase):
 			image = read_binary(path)
 		# The registration function is found through the PE string reference;
 		# its traced instructions name the keyword and the handler address.
+		from test_pe import IMAGE_BASE
+
 		register = function(
 			"sub_1000",
-			TEXT_RVA,
+			IMAGE_BASE + TEXT_RVA,
 			literal("RDI", "set_country_flag"),
-			handler_address("RDX", TEXT_RVA + 0x100),
+			handler_address("RDX", IMAGE_BASE + TEXT_RVA + 0x100),
 			instruction("CALL", "RAX"),
 			pseudocode="void Register() { Add(set_country_flag, SetCountryFlag); }",
 		)
 		handler_body = function(
 			"sub_1100",
-			TEXT_RVA + 0x100,
+			IMAGE_BASE + TEXT_RVA + 0x100,
 			pseudocode="void SetCountryFlag(flags) { flags.insert(name); }",
 		)
 		symbolless = SymbollessAnalysis(register, handler_body, image=image)
 		handler = locate(symbolless, "set_country_flag", DEFAULT_EFFECT_PATTERNS)
 		self.assertIsNotNone(handler)
 		assert handler is not None
-		self.assertEqual(handler.address, TEXT_RVA + 0x100)
+		self.assertEqual(handler.address, IMAGE_BASE + TEXT_RVA + 0x100)
 
 	def test_pin_records_the_pseudocode_digest(self) -> None:
 		pinned = pin(analysis(), Function(0x2000, 0x2100, ("CCountry::SetCountryFlag",)))
