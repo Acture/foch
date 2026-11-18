@@ -43,3 +43,54 @@ fn native_war_fixtures_compile_as_isolated_foch_sessions_with_real_assertions() 
 		);
 	}
 }
+
+#[test]
+fn read_probe_fixture_preserves_both_war_assertions_and_the_game_flag() {
+	let source = SourceFile {
+		mod_name: "Directed Pact Read Probe".into(),
+		path: RelPath::new("events/rosters.txt").unwrap(),
+		kind: SourceKind::Inline,
+		text: std::fs::read_to_string(
+			std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+				.join("fixtures/probe/events/rosters.txt"),
+		)
+		.unwrap(),
+	};
+	let collected = collect(&[source]);
+	assert!(!collected.has_errors(), "{:?}", collected.diagnostics);
+	assert_eq!(collected.cases.len(), 1);
+	assert!(
+		collected.cases[0]
+			.steps
+			.iter()
+			.any(|step| matches!(step, foch_test::model::Step::AdvanceDays { days: 35, .. }))
+	);
+	let expanded = expand(&collected, &ExpandOptions::default()).unwrap();
+	let linted = lint(&expanded, &ProjectFacts::default());
+	let plan = group(expanded, &linted, &GroupOptions::default());
+	assert_eq!(plan.sessions.len(), 1);
+	let bundle = compile(
+		&plan,
+		plan.sessions[0].id,
+		&RunContext {
+			run_id: RunId::parse("pact-read-probe").unwrap(),
+			mod_name: "Directed Pact Read Probe".into(),
+		},
+	)
+	.unwrap();
+	assert!(!bundle.requires.shared_session);
+	assert_eq!(
+		bundle
+			.checks
+			.iter()
+			.filter(|check| matches!(check.kind, foch_test::compile::CheckKind::Expect { .. }))
+			.count(),
+		3
+	);
+	assert!(
+		bundle
+			.files
+			.values()
+			.any(|text| text.contains("has_country_flag = foch_dp_roster_flag"))
+	);
+}

@@ -19,6 +19,16 @@ pairs. No observations are emitted until every requested pair exists, and
 ambiguous matches fail the diagnostic. This mode never calls a war-entry or
 flag-writing function.
 
+For the probe fixture, set `probe_case = "two_rosters"` and optionally
+`probe_country_flag = "FRA:foch_dp_roster_flag"`. The fixture sets that flag
+using a game script effect. With this option the diagnostic waits for the
+flag too, then emits its actual name, country and stored hour value, plus the
+campaign GUID and day read from the game context. These candidate fields
+remain unverified in a game session; the GUID alone does not identify a save
+or prove persistence. The flag option defaults to empty (disabled), accepts
+one requested war principal and a flag key of at most 64 bytes, and provides
+no flag mutation or command consumption.
+
 Package the diagnostic with the normal package tool's `--roster-probe` switch.
 It uses a separate manifest and `eu4_directed_pacts_roster_probe.dll` filename;
 the ordinary package remains `dev.foch.directed-pacts`. The one-case
