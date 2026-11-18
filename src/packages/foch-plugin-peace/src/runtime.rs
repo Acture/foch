@@ -2,7 +2,7 @@
 //! directional validation, AI evaluation and execution are verified together.
 use crate::{bridge, composition, native, profile, ui};
 use core::ffi::c_void;
-use foch_plugin_abi::{self as abi, FochHostApi, FochPluginApi, FochStatus, FochStr};
+use foch_plugin_sdk::{self as abi, FochHostApi, FochPluginApi, FochStatus, FochStr};
 use std::{
 	panic::{AssertUnwindSafe, catch_unwind},
 	sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicUsize, Ordering},

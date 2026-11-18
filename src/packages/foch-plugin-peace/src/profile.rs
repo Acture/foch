@@ -1,5 +1,5 @@
 //! Exact-build boundary for the native peace editor.
-use foch_plugin_abi::FochHostApi;
+use foch_plugin_sdk::FochHostApi;
 
 pub const EXE_SHA256: &str = "c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e";
 
@@ -140,7 +140,7 @@ const CHECKS: &[CodeSite] = &[
 /// # Safety
 /// The host and its image/string ranges must be valid for this ABI call.
 pub unsafe fn verify(host: &FochHostApi) -> Result<(), &'static str> {
-	if host.abi_major != foch_plugin_abi::ABI_MAJOR
+	if host.abi_major != foch_plugin_sdk::ABI_MAJOR
 		|| (host.size as usize) < std::mem::size_of::<FochHostApi>()
 	{
 		return Err("incompatible Foch plugin host");

@@ -13,4 +13,4 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-foch-plugin-abi = { path = "../foch-plugin-abi", version = "=0.0.2" }
+foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }

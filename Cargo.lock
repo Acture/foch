@@ -1480,6 +1480,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-plugin-peace"
+version = "0.0.2"
+dependencies = [
+ "foch-plugin-sdk",
+]
+
+[[package]]
 name = "foch-plugin-sdk"
 version = "0.0.1"
 

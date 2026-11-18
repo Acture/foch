@@ -5,7 +5,7 @@
 //! executable allocations until process exit, matching the plugin's lifetime.
 
 use core::ffi::c_void;
-use foch_plugin_abi::{self as abi, FochHostApi, FochPatch};
+use foch_plugin_sdk::{self as abi, FochHostApi, FochPatch};
 
 /// One exact CALL rel32 or `48 8D /r` RIP-relative LEA to redirect.
 ///

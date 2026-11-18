@@ -16,6 +16,6 @@ mod runtime;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn foch_plugin_get_api(
 	host_abi_major: u32,
-) -> *const foch_plugin_abi::FochPluginApi {
+) -> *const foch_plugin_sdk::FochPluginApi {
 	runtime::api(host_abi_major)
 }
