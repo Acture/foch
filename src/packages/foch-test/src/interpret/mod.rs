@@ -320,15 +320,24 @@ pub fn interpret(
 	catalog: &SemanticsCatalog,
 	options: &InterpretOptions,
 ) -> Interpretation {
+	let mut scripted_effects = BTreeMap::new();
+	let mut scripted_triggers = BTreeMap::new();
+	for definition in &plan.scripted {
+		match definition.kind {
+			ScriptedKind::Effect => {
+				scripted_effects.insert(definition.name.as_str(), definition);
+			}
+			ScriptedKind::Trigger => {
+				scripted_triggers.insert(definition.name.as_str(), definition);
+			}
+		}
+	}
 	let interpreter = Interpreter {
 		facts,
 		catalog,
 		events: plan.events.iter().map(|event| (&event.id, event)).collect(),
-		scripted: plan
-			.scripted
-			.iter()
-			.map(|definition| (definition.name.as_str(), definition))
-			.collect(),
+		scripted_effects,
+		scripted_triggers,
 		observe: options.observe,
 	};
 	Interpretation {
@@ -507,8 +516,11 @@ struct Interpreter<'a> {
 	catalog: &'a SemanticsCatalog,
 	events: BTreeMap<&'a EventId, &'a EventInfo>,
 	/// The mod's scripted definitions, inlined wherever their names appear in
-	/// the matching kind of block.
-	scripted: BTreeMap<&'a str, &'a ScriptedDef>,
+	/// the matching kind of block. The two kinds index separately, so one
+	/// name may serve as both an effect and a trigger; within one kind the
+	/// later source keeps the existing last-wins boundary.
+	scripted_effects: BTreeMap<&'a str, &'a ScriptedDef>,
+	scripted_triggers: BTreeMap<&'a str, &'a ScriptedDef>,
 	/// Observer mode: record each case's run trace.
 	observe: bool,
 }
@@ -1092,7 +1104,7 @@ impl<'a> Interpreter<'a> {
 					));
 				}
 			}
-			if !seen.insert(format!("scripted:{key}")) {
+			if !seen.insert(format!("scripted:{}:{key}", Self::kind_word(context))) {
 				return;
 			}
 			self.scan_statements(
@@ -1105,7 +1117,7 @@ impl<'a> Interpreter<'a> {
 			);
 			return;
 		}
-		if let Some(definition) = self.scripted.get(key) {
+		if let Some(definition) = self.scripted_any(key) {
 			let kind = match definition.kind {
 				ScriptedKind::Trigger => "trigger",
 				ScriptedKind::Effect => "effect",
@@ -1138,7 +1150,7 @@ impl<'a> Interpreter<'a> {
 		reasons: &mut Vec<String>,
 	) {
 		if let Some(definition) = self.scripted_in(name, context) {
-			if !seen.insert(format!("scripted:{name}")) {
+			if !seen.insert(format!("scripted:{}:{name}", Self::kind_word(context))) {
 				return;
 			}
 			self.scan_statements(
@@ -1151,7 +1163,7 @@ impl<'a> Interpreter<'a> {
 			);
 			return;
 		}
-		if let Some(definition) = self.scripted.get(name) {
+		if let Some(definition) = self.scripted_any(name) {
 			let kind = match definition.kind {
 				ScriptedKind::Trigger => "trigger",
 				ScriptedKind::Effect => "effect",
@@ -1176,14 +1188,27 @@ impl<'a> Interpreter<'a> {
 
 	/// The scripted definition named `key` when its kind fits this context.
 	fn scripted_in<'d>(&'d self, key: &str, context: Context) -> Option<&'d ScriptedDef> {
-		let wanted = match context {
-			Context::Effect => ScriptedKind::Effect,
-			Context::Condition => ScriptedKind::Trigger,
-		};
-		match self.scripted.get(key) {
-			Some(definition) if definition.kind == wanted => Some(*definition),
-			_ => None,
+		match context {
+			Context::Effect => self.scripted_effects.get(key).copied(),
+			Context::Condition => self.scripted_triggers.get(key).copied(),
 		}
+	}
+
+	/// The word for a scripted definition's kind in call-stack keys.
+	fn kind_word(context: Context) -> &'static str {
+		match context {
+			Context::Effect => "effect",
+			Context::Condition => "trigger",
+		}
+	}
+
+	/// A scripted definition of either kind under `name`, for messages about
+	/// a kind mismatch.
+	fn scripted_any<'d>(&'d self, key: &str) -> Option<&'d ScriptedDef> {
+		self.scripted_effects
+			.get(key)
+			.or_else(|| self.scripted_triggers.get(key))
+			.copied()
 	}
 
 	/// A `country_event = { id = ... days = ... }` effect: the target must be
@@ -1310,7 +1335,7 @@ impl<'a> Interpreter<'a> {
 					})?;
 					// Active call stack: inlining itself is a cycle; a later
 					// second call after returning runs again.
-					if !visited.insert(format!("scripted:{name}")) {
+					if !visited.insert(format!("scripted:effect:{name}")) {
 						return Err(format!(
 							"{where_}: {name} inlines itself through scripted definitions; the 							 model refuses the cycle"
 						));
@@ -1322,7 +1347,7 @@ impl<'a> Interpreter<'a> {
 						&definition.origin,
 						visited,
 					);
-					visited.remove(&format!("scripted:{name}"));
+					visited.remove(&format!("scripted:effect:{name}"));
 					result?;
 					index += 1;
 				}
@@ -1542,7 +1567,7 @@ impl<'a> Interpreter<'a> {
 					// Active call stack: a definition inlining itself is a
 					// cycle; the same definition called again after returning
 					// runs again.
-					if !visited.insert(format!("scripted:{other}")) {
+					if !visited.insert(format!("scripted:effect:{other}")) {
 						return Err(format!(
 							"{where_}: {other} inlines itself through scripted definitions; the 							 model refuses the cycle"
 						));
@@ -1554,7 +1579,7 @@ impl<'a> Interpreter<'a> {
 						&definition.origin,
 						visited,
 					);
-					visited.remove(&format!("scripted:{other}"));
+					visited.remove(&format!("scripted:effect:{other}"));
 					return result;
 				}
 				return Err(format!(
@@ -2305,6 +2330,46 @@ test = {
 			"{:#?}",
 			case(&result, "mixed_and")
 		);
+	}
+
+	#[test]
+	fn one_scripted_name_serves_both_its_kinds() {
+		// `shared` is defined once as an effect and once as a trigger; the
+		// later source must not erase the earlier kind, in either input
+		// order.
+		const EFFECT: (&str, &str) = (
+			"common/scripted_effects/shared.txt",
+			"shared = { set_country_flag = ready }",
+		);
+		const TRIGGER: (&str, &str) = (
+			"common/scripted_triggers/shared.txt",
+			"shared = { has_country_flag = ready }",
+		);
+		const CASES: &str = r#"test = {
+	name = both_kinds
+	time = 1444.11.11
+	tag = SWE
+	effect = { shared }
+	expect = { shared }
+}"#;
+		for (first, second) in [(EFFECT, TRIGGER), (TRIGGER, EFFECT)] {
+			let sources = [
+				file(first.0, SourceKind::Scripted, first.1),
+				file(second.0, SourceKind::Scripted, second.1),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			];
+			let result = interpret_sources(
+				&sources,
+				&ProjectFacts::default(),
+				&SemanticsCatalog::embedded(),
+			);
+			let verdict = case(&result, "both_kinds");
+			assert_eq!(
+				verdict.outcome,
+				Outcome::Pass,
+				"{first:?} then {second:?}: {verdict:#?}"
+			);
+		}
 	}
 
 	#[test]
