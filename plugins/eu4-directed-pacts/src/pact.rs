@@ -128,8 +128,35 @@ impl Pact {
 	fn live(&self) -> bool {
 		matches!(self.state, PactState::Proposed | PactState::Active { .. })
 	}
+	fn overlaps_live(&self, target: CountryId, obligations: &[Obligation]) -> bool {
+		self.live()
+			&& self.target == target
+			&& self.obligations.iter().any(|old| {
+				obligations.iter().any(|new| {
+					old.obligor == new.obligor
+						&& old.beneficiary == new.beneficiary
+						&& old.scope.overlaps(new.scope)
+				})
+			})
+	}
 	fn participants(&self) -> [CountryId; 3] {
 		[self.proposer, self.partner, self.target]
+	}
+	fn check_independence(&self, world: &World) -> Result<(), JoinRefusal> {
+		for id in [self.proposer, self.partner] {
+			let country = &world.countries[&id];
+			match country.independent {
+				Some(true) => {}
+				Some(false) => return Err(JoinRefusal::Subject),
+				None => {
+					return Err(JoinRefusal::Unsupported(format!(
+						"independent foreign policy of signatory {} is unverified",
+						country.tag
+					)));
+				}
+			}
+		}
+		Ok(())
 	}
 	fn refresh(&mut self, world: &World) {
 		if !self.live() {
@@ -258,17 +285,11 @@ impl PactBook {
 				..obligations[0].clone()
 			});
 		}
-		if self.pacts.iter().any(|pact| {
-			pact.live()
-				&& pact.target == proposal.target
-				&& pact.obligations.iter().any(|old| {
-					obligations.iter().any(|new| {
-						old.obligor == new.obligor
-							&& old.beneficiary == new.beneficiary
-							&& old.scope.overlaps(new.scope)
-					})
-				})
-		}) {
+		if self
+			.pacts
+			.iter()
+			.any(|pact| pact.overlaps_live(proposal.target, &obligations))
+		{
 			return Err("a pending or active pact already covers this directed obligation".into());
 		}
 		if self.pacts.len() >= MAX_PACTS {
@@ -369,6 +390,7 @@ impl PactBook {
 			else {
 				continue;
 			};
+			let independence = pact.check_independence(world);
 			for (index, obligation) in pact.obligations.iter().enumerate() {
 				for war in &world.wars {
 					if war.id.started < *accepted_on || excluded_wars.contains(&war.id) {
@@ -402,28 +424,26 @@ impl PactBook {
 						side,
 						revision: world.revision,
 					};
-					let outcome = match war.side(obligation.obligor) {
-						Some(own) if own == side => Fulfillment::AlreadyTogether,
-						Some(_) => Fulfillment::Blocked(JoinRefusal::AlreadyEnemy),
-						None => {
-							let check =
-								if world.countries[&obligation.obligor].independent != Some(true) {
-									Err(JoinRefusal::Subject)
-								} else if war
-									.participants(side)
-									.iter()
-									.any(|ally| world.enemies(obligation.obligor, *ally))
-									|| world.wars.iter().any(|other| {
-										other.side(obligation.obligor).is_some_and(|own| {
-											war.participants(side.opposite())
-												.iter()
-												.any(|enemy| other.side(*enemy) == Some(own))
-										})
-									}) {
-									Err(JoinRefusal::OpposingWar)
-								} else {
-									bridge.validate_join(&request)
-								};
+					let outcome = match (independence.clone(), war.side(obligation.obligor)) {
+						(Err(reason), _) => Fulfillment::Blocked(reason),
+						(Ok(()), Some(own)) if own == side => Fulfillment::AlreadyTogether,
+						(Ok(()), Some(_)) => Fulfillment::Blocked(JoinRefusal::AlreadyEnemy),
+						(Ok(()), None) => {
+							let check = if war
+								.participants(side)
+								.iter()
+								.any(|ally| world.enemies(obligation.obligor, *ally))
+								|| world.wars.iter().any(|other| {
+									other.side(obligation.obligor).is_some_and(|own| {
+										war.participants(side.opposite())
+											.iter()
+											.any(|enemy| other.side(*enemy) == Some(own))
+									})
+								}) {
+								Err(JoinRefusal::OpposingWar)
+							} else {
+								bridge.validate_join(&request)
+							};
 							match check.and_then(|()| bridge.join_specific_war(&request)) {
 								Ok(receipt) if receipt.request == request => Fulfillment::Joined,
 								Ok(_) => Fulfillment::Blocked(JoinRefusal::InconsistentReceipt),
@@ -473,7 +493,7 @@ impl PactBook {
 			return Err("unsupported pact save or campaign mismatch".into());
 		}
 		let mut ids = BTreeSet::new();
-		for pact in &book.pacts {
+		for (index, pact) in book.pacts.iter().enumerate() {
 			if !ids.insert(pact.id)
 				|| pact.id.0 == 0
 				|| pact.id.0 >= book.next_id
@@ -538,6 +558,13 @@ impl PactBook {
 				{
 					return Err("invalid saved fulfillment side or war".into());
 				}
+			}
+			if pact.live()
+				&& book.pacts[..index]
+					.iter()
+					.any(|other| other.overlaps_live(pact.target, &pact.obligations))
+			{
+				return Err("saved pending or active pacts overlap a directed obligation".into());
 			}
 		}
 		Ok(book)

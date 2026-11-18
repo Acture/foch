@@ -48,9 +48,16 @@ fixture or the field read occurred.
 The library supports proposals, recipient acceptance or rejection, signatory
 termination and exclusive expiry dates. A proposal names three distinct
 countries. It records each directed obligation explicitly; reciprocal terms
-create two obligations. Pending and active overlapping obligations are rejected.
+create two obligations. Overlapping pending or active obligations are rejected
+when proposing or restoring a payload.
 Signatories require verified independent foreign policy. A missing country or
 changed tag ends the pact. Existing wars at acceptance are excluded.
+
+Fulfillment requires confirmed independent foreign policy for both signatories,
+including when they already share a war side. A known subject blocks fulfillment;
+unknown status reports that independence is unverified. The pact stays active
+with a blocked attempt, and can retry on a newer snapshot once both signatories
+are confirmed independent.
 
 Attack cooperation and defense cooperation each name one target country.
 For example, FRA and SWE can agree to cooperate defensively against HAB.

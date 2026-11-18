@@ -50,15 +50,19 @@ fn war(id: u32, attacker: CountryId, defender: CountryId) -> War {
 #[derive(Default)]
 struct Bridge {
 	joins: Vec<JoinRequest>,
+	validations: usize,
+	join_calls: usize,
 	refuse: Option<JoinRefusal>,
 }
 
 impl WarBridge for Bridge {
 	fn validate_join(&mut self, request: &JoinRequest) -> Result<(), JoinRefusal> {
+		self.validations += 1;
 		assert_ne!(request.country, request.war.declarer);
 		self.refuse.clone().map_or(Ok(()), Err)
 	}
 	fn join_specific_war(&mut self, request: &JoinRequest) -> Result<JoinReceipt, JoinRefusal> {
+		self.join_calls += 1;
 		self.validate_join(request)?;
 		self.joins.push(request.clone());
 		Ok(JoinReceipt {
@@ -322,6 +326,85 @@ fn only_new_snapshot_retries_a_refused_entry_and_reused_serial_is_a_new_war() {
 }
 
 #[test]
+fn both_signatories_need_confirmed_independence_before_fulfillment() {
+	for (country, independence) in [
+		(FRA, Some(false)),
+		(FRA, None),
+		(SWE, Some(false)),
+		(SWE, None),
+	] {
+		let mut state = world();
+		let mut book = accepted(&state, Scope::Both, false);
+		state.day = 101;
+		state.revision += 1;
+		state.countries.get_mut(&country).unwrap().independent = independence;
+		state.wars.push(war(1, FRA, HAB));
+		let mut bridge = Bridge::default();
+		let attempts = book.process(&state, &mut bridge).unwrap();
+		assert_eq!(bridge.validations, 0, "{country:?} {independence:?}");
+		assert_eq!(bridge.join_calls, 0);
+		assert_eq!(attempts.len(), 1);
+		let Fulfillment::Blocked(reason) = &attempts[0].outcome else {
+			panic!("ineligible signatories cannot fulfill a pact");
+		};
+		if independence == Some(false) {
+			assert_eq!(*reason, JoinRefusal::Subject);
+		} else {
+			assert!(matches!(reason, JoinRefusal::Unsupported(_)));
+			assert!(reason.explanation().contains("unverified"));
+			assert!(
+				reason
+					.explanation()
+					.contains(&state.countries[&country].tag)
+			);
+		}
+		assert!(matches!(book.list()[0].state, PactState::Active { .. }));
+		assert_eq!(book.list()[0].attempts, attempts);
+		book = PactBook::restore(&state.campaign, &book.save().unwrap()).unwrap();
+		assert_eq!(book.list()[0].attempts, attempts);
+		assert!(book.process(&state, &mut bridge).unwrap().is_empty());
+		state.countries.get_mut(&country).unwrap().independent = Some(true);
+		state.revision += 1;
+		assert_eq!(
+			book.process(&state, &mut bridge).unwrap()[0].outcome,
+			Fulfillment::Joined
+		);
+		assert_eq!(bridge.join_calls, 1);
+		assert_eq!(bridge.joins.len(), 1);
+	}
+}
+
+#[test]
+fn independence_is_required_even_when_signatories_are_already_together() {
+	for country in [FRA, SWE] {
+		for independence in [Some(false), None] {
+			let mut state = world();
+			let mut book = accepted(&state, Scope::Both, false);
+			state.day = 101;
+			state.revision += 1;
+			let mut matching = war(1, FRA, HAB);
+			matching.attackers.push(SWE);
+			state.wars.push(matching);
+			state.countries.get_mut(&country).unwrap().independent = independence;
+			let mut bridge = Bridge::default();
+			assert!(matches!(
+				book.process(&state, &mut bridge).unwrap()[0].outcome,
+				Fulfillment::Blocked(_)
+			));
+			assert_eq!((bridge.validations, bridge.join_calls), (0, 0));
+			assert!(matches!(book.list()[0].state, PactState::Active { .. }));
+			state.countries.get_mut(&country).unwrap().independent = Some(true);
+			state.revision += 1;
+			assert_eq!(
+				book.process(&state, &mut bridge).unwrap()[0].outcome,
+				Fulfillment::AlreadyTogether
+			);
+			assert_eq!((bridge.validations, bridge.join_calls), (0, 0));
+		}
+	}
+}
+
+#[test]
 fn replaced_country_identity_ends_the_pact_and_future_state_cannot_be_replayed() {
 	let mut state = world();
 	let mut book = accepted(&state, Scope::Both, false);
@@ -352,4 +435,109 @@ fn forged_saved_ledger_cannot_suppress_a_different_side() {
 	let mut save: serde_json::Value = serde_json::from_slice(&book.save().unwrap()).unwrap();
 	save["pacts"][0]["attempts"][0]["request"]["side"] = "attacker".into();
 	assert!(PactBook::restore(&state.campaign, &serde_json::to_vec(&save).unwrap()).is_err());
+}
+
+#[test]
+fn restore_rejects_overlapping_live_pacts() {
+	let state = world();
+	let mut incorrectly_accepted = vec![];
+	for (old_scope, new_scope) in [
+		(Scope::Both, Scope::Both),
+		(Scope::Both, Scope::Attack),
+		(Scope::Attack, Scope::Both),
+		(Scope::Defense, Scope::Both),
+		(Scope::Attack, Scope::Attack),
+		(Scope::Defense, Scope::Defense),
+	] {
+		let book = accepted(&state, old_scope, false);
+		let actual_save: serde_json::Value = serde_json::from_slice(&book.save().unwrap()).unwrap();
+		let states = [PactState::Proposed, book.list()[0].state.clone()];
+		for first in &states {
+			for second in &states {
+				let mut save = actual_save.clone();
+				let mut duplicate = save["pacts"][0].clone();
+				duplicate["id"] = 2.into();
+				duplicate["state"] = serde_json::to_value(second).unwrap();
+				duplicate["obligations"][0]["scope"] = serde_json::to_value(new_scope).unwrap();
+				save["pacts"][0]["state"] = serde_json::to_value(first).unwrap();
+				save["pacts"].as_array_mut().unwrap().push(duplicate);
+				save["next_id"] = 3.into();
+				if PactBook::restore(&state.campaign, &serde_json::to_vec(&save).unwrap()).is_ok() {
+					incorrectly_accepted.push((
+						old_scope,
+						new_scope,
+						first.clone(),
+						second.clone(),
+					));
+				}
+			}
+		}
+	}
+	assert!(
+		incorrectly_accepted.is_empty(),
+		"accepted overlapping live pacts: {incorrectly_accepted:?}"
+	);
+}
+
+#[test]
+fn restore_accepts_nonoverlapping_live_pacts() {
+	let state = world();
+	for (first_scope, actor, partner, target, scope) in [
+		(Scope::Attack, FRA, SWE, HAB, Scope::Defense),
+		(Scope::Defense, FRA, SWE, HAB, Scope::Attack),
+		(Scope::Both, SWE, FRA, HAB, Scope::Both),
+		(Scope::Both, FRA, SWE, ENG, Scope::Both),
+	] {
+		let mut book = accepted(&state, first_scope, false);
+		let id = book
+			.propose(
+				&state,
+				actor,
+				Proposal {
+					partner,
+					target,
+					scope,
+					reciprocal: false,
+					expires: 120,
+				},
+			)
+			.unwrap();
+		book.respond(&state, partner, id, Response::Accept).unwrap();
+		let restored = PactBook::restore(&state.campaign, &book.save().unwrap()).unwrap();
+		assert_eq!(restored.list(), book.list());
+	}
+}
+
+#[test]
+fn restore_accepts_overlap_with_rejected_or_ended_history() {
+	let state = world();
+	for rejected in [false, true] {
+		let mut book = PactBook::new(state.campaign.clone());
+		let terms = Proposal {
+			partner: SWE,
+			target: HAB,
+			scope: Scope::Both,
+			reciprocal: false,
+			expires: 120,
+		};
+		let first = book.propose(&state, FRA, terms.clone()).unwrap();
+		book.respond(
+			&state,
+			SWE,
+			first,
+			if rejected {
+				Response::Reject
+			} else {
+				Response::Accept
+			},
+		)
+		.unwrap();
+		if !rejected {
+			book.end(&state, FRA, first).unwrap();
+		}
+		let second = book.propose(&state, FRA, terms).unwrap();
+		book.respond(&state, SWE, second, Response::Accept).unwrap();
+		let restored = PactBook::restore(&state.campaign, &book.save().unwrap()).unwrap();
+		assert_eq!(restored.list(), book.list());
+	}
 }
