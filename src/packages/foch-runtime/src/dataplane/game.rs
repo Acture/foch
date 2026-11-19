@@ -206,17 +206,21 @@ impl TradeNodes {
 	}
 
 	/// The route vector of a node definition: `(begin, end)`. An empty
-	/// vector (`begin == end`, both plausibly null) is legal — vanilla
-	/// end nodes have no outgoing routes at all.
+	/// vector (`begin == end`, both null or above the null page) is legal —
+	/// vanilla end nodes have a default-constructed MSVC vector (`nullptr`,
+	/// `nullptr`) with no outgoing routes at all.
 	pub fn routes(&self, definition: usize) -> Option<(usize, usize)> {
-		let begin = self.memory.read_ptr(definition.checked_add(def::ROUTES)?)?;
+		let begin = self
+			.memory
+			.read_qword(definition.checked_add(def::ROUTES)?)? as usize;
 		let end = self
 			.memory
 			.read_qword(definition.checked_add(def::ROUTES_END)?)? as usize;
-		if begin == end {
+		if begin == end && (begin == 0 || begin > 0x1_0000) {
 			return Some((begin, end));
 		}
-		(end >= begin && (end - begin).is_multiple_of(route::SIZE)).then_some((begin, end))
+		(begin > 0x1_0000 && end >= begin && (end - begin).is_multiple_of(route::SIZE))
+			.then_some((begin, end))
 	}
 }
 
@@ -552,6 +556,29 @@ impl CountryView {
 	/// +/-1e9).
 	pub fn treasury(&self) -> Option<i32> {
 		self.memory.read_i32(self.address + country::TREASURY)
+	}
+
+	/// Treasury thousandths from an owned country record.
+	///
+	/// The field offset stays inside the data plane. `None` means
+	/// `record` is shorter than the field.
+	pub fn treasury_record(record: &[u8]) -> Option<i32> {
+		let start = country::TREASURY;
+		let end = start.checked_add(4)?;
+		let bytes: [u8; 4] = record.get(start..end)?.try_into().ok()?;
+		Some(i32::from_le_bytes(bytes))
+	}
+
+	/// Store treasury thousandths in an owned country record.
+	///
+	/// The field offset stays inside the data plane. `None` means
+	/// `record` is shorter than the field.
+	pub fn write_treasury_record(record: &mut [u8], value: i32) -> Option<()> {
+		let start = country::TREASURY;
+		let end = start.checked_add(4)?;
+		let slot = record.get_mut(start..end)?;
+		slot.copy_from_slice(&value.to_le_bytes());
+		Some(())
 	}
 
 	/// Add to the treasury, mirroring the game's own ChangeTreasury:
@@ -1014,5 +1041,34 @@ mod tests {
 		route_bytes[route::TARGET..route::TARGET + 8].copy_from_slice(&1u64.to_le_bytes());
 		std::hint::black_box(&route_bytes);
 		assert_eq!(first.outgoing_targets(&nodes), None);
+
+		// A default-constructed MSVC route vector is null/null, which live
+		// end nodes use. It is an empty list, not a corrupt header.
+		def1[def::ROUTES / 8] = 0;
+		def1[def::ROUTES_END / 8] = 0;
+		std::hint::black_box(&def1);
+		assert_eq!(second.live_route_count(&nodes), Some(0));
+		assert_eq!(second.outgoing_targets(&nodes), Some(vec![]));
+
+		// Non-zero null-page pointers are rejected even when begin == end.
+		def1[def::ROUTES / 8] = 0x1000;
+		def1[def::ROUTES_END / 8] = 0x1000;
+		std::hint::black_box(&def1);
+		assert_eq!(second.live_route_count(&nodes), None);
+	}
+
+	#[test]
+	fn treasury_record_round_trips_at_the_pinned_field() {
+		let mut record = vec![0u8; country::TREASURY + 4];
+		CountryView::write_treasury_record(&mut record, 350).unwrap();
+		assert_eq!(CountryView::treasury_record(&record), Some(350));
+		let stored = i32::from_le_bytes(
+			record[country::TREASURY..country::TREASURY + 4]
+				.try_into()
+				.unwrap(),
+		);
+		assert_eq!(stored, 350);
+		assert!(CountryView::write_treasury_record(&mut record[..4], 1).is_none());
+		assert!(CountryView::treasury_record(&record[..4]).is_none());
 	}
 }
