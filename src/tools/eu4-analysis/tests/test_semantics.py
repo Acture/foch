@@ -113,9 +113,7 @@ def catalog_file(directory: Path, primitives: dict) -> Path:
 
 class LocateHandlers(unittest.TestCase):
 	def test_a_registration_pins_the_handler_argument(self) -> None:
-		handler = locate(
-			analysis(), "set_country_flag", DEFAULT_EFFECT_PATTERNS
-		)
+		handler = locate(analysis(), "set_country_flag", DEFAULT_EFFECT_PATTERNS)
 		self.assertIsNotNone(handler)
 		assert handler is not None
 		self.assertEqual(handler.address, 0x2000)
@@ -126,8 +124,9 @@ class LocateHandlers(unittest.TestCase):
 
 	def test_a_stripped_pe_image_locates_through_string_references(self) -> None:
 		"""The Windows path: no symbols, discovery by keyword reference."""
-		from eu4_analysis.pe import read_binary
 		from test_pe import RDATA_RVA, TEXT_RVA, build_pe, registry_function
+
+		from eu4_analysis.pe import read_binary
 
 		begin, code = registry_function("set_country_flag", RDATA_RVA, TEXT_RVA + 0x100)
 		blob: bytes = build_pe(("set_country_flag",), (begin, code))
@@ -159,11 +158,15 @@ class LocateHandlers(unittest.TestCase):
 		self.assertEqual(handler.address, IMAGE_BASE + TEXT_RVA + 0x100)
 
 	def test_pin_records_the_pseudocode_digest(self) -> None:
-		pinned = pin(analysis(), Function(0x2000, 0x2100, ("CCountry::SetCountryFlag",)))
+		pinned = pin(
+			analysis(), Function(0x2000, 0x2100, ("CCountry::SetCountryFlag",))
+		)
 		self.assertEqual(pinned["symbol"], "CCountry::SetCountryFlag")
 		self.assertEqual(
 			pinned["pseudocode_sha256"],
-			hashlib.sha256(b"void SetCountryFlag(flags) { flags.insert(name); }").hexdigest(),
+			hashlib.sha256(
+				b"void SetCountryFlag(flags) { flags.insert(name); }"
+			).hexdigest(),
 		)
 
 

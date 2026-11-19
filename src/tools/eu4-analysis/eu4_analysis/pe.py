@@ -66,7 +66,9 @@ class PEImage:
 		)
 
 	def section_of(self, rva: int) -> Section | None:
-		return next((section for section in self.sections if section.contains_rva(rva)), None)
+		return next(
+			(section for section in self.sections if section.contains_rva(rva)), None
+		)
 
 	def bytes_of_rva(self, rva: int, size: int) -> bytes | None:
 		section = self.section_of(rva)
@@ -84,7 +86,9 @@ def _read_u64(data: bytes, offset: int) -> int:
 	return struct.unpack_from("<Q", data, offset)[0]
 
 
-def section_table(data: bytes, first_section_offset: int, count: int) -> tuple[Section, ...]:
+def section_table(
+	data: bytes, first_section_offset: int, count: int
+) -> tuple[Section, ...]:
 	sections: list[Section] = []
 	for index in range(count):
 		offset: int = first_section_offset + index * 40
@@ -92,7 +96,9 @@ def section_table(data: bytes, first_section_offset: int, count: int) -> tuple[S
 			raise ValueError("truncated section table")
 		raw_name: bytes = data[offset : offset + 8]
 		name: str = raw_name.split(b"\0", 1)[0].decode("ascii", "replace")
-		virtual_size, rva, file_size, file_offset = struct.unpack_from("<IIII", data, offset + 8)
+		virtual_size, rva, file_size, file_offset = struct.unpack_from(
+			"<IIII", data, offset + 8
+		)
 		sections.append(Section(name, rva, virtual_size, file_offset, file_size))
 	return tuple(sections)
 
@@ -103,7 +109,10 @@ def read_binary(path: Path) -> PEImage:
 	if len(data) < 0x40 or _read_u32(data, 0x3C) == 0:
 		raise ValueError("truncated DOS header")
 	pe_offset: int = _read_u32(data, 0x3C)
-	if _read_u16(data, 0) != IMAGE_DOS_SIGNATURE or _read_u32(data, pe_offset) != IMAGE_NT_SIGNATURE:
+	if (
+		_read_u16(data, 0) != IMAGE_DOS_SIGNATURE
+		or _read_u32(data, pe_offset) != IMAGE_NT_SIGNATURE
+	):
 		raise ValueError("not a PE executable")
 	machine: int = _read_u16(data, pe_offset + 4)
 	if machine != MACHINE_AMD64:
@@ -125,7 +134,9 @@ def read_binary(path: Path) -> PEImage:
 	entries: dict[int, int] = {}
 	starts: set[int] = set()
 	for offset in range(
-		pdata.file_offset, min(pdata.file_offset + pdata.file_size, len(data)) - 12 + 1, 12
+		pdata.file_offset,
+		min(pdata.file_offset + pdata.file_size, len(data)) - 12 + 1,
+		12,
 	):
 		begin, end, _ = struct.unpack_from("<III", data, offset)
 		if begin == 0:
@@ -162,7 +173,9 @@ def keyword_rvas(image: PEImage, keyword: str) -> tuple[int, ...]:
 	for section in image.sections:
 		if section.name == ".text":
 			continue
-		haystack: bytes = image.data[section.file_offset : section.file_offset + section.file_size]
+		haystack: bytes = image.data[
+			section.file_offset : section.file_offset + section.file_size
+		]
 		position: int = haystack.find(needle)
 		while position != -1:
 			found.append(section.rva + position)
@@ -225,7 +238,9 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 	return tuple(sorted(unique)) if len(unique) == 1 else ()
 
 
-def keyword_reference_functions(image: PEImage, keyword: str) -> tuple[tuple[int, int], ...]:
+def keyword_reference_functions(
+	image: PEImage, keyword: str
+) -> tuple[tuple[int, int], ...]:
 	"""Functions whose code references the keyword string, begin/end pairs.
 
 	For a stripped executable this replaces symbol lookup: the containing

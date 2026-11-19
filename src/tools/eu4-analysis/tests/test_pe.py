@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from eu4_analysis import pe
 from eu4_analysis.pe import PEImage, keyword_reference_functions, read_binary
 
 FILE_ALIGNMENT = 0x10
@@ -86,7 +85,9 @@ def build_pe(
 		entry: bytearray = bytearray(40)
 		entry[:8] = name.ljust(8, b"\0")
 		struct.pack_into("<IIII", entry, 8, size, rva, size, offset)
-		struct.pack_into("<I", entry, 36, 0x60000020 if name == b".text" else 0x40000040)
+		struct.pack_into(
+			"<I", entry, 36, 0x60000020 if name == b".text" else 0x40000040
+		)
 		return bytes(entry)
 
 	sections: bytearray = bytearray()
@@ -107,7 +108,9 @@ def build_pe(
 	return bytes(image)
 
 
-def registry_function(keyword: str, keyword_rva: int, handler_rva: int) -> tuple[int, bytes]:
+def registry_function(
+	keyword: str, keyword_rva: int, handler_rva: int
+) -> tuple[int, bytes]:
 	"""(begin, code) registering `keyword`: lea string, lea handler, call."""
 	insn_rva: int = TEXT_RVA
 	code: bytes = (
@@ -129,7 +132,10 @@ class ReadPE(unittest.TestCase):
 			image = read_binary(path)
 		self.assertIsInstance(image, PEImage)
 		self.assertEqual(image.function_starts, (IMAGE_BASE + TEXT_RVA,))
-		self.assertEqual(image.function_end(IMAGE_BASE + TEXT_RVA), IMAGE_BASE + TEXT_RVA + len(code) + 0x10)
+		self.assertEqual(
+			image.function_end(IMAGE_BASE + TEXT_RVA),
+			IMAGE_BASE + TEXT_RVA + len(code) + 0x10,
+		)
 		self.assertEqual(image.image_base, IMAGE_BASE)
 
 	def test_non_pe_binaries_are_rejected(self) -> None:

@@ -153,7 +153,10 @@ class GhidraSession:
 		literal: str | None = None
 		if block is not None and (
 			"cstring" in str(block.getName()).lower()
-			or (self.image.platform == "windows" and str(block.getName()).lower() == ".rdata")
+			or (
+				self.image.platform == "windows"
+				and str(block.getName()).lower() == ".rdata"
+			)
 		):
 			length: int = min(512, int(block.getEnd().getOffset()) - address + 1)
 			buffer: bytearray = bytearray()

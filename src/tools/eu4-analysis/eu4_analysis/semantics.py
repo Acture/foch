@@ -75,7 +75,9 @@ def load_catalog(path: Path) -> dict:
 		raise ValueError(f"unsupported semantics format {catalog.get('format')}")
 	for name, primitive in catalog.get("primitives", {}).items():
 		if primitive.get("kind") not in {"effect", "trigger"}:
-			raise ValueError(f"primitive {name} has unknown kind {primitive.get('kind')!r}")
+			raise ValueError(
+				f"primitive {name} has unknown kind {primitive.get('kind')!r}"
+			)
 	return catalog
 
 
@@ -96,7 +98,9 @@ def keyword_of(argument: object) -> str | None:
 	return None
 
 
-def locate(analysis: PinAnalysis, name: str, patterns: tuple[str, ...]) -> Function | None:
+def locate(
+	analysis: PinAnalysis, name: str, patterns: tuple[str, ...]
+) -> Function | None:
 	"""The handler registered under `name`, or None.
 
 	On a PE image the static registration tables name the handler directly;
@@ -172,7 +176,11 @@ def pin(analysis: PinAnalysis, function: Function) -> dict:
 
 
 def pin_catalog(
-	analysis: PinAnalysis, query: SemanticsQuery, *, game_version: str, binary_sha256: str
+	analysis: PinAnalysis,
+	query: SemanticsQuery,
+	*,
+	game_version: str,
+	binary_sha256: str,
 ) -> SemanticsResult:
 	catalog: dict = load_catalog(query.catalog)
 	missing: list[str] = []
@@ -190,8 +198,8 @@ def pin_catalog(
 			LOGGER.warning("No handler found for %s (%s)", name, primitive["kind"])
 			continue
 		try:
-				primitive["handler"] = pin(analysis, handler)
-				LOGGER.info("Pinned %s to %#x", name, handler.address)
+			primitive["handler"] = pin(analysis, handler)
+			LOGGER.info("Pinned %s to %#x", name, handler.address)
 		except (ValueError, RuntimeError) as error:
 			# A batch boundary retains bounded-analysis failures and
 			# continues with the other primitives.
