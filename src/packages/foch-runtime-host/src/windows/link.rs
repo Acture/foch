@@ -19,8 +19,9 @@ use std::{
 use windows_sys::Win32::System::{
 	Diagnostics::Debug::FlushInstructionCache,
 	Memory::{
-		MEM_COMMIT, MEM_RESERVE, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READWRITE, PAGE_READWRITE,
-		VirtualAlloc, VirtualProtect, VirtualQuery,
+		MEM_COMMIT, MEM_FREE, MEM_RELEASE, MEM_RESERVE, MEMORY_BASIC_INFORMATION,
+		PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualAlloc, VirtualFree, VirtualProtect,
+		VirtualQuery,
 	},
 	SystemInformation::{GetSystemInfo, SYSTEM_INFO},
 	Threading::{ExitProcess, GetCurrentProcess},
@@ -336,12 +337,35 @@ fn install(site: &mut Site) -> i32 {
 		return abi::result::E_CONFLICT;
 	}
 	let stolen = site.original.len();
-	let trampoline = allocate(stolen + JUMP_BYTES, PAGE_EXECUTE_READWRITE);
+	// A trampoline holding RIP-relative operands must sit inside the
+	// intersection of all operands' disp32 reach so every copied disp32 can
+	// be rewritten to its exact original target; windows without them keep
+	// the original placement.
+	let trampoline = match rip_trampoline_range(&site.original, site.target) {
+		Some(Some((low, high))) => {
+			allocate_in_range(low, high, stolen + JUMP_BYTES, PAGE_EXECUTE_READWRITE)
+		}
+		Some(None) => allocate(stolen + JUMP_BYTES, PAGE_EXECUTE_READWRITE),
+		None => return abi::result::E_MEMORY,
+	};
 	let stub = allocate(16, PAGE_EXECUTE_READWRITE);
 	if trampoline.is_null() || stub.is_null() {
+		if !trampoline.is_null() {
+			unsafe { VirtualFree(trampoline.cast(), 0, MEM_RELEASE) };
+		}
+		if !stub.is_null() {
+			unsafe { VirtualFree(stub.cast(), 0, MEM_RELEASE) };
+		}
 		return abi::result::E_MEMORY;
 	}
 	let mut body = site.original.clone();
+	if !relocate_rip_operands(&mut body, site.target, trampoline as usize) {
+		unsafe {
+			VirtualFree(trampoline.cast(), 0, MEM_RELEASE);
+			VirtualFree(stub.cast(), 0, MEM_RELEASE);
+		}
+		return abi::result::E_MEMORY;
+	}
 	body.extend_from_slice(&absolute_jump(site.target + stolen));
 	unsafe { std::ptr::copy_nonoverlapping(body.as_ptr(), trampoline, body.len()) };
 	let mut stub_bytes = [0u8; 16];
@@ -490,6 +514,121 @@ fn allocate(len: usize, protection: u32) -> *mut u8 {
 		)
 		.cast()
 	}
+}
+
+/// Inclusive trampoline address range `(low, high)` whose disp32 reaches every
+/// RIP-relative target in `body` copied from `source`.
+///
+/// Returns `Some(None)` when `body` has no RIP-relative operands,
+/// `Some(Some((low, high)))` when at least one valid trampoline address exists,
+/// and `None` if decoding fails or the operands' reachable windows do not overlap.
+fn rip_trampoline_range(body: &[u8], source: usize) -> Option<Option<(usize, usize)>> {
+	let operands = prologue::rip_operands(body, body.len())?;
+	if operands.is_empty() {
+		return Some(None);
+	}
+	let mut min_dest: i128 = 0x1_0000;
+	let mut max_dest: i128 = usize::MAX as i128;
+	for operand in operands {
+		let bytes: [u8; 4] = body
+			.get(operand.disp_at..operand.disp_at + 4)?
+			.try_into()
+			.ok()?;
+		let old = i32::from_le_bytes(bytes) as i128;
+		let target = (source as i128) + (operand.next as i128) + old;
+		let op_min = target - (operand.next as i128) - (i32::MAX as i128);
+		let op_max = target - (operand.next as i128) - (i32::MIN as i128);
+		min_dest = min_dest.max(op_min);
+		max_dest = max_dest.min(op_max);
+	}
+	if min_dest > max_dest {
+		return None;
+	}
+	Some(Some((min_dest as usize, max_dest as usize)))
+}
+
+/// First committed free region whose base lies in `[low, high]`. Returns null
+/// when no granularity-aligned free space fits inside the reachable window.
+fn allocate_in_range(low: usize, high: usize, len: usize, protection: u32) -> *mut u8 {
+	let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+	let mut system: SYSTEM_INFO = unsafe { std::mem::zeroed() };
+	unsafe { GetSystemInfo(&mut system) };
+	let granularity = if system.dwAllocationGranularity == 0 {
+		0x1000
+	} else {
+		system.dwAllocationGranularity as usize
+	};
+	let min_app = (system.lpMinimumApplicationAddress as usize).max(0x1_0000);
+	let max_app = system.lpMaximumApplicationAddress as usize;
+	let low = low.max(min_app);
+	let high = if max_app > 0 { high.min(max_app) } else { high };
+	if low > high {
+		return std::ptr::null_mut();
+	}
+	let mut cursor = low;
+	while cursor <= high {
+		let filled = unsafe {
+			VirtualQuery(
+				cursor as *const c_void,
+				&mut info,
+				size_of::<MEMORY_BASIC_INFORMATION>(),
+			)
+		};
+		if filled == 0 {
+			break;
+		}
+		let base = info.BaseAddress as usize;
+		let next = base.saturating_add(info.RegionSize);
+		if info.State == MEM_FREE
+			&& let Some(start) = base.max(low).div_ceil(granularity).checked_mul(granularity)
+			&& start <= high
+			&& start.checked_add(len).is_some_and(|end| end <= next)
+		{
+			let got = unsafe {
+				VirtualAlloc(
+					start as *const c_void,
+					len,
+					MEM_COMMIT | MEM_RESERVE,
+					protection,
+				)
+			};
+			if !got.is_null() {
+				return got.cast();
+			}
+		}
+		if next <= cursor {
+			break;
+		}
+		cursor = next;
+	}
+	std::ptr::null_mut()
+}
+
+/// Rewrite every RIP-relative disp32 in a stolen window so the operands keep
+/// their original absolute targets from the trampoline's address. Fails
+/// without touching `body` when a decoded displacement falls outside disp32.
+fn relocate_rip_operands(body: &mut [u8], source: usize, destination: usize) -> bool {
+	let Some(operands) = prologue::rip_operands(body, body.len()) else {
+		return false;
+	};
+	let mut patches = Vec::with_capacity(operands.len());
+	for operand in operands {
+		let bytes: [u8; 4] = match body.get(operand.disp_at..operand.disp_at + 4) {
+			Some(bytes) => bytes.try_into().expect("slice of 4"),
+			None => return false,
+		};
+		let old = i32::from_le_bytes(bytes) as i128;
+		let target = (source as i128) + (operand.next as i128) + old;
+		let moved = target - ((destination as i128) + (operand.next as i128));
+		if moved < i32::MIN as i128 || moved > i32::MAX as i128 {
+			return false;
+		}
+		patches.push((operand.disp_at, moved as i32));
+	}
+	for (disp_at, moved) in patches {
+		body[disp_at..disp_at + 4].copy_from_slice(&moved.to_le_bytes());
+	}
+	true
 }
 
 fn flush(address: *const c_void, len: usize) -> bool {
@@ -842,22 +981,42 @@ mod tests {
 		);
 		assert!(hook.is_null());
 
-		let rip = code(32);
-		let bytes = [0x48u8, 0x8B, 0x05, 0, 0, 0, 0];
-		unsafe {
-			std::ptr::copy_nonoverlapping(bytes.as_ptr(), rip, bytes.len());
-			std::ptr::write_bytes(rip.add(bytes.len()), 0x90, 16);
+		// A RIP-relative load is no longer an unsupported prologue: the hook
+		// installs and the trampoline rewrites the disp32 to the same target.
+		{
+			let mut linker = Linker::new();
+			linker.open_init(true);
+			let rip = code(32);
+			// mov rax,[rip+0x10]; nop*9 — the load reads the qword that
+			// follows the stolen window at rip+7+0x10 = rip+0x17.
+			let mut bytes = [0x90u8; 14];
+			bytes[..7].copy_from_slice(&[0x48, 0x8B, 0x05, 0x10, 0x00, 0x00, 0x00]);
+			unsafe {
+				std::ptr::copy_nonoverlapping(bytes.as_ptr(), rip, bytes.len());
+			}
+			let mut cell: *mut abi::FochHook = std::ptr::null_mut();
+			let mut next: *const *const c_void = std::ptr::null();
+			assert_eq!(
+				linker.hook_create(
+					rip.cast(),
+					detour_lo as *mut c_void,
+					0,
+					&mut next,
+					&mut cell
+				),
+				abi::result::OK
+			);
+			NEXT_LO.store(next as usize, Ordering::Release);
+			assert_eq!(linker.hook_set_enabled(cell, 1), abi::result::OK);
+			let site = &linker.sites[0];
+			let moved: [u8; 4] = unsafe {
+				std::slice::from_raw_parts(site.trampoline as *const u8, 7)[3..7]
+					.try_into()
+					.unwrap()
+			};
+			let expected = (rip as usize + 0x17).wrapping_sub(site.trampoline + 7) as i32;
+			assert_eq!(i32::from_le_bytes(moved), expected);
 		}
-		assert_eq!(
-			linker.hook_create(
-				rip.cast(),
-				detour_lo as *mut c_void,
-				0,
-				&mut next,
-				&mut hook
-			),
-			abi::result::E_UNSUPPORTED
-		);
 
 		let page = linker.page_size;
 		let crossed = allocate(page * 2, PAGE_EXECUTE_READWRITE);
@@ -1335,5 +1494,47 @@ mod tests {
 			}
 			// XBEGIN is never executed: these tests also work without TSX.
 		}
+	}
+
+	#[test]
+	fn rip_trampoline_range_intersects_operands_and_relocate_is_atomic() {
+		let source: usize = 0x1_40a8_9360;
+		// Two RIP-relative loads in one 14-byte window:
+		//   mov rax, [rip + 0x018b_6b18]  (7 bytes, target = source + 7 + 0x018b_6b18)
+		//   mov rcx, [rip - 0x0040_0000]  (7 bytes, target = source + 14 - 0x0040_0000)
+		let mut window = [0u8; 14];
+		window[..3].copy_from_slice(&[0x48, 0x8B, 0x05]);
+		window[3..7].copy_from_slice(&(0x018b_6b18_i32).to_le_bytes());
+		window[7..10].copy_from_slice(&[0x48, 0x8B, 0x0D]);
+		window[10..14].copy_from_slice(&(-0x0040_0000_i32).to_le_bytes());
+
+		let (low, high) = rip_trampoline_range(&window, source)
+			.expect("valid decode")
+			.expect("non-empty RIP range");
+
+		// A trampoline at `source - 0x7F00_0000` is out of disp32 reach of the
+		// +24 MB global target and must lie strictly below `low`.
+		assert!(source - 0x7F00_0000 < low);
+
+		// Both exact endpoints succeed and preserve each absolute target.
+		for dest in [low, high] {
+			let mut body = window.to_vec();
+			assert!(relocate_rip_operands(&mut body, source, dest));
+			let d0 = i32::from_le_bytes(body[3..7].try_into().unwrap()) as i128;
+			let d1 = i32::from_le_bytes(body[10..14].try_into().unwrap()) as i128;
+			assert_eq!(dest as i128 + 7 + d0, source as i128 + 7 + 0x018b_6b18);
+			assert_eq!(dest as i128 + 14 + d1, source as i128 + 14 - 0x0040_0000);
+		}
+
+		// Just outside either endpoint fails without mutating any byte of `body`.
+		for bad_dest in [low - 1, high + 1] {
+			let mut body = window.to_vec();
+			assert!(!relocate_rip_operands(&mut body, source, bad_dest));
+			assert_eq!(body, window);
+		}
+
+		// Window without RIP-relative operands returns Some(None).
+		let plain = [0x90u8; 14];
+		assert_eq!(rip_trampoline_range(&plain, source), Some(None));
 	}
 }

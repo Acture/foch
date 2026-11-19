@@ -1,9 +1,10 @@
 //! x64 instruction lengths for inline plugin hooks.
 //!
-//! Select the first complete, unchanged-copy window of 14 through 28 bytes.
-//! RIP-relative operands, relative control flow, terminators, unknown opcodes
-//! and truncated instructions are refused. The executable entry gate has its
-//! own fixed window and does not use this decoder.
+//! Select the first complete window of 14 through 28 bytes. RIP-relative
+//! operands are allowed as long as the caller relocates their disp32 in the
+//! trampoline (see [`rip_operands`]); relative control flow, terminators,
+//! unknown opcodes and truncated instructions are refused. The executable
+//! entry gate has its own fixed window and does not use this decoder.
 
 pub(crate) const MIN_STEAL: usize = 14;
 pub(crate) const MAX_STEAL: usize = 28;
@@ -13,6 +14,9 @@ struct Insn {
 	rip_relative: bool,
 	relative: bool,
 	terminator: bool,
+	/// Byte offset of the disp32 inside this instruction. Only meaningful
+	/// when `rip_relative`; zero otherwise.
+	rip_disp: usize,
 }
 
 pub(crate) fn steal_len(bytes: &[u8]) -> Option<usize> {
@@ -20,12 +24,43 @@ pub(crate) fn steal_len(bytes: &[u8]) -> Option<usize> {
 	let mut at = 0;
 	while at < MIN_STEAL {
 		let insn = decode(bytes.get(at..)?)?;
-		if insn.len == 0 || insn.rip_relative || insn.relative || insn.terminator {
+		if insn.len == 0 || insn.relative || insn.terminator {
 			return None;
 		}
 		at = at.checked_add(insn.len)?;
 	}
 	Some(at)
+}
+
+/// A RIP-relative disp32 inside a stolen window.
+pub(crate) struct RipOperand {
+	/// Byte offset of the disp32 within the window.
+	pub disp_at: usize,
+	/// Byte offset just past the instruction holding it: the RIP the disp
+	/// is relative to, as a window offset.
+	pub next: usize,
+}
+
+/// Every RIP-relative operand in the first `len` bytes of `bytes`, in order.
+/// The window must be the one [`steal_len`] accepted; a decode failure or a
+/// RIP operand past `len` yields `None`.
+pub(crate) fn rip_operands(bytes: &[u8], len: usize) -> Option<Vec<RipOperand>> {
+	let mut out = Vec::new();
+	let mut at = 0;
+	while at < len {
+		let insn = decode(bytes.get(at..)?)?;
+		if insn.len == 0 || at + insn.len > len {
+			return None;
+		}
+		if insn.rip_relative {
+			out.push(RipOperand {
+				disp_at: at + insn.rip_disp,
+				next: at + insn.len,
+			});
+		}
+		at += insn.len;
+	}
+	if at != len { None } else { Some(out) }
 }
 
 fn decode(code: &[u8]) -> Option<Insn> {
@@ -86,6 +121,7 @@ fn decode_primary(op: u8, rex_w: bool, operand16: bool, code: &[u8], i: usize) -
 			rip_relative: false,
 			relative,
 			terminator,
+			rip_disp: 0,
 		})
 	};
 	match op {
@@ -180,18 +216,21 @@ fn decode_0f(code: &[u8], i: usize) -> Option<Insn> {
 			rip_relative: false,
 			relative: false,
 			terminator: false,
+			rip_disp: 0,
 		}),
 		0x0B => Some(Insn {
 			len: i,
 			rip_relative: false,
 			relative: false,
 			terminator: true,
+			rip_disp: 0,
 		}),
 		0x80..=0x8F => Some(Insn {
 			len: take(code, i, 4)?,
 			rip_relative: false,
 			relative: true,
 			terminator: false,
+			rip_disp: 0,
 		}),
 		0x00..=0x03
 		| 0x10..=0x1F
@@ -221,6 +260,9 @@ fn decode_0f(code: &[u8], i: usize) -> Option<Insn> {
 struct Modrm {
 	next: usize,
 	rip_relative: bool,
+	/// Offset of the disp32 within the instruction; only set when
+	/// `rip_relative` (it directly follows the modrm byte).
+	disp: usize,
 	reg: u8,
 }
 
@@ -231,6 +273,7 @@ fn modrm(code: &[u8], i: usize) -> Option<Modrm> {
 	let reg = (byte >> 3) & 7;
 	let rm = byte & 7;
 	let mut rip_relative = false;
+	let mut disp = 0;
 	if mode != 3 {
 		if rm == 4 {
 			let sib = *code.get(next)?;
@@ -243,6 +286,7 @@ fn modrm(code: &[u8], i: usize) -> Option<Modrm> {
 				next += 4;
 			}
 		} else if mode == 0 && rm == 5 {
+			disp = next;
 			next += 4;
 			rip_relative = true;
 		} else if mode == 1 {
@@ -257,6 +301,7 @@ fn modrm(code: &[u8], i: usize) -> Option<Modrm> {
 	Some(Modrm {
 		next,
 		rip_relative,
+		disp,
 		reg,
 	})
 }
@@ -277,6 +322,7 @@ fn finish(
 		rip_relative: modrm.rip_relative,
 		relative,
 		terminator,
+		rip_disp: if modrm.rip_relative { modrm.disp } else { 0 },
 	})
 }
 
@@ -339,7 +385,7 @@ mod tests {
 		);
 		let mut rip = [0x90; 14];
 		rip[..7].copy_from_slice(&[0x48, 0x8B, 0x05, 0, 0, 0, 0]);
-		assert_eq!(steal_len(&rip), None);
+		assert_eq!(steal_len(&rip), Some(14));
 		let mut call = [0x90; 14];
 		call[..5].copy_from_slice(&[0xE8, 0, 0, 0, 0]);
 		assert_eq!(steal_len(&call), None);
@@ -348,6 +394,24 @@ mod tests {
 		split[10..15].copy_from_slice(&[0xB8, 1, 0, 0, 0]);
 		assert_eq!(steal_len(&split), Some(15));
 		assert_eq!(steal_len(&[0x90; 13]), None);
+	}
+
+	#[test]
+	fn rip_operand_positions_are_reported_for_relocation() {
+		let mut bytes = [0x90u8; 15];
+		// mov r14,[r13]; mov eax,[rip+8]; add [r14+0x18],eax
+		bytes[..3].copy_from_slice(&[0x4D, 0x8B, 0x26]);
+		bytes[3..9].copy_from_slice(&[0x8B, 0x05, 0x08, 0x00, 0x00, 0x00]);
+		bytes[9..13].copy_from_slice(&[0x41, 0x01, 0x46, 0x18]);
+		assert_eq!(steal_len(&bytes), Some(14));
+		let operands = rip_operands(&bytes, 14).unwrap();
+		assert_eq!(operands.len(), 1);
+		assert_eq!(operands[0].disp_at, 5);
+		assert_eq!(operands[0].next, 9);
+		// A jmp [rip+0] stays a terminator even though it is RIP-relative.
+		let mut jump = [0x90u8; 14];
+		jump[..6].copy_from_slice(&[0xFF, 0x25, 0, 0, 0, 0]);
+		assert_eq!(steal_len(&jump), None);
 	}
 
 	#[test]
@@ -388,7 +452,7 @@ mod tests {
 			vec![0xC3],
 			vec![0x0F, 0x0B],
 			vec![0xC5, 0xF8, 0x77],
-			vec![0x48, 0x8B, 0x05, 0, 0, 0, 0],
+			vec![0xFF, 0x25, 0, 0, 0, 0],
 		] {
 			let mut bytes = bad;
 			bytes.resize(28, 0x90);
