@@ -186,6 +186,122 @@ impl VerifiedGame {
 		self.memory
 			.read_i32(war.checked_add(candidates::war::SCORE_VALUE)?)
 	}
+
+	/// Dword count of regiment pointers on a combat-side object
+	/// ([`candidates::combat_side::REGIMENT_COUNT`]). Negative reads are
+	/// refused. This is not a live-verified headcount.
+	pub fn regiment_slot_count(&self, object: usize) -> Option<i32> {
+		let count = self
+			.memory
+			.read_i32(object.checked_add(candidates::combat_side::REGIMENT_COUNT)?)?;
+		(count >= 0).then_some(count)
+	}
+
+	/// Infantry / cavalry / artillery amounts from the named-amount list
+	/// on a combat-side object ([`candidates::combat_side::AMOUNT_LIST`]).
+	///
+	/// `None` means the walk failed or every non-`dice` name was
+	/// unrecognized — the caller must not invent zeros. A null head is a
+	/// real empty list and returns zeros. Current morale is not read;
+	/// that field is not pinned.
+	pub fn regiment_counts(&self, object: usize) -> Option<RegimentCounts> {
+		let head_at = object.checked_add(candidates::combat_side::AMOUNT_LIST)?;
+		let head = self.memory.read_qword(head_at)? as usize;
+		if head == 0 {
+			return Some(RegimentCounts::default());
+		}
+		if head <= 0x1_0000 {
+			return None;
+		}
+		let mut entries = Vec::new();
+		let mut node = head;
+		for _ in 0..64 {
+			let name = foch_runtime::dataplane::read_sso(
+				&self.memory,
+				node.checked_add(candidates::amount::NAME)?,
+				foch_runtime::dataplane::is_name_byte,
+			)?;
+			let count = self
+				.memory
+				.read_i32(node.checked_add(candidates::amount::COUNT)?)?;
+			entries.push((name, count));
+			let next = self
+				.memory
+				.read_qword(node.checked_add(candidates::amount::NEXT)?)?;
+			if next == 0 {
+				return counts_from_named(&entries);
+			}
+			let next = next as usize;
+			if next <= 0x1_0000 {
+				return None;
+			}
+			node = next;
+		}
+		None
+	}
+}
+
+/// How one named amount contributes to the three plane columns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegimentKind {
+	Infantry,
+	Cavalry,
+	Artillery,
+}
+
+/// Candidate headcounts for columns 8–10. Not live-verified.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegimentCounts {
+	pub infantry: i32,
+	pub cavalry: i32,
+	pub artillery: i32,
+}
+
+/// Classify one node name. `dice` is the literal `FUN_14021c980` skips.
+/// Unit-type suffixes (`western_medieval_infantry`) count as that arm.
+pub fn regiment_kind(name: &str) -> Option<RegimentKind> {
+	let name = name.trim().to_ascii_lowercase();
+	if name == "dice" || name.is_empty() {
+		return None;
+	}
+	if name == "infantry" || name.ends_with("_infantry") {
+		Some(RegimentKind::Infantry)
+	} else if name == "cavalry" || name.ends_with("_cavalry") {
+		Some(RegimentKind::Cavalry)
+	} else if name == "artillery" || name.ends_with("_artillery") {
+		Some(RegimentKind::Artillery)
+	} else {
+		None
+	}
+}
+
+/// Fold named amounts. `None` when a non-dice name was present and none
+/// of them classified — an unrecognized list must not become zeros.
+pub fn counts_from_named(entries: &[(String, i32)]) -> Option<RegimentCounts> {
+	let mut counts = RegimentCounts::default();
+	let mut recognized = false;
+	let mut other = false;
+	for (name, amount) in entries {
+		if name.eq_ignore_ascii_case("dice") {
+			continue;
+		}
+		match regiment_kind(name) {
+			Some(RegimentKind::Infantry) => {
+				counts.infantry = counts.infantry.saturating_add(*amount);
+				recognized = true;
+			}
+			Some(RegimentKind::Cavalry) => {
+				counts.cavalry = counts.cavalry.saturating_add(*amount);
+				recognized = true;
+			}
+			Some(RegimentKind::Artillery) => {
+				counts.artillery = counts.artillery.saturating_add(*amount);
+				recognized = true;
+			}
+			None => other = true,
+		}
+	}
+	(recognized || !other).then_some(counts)
 }
 
 /// The pure extraction behind [`VerifiedGame::owner_country_index`] and
@@ -327,5 +443,84 @@ mod tests {
 		assert_eq!(province_count_from(0x1000, 0x1000 + 8 * 4209), Some(4209));
 		assert_eq!(province_count_from(0x1008, 0x1000), None);
 		assert_eq!(province_count_from(0x1000, 0x1004), None);
+	}
+
+	fn named(pairs: &[(&str, i32)]) -> Vec<(String, i32)> {
+		pairs
+			.iter()
+			.map(|(name, count)| ((*name).to_string(), *count))
+			.collect()
+	}
+
+	#[test]
+	fn named_amounts_split_into_arms_and_refuse_an_unknown_list() {
+		let counts = counts_from_named(&named(&[
+			("dice", 99),
+			("western_medieval_infantry", 10),
+			("cavalry", 4),
+			("artillery", 2),
+		]))
+		.expect("classified");
+		assert_eq!(counts.infantry, 10);
+		assert_eq!(counts.cavalry, 4);
+		assert_eq!(counts.artillery, 2);
+		assert_eq!(
+			counts_from_named(&named(&[("dice", 5)])),
+			Some(RegimentCounts::default())
+		);
+		assert!(counts_from_named(&named(&[("huskarls", 8)])).is_none());
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn regiment_counts_walk_a_local_amount_list() {
+		let mut words = vec![0_u64; 0x80];
+		let base = words.as_mut_ptr() as usize;
+		let dice = base + 0x80;
+		let infantry = base + 0x100;
+		unsafe {
+			write_sso(dice, "dice");
+			write_i32(dice + candidates::amount::COUNT, 99);
+			write_qword(dice + candidates::amount::NEXT, infantry as u64);
+			write_sso(infantry, "infantry");
+			write_i32(infantry + candidates::amount::COUNT, 10);
+			write_qword(base + candidates::combat_side::AMOUNT_LIST, dice as u64);
+			write_i32(base + candidates::combat_side::REGIMENT_COUNT, 1);
+		}
+		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let game = VerifiedGame::new(Memory, base, expected).expect("pinned digest opens the gate");
+		let counts = game.regiment_counts(base).expect("walk");
+		assert_eq!(counts.infantry, 10);
+		assert_eq!(counts.cavalry, 0);
+		assert_eq!(game.regiment_slot_count(base), Some(1));
+
+		unsafe { write_qword(base + candidates::combat_side::AMOUNT_LIST, 0) };
+		assert_eq!(game.regiment_counts(base), Some(RegimentCounts::default()));
+	}
+
+	#[cfg(windows)]
+	unsafe fn write_sso(addr: usize, name: &str) {
+		let base = addr as *mut u8;
+		unsafe {
+			core::ptr::copy_nonoverlapping(name.as_ptr(), base, name.len());
+			let len = (name.len() as u64).to_le_bytes();
+			core::ptr::copy_nonoverlapping(len.as_ptr(), base.add(0x10), 8);
+			let cap = 0x0f_u64.to_le_bytes();
+			core::ptr::copy_nonoverlapping(cap.as_ptr(), base.add(0x18), 8);
+		}
+	}
+
+	#[cfg(windows)]
+	unsafe fn write_i32(addr: usize, value: i32) {
+		unsafe {
+			core::ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), addr as *mut u8, 4);
+		}
+	}
+
+	#[cfg(windows)]
+	unsafe fn write_qword(addr: usize, value: u64) {
+		unsafe {
+			core::ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), addr as *mut u8, 8);
+		}
 	}
 }

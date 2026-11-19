@@ -1,0 +1,7 @@
+{
+  "probe": true,
+  "playset": "fixtures/probe/game,fixtures/probe/overhaul",
+  "weights": "weights.json",
+  "our_tag": "SWE",
+  "our_index": 1500
+}

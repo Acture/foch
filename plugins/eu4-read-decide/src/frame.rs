@@ -3,18 +3,14 @@
 //! Everything here is a pure function over VALUES — the memory edge
 //! (VerifiedGame) stays thin and untestable offline by design. Columns
 //! the live path cannot fill yet are explicit below: army composition
-//! and morale arrive as [`FrameInput`] snapshots for now (regiment RE
-//! pending), terrain one-hots and supply stay zero until the template
-//! reads land, and a siege column of zero means "no siege in progress"
-//! exactly as the simulator encodes it.
+//! arrives through [`ArmySnapshot::with_regiments`] when the caller has
+//! a combat-side object (`foch_eu4_state::view::VerifiedGame::regiment_counts`).
+//! Current morale is still the caller's snapshot — its field is not
+//! pinned. An unresolved terrain bucket stays an all-zero one-hot
+//! (see `src/tools/eu4-decide/docs/v2-features.md`); a siege column of
+//! zero means "no siege in progress" exactly as the simulator encodes it.
 
 use foch_eu4_state::plane::{NODE, RULES, State};
-
-/// The simulator's terrain buckets, column order 22..26.
-const TERRAIN_SLOTS: [&str; 5] = ["plains", "forest", "hills", "mountains", "marsh"];
-/// Real map terrain names folded into a simulator bucket verbatim —
-/// extend only with a training-distribution decision, never silently.
-const TERRAIN_ALIASES: [(&str, usize); 0] = [];
 
 use crate::graph::StaticGraph;
 
@@ -29,10 +25,10 @@ pub struct DynamicProvince {
 	pub fort_level: i32,
 	/// Controlling country index, when read.
 	pub controller_index: Option<i32>,
-	/// Terrain display name ("hills", "marsh", ...). The frame maps
-	/// exactly the simulator's five terrain names; anything else
-	/// refuses the frame rather than guessing a bucket.
-	pub terrain_name: Option<&'static str>,
+	/// Pre-resolved terrain bucket (0..5) from the mod-compatible
+	/// codec ([`crate::terrain`]); `None` encodes "unresolved" as an
+	/// all-zero one-hot — terrain never refuses a frame.
+	pub terrain_bucket: Option<usize>,
 }
 
 /// Our stack for this decision, from the caller's snapshot.
@@ -43,6 +39,17 @@ pub struct ArmySnapshot {
 	pub cavalry: f32,
 	pub artillery: f32,
 	pub morale: f32,
+}
+
+impl ArmySnapshot {
+	/// Write candidate regiment amounts into the stand columns. Morale
+	/// is left alone: `FUN_14021c980` does not expose it.
+	pub fn with_regiments(mut self, counts: foch_eu4_state::view::RegimentCounts) -> Self {
+		self.infantry = counts.infantry as f32;
+		self.cavalry = counts.cavalry as f32;
+		self.artillery = counts.artillery as f32;
+		self
+	}
 }
 
 /// War-level facts for the rules row, mapped one-to-one onto the
@@ -96,7 +103,7 @@ pub struct FrameInput {
 /// simulator itself encodes an absence (armies, sieges).
 pub fn assemble(
 	graph: &StaticGraph,
-	dynamics: &dyn Fn(u32) -> Option<DynamicProvince>,
+	dynamics: &mut dyn FnMut(u32) -> Option<DynamicProvince>,
 	input: &FrameInput,
 ) -> Option<State> {
 	let count = graph.provinces.len();
@@ -119,25 +126,21 @@ pub fn assemble(
 			.into();
 		row[6] = (row[4] == 0.0 && row[5] == 0.0).into();
 		row[7] = (record.owner == input.our_tag).into();
-		// Terrain one-hot, columns 22..26: the simulator's five buckets
-		// only — an unknown name refuses the frame, never a guess.
-		let name = dynamic.terrain_name?;
-		let slot = TERRAIN_SLOTS
-			.iter()
-			.position(|&known| known == name)
-			.or_else(|| {
-				TERRAIN_ALIASES
-					.iter()
-					.find(|&&(from, _)| from == name)
-					.map(|&(_, to)| to)
-			})?;
-		row[22 + slot] = 1.0;
+		// Terrain one-hot, columns 22..26. The bucket was resolved by
+		// the mod-compatible codec at the caller; an unresolved terrain
+		// stays all-zero rather than refusing the frame.
+		if let Some(slot) = dynamic.terrain_bucket.filter(|slot| *slot < 5) {
+			row[22 + slot] = 1.0;
+		}
 		if slot == our_index {
 			row[8] = our.infantry / 14.0;
 			row[9] = our.cavalry / 14.0;
 			row[10] = our.artillery / 14.0;
 			row[11] = our.morale;
 		}
+		// Column 20 stays the binary war-goal flag the current weights
+		// consume. v2 replaces it with f(cb modifiers) + E_id; see the
+		// feature spec. A missing goal is zero, never a refused frame.
 		row[20] = (input.wargoal == Some(id)).into();
 		row[21] = if input.our_capital == Some(id) {
 			1.0
@@ -235,15 +238,15 @@ mod tests {
 	#[test]
 	fn assembles_the_plane_with_our_stand_column() {
 		let graph = graph();
-		let dynamics = |_| {
+		let mut dynamics = |_| {
 			Some(DynamicProvince {
 				development_mille: 14_000,
 				fort_level: 2,
 				controller_index: Some(3),
-				terrain_name: Some("hills"),
+				terrain_bucket: Some(2),
 			})
 		};
-		let state = assemble(&graph, &dynamics, &input()).expect("frame");
+		let state = assemble(&graph, &mut dynamics, &input()).expect("frame");
 		assert_eq!(state.nodes.len(), 3);
 		assert_eq!(state.nodes_flat().len(), 3 * NODE);
 		assert_eq!(state.here(), 0);
@@ -260,12 +263,12 @@ mod tests {
 	#[test]
 	fn rules_row_fills_the_live_war_slots_in_simulator_order() {
 		let graph = graph();
-		let dynamics = |_| {
+		let mut dynamics = |_| {
 			Some(DynamicProvince {
 				development_mille: 14_000,
 				fort_level: 2,
 				controller_index: Some(3),
-				terrain_name: Some("hills"),
+				terrain_bucket: Some(2),
 			})
 		};
 		let mut input = input();
@@ -278,7 +281,7 @@ mod tests {
 			we_declared: true,
 			has_wargoal: true,
 		};
-		let state = assemble(&graph, &dynamics, &input).expect("frame");
+		let state = assemble(&graph, &mut dynamics, &input).expect("frame");
 		let rules = &state.rules;
 		assert_eq!(rules[3], 365.0 / 1825.0);
 		assert_eq!(rules[4], 0.4);
@@ -295,42 +298,77 @@ mod tests {
 	#[test]
 	fn missing_dynamics_refuse_the_whole_frame() {
 		let graph = graph();
-		let dynamics = |id: u32| {
+		let mut dynamics = |id: u32| {
 			(id != 2).then_some(DynamicProvince {
 				development_mille: 14_000,
 				fort_level: 2,
 				controller_index: Some(3),
-				terrain_name: Some("hills"),
+				terrain_bucket: Some(2),
 			})
 		};
-		assert!(assemble(&graph, &dynamics, &input()).is_none());
+		assert!(assemble(&graph, &mut dynamics, &input()).is_none());
 	}
 
 	#[test]
-	fn terrain_outside_the_simulator_buckets_refuses_the_frame() {
+	fn unresolved_terrain_keeps_the_frame_with_a_zero_one_hot() {
 		let graph = graph();
-		let hills = |_| {
+		let mut hills = |_| {
 			Some(DynamicProvince {
 				development_mille: 14_000,
 				fort_level: 2,
 				controller_index: Some(3),
-				terrain_name: Some("hills"),
+				terrain_bucket: Some(2),
 			})
 		};
-		let lava = |_| {
-			Some(DynamicProvince {
-				development_mille: 14_000,
-				fort_level: 2,
-				controller_index: Some(3),
-				terrain_name: Some("lava"),
-			})
-		};
-		let input = input();
-		let state = assemble(&graph, &hills, &input).expect("hills frame");
+		let state = assemble(&graph, &mut hills, &input()).expect("hills frame");
 		assert_eq!(&state.nodes[0][22..27], &[0.0, 0.0, 1.0, 0.0, 0.0]);
-		assert!(
-			assemble(&graph, &lava, &input).is_none(),
-			"unmapped terrain refuses"
+		let mut unresolved = |_| {
+			Some(DynamicProvince {
+				development_mille: 14_000,
+				fort_level: 2,
+				controller_index: Some(3),
+				terrain_bucket: None,
+			})
+		};
+		let state = assemble(&graph, &mut unresolved, &input()).expect("unresolved frames");
+		assert_eq!(&state.nodes[0][22..27], &[0.0; 5]);
+	}
+
+	#[test]
+	fn regiment_amounts_fill_the_stand_columns_and_leave_morale() {
+		let graph = graph();
+		let mut dynamics = |_| {
+			Some(DynamicProvince {
+				development_mille: 14_000,
+				fort_level: 2,
+				controller_index: Some(3),
+				terrain_bucket: Some(9),
+			})
+		};
+		let mut input = input();
+		input.our = Some(
+			ArmySnapshot {
+				province: 1,
+				infantry: 0.0,
+				cavalry: 0.0,
+				artillery: 0.0,
+				morale: 0.4,
+			}
+			.with_regiments(foch_eu4_state::view::RegimentCounts {
+				infantry: 14,
+				cavalry: 2,
+				artillery: 2,
+			}),
+		);
+		let state = assemble(&graph, &mut dynamics, &input).expect("frame");
+		assert_eq!(state.nodes[0][8], 1.0);
+		assert_eq!(state.nodes[0][9], 2.0 / 14.0);
+		assert_eq!(state.nodes[0][10], 2.0 / 14.0);
+		assert_eq!(state.nodes[0][11], 0.4);
+		assert_eq!(
+			&state.nodes[0][22..27],
+			&[0.0; 5],
+			"an out-of-range bucket does not panic"
 		);
 	}
 }

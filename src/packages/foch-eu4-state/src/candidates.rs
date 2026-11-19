@@ -105,6 +105,55 @@ pub mod template {
 	pub const PROVINCE_ID: usize = 0x150;
 }
 
+/// `FUN_14017a3d0` is a budget-category name switch (`cmp ecx, 9`), not a
+/// province army vector. Case 4 returns the string `armies`; the other
+/// cases are `advisors`, `savings`, `colonists`, `missionaries`, `navies`,
+/// `subsidies`, `forts`, `corruption`, `states`. Do not read a province
+/// field from it.
+///
+/// Composition lives on the combat-side object `combat.cpp` walks
+/// (`FUN_140221750` at combat.cpp:0x727 calls `FUN_14021c980`; battle
+/// setup `FUN_140237f90` calls `FUN_140237120` / `FUN_14021c7a0` on the
+/// two sides at `+0x20` / `+0x28`). A province's stacks are still armies
+/// whose [`army::LOCATION`] points at the province. The global army array
+/// and the current-morale field were not pinned: the `morale` hit at
+/// `0x14104eb76` is a 7-byte string compare on a virtual call, not a
+/// dword. These offsets stay candidates until a live read confirms them.
+pub mod combat_side {
+	/// Linked list of named amounts. Head pointer. Node layout is [`amount`].
+	/// `FUN_14021c980` walks `node = [rcx+0x50]`, `next = [node+0x50]`.
+	pub const AMOUNT_LIST: usize = 0x50;
+	/// Pointer to the regiment-pointer array (`[object+0x190]`).
+	pub const REGIMENTS: usize = 0x190;
+	/// Dword count of pointers at [`REGIMENTS`] (`[object+0x19c]`).
+	pub const REGIMENT_COUNT: usize = 0x19c;
+	/// List `FUN_140d722c0` counts when [`ENGAGED`] is set. Battle setup
+	/// adds that count into the per-side totals.
+	pub const ENGAGED_LIST: usize = 0xe8;
+	/// Bool gate for [`ENGAGED_LIST`] (`[side+0x169]`).
+	pub const ENGAGED: usize = 0x169;
+	/// Begin of a 0x20-byte identity vector (end at `+0x108`). Element
+	/// `+0x10` is a packed identity; bits 32..48 are a country index.
+	/// `FUN_14021c7a0` returns one of these.
+	pub const IDENTITIES: usize = 0x100;
+	/// Dword count that selects `FUN_14021c7a0`'s early identity return.
+	pub const IDENTITY_COUNT: usize = 0xf8;
+}
+
+/// One node of [`combat_side::AMOUNT_LIST`].
+pub mod amount {
+	/// Next pointer. Zero ends the list.
+	pub const NEXT: usize = 0x50;
+	/// MSVC SSO name. `FUN_14021c980` compares it with the literal `dice`.
+	pub const NAME: usize = 0x0;
+	/// Second SSO on the node.
+	pub const NAME_2: usize = 0x20;
+	/// Dword added into the sum unless the name is `dice`.
+	pub const COUNT: usize = 0x40;
+	/// Flag byte beside the count.
+	pub const FLAG: usize = 0x44;
+}
+
 /// Candidate fields of one army stack object (from the army script/save
 /// setter `FUN_1401a5e50`, `AssignLeader`, and battle setup
 /// `FUN_140237f90`).
@@ -175,6 +224,17 @@ mod tests {
 			assert!(army::COMBAT_WIDTH.is_multiple_of(4));
 			assert!(army::ID.is_multiple_of(4));
 			assert!(army::LEADER.is_multiple_of(8));
+
+			assert!(combat_side::AMOUNT_LIST.is_multiple_of(8));
+			assert!(combat_side::REGIMENTS.is_multiple_of(8));
+			assert!(combat_side::REGIMENT_COUNT.is_multiple_of(4));
+			assert!(combat_side::ENGAGED_LIST.is_multiple_of(8));
+			assert!(combat_side::IDENTITIES.is_multiple_of(8));
+			assert!(combat_side::IDENTITY_COUNT.is_multiple_of(4));
+			assert!(amount::COUNT.is_multiple_of(4));
+			assert!(amount::NEXT.is_multiple_of(8));
+			assert!(amount::NAME < amount::NAME_2);
+			assert!(amount::NAME_2 < amount::COUNT);
 		}
 		let combat_stats = [
 			army::TACTICS,
