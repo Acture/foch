@@ -3,7 +3,7 @@
 use crate::receipt::Correlation;
 use foch_plugin_sdk::{FochHostApi, FochStr, log, result};
 use foch_runtime::{
-	dataplane::{CountryFlags, Eu4Game, Memory, layout},
+	dataplane::{CountryFlags, Eu4Game},
 	war::eu4::{CampaignStamp, WarRoster},
 };
 use serde::Deserialize;
@@ -16,11 +16,10 @@ use std::{
 	},
 };
 
-// The exact signature/ABI already used by the trade plugin. Offsets, build
-// identity, memory access and detour chaining remain shared Foch services.
-// The void return follows static evidence; main-thread/tick thread identity
-// has not been measured. This read diagnostic grants no mutation permission.
-const TICK_PATTERN: &str = "88 54 24 10 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 28 F1 FF FF 48 81 EC D8 0F 00 00 4C 8B F9 BA FF FF FF FF";
+// The exact signature/ABI already used by the trade plugin. Build identity,
+// memory access and detour chaining remain shared Foch services. The void
+// return follows static evidence; main-thread/tick thread identity has not
+// been measured. This read diagnostic grants no mutation permission.
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 static CONTEXT: OnceLock<Probe> = OnceLock::new();
 
@@ -138,21 +137,8 @@ struct Probe {
 }
 
 pub(super) unsafe fn install(host: &FochHostApi, request: Request) -> Result<(), String> {
-	if !cfg!(all(windows, target_arch = "x86_64")) {
-		return Err("read diagnostic requires Windows x64".into());
-	}
-	let tick = (host.exe_base as usize)
-		.checked_add(layout::TICK_RVA)
-		.ok_or("tick address overflow")?;
-	let required = layout::CONTEXT_GLOBAL_RVA.max(layout::COUNTRY_MANAGER_GLOBAL_RVA) + 8;
-	if host.exe_base.is_null() || host.exe_size < required || layout::TICK_RVA >= host.exe_size {
-		return Err("host image does not contain the pinned game fields".into());
-	}
-	let mut resolved = std::ptr::null_mut();
-	let code = unsafe { (host.find_pattern)(host, FochStr::from_str(TICK_PATTERN), &mut resolved) };
-	if code != result::OK || resolved as usize != tick {
-		return Err("verified monthly callback signature or RVA did not match".into());
-	}
+	// SAFETY: the caller passes the live host table for this plugin init.
+	let resolved = unsafe { foch_runtime::dataplane::resolve_monthly_tick(host) }?;
 	let mut next = std::ptr::null();
 	let mut hook = std::ptr::null_mut();
 	let code = unsafe {
@@ -281,21 +267,16 @@ fn observe(probe: &Probe, context: usize) -> Result<(), String> {
 	if probe.emitted.load(Ordering::Acquire) {
 		return Ok(());
 	}
-	let memory = Memory;
-	if Eu4Game::context_of(&memory, probe.exe_base, context).is_none() {
+	let Some(game) = Eu4Game::from_tick(probe.exe_base, context) else {
 		return Ok(());
-	}
-	let game = Eu4Game {
-		memory,
-		exe_base: probe.exe_base,
-		context,
 	};
 	let Some(countries) = game.countries() else {
 		return Ok(());
 	};
 	// Observe synchronously on the callback thread after forwarding next.
 	// No mutation or engine object pointer is retained beyond this read.
-	let rosters = unsafe { WarRoster::read_active(&memory, context) }?;
+	// SAFETY: same synchronous callback context the hook just forwarded.
+	let rosters = unsafe { game.active_wars() }?;
 	for war in &rosters {
 		for country in [&war.original_attacker, &war.original_defender]
 			.into_iter()
@@ -333,8 +314,8 @@ fn observe(probe: &Probe, context: usize) -> Result<(), String> {
 		// SAFETY: the same synchronous callback/context and registry objects as
 		// the roster read; no native pointers survive this callback.
 		let flags =
-			unsafe { country.flags(probe.exe_base, digest) }.map_err(|error| error.to_string())?;
-		let stamp = unsafe { CampaignStamp::read(&memory, context) }?;
+			unsafe { game.country_flags(&country, digest) }.map_err(|error| error.to_string())?;
+		let stamp = unsafe { game.campaign_stamp() }?;
 		let Some(message) = flag_message(&probe.request, &stamp, &flags)? else {
 			return Ok(());
 		};

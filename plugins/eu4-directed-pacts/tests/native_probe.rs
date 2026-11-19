@@ -92,7 +92,7 @@ fn native_probe_checks_the_actual_host_digest_before_resolving_or_installing_any
 	assert_eq!(read_status().state, state::REFUSED);
 	assert_eq!(FIND.load(Ordering::Relaxed), 0);
 	host.plugin_id = FochStr::from_str("dev.foch.directed-pacts.roster-probe");
-	let uppercase = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256.to_ascii_uppercase();
+	let uppercase = foch_runtime::dataplane::pinned_exe_sha256().to_ascii_uppercase();
 	for digest in ["", "1.37.5", "c9ec55a4", &uppercase] {
 		host.exe_sha256 = FochStr::from_str(digest);
 		assert_eq!(unsafe { (api.init)(&host) }, result::OK);
@@ -101,7 +101,7 @@ fn native_probe_checks_the_actual_host_digest_before_resolving_or_installing_any
 		assert_eq!(FIND.load(Ordering::Relaxed), 0);
 		assert_eq!(HOOKS.load(Ordering::Relaxed), 0);
 	}
-	host.exe_sha256 = FochStr::from_str(foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256);
+	host.exe_sha256 = FochStr::from_str(foch_runtime::dataplane::pinned_exe_sha256());
 	CONFIG.store(2, Ordering::Relaxed);
 	assert_eq!(unsafe { (api.init)(&host) }, result::OK);
 	assert_eq!(read_status().reason_code, 211);

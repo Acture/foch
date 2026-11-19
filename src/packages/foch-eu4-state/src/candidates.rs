@@ -7,16 +7,16 @@
 //! `Option`-gated by the caller and a `None` must stay `None`: never
 //! substitute zero to fill the plane and present it as complete live
 //! state. When a candidate passes live verification it graduates into
-//! [`foch_runtime::dataplane::layout`] and leaves this module.
+//! the shared dataplane views and leaves this module.
 //!
-//! The candidates pin to the same executable the shared layout does:
+//! The candidates pin to the same executable the shared data plane does:
 //! gate use with [`foch_runtime::dataplane::supports_build`] against
-//! `layout::EXPECTED_EXE_SHA256` — this crate carries no hash of its
-//! own.
+//! [`foch_runtime::dataplane::pinned_exe_sha256`] — this crate carries no
+//! hash of its own.
 
-/// Verified layout constants live in the shared dataplane; the values
-/// below extend that table for fields the shared plane does not carry
-/// yet. Same binary, same conventions (engine fixed point is ÷1000).
+/// Verified province fields are read through the shared dataplane. The
+/// values below extend that view for fields it does not carry yet. Same
+/// binary, same conventions (engine fixed point is ÷1000).
 pub mod province {
 	/// Base production, thousandths — the third ledger getter
 	/// (FUN_140a0dff0, LEDGER_PRODUCTION). Tax and manpower already
@@ -74,10 +74,10 @@ pub mod army {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_runtime::dataplane::layout::province as shared;
 
 	#[test]
 	fn candidate_offsets_stay_inside_one_province_stride() {
+		let span = foch_runtime::dataplane::Province::record_span();
 		for offset in [
 			province::BASE_PRODUCTION,
 			province::FORT_LEVEL,
@@ -86,7 +86,7 @@ mod tests {
 			province::OWNER_INDEX,
 			province::CORES,
 		] {
-			assert!(offset + 8 <= shared::CPROVINCE_SIZE);
+			assert!(offset + 8 <= span);
 		}
 	}
 
@@ -96,7 +96,7 @@ mod tests {
 		// boundary — actual host digest in, walk only after
 		// supports_build — is `crate::view::VerifiedGame`; this test
 		// is not host wiring and does not verify any candidate.
-		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let expected = foch_runtime::dataplane::pinned_exe_sha256();
 		assert!(foch_runtime::dataplane::supports_build(expected));
 	}
 }

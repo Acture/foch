@@ -11,7 +11,7 @@ pub const NODE: usize = 29;
 pub const RULES: usize = 26;
 
 /// Column semantics, in board order. `live` names the game-memory
-/// source the reader fills the column from (candidate offsets in [`crate::candidates`], verified ones in `foch_runtime::dataplane::layout`).
+/// source the reader fills the column from (candidate offsets in [`crate::candidates`], verified ones through `foch_runtime::dataplane` views).
 pub const COLUMNS: [&str; NODE] = [
 	"x",                   // 0: map position ÷5000
 	"y",                   // 1: map position ÷5000
