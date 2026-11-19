@@ -396,22 +396,18 @@ fn result_name(code: i32) -> &'static str {
 ///
 /// Every game-memory read and write goes through `foch_runtime::dataplane::Memory`
 /// so null, unmapped, or half-initialized objects degrade to `None` instead of
-/// faulting. Country tags are decoded from the inline packed identity at
-/// `CCountry + layout::country::TAG` (`+0x20`).
+/// faulting. Country tags come from `CountryView` (`from_ptr`, `try_tag`,
+/// `index`). The context global and the province array stay inside
+/// `Eu4Game::from_exe_base` and `Eu4Game::province`.
 mod detour {
 	use foch_plugin_sdk::{FochHook, FochHostApi, result};
-	use foch_runtime::dataplane::{
-		Memory, game,
-		layout::{country, province},
-	};
+	use foch_runtime::dataplane::{Memory, game};
 	use std::ffi::c_void;
 	use std::sync::Mutex;
 	use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 	/// Tribute payment command amount offset (`i32`, milli-ducats) in `FUN_140b1c800`.
 	const COMMAND_AMOUNT_OFFSET: usize = 0x1c;
-	/// Monthly accumulated income bank (`i32`) on `CCountry`, banked by `ApplyMonthlyIncome`.
-	const COUNTRY_MONTHLY_INCOME_BANK: usize = 0x68;
 	/// Upper bound on engine country indices. Matches
 	/// `foch_runtime::dataplane::game::valid_country_count`, which accepts a
 	/// registry of up to `i16::MAX` countries for overhaul mods. Indices are
@@ -420,9 +416,10 @@ mod detour {
 	/// `std::vector<int32>` of province ids on `FUN_1403f1510`'s third argument.
 	const SUBJECT_PROVINCE_BEGIN: usize = 0x88;
 	const SUBJECT_PROVINCE_END: usize = 0x90;
-	/// Packed country identity on `CProvince` (same qword layout as
-	/// [`country::TAG`]). Static 1.37.5: the income function compares its
-	/// index bits with the income recipient. Not live-verified.
+	/// Candidate packed country identity on `CProvince`. Static 1.37.5: the
+	/// income function compares its index bits with the income recipient.
+	/// Not live-verified. Anchored at `Province::raw_address`; the data plane
+	/// does not publish this offset.
 	pub(crate) const PROVINCE_OWNER: usize = 0x468;
 	/// Refuse a province-id span longer than this before touching it.
 	const MAX_PROVINCE_SPAN: usize = 4096;
@@ -431,16 +428,9 @@ mod detour {
 	const MAX_PROVINCE_ID: i32 = 65_535;
 
 	static EXE_BASE: AtomicUsize = AtomicUsize::new(0);
-	#[cfg(test)]
-	static PROVINCE_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 
 	pub(crate) fn set_exe_base(base: usize) {
 		EXE_BASE.store(base, Ordering::Relaxed);
-	}
-
-	#[cfg(test)]
-	pub(crate) fn set_province_context_for_test(context: usize) {
-		PROVINCE_CONTEXT.store(context, Ordering::Relaxed);
 	}
 
 	/// The host-owned trampoline cell; call through `*next` on every call.
@@ -488,33 +478,27 @@ mod detour {
 		Some((decoded.tag, decoded.index))
 	}
 
-	/// Guarded read of a country's inline packed tag and index at `country + country::TAG`.
+	/// Guarded read of a country's packed tag and index.
 	pub(crate) fn read_country_tag(memory: &Memory, country_addr: usize) -> Option<(String, u16)> {
-		let tag_addr = country_addr.checked_add(country::TAG)?;
-		let packed = memory.read_qword(tag_addr)?;
-		decode_packed_country_tag(packed, false)
-	}
-
-	fn province_context(memory: &Memory) -> Option<usize> {
-		#[cfg(test)]
-		{
-			let forced = PROVINCE_CONTEXT.load(Ordering::Relaxed);
-			if forced != 0 {
-				return Some(forced);
-			}
-		}
-		let base = EXE_BASE.load(Ordering::Relaxed);
-		if base <= 0x1_0000 {
+		let view = game::CountryView::from_ptr(*memory, country_addr)?;
+		let tag = view.try_tag()?;
+		let index = view.index()?;
+		if usize::from(index) >= MAX_COUNTRY_INDEX {
 			return None;
 		}
-		memory.read_ptr(base + foch_runtime::dataplane::layout::CONTEXT_GLOBAL_RVA)
+		Some((tag, index))
+	}
+
+	fn live_game() -> Option<game::Eu4Game> {
+		let base = EXE_BASE.load(Ordering::Relaxed);
+		game::Eu4Game::from_exe_base(base)
 	}
 
 	/// Subject tag for `FUN_1403f1510`.
 	///
 	/// The third argument is not a `CCountry`. It holds province ids at
-	/// `+0x88`/`+0x90`. Each id indexes `context + CPROVINCES` with stride
-	/// `CPROVINCE_SIZE`, and `CProvince + 0x468` is a packed country identity.
+	/// `+0x88`/`+0x90`. Each id is `game.province(id)`, and the candidate
+	/// owner at `raw_address + PROVINCE_OWNER` is a packed country identity.
 	/// The income function keeps provinces whose owner index matches the
 	/// recipient, so those owners are the overlord. The first owner with a
 	/// different index is the subject. Anything unreadable, oversized, or
@@ -525,11 +509,11 @@ mod detour {
 	/// name and does not reference `copy_from`; a `CSubjectType` key is not
 	/// established on `element` or `*(element+0x10)`.
 	pub(crate) fn subject_tag_from_provinces(
-		memory: &Memory,
+		game: &game::Eu4Game,
 		subject: usize,
-		context: usize,
 		overlord_index: Option<u16>,
 	) -> Option<String> {
+		let memory = &game.memory;
 		let begin = memory.read_qword(subject.checked_add(SUBJECT_PROVINCE_BEGIN)?)? as usize;
 		let end = memory.read_qword(subject.checked_add(SUBJECT_PROVINCE_END)?)? as usize;
 		if begin == 0 && end == 0 {
@@ -542,10 +526,6 @@ mod detour {
 		if count == 0 || count > MAX_PROVINCE_SPAN {
 			return None;
 		}
-		let provinces = memory.read_ptr(context.checked_add(province::CPROVINCES)?)?;
-		if !provinces.is_multiple_of(8) {
-			return None;
-		}
 		let scan = count.min(MAX_PROVINCE_SCAN);
 		for index in 0..scan {
 			let Some(id) = memory.read_i32(begin + index * 4) else {
@@ -554,12 +534,10 @@ mod detour {
 			if !(0..=MAX_PROVINCE_ID).contains(&id) {
 				continue;
 			}
-			let Some(province_addr) =
-				provinces.checked_add((id as usize).saturating_mul(province::CPROVINCE_SIZE))
-			else {
+			let Some(province) = game.province(id as u32) else {
 				continue;
 			};
-			let Some(owner_addr) = province_addr.checked_add(PROVINCE_OWNER) else {
+			let Some(owner_addr) = province.raw_address().checked_add(PROVINCE_OWNER) else {
 				continue;
 			};
 			let Some(packed) = memory.read_qword(owner_addr) else {
@@ -580,7 +558,7 @@ mod detour {
 	///
 	/// Accepts either a packed `CCountryTag` passed by value (high validity byte
 	/// non-zero, never collides with a canonical x64 user-mode pointer) or a
-	/// `CCountry*` pointer whose `+0x20` holds the inline packed tag.
+	/// `CCountry*` pointer whose packed identity `CountryView` reads.
 	pub(crate) fn resolve_partner_tag(memory: &Memory, partner: u64) -> Option<String> {
 		if let Some((tag, _)) = decode_packed_country_tag(partner, true) {
 			return Some(tag);
@@ -683,11 +661,10 @@ mod detour {
 			return;
 		}
 		let overlord = read_country_tag(&memory, country as usize);
-		let subject_tag = province_context(&memory).and_then(|context| {
+		let subject_tag = live_game().and_then(|game| {
 			subject_tag_from_provinces(
-				&memory,
+				&game,
 				subject as usize,
-				context,
 				overlord.as_ref().map(|(_, index)| *index),
 			)
 		});
@@ -766,13 +743,19 @@ mod detour {
 		unsafe { original(country, flush) };
 
 		let memory = Memory;
-		let Some((tag, country_index)) = read_country_tag(&memory, country as usize) else {
+		let Some(view) = game::CountryView::from_ptr(memory, country as usize) else {
 			return;
 		};
-		let Some(amount) = (country as usize)
-			.checked_add(COUNTRY_MONTHLY_INCOME_BANK)
-			.and_then(|addr| memory.read_i32(addr))
-		else {
+		let Some(tag) = view.try_tag() else {
+			return;
+		};
+		let Some(country_index) = view.index() else {
+			return;
+		};
+		if usize::from(country_index) >= MAX_COUNTRY_INDEX {
+			return;
+		}
+		let Some(amount) = view.monthly_income_bank() else {
 			return;
 		};
 		if let Ok(mut seen) = SEEN_MONTHLY.try_lock()
@@ -1026,7 +1009,7 @@ mod tests {
 	impl ResetSubjectTypes {
 		fn clear() -> Self {
 			*subject_types::ACTIVE.write().unwrap() = subject_types::SubjectTypeGraph::EMPTY;
-			detour::set_province_context_for_test(0);
+			detour::set_exe_base(0);
 			clear_runtime_watch();
 			Self
 		}
@@ -1039,7 +1022,7 @@ mod tests {
 
 	impl Drop for ResetSubjectTypes {
 		fn drop(&mut self) {
-			detour::set_province_context_for_test(0);
+			detour::set_exe_base(0);
 			clear_runtime_watch();
 			if let Ok(mut active) = subject_types::ACTIVE.write() {
 				*active = subject_types::SubjectTypeGraph::EMPTY;
@@ -1047,40 +1030,85 @@ mod tests {
 		}
 	}
 
-	/// Third-argument stand-in: province ids at +0x88/+0x90, owners at
-	/// `CProvince+0x468`, and a decoy packed tag at +0x20 that must be ignored.
-	#[allow(dead_code)] // the vecs keep the synthetic game objects alive
+	/// Decoy packed identity on the province-list argument. The income path
+	/// must ignore this slot and read the province owner instead. It is the
+	/// argument object's own field, not a published country offset.
+	const SUBJECT_DECOY_SLOT: usize = 0x20;
+
+	/// Third-argument stand-in: province ids at +0x88/+0x90, owners written
+	/// at the `0x468` candidate field, and a decoy packed tag that must be
+	/// ignored. The scene keeps the synthetic image alive.
+	#[allow(dead_code)]
 	struct ProvinceSubject {
 		ids: Vec<i32>,
-		provinces: Vec<u64>,
-		context: Vec<u64>,
 		subject: Vec<u64>,
+		scene: ProvinceScene,
+	}
+
+	#[cfg(windows)]
+	struct ProvinceScene(foch_runtime::dataplane::testing::FakeGame);
+	#[cfg(not(windows))]
+	struct ProvinceScene;
+
+	impl ProvinceSubject {
+		fn bind(&mut self) {
+			#[cfg(windows)]
+			{
+				let base = self.scene.0.exe_base().expect("synthetic image base");
+				detour::set_exe_base(base);
+			}
+		}
+
+		fn game(&mut self) -> Option<foch_runtime::dataplane::game::Eu4Game> {
+			#[cfg(windows)]
+			{
+				Some(self.scene.0.game().expect("synthetic game"))
+			}
+			#[cfg(not(windows))]
+			{
+				None
+			}
+		}
 	}
 
 	fn province_subject(owners: &[([u8; 3], i16)], decoy: u64) -> ProvinceSubject {
-		let stride_qwords = foch_runtime::dataplane::layout::province::CPROVINCE_SIZE / 8;
-		let mut provinces = vec![0_u64; stride_qwords * owners.len().max(1) + 1];
+		let scene = plant_province_scene(owners);
 		let mut ids = Vec::with_capacity(owners.len());
-		for (index, (tag, country_index)) in owners.iter().enumerate() {
+		for (index, _) in owners.iter().enumerate() {
 			ids.push(index as i32);
-			let slot = index * stride_qwords + detour::PROVINCE_OWNER / 8;
-			provinces[slot] = pack_country_tag(tag, *country_index, 0);
 		}
-		let mut context = vec![0_u64; 0x1cb0 / 8];
-		context[foch_runtime::dataplane::layout::province::CPROVINCES / 8] =
-			provinces.as_ptr() as u64;
 		let mut subject = vec![0_u64; 0xA0 / 8];
-		subject[foch_runtime::dataplane::layout::country::TAG / 8] = decoy;
+		subject[SUBJECT_DECOY_SLOT / 8] = decoy;
 		subject[0x88 / 8] = ids.as_ptr() as u64;
 		// SAFETY: `ids` is not mutated after this pointer is stored, and the
 		// buffer outlives every read in the test.
 		subject[0x90 / 8] = unsafe { ids.as_ptr().add(ids.len()) as u64 };
-		ProvinceSubject {
+		let mut built = ProvinceSubject {
 			ids,
-			provinces,
-			context,
 			subject,
+			scene,
+		};
+		built.bind();
+		built
+	}
+
+	#[cfg(windows)]
+	fn plant_province_scene(owners: &[([u8; 3], i16)]) -> ProvinceScene {
+		let mut scene = foch_runtime::dataplane::testing::FakeGame::new();
+		for (index, (tag, country_index)) in owners.iter().enumerate() {
+			let id = u32::try_from(index).expect("province id");
+			scene.add_province(id, 0, 0).expect("synthetic province");
+			let packed = pack_country_tag(tag, *country_index, 0);
+			scene
+				.write_province(id, detour::PROVINCE_OWNER, &packed.to_le_bytes())
+				.expect("province owner");
 		}
+		ProvinceScene(scene)
+	}
+
+	#[cfg(not(windows))]
+	fn plant_province_scene(_owners: &[([u8; 3], i16)]) -> ProvinceScene {
+		ProvinceScene
 	}
 
 	fn pack_country_tag(tag: &[u8; 3], index: i16, valid_flag: u8) -> u64 {
@@ -1088,13 +1116,44 @@ mod tests {
 		u64::from_le_bytes([tag[0], tag[1], tag[2], 0, idx[0], idx[1], 0, valid_flag])
 	}
 
-	/// Build an 8-byte-aligned fake `CCountry` buffer with its inline packed
-	/// identity at `layout::country::TAG` (`+0x20`).
-	fn fake_country(tag: &[u8; 3], index: i16, valid_flag: u8) -> Vec<u64> {
-		let mut buf = vec![0_u64; 16];
-		let slot = foch_runtime::dataplane::layout::country::TAG / 8;
-		buf[slot] = pack_country_tag(tag, index, valid_flag);
-		buf
+	/// Synthetic `CCountry` whose packed identity `CountryView` can read.
+	/// `valid_flag` stays in the signature so callers still record the flag
+	/// the live path accepts; `FakeGame` seals a valid identity.
+	struct SyntheticCountry {
+		address: usize,
+		_keep: CountryScene,
+	}
+
+	#[cfg(windows)]
+	#[allow(dead_code)] // keeps the synthetic country allocation alive
+	struct CountryScene(foch_runtime::dataplane::testing::FakeGame);
+	#[cfg(not(windows))]
+	struct CountryScene;
+
+	fn fake_country(tag: &[u8; 3], index: i16, valid_flag: u8) -> SyntheticCountry {
+		let (address, _keep) = plant_country(tag, index, valid_flag);
+		SyntheticCountry { address, _keep }
+	}
+
+	#[cfg(windows)]
+	fn plant_country(tag: &[u8; 3], index: i16, valid_flag: u8) -> (usize, CountryScene) {
+		assert_eq!(valid_flag, 1, "synthetic countries carry a valid identity");
+		let index = u16::try_from(index).expect("country index");
+		let tag = std::str::from_utf8(tag).expect("country tag");
+		let mut scene = foch_runtime::dataplane::testing::FakeGame::new();
+		scene
+			.add_country(tag, index, 0, None, &[])
+			.expect("synthetic country");
+		let address = scene
+			.country(usize::from(index))
+			.expect("country view")
+			.raw_address();
+		(address, CountryScene(scene))
+	}
+
+	#[cfg(not(windows))]
+	fn plant_country(_tag: &[u8; 3], _index: i16, _valid_flag: u8) -> (usize, CountryScene) {
+		(0, CountryScene)
 	}
 
 	#[test]
@@ -1213,10 +1272,10 @@ mod tests {
 		unsafe { detour::tribute_executor(command.as_mut_ptr(), kor_packed) };
 		assert_eq!(SEEN.load(Ordering::SeqCst), 1500);
 
-		// 2. CCountry* pointer passed in `partner` (tag read at +0x20 via dataplane::Memory).
+		// 2. CCountry* pointer passed in `partner` (tag read via CountryView).
 		let mug_country = fake_country(b"MUG", 77, 1);
 		command[0x1c..0x20].copy_from_slice(&1000i32.to_le_bytes());
-		unsafe { detour::tribute_executor(command.as_mut_ptr(), mug_country.as_ptr() as u64) };
+		unsafe { detour::tribute_executor(command.as_mut_ptr(), mug_country.address as u64) };
 		assert_eq!(SEEN.load(Ordering::SeqCst), 250);
 
 		// 3. When defines already applied 0.5x, residual scaling avoids double-scaling
@@ -1264,18 +1323,17 @@ mod tests {
 		cfg.tag_percent.insert("MUG".into(), 10);
 		*CONFIG.write().unwrap() = cfg;
 
-		let mut overlord = fake_country(b"ENG", 10, 1);
+		let overlord = fake_country(b"ENG", 10, 1);
 		let wls = province_subject(&[(*b"WLS", 11)], pack_country_tag(b"MUG", 99, 1));
 		let mut sco = vec![0_u64; 0xA0 / 8];
 		let mut half_init = vec![0_u64; 0xA0 / 8];
-		detour::set_province_context_for_test(wls.context.as_ptr() as usize);
 
 		// 1. No define patch: WLS comes from CProvince+0x468 (1500). The decoy
 		//    tag at +0x20 is ignored. An empty province list falls back to vassal.
 		let mut out = 0_i32;
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				wls.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
@@ -1285,7 +1343,7 @@ mod tests {
 
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				sco.as_mut_ptr().cast(),
 				std::ptr::null_mut(),
@@ -1298,7 +1356,7 @@ mod tests {
 		detour::set_applied_scales(1.0, 0.5);
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				sco.as_mut_ptr().cast(),
 				std::ptr::null_mut(),
@@ -1308,7 +1366,7 @@ mod tests {
 
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				wls.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
@@ -1321,7 +1379,7 @@ mod tests {
 		detour::set_applied_scales(1.0, 1.0);
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				half_init.as_mut_ptr().cast(),
 				std::ptr::null_mut(),
@@ -1343,7 +1401,7 @@ mod tests {
 		CONFIG.write().unwrap().enabled = false;
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				wls.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
@@ -1383,12 +1441,12 @@ mod tests {
 		cfg.kind_percent.insert("default".into(), 25);
 		*CONFIG.write().unwrap() = cfg;
 
-		let mut overlord = fake_country(b"ENG", 10, 1);
+		let overlord = fake_country(b"ENG", 10, 1);
 		let mut sco = vec![0_u64; 0xA0 / 8];
 		let mut out = 0_i32;
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				sco.as_mut_ptr().cast(),
 				std::ptr::null_mut(),
@@ -1424,13 +1482,12 @@ mod tests {
 		cfg.tag_percent.insert("WLS".into(), 150);
 		*CONFIG.write().unwrap() = cfg;
 
-		let mut overlord = fake_country(b"ENG", 10, 1);
+		let overlord = fake_country(b"ENG", 10, 1);
 		let both = province_subject(&[(*b"ENG", 10), (*b"WLS", 11)], 0);
-		detour::set_province_context_for_test(both.context.as_ptr() as usize);
 		let mut out = 0_i32;
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				both.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
@@ -1438,11 +1495,10 @@ mod tests {
 		}
 		assert_eq!(out, 1500, "the later non-overlord owner is the subject");
 
-		let only_overlord = province_subject(&[(*b"ENG", 10)], 0);
-		detour::set_province_context_for_test(only_overlord.context.as_ptr() as usize);
+		let mut only_overlord = province_subject(&[(*b"ENG", 10)], 0);
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				only_overlord.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
@@ -1453,14 +1509,10 @@ mod tests {
 		let mut corrupt = [0_u64; 0xA0 / 8];
 		corrupt[0x88 / 8] = 0x2_0000;
 		corrupt[0x90 / 8] = 0x2_0000 + 4 * 5_000;
+		let game = only_overlord.game().expect("synthetic game");
 		assert!(
-			detour::subject_tag_from_provinces(
-				&Memory,
-				corrupt.as_ptr() as usize,
-				only_overlord.context.as_ptr() as usize,
-				Some(10),
-			)
-			.is_none()
+			detour::subject_tag_from_provinces(&game, corrupt.as_ptr() as usize, Some(10),)
+				.is_none()
 		);
 	}
 
@@ -1516,12 +1568,12 @@ mod tests {
 		static mut CELL: detour::SubjectOriginal = original as detour::SubjectOriginal;
 		detour::set_next_subject_for_test((&raw const CELL) as *mut std::ffi::c_void);
 		detour::set_applied_scales(1.0, 1.0);
-		let mut overlord = fake_country(b"ENG", 10, 1);
+		let overlord = fake_country(b"ENG", 10, 1);
 		let mut subject = vec![0_u64; 0xA0 / 8];
 		let mut out = 0_i32;
 		unsafe {
 			detour::subject_income(
-				overlord.as_mut_ptr().cast(),
+				overlord.address as *mut u8,
 				&mut out,
 				subject.as_mut_ptr().cast(),
 				std::ptr::null_mut(),

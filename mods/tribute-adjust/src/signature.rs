@@ -253,15 +253,15 @@ mod tests {
 
 	#[test]
 	fn the_shipped_table_parses_verified() {
+		// The shipped offset is this table's own contract. The data plane
+		// no longer publishes the country-identity slot.
+		const INLINE_PACKED_TAG_OFFSET: u32 = 0x20;
 		let table = load_embedded().expect("embedded signature table parses");
 		// The 1.37.5 table ships verified patterns; gaps must close, not open.
 		assert!(table.usable().is_ok(), "{:?}", table.usable().err());
 		assert_eq!(table.exe_sha256.len(), 64);
 		assert!(foch_runtime::dataplane::supports_build(&table.exe_sha256));
 		assert_eq!(table.subject_tag.kind, ReadKind::InlineTag);
-		assert_eq!(
-			table.subject_tag.offsets,
-			vec![foch_runtime::dataplane::layout::country::TAG as u32]
-		);
+		assert_eq!(table.subject_tag.offsets, vec![INLINE_PACKED_TAG_OFFSET]);
 	}
 }
