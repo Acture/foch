@@ -1526,6 +1526,63 @@ fn daily_b_scale_preserves_order_and_releases_every_arena_block() {
 }
 
 #[test]
+fn daily_b_wide_country_and_province_counts_match_serial_without_truncation() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-wide");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let text = fs::read_to_string(rt.path("foch-host/daily-b-wide.txt")).unwrap();
+	let rows = proof(&text);
+	assert_eq!(rows["match"], "1", "{rows:?}");
+	assert_eq!(rows["warm-match"], "1", "{rows:?}");
+	assert_eq!(rows["centers"], "4096", "{rows:?}");
+	assert_eq!(rows["countries"], "3000", "{rows:?}");
+	assert_eq!(rows["provinces"], "12001", "{rows:?}");
+	assert_eq!(
+		rows["messages"].parse::<u32>().unwrap(),
+		rows["fired"].parse::<u32>().unwrap() * 2,
+		"{rows:?}"
+	);
+	assert!(rows["fired"].parse::<u32>().unwrap() > 1024, "{rows:?}");
+	assert_eq!(rows["live"], "0", "{rows:?}");
+	assert_eq!(rows["allocs"], rows["frees"], "{rows:?}");
+}
+
+#[test]
+fn daily_b_op_log_exhaustion_falls_back_to_the_complete_native_result() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-exhaust");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let text = fs::read_to_string(rt.path("foch-host/daily-b-exhaust.txt")).unwrap();
+	let rows = proof(&text);
+	assert_eq!(rows["match"], "1", "{rows:?}");
+	assert_eq!(rows["fallback"], "1", "{rows:?}");
+	assert!(rows["fired"].parse::<u32>().unwrap() > 0, "{rows:?}");
+	assert_eq!(
+		rows["messages"].parse::<u32>().unwrap(),
+		rows["fired"].parse::<u32>().unwrap() * 3,
+		"{rows:?}"
+	);
+}
+
+#[test]
+fn daily_b_real_prologue_stays_unhooked() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-block");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let entry = fs::read_to_string(rt.path("foch-host/countries-entry.txt")).unwrap();
+	let entry = proof(&entry);
+	assert_eq!(entry["daily-b-ready"], "1", "{entry:?}");
+	assert_eq!(entry["daily-b-real"], "0000000000000000", "{entry:?}");
+	let text = fs::read_to_string(rt.path("foch-host/daily-b-block.txt")).unwrap();
+	let rows = proof(&text);
+	assert_eq!(rows["blocked"], "1", "{rows:?}");
+	assert_eq!(rows["changed"], "0", "{rows:?}");
+}
+
+#[test]
 fn daily_log_and_arena_refuse_past_their_reservation_without_writing_through_it() {
 	let rt = Runtime::new();
 	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);

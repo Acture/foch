@@ -1877,14 +1877,66 @@ static int fixture_drive_daily_b(int centers, int countries, int provinces, int 
 	snprintf(text, sizeof(text),
 		"match=%d\nwarm-match=%d\nwarm-calls=%ld\nwarm-workers=%d\ncalls=%ld\n"
 		"fired=%d\nmessages=%d\nspread=%d\nquiet=%d\nlive=%llu\nallocs=%llu\nfrees=%llu\n"
-		"centers=%d\nfactor=%d\n",
+		"centers=%d\ncountries=%d\nprovinces=%d\nfactor=%d\n",
 		match, warm_match, warm_calls, warm_workers, calls,
 		parallel.fired_count, parallel.message_count, parallel.spread_count, parallel.quiet_count,
-		live, allocs, frees, centers, factor);
+		live, allocs, frees, centers, parallel.country_count, parallel.province_count, factor);
 	da_abi_proof(proof_name, text);
 	db_free_world(&base);
 	db_free_world(&warm);
 	db_free_world(&parallel);
+	return 0;
+}
+
+static int fixture_daily_b_exhaust(void) {
+	HMODULE plugin = GetModuleHandleA("eu4_country_month.dll");
+	typedef void (*SerialFn)(void *);
+	typedef void (*FaultFn)(const char *, unsigned);
+	SerialFn serial = plugin ? (SerialFn)GetProcAddress(plugin, "daily_b_serial") : NULL;
+	FaultFn fault = plugin ? (FaultFn)GetProcAddress(plugin, "fixture_daily_fault") : NULL;
+	struct db_world base, hooked;
+	int match = 0, fallback = 0;
+	char text[256], line[96];
+	FILE *proof;
+	if (!serial || !fault) return 132;
+	if (!db_make(&base, 64, 40, 80, 3) || !db_make(&hooked, 64, 40, 80, 3)) return 133;
+	serial(&base);
+	fault("db-ops", 1);
+	fixture_daily_b(&hooked);
+	fault(NULL, 0);
+	match = db_same(&base, &hooked) && hooked.fired_count == base.fired_count && base.fired_count > 0
+		&& hooked.message_count == base.message_count;
+	proof = fopen("foch-host/daily-b-dispatch.txt", "r");
+	if (proof) {
+		if (fgets(line, sizeof(line), proof) && strstr(line, "preflight-fallback")) fallback = 1;
+		fclose(proof);
+	}
+	snprintf(text, sizeof(text), "match=%d\nfallback=%d\nfired=%d\nmessages=%d\n",
+		match, fallback, hooked.fired_count, hooked.message_count);
+	da_abi_proof("daily-b-exhaust.txt", text);
+	db_free_world(&base);
+	db_free_world(&hooked);
+	return 0;
+}
+
+static int fixture_daily_b_block(void) {
+	HMODULE plugin = GetModuleHandleA("eu4_country_month.dll");
+	typedef int (*BlockFn)(const unsigned char *, size_t);
+	BlockFn block = plugin ? (BlockFn)GetProcAddress(plugin, "daily_b_real_prologue_blocked") : NULL;
+	static const unsigned char prologue[] = {
+		0x48,0x89,0x4C,0x24,0x08,0x55,0x53,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,
+		0x41,0x57,0x48,0x8D,0xAC,0x24,0x28,0xEC,0xFF,0xFF
+	};
+	unsigned char mutated[sizeof prologue];
+	char text[64];
+	int blocked, changed;
+	if (!block) return 134;
+	memcpy(mutated, prologue, sizeof prologue);
+	mutated[0] ^= 0xFF;
+	blocked = block(prologue, sizeof prologue);
+	changed = block(mutated, sizeof mutated);
+	snprintf(text, sizeof(text), "blocked=%d\nchanged=%d\n", blocked, changed);
+	da_abi_proof("daily-b-block.txt", text);
 	return 0;
 }
 
@@ -2140,6 +2192,9 @@ int main(int argc, char **argv) {
 	if (argc > 1 && strcmp(argv[1], "dailya-scale") == 0 && fixture_daily_scale() != 0) return 125;
 	if (argc > 1 && strcmp(argv[1], "dailyb") == 0 && fixture_drive_daily_b(48, 40, 60, 3, "daily-b-fixture.txt") != 0) return 126;
 	if (argc > 1 && strcmp(argv[1], "dailyb-scale") == 0 && fixture_drive_daily_b(3000, 2500, 3500, 3, "daily-b-scale.txt") != 0) return 127;
+	if (argc > 1 && strcmp(argv[1], "dailyb-wide") == 0 && fixture_drive_daily_b(4096, 3000, 12001, 2, "daily-b-wide.txt") != 0) return 129;
+	if (argc > 1 && strcmp(argv[1], "dailyb-exhaust") == 0 && fixture_daily_b_exhaust() != 0) return 130;
+	if (argc > 1 && strcmp(argv[1], "dailyb-block") == 0 && fixture_daily_b_block() != 0) return 131;
 	if (argc > 1 && strcmp(argv[1], "dailyb-guard") == 0 && fixture_daily_b_guard() != 0) return 128;
 	if (argc > 1 && strcmp(argv[1], "dailya-compare") == 0) {
 		int compare_rc = fixture_daily_list_comparison();

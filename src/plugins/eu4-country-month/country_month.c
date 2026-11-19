@@ -2292,8 +2292,14 @@ static int32_t install_daily_a(const FochHostApi *host, int *found, void **site_
    log is complete. Workers mutate a private center snapshot and record
    effects; the game thread replays that log in element order. Reservation
    failure or a log that would pass its cap leaves the world untouched and
-   the original body runs instead. The real image is not hooked: its
-   0x93d750 subtree is still an unproven shared write. */
+   the original body runs instead.
+   The installed 0xa89360 body stays native. 0x93d750 (country_cached_data.cpp,
+   CCountryModifiers) returns without a global store on its two ordinary
+   paths, but when the state dword at this+8 is 1 it is the CALCULATING
+   re-entry assert and calls 0x14d6110. That callee's fast path writes the
+   caller's buffer pointer and three dwords through fixed RIP slots on every
+   entry, so it is a cross-thread shared write, not a one-shot singleton.
+   FOCH_DAILY_B=1 therefore hooks only the fixture stand-in. */
 
 #define DB_ZEAL 1
 #define DB_QUIET 2
@@ -2672,6 +2678,17 @@ static int db_apply_parts(struct db_world *w, struct db_part *parts, int n) {
 
 __declspec(dllexport) unsigned daily_b_layout(void) {
 	return (unsigned)sizeof(struct db_world) ^ 0x0B170000u;
+}
+
+/* The 0xa89360 prologue. install_daily_b records it and does not hook it. */
+static const unsigned char daily_b_real_prologue[] = {
+	0x48,0x89,0x4C,0x24,0x08,0x55,0x53,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,
+	0x41,0x57,0x48,0x8D,0xAC,0x24,0x28,0xEC,0xFF,0xFF
+};
+
+__declspec(dllexport) int daily_b_real_prologue_blocked(const unsigned char *bytes, size_t len) {
+	if (!bytes || len < sizeof daily_b_real_prologue) return 0;
+	return memcmp(bytes, daily_b_real_prologue, sizeof daily_b_real_prologue) == 0;
 }
 
 __declspec(dllexport) void daily_b_serial(void *opaque) {
