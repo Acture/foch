@@ -6,7 +6,7 @@
 //! An adapter must reconcile every country against the live country registry.
 
 use super::{CountryId, JoinRefusal};
-use crate::dataplane::{Memory, layout::country};
+use crate::dataplane::{Memory, decode_packed_tag, layout::country};
 use std::collections::{BTreeMap, BTreeSet};
 
 // War-specific fields belong here; the common registry, reader and executable
@@ -19,7 +19,6 @@ const MAX_PARTICIPANTS: usize = 1024;
 const ACTIVE_WARS: usize = 0x1e30;
 const WAR_ARRAY_COUNTS: usize = 0x1e38;
 const MAX_WARS: usize = 4096;
-const OVERLORD: usize = 0x18f0;
 const DIPLOMACY: usize = 0x1510;
 const RELATION_SIZE: usize = 0x48;
 const TRUCE_FLAGS: usize = 0x45;
@@ -93,21 +92,12 @@ pub struct CountryRef {
 
 impl CountryRef {
 	fn from_packed(packed: u64) -> Result<Self, String> {
-		let bytes = packed.to_le_bytes();
-		let index = i16::from_le_bytes([bytes[4], bytes[5]]);
-		if bytes[7] == 0
-			|| bytes[3] != 0
-			|| index < 0
-			|| index as usize >= MAX_PARTICIPANTS
-			|| !bytes[..3]
-				.iter()
-				.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-		{
-			return Err("invalid packed country identity in war".into());
-		}
+		let decoded = decode_packed_tag(packed, true)
+			.filter(|tag| (tag.index as usize) < MAX_PARTICIPANTS)
+			.ok_or_else(|| "invalid packed country identity in war".to_string())?;
 		Ok(Self {
-			id: CountryId(index as u32),
-			tag: String::from_utf8(bytes[..3].to_vec()).map_err(|error| error.to_string())?,
+			id: CountryId(u32::from(decoded.index)),
+			tag: decoded.tag,
 		})
 	}
 }
@@ -247,7 +237,7 @@ pub unsafe fn check_country_restrictions(
 			"entering country's engine identity changed".into(),
 		));
 	}
-	let overlord = qword(memory, address, OVERLORD).map_err(unavailable)?;
+	let overlord = qword(memory, address, country::OVERLORD).map_err(unavailable)?;
 	if overlord >> 56 != 0 {
 		return Err(JoinRefusal::Subject);
 	}

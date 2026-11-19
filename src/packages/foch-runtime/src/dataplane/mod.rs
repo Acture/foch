@@ -13,8 +13,11 @@ pub mod memory;
 pub mod routes;
 
 pub use flags::{CountryFlag, CountryFlags, FlagReadError};
-pub use game::{Countries, CountryView, Eu4Game, NodeView, Province, TradeNodes};
-pub use memory::{Memory, is_key_byte, is_name_byte, read_sso};
+pub use game::{
+	Countries, CountryView, Eu4Game, NodeView, PackedCountryTag, Province, TradeNodes,
+	decode_packed_tag,
+};
+pub use memory::{Memory, StdVector, is_key_byte, is_name_byte, read_sso};
 pub use routes::{RouteMutation, live_order};
 
 /// A host-computed executable digest must match before using the pinned layout.

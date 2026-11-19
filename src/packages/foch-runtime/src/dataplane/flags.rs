@@ -4,7 +4,7 @@
 //! paths for the pinned executable. They have not passed a Foch game probe.
 //! Reading a snapshot grants no permission to set, remove or consume flags.
 
-use super::{CountryView, Memory, is_name_byte, layout, read_sso, supports_build};
+use super::{CountryView, Memory, StdVector, is_name_byte, layout, read_sso, supports_build};
 use std::collections::BTreeSet;
 
 // Keep static candidates out of layout's live-verified field set.
@@ -73,9 +73,7 @@ fn qword(memory: &Memory, address: usize, offset: usize) -> Result<u64, FlagRead
 
 #[derive(Debug, Eq, PartialEq)]
 struct Vector {
-	begin: usize,
-	end: usize,
-	capacity: usize,
+	header: StdVector,
 	count: usize,
 }
 
@@ -86,29 +84,18 @@ impl Vector {
 		stride: usize,
 		limit: usize,
 	) -> Result<Self, FlagReadError> {
-		let begin = qword(memory, address, 0)? as usize;
-		let end = qword(memory, address, 8)? as usize;
-		let capacity = qword(memory, address, 16)? as usize;
-		if end < begin
-			|| capacity < end
-			|| !begin.is_multiple_of(stride.min(8))
-			|| !(end - begin).is_multiple_of(stride)
-			|| !(capacity - begin).is_multiple_of(stride)
-			|| (begin == 0 && capacity != 0)
-			|| (begin != 0 && begin <= 0x1_0000)
-		{
-			return Err(FlagReadError::InvalidLayout("vector bounds"));
-		}
-		let count = (end - begin) / stride;
-		if (capacity - begin) / stride > limit {
+		let header = StdVector {
+			begin: qword(memory, address, 0)? as usize,
+			end: qword(memory, address, 8)? as usize,
+			capacity: qword(memory, address, 16)? as usize,
+		};
+		let count = header
+			.len(stride, usize::MAX)
+			.ok_or(FlagReadError::InvalidLayout("vector bounds"))?;
+		if (header.capacity - header.begin) / stride > limit {
 			return Err(FlagReadError::LimitExceeded("vector capacity"));
 		}
-		Ok(Self {
-			begin,
-			end,
-			capacity,
-			count,
-		})
+		Ok(Self { header, count })
 	}
 }
 
@@ -156,7 +143,7 @@ fn sample(memory: &Memory, address: usize, names_address: usize) -> Result<Sampl
 	let mut seen_names = BTreeSet::new();
 	for index in 0..ids.count {
 		let id_address = add(
-			ids.begin,
+			ids.header.begin,
 			index
 				.checked_mul(2)
 				.ok_or(FlagReadError::InvalidLayout("ID stride"))?,
@@ -175,7 +162,7 @@ fn sample(memory: &Memory, address: usize, names_address: usize) -> Result<Sampl
 			return Err(FlagReadError::Inconsistent);
 		}
 		let string_address = add(
-			names.begin,
+			names.header.begin,
 			(id as usize)
 				.checked_mul(STRING_SIZE)
 				.ok_or(FlagReadError::InvalidLayout("name stride"))?,
@@ -193,7 +180,7 @@ fn sample(memory: &Memory, address: usize, names_address: usize) -> Result<Sampl
 			return Err(FlagReadError::Inconsistent);
 		}
 		let date_address = add(
-			dates.begin,
+			dates.header.begin,
 			index
 				.checked_mul(4)
 				.ok_or(FlagReadError::InvalidLayout("date stride"))?,

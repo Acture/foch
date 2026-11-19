@@ -1,9 +1,10 @@
 //! The pinned EU4 1.37.5 Steam x64 layout the data plane walks.
 //!
 //! Every constant was reversed against the build with sha256
-//! `c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e`
-//! and live-verified from automated sessions; see the plugin's
-//! reverse-engineering record for the derivations.
+//! `c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e`.
+//! Most constants are live-verified from automated sessions; any
+//! statically identified fields that have not yet passed a live Foch
+//! session probe are explicitly marked in their doc comments.
 
 /// Exact executable identity used by every consumer of this pinned layout.
 pub const EXPECTED_EXE_SHA256: &str =
@@ -137,13 +138,28 @@ pub mod country_manager {
 pub mod country {
 	/// Packed identity: the low bytes hold the tag (printed as `%s`
 	/// by the ChangeTreasury console log), and bits 32..48 of the
-	/// same qword hold the country index.
+	/// same qword hold the country index. Live-verified.
 	pub const TAG: usize = 0x20;
+	/// Monthly income bank (`i32`, thousandths) used by tribute and
+	/// economy calculations. Statically identified for EU4 1.37.5;
+	/// pending live Foch game-session verification.
+	pub const MONTHLY_INCOME_BANK: usize = 0x68;
 	/// The treasury (int32), added to by `ChangeTreasury` at
-	/// `country.cpp:0x5882` and clamped to ±1,000,000,000.
+	/// `country.cpp:0x5882` and clamped to ±1,000,000,000. Live-verified.
 	pub const TREASURY: usize = 0xbb0;
 	/// `ChangeTreasury` clamps the treasury to this magnitude.
 	pub const TREASURY_CLAMP: i64 = 1_000_000_000;
+	/// Packed overlord country identity (same 8-byte layout as [`TAG`],
+	/// with byte 7 non-zero when this country is a subject). Statically
+	/// identified for EU4 1.37.5; shared with `war::eu4`.
+	pub const OVERLORD: usize = 0x18f0;
+	/// MSVC `std::vector` header of this country's subjects. Statically
+	/// identified for EU4 1.37.5; pending live Foch game-session
+	/// verification.
+	pub const SUBJECTS_VEC: usize = 0x24b0;
+	/// Tributary tribute-type discriminator (`u8`). Statically identified
+	/// for EU4 1.37.5; pending live Foch game-session verification.
+	pub const TRIBUTE_TYPE: usize = 0x28a6;
 }
 
 /// Player-facing UI refresh, mirrored from ChangeTreasury's tail.
