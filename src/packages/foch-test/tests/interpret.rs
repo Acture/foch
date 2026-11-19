@@ -49,6 +49,7 @@ fn interpret_fixture() -> foch_test::Interpretation {
 			mod_name: "foch-framework-example".into(),
 			observe: false,
 			seed: None,
+			history: None,
 		},
 	)
 }
@@ -201,6 +202,7 @@ fn interpret_corpus() -> foch_test::Interpretation {
 			mod_name: "Reform Mod".into(),
 			observe: false,
 			seed: None,
+			history: None,
 		},
 	)
 }

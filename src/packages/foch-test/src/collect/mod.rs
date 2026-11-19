@@ -133,23 +133,59 @@ pub fn collect(files: &[SourceFile]) -> Collection {
 	collection
 }
 
-/// Collect top-level decision definitions from `common/decisions/`.
+/// Collect country decisions from `decisions/*.txt`.
+///
+/// The game nests each decision under `country_decisions = { ... }`. The
+/// container itself is not a decision, and a top-level `name = { ... }`
+/// outside that container is not one either.
 fn decisions_collect(file: &SourceFile, statements: &[AstStatement], out: &mut Collection) {
+	out.decisions
+		.extend(country_decisions(&file.path, &file.text, statements));
+}
+
+/// Country decisions nested in `country_decisions` blocks, in source order.
+/// A later block that repeats a name is a later definition; callers that
+/// overlay playset layers decide which one survives.
+pub(crate) fn country_decisions(
+	path: &crate::source::RelPath,
+	text: &str,
+	statements: &[AstStatement],
+) -> Vec<DecisionInfo> {
+	let mut decisions = Vec::new();
 	for statement in statements {
 		let AstStatement::Assignment {
 			key,
-			value: AstValue::Block { span, .. },
+			value: AstValue::Block { items, .. },
 			..
 		} = statement
 		else {
 			continue;
 		};
-		out.decisions.push(DecisionInfo {
-			name: key.clone(),
-			origin: SourceSpan::from_parser(&file.path, span),
-			body: file.text[span.start.offset + 1..span.end.offset - 1].into(),
-		});
+		if key != "country_decisions" {
+			continue;
+		}
+		for item in items {
+			let AstStatement::Assignment {
+				key,
+				value: AstValue::Block { span, .. },
+				..
+			} = item
+			else {
+				continue;
+			};
+			let start = span.start.offset + 1;
+			let end = span.end.offset.saturating_sub(1);
+			if start > end || end > text.len() {
+				continue;
+			}
+			decisions.push(DecisionInfo {
+				name: key.clone(),
+				origin: SourceSpan::from_parser(path, span),
+				body: text[start..end].into(),
+			});
+		}
 	}
+	decisions
 }
 
 /// Collect top-level `name = { ... }` definitions from a scripted directory.

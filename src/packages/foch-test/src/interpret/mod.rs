@@ -22,6 +22,7 @@
 //! base snapshot, so both reading and writing them is refused rather than
 //! guessed.
 
+mod overlay;
 pub mod pins;
 
 use crate::lint::ProjectFacts;
@@ -38,6 +39,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+pub use overlay::{
+	ContentLayer, CountrySlice, HistoryTimeline, LayerFile, ProvinceSlice, fold_history,
+	overlay_decisions, overlay_history,
+};
 pub use pins::{EvidenceStatus, HandlerPin, SemanticsCatalog};
 
 /// Marks every offline result, in JSON and in reports, as its own layer.
@@ -204,10 +209,12 @@ pub struct InterpretOptions {
 	pub mod_name: String,
 	/// Record each case's run trace (observer mode).
 	pub observe: bool,
-	/// Starting state from the game's history files, when a game install is
-	/// available; without it the model world is only the countries a case
-	/// names and unwritten slots refuse.
+	/// Starting state already folded for one date. Ignored when [`Self::history`]
+	/// is set, because each case folds the timeline at its own start date.
 	pub seed: Option<SeedFacts>,
+	/// Dated history from the ordered playset. Each case applies the blocks
+	/// on or before its own start date.
+	pub history: Option<HistoryTimeline>,
 }
 
 /// Starting state the caller supplies from the game's own history files:
@@ -218,6 +225,20 @@ pub struct InterpretOptions {
 pub struct SeedFacts {
 	pub tags: BTreeSet<Tag>,
 	pub countries: BTreeMap<Tag, SeededCountry>,
+	/// Provinces that survived the history overlay, folded at the same date
+	/// as `countries`. Ids are whatever the files named, with no vanilla cap.
+	#[serde(default)]
+	pub provinces: BTreeMap<u32, ProvinceSeed>,
+}
+
+/// A province's scripted slots at one date. Absent fields were not written
+/// by the history that applies on that date.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProvinceSeed {
+	pub owner: Option<Tag>,
+	pub controller: Option<Tag>,
+	pub religion: Option<String>,
+	pub culture: Option<String>,
 }
 
 /// A country's scripted starting slots; `None` stays unknown until written.
@@ -501,6 +522,7 @@ pub fn interpret(
 			.collect(),
 		observe: options.observe,
 		seed: options.seed.as_ref(),
+		history: options.history.as_ref(),
 	};
 	Interpretation {
 		layer: LAYER,
@@ -707,6 +729,8 @@ struct Interpreter<'a> {
 	decisions: BTreeMap<&'a str, &'a DecisionInfo>,
 	/// Starting state from the game's history files, when supplied.
 	seed: Option<&'a SeedFacts>,
+	/// Dated history, folded at each case's start date.
+	history: Option<&'a HistoryTimeline>,
 	/// Observer mode: record each case's run trace.
 	observe: bool,
 }
@@ -788,8 +812,15 @@ impl<'a> Interpreter<'a> {
 			trace: Vec::new(),
 			recording: self.observe,
 		};
-		if let Some(seed) = self.seed {
-			// The seeded world is the countries existing at the bookmark;
+		let folded = self
+			.history
+			.map(|timeline| fold_history(timeline, case.start.date));
+		// A timeline is folded at this case's date. A snapshot seed is the
+		// caller's already-folded bookmark and applies only when no timeline
+		// was given.
+		let seed = folded.as_ref().or(self.seed);
+		if let Some(seed) = seed {
+			// The seeded world is the countries existing at this date;
 			// every_country iterates it instead of the case's named set.
 			for (tag, country) in &seed.countries {
 				if let Some(religion) = &country.religion {
@@ -1433,6 +1464,20 @@ impl<'a> Interpreter<'a> {
 			}
 			return;
 		}
+		if context == Context::Effect && key == "every_country" {
+			// The pin gate applies to the iterator itself and to every
+			// statement inside it. A missing handler on `every_country` does
+			// not skip the nested check: the precheck lists every reason.
+			if let Err(reason) = self.catalog.permits(key) {
+				reasons.push(self.refusal(key, &reason, context, where_));
+			}
+			let AstValue::Block { items, .. } = value else {
+				reasons.push(format!("{where_}: every_country must be a block"));
+				return;
+			};
+			self.scan_every_country(items, where_, scope, seen, reasons);
+			return;
+		}
 		if let Some(definition) = self.scripted_in(key, context) {
 			// A scripted name that collides with a catalog primitive would
 			// resolve differently in the scan and in execution; refuse the
@@ -1640,6 +1685,46 @@ impl<'a> Interpreter<'a> {
 		match country_event_args(value) {
 			Ok(args) => self.scan_event(&args.event, where_, scope, seen, reasons),
 			Err(reason) => reasons.push(format!("{where_}: {reason}")),
+		}
+	}
+
+	/// `every_country`: `limit` is a condition (zero or one), the rest are
+	/// effects. Both are scanned even when the iterator itself failed the
+	/// pin gate.
+	fn scan_every_country(
+		&self,
+		items: &[AstStatement],
+		where_: &SourceSpan,
+		scope: ScanScope,
+		seen: &mut BTreeSet<String>,
+		reasons: &mut Vec<String>,
+	) {
+		let mut limits = 0;
+		for statement in items {
+			match statement {
+				AstStatement::Comment { .. } => continue,
+				AstStatement::Assignment { key, value, .. } if key == "limit" => {
+					limits += 1;
+					let AstValue::Block { items, .. } = value else {
+						reasons.push(format!("{where_}: limit must be a block"));
+						continue;
+					};
+					self.scan_statements(items, where_, Context::Condition, scope, seen, reasons);
+				}
+				other => self.scan_statements(
+					std::slice::from_ref(other),
+					where_,
+					Context::Effect,
+					scope,
+					seen,
+					reasons,
+				),
+			}
+		}
+		if limits > 1 {
+			reasons.push(format!(
+				"{where_}: every_country needs exactly one limit block"
+			));
 		}
 	}
 
@@ -2097,6 +2182,9 @@ impl<'a> Interpreter<'a> {
 				);
 			}
 			"every_country" => {
+				self.catalog
+					.permits(key)
+					.map_err(|reason| format!("{where_}: {reason}"))?;
 				let AstValue::Block { items, .. } = value else {
 					return Err(format!("{where_}: every_country must be a block"));
 				};
@@ -2797,6 +2885,7 @@ mod tests {
 				mod_name: "Offline Mod".into(),
 				observe: false,
 				seed: None,
+				history: None,
 			},
 		)
 	}
@@ -4335,6 +4424,7 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: true,
 				seed: None,
+				history: None,
 			},
 		);
 		let trace = &case(&observed, "observed").trace;
@@ -4472,6 +4562,7 @@ test = {
 				)
 			})
 			.collect(),
+			provinces: BTreeMap::new(),
 		};
 		let result = interpret(
 			&plan,
@@ -4482,6 +4573,7 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: false,
 				seed: Some(seed),
+				history: None,
 			},
 		);
 		let seeded_read = case(&result, "seeded_read");
@@ -4536,10 +4628,101 @@ test = {
 		assert_eq!(iterate.outcome, Outcome::Pass, "{:#?}", iterate);
 	}
 
-	const DECISION_FILE: &str = r#"unify_japan_test = {
-	potential = { tag = SWE }
-	allow = { has_country_flag = ready }
-	effect = { set_country_flag = decided }
+	fn pinned_catalog(body: &str) -> SemanticsCatalog {
+		let text = format!(
+			r#"{{
+			"format": 1,
+			"status": "pinned",
+			"game_version": "1.37.5",
+			"binary_sha256": "abc",
+			"primitives": {{ {body} }}
+		}}"#
+		);
+		SemanticsCatalog::parse(&text).unwrap()
+	}
+
+	const PINNED_HANDLER: &str = r#""handler": {
+		"symbol": "CCountry::Example",
+		"address": 16,
+		"end": 64,
+		"pseudocode_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	}"#;
+
+	/// An unpinned effect inside `every_country` is still refused. The
+	/// iterator's own handler must not hide the nested pin check.
+	#[test]
+	fn every_country_precheck_does_not_bypass_an_unpinned_body() {
+		let catalog = pinned_catalog(&format!(
+			r#"
+			"every_country": {{ "kind": "effect", "facts": {{}}, {PINNED_HANDLER} }},
+			"set_country_flag": {{ "kind": "effect", "facts": {{}}, {PINNED_HANDLER} }},
+			"has_country_flag": {{ "kind": "trigger", "facts": {{}}, {PINNED_HANDLER} }},
+			"add_prestige": {{ "kind": "effect", "facts": {{}}, "handler": null }}
+			"#
+		));
+		const CASES: &str = r#"test = {
+	name = bypass
+	time = 1444.11.11
+	tag = SWE
+	effect = { every_country = { add_prestige = 1 set_country_flag = seen } }
+	expect = { has_country_flag = seen }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&catalog,
+		);
+		let bypass = case(&result, "bypass");
+		assert_eq!(bypass.outcome, Outcome::Unsupported);
+		assert!(
+			bypass
+				.unsupported
+				.iter()
+				.any(|reason| reason.contains("add_prestige")
+					&& reason.contains("no decompiled handler evidence")),
+			"{:#?}",
+			bypass.unsupported
+		);
+	}
+
+	/// A missing handler on `every_country` still scans the limit and the body.
+	#[test]
+	fn every_country_precheck_lists_nested_unpinned_reasons_too() {
+		let catalog = pinned_catalog(
+			r#"
+			"every_country": { "kind": "effect", "facts": {}, "handler": null },
+			"always": { "kind": "trigger", "facts": {}, "handler": null },
+			"add_prestige": { "kind": "effect", "facts": {}, "handler": null }
+			"#,
+		);
+		const CASES: &str = r#"test = {
+	name = all_reasons
+	time = 1444.11.11
+	tag = SWE
+	effect = { every_country = { limit = { always = yes } add_prestige = 1 } }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&catalog,
+		);
+		let reasons = case(&result, "all_reasons").unsupported.join("\n");
+		assert!(reasons.contains("every_country"), "{reasons}");
+		assert!(reasons.contains("always"), "{reasons}");
+		assert!(reasons.contains("add_prestige"), "{reasons}");
+		assert_eq!(
+			reasons.matches("no decompiled handler evidence").count(),
+			3,
+			"{reasons}"
+		);
+	}
+
+	const DECISION_FILE: &str = r#"country_decisions = {
+	unify_japan_test = {
+		potential = { tag = SWE }
+		allow = { has_country_flag = ready }
+		effect = { set_country_flag = decided }
+	}
 }"#;
 
 	#[test]
@@ -4554,11 +4737,7 @@ test = {
 }"#;
 		let result = interpret_sources(
 			&[
-				file(
-					"common/decisions/test.txt",
-					SourceKind::Decisions,
-					DECISION_FILE,
-				),
+				file("decisions/test.txt", SourceKind::Decisions, DECISION_FILE),
 				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
 			],
 			&ProjectFacts::default(),
@@ -4579,11 +4758,7 @@ test = {
 }"#;
 		let result = interpret_sources(
 			&[
-				file(
-					"common/decisions/test.txt",
-					SourceKind::Decisions,
-					DECISION_FILE,
-				),
+				file("decisions/test.txt", SourceKind::Decisions, DECISION_FILE),
 				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
 			],
 			&ProjectFacts::default(),
@@ -4690,6 +4865,7 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: true,
 				seed: None,
+				history: None,
 			},
 		);
 		let toggled = case(&result, "toggled");
@@ -4741,6 +4917,7 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: true,
 				seed: None,
+				history: None,
 			},
 		);
 		let any_command = case(&result, "any_command");
@@ -4753,6 +4930,111 @@ test = {
 			)),
 			"{:#?}",
 			any_command.trace
+		);
+	}
+
+	#[test]
+	fn history_date_blocks_follow_each_case_date() {
+		let timeline = overlay_history(&[
+			ContentLayer {
+				replace_paths: Vec::new(),
+				files: vec![
+					LayerFile {
+						path: "history/countries/SWE - Sweden.txt".into(),
+						text: "religion = catholic\nprimary_culture = swedish\n1500.1.1 = { religion = protestant }\n".into(),
+					},
+					LayerFile {
+						path: "history/countries/DAN - Denmark.txt".into(),
+						text: "1500.1.1 = { religion = protestant }\n".into(),
+					},
+				],
+			},
+			ContentLayer {
+				replace_paths: Vec::new(),
+				files: vec![LayerFile {
+					path: "history/countries/Q01 - Custom.txt".into(),
+					text: "religion = norse\n".into(),
+				}],
+			},
+		])
+		.unwrap();
+		const CASES: &str = r#"test = {
+	name = early
+	time = 1444.11.11
+	tag = SWE
+	expect = { religion = catholic NOT = { religion = protestant } }
+}
+test = {
+	name = later
+	time = 1500.1.1
+	tag = SWE
+	expect = { religion = protestant primary_culture = swedish }
+}
+test = {
+	name = custom
+	time = 1444.11.11
+	tag = Q01
+	expect = { religion = norse }
+}
+test = {
+	name = not_yet
+	time = 1444.11.11
+	tag = DAN
+	expect = { religion = protestant }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: false,
+				seed: None,
+				history: Some(timeline),
+			},
+		);
+		assert_eq!(
+			case(&result, "early").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "early")
+		);
+		assert_eq!(
+			case(&result, "later").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "later")
+		);
+		assert_eq!(
+			case(&result, "custom").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "custom")
+		);
+		let not_yet = case(&result, "not_yet");
+		assert_eq!(not_yet.outcome, Outcome::Unsupported);
+		assert!(
+			not_yet.unsupported[0].contains("unknown until the case writes it"),
+			"{:#?}",
+			not_yet.unsupported
 		);
 	}
 

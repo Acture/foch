@@ -6,7 +6,7 @@
 
 use super::HandlerResult;
 use crate::cli::arg::{CheckOutputFormat, TestArgs};
-use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
+use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
 use foch::input::load_config_read_only;
 use foch_annotation::builtin::SCHEMAS;
 use foch_annotation::value::scalar;
@@ -17,13 +17,14 @@ use foch_test::plan::{IgnoredMode, Isolation, Plan, SessionId};
 use foch_test::report::EnvironmentRecord;
 use foch_test::select::{Expr, NodeIdPattern};
 use foch_test::{
-	Bundle, Diagnostic, ExpandOptions, GroupOptions, InterpretOptions, Interpretation, Outcome,
-	ProjectFacts, RelPath, Report, RunArtifacts, RunContext, Selector, SemanticsCatalog,
-	SourceFile, SourceKind, Status, blocks_run, check_capabilities, collect, compile, expand,
-	group, interpret, judge, lint, reconcile,
+	Bundle, ContentLayer, Diagnostic, ExpandOptions, GroupOptions, InterpretOptions,
+	Interpretation, LayerFile, Outcome, ProjectFacts, RelPath, Report, RunArtifacts, RunContext,
+	Selector, SemanticsCatalog, SourceFile, SourceKind, Status, blocks_run, check_capabilities,
+	collect, compile, expand, group, interpret, judge, lint, overlay_decisions, overlay_history,
+	reconcile,
 };
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -229,93 +230,107 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	Ok(report.exit_code())
 }
 
-/// Starting state from the game's own history files: the countries that
-/// exist at the bookmark and their scripted religion, culture, government
-/// and rank. Missing installs seed nothing — the model then runs on the
-/// countries a case names and unwritten slots refuse.
-fn seed_from_game(args: &TestArgs) -> Result<Option<foch_test::SeedFacts>> {
-	// Explicit opt-in: seeding only reads an install the author named.
+/// Vanilla, then declared dependencies, then the mod under test.
+///
+/// That is the ordered playset `foch test` can see. Layers are not sorted.
+/// `--game-path` is the only way vanilla is included; a missing install adds
+/// no vanilla layer. `replace_path` is read from each mod's own descriptor.
+fn playset_layers(args: &TestArgs, root: &Path) -> Result<Vec<ContentLayer>> {
+	let mut layers = Vec::new();
+	if let Some(game_root) = vanilla_root(args)? {
+		layers.push(read_content_layer(&game_root, Vec::new())?);
+	}
+	let dependencies = resolve_dependencies(root, default_eu4_user_dir().as_deref());
+	for warning in &dependencies.unresolved {
+		eprintln!("warning: dependency {warning:?} is not installed; overlaying without it");
+	}
+	for dependency in &dependencies.mods {
+		let replace = replace_paths_of(&dependency.path)?;
+		layers.push(read_content_layer(&dependency.path, replace)?);
+	}
+	layers.push(read_content_layer(root, replace_paths_of(root)?)?);
+	Ok(layers)
+}
+
+/// The named install, when `--game-path` was passed and the install exists.
+/// Seeding never searches for a game on its own.
+fn vanilla_root(args: &TestArgs) -> Result<Option<PathBuf>> {
 	let Some(game_path) = args.game_path.as_deref() else {
 		return Ok(None);
 	};
 	let config = load_config_read_only()?;
-	let game_root = match foch_runtime::runner::locate_game(&config, Some(game_path)) {
-		Ok(root) => root,
-		Err(_) => return Ok(None),
-	};
-	let history = game_root.join("history/countries");
-	let mut tags = BTreeSet::new();
-	let mut countries = BTreeMap::new();
-	let entries = match fs::read_dir(&history) {
-		Ok(entries) => entries,
-		Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-		Err(err) => return Err(err.into()),
-	};
-	for entry in entries.flatten() {
-		let name = entry.file_name();
-		let Some(file) = name.to_str() else {
-			continue;
-		};
-		let Some(stem) = file.strip_suffix(".txt") else {
-			continue;
-		};
-		let Ok(tag) = foch_test::Tag::parse(stem.split_once(' ').map_or(stem, |(tag, _)| tag))
-		else {
-			continue;
-		};
-		// Some histories carry non-UTF-8 bytes in comments; read lossily so
-		// the scripted fields still parse.
-		let Ok(bytes) = fs::read(entry.path()) else {
-			continue;
-		};
-		let text = String::from_utf8_lossy(&bytes);
-		let parsed =
-			parse_clausewitz_content(foch::model::GamePath::new("history.txt").unwrap(), &text);
-		let mut seeded = foch_test::SeededCountry::default();
-		for statement in &parsed.ast.statements {
-			let AstStatement::Assignment { key, value, .. } = statement else {
-				continue;
-			};
-			let scalar = || {
-				matches!(value, AstValue::Scalar { .. }).then(|| scalar(value).unwrap_or_default())
-			};
-			match key.as_str() {
-				"religion" => seeded.religion = scalar(),
-				"primary_culture" => seeded.culture = scalar(),
-				"government" => seeded.government = scalar(),
-				"government_rank" => {
-					seeded.government_rank = scalar().and_then(|text| text.parse().ok())
-				}
-				_ => {}
-			}
-		}
-		tags.insert(tag.clone());
-		countries.insert(tag, seeded);
+	match foch_runtime::runner::locate_game(&config, Some(game_path)) {
+		Ok(root) => Ok(Some(root)),
+		Err(_) => Ok(None),
 	}
-	Ok(Some(foch_test::SeedFacts { tags, countries }))
+}
+
+fn replace_paths_of(root: &Path) -> Result<Vec<String>> {
+	let path = root.join("descriptor.mod");
+	if !path.is_file() {
+		return Ok(Vec::new());
+	}
+	let descriptor = foch::playset::descriptor::load_descriptor(&path)?;
+	Ok(descriptor
+		.replace_path
+		.iter()
+		.map(|item| item.to_string())
+		.collect())
+}
+
+/// Decisions and history this root ships. Files inside the layer stay in
+/// path order; the caller orders the layers.
+fn read_content_layer(root: &Path, replace_paths: Vec<String>) -> Result<ContentLayer> {
+	let mut files = Vec::new();
+	for directory in ["decisions", "history/countries", "history/provinces"] {
+		for path in directory_files(root, directory)? {
+			let relative = path
+				.strip_prefix(root)?
+				.to_string_lossy()
+				.replace('\\', "/");
+			let bytes = fs::read(&path)?;
+			files.push(LayerFile {
+				path: relative,
+				text: String::from_utf8_lossy(&bytes).into_owned(),
+			});
+		}
+	}
+	files.sort_by(|left, right| left.path.cmp(&right.path));
+	Ok(ContentLayer {
+		replace_paths,
+		files,
+	})
 }
 
 /// `--offline`: interpret the planned cases against the embedded semantics
-/// catalog. No game launch, no Steam login; modeled semantics only, seeded
-/// from the game's history files when an install is reachable.
+/// catalog. No game launch, no Steam login. Decisions and history come from
+/// the ordered playset: vanilla only when `--game-path` names an install,
+/// then dependencies, then this mod. Each case folds history at its own date.
 fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 	let run_id = new_run_id()?;
-	let seed = seed_from_game(args)?;
-	if let Some(seed) = &seed {
+	let layers = playset_layers(args, &planned.root)?;
+	let mut plan = planned.plan.clone();
+	plan.decisions =
+		overlay_decisions(&layers).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+	let timeline =
+		overlay_history(&layers).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+	if !timeline.countries.is_empty() || !timeline.provinces.is_empty() {
 		eprintln!(
-			"seeded {} countries from the game's history files",
-			seed.tags.len()
+			"loaded {} country histories and {} province histories from the ordered playset",
+			timeline.countries.len(),
+			timeline.provinces.len()
 		);
 	}
 	let interpretation = interpret(
-		&planned.plan,
+		&plan,
 		&project_facts(),
 		&SemanticsCatalog::embedded(),
 		&InterpretOptions {
 			run_id: run_id.clone(),
 			mod_name: planned.mod_name.clone(),
 			observe: !args.no_observe,
-			seed,
+			seed: None,
+			history: Some(timeline),
 		},
 	);
 	let requested_output = match &args.out {
@@ -563,7 +578,7 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 			|| relative.starts_with("common/scripted_effects/")
 		{
 			SourceKind::Scripted
-		} else if relative.starts_with("common/decisions/") {
+		} else if relative.starts_with("decisions/") {
 			SourceKind::Decisions
 		} else {
 			SourceKind::Inline
@@ -792,7 +807,7 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 		let mut files = event_files(&root)?;
 		files.extend(tests_files(&root)?);
 		files.extend(scripted_files(&root)?);
-		files.extend(directory_files(&root, "common/decisions")?);
+		files.extend(directory_files(&root, "decisions")?);
 		if !files.contains(&path) {
 			files.push(path);
 		}
@@ -811,7 +826,7 @@ fn discover(path: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
 	let mut files = event_files(&root)?;
 	files.extend(tests_files(&root)?);
 	files.extend(scripted_files(&root)?);
-	files.extend(directory_files(&root, "common/decisions")?);
+	files.extend(directory_files(&root, "decisions")?);
 	Ok((root, files))
 }
 

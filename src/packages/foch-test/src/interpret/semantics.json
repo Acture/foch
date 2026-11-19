@@ -193,7 +193,7 @@
     "every_country": {
       "kind": "effect",
       "facts": {
-        "behavior": "iterates the countries the case has named (the model world), not the full game set"
+        "behavior": "iterates the countries in the model world: the case's named set, or the history overlay folded at the case date"
       },
       "handler": null
     },

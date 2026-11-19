@@ -758,3 +758,77 @@ fn offline_refuses_runner_only_flags() {
 	);
 	assert!(!output.status.success());
 }
+
+#[test]
+fn offline_takes_a_nested_country_decision() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/decisions")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/decisions/00_decisions.txt"),
+		"country_decisions = {\n\tmy_decision = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { always = yes }\n\t\teffect = { set_country_flag = decided }\n\t}\n}\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/case.txt"),
+		"test = { name = decided time = 1444.11.11 tag = SWE take_decision = my_decision expect = { has_country_flag = decided } }\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"stdout={} stderr={}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert_eq!(json(&output)["results"][0]["outcome"], "pass");
+}
+
+#[test]
+fn offline_folds_mod_history_at_the_case_date() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/history/countries")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/history/countries/SWE - Sweden.txt"),
+		"religion = catholic\n1500.1.1 = { religion = protestant }\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/history/countries/Q01 - Custom.txt"),
+		"religion = norse\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/case.txt"),
+		"test = { name = early time = 1444.11.11 tag = SWE expect = { religion = catholic } }\n\
+		 test = { name = later time = 1500.1.1 tag = SWE expect = { religion = protestant } }\n\
+		 test = { name = custom time = 1444.11.11 tag = Q01 expect = { religion = norse } }\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"stdout={} stderr={}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	let outcomes: Vec<_> = report["results"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|result| result["outcome"].as_str().unwrap())
+		.collect();
+	assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+	assert!(
+		outcomes.iter().all(|outcome| *outcome == "pass"),
+		"{outcomes:?}"
+	);
+}

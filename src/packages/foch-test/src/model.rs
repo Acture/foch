@@ -480,8 +480,8 @@ pub struct Fixture {
 	pub check: Vec<Clause>,
 }
 
-/// A top-level decision from `common/decisions/`, keyed by its definition
-/// name; the body holds potential/allow/effect as authored.
+/// One country decision from `decisions/*.txt`, keyed by the name nested
+/// under `country_decisions`. The body holds potential/allow/effect as authored.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DecisionInfo {
 	pub name: String,
