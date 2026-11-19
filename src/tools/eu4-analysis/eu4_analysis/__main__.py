@@ -18,6 +18,7 @@ from .families import DEFAULT_BOOTSTRAP, Discovery, FamilyQuery, discover_family
 from .ghidra import GhidraSession, validate_output_directory
 from .load_rules import LoadRules, discover_load_rules, parse_rules, with_prior_build
 from .models import Function, FunctionEvidence
+from .semantics import SemanticsQuery, pin_catalog
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -35,8 +36,9 @@ class Options:
 	workspace: Path
 	game_version: str
 	timeout: int
-	query: CatalogQuery | FamilyQuery | str
+	query: CatalogQuery | FamilyQuery | SemanticsQuery | str
 	rules_directory: Path | None
+	semantics_output: Path | None = None
 
 
 def label(value: str) -> str:
@@ -58,7 +60,17 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 		)
 	)
 	inspect = commands.add_parser("inspect", help="Export one function and its calls")
-	for command in (discover, inspect):
+	semantics = commands.add_parser(
+		"semantics", help="Pin catalog handlers from decompiled registrations"
+	)
+	semantics.add_argument("--catalog", required=True, type=Path)
+	semantics.add_argument(
+		"--output",
+		required=True,
+		type=Path,
+		help="Where the pinned catalog artifact is written for review",
+	)
+	for command in (discover, inspect, semantics):
 		command.add_argument("--binary", required=True, type=Path)
 		command.add_argument("--game-version", required=True, type=label)
 		command.add_argument(
@@ -112,8 +124,11 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 			if args.registry
 			else CatalogQuery(args.bootstrap, args.limit)
 		)
+	elif args.command == "semantics":
+		query = SemanticsQuery(catalog=args.catalog.resolve())
 	else:
 		query = args.symbol
+	semantic_output = args.output.resolve() if args.command == "semantics" else None
 	return Options(
 		args.binary.resolve(),
 		args.ghidra.resolve(),
@@ -122,25 +137,22 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 		args.timeout,
 		query,
 		args.rules_dir.resolve() if args.command == "discover" else None,
+		semantic_output,
 	)
 
 
 def write_json(path: Path, value: object) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
-	with tempfile.NamedTemporaryFile(
-		mode="w",
-		encoding="utf-8",
-		dir=path.parent,
-		prefix=f".{path.name}.",
-		delete=False,
-	) as temporary:
-		temporary_path: Path = Path(temporary.name)
-		try:
+	# Windows cannot replace a file that is still open, so the handle is
+	# closed by the with-block before the atomic rename.
+	handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+	temporary_path: Path = Path(name)
+	try:
+		with os.fdopen(handle, "w", encoding="utf-8") as temporary:
 			temporary.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
-			temporary.flush()
-			temporary_path.replace(path)
-		finally:
-			temporary_path.unlink(missing_ok=True)
+		os.replace(temporary_path, path)
+	finally:
+		temporary_path.unlink(missing_ok=True)
 	LOGGER.info("Wrote %s", path)
 
 
@@ -197,6 +209,21 @@ def run(options: Options | BuiltinOptions) -> None:
 				sum(item.status == "unknown" for item in catalog.report.entries),
 				sum(item.status == "error" for item in catalog.report.entries),
 				sum(item.status == "pending" for item in catalog.report.entries),
+			)
+		elif isinstance(options.query, SemanticsQuery):
+			result = pin_catalog(
+				analysis,
+				options.query,
+				game_version=options.game_version,
+				binary_sha256=analysis.image.sha256,
+			)
+			assert options.semantics_output is not None
+			write_json(options.semantics_output, result.catalog)
+			LOGGER.info(
+				"Semantics: %d primitives, %d missing (catalog stays %s)",
+				len(result.catalog["primitives"]),
+				len(result.missing),
+				result.catalog["status"],
 			)
 		elif isinstance(options.query, FamilyQuery):
 			result: Discovery = discover_family(

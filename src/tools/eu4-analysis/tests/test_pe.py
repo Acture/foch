@@ -185,6 +185,46 @@ class TableHandlers(unittest.TestCase):
 			(IMAGE_BASE + TEXT_RVA + 0x110,),
 		)
 
+	def test_an_overlay_pointer_hit_cannot_break_the_batch(self) -> None:
+		"""A trailing overlay qword is skipped; the window stays in bounds.
+
+		The overlay names the keyword with its last eight bytes, so the
+		-8..+0x38 neighborhood read used to run past the buffer and the
+		struct.error aborted the whole batch. The .rdata table entry still
+		pins; the overlay hit is skipped, not fatal.
+		"""
+		from eu4_analysis.pe import table_handlers
+
+		entry = struct.pack(
+			"<QQQQQQQQ",
+			1,
+			IMAGE_BASE + RDATA_RVA,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x40,
+			0,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x80,
+			IMAGE_BASE + TEXT_RVA + 0x110,
+		)
+		code = b"\x90" * 0x110
+		blob = build_pe(
+			("set_country_flag",),
+			(TEXT_RVA, code),
+			(TEXT_RVA + 0x110, b"\x90" * 0x20),
+			extra_rdata=entry,
+		)
+		# The keyword's address qword as the very last eight bytes: the
+		# window around this hit cannot be read in full.
+		blob += struct.pack("<Q", IMAGE_BASE + RDATA_RVA)
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_binary(path)
+		self.assertEqual(
+			table_handlers(image, "set_country_flag"),
+			(IMAGE_BASE + TEXT_RVA + 0x110,),
+		)
+
 	def test_two_pointer_hits_naming_the_same_handler_still_pin(self) -> None:
 		"""Two table entries naming the same handler agree; that is one."""
 		from eu4_analysis.pe import table_handlers

@@ -44,9 +44,11 @@ def read_binary(path: Path) -> BinaryImage:
 	with path.open("rb") as image:
 		pe: bool = image.read(2) == b"MZ"
 	if pe:
-		from .pe import read_pe_image
+		# The full PEImage, not the symbol-less summary: the registration-
+		# table scan the semantics extractor needs lives on it.
+		from .pe import read_binary as read_pe
 
-		return read_pe_image(path)
+		return read_pe(path)
 	from .macho import read_macho_image
 
 	return read_macho_image(path)

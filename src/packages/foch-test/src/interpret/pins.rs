@@ -12,9 +12,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The embedded catalog seed, `unpinned`. Replacing it with a `pinned`
-/// file requires decompilation tooling and a manual review that do not
-/// exist yet; no extraction command is wired today.
+/// The embedded catalog seed, `unpinned`. `python -m eu4_analysis
+/// semantics --catalog <seed> --output <artifact>` writes a pinning
+/// artifact against a symbol-bearing executable; replace this seed only
+/// with an artifact that passed a manual review.
 pub const EMBEDDED: &str = include_str!("semantics.json");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

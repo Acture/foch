@@ -225,14 +225,28 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 	text_end = text.rva + max(text.virtual_size, text.file_size) + image.image_base
 	starts = set(image.function_starts)
 	handlers: list[int] = []
+	# The neighborhood window around a pointer hit: the first read dips 8
+	# bytes behind the hit and the last needs 8 bytes at hit + 0x38.
+	window_last = 0x38 + 8
+	# Only hits inside a section's raw extent count; anything past the
+	# section table is overlay noise an appended blob can plant at will.
+	backed = tuple(
+		(section.file_offset, section.file_offset + section.file_size)
+		for section in image.sections
+	)
 	for rva in keyword_rvas(image, keyword):
 		needle = struct.pack("<Q", image.image_base + rva)
 		position = image.data.find(needle)
 		while position != -1:
-			for offset in range(-8, 0x40, 8):
-				value = struct.unpack_from("<Q", image.data, position + offset)[0]
-				if text_begin <= value < text_end and value in starts:
-					handlers.append(value)
+			if (
+				position >= 8
+				and position + window_last <= len(image.data)
+				and any(begin <= position < end for begin, end in backed)
+			):
+				for offset in range(-8, 0x40, 8):
+					value = struct.unpack_from("<Q", image.data, position + offset)[0]
+					if text_begin <= value < text_end and value in starts:
+						handlers.append(value)
 			position = image.data.find(needle, position + 1)
 	unique = set(handlers)
 	return tuple(sorted(unique)) if len(unique) == 1 else ()
