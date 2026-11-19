@@ -4,11 +4,13 @@ use std::ffi::CString;
 const MAX_SUMMARY: usize = 64 * 1024;
 /// The view's active-direction byte: non-zero selects the demand draft.
 pub const VIEW_DIRECTION: usize = 0x660;
-const RECEIVE_HEADING: &[u8] = b"YOU RECEIVE (+)\n";
-const GIVE_HEADING: &[u8] = b"\n\nYOU GIVE (-)\n";
-/// The desc box scrolls; the net line leads so the merged deal value is
-/// visible without scrolling.
-const NET_HEADING: &[u8] = b"NET DEAL: ";
+/// Direction markers only. The clause bodies stay in whatever encoding and
+/// language the game or a UI mod already rendered.
+const RECEIVE_HEADING: &[u8] = b"(+)\n";
+const GIVE_HEADING: &[u8] = b"\n\n(-)\n";
+/// The desc box scrolls; the numeric net line leads so the merged deal value
+/// is visible without scrolling. No English sentence is inserted around it.
+const NET_HEADING: &[u8] = b"";
 const NET_TAIL: &[u8] = b"\n\n";
 /// Appended to the demand tab's existing localized title.
 pub const DEMAND_TAB_MARKER: &[u8] = b" (+)";
@@ -289,22 +291,16 @@ mod tests {
 			agreement_summary(b"\xa7YGenoa\xa7!", b"\xa7Y100 ducats\xa7!", 12_300, 4_500).unwrap();
 		assert_eq!(
 			text.to_bytes(),
-			b"NET DEAL: +12.3% -4.5% = +7.8%\n\nYOU RECEIVE (+)\n\xa7YGenoa\xa7!\n\nYOU GIVE (-)\n\xa7Y100 ducats\xa7!"
+			b"+12.3% -4.5% = +7.8%\n\n(+)\n\xa7YGenoa\xa7!\n\n(-)\n\xa7Y100 ducats\xa7!"
 		);
 	}
 
 	#[test]
 	fn net_line_subtracts_the_given_side_and_keeps_the_player_sign() {
 		let text = agreement_summary(b"a", b"b", 3_000, 9_000).unwrap();
-		assert!(
-			text.to_bytes()
-				.starts_with(b"NET DEAL: +3.0% -9.0% = -6.0%")
-		);
+		assert!(text.to_bytes().starts_with(b"+3.0% -9.0% = -6.0%"));
 		let even = agreement_summary(b"a", b"b", 0, 0).unwrap();
-		assert!(
-			even.to_bytes()
-				.starts_with(b"NET DEAL: +0.0% -0.0% = +0.0%")
-		);
+		assert!(even.to_bytes().starts_with(b"+0.0% -0.0% = +0.0%"));
 	}
 
 	#[test]
@@ -349,6 +345,30 @@ mod tests {
 	#[test]
 	fn rejects_nul_that_would_hide_the_rest_of_the_agreement() {
 		assert!(agreement_summary(b"one\0two", b"three", 0, 0).is_err());
+	}
+
+	#[test]
+	fn summary_keeps_non_english_clause_bytes_and_adds_no_english_sentence() {
+		let receive = "热那亚".as_bytes();
+		let give = "割地".as_bytes();
+		let text = agreement_summary(receive, give, 1_000, 250).unwrap();
+		let bytes = text.to_bytes();
+		assert!(bytes.windows(receive.len()).any(|window| window == receive));
+		assert!(bytes.windows(give.len()).any(|window| window == give));
+		assert!(!bytes.windows(11).any(|window| window == b"YOU RECEIVE"));
+		assert!(!bytes.windows(8).any(|window| window == b"YOU GIVE"));
+		assert!(!bytes.windows(8).any(|window| window == b"NET DEAL"));
+		let high = agreement_summary(b"\xa7Y\xc8\xce\xa7!", b"\xff\xfe", 0, 0).unwrap();
+		assert!(
+			high.to_bytes()
+				.windows(6)
+				.any(|window| window == b"\xa7Y\xc8\xce\xa7!")
+		);
+		assert!(
+			high.to_bytes()
+				.windows(2)
+				.any(|window| window == b"\xff\xfe")
+		);
 	}
 
 	#[test]

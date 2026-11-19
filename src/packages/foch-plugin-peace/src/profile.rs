@@ -55,9 +55,10 @@ pub const ACTION_CONSTRUCTOR_CALL: CodeSite = CodeSite {
 };
 /// Call into the treaty execution path for an accepted action; the execute
 /// function is `CPeaceOffer::Execute` (log string at 0x1cd0db0) and updates
-/// the war score through 0x990770 (`Execute_UpdateWarScoreImpact`). Whether
-/// the receiving AI re-runs the all-positive rebuild on its offer copy —
-/// discarding the plugin's net pricing — is verified only in game.
+/// the war score through 0x990770 (`Execute_UpdateWarScoreImpact`).
+/// [`crate::contract`] records the static fact that `Execute` itself calls
+/// the all-positive rebuild. Which function the accepting AI uses, and
+/// whether that function sees the net total, is still not verified in game.
 pub const EXECUTE_CALL: CodeSite = CodeSite {
 	rva: 0x59a6ea,
 	original: &[0xe8, 0x41, 0xc0, 0x3d, 0x00],

@@ -58,7 +58,7 @@ pub fn compose(receive: &Draft, give: &Draft) -> Result<Vec<Selection>, ComposeE
 	let mut result = Vec::with_capacity(receive.selected.len() + give.selected.len());
 	for (draft, side) in [(receive, Side::Receive), (give, Side::Give)] {
 		for &clause in &draft.selected {
-			if clause.address == 0 || clause.kind >= 40 {
+			if clause.address == 0 || !crate::contract::kind_slot_admitted(clause.kind) {
 				return Err(ComposeError::InvalidClause);
 			}
 			if !addresses.insert(clause.address) {
@@ -179,6 +179,20 @@ mod tests {
 		assert_eq!(compose(&receive, &give), Err(ComposeError::InvalidClause));
 		receive.selected[0] = clause(0x100, 40, 111);
 		assert_eq!(compose(&receive, &give), Err(ComposeError::InvalidClause));
+	}
+
+	#[test]
+	fn a_scripted_or_modded_target_stays_opaque_inside_the_image_table() {
+		let (mut receive, give) = drafts();
+		receive.selected = vec![clause(
+			0x100,
+			(crate::contract::KIND_SLOTS as u32) - 1,
+			u64::MAX,
+		)];
+		let selections = compose(&receive, &give).unwrap();
+		assert_eq!(selections[0].clause.kind, 39);
+		assert_eq!(selections[0].clause.target, u64::MAX);
+		assert_eq!(selections[0].side, Side::Receive);
 	}
 
 	#[test]

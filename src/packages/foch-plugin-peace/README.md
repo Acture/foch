@@ -24,11 +24,43 @@ direction and cached score. A merged offer whose inactive-side clauses
 vanish between submission and execution is visible in that log line
 instead of as a silent one-direction treaty.
 
-The pricing chain above is verified by disassembly of the pinned image only.
-Whether the receiving AI re-runs the all-positive native rebuild on its copy
-of the offer — discarding the net total — and how a mixed treaty settles in
-every clause family are **not verified in game**. Test only in a disposable
-EU4 campaign profile. Startup alone does not verify any of this.
+The pricing chain above is verified by disassembly of the pinned image only
+(`eu4.exe` sha256 `c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e`).
+`src/contract.rs` records that static read. It is not an in-game result.
+
+The cost rebuild at `0x978b20` always passes `negate = 0` and the offer's
+direction byte, then overwrites the cached total at `+0xf0`. The copy
+constructor copies that dword and does not call the rebuild. `GetCost` reads
+the dword and does not call the rebuild. `CPeaceOffer::Execute` calls the
+rebuild before it walks clauses, so a net total does not survive execution.
+The function that calls `Execute` (`0x598ed0`, no
+`CExecutePeaceOfferCommand` string in the image) also rebuilds its embedded
+offer at `+0x48` after two lookups succeed. A separate `GetCost` caller at
+`0x36e510` constructs a new offer instead of copying one, so it is not
+reading the player's net total. Which of these the accepting AI uses is
+**not named and not verified in game**.
+
+The offer's kind table is 40 slots in this image (constructor immediate
+`0x28`, clone rejects kind `>= 40`). That is a layout limit, not a list of
+vanilla treaty names. Kind 0's execute returns immediately when the amount
+at clause `+0x30` is zero. Kind 3 is the annex execute already described in
+`trust`. Kind 39's execute reads the clause's own receiver and a pointer at
+`+0x30`; the other slots were not classified one by one. Scripted treaties
+in `common/peace_treaties` and subject types reached through `create_subject`
+(including `copy_from`) stay an opaque target word. How a mixed treaty
+settles for provinces, money, war reparations, subject clauses, or a modded
+treaty is **not verified in game**. Test only in a disposable EU4 campaign
+profile. Startup alone does not verify any of this.
+
+The agreement text keeps the game's own clause bytes, including a non-English
+UI, and adds only the numeric net line plus `(+)` / `(-)`.
+
+Collect the probe fixture without launching the game:
+
+```text
+foch test src/packages/foch-plugin-peace/fixtures/probe --collect-only
+foch test src/packages/foch-plugin-peace/fixtures/probe --no-run --out target/peace-probe-bundles
+```
 
 Build with:
 

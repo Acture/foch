@@ -23,8 +23,8 @@ pub(crate) const PREFIX: &str = "foch_peace_probe_";
 /// bytes the trade plugin and the directed-pacts probe already require.
 pub(crate) const TICK_PATTERN: &str = "88 54 24 10 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 28 F1 FF FF 48 81 EC D8 0F 00 00 4C 8B F9 BA FF FF FF FF";
 
-/// Treaty kinds the native offer table can hold. Mirrors `native`'s table.
-const KIND_LIMIT: u32 = 40;
+/// Treaty slots the pinned image can clone. Not a vanilla treaty-name list.
+const KIND_LIMIT: u32 = crate::contract::KIND_SLOTS as u32;
 const DEMAND_ADDRESS: usize = 0x1_0000;
 const CONCESSION_ADDRESS: usize = 0x2_0000;
 
@@ -438,6 +438,34 @@ mod tests {
 			interpret(&[country("FRA", &["ordinary_flag"])]).unwrap(),
 			None
 		);
+	}
+
+	#[test]
+	fn dynamic_tags_and_the_last_kind_slot_are_not_a_vanilla_list() {
+		let order = country(
+			"C00",
+			&[
+				"foch_peace_probe_vs_A01",
+				"foch_peace_probe_demand_39_1",
+				"foch_peace_probe_give_0_7",
+				"foch_peace_probe_case_modtag",
+				"foch_peace_probe_request_2",
+			],
+		);
+		let submission = interpret(&[order]).unwrap().unwrap();
+		assert_eq!(submission.actor, "C00");
+		assert_eq!(submission.opponent, "A01");
+		assert_eq!(submission.demands, vec![(39, 1)]);
+		assert!(submission.receipt().contains(r#""demands":"39:1""#));
+	}
+
+	#[test]
+	fn an_order_past_one_thousand_twenty_four_countries_still_submits() {
+		let mut snapshots = vec![country("FRA", &["ordinary_flag"]); 1024];
+		snapshots.push(armed(&[]));
+		let submission = interpret(&snapshots).unwrap().unwrap();
+		assert_eq!(submission.actor, "SWE");
+		assert_eq!(snapshots.len(), 1025);
 	}
 
 	#[test]

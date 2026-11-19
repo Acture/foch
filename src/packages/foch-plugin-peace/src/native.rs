@@ -37,7 +37,8 @@ const KEY_VTABLE_OFFSET: usize = 0x78;
 /// Signed clause-cost accumulator: (treaty, totals, direction, negate) adds
 /// one clause's magnitude into the totals, negated when the last byte is set.
 const ADD_COST_VTABLE_OFFSET: usize = 0x118;
-const KIND_COUNT: usize = 40;
+/// Pinned-image kind table. See [`crate::contract::KIND_SLOTS`].
+const KIND_COUNT: usize = crate::contract::KIND_SLOTS;
 const MAX_CLAUSES: usize = 16_384;
 const POINTER_SIZE: usize = 8;
 const VECTOR_SIZE: usize = 24;

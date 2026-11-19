@@ -1,6 +1,7 @@
 //! Native EU4 peace editor with terms flowing in both directions.
 
 pub mod composition;
+pub mod contract;
 pub mod native;
 mod probe;
 pub mod profile;
