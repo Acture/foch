@@ -6,12 +6,16 @@
 //! [`Memory`] uses checked kernel copies on Windows; complete readable
 //! ranges can still hold the wrong object or stale state. Callers must
 //! establish identity, type, lifetime and game-thread stability.
+//! The `test-support` feature adds `dataplane::testing` on Windows for
+//! synthetic scenes. Production plugin builds leave that feature off.
 
 pub mod flags;
 pub mod game;
 pub(crate) mod layout;
 pub mod memory;
 pub mod routes;
+#[cfg(all(windows, feature = "test-support"))]
+pub mod testing;
 pub mod war;
 
 pub use flags::{CountryFlag, CountryFlags, FlagReadError};
