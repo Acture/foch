@@ -191,15 +191,14 @@ pub unsafe fn verify(host: &FochHostApi) -> Result<(), &'static str> {
 		if end > host.exe_size {
 			return Err("native peace editor code lies outside the game image");
 		}
-		// Read only the checked code range through the guarded reader.
+		// Read the whole site in one guarded bulk read, not byte by byte.
 		let site_addr = base.checked_add(site.rva).ok_or("invalid code site")?;
-		for (offset, &expected) in site.original.iter().enumerate() {
-			let actual = memory
-				.read_u8(site_addr + offset)
-				.ok_or("native peace editor code is unreadable")?;
-			if actual != expected {
-				return Err("native peace editor code differs from the supported profile");
-			}
+		let mut actual = vec![0u8; site.original.len()];
+		memory
+			.read_bytes(site_addr, &mut actual)
+			.ok_or("native peace editor code is unreadable")?;
+		if actual != site.original {
+			return Err("native peace editor code differs from the supported profile");
 		}
 	}
 	Ok(())

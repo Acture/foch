@@ -334,17 +334,35 @@ unsafe extern "system" fn send(view: *mut u8) {
 					.map_err(|_| ())
 			}));
 			match restored {
-				Ok(Ok(())) => log(
-					abi::log::INFO,
-					&format!(
-						"Mixed peace submission sent with {merged} merged terms, net deal {}, editor restored",
-						ui::permille_percent(net)
-					),
-				),
-				_ => log(
-					abi::log::WARN,
-					"Mixed peace submission sent; the editor's prior selection was not restored",
-				),
+				Ok(Ok(())) => {
+					log(
+						abi::log::INFO,
+						&format!(
+							"Mixed peace submission sent with {merged} merged terms, net deal {}, editor restored",
+							ui::permille_percent(net)
+						),
+					);
+					receipt(&[
+						("action", "mixed_submit"),
+						("net_deal", &ui::permille_percent(net)),
+						("merged_terms", &merged.to_string()),
+						("ducats_netted", "0"),
+						("editor_restored", "yes"),
+					]);
+				}
+				_ => {
+					log(
+						abi::log::WARN,
+						"Mixed peace submission sent; the editor's prior selection was not restored",
+					);
+					receipt(&[
+						("action", "mixed_submit"),
+						("net_deal", &ui::permille_percent(net)),
+						("merged_terms", &merged.to_string()),
+						("ducats_netted", "0"),
+						("editor_restored", "no"),
+					]);
+				}
 			}
 		}
 		Ok(Ok(Some((plan, merged, net, netted)))) => {
@@ -360,18 +378,36 @@ unsafe extern "system" fn send(view: *mut u8) {
 					.map_err(|_| ())
 			}));
 			match restored {
-				Ok(Ok(())) => log(
-					abi::log::INFO,
-					&format!(
-						"Mixed peace submission sent with {merged} merged terms ({} ducats edits netted), net deal {}, editor restored",
-						netted.len(),
-						ui::permille_percent(net)
-					),
-				),
-				_ => log(
-					abi::log::WARN,
-					"Mixed peace submission sent; the editor's prior selection was not restored",
-				),
+				Ok(Ok(())) => {
+					log(
+						abi::log::INFO,
+						&format!(
+							"Mixed peace submission sent with {merged} merged terms ({} ducats edits netted), net deal {}, editor restored",
+							netted.len(),
+							ui::permille_percent(net)
+						),
+					);
+					receipt(&[
+						("action", "mixed_submit"),
+						("net_deal", &ui::permille_percent(net)),
+						("merged_terms", &merged.to_string()),
+						("ducats_netted", &netted.len().to_string()),
+						("editor_restored", "yes"),
+					]);
+				}
+				_ => {
+					log(
+						abi::log::WARN,
+						"Mixed peace submission sent; the editor's prior selection was not restored",
+					);
+					receipt(&[
+						("action", "mixed_submit"),
+						("net_deal", &ui::permille_percent(net)),
+						("merged_terms", &merged.to_string()),
+						("ducats_netted", &netted.len().to_string()),
+						("editor_restored", "no"),
+					]);
+				}
 			}
 		}
 		Ok(Err(reason)) => log(abi::log::ERROR, reason),
@@ -387,6 +423,20 @@ fn log(level: i32, message: &str) {
 	if !host.is_null() {
 		unsafe { ((*host).log)(host, level, FochStr::from_str(message)) };
 	}
+}
+
+/// Emits a structured `FOCH_RECEIPT/1` record for the test framework's
+/// `expect_receipt` assertions. Every value is a string; no envelope key
+/// (the host owns those) is repeated.
+fn receipt(payload: &[(&str, &str)]) {
+	let fields: Vec<String> = payload
+		.iter()
+		.map(|(key, value)| format!("{key:?}:{value:?}"))
+		.collect();
+	log(
+		abi::log::INFO,
+		&format!("FOCH_RECEIPT/1 {{{}}}", fields.join(",")),
+	);
 }
 
 /// Runs every executed peace offer. If a mixed submission's give side was
@@ -509,6 +559,12 @@ unsafe extern "system" fn execute(offer: *mut u8) {
 						demands.len()
 					),
 				);
+				receipt(&[
+					("action", "mixed_execute"),
+					("concessions", &appended.len().to_string()),
+					("demands", &demands.len().to_string()),
+					("ducats_netted", &netted.to_string()),
+				]);
 			}
 			Ok(Err(())) => {
 				unsafe { original(offer) };

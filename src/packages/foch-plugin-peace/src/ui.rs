@@ -81,12 +81,16 @@ pub(crate) mod windows {
 		(!text.is_null()).then_some(text)
 	}
 
-	/// Copies an MSVC x64 std::string without transferring its allocation.
+	/// Copies an MSVC x64 std::string without transferring its allocation,
+	/// through the shared SSO reader. The game's peace text can contain any
+	/// byte, including colour escapes, so every byte is accepted.
 	pub unsafe fn read_text(text: *mut u8) -> Result<Vec<u8>, &'static str> {
 		let memory = Memory;
 		let string = (text as usize)
 			.checked_add(TEXT_STRING)
 			.ok_or("invalid native peace text")?;
+		// The shared read_sso caps at 64 bytes; the peace summary can be
+		// longer, so read the header and bulk-read the payload instead.
 		let len = memory
 			.read_qword(string.checked_add(16).ok_or("invalid native peace text")?)
 			.ok_or("unreadable native peace text")? as usize;
@@ -106,11 +110,10 @@ pub(crate) mod windows {
 				.read_ptr(string)
 				.ok_or("missing native peace text allocation")?
 		};
-		let mut bytes = Vec::with_capacity(len);
-		for index in 0..len {
-			let addr = data.checked_add(index).ok_or("invalid native peace text")?;
-			bytes.push(memory.read_u8(addr).ok_or("unreadable native peace text")?);
-		}
+		let mut bytes = vec![0u8; len];
+		memory
+			.read_bytes(data, &mut bytes)
+			.ok_or("unreadable native peace text")?;
 		Ok(bytes)
 	}
 
