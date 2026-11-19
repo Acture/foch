@@ -97,6 +97,9 @@ pub mod template {
 	pub const STRIDE: usize = 0x230;
 	/// Terrain object pointer.
 	pub const TERRAIN: usize = 0x30;
+	/// MSVC SSO terrain name on the terrain object (size/capacity at
+	/// +0x130, standard layout).
+	pub const NAME: usize = 0x118;
 	/// int printed beside the terrain in SetMostCommonTerrain — the
 	/// province id link, still to confirm.
 	pub const PROVINCE_ID: usize = 0x150;

@@ -10,6 +10,12 @@
 
 use foch_eu4_state::plane::{NODE, RULES, State};
 
+/// The simulator's terrain buckets, column order 22..26.
+const TERRAIN_SLOTS: [&str; 5] = ["plains", "forest", "hills", "mountains", "marsh"];
+/// Real map terrain names folded into a simulator bucket verbatim —
+/// extend only with a training-distribution decision, never silently.
+const TERRAIN_ALIASES: [(&str, usize); 0] = [];
+
 use crate::graph::StaticGraph;
 
 /// One province's dynamic fields, already extracted through the
@@ -23,6 +29,10 @@ pub struct DynamicProvince {
 	pub fort_level: i32,
 	/// Controlling country index, when read.
 	pub controller_index: Option<i32>,
+	/// Terrain display name ("hills", "marsh", ...). The frame maps
+	/// exactly the simulator's five terrain names; anything else
+	/// refuses the frame rather than guessing a bucket.
+	pub terrain_name: Option<&'static str>,
 }
 
 /// Our stack for this decision, from the caller's snapshot.
@@ -33,6 +43,28 @@ pub struct ArmySnapshot {
 	pub cavalry: f32,
 	pub artillery: f32,
 	pub morale: f32,
+}
+
+/// War-level facts for the rules row, mapped one-to-one onto the
+/// simulator's 26-slot layout. Fields the live path cannot fill yet
+/// keep the simulator's neutral encoding and are listed in
+/// [`rules_row`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WarFacts {
+	/// Campaign day over the simulator's five-year horizon (1825).
+	pub day: Option<i32>,
+	/// Fraction of graph provinces we control.
+	pub our_held_fraction: Option<f32>,
+	/// Fraction the enemy controls.
+	pub their_held_fraction: Option<f32>,
+	/// Clamped engine warscore total (candidate read ÷ engine scale).
+	pub war_score: Option<i32>,
+	/// Manpower pool fraction (candidate country reads).
+	pub manpower_fraction: Option<f32>,
+	/// We are the declaring side.
+	pub we_declared: bool,
+	/// A conquest wargoal province exists.
+	pub has_wargoal: bool,
 }
 
 /// The decision's inputs beyond the per-province dynamics.
@@ -55,6 +87,8 @@ pub struct FrameInput {
 	pub their_capital: Option<u32>,
 	/// Our stack.
 	pub our: Option<ArmySnapshot>,
+	/// War-level facts for the rules row.
+	pub war: WarFacts,
 }
 
 /// Assemble the 29-column frame. Missing dynamics for a province are
@@ -85,6 +119,19 @@ pub fn assemble(
 			.into();
 		row[6] = (row[4] == 0.0 && row[5] == 0.0).into();
 		row[7] = (record.owner == input.our_tag).into();
+		// Terrain one-hot, columns 22..26: the simulator's five buckets
+		// only — an unknown name refuses the frame, never a guess.
+		let name = dynamic.terrain_name?;
+		let slot = TERRAIN_SLOTS
+			.iter()
+			.position(|&known| known == name)
+			.or_else(|| {
+				TERRAIN_ALIASES
+					.iter()
+					.find(|&&(from, _)| from == name)
+					.map(|&(_, to)| to)
+			})?;
+		row[22 + slot] = 1.0;
 		if slot == our_index {
 			row[8] = our.infantry / 14.0;
 			row[9] = our.cavalry / 14.0;
@@ -105,7 +152,7 @@ pub fn assemble(
 	Some(State {
 		nodes,
 		edges: graph.index_edges.clone(),
-		rules: rules_row(input),
+		rules: rules_row(input, our.morale),
 		// Candidate NODE INDICES (the plane contract), in neighbor
 		// order — ids recover through the graph.
 		candidates: graph
@@ -119,11 +166,39 @@ pub fn assemble(
 	})
 }
 
-/// The war-level rules row: v1 carries the structural facts the net
-/// can consume today; the rest of the 26 slots stay zero with the
-/// same encoding the simulator uses for "not in a state".
-fn rules_row(_input: &FrameInput) -> [f32; RULES] {
-	[0.0; RULES]
+/// The war-level rules row, in the simulator's exact 26-slot order:
+/// define ratios (0-2, 12-14, 16-17) are static and stay at the
+/// simulator's defaults here; battle/occupation/ticking parts
+/// (20-22), supply (10), siege fraction (11), ally regiments (15)
+/// and blood ledger (24-25) are pending their engine reads and keep
+/// the neutral encoding. Live today: day (3), held fractions (4-5),
+/// our regiments and morale (6, 8), warscore (9), declaration and
+/// wargoal flags (18-19), manpower fraction (23).
+fn rules_row(input: &FrameInput, our_morale: f32) -> [f32; RULES] {
+	let war = &input.war;
+	let mut row = [0.0f32; RULES];
+	// Define ratios the simulator trained on (battles cap 40,
+	// wargoal bonus 5, ticking 0.4, recoveries, width 15, flank 2).
+	row[0] = 1.0;
+	row[1] = 1.0;
+	row[2] = 1.0;
+	row[12] = 1.0;
+	row[13] = 1.0;
+	row[14] = 1.0;
+	row[16] = 1.0;
+	row[17] = 1.0;
+	row[3] = war.day.map(|d| d as f32 / 1825.0).unwrap_or(0.0);
+	row[4] = war.our_held_fraction.unwrap_or(0.0);
+	row[5] = war.their_held_fraction.unwrap_or(0.0);
+	if let Some(stack) = &input.our {
+		row[6] = (stack.infantry + stack.cavalry + stack.artillery) / 14.0;
+	}
+	row[8] = our_morale;
+	row[9] = war.war_score.map(|s| s as f32 / 50.0).unwrap_or(0.0);
+	row[18] = f32::from(war.we_declared);
+	row[19] = f32::from(war.has_wargoal);
+	row[23] = war.manpower_fraction.unwrap_or(0.0);
+	row
 }
 
 #[cfg(test)]
@@ -165,6 +240,7 @@ mod tests {
 				development_mille: 14_000,
 				fort_level: 2,
 				controller_index: Some(3),
+				terrain_name: Some("hills"),
 			})
 		};
 		let state = assemble(&graph, &dynamics, &input()).expect("frame");
@@ -182,6 +258,41 @@ mod tests {
 	}
 
 	#[test]
+	fn rules_row_fills_the_live_war_slots_in_simulator_order() {
+		let graph = graph();
+		let dynamics = |_| {
+			Some(DynamicProvince {
+				development_mille: 14_000,
+				fort_level: 2,
+				controller_index: Some(3),
+				terrain_name: Some("hills"),
+			})
+		};
+		let mut input = input();
+		input.war = WarFacts {
+			day: Some(365),
+			our_held_fraction: Some(0.4),
+			their_held_fraction: Some(0.6),
+			war_score: Some(12),
+			manpower_fraction: Some(0.5),
+			we_declared: true,
+			has_wargoal: true,
+		};
+		let state = assemble(&graph, &dynamics, &input).expect("frame");
+		let rules = &state.rules;
+		assert_eq!(rules[3], 365.0 / 1825.0);
+		assert_eq!(rules[4], 0.4);
+		assert_eq!(rules[5], 0.6);
+		assert_eq!(rules[9], 12.0 / 50.0);
+		assert_eq!(rules[18], 1.0);
+		assert_eq!(rules[19], 1.0);
+		assert_eq!(rules[23], 0.5);
+		// Our stack feeds regiments and morale.
+		assert_eq!(rules[6], 18.0 / 14.0);
+		assert_eq!(rules[8], 0.8);
+	}
+
+	#[test]
 	fn missing_dynamics_refuse_the_whole_frame() {
 		let graph = graph();
 		let dynamics = |id: u32| {
@@ -189,8 +300,37 @@ mod tests {
 				development_mille: 14_000,
 				fort_level: 2,
 				controller_index: Some(3),
+				terrain_name: Some("hills"),
 			})
 		};
 		assert!(assemble(&graph, &dynamics, &input()).is_none());
+	}
+
+	#[test]
+	fn terrain_outside_the_simulator_buckets_refuses_the_frame() {
+		let graph = graph();
+		let hills = |_| {
+			Some(DynamicProvince {
+				development_mille: 14_000,
+				fort_level: 2,
+				controller_index: Some(3),
+				terrain_name: Some("hills"),
+			})
+		};
+		let lava = |_| {
+			Some(DynamicProvince {
+				development_mille: 14_000,
+				fort_level: 2,
+				controller_index: Some(3),
+				terrain_name: Some("lava"),
+			})
+		};
+		let input = input();
+		let state = assemble(&graph, &hills, &input).expect("hills frame");
+		assert_eq!(&state.nodes[0][22..27], &[0.0, 0.0, 1.0, 0.0, 0.0]);
+		assert!(
+			assemble(&graph, &lava, &input).is_none(),
+			"unmapped terrain refuses"
+		);
 	}
 }

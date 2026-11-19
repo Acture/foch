@@ -138,6 +138,54 @@ impl VerifiedGame {
 		let end = self.memory.read_qword(ids.checked_add(8)?)? as usize;
 		province_count_from(begin, end)
 	}
+
+	/// The terrain object's display name behind one province template
+	/// (SSO string at terrain+0x118, read through the shared
+	/// dataplane's `read_sso`). Candidate offsets.
+	pub fn template_terrain_name(&self, template_index: usize) -> Option<String> {
+		let templates = self
+			.memory
+			.read_ptr(self.context.checked_add(candidates::world::TEMPLATES)?)?;
+		let template =
+			templates.checked_add(template_index.checked_mul(candidates::template::STRIDE)?)?;
+		let terrain = self
+			.memory
+			.read_ptr(template.checked_add(candidates::template::TERRAIN)?)?;
+		foch_runtime::dataplane::read_sso(
+			&self.memory,
+			terrain.checked_add(candidates::template::NAME)?,
+			foch_runtime::dataplane::is_name_byte,
+		)
+	}
+
+	/// The terrain name of one province: scans the template array for
+	/// the template whose province-id field matches, bounded by
+	/// `bound` (the caller's province count works — template ids and
+	/// province ids share the engine's numbering space). Candidate
+	/// offsets; a missing template or name is `None`.
+	pub fn terrain_of(&self, province_id: u32, bound: usize) -> Option<String> {
+		for index in 0..bound {
+			let templates = self
+				.memory
+				.read_ptr(self.context.checked_add(candidates::world::TEMPLATES)?)?;
+			let template =
+				templates.checked_add(index.checked_mul(candidates::template::STRIDE)?)?;
+			let marked = self
+				.memory
+				.read_i32(template.checked_add(candidates::template::PROVINCE_ID)?)?;
+			if marked == province_id as i32 {
+				return self.template_terrain_name(index);
+			}
+		}
+		None
+	}
+
+	/// The war's clamped score total from a war object address
+	/// (candidate offset `war::SCORE_VALUE`).
+	pub fn war_score_total(&self, war: usize) -> Option<i32> {
+		self.memory
+			.read_i32(war.checked_add(candidates::war::SCORE_VALUE)?)
+	}
 }
 
 /// The pure extraction behind [`VerifiedGame::owner_country_index`] and
