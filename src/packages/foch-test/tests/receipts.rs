@@ -311,6 +311,123 @@ fn full_stream() -> String {
 }
 
 #[test]
+fn numeric_ranges_match_payload_values() {
+	// Receipts serialize every payload as a string; the judge parses the
+	// constrained fields and compares inclusive bounds. In-range and
+	// negative bounds pass; below-min and non-numeric payloads fail.
+	let cases = r#"
+test = { name = gold_in time = 1444.11.11 tag = SWE expect_receipt = {
+	plugin = dev.foch.directed-pacts case = gold_in request = n1
+	status = paid numeric = { gold = { min = 100 max = 500 } } } }
+test = { name = gold_low time = 1444.11.11 tag = SWE expect_receipt = {
+	plugin = dev.foch.directed-pacts case = gold_low request = n2
+	status = paid numeric = { gold = { min = 1000 } } } }
+test = { name = gold_words time = 1444.11.11 tag = SWE expect_receipt = {
+	plugin = dev.foch.directed-pacts case = gold_words request = n3
+	status = paid numeric = { gold = { max = 500 } } } }
+test = { name = stable_min time = 1444.11.11 tag = SWE expect_receipt = {
+	plugin = dev.foch.directed-pacts case = stable_min request = n4
+	status = paid numeric = { stability = { min = -3 } } } }"#;
+	let plan = plan_from(cases, false);
+	let context = RunContext {
+		run_id: RunId::parse("run-1").unwrap(),
+		mod_name: "Receipt Mod".into(),
+	};
+	let mut results = BTreeMap::new();
+	for (position, session) in plan.sessions.iter().enumerate() {
+		let bundle = foch_test::compile(&plan, session.id, &context).unwrap();
+		let launch = format!("{}_launch{position}", bundle.namespace);
+		let log = simulated_log(&bundle);
+		let payload = |case: &str, request: &str, extra: &str| {
+			format!(
+				"{{\"type\":\"pay\",\"case\":\"{case}\",\"request\":\"{request}\",\"status\":\"paid\",{extra}}}"
+			)
+		};
+		let stream = [
+			state_line("dev.foch.directed-pacts", "active", &launch),
+			receipt_line(
+				"dev.foch.directed-pacts",
+				&launch,
+				&payload("gold_in", "n1", "\"gold\":\"250\""),
+			),
+			receipt_line(
+				"dev.foch.directed-pacts",
+				&launch,
+				&payload("gold_low", "n2", "\"gold\":\"250\""),
+			),
+			receipt_line(
+				"dev.foch.directed-pacts",
+				&launch,
+				&payload("gold_words", "n3", "\"gold\":\"rich\""),
+			),
+			receipt_line(
+				"dev.foch.directed-pacts",
+				&launch,
+				&payload("stable_min", "n4", "\"stability\":\"-1\""),
+			),
+		]
+		.join(
+			"
+",
+		);
+		let artifacts = RunArtifacts {
+			game_log: Some(&log),
+			error_log: Some(""),
+			exit: RunnerExit::Success,
+			timing: Timing::default(),
+			profile_untouched: true,
+			host_events: Some(&stream),
+			host_launch_id: Some(&launch),
+		};
+		for result in judge(&bundle, &plan, &artifacts) {
+			results.insert(result.node.name.to_string(), result.status);
+		}
+	}
+	assert_eq!(results["gold_in"], Status::Passed);
+	assert_eq!(results["stable_min"], Status::Passed);
+	assert_eq!(results["gold_low"], Status::Failed);
+	assert_eq!(results["gold_words"], Status::Failed);
+}
+
+#[test]
+fn numeric_constraints_are_guarded_at_collection() {
+	let bad = |numeric: &str| {
+		let cases = format!(
+			"test = {{ name = g time = 1444.11.11 tag = SWE expect_receipt = {{ 				plugin = p case = g request = r numeric = {{ {numeric} }} }} }}"
+		);
+		let sources = [SourceFile {
+			mod_name: "Receipt Mod".into(),
+			path: RelPath::new("tests/a.txt").unwrap(),
+			kind: SourceKind::TestsDir,
+			text: cases,
+		}];
+		collect(&sources).diagnostics
+	};
+	assert!(
+		bad("gold = { min = 1 } gold = { max = 2 }")
+			.iter()
+			.any(|d| d.message.contains("constrains gold twice"))
+	);
+	assert!(
+		bad("gold = { }")
+			.iter()
+			.any(|d| d.message.contains("at least one of min or max"))
+	);
+	assert!(
+		bad("gold = { min = 1e999 }")
+			.iter()
+			.any(|d| d.message.contains("finite"))
+	);
+	// One field constrained both as an exact string and numerically is a
+	// conflict, not a conjunction.
+	assert!(
+		bad("case = { min = 1 }")
+			.iter()
+			.any(|d| d.message.contains("constrained twice"))
+	);
+}
+
+#[test]
 fn matched_receipts_pass_and_correlation_gates_fail() {
 	let results = judge_launches(&full_stream());
 	assert_eq!(results["join_check"], Status::Passed);

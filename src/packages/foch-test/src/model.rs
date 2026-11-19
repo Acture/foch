@@ -304,6 +304,11 @@ pub enum Step {
 		plugin: String,
 		/// Required payload fields, matched as exact strings.
 		fields: Vec<(String, String)>,
+		/// Required numeric payload ranges, matched by value: receipts emit
+		/// every payload as a string, so the judge parses the field and
+		/// compares it against the inclusive bounds.
+		#[serde(default)]
+		numeric: Vec<ReceiptRange>,
 		span: SourceSpan,
 	},
 	/// Run a console cheat command as setup (`cash 500`, `adm 100`, ...).
@@ -324,6 +329,50 @@ pub enum Step {
 		span: SourceSpan,
 	},
 }
+
+/// One inclusive numeric constraint on a receipt payload field: at least
+/// one bound is set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+// Eq by hand: the bounds are finite (collection refuses NaN and inf), so
+// no NaN corner weakens the equality the rest of the model relies on.
+pub struct ReceiptRange {
+	pub field: String,
+	pub min: Option<f64>,
+	pub max: Option<f64>,
+}
+
+impl ReceiptRange {
+	/// Whether `value` (a receipt payload string) satisfies the range; a
+	/// missing or non-numeric payload never matches.
+	pub fn accepts(&self, value: Option<&str>) -> bool {
+		let Some(parsed) = value.and_then(|text| text.parse::<f64>().ok()) else {
+			return false;
+		};
+		if let Some(min) = self.min
+			&& parsed < min
+		{
+			return false;
+		}
+		if let Some(max) = self.max
+			&& parsed > max
+		{
+			return false;
+		}
+		true
+	}
+
+	/// The constraint as written, for failure messages.
+	pub fn describe(&self) -> String {
+		match (self.min, self.max) {
+			(Some(min), Some(max)) => format!("{}={}..{}", self.field, min, max),
+			(Some(min), None) => format!("{}>={}", self.field, min),
+			(None, Some(max)) => format!("{}<={}", self.field, max),
+			(None, None) => format!("{} unconstrained", self.field),
+		}
+	}
+}
+
+impl Eq for ReceiptRange {}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Marker {

@@ -343,6 +343,7 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			};
 			let mut plugin: Option<String> = None;
 			let mut fields: Vec<(String, String)> = Vec::new();
+			let mut numeric: Vec<crate::model::ReceiptRange> = Vec::new();
 			for item in items {
 				let AstStatement::Assignment { key, value, .. } = item else {
 					// Comments are fine; a bare item drops a constraint the
@@ -363,7 +364,90 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 					..
 				} = value
 				else {
-					return Err(format!("expect_receipt field {key} needs a plain value"));
+					// A nested block of field = { min = .. max = .. } ranges;
+					// every other block-shaped field is unreadable.
+					if key != "numeric" {
+						return Err(format!("expect_receipt field {key} needs a plain value"));
+					}
+					let AstValue::Block { items, .. } = value else {
+						return Err(
+							"numeric must be a block of field = { min = .. max = .. }".into()
+						);
+					};
+					for entry in items {
+						let AstStatement::Assignment {
+							key: field, value, ..
+						} = entry
+						else {
+							if matches!(entry, AstStatement::Comment { .. }) {
+								continue;
+							}
+							return Err(
+								"numeric holds field = { min = .. max = .. } entries".into()
+							);
+						};
+						let AstValue::Block { items, .. } = value else {
+							return Err(format!(
+								"numeric field {field} needs a min = .. and/or max = .. block"
+							));
+						};
+						if fields.iter().any(|(existing, _)| existing == field) {
+							return Err(format!(
+								"expect_receipt field {field} is constrained twice, once as an exact string and once numerically; keep one form"
+							));
+						}
+						if numeric.iter().any(|range| range.field == *field) {
+							return Err(format!("numeric constrains {field} twice"));
+						}
+						let (mut min, mut max) = (None, None);
+						for bound in items {
+							let AstStatement::Assignment { key, value, .. } = bound else {
+								if matches!(bound, AstStatement::Comment { .. }) {
+									continue;
+								}
+								return Err(format!(
+									"numeric field {field} holds min and/or max bounds"
+								));
+							};
+							let AstValue::Scalar {
+								value: ScalarValue::Number(text),
+								..
+							} = value
+							else {
+								return Err(format!(
+									"numeric bound {key} of {field} needs a number"
+								));
+							};
+							let parsed: f64 = text.parse().map_err(|_| {
+								format!("numeric bound {key} of {field} is not a number")
+							})?;
+							if !parsed.is_finite() {
+								return Err(format!(
+									"numeric bound {key} of {field} must be finite"
+								));
+							}
+							match key.as_str() {
+								"min" => min = Some(parsed),
+								"max" => max = Some(parsed),
+								other => {
+									return Err(format!(
+										"numeric field {field} takes min and/or max, not {other}"
+									));
+								}
+							}
+						}
+						if min.is_none() && max.is_none() {
+							return Err(format!(
+								"numeric field {field} needs at least one of min or max"
+							));
+						}
+						numeric.push(crate::model::ReceiptRange {
+							field: field.clone(),
+							min,
+							max,
+						});
+					}
+					continue;
 				};
 				if key == "plugin" {
 					if plugin.is_some() {
@@ -396,6 +480,7 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			Step::ExpectReceipt {
 				plugin,
 				fields,
+				numeric,
 				span: span(),
 			}
 		}

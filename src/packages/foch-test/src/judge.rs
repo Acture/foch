@@ -577,6 +577,7 @@ fn judge_receipts(
 		let crate::model::Step::ExpectReceipt {
 			plugin,
 			fields,
+			numeric,
 			span,
 		} = expectation
 		else {
@@ -585,10 +586,17 @@ fn judge_receipts(
 		let counter = per_plugin.entry(plugin.as_str()).or_insert(0);
 		let label = format!("receipt.{plugin}.{counter}");
 		*counter += 1;
-		let matches = stream
-			.receipts
+		let constraints: Vec<String> = fields
 			.iter()
-			.any(|receipt| receipt_matches(receipt, plugin, fields));
+			.map(|(key, value)| format!("{key}={value}"))
+			.chain(numeric.iter().map(|range| range.describe()))
+			.collect();
+		let matches = stream.receipts.iter().any(|receipt| {
+			receipt_matches(receipt, plugin, fields)
+				&& numeric
+					.iter()
+					.all(|range| range.accepts(receipt.payload[range.field.as_str()].as_str()))
+		});
 		if matches {
 			passed.push(label);
 		} else {
@@ -598,11 +606,7 @@ fn judge_receipts(
 				message: format!(
 					"no receipt of plugin {plugin} in this launch matches {}; the plugin \
 					 reported: {}",
-					fields
-						.iter()
-						.map(|(key, value)| format!("{key}={value}"))
-						.collect::<Vec<_>>()
-						.join(" "),
+					constraints.join(" "),
 					observed_summary(&stream.receipts, plugin)
 				),
 			});
