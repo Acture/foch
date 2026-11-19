@@ -5,7 +5,15 @@
 //! serial field was identified, so [`read_world`] records `WarId.serial` as 0
 //! and the declaration tuple is the identity. These reads have not yet passed
 //! a Foch game-session probe. Entry still refuses every subject, including
-//! tributaries and custom types, until `CSubjectType` / `copy_from` is verified.
+//! tributaries and custom types. On this image `CWar::AddAttacker`
+//! (`FUN_140d89cd0`) and `CWar::AddDefender` (`FUN_140d8caf0`) take one
+//! `CWar` as `this` and a packed country identity as the next argument; an
+//! index already present in the attacker vector at `+0x48` or the defender
+//! vector at `+0x78` is not added again. The remaining arguments are not
+//! identified, so nothing here calls either method.
+//! `join_all_offensive_wars_of` and `join_all_defensive_wars_of` occur only
+//! as token-table names, with no direct code reference. No `CCountry` field
+//! pointing at a `CSubjectType` was identified.
 
 use super::{Country, CountryId, JoinRefusal, War, WarId, World};
 use crate::dataplane::{Eu4Game, Memory, decode_packed_tag, layout::country};
@@ -385,8 +393,8 @@ pub unsafe fn check_country_restrictions(
 		));
 	}
 	// Byte 7 of the overlord packed identity is the subject flag. Tributaries
-	// and custom subject types keep that byte set; they stay refused until a
-	// verified `CSubjectType` or `copy_from` reading can separate them.
+	// and custom subject types keep that byte set. File-level subject-type
+	// policy does not identify which type this country is, so they stay refused.
 	let overlord = qword(memory, address, country::OVERLORD).map_err(unavailable)?;
 	if overlord >> 56 != 0 {
 		return Err(JoinRefusal::Subject);

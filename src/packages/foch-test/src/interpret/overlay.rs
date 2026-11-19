@@ -13,7 +13,7 @@ use crate::collect::country_decisions;
 use crate::model::{DecisionInfo, GameDate, Tag};
 use crate::source::RelPath;
 use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
-use foch_annotation::value::scalar;
+use foch_annotation::value::{boolean, scalar};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,6 +62,23 @@ pub struct SubjectTypeSet {
 	/// The `copy_from` parent each resolved type names, when it names one.
 	pub copy_from: BTreeMap<String, String>,
 	pub unresolved: BTreeMap<String, String>,
+	/// File-level war policy for each resolved type.
+	pub policies: BTreeMap<String, SubjectWarPolicy>,
+}
+
+/// Whether a subject type joins its overlord's wars or is protected from
+/// outside attackers, after `copy_from`.
+///
+/// `None` means the ordered files never assigned that key and no applied
+/// `copy_from` supplied one. This is the playset text, not a live
+/// `CSubjectType` read. The pinned executable stores `yes` as byte 1 and
+/// `no` as byte 0 on the type object, but the token-to-offset switch did
+/// not survive an assembly check, and no `CCountry` field pointing at that
+/// object was identified.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubjectWarPolicy {
+	pub joins_overlords_wars: Option<bool>,
+	pub overlord_protects_external: Option<bool>,
 }
 
 /// One province history assignment group.
@@ -395,23 +412,47 @@ fn province_id(path: &str) -> Option<u32> {
 /// writes and otherwise keeps the earlier one. `replace_path` of
 /// `common/subject_types` (or a directory above it) drops every earlier file
 /// first. Vanilla type names are not filled in when the files do not ship them.
+///
+/// War-policy keys are applied in source order. `copy_from` replaces both
+/// policy fields with the parent's current values (the shipped
+/// `subject_types` header says a `copy_from` copies the type and overwrites
+/// keys written above it, except `count` and `is_potential_overlord`, which
+/// this policy does not track). Keys after that `copy_from` then override.
+/// A later block that does not write `copy_from` updates only the keys it
+/// sets.
 pub fn overlay_subject_types(layers: &[ContentLayer]) -> Result<SubjectTypeSet, String> {
 	let mut copy_from: BTreeMap<String, Option<String>> = BTreeMap::new();
+	let mut ops: BTreeMap<String, Vec<WarOp>> = BTreeMap::new();
 	for file in visible_files(layers)
 		.into_iter()
 		.filter(|file| is_under(&file.path, "common/subject_types"))
 	{
-		for (name, parent) in subject_type_blocks(&file.path, &file.text)? {
-			let slot = copy_from.entry(name).or_insert(None);
-			if let Some(parent) = parent {
+		for block in subject_type_blocks(&file.path, &file.text)? {
+			let slot = copy_from.entry(block.name.clone()).or_insert(None);
+			if let Some(parent) = block.copy_from {
 				*slot = Some(parent);
 			}
+			ops.entry(block.name).or_default().extend(block.ops);
 		}
 	}
-	Ok(resolve_subject_types(copy_from))
+	let mut set = resolve_subject_types(copy_from);
+	set.policies = resolve_policies(&ops, &set.resolved);
+	Ok(set)
 }
 
-fn subject_type_blocks(path: &str, text: &str) -> Result<Vec<(String, Option<String>)>, String> {
+struct TypeBlock {
+	name: String,
+	copy_from: Option<String>,
+	ops: Vec<WarOp>,
+}
+
+enum WarOp {
+	CopyFrom(String),
+	Joins(bool),
+	Protects(bool),
+}
+
+fn subject_type_blocks(path: &str, text: &str) -> Result<Vec<TypeBlock>, String> {
 	let mut found = Vec::new();
 	for statement in parse_file(path, text)? {
 		let AstStatement::Assignment {
@@ -422,7 +463,8 @@ fn subject_type_blocks(path: &str, text: &str) -> Result<Vec<(String, Option<Str
 		else {
 			continue;
 		};
-		let mut parent = None;
+		let mut copy_from = None;
+		let mut ops = Vec::new();
 		for item in items {
 			let AstStatement::Assignment {
 				key: field, value, ..
@@ -430,13 +472,80 @@ fn subject_type_blocks(path: &str, text: &str) -> Result<Vec<(String, Option<Str
 			else {
 				continue;
 			};
-			if field == "copy_from" {
-				parent = scalar(&value).ok();
+			match field.as_str() {
+				"copy_from" => {
+					let parent = scalar(&value).map_err(|error| format!("{path}: {error}"))?;
+					copy_from = Some(parent.clone());
+					ops.push(WarOp::CopyFrom(parent));
+				}
+				"joins_overlords_wars" => ops.push(WarOp::Joins(yes_no(path, &field, &value)?)),
+				"overlord_protects_external" => {
+					ops.push(WarOp::Protects(yes_no(path, &field, &value)?));
+				}
+				_ => {}
 			}
 		}
-		found.push((key, parent));
+		found.push(TypeBlock {
+			name: key,
+			copy_from,
+			ops,
+		});
 	}
 	Ok(found)
+}
+
+fn yes_no(path: &str, field: &str, value: &AstValue) -> Result<bool, String> {
+	match boolean(value) {
+		Ok(value) => Ok(value),
+		Err(_) => match scalar(value) {
+			Ok(text) if text == "yes" => Ok(true),
+			Ok(text) if text == "no" => Ok(false),
+			_ => Err(format!("{path}: {field} expected yes or no")),
+		},
+	}
+}
+
+fn resolve_policies(
+	ops: &BTreeMap<String, Vec<WarOp>>,
+	resolved: &BTreeSet<String>,
+) -> BTreeMap<String, SubjectWarPolicy> {
+	let mut cache = BTreeMap::new();
+	let mut stack = BTreeSet::new();
+	for name in resolved {
+		policy_of(name, ops, resolved, &mut stack, &mut cache);
+	}
+	cache
+}
+
+fn policy_of(
+	name: &str,
+	ops: &BTreeMap<String, Vec<WarOp>>,
+	resolved: &BTreeSet<String>,
+	stack: &mut BTreeSet<String>,
+	cache: &mut BTreeMap<String, SubjectWarPolicy>,
+) -> SubjectWarPolicy {
+	if let Some(policy) = cache.get(name) {
+		return policy.clone();
+	}
+	if !stack.insert(name.to_string()) {
+		return SubjectWarPolicy::default();
+	}
+	let mut policy = SubjectWarPolicy::default();
+	if let Some(steps) = ops.get(name) {
+		for step in steps {
+			match step {
+				WarOp::CopyFrom(parent) if resolved.contains(parent) => {
+					policy = policy_of(parent, ops, resolved, stack, cache);
+				}
+				WarOp::CopyFrom(_) => {}
+				WarOp::Joins(value) => policy.joins_overlords_wars = Some(*value),
+				WarOp::Protects(value) => policy.overlord_protects_external = Some(*value),
+			}
+		}
+	}
+	stack.remove(name);
+	cache.insert(name.to_string(), policy.clone());
+	policy
 }
 
 fn resolve_subject_types(types: BTreeMap<String, Option<String>>) -> SubjectTypeSet {
@@ -474,6 +583,7 @@ fn resolve_subject_types(types: BTreeMap<String, Option<String>>) -> SubjectType
 		resolved,
 		copy_from,
 		unresolved,
+		policies: BTreeMap::new(),
 	}
 }
 
@@ -823,6 +933,84 @@ mod tests {
 			"{:?}",
 			set.unresolved
 		);
+	}
+
+	#[test]
+	fn war_policy_copy_from_overwrites_earlier_keys_and_keeps_later_ones() {
+		let layer = layer(
+			&[],
+			&[(
+				"common/subject_types/00_subject_types.txt",
+				"default = {\n\tjoins_overlords_wars = yes\n\toverlord_protects_external = no\n}\nvassal = {\n\tjoins_overlords_wars = no\n\tcopy_from = default\n\toverlord_protects_external = yes\n}\ntributary_state = {\n\tcopy_from = default\n\tjoins_overlords_wars = no\n\toverlord_protects_external = yes\n}\n",
+			)],
+		);
+		let set = overlay_subject_types(&[layer]).unwrap();
+		assert_eq!(
+			set.policies["vassal"],
+			SubjectWarPolicy {
+				joins_overlords_wars: Some(true),
+				overlord_protects_external: Some(true),
+			}
+		);
+		assert_eq!(
+			set.policies["tributary_state"],
+			SubjectWarPolicy {
+				joins_overlords_wars: Some(false),
+				overlord_protects_external: Some(true),
+			}
+		);
+		assert!(!set.policies.contains_key("missing"));
+	}
+
+	#[test]
+	fn a_later_block_overrides_one_war_policy_and_replace_path_drops_the_rest() {
+		let vanilla = layer(
+			&[],
+			&[(
+				"common/subject_types/00_subject_types.txt",
+				"default = { joins_overlords_wars = yes overlord_protects_external = no }\nvassal = { copy_from = default }\n",
+			)],
+		);
+		let later = layer(
+			&[],
+			&[(
+				"common/subject_types/mod.txt",
+				"vassal = { joins_overlords_wars = no }\n",
+			)],
+		);
+		let set = overlay_subject_types(&[vanilla.clone(), later]).unwrap();
+		assert_eq!(set.policies["vassal"].joins_overlords_wars, Some(false));
+		assert_eq!(
+			set.policies["vassal"].overlord_protects_external,
+			Some(false)
+		);
+
+		let overhaul = layer(
+			&["common/subject_types"],
+			&[(
+				"common/subject_types/overhaul.txt",
+				"custom = { joins_overlords_wars = no overlord_protects_external = yes }\n",
+			)],
+		);
+		let set = overlay_subject_types(&[vanilla, overhaul]).unwrap();
+		assert!(!set.policies.contains_key("vassal"));
+		assert_eq!(
+			set.policies["custom"].overlord_protects_external,
+			Some(true)
+		);
+	}
+
+	#[test]
+	fn a_war_policy_value_must_be_yes_or_no() {
+		let layer = layer(
+			&[],
+			&[(
+				"common/subject_types/00.txt",
+				"vassal = { joins_overlords_wars = maybe }\n",
+			)],
+		);
+		let error = overlay_subject_types(&[layer]).unwrap_err();
+		assert!(error.contains("joins_overlords_wars"), "{error}");
 	}
 
 	#[test]
