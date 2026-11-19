@@ -208,7 +208,7 @@ fn messages(request: &Request, rosters: &[WarRoster]) -> Result<Option<Vec<Strin
 		.enumerate()
 		.map(|(index, war)| {
 			let correlation = request.correlation_at(index)?;
-			let tags = |countries: &[foch_runtime::war::eu4::CountryRef]| {
+			let tags = |countries: &[foch_runtime::dataplane::war::CountryRef]| {
 				let mut names: Vec<_> = countries
 					.iter()
 					.map(|country| country.tag.as_str())
@@ -380,7 +380,7 @@ unsafe extern "C" fn detour(context: *mut c_void, flag: u8) {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_runtime::war::{CountryId, eu4::CountryRef};
+	use foch_runtime::{dataplane::war::CountryRef, war::CountryId};
 	#[test]
 	fn disabled_observation_still_forwards_every_dl_bit_and_rereads_next() {
 		static RECEIVED: AtomicUsize = AtomicUsize::new(0);

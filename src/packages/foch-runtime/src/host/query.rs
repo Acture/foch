@@ -7,16 +7,23 @@ use windows_sys::Win32::System::Memory::{
 	PAGE_WRITECOPY, VirtualQuery,
 };
 
-pub(super) fn executable(ptr: *const c_void) -> bool {
+pub fn executable(ptr: *const c_void) -> bool {
+	let addr = ptr as usize;
 	let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-	let queried = unsafe { VirtualQuery(ptr, &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) };
+	let queried = unsafe {
+		VirtualQuery(
+			addr as *const c_void,
+			&mut info,
+			size_of::<MEMORY_BASIC_INFORMATION>(),
+		)
+	};
 	queried != 0
 		&& info.State == MEM_COMMIT
 		&& info.Protect & (PAGE_GUARD | PAGE_NOACCESS) == 0
 		&& info.Protect & 0xf0 != 0
 }
 
-pub(super) fn readable(ptr: *const u8, len: usize) -> bool {
+pub fn readable(ptr: *const u8, len: usize) -> bool {
 	if ptr.is_null() {
 		return false;
 	}

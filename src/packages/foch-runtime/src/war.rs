@@ -10,7 +10,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub mod eu4;
+/// Compatibility re-export of the EU4 live war reader, which lives under
+/// [`crate::dataplane::war`].
+pub use crate::dataplane::war as eu4;
 
 /// Provider-assigned country identity; never an ASCII tag encoded as an integer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]

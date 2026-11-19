@@ -1,11 +1,14 @@
 //! The frozen plan and all native callback storage live until process exit.
 
-use super::{
-	MODULE, gate, link,
-	query::{executable, readable},
-};
-use crate::plan::{self, Kind, Phase, Plan, PlannedPlugin, StatusMode};
+use super::{MODULE, gate};
 use foch_plugin_sdk::{self as abi, FochHostApi, FochStatus, FochStr};
+use foch_runtime::{
+	host::{
+		link,
+		query::{executable, readable},
+	},
+	plan::{self, Kind, Phase, Plan, PlannedPlugin, StatusMode},
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -819,7 +822,14 @@ unsafe extern "C" fn find_pattern(
 	let Ok(Some(text)) = (unsafe { text(pattern) }) else {
 		return abi::result::E_INVALID;
 	};
-	link::find_in_module(ctx.runtime.exe_size, &text, address)
+	unsafe {
+		link::find_in_module(
+			gate::image_base() as *const u8,
+			ctx.runtime.exe_size,
+			&text,
+			address,
+		)
+	}
 }
 
 unsafe extern "C" fn hook_create(
@@ -839,7 +849,7 @@ unsafe extern "C" fn hook_create(
 		}
 		return abi::result::E_INVALID;
 	};
-	linker(ctx).hook_create(target, detour, priority, next, hook)
+	unsafe { linker(ctx).hook_create(target, detour, priority, next, hook) }
 }
 
 unsafe extern "C" fn hook_set_enabled(
@@ -850,7 +860,7 @@ unsafe extern "C" fn hook_set_enabled(
 	let Some(ctx) = (unsafe { from_host(host) }) else {
 		return abi::result::E_INVALID;
 	};
-	linker(ctx).hook_set_enabled(hook, enabled)
+	unsafe { linker(ctx).hook_set_enabled(hook, enabled) }
 }
 
 unsafe extern "C" fn patch_create(
@@ -866,7 +876,7 @@ unsafe extern "C" fn patch_create(
 		}
 		return abi::result::E_INVALID;
 	};
-	linker(ctx).patch_create(address, bytes, len, patch)
+	unsafe { linker(ctx).patch_create(address, bytes, len, patch) }
 }
 
 unsafe extern "C" fn patch_set_enabled(
@@ -877,7 +887,7 @@ unsafe extern "C" fn patch_set_enabled(
 	let Some(ctx) = (unsafe { from_host(host) }) else {
 		return abi::result::E_INVALID;
 	};
-	linker(ctx).patch_set_enabled(patch, enabled)
+	unsafe { linker(ctx).patch_set_enabled(patch, enabled) }
 }
 
 #[cfg(test)]
