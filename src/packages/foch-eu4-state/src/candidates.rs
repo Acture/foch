@@ -18,6 +18,9 @@
 /// values below extend that view for fields it does not carry yet. Same
 /// binary, same conventions (engine fixed point is ÷1000).
 pub mod province {
+	/// Dword compared with [`super::country::MARK`] to identify a
+	/// country's capital province.
+	pub const MARK: usize = 0x20;
 	/// Base production, thousandths — the third ledger getter
 	/// (FUN_140a0dff0, LEDGER_PRODUCTION). Tax and manpower already
 	/// live in the shared layout.
@@ -32,9 +35,49 @@ pub mod province {
 	/// engine reads `(short)(packed >> 0x20)`), NOT the tag — the tag
 	/// decodes through the country registry.
 	pub const OWNER_INDEX: usize = 0x468;
+	/// Packed controller qword; same bit layout as [`OWNER_INDEX`]
+	/// (bits 32..48 hold the controlling country index).
+	pub const CONTROLLER: usize = 0x470;
 	/// Cores / trade-company region vector (begin +0x28, end +0x30 on
 	/// the pointee).
 	pub const CORES: usize = 0x8a8;
+	/// Province flags byte; both bits of [`OCCUPIED_MASK`] set means
+	/// the province is counted as occupied.
+	pub const FLAGS: usize = 0x958;
+	/// Both of these bits set in [`FLAGS`] means the province is
+	/// counted as occupied.
+	pub const OCCUPIED_MASK: u8 = 0x50;
+	/// Next pointer on a country's province linked-list node (`i32`
+	/// province index sits at `+0`, next pointer at `+0x10`).
+	pub const LINK_NEXT: usize = 0x10;
+}
+
+/// Candidate fields on `CCountry` beyond the verified
+/// [`foch_runtime::dataplane::layout::country`] fields (`TAG`, `TREASURY`).
+pub mod country {
+	/// Current manpower on the country object (`SetManpower`).
+	pub const MANPOWER: usize = 0xdb8;
+	/// Manpower cap read by `CalcManpowerIncrease`.
+	pub const MANPOWER_MAX: usize = 0xdbc;
+	/// Province linked-list head on a country. Each node holds an `i32`
+	/// province index at `+0` and the next pointer at
+	/// [`super::province::LINK_NEXT`].
+	pub const PROVINCES: usize = 0x1348;
+	/// Dword compared with [`super::province::MARK`].
+	pub const MARK: usize = 0x14b8;
+	/// Overlord country id read while resolving the other side of a
+	/// province.
+	pub const OVERLORD: usize = 0x18f0;
+}
+
+/// Candidate fields on a war object (`WAR_SCORE_TOTAL` / `WAR_SCORE_SIDE`).
+pub mod war {
+	/// First participant list on the war (`begin` at `+0x48`, `end` at `+0x50`).
+	pub const SIDE_A: usize = 0x48;
+	/// Second participant list (`begin` at `+0x78`, `end` at `+0x80`).
+	pub const SIDE_B: usize = 0x78;
+	/// Clamped warscore total stored by the warscore reporter.
+	pub const SCORE_VALUE: usize = 0x190;
 }
 
 /// Fields of the world/game context next to the shared layout's
@@ -59,14 +102,29 @@ pub mod template {
 	pub const PROVINCE_ID: usize = 0x150;
 }
 
-/// Fields of one army (from the army script/save setter
-/// FUN_1401a5e50). The verified combat-modifier block (+0x118..0x130)
-/// lives in foch-eu4-decide's `sites` table, not here.
+/// Candidate fields of one army stack object (from the army script/save
+/// setter `FUN_1401a5e50`, `AssignLeader`, and battle setup
+/// `FUN_140237f90`).
 pub mod army {
-	/// Location: a province pointer into the shared layout's array.
-	pub const LOCATION: usize = 0x228;
+	/// Combat width cached on the army stack object.
+	pub const COMBAT_WIDTH: usize = 0x1c;
+	/// Army id dword (`[rcx+0x24]` in `AssignLeader`).
+	pub const ID: usize = 0x24;
+	/// Leader pointer (`[rcx+0xd8]` in `AssignLeader`).
+	pub const LEADER: usize = 0xd8;
+	/// Seven consecutive combat-stat dwords (each ÷1000) cached on the
+	/// army stack object and read by battle setup (`FUN_140237f90`).
+	pub const TACTICS: usize = 0x118;
+	pub const DISCIPLINE: usize = 0x11c;
+	pub const INF_FIRE: usize = 0x120;
+	pub const INF_SHOCK: usize = 0x124;
+	pub const CAV_FIRE: usize = 0x128;
+	pub const ART_FIRE: usize = 0x12c;
+	pub const ART_SHOCK: usize = 0x130;
 	/// Country pointer (registry-resolved).
 	pub const COUNTRY: usize = 0x21c;
+	/// Location: a province pointer into the shared layout's array.
+	pub const LOCATION: usize = 0x228;
 	/// Region pointer, `index × 0x58` into the region table.
 	pub const REGION: usize = 0x250;
 }
@@ -79,14 +137,53 @@ mod tests {
 	fn candidate_offsets_stay_inside_one_province_stride() {
 		let span = foch_runtime::dataplane::Province::record_span();
 		for offset in [
+			province::MARK,
 			province::BASE_PRODUCTION,
-			province::FORT_LEVEL,
-			province::UNREST,
 			province::DEVASTATION,
 			province::OWNER_INDEX,
+			province::CONTROLLER,
 			province::CORES,
+			province::FLAGS,
+			province::FORT_LEVEL,
+			province::UNREST,
 		] {
 			assert!(offset + 8 <= span);
+		}
+		const {
+			assert!(province::LINK_NEXT.is_multiple_of(8));
+			assert!(province::LINK_NEXT >= 4);
+			assert!(province::OCCUPIED_MASK != 0);
+		}
+	}
+
+	#[test]
+	fn country_war_and_army_candidate_offsets_have_valid_alignment_and_spacing() {
+		const {
+			assert!(country::MANPOWER + 4 == country::MANPOWER_MAX);
+			assert!(country::PROVINCES.is_multiple_of(8));
+			assert!(country::MARK.is_multiple_of(4));
+			assert!(country::OVERLORD.is_multiple_of(8));
+
+			assert!(war::SIDE_A.is_multiple_of(8));
+			assert!(war::SIDE_B.is_multiple_of(8));
+			assert!(war::SIDE_A + 16 <= war::SIDE_B);
+			assert!(war::SCORE_VALUE.is_multiple_of(4));
+
+			assert!(army::COMBAT_WIDTH.is_multiple_of(4));
+			assert!(army::ID.is_multiple_of(4));
+			assert!(army::LEADER.is_multiple_of(8));
+		}
+		let combat_stats = [
+			army::TACTICS,
+			army::DISCIPLINE,
+			army::INF_FIRE,
+			army::INF_SHOCK,
+			army::CAV_FIRE,
+			army::ART_FIRE,
+			army::ART_SHOCK,
+		];
+		for pair in combat_stats.windows(2) {
+			assert_eq!(pair[0] + 4, pair[1]);
 		}
 	}
 

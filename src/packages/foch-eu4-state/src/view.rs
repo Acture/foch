@@ -59,7 +59,33 @@ impl VerifiedGame {
 		let packed = self
 			.memory
 			.read_qword(province.checked_add(candidates::province::OWNER_INDEX)?)?;
-		Some(((packed >> 0x20) as u16) as i32)
+		Some(country_index_from_packed(packed))
+	}
+
+	/// The controller's country index from the packed controller qword
+	/// (bits 32..48, matching [`Self::owner_country_index`]).
+	pub fn controller_index(&self, province: usize) -> Option<i32> {
+		let packed = self
+			.memory
+			.read_qword(province.checked_add(candidates::province::CONTROLLER)?)?;
+		Some(country_index_from_packed(packed))
+	}
+
+	/// Whether the province's flags byte has both occupied bits
+	/// ([`candidates::province::OCCUPIED_MASK`]) set.
+	pub fn occupied_flags(&self, province: usize) -> Option<bool> {
+		let flags = self
+			.memory
+			.read_u8(province.checked_add(candidates::province::FLAGS)?)?;
+		Some(is_occupied_flags(flags))
+	}
+
+	/// The province mark dword compared against a country's capital mark
+	/// ([`candidates::country::MARK`]).
+	pub fn province_mark(&self, province: usize) -> Option<u32> {
+		self.memory
+			.read_i32(province.checked_add(candidates::province::MARK)?)
+			.map(|raw| raw as u32)
 	}
 
 	/// The owner's tag, decoded through the live country registry.
@@ -112,6 +138,18 @@ impl VerifiedGame {
 		let end = self.memory.read_qword(ids.checked_add(8)?)? as usize;
 		province_count_from(begin, end)
 	}
+}
+
+/// The pure extraction behind [`VerifiedGame::owner_country_index`] and
+/// [`VerifiedGame::controller_index`]: bits 32..48 hold the country index.
+pub fn country_index_from_packed(packed: u64) -> i32 {
+	((packed >> 0x20) as u16) as i32
+}
+
+/// The pure bitmask check behind [`VerifiedGame::occupied_flags`]: both
+/// bits of [`candidates::province::OCCUPIED_MASK`] must be set.
+pub fn is_occupied_flags(flags: u8) -> bool {
+	flags & candidates::province::OCCUPIED_MASK == candidates::province::OCCUPIED_MASK
 }
 
 /// The pure arithmetic behind [`VerifiedGame::development`]: widened
@@ -168,13 +206,58 @@ mod tests {
 		};
 		assert_eq!(game.province_address(u32::MAX), None);
 		assert_eq!(game.province_count(), None);
+		assert_eq!(game.controller_index(usize::MAX), None);
+		assert_eq!(game.occupied_flags(usize::MAX), None);
+		assert_eq!(game.province_mark(usize::MAX), None);
 	}
 
 	#[test]
 	fn owner_index_reads_the_engine_window_of_the_packed_qword() {
 		// High 32 bits hold the index; the engine truncates to a short.
 		let packed = (0x0000_012c_u64 << 0x20) | 0xffff_ffff;
-		assert_eq!(((packed >> 0x20) as u16) as i32, 0x012c);
+		assert_eq!(country_index_from_packed(packed), 0x012c);
+	}
+
+	#[test]
+	fn occupied_flags_requires_both_mask_bits() {
+		assert!(!is_occupied_flags(0x00));
+		assert!(!is_occupied_flags(0x10));
+		assert!(!is_occupied_flags(0x40));
+		assert!(is_occupied_flags(candidates::province::OCCUPIED_MASK));
+		assert!(is_occupied_flags(0xff));
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn verified_game_reads_controller_occupied_and_mark_from_province_buffer() {
+		let mut words = vec![0_u64; shared::CPROVINCE_SIZE / 8];
+		let base = words.as_mut_ptr() as *mut u8;
+		// SAFETY: every offset is inside `words` (length `CPROVINCE_SIZE`),
+		// which is validated by `candidates::tests`.
+		unsafe {
+			let mark = 0x1234_5678_u32.to_le_bytes();
+			core::ptr::copy_nonoverlapping(mark.as_ptr(), base.add(candidates::province::MARK), 4);
+			let controller = ((0x002a_u64 << 0x20) | 0xdead_beef).to_le_bytes();
+			core::ptr::copy_nonoverlapping(
+				controller.as_ptr(),
+				base.add(candidates::province::CONTROLLER),
+				8,
+			);
+			*base.add(candidates::province::FLAGS) = candidates::province::OCCUPIED_MASK | 0x01;
+		}
+		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let game = VerifiedGame::new(Memory, base as usize, expected)
+			.expect("shared pinned digest must open the gate");
+		let province = base as usize;
+		assert_eq!(game.province_mark(province), Some(0x1234_5678));
+		assert_eq!(game.controller_index(province), Some(0x002a));
+		assert_eq!(game.occupied_flags(province), Some(true));
+
+		// Flipping one bit of the occupied mask clears the occupied state.
+		unsafe {
+			*base.add(candidates::province::FLAGS) = 0x10;
+		}
+		assert_eq!(game.occupied_flags(province), Some(false));
 	}
 
 	#[test]

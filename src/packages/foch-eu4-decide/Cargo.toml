@@ -1,0 +1,20 @@
+[package]
+name = "foch-eu4-decide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Offline scaffold for an EU4 attitude policy whose baseline is the vanilla AI"
+publish = false
+
+[dependencies]
+foch-eu4-gnn = { path = "../foch-eu4-gnn" }
+foch-eu4-state = { path = "../foch-eu4-state" }
+foch-runtime = { path = "../foch-runtime", default-features = false }
+sha2.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

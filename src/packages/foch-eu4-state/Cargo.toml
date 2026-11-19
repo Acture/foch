@@ -13,3 +13,6 @@ publish = false
 # The data plane only: default features would drag the analysis crates
 # through the test runner into this library.
 foch-runtime = { path = "../foch-runtime", default-features = false }
+
+[dev-dependencies]
+foch-eu4-gnn = { path = "../foch-eu4-gnn" }
