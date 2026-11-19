@@ -1,7 +1,8 @@
 //! foch-eu4-tribute — Foch native plugin (ABI 1.0).
 //!
 //! Scales each subject nation's tribute to its overlord by a configurable
-//! percentage: tag replaces kind replaces global, master switch passthrough.
+//! percentage: tag replaces the subject-type key, then each `copy_from`
+//! parent, then `default`, then global. The master switch is passthrough.
 //! The coefficients live in a runtime config the slider panel (a later
 //! milestone) mutates; until that lands, the manifest config and
 //! `tribute-config.json` in the plugin data directory are the interface.
@@ -11,6 +12,7 @@
 mod coefficient;
 mod config;
 mod signature;
+mod subject_types;
 
 use foch_plugin_sdk::{
 	ABI_MAJOR, ABI_MINOR, FochHostApi, FochPluginApi, FochStatus, FochStr, dir, log, result, state,
@@ -107,9 +109,10 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 	{
 		let (coefficient, vassal_coefficient, has_tag_overrides) = {
 			let config = CONFIG.read().unwrap();
+			let types = subject_types::ACTIVE.read().unwrap();
 			(
-				config.coefficient("", coefficient::SubjectKind::Tributary),
-				config.coefficient("", coefficient::SubjectKind::Vassal),
+				config.coefficient("", "tributary", &types),
+				config.coefficient("", "vassal", &types),
 				!config.tag_percent.is_empty(),
 			)
 		};
@@ -321,6 +324,12 @@ fn log_line(host: &FochHostApi, level: i32, message: &str) {
 	unsafe { (host.log)(host, level, FochStr::from_str(message)) };
 }
 
+fn active_coefficient(tag: &str, kind: &str) -> f64 {
+	let config = CONFIG.read().unwrap();
+	let types = subject_types::ACTIVE.read().unwrap();
+	config.coefficient(tag, kind, &types)
+}
+
 fn result_name(code: i32) -> &'static str {
 	match code {
 		result::E_NOT_FOUND => "not found",
@@ -349,8 +358,11 @@ mod detour {
 	const COMMAND_AMOUNT_OFFSET: usize = 0x1c;
 	/// Monthly accumulated income bank (`i32`) on `CCountry`, banked by `ApplyMonthlyIncome`.
 	const COUNTRY_MONTHLY_INCOME_BANK: usize = 0x68;
-	/// Upper bound on engine country indices (matches `foch_runtime::dataplane::game::Countries`).
-	const MAX_COUNTRY_INDEX: usize = 1024;
+	/// Upper bound on engine country indices. Matches
+	/// `foch_runtime::dataplane::game::valid_country_count`, which accepts a
+	/// registry of up to `i16::MAX` countries for overhaul mods. Indices are
+	/// zero-based, so `i16::MAX` itself is not a valid index into that registry.
+	const MAX_COUNTRY_INDEX: usize = i16::MAX as usize;
 
 	/// The host-owned trampoline cell; call through `*next` on every call.
 	static NEXT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
@@ -450,13 +462,7 @@ mod detour {
 		}
 		let memory = Memory;
 		let tag = resolve_partner_tag(&memory, partner);
-		let desired = {
-			let config = crate::CONFIG.read().unwrap();
-			config.coefficient(
-				tag.as_deref().unwrap_or(""),
-				crate::coefficient::SubjectKind::Tributary,
-			)
-		};
+		let desired = crate::active_coefficient(tag.as_deref().unwrap_or(""), "tributary");
 		let scale = residual_scale(desired, applied_tribute_scale());
 		if (scale - 1.0).abs() > f64::EPSILON
 			&& let Some(amount_addr) = (command as usize).checked_add(COMMAND_AMOUNT_OFFSET)
@@ -507,13 +513,7 @@ mod detour {
 			return;
 		}
 		let subject_tag = read_country_tag(&memory, subject as usize).map(|(tag, _)| tag);
-		let desired = {
-			let config = crate::CONFIG.read().unwrap();
-			config.coefficient(
-				subject_tag.as_deref().unwrap_or(""),
-				crate::coefficient::SubjectKind::Vassal,
-			)
-		};
+		let desired = crate::active_coefficient(subject_tag.as_deref().unwrap_or(""), "vassal");
 		let scale = residual_scale(desired, applied_vassal_scale());
 		let mut after = before;
 		if (scale - 1.0).abs() > f64::EPSILON {
@@ -534,10 +534,11 @@ mod detour {
 		{
 			seen.push((after as i64, key));
 			let overlord_tag = read_country_tag(&memory, country as usize).map(|(tag, _)| tag);
-			// Relation-slot dump: the subject argument of FUN_1403f1510 is the
-			// element the overlord's SUBJECTS_VEC iteration hands over; its byte
-			// layout across known subject kinds is what pins the kind
-			// discriminant. 0x40 bytes cover the observed header + floats.
+			// Static 1.37.5 layout (capstone only, not live-verified). country+0x24b0
+			// is a pointer vector: end at +0x24b8, stride 8. This argument is
+			// *(*(*(element + 0x10) + 0x10)), and that object holds province ids
+			// in a vector at +0x88/+0x90. The subject-type key and copy_from
+			// parent are not on it, so the tag read below stays a guarded probe.
 			let mut slot = [0u8; 0x40];
 			let slot_ok = memory.read_bytes(subject as usize, &mut slot).is_some();
 			let slot_hex = slot
@@ -768,6 +769,28 @@ mod tests {
 	/// Serialize tests that mutate process-wide detour statics (`CONFIG`, `NEXT`, etc.).
 	static DETOUR_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+	struct ResetSubjectTypes;
+
+	impl ResetSubjectTypes {
+		fn clear() -> Self {
+			*subject_types::ACTIVE.write().unwrap() = subject_types::SubjectTypeGraph::EMPTY;
+			Self
+		}
+
+		fn install(graph: subject_types::SubjectTypeGraph) -> Self {
+			*subject_types::ACTIVE.write().unwrap() = graph;
+			Self
+		}
+	}
+
+	impl Drop for ResetSubjectTypes {
+		fn drop(&mut self) {
+			if let Ok(mut active) = subject_types::ACTIVE.write() {
+				*active = subject_types::SubjectTypeGraph::EMPTY;
+			}
+		}
+	}
+
 	fn pack_country_tag(tag: &[u8; 3], index: i16, valid_flag: u8) -> u64 {
 		let idx = index.to_le_bytes();
 		u64::from_le_bytes([tag[0], tag[1], tag[2], 0, idx[0], idx[1], 0, valid_flag])
@@ -800,6 +823,7 @@ mod tests {
 	#[test]
 	fn the_detour_scales_the_command_amount_before_the_original() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		let _types = ResetSubjectTypes::clear();
 		static SEEN: AtomicI32 = AtomicI32::new(i32::MIN);
 		unsafe extern "C" fn original(command: *mut u8, _partner: u64) {
 			unsafe {
@@ -842,6 +866,7 @@ mod tests {
 	#[test]
 	fn tribute_executor_resolves_tag_overrides_and_avoids_double_scaling() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		let _types = ResetSubjectTypes::clear();
 		static SEEN: AtomicI32 = AtomicI32::new(i32::MIN);
 		unsafe extern "C" fn original(command: *mut u8, _partner: u64) {
 			unsafe {
@@ -892,6 +917,7 @@ mod tests {
 	#[test]
 	fn subject_income_scales_per_tag_and_guards_invalid_subject_pointers() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		let _types = ResetSubjectTypes::clear();
 		unsafe extern "C" fn original(
 			_country: *mut u8,
 			out: *mut i32,
@@ -1002,6 +1028,51 @@ mod tests {
 	}
 
 	#[test]
+	fn subject_income_walks_copy_from_before_the_global_percent() {
+		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		let _types = ResetSubjectTypes::install(
+			subject_types::SubjectTypeGraph::from_script(
+				"vassal = { copy_from = default }\ndefault = {}\n",
+			)
+			.unwrap(),
+		);
+		unsafe extern "C" fn original(
+			_country: *mut u8,
+			out: *mut i32,
+			_subject: *mut u8,
+			_tooltip: *mut u8,
+		) {
+			if !out.is_null() {
+				unsafe { *out = 1000 };
+			}
+		}
+		static mut CELL: detour::SubjectOriginal = original as detour::SubjectOriginal;
+		detour::set_next_subject_for_test((&raw const CELL) as *mut std::ffi::c_void);
+		detour::set_applied_scales(1.0, 1.0);
+
+		let mut cfg = coefficient::TributeConfig {
+			enabled: true,
+			global_percent: 100,
+			..coefficient::TributeConfig::ONCE
+		};
+		cfg.kind_percent.insert("default".into(), 25);
+		*CONFIG.write().unwrap() = cfg;
+
+		let mut overlord = fake_country(b"ENG", 10, 1);
+		let mut sco = fake_country(b"SCO", 12, 1);
+		let mut out = 0_i32;
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				sco.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 250);
+	}
+
+	#[test]
 	fn packed_country_tag_validation_rejects_malformed_and_null_page() {
 		let memory = Memory;
 		// Valid packed tag.
@@ -1017,7 +1088,8 @@ mod tests {
 			detour::decode_packed_country_tag(no_flag, false),
 			Some(("C01".into(), 300))
 		);
-		// Non-zero byte 3 (not NUL-terminated), lowercase chars, negative or >=1024 index.
+		// Non-zero byte 3 (not NUL-terminated), lowercase chars, negative index,
+		// or an index at the `i16::MAX` country-count ceiling.
 		assert_eq!(
 			detour::decode_packed_country_tag(
 				u64::from_le_bytes([b'F', b'R', b'A', b'X', 1, 0, 0, 1]),
@@ -1035,6 +1107,14 @@ mod tests {
 		);
 		assert_eq!(
 			detour::decode_packed_country_tag(pack_country_tag(b"FRA", 1024, 1), false),
+			Some(("FRA".into(), 1024))
+		);
+		assert_eq!(
+			detour::decode_packed_country_tag(pack_country_tag(b"FRA", i16::MAX - 1, 1), false),
+			Some(("FRA".into(), (i16::MAX as u16) - 1))
+		);
+		assert_eq!(
+			detour::decode_packed_country_tag(pack_country_tag(b"FRA", i16::MAX, 1), false),
 			None
 		);
 		// Null page / overflow refused without faulting.

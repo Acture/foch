@@ -34,7 +34,7 @@ pub struct SignatureTable {
 	pub subject_kind: FieldRead,
 	/// How to read the subject's tag from the same object.
 	pub subject_tag: FieldRead,
-	/// Discriminant value -> [`crate::coefficient::SubjectKind::key`] spelling.
+	/// Discriminant value -> subject-type script key (`tributary_state`, `vassal`, …).
 	pub kind_values: Vec<KindValue>,
 }
 
@@ -106,7 +106,8 @@ pub enum ReadKind {
 impl SignatureTable {
 	/// A table is usable only when every pattern is verified, any pinned
 	/// executable digest matches the shared data plane, and every kind
-	/// value maps to a known subject kind key.
+	/// value names a non-empty subject-type key. Mod keys are allowed; the
+	/// nine historical enums are not a closed set.
 	pub fn usable(&self) -> Result<(), String> {
 		if !self.exe_sha256.is_empty() && !foch_runtime::dataplane::supports_build(&self.exe_sha256)
 		{
@@ -130,12 +131,9 @@ impl SignatureTable {
 			return Err(format!("kind_values for {} is empty", self.game_version));
 		}
 		for KindValue { value, key } in &self.kind_values {
-			if !crate::coefficient::SubjectKind::ALL
-				.iter()
-				.any(|k| k.key() == key)
-			{
+			if key.is_empty() {
 				return Err(format!(
-					"kind value {value} maps to unknown kind key {key:?}"
+					"kind value {value} maps to an empty subject type key"
 				));
 			}
 		}
@@ -234,11 +232,21 @@ mod tests {
 	}
 
 	#[test]
-	fn unknown_kind_keys_are_refused() {
+	fn mod_subject_type_keys_are_accepted() {
 		let mut table = table(PatternStatus::Verified);
 		table.kind_values.push(KindValue {
 			value: 9,
-			key: "palpatine".into(),
+			key: "core_eyalet".into(),
+		});
+		assert!(table.usable().is_ok());
+	}
+
+	#[test]
+	fn empty_kind_keys_are_refused() {
+		let mut table = table(PatternStatus::Verified);
+		table.kind_values.push(KindValue {
+			value: 9,
+			key: String::new(),
 		});
 		assert!(table.usable().is_err());
 	}

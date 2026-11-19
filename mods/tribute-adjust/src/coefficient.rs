@@ -1,52 +1,12 @@
 //! Coefficient resolution: which multiplier applies to one subject's tribute.
+//!
+//! Subject kinds are the script keys in `common/subject_types`, not a fixed
+//! enum. A missing key walks `copy_from` parents (cycle-safe) and then the
+//! `default` key before the global percent.
 
+use crate::subject_types::SubjectTypeGraph;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-/// The subject kinds EU4 distinguishes on the subject side of the relation.
-/// The discriminant read in the detour maps onto this enum; the order here is
-/// our own, the mapping lives in the signature table.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub enum SubjectKind {
-	JuniorPartner,
-	Vassal,
-	March,
-	ClientState,
-	Colony,
-	Tributary,
-	Daimyo,
-	Appanage,
-	Dominion,
-}
-
-impl SubjectKind {
-	pub const ALL: [SubjectKind; 9] = [
-		SubjectKind::JuniorPartner,
-		SubjectKind::Vassal,
-		SubjectKind::March,
-		SubjectKind::ClientState,
-		SubjectKind::Colony,
-		SubjectKind::Tributary,
-		SubjectKind::Daimyo,
-		SubjectKind::Appanage,
-		SubjectKind::Dominion,
-	];
-
-	/// Manifest / config file spelling, stable for the runtime config format.
-	pub fn key(self) -> &'static str {
-		match self {
-			SubjectKind::JuniorPartner => "junior_partner",
-			SubjectKind::Vassal => "vassal",
-			SubjectKind::March => "march",
-			SubjectKind::ClientState => "client_state",
-			SubjectKind::Colony => "colony",
-			SubjectKind::Tributary => "tributary",
-			SubjectKind::Daimyo => "daimyo",
-			SubjectKind::Appanage => "appanage",
-			SubjectKind::Dominion => "dominion",
-		}
-	}
-}
 
 /// The effective runtime configuration. Built from the manifest config
 /// (host-delivered) merged with `tribute-config.json` from the data directory;
@@ -57,10 +17,11 @@ pub struct TributeConfig {
 	/// Percent for subjects of any kind. Replaced, not stacked, by kind and
 	/// tag values.
 	pub global_percent: i64,
-	/// Percent per subject kind; a missing kind falls back to `global_percent`.
+	/// Percent per subject-type key (`vassal`, `core_eyalet`, a mod key, or
+	/// `default`). A missing key walks `copy_from`.
 	pub kind_percent: BTreeMap<String, i64>,
 	/// Percent per subject tag (three-letter tag, uppercase); replaces the
-	/// kind value.
+	/// kind chain.
 	pub tag_percent: BTreeMap<String, i64>,
 }
 
@@ -87,35 +48,64 @@ impl Default for TributeConfig {
 }
 
 impl TributeConfig {
-	/// The multiplier for one subject: tag replaces kind replaces global.
-	/// Clamp is not applied here; the panel and the config reader clamp on
-	/// write so the hot path stays branch-light. The settlement detour calls
-	/// this once per subject per month.
-	#[allow(dead_code)] // until the signature table lands and detour::attach calls it
-	pub fn coefficient(&self, tag: &str, kind: SubjectKind) -> f64 {
+	/// The multiplier for one subject.
+	///
+	/// Priority is `tag_percent[tag]`, then `kind_percent` of the exact key,
+	/// then each `copy_from` parent, then `kind_percent["default"]` when the
+	/// walk did not already visit that key, then `global_percent`. Values
+	/// replace; they do not stack. The settlement detour calls this once per
+	/// subject per month.
+	pub fn coefficient(&self, tag: &str, kind: &str, types: &SubjectTypeGraph) -> f64 {
 		if !self.enabled {
 			return 1.0;
 		}
-		let percent = self
-			.tag_percent
-			.get(tag)
-			.or_else(|| self.kind_percent.get(kind.key()))
-			.copied()
-			.unwrap_or(self.global_percent);
-		percent as f64 / 100.0
+		if !tag.is_empty()
+			&& let Some(percent) = self.tag_percent.get(tag)
+		{
+			return scale(*percent);
+		}
+		let chain = types.ancestry(kind);
+		for key in &chain {
+			if let Some(percent) = self.kind_percent.get(key) {
+				return scale(*percent);
+			}
+		}
+		if !chain.iter().any(|key| key == "default")
+			&& let Some(percent) = self.kind_percent.get("default")
+		{
+			return scale(*percent);
+		}
+		scale(self.global_percent)
 	}
+}
+
+fn scale(percent: i64) -> f64 {
+	percent as f64 / 100.0
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
+	fn chain() -> SubjectTypeGraph {
+		SubjectTypeGraph::from_script(
+			"\
+default = {}
+vassal = { copy_from = default }
+eyalet = { copy_from = vassal }
+core_eyalet = { copy_from = eyalet }
+beylerbey = { copy_from = core_eyalet }
+",
+		)
+		.unwrap()
+	}
+
 	fn config() -> TributeConfig {
 		let mut cfg = TributeConfig {
 			global_percent: 80,
 			..TributeConfig::default()
 		};
-		cfg.kind_percent.insert("tributary".into(), 50);
+		cfg.kind_percent.insert("tributary_state".into(), 50);
 		cfg.kind_percent.insert("colony".into(), 120);
 		cfg.tag_percent.insert("MUG".into(), 10);
 		cfg
@@ -124,30 +114,113 @@ mod tests {
 	#[test]
 	fn tag_replaces_kind_replaces_global() {
 		let cfg = config();
-		assert!((cfg.coefficient("MUG", SubjectKind::Tributary) - 0.10).abs() < 1e-9);
-		assert!((cfg.coefficient("KOR", SubjectKind::Tributary) - 0.50).abs() < 1e-9);
-		assert!((cfg.coefficient("KOR", SubjectKind::Colony) - 1.20).abs() < 1e-9);
-		// No kind entry: the global value.
-		assert!((cfg.coefficient("KOR", SubjectKind::Vassal) - 0.80).abs() < 1e-9);
+		let types = SubjectTypeGraph::EMPTY;
+		assert!((cfg.coefficient("MUG", "tributary_state", &types) - 0.10).abs() < 1e-9);
+		assert!((cfg.coefficient("KOR", "tributary_state", &types) - 0.50).abs() < 1e-9);
+		assert!((cfg.coefficient("KOR", "colony", &types) - 1.20).abs() < 1e-9);
+		assert!((cfg.coefficient("KOR", "vassal", &types) - 0.80).abs() < 1e-9);
 	}
 
 	#[test]
 	fn disabled_means_passthrough() {
 		let mut cfg = config();
 		cfg.enabled = false;
-		assert!((cfg.coefficient("MUG", SubjectKind::Tributary) - 1.0).abs() < 1e-9);
+		assert!(
+			(cfg.coefficient("MUG", "tributary_state", &SubjectTypeGraph::EMPTY) - 1.0).abs()
+				< 1e-9
+		);
 	}
 
 	#[test]
-	fn every_kind_has_a_key_round_trip() {
-		for kind in SubjectKind::ALL {
+	fn kind_keys_are_open_strings() {
+		for kind in [
+			"junior_partner",
+			"vassal",
+			"march",
+			"client_vassal",
+			"colony",
+			"tributary_state",
+			"daimyo_vassal",
+			"appanage",
+			"core_eyalet",
+			"beylerbey",
+		] {
 			let mut cfg = TributeConfig::default();
-			cfg.kind_percent.insert(kind.key().into(), 33);
+			cfg.kind_percent.insert(kind.into(), 33);
 			assert!(
-				(cfg.coefficient("XXX", kind) - 0.33).abs() < 1e-9,
-				"{kind:?}"
+				(cfg.coefficient("XXX", kind, &SubjectTypeGraph::EMPTY) - 0.33).abs() < 1e-9,
+				"{kind}"
 			);
 		}
+	}
+
+	#[test]
+	fn core_eyalet_inherits_eyalet_then_vassal_then_default() {
+		let types = chain();
+		let mut cfg = TributeConfig {
+			global_percent: 10,
+			..TributeConfig::default()
+		};
+		cfg.kind_percent.insert("eyalet".into(), 70);
+		cfg.kind_percent.insert("vassal".into(), 50);
+		cfg.kind_percent.insert("default".into(), 30);
+		assert!((cfg.coefficient("AAA", "core_eyalet", &types) - 0.70).abs() < 1e-9);
+
+		cfg.kind_percent.remove("eyalet");
+		assert!((cfg.coefficient("AAA", "core_eyalet", &types) - 0.50).abs() < 1e-9);
+
+		cfg.kind_percent.remove("vassal");
+		assert!((cfg.coefficient("AAA", "core_eyalet", &types) - 0.30).abs() < 1e-9);
+
+		cfg.kind_percent.remove("default");
+		assert!((cfg.coefficient("AAA", "core_eyalet", &types) - 0.10).abs() < 1e-9);
+	}
+
+	#[test]
+	fn exact_key_and_tag_beat_the_parent_chain() {
+		let types = chain();
+		let mut cfg = TributeConfig {
+			global_percent: 10,
+			..TributeConfig::default()
+		};
+		cfg.kind_percent.insert("vassal".into(), 50);
+		cfg.kind_percent.insert("beylerbey".into(), 80);
+		cfg.tag_percent.insert("BYZ".into(), 15);
+		assert!((cfg.coefficient("TRE", "beylerbey", &types) - 0.80).abs() < 1e-9);
+		assert!((cfg.coefficient("BYZ", "beylerbey", &types) - 0.15).abs() < 1e-9);
+	}
+
+	#[test]
+	fn default_applies_when_the_chain_never_names_it() {
+		let types = SubjectTypeGraph::from_script("custom = {}\n").unwrap();
+		let mut cfg = TributeConfig {
+			global_percent: 80,
+			..TributeConfig::default()
+		};
+		cfg.kind_percent.insert("default".into(), 40);
+		assert!((cfg.coefficient("KOR", "custom", &types) - 0.40).abs() < 1e-9);
+		cfg.kind_percent.insert("custom".into(), 25);
+		assert!((cfg.coefficient("KOR", "custom", &types) - 0.25).abs() < 1e-9);
+	}
+
+	#[test]
+	fn a_cycle_uses_the_first_set_percent_and_stops() {
+		let types = SubjectTypeGraph::from_script(
+			"a = { copy_from = b }\nb = { copy_from = c }\nc = { copy_from = a }\n",
+		)
+		.unwrap();
+		let mut cfg = TributeConfig {
+			global_percent: 80,
+			..TributeConfig::default()
+		};
+		cfg.kind_percent.insert("c".into(), 40);
+		assert!((cfg.coefficient("KOR", "a", &types) - 0.40).abs() < 1e-9);
+		cfg.kind_percent.remove("c");
+		cfg.kind_percent.insert("default".into(), 15);
+		assert!((cfg.coefficient("KOR", "a", &types) - 0.15).abs() < 1e-9);
+		cfg.kind_percent.clear();
+		assert!((cfg.coefficient("KOR", "a", &types) - 0.80).abs() < 1e-9);
+		assert_eq!(types.ancestry("a"), vec!["a", "b", "c"]);
 	}
 
 	#[test]

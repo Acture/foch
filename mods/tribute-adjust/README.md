@@ -7,11 +7,14 @@
 ## 配置维度
 
 - **全局系数** `global_percent`(0–200)
-- **按属国类别** `kind_percent`:junior_partner / vassal / march / client_state /
-  colony / tributary / daimyo / appanage / dominion;类别值**替换**全局值,不叠加
-- **按 tag** `tag_percent`:三字 tag → 百分比,替换类别值
+- **按属国类型** `kind_percent`:键是 `common/subject_types` 里的类型名
+  (`vassal`、`eyalet`、`core_eyalet`、`tributary_state`、`daimyo_vassal`,以及 Mod
+  自定义类型),不是固定的 9 种枚举。未写本类型时沿 `copy_from` 向父级找,遇到重复键
+  即停;链上没有 `default` 时再看 `kind_percent["default"]`。命中的值**替换**更低优先级,不叠加
+- **按 tag** `tag_percent`:三字 tag → 百分比,替换整条类型链
 
-优先级:tag > 类别 > 全局;`enabled = false` 时全部按 100% 直通。
+优先级:`tag_percent[tag]` > `kind_percent[本类型]` > `kind_percent[父类型]` > … >
+`kind_percent[default]` > `global_percent`。`enabled = false` 时全部按 100% 直通。
 
 ## 状态
 

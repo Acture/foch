@@ -11,10 +11,13 @@ fn clamp_percent(value: i64) -> i64 {
 	value.clamp(0, 200)
 }
 
-/// Extract a percent map from a JSON object of tag-or-kind key -> number.
-/// Non-numeric entries are skipped; keys are uppercased only when they look
-/// like tags (three characters) so kind keys stay as written.
-fn percent_map(value: &serde_json::Value) -> std::collections::BTreeMap<String, i64> {
+/// Extract a percent map from a JSON object of key -> number.
+/// Non-numeric entries are skipped. Tag keys are uppercased when they are
+/// three characters; subject-type keys keep the spelling from the script.
+fn percent_map(
+	value: &serde_json::Value,
+	uppercase_tags: bool,
+) -> std::collections::BTreeMap<String, i64> {
 	value
 		.as_object()
 		.map(|entries| {
@@ -22,7 +25,7 @@ fn percent_map(value: &serde_json::Value) -> std::collections::BTreeMap<String, 
 				.iter()
 				.filter_map(|(key, value)| {
 					let percent = value.as_i64()?;
-					let key = if key.len() == 3 {
+					let key = if uppercase_tags && key.len() == 3 {
 						key.to_ascii_uppercase()
 					} else {
 						key.clone()
@@ -50,13 +53,13 @@ impl TributeConfig {
 				.unwrap_or(100),
 			kind_percent: value
 				.get("kind_percent")
-				.map(percent_map)
+				.map(|kinds| percent_map(kinds, false))
 				.unwrap_or_default(),
 			tag_percent: value
 				.get("tag_overrides")
 				.and_then(serde_json::Value::as_str)
 				.and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-				.map(|overrides| percent_map(&overrides))
+				.map(|overrides| percent_map(&overrides, true))
 				.unwrap_or_default(),
 		};
 		config.global_percent = clamp_percent(config.global_percent);
@@ -90,10 +93,10 @@ impl TributeConfig {
 			self.global_percent = clamp_percent(percent);
 		}
 		if let Some(kinds) = value.get("kind_percent") {
-			self.kind_percent = percent_map(kinds);
+			self.kind_percent = percent_map(kinds, false);
 		}
 		if let Some(tags) = value.get("tag_percent") {
-			self.tag_percent = percent_map(tags);
+			self.tag_percent = percent_map(tags, true);
 		}
 		self
 	}
@@ -122,6 +125,17 @@ mod tests {
 		assert_eq!(config.global_percent, 200);
 		assert_eq!(config.tag_percent.get("MUG"), Some(&10));
 		assert_eq!(config.tag_percent.get("KOR"), Some(&0));
+	}
+
+	#[test]
+	fn kind_keys_keep_script_spelling_while_tags_are_uppercased() {
+		let config = TributeConfig::from_manifest_config(
+			r#"{"kind_percent":{"eyalet":40,"abc":15,"Core_Eyalet":70},"tag_overrides":"{\"mug\":10}"}"#,
+		);
+		assert_eq!(config.kind_percent.get("eyalet"), Some(&40));
+		assert_eq!(config.kind_percent.get("abc"), Some(&15));
+		assert_eq!(config.kind_percent.get("Core_Eyalet"), Some(&70));
+		assert_eq!(config.tag_percent.get("MUG"), Some(&10));
 	}
 
 	#[test]
