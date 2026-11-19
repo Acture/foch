@@ -501,22 +501,10 @@ unsafe extern "C" fn tick_detour(context: *mut c_void, flag: u8) {
 
 fn observe_probe(context: usize) -> Result<Option<String>, String> {
 	let base = BASE.load(Ordering::Acquire);
-	if dataplane::Eu4Game::context_of(&Memory, base, context).is_none() {
+	let Some(game) = dataplane::Eu4Game::from_tick(base, context) else {
 		return Ok(None);
-	}
-	let host = HOST.load(Ordering::Acquire);
-	if host.is_null() {
-		return Ok(None);
-	}
-	let digest = unsafe { (*host).exe_sha256.as_str() }
-		.unwrap_or("")
-		.to_owned();
-	let game = dataplane::Eu4Game {
-		memory: Memory,
-		exe_base: base,
-		context,
 	};
-	let snapshots = unsafe { probe::snapshots(&game, &digest) };
+	let snapshots = unsafe { probe::snapshots(&game, dataplane::pinned_exe_sha256()) };
 	probe::interpret(&snapshots)
 		.map(|found| found.map(|submission| submission.receipt()))
 		.map_err(|error| error.to_string())
@@ -650,33 +638,22 @@ unsafe fn reprice_mixed_offer(offer: *mut u8) -> Result<(), native::NativeError>
 	repriced
 }
 
-/// Installs the economy-tick hook used by the directed-pacts probe. A
-/// signature or RVA mismatch leaves the editor running and the probe dark.
+/// Installs the economy-tick hook the peace probe reads flags from.
+/// A digest, image, or signature mismatch leaves the editor running and the probe dark.
 fn install_tick_probe(host: *const FochHostApi) {
 	let host_ref = unsafe { &*host };
-	let base = host_ref.exe_base as usize;
-	let Some(tick) = base.checked_add(dataplane::layout::TICK_RVA) else {
-		log(abi::log::WARN, "peace probe tick address overflowed");
-		return;
+	// SAFETY: `host` is the live table passed to `init`. Its digest bytes and
+	// `find_pattern` callback stay valid for this synchronous resolution.
+	let resolved = match unsafe { dataplane::resolve_monthly_tick(host_ref) } {
+		Ok(tick) => tick,
+		Err(reason) => {
+			log(
+				abi::log::WARN,
+				&format!("peace probe tick did not resolve: {reason}"),
+			);
+			return;
+		}
 	};
-	if host_ref.exe_base.is_null() || dataplane::layout::TICK_RVA >= host_ref.exe_size {
-		log(
-			abi::log::WARN,
-			"peace probe tick lies outside the game image",
-		);
-		return;
-	}
-	let mut resolved = std::ptr::null_mut();
-	let code = unsafe {
-		(host_ref.find_pattern)(host, FochStr::from_str(probe::TICK_PATTERN), &mut resolved)
-	};
-	if code != abi::result::OK || resolved as usize != tick {
-		log(
-			abi::log::WARN,
-			"peace probe tick signature did not match the pinned economy update",
-		);
-		return;
-	}
 	let mut next: *const *const c_void = std::ptr::null();
 	let mut hook: *mut abi::FochHook = std::ptr::null_mut();
 	let code = unsafe {

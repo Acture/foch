@@ -19,10 +19,6 @@ use std::fmt;
 /// order; the script uses the starred names below.
 pub(crate) const PREFIX: &str = "foch_peace_probe_";
 
-/// Prologue of the pinned economy update (`layout::TICK_RVA`). The same
-/// bytes the trade plugin and the directed-pacts probe already require.
-pub(crate) const TICK_PATTERN: &str = "88 54 24 10 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 28 F1 FF FF 48 81 EC D8 0F 00 00 4C 8B F9 BA FF FF FF FF";
-
 /// Treaty slots the pinned image can clone. Not a vanilla treaty-name list.
 const KIND_LIMIT: u32 = crate::contract::KIND_SLOTS as u32;
 const DEMAND_ADDRESS: usize = 0x1_0000;
@@ -111,8 +107,9 @@ struct Parts {
 ///
 /// # Safety
 /// `game` must be the live registry on the economy-tick thread, and `digest`
-/// must be that process's host-reported executable digest. Flag vectors and
-/// the global name table stay stable for this call.
+/// must equal [`foch_runtime::dataplane::pinned_exe_sha256`]. The monthly-tick
+/// resolver rejects any other host digest before the probe reads flags. Flag
+/// vectors and the global name table stay stable for this call.
 pub(crate) unsafe fn snapshots(game: &Eu4Game, digest: &str) -> Vec<CountryFlags> {
 	let Some(countries) = game.countries() else {
 		return Vec::new();
@@ -122,7 +119,7 @@ pub(crate) unsafe fn snapshots(game: &Eu4Game, digest: &str) -> Vec<CountryFlags
 		let Some(country) = countries.country(index) else {
 			continue;
 		};
-		let Ok(flags) = (unsafe { country.flags(game.exe_base, digest) }) else {
+		let Ok(flags) = (unsafe { game.country_flags(&country, digest) }) else {
 			continue;
 		};
 		if flags.flags.iter().any(|flag| flag.name.starts_with(PREFIX)) {
@@ -505,116 +502,34 @@ mod tests {
 	#[test]
 	#[cfg(windows)]
 	fn synthetic_memory_reads_the_order_through_the_shared_dataplane() {
-		use foch_runtime::dataplane::{Memory, layout};
-		// Private flag layout walked by `CountryView::flags`.
-		const FLAG_NAMES_RVA: usize = 0x2357d80;
-		const FLAG_IDS: usize = 0x280;
-		const FLAG_DATES: usize = 0x298;
-		let labels = [
-			"foch_peace_probe_vs_FRA",
-			"foch_peace_probe_demand_3_111",
-			"foch_peace_probe_give_0_500",
-			"foch_peace_probe_case_rosy",
-			"foch_peace_probe_request_1",
-		];
-		let payloads: Vec<Vec<u8>> = labels
-			.iter()
-			.map(|label| label.as_bytes().to_vec())
-			.collect();
-		let mut name_blob = vec![0u8; payloads.len() * 32];
-		for (index, payload) in payloads.iter().enumerate() {
-			let start = index * 32;
-			name_blob[start..start + 8].copy_from_slice(&(payload.as_ptr() as u64).to_le_bytes());
-			name_blob[start + 16..start + 24]
-				.copy_from_slice(&(payload.len() as u64).to_le_bytes());
-			name_blob[start + 24..start + 32]
-				.copy_from_slice(&(payload.len() as u64).to_le_bytes());
-		}
-		let ids: Vec<u16> = (0..labels.len() as u16).collect();
-		let dates = vec![1_500i32; labels.len()];
-		let mut country = vec![0u64; (FLAG_DATES + 24) / 8];
-		let mut image = vec![0u64; (FLAG_NAMES_RVA + 24) / 8];
-		let mut context = vec![0u64; (layout::COUNTRIES_COUNT + 8) / 8];
-		let mut manager = vec![0u64; (layout::country_manager::INDEX_ARRAY + 16) / 8];
-		let country_addr = country.as_mut_ptr() as usize;
-		let exe_base = image.as_mut_ptr() as usize;
-		let context_addr = context.as_mut_ptr() as usize;
-		let manager_addr = manager.as_mut_ptr() as usize;
-		let pointers = vec![country_addr as u64];
-		assert!(country_addr > 0x1_0000 && exe_base > 0x1_0000);
-		write_qword(
-			&mut country,
-			layout::country::TAG,
-			u64::from_le_bytes(*b"SWE\0\0\0\0\x01"),
-		);
-		write_vector(&mut country, FLAG_IDS, ids.as_ptr() as u64, ids.len(), 2);
-		write_vector(
-			&mut country,
-			FLAG_DATES,
-			dates.as_ptr() as u64,
-			dates.len(),
-			4,
-		);
-		write_vector(
-			&mut image,
-			FLAG_NAMES_RVA,
-			name_blob.as_ptr() as u64,
-			payloads.len(),
-			32,
-		);
-		write_qword(&mut image, layout::CONTEXT_GLOBAL_RVA, context_addr as u64);
-		write_qword(
-			&mut image,
-			layout::COUNTRY_MANAGER_GLOBAL_RVA,
-			manager_addr as u64,
-		);
-		write_qword(
-			&mut manager,
-			layout::country_manager::INDEX_ARRAY,
-			pointers.as_ptr() as u64,
-		);
-		write_i32(&mut context, layout::COUNTRIES_COUNT, 1);
+		use foch_runtime::dataplane::{pinned_exe_sha256, testing::FakeGame};
 
-		let submission = {
-			std::hint::black_box((
-				&payloads, &name_blob, &ids, &dates, &country, &image, &context, &manager,
-				&pointers,
-			));
-			let game = Eu4Game {
-				memory: Memory,
-				exe_base,
-				context: context_addr,
-			};
-			assert_eq!(
-				Eu4Game::context_of(&Memory, exe_base, context_addr),
-				Some(context_addr)
-			);
-			let snapshots = unsafe { snapshots(&game, layout::EXPECTED_EXE_SHA256) };
-			interpret(&snapshots).unwrap().unwrap()
-		};
+		let mut scene = FakeGame::new();
+		scene
+			.add_country(
+				"SWE",
+				0,
+				0,
+				None,
+				&[
+					("foch_peace_probe_vs_FRA", 1_500),
+					("foch_peace_probe_demand_3_111", 1_500),
+					("foch_peace_probe_give_0_500", 1_500),
+					("foch_peace_probe_case_rosy", 1_500),
+					("foch_peace_probe_request_1", 1_500),
+				],
+			)
+			.expect("country");
+		let game = scene.game().expect("scene");
+		let base = scene.exe_base().expect("image");
+		let game = Eu4Game::from_tick(base, game.context).expect("tick context");
+		// SAFETY: `scene` owns the country, its flag vectors, and the name table
+		// for this synchronous read.
+		let snapshots = unsafe { snapshots(&game, pinned_exe_sha256()) };
+		let submission = interpret(&snapshots).unwrap().unwrap();
 		assert_eq!(submission.actor, "SWE");
 		assert_eq!(submission.opponent, "FRA");
 		assert!(submission.receipt().contains(r#""demands":"3:111""#));
 		assert!(submission.receipt().contains(r#""native_calls":"0""#));
-		std::hint::black_box((payloads, name_blob, ids, dates, pointers));
-	}
-
-	fn write_qword(buf: &mut [u64], byte_offset: usize, value: u64) {
-		assert_eq!(byte_offset % 8, 0);
-		buf[byte_offset / 8] = value;
-	}
-
-	fn write_i32(buf: &mut [u64], byte_offset: usize, value: i32) {
-		let index = byte_offset / 8;
-		let shift = (byte_offset % 8) * 8;
-		let mask = 0xffff_ffffu64 << shift;
-		buf[index] = (buf[index] & !mask) | ((value as u32 as u64) << shift);
-	}
-
-	fn write_vector(buf: &mut [u64], byte_offset: usize, begin: u64, count: usize, stride: usize) {
-		let end = begin + u64::try_from(count * stride).unwrap();
-		write_qword(buf, byte_offset, begin);
-		write_qword(buf, byte_offset + 8, end);
-		write_qword(buf, byte_offset + 16, end);
 	}
 }
