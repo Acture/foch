@@ -97,6 +97,12 @@ pub mod def {
 	/// MSVC SSO `std::string` node name, e.g. `lubeck_trade_node`:
 	/// 16-byte buffer-or-pointer, size at +0x10, capacity at +0x18.
 	pub const NAME: usize = 0x30;
+	/// MSVC `std::vector<int32>` of 1-based member province IDs belonging
+	/// to this trade node (`members = { ... }`, token `0x2aa9`). Statically
+	/// identified for EU4 1.37.5 via `CTradeNodeDefinition` parser/writer
+	/// (`[rcx+0x50]` / `[rsi+0x50]`, stride 4); pending live Foch session
+	/// verification.
+	pub const MEMBERS: usize = 0x50;
 	/// `std::vector<CTradeRoute>`: begin pointer; end pointer at
 	/// [`ROUTES_END`]. Element stride 0x78 ([`route::SIZE`]).
 	pub const ROUTES: usize = 0x98;

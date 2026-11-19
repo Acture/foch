@@ -6,7 +6,7 @@
 //! thousandths — and every fallible read is an `Option`.
 
 use super::layout::{country, country_manager, db, def, node, province, route};
-use super::{Memory, is_name_byte, read_sso};
+use super::{Memory, StdVector, is_name_byte, read_sso};
 
 /// The live game: an image base and the global game-context pointer it
 /// holds. Construct one from the host's reported base, or from any
@@ -166,6 +166,31 @@ impl NodeView {
 		read_sso(&self.memory, self.definition + def::NAME, is_name_byte)
 	}
 
+	/// Member province IDs (`members = { ... }`) read from
+	/// `CTradeNodeDefinition + def::MEMBERS` (`std::vector<i32>`).
+	///
+	/// Statically identified for EU4 1.37.5; pending live Foch session
+	/// verification. Returns `Some(Vec::new())` for an empty vector, and
+	/// `None` if the vector header, buffer range, or any province ID
+	/// (`<= 0`) fails validation.
+	pub fn member_provinces(&self) -> Option<Vec<u32>> {
+		let header = StdVector::read(&self.memory, self.definition.checked_add(def::MEMBERS)?)?;
+		let count = header.len(size_of::<i32>(), MAX_NODE_MEMBERS)?;
+		if count == 0 {
+			return Some(Vec::new());
+		}
+		let byte_len = count.checked_mul(size_of::<i32>())?;
+		let mut raw = vec![0_u8; byte_len];
+		self.memory.read_bytes(header.begin, &mut raw)?;
+		let mut ids = Vec::with_capacity(count);
+		for chunk in raw.chunks_exact(size_of::<i32>()) {
+			let id = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+			let province_id = u32::try_from(id).ok().filter(|&p| p > 0)?;
+			ids.push(province_id);
+		}
+		Some(ids)
+	}
+
 	/// The target definition pointer of the route entry at `slot`.
 	pub fn route_target(&self, slot: usize) -> Option<usize> {
 		self.memory.read_ptr(slot + route::TARGET)
@@ -260,6 +285,16 @@ impl CountryView {
 		decode_packed_tag(packed, false).map(|decoded| decoded.tag)
 	}
 
+	/// Whether the packed identity qword at `country::TAG` holds EU4's
+	/// invalid/uncolonized country sentinel (`"---\0"`, typically slot 0).
+	/// Returns `None` when the field cannot be read.
+	pub fn is_sentinel_tag(&self) -> Option<bool> {
+		let packed = self
+			.memory
+			.read_qword(self.address.checked_add(country::TAG)?)?;
+		Some(&packed.to_le_bytes()[..4] == b"---\0")
+	}
+
 	/// Country index from the packed identity qword (`country::TAG`).
 	pub fn index(&self) -> Option<u16> {
 		let packed = self
@@ -287,6 +322,21 @@ impl CountryView {
 			.memory
 			.read_qword(self.address.checked_add(country::OVERLORD)?)?;
 		decode_packed_tag(packed, true)
+	}
+
+	/// Independence from the overlord qword: `Some(false)` when the valid
+	/// flag marks a subject, `Some(true)` when the record is readable and
+	/// no overlord is set, `None` when the field cannot be read (so
+	/// independence stays unverified rather than assumed).
+	///
+	/// A non-zero flag byte is a subject for tributaries and custom subject
+	/// types alike. Separating those through `CSubjectType` or `copy_from`
+	/// is later work; callers keep the conservative refusal.
+	pub fn independence(&self) -> Option<bool> {
+		let packed = self
+			.memory
+			.read_qword(self.address.checked_add(country::OVERLORD)?)?;
+		Some(packed >> 56 == 0)
 	}
 
 	/// Read candidate country-flag fields, using the actual host's executable
@@ -402,6 +452,13 @@ impl Province {
 /// clearly corrupt counts are rejected.
 pub const MAX_TRADE_NODES: usize = 4096;
 
+/// Maximum member provinces accepted for a single trade node by
+/// [`NodeView::member_provinces`].
+///
+/// Generous enough for total-conversion and single-node test maps while still
+/// rejecting corrupt `std::vector` headers before allocating.
+pub const MAX_NODE_MEMBERS: usize = 65_536;
+
 fn valid_country_count(raw: i32) -> Option<usize> {
 	let count = usize::try_from(raw).ok()?;
 	(1..=i16::MAX as usize).contains(&count).then_some(count)
@@ -499,10 +556,12 @@ mod tests {
 
 		let view = CountryView::from_ptr(memory, base).expect("valid aligned country pointer");
 		assert_eq!(view.try_tag().as_deref(), Some("KOR"));
+		assert_eq!(view.is_sentinel_tag(), Some(false));
 		assert_eq!(view.index(), Some(17));
 		assert_eq!(view.monthly_income_bank(), Some(123_456));
 		assert_eq!(view.tribute_type(), Some(2));
 		assert_eq!(view.overlord_tag(), None);
+		assert_eq!(view.independence(), Some(true));
 
 		// Mark overlord valid flag non-zero to simulate a subject.
 		raw[country::OVERLORD / 8] = pack_tag(*b"MNG", 5, 1);
@@ -513,5 +572,66 @@ mod tests {
 				index: 5,
 			})
 		);
+		assert_eq!(view.independence(), Some(false));
+
+		// Sentinel `---` tag (slot 0 in live EU4) is recognized explicitly.
+		raw[country::TAG / 8] = pack_tag(*b"---", 0, 0);
+		assert_eq!(view.try_tag(), None);
+		assert_eq!(view.is_sentinel_tag(), Some(true));
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn node_view_reads_and_validates_member_provinces() {
+		let memory = Memory;
+		let mut def_buf = vec![0_u64; 0xc0 / 8];
+		let def_addr = def_buf.as_mut_ptr() as usize;
+		let node = NodeView {
+			memory,
+			address: def_addr,
+			definition: def_addr,
+		};
+
+		// Empty null vector is legal (e.g. placeholder/custom trade node).
+		assert_eq!(node.member_provinces(), Some(Vec::new()));
+
+		// Populated vector with extra reserved capacity.
+		let provinces: [i32; 4] = [1, 45, 4941, 0];
+		let prov_base = provinces.as_ptr() as usize;
+		def_buf[def::MEMBERS / 8] = prov_base as u64;
+		def_buf[def::MEMBERS / 8 + 1] = (prov_base + 3 * 4) as u64;
+		def_buf[def::MEMBERS / 8 + 2] = (prov_base + 4 * 4) as u64;
+		assert_eq!(node.member_provinces(), Some(vec![1, 45, 4941]));
+
+		// Empty vector with reserved capacity.
+		def_buf[def::MEMBERS / 8 + 1] = prov_base as u64;
+		assert_eq!(node.member_provinces(), Some(Vec::new()));
+
+		// Non-positive province IDs (0 or negative) fail validation.
+		let with_zero: [i32; 2] = [1, 0];
+		let z_base = with_zero.as_ptr() as usize;
+		def_buf[def::MEMBERS / 8] = z_base as u64;
+		def_buf[def::MEMBERS / 8 + 1] = (z_base + 8) as u64;
+		def_buf[def::MEMBERS / 8 + 2] = (z_base + 8) as u64;
+		assert_eq!(node.member_provinces(), None);
+
+		let with_neg: [i32; 2] = [1, -7];
+		let n_base = with_neg.as_ptr() as usize;
+		def_buf[def::MEMBERS / 8] = n_base as u64;
+		def_buf[def::MEMBERS / 8 + 1] = (n_base + 8) as u64;
+		def_buf[def::MEMBERS / 8 + 2] = (n_base + 8) as u64;
+		assert_eq!(node.member_provinces(), None);
+
+		// Corrupt vector bounds (end < begin) or oversize count are rejected.
+		def_buf[def::MEMBERS / 8] = (prov_base + 8) as u64;
+		def_buf[def::MEMBERS / 8 + 1] = prov_base as u64;
+		def_buf[def::MEMBERS / 8 + 2] = (prov_base + 16) as u64;
+		assert_eq!(node.member_provinces(), None);
+
+		let oversize_bytes = (MAX_NODE_MEMBERS + 1) * size_of::<i32>();
+		def_buf[def::MEMBERS / 8] = prov_base as u64;
+		def_buf[def::MEMBERS / 8 + 1] = (prov_base + oversize_bytes) as u64;
+		def_buf[def::MEMBERS / 8 + 2] = (prov_base + oversize_bytes) as u64;
+		assert_eq!(node.member_provinces(), None);
 	}
 }
