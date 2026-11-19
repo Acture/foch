@@ -1224,6 +1224,39 @@ fn daily_arena_ownership_survives_multiple_real_dispatch_rounds() {
 }
 
 #[test]
+fn daily_arena_accounting_reports_bounded_reuse_and_zero_live_after_multi_round_runs() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailya-arena-rounds");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let rounds_text = fs::read_to_string(rt.path("foch-host/daily-rounds.txt")).unwrap();
+	let rounds = proof(&rounds_text);
+	assert_eq!(rounds["errors"], "0", "{rounds:?}");
+	assert_eq!(rounds["foreign-free"], "0", "{rounds:?}");
+	let owners_final: u64 = rounds["owners-final"].parse().unwrap();
+	let live_text = fs::read_to_string(rt.path("foch-host/daily-a-real.txt")).unwrap();
+	let live = proof(&live_text);
+	assert_eq!(live["calls"], "5", "{live:?}");
+	let workers: u64 = live["workers"].parse().unwrap();
+	assert!(workers >= 2, "{live:?}");
+	let arena_count: u64 = live["arena-count"].parse().unwrap();
+	let allocs: u64 = live["arena-allocs"].parse().unwrap();
+	let frees: u64 = live["arena-frees"].parse().unwrap();
+	let live_allocs: u64 = live["arena-live"].parse().unwrap();
+	let peak_live: u64 = live["arena-peak-live"].parse().unwrap();
+	let committed: u64 = live["arena-committed-bytes"].parse().unwrap();
+	let oversized: u64 = live["arena-oversized"].parse().unwrap();
+	assert_eq!(arena_count, owners_final, "{live:?} {rounds:?}");
+	assert_eq!(arena_count, workers, "{live:?}");
+	assert_eq!(allocs, 65, "{live:?}");
+	assert_eq!(frees, allocs, "{live:?}");
+	assert_eq!(live_allocs, 0, "{live:?}");
+	assert!(peak_live >= 1 && peak_live <= arena_count, "{live:?}");
+	assert_eq!(committed, arena_count * 0x400000, "{live:?}");
+	assert_eq!(oversized, 0, "{live:?}");
+}
+
+#[test]
 fn daily_arena_never_returns_an_unregistered_thirty_third_owner() {
 	let rt = Runtime::new();
 	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);

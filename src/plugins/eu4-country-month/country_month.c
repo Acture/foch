@@ -1347,8 +1347,23 @@ struct daily_a_arena {
 	size_t reserved;
 	size_t committed;
 	size_t bump;
+	uint64_t alloc_count;
+	uint64_t free_count;
+	uint64_t live_count;
+	uint64_t peak_live;
+	uint64_t oversized_fallbacks;
 	void *freelist[62];        /* size classes 1..61, in 16-byte steps */
-	SRWLOCK lock;              /* freelist pushes may come from any thread */
+	SRWLOCK lock;              /* freelist pushes and accounting may come from any thread */
+};
+
+struct daily_a_arena_totals {
+	unsigned int arenas;
+	uint64_t allocs;
+	uint64_t frees;
+	uint64_t live;
+	uint64_t peak_live;
+	uint64_t committed_bytes;
+	uint64_t oversized_fallbacks;
 };
 
 struct daily_a_op {
@@ -1430,27 +1445,54 @@ static void *daily_a_arena_alloc(struct daily_a_arena *arena, size_t size) {
 	unsigned char *block;
 	size_t klass;
 	if (size == 0) size = 1;
-	if (size > (sizeof(arena->freelist) / sizeof(arena->freelist[0]) - 1) * 16) return daily_a_call_alloc(size);
+	if (size > (sizeof(arena->freelist) / sizeof(arena->freelist[0]) - 1) * 16) {
+		AcquireSRWLockExclusive(&arena->lock);
+		arena->oversized_fallbacks += 1;
+		ReleaseSRWLockExclusive(&arena->lock);
+		return daily_a_call_alloc(size);
+	}
 	klass = (size + 15) / 16;
 	AcquireSRWLockExclusive(&arena->lock);
 	block = arena->freelist[klass];
-	if (block) arena->freelist[klass] = *(void **)(block + sizeof(size_t));
-	ReleaseSRWLockExclusive(&arena->lock);
-	if (block) return block + 16;
+	if (block) {
+		arena->freelist[klass] = *(void **)(block + sizeof(size_t));
+		arena->alloc_count += 1;
+		arena->live_count += 1;
+		if (arena->live_count > arena->peak_live) arena->peak_live = arena->live_count;
+		ReleaseSRWLockExclusive(&arena->lock);
+		return block + 16;
+	}
 	want = 16 + size;
 	if (arena->bump + want > arena->committed) {
 		size_t chunk = 0x10000;
 		size_t need = arena->bump + want;
-		while (chunk < need - arena->committed) chunk *= 2;
-		if (arena->committed + chunk > arena->reserved) return daily_a_call_alloc(size);
-		if (!DAILY_A_VIRTUAL("arena-commit", arena->base + arena->committed, chunk, MEM_COMMIT, PAGE_READWRITE)) {
+		size_t commit_offset = arena->committed;
+		while (chunk < need - commit_offset) chunk *= 2;
+		if (commit_offset + chunk > arena->reserved) {
+			ReleaseSRWLockExclusive(&arena->lock);
 			return daily_a_call_alloc(size);
 		}
-		arena->committed += chunk;
+		ReleaseSRWLockExclusive(&arena->lock);
+		if (!DAILY_A_VIRTUAL("arena-commit", arena->base + commit_offset, chunk, MEM_COMMIT, PAGE_READWRITE)) {
+			return daily_a_call_alloc(size);
+		}
+		AcquireSRWLockExclusive(&arena->lock);
+		/* Another worker may have committed the same span while the lock was
+		   open; MEM_COMMIT is idempotent, so take the maximum and re-cover
+		   this allocation before the bump advances past it. */
+		if (arena->committed < commit_offset + chunk) arena->committed = commit_offset + chunk;
+		if (arena->bump + want > arena->committed) {
+			ReleaseSRWLockExclusive(&arena->lock);
+			return daily_a_call_alloc(size);
+		}
 	}
 	base = arena->base + arena->bump;
 	arena->bump += (want + 15) & ~(size_t)15;
 	*(size_t *)base = size;
+	arena->alloc_count += 1;
+	arena->live_count += 1;
+	if (arena->live_count > arena->peak_live) arena->peak_live = arena->live_count;
+	ReleaseSRWLockExclusive(&arena->lock);
 	return base + 16;
 }
 
@@ -1480,7 +1522,28 @@ static void daily_a_arena_free(void *ptr) {
 	AcquireSRWLockExclusive(&arena->lock);
 	*(void **)(base + sizeof(size_t)) = arena->freelist[klass];
 	arena->freelist[klass] = base;
+	arena->free_count += 1;
+	if (arena->live_count > 0) arena->live_count -= 1;
 	ReleaseSRWLockExclusive(&arena->lock);
+}
+
+static void daily_a_arena_totals_snapshot(struct daily_a_arena_totals *out) {
+	int i;
+	memset(out, 0, sizeof(*out));
+	AcquireSRWLockShared(&daily_a_owner_lock);
+	out->arenas = (unsigned int)daily_a_arena_count;
+	for (i = 0; i < daily_a_arena_count; ++i) {
+		struct daily_a_arena *arena = daily_a_arenas[i];
+		AcquireSRWLockShared(&arena->lock);
+		out->allocs += arena->alloc_count;
+		out->frees += arena->free_count;
+		out->live += arena->live_count;
+		out->peak_live += arena->peak_live;
+		out->committed_bytes += (uint64_t)arena->committed;
+		out->oversized_fallbacks += arena->oversized_fallbacks;
+		ReleaseSRWLockShared(&arena->lock);
+	}
+	ReleaseSRWLockShared(&daily_a_owner_lock);
 }
 
 /* Detour bodies: the routing only diverts worker threads. */
@@ -1843,7 +1906,9 @@ static int daily_a_arena_prepare(struct daily_a_arena *arena) {
 	if (arena->committed == arena->reserved) return 1;
 	if (!DAILY_A_VIRTUAL("arena-commit", arena->base + arena->committed,
 		arena->reserved - arena->committed, MEM_COMMIT, PAGE_READWRITE)) return 0;
+	AcquireSRWLockExclusive(&arena->lock);
 	arena->committed = arena->reserved;
+	ReleaseSRWLockExclusive(&arena->lock);
 	return 1;
 }
 
@@ -1932,7 +1997,7 @@ int daily_a_dispatch(void *game) {
 	int n = 0, i, completed = 0;
 	LONG call;
 	long long span;
-	char text[192];
+	char text[512];
 	daily_a_owner = GetCurrentThreadId();
 	memcpy(&array, g + 0x1E30, sizeof(array));
 	memcpy(&count, g + 0x1E3C, sizeof(count));
@@ -2002,9 +2067,22 @@ int daily_a_dispatch(void *game) {
 	span = qpc_ticks_to_ns(qpc_ticks_now() - t0);
 	{
 		unsigned int total_ops = 0;
+		struct daily_a_arena_totals totals;
 		for (i = 0; i < n; ++i) total_ops += parts[i].op_count;
-		snprintf(text, sizeof(text), "calls=%ld\ncountries=%ld\nworkers=%d\nops=%u\nspan-ns=%lld\n",
-			call, count, n, total_ops, span);
+		daily_a_arena_totals_snapshot(&totals);
+		snprintf(text, sizeof(text),
+			"calls=%ld\ncountries=%ld\nworkers=%d\nops=%u\nspan-ns=%lld\n"
+			"arena-count=%u\narena-allocs=%llu\narena-frees=%llu\n"
+			"arena-live=%llu\narena-peak-live=%llu\n"
+			"arena-committed-bytes=%llu\narena-oversized=%llu\n",
+			call, count, n, total_ops, span,
+			totals.arenas,
+			(unsigned long long)totals.allocs,
+			(unsigned long long)totals.frees,
+			(unsigned long long)totals.live,
+			(unsigned long long)totals.peak_live,
+			(unsigned long long)totals.committed_bytes,
+			(unsigned long long)totals.oversized_fallbacks);
 		write_proof("daily-a-real.txt", text);
 	}
 	completed = 1;
