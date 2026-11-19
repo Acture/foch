@@ -168,8 +168,8 @@ static FochHook *active_hook;
  * any callback; on an enable error also disable the failed attempt, since a
  * host may report failure after updating its chain. The host owns all cells. */
 struct owned_hook { FochHook *handle; int queued; };
-static struct owned_hook owned_hooks[7];
-static unsigned owned_count, owned_order[7], owned_pending;
+static struct owned_hook owned_hooks[12];
+static unsigned owned_count, owned_order[12], owned_pending;
 static int owned_preparing;
 static FochStatus plugin_status = { sizeof(FochStatus), FOCH_STATE_INITIALIZING, 0, { NULL, 0 } };
 
@@ -1354,6 +1354,10 @@ struct daily_a_arena {
 	uint64_t oversized_fallbacks;
 	void *freelist[62];        /* size classes 1..61, in 16-byte steps */
 	SRWLOCK lock;              /* freelist pushes and accounting may come from any thread */
+	unsigned char *extra_base; /* second span when a slice's budget exceeds 4MB */
+	size_t extra_reserved;
+	size_t extra_committed;
+	size_t extra_bump;
 };
 
 struct daily_a_arena_totals {
@@ -1385,6 +1389,7 @@ struct daily_a_part {
 	unsigned int op_cap;
 	struct daily_a_arena *arena;
 	DWORD tid;
+	int overflow;              /* a refused log; dispatch must not replay */
 };
 
 struct daily_a_publish_pool { void **nodes; size_t count, used; };
@@ -1469,6 +1474,20 @@ static void *daily_a_arena_alloc(struct daily_a_arena *arena, size_t size) {
 		size_t commit_offset = arena->committed;
 		while (chunk < need - commit_offset) chunk *= 2;
 		if (commit_offset + chunk > arena->reserved) {
+			unsigned char *extra;
+			if (arena->extra_base && arena->extra_bump + want <= arena->extra_committed) {
+				extra = arena->extra_base + arena->extra_bump;
+				arena->extra_bump += (want + 15) & ~(size_t)15;
+				*(size_t *)extra = size;
+				arena->alloc_count += 1;
+				arena->live_count += 1;
+				if (arena->live_count > arena->peak_live) arena->peak_live = arena->live_count;
+				ReleaseSRWLockExclusive(&arena->lock);
+				return extra + 16;
+			}
+			/* The reserved spans cannot hold this block. The native heap
+			   returns the full size or NULL; the size is never clipped. */
+			arena->oversized_fallbacks += 1;
 			ReleaseSRWLockExclusive(&arena->lock);
 			return daily_a_call_alloc(size);
 		}
@@ -1504,6 +1523,8 @@ static struct daily_a_arena *daily_a_arena_for(const void *ptr) {
 	for (i = 0; i < daily_a_arena_count; ++i) {
 		struct daily_a_arena *arena = daily_a_arenas[i];
 		if ((uintptr_t)arena->base <= at && at - (uintptr_t)arena->base < arena->reserved) { found = arena; break; }
+		if (arena->extra_base && (uintptr_t)arena->extra_base <= at &&
+			at - (uintptr_t)arena->extra_base < arena->extra_reserved) { found = arena; break; }
 	}
 	ReleaseSRWLockShared(&daily_a_owner_lock);
 	return found;
@@ -1539,7 +1560,7 @@ static void daily_a_arena_totals_snapshot(struct daily_a_arena_totals *out) {
 		out->frees += arena->free_count;
 		out->live += arena->live_count;
 		out->peak_live += arena->peak_live;
-		out->committed_bytes += (uint64_t)arena->committed;
+		out->committed_bytes += (uint64_t)arena->committed + (uint64_t)arena->extra_committed;
 		out->oversized_fallbacks += arena->oversized_fallbacks;
 		ReleaseSRWLockShared(&arena->lock);
 	}
@@ -1549,7 +1570,7 @@ static void daily_a_arena_totals_snapshot(struct daily_a_arena_totals *out) {
 /* Detour bodies: the routing only diverts worker threads. */
 void *daily_a_route_alloc(size_t size) {
 	if (da_tls_publish && size == 0x20) {
-		assert(da_tls_publish->used < da_tls_publish->count);
+		if (da_tls_publish->used >= da_tls_publish->count || !da_tls_publish->nodes) return NULL;
 		return da_tls_publish->nodes[da_tls_publish->used++];
 	}
 	if (da_tls_arena) return daily_a_arena_alloc(da_tls_arena, size);
@@ -1567,9 +1588,13 @@ void daily_a_route_free(void *ptr, size_t size) {
 static void daily_a_log(int kind, unsigned int index, void *country) {
 	struct daily_a_part *part = da_tls_part;
 	if (!part) return;
-	/* The validated loop logs one light removal or two heavy operations per
-	   country. Dispatch reserves that complete bound before executing it. */
-	assert(part->op_count < part->op_cap);
+	/* One light removal or two heavy operations per queue entry. The cap is
+	   that bound for the slice. Past it, refuse the store: replaying a short
+	   log would drop messages, and writing past it is an overflow. */
+	if (part->op_count >= part->op_cap || !part->ops) {
+		part->overflow = 1;
+		return;
+	}
 	part->ops[part->op_count].kind = kind;
 	part->ops[part->op_count].index = index;
 	part->ops[part->op_count].country = country;
@@ -1927,7 +1952,7 @@ static VOID CALLBACK daily_a_work(PTP_CALLBACK_INSTANCE instance, PVOID param, P
 	daily_a_run_part(param);
 }
 
-static void daily_a_replay(void *game, struct daily_a_part *parts, int n, struct daily_a_publish_pool *pool) {
+static int daily_a_replay(void *game, struct daily_a_part *parts, int n, struct daily_a_publish_pool *pool) {
 	typedef void (*ShiftFn)(void *, unsigned int);
 	typedef void (*PublishFn)(void *, void *);
 	unsigned char *g = game;
@@ -1954,7 +1979,7 @@ static void daily_a_replay(void *game, struct daily_a_part *parts, int n, struct
 					lower = count - 1;
 					memcpy(g + 0x1E3C, &lower, sizeof(lower));
 				}
-				assert(pool->used < pool->count);
+				if (pool->used >= pool->count || !pool->nodes) return 0;
 				node = pool->nodes[pool->used++];
 				((void **)node)[0] = op->country;
 				memcpy(&tail, g + 0x1E48, sizeof(tail));
@@ -1976,6 +2001,43 @@ static void daily_a_replay(void *game, struct daily_a_part *parts, int n, struct
 			}
 		}
 	}
+	return 1;
+}
+
+static int daily_mul_size(size_t count, size_t each, size_t *out) {
+	if (each != 0 && count > SIZE_MAX / each) return 0;
+	*out = count * each;
+	return 1;
+}
+
+/* Bytes of simultaneous arena traffic charged to one queue entry. A slice
+   whose product does not fit the worker's reserved spans grows a second
+   span; if that cannot be committed, the dispatch does not start. */
+#define DAILY_ENTRY_BUDGET 64u
+
+static int daily_a_arena_ensure(struct daily_a_arena *arena, size_t bytes) {
+	size_t have, extra;
+	void *block;
+	if (!arena) return 0;
+	have = arena->reserved + arena->extra_reserved;
+	if (bytes <= have) return 1;
+	if (arena->extra_base) return 0;
+	extra = bytes - have;
+	block = DAILY_A_VIRTUAL("arena-grow", NULL, extra, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (!block) return 0;
+	AcquireSRWLockExclusive(&arena->lock);
+	if (arena->extra_base) {
+		ReleaseSRWLockExclusive(&arena->lock);
+		VirtualFree(block, 0, MEM_RELEASE);
+		return 0;
+	}
+	arena->extra_reserved = extra;
+	arena->extra_committed = extra;
+	arena->extra_bump = 0;
+	MemoryBarrier();
+	arena->extra_base = (unsigned char *)block;
+	ReleaseSRWLockExclusive(&arena->lock);
+	return 1;
 }
 
 void daily_a_finish_fallback(void *frame) {
@@ -1998,11 +2060,15 @@ int daily_a_dispatch(void *game) {
 	LONG call;
 	long long span;
 	char text[512];
+	size_t snap_bytes = 0, op_bytes = 0, budget = 0;
 	daily_a_owner = GetCurrentThreadId();
 	memcpy(&array, g + 0x1E30, sizeof(array));
 	memcpy(&count, g + 0x1E3C, sizeof(count));
-	if (!array || count <= 0 || (uint64_t)count > UINT_MAX / 2 ||
-		(size_t)count > SIZE_MAX / (2 * sizeof(struct daily_a_op))) goto fallback;
+	if (!array || count <= 0 || (uint64_t)count > UINT_MAX / 2) goto fallback;
+	if (!daily_mul_size((size_t)count, sizeof(void *), &snap_bytes) ||
+		!daily_mul_size((size_t)count, 2 * sizeof(struct daily_a_op), &op_bytes) ||
+		!daily_mul_size((size_t)count, DAILY_ENTRY_BUDGET, &budget) ||
+		op_bytes < (size_t)count) goto fallback;
 	if (!daily_a_body_copy) {
 		daily_a_body_copy = build_daily_a_body(daily_a_site, 0);
 		if (!daily_a_body_copy) goto fallback;
@@ -2016,7 +2082,7 @@ int daily_a_dispatch(void *game) {
 	else if (!ensure_active_pool(n)) n = 1;
 	parts = DAILY_A_HEAP("parts", HEAP_ZERO_MEMORY, sizeof(*parts) * (size_t)n);
 	if (!parts) goto fallback;
-	pool.nodes = DAILY_A_HEAP("publish-table", HEAP_ZERO_MEMORY, sizeof(void *) * (size_t)count);
+	pool.nodes = DAILY_A_HEAP("publish-table", HEAP_ZERO_MEMORY, snap_bytes);
 	if (!pool.nodes) goto fallback;
 	for (i = 0; i < count; ++i) {
 		void *node = DAILY_A_NATIVE("publish-node", 0x20);
@@ -2032,6 +2098,7 @@ int daily_a_dispatch(void *game) {
 			parts[i].copy = daily_a_body_copy;
 			parts[i].from = (uint64_t)(cursor - share);
 			parts[i].to = (uint64_t)cursor;
+			if ((uint64_t)share > UINT_MAX / 2) goto fallback;
 			parts[i].op_cap = (unsigned int)share * 2;
 			cursor -= share;
 		}
@@ -2039,11 +2106,12 @@ int daily_a_dispatch(void *game) {
 	/* No country body runs until every slice's complete log, frame and arena,
 	   and every replay publication node, have been reserved successfully. */
 	for (i = 0; i < n; ++i) {
-		parts[i].snapshot = DAILY_A_HEAP("snapshot", 0, sizeof(void *) * (size_t)count);
+		parts[i].snapshot = DAILY_A_HEAP("snapshot", 0, snap_bytes);
 		parts[i].shadow = DAILY_A_VIRTUAL("shadow", NULL, 0x800, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 		parts[i].ops = DAILY_A_HEAP("ops", HEAP_ZERO_MEMORY, sizeof(*parts[i].ops) * parts[i].op_cap);
 		parts[i].arena = daily_a_arena_get(i);
 		if (!parts[i].snapshot || !parts[i].shadow || !parts[i].ops || !parts[i].arena ||
+			!daily_a_arena_ensure(parts[i].arena, budget) ||
 			!daily_a_arena_prepare(parts[i].arena)) goto fallback;
 		memcpy(parts[i].snapshot, array, sizeof(void *) * (size_t)count);
 		memcpy(parts[i].shadow + DA_SHADOW_RBP + DA_CTX_AT + 0x08, &parts[i].snapshot, sizeof(void *));
@@ -2063,7 +2131,28 @@ int daily_a_dispatch(void *game) {
 		}
 		if (submitted) CloseThreadpoolCleanupGroupMembers(active_group, FALSE, NULL);
 	}
-	daily_a_replay(game, parts, n, &pool);
+	for (i = 0; i < n; ++i) if (parts[i].overflow) goto fallback;
+	{
+		void **undo = DAILY_A_HEAP("undo", 0, snap_bytes);
+		void *saved_head = NULL, *saved_tail = NULL;
+		long saved_nodes = 0;
+		if (!undo) goto fallback;
+		memcpy(undo, array, snap_bytes);
+		memcpy(&saved_head, g + 0x1E40, sizeof(saved_head));
+		memcpy(&saved_tail, g + 0x1E48, sizeof(saved_tail));
+		memcpy(&saved_nodes, g + 0x1E50, sizeof(saved_nodes));
+		if (!daily_a_replay(game, parts, n, &pool)) {
+			memcpy(array, undo, snap_bytes);
+			memcpy(g + 0x1E3C, &count, sizeof(count));
+			memcpy(g + 0x1E40, &saved_head, sizeof(saved_head));
+			memcpy(g + 0x1E48, &saved_tail, sizeof(saved_tail));
+			memcpy(g + 0x1E50, &saved_nodes, sizeof(saved_nodes));
+			pool.used = 0;
+			HeapFree(GetProcessHeap(), 0, undo);
+			goto fallback;
+		}
+		HeapFree(GetProcessHeap(), 0, undo);
+	}
 	span = qpc_ticks_to_ns(qpc_ticks_now() - t0);
 	{
 		unsigned int total_ops = 0;
@@ -2197,6 +2286,507 @@ static int32_t install_daily_a(const FochHostApi *host, int *found, void **site_
 	return FOCH_OK;
 }
 
+/* ===== Daily loop B (0xa89360): two walks, FOCH_DAILY_B gated =====
+   Walk 1 moves backward over revolution centers. Walk 2 moves forward over
+   spread targets and reads walk 1's flags, so it starts only after walk 1's
+   log is complete. Workers mutate a private center snapshot and record
+   effects; the game thread replays that log in element order. Reservation
+   failure or a log that would pass its cap leaves the world untouched and
+   the original body runs instead. The real image is not hooked: its
+   0x93d750 subtree is still an unproven shared write. */
+
+#define DB_ZEAL 1
+#define DB_QUIET 2
+#define DB_FLAG 3
+#define DB_MOD 4
+#define DB_AUTO 5
+#define DB_FIRED 6
+#define DB_SAME 7
+#define DB_MSG 8
+#define DB_SPREAD 9
+#define DB_THRESHOLD 0x186a0u
+
+struct db_center {
+	uint32_t zeal;
+	uint8_t quiet;
+	uint8_t pad[3];
+	uint32_t country;
+};
+struct db_country {
+	uint32_t id;
+	uint32_t tag;
+	uint8_t flag;
+	uint8_t pad[3];
+	int32_t modifier_acc;
+	int32_t autonomy_acc;
+};
+struct db_province {
+	uint32_t country;
+	uint32_t id;
+	uint8_t gate;
+	uint8_t pad[3];
+};
+struct db_world {
+	struct db_center *centers;
+	int32_t center_count;
+	struct db_country *countries;
+	int32_t country_count;
+	struct db_province *provinces;
+	int32_t province_count;
+	int32_t *fired;
+	int32_t fired_count;
+	int32_t fired_cap;
+	int32_t *same_tag;
+	int32_t same_count;
+	int32_t same_cap;
+	int32_t *spread_id;
+	int32_t *spread_n;
+	int32_t spread_count;
+	int32_t spread_cap;
+	int32_t *messages;
+	int32_t message_count;
+	int32_t message_cap;
+	int32_t message_factor;
+	uint32_t player_tag;
+	uint32_t zeal_step;
+	int32_t singleton;
+	int32_t quiet_count;
+};
+struct db_op { int kind; int32_t a; int32_t b; };
+struct db_part {
+	struct db_world *src;
+	struct db_op *ops;
+	unsigned op_count, op_cap;
+	int from, to, walk, overflow;
+	struct daily_a_arena *arena;
+	const uint8_t *flags;
+	const int32_t *fired;
+	int32_t fired_n;
+};
+
+static int daily_b_enabled, daily_b_ready, daily_b_install_started;
+static volatile LONG daily_b_running, daily_b_calls;
+static void *const *daily_b_next;
+static FochHook *daily_b_hook;
+static void *daily_b_real_site;
+
+static int db_world_ok(const struct db_world *w) {
+	if (!w || w->center_count < 0 || w->country_count < 0 || w->province_count < 0 || w->message_factor < 0) return 0;
+	if (w->center_count && !w->centers) return 0;
+	if (w->country_count && !w->countries) return 0;
+	if (w->province_count && !w->provinces) return 0;
+	return 1;
+}
+
+static int db_grow(int32_t **buf, int32_t *cap, int32_t need) {
+	int32_t *next;
+	size_t bytes;
+	if (need <= *cap) return 1;
+	if (need < 0 || !daily_mul_size((size_t)need, sizeof(int32_t), &bytes)) return 0;
+	next = DAILY_A_HEAP("db-result", HEAP_ZERO_MEMORY, bytes);
+	if (!next) return 0;
+	if (*buf && *cap > 0) memcpy(next, *buf, (size_t)(*cap) * sizeof(int32_t));
+	if (*buf) HeapFree(GetProcessHeap(), 0, *buf);
+	*buf = next;
+	*cap = need;
+	return 1;
+}
+
+static int db_prepare(struct db_world *w) {
+	int32_t messages = 0;
+	if (w->message_factor != 0 && w->center_count > INT32_MAX / w->message_factor) return 0;
+	messages = w->center_count * w->message_factor;
+	if (!db_grow(&w->fired, &w->fired_cap, w->center_count) ||
+		!db_grow(&w->same_tag, &w->same_cap, w->center_count) ||
+		!db_grow(&w->messages, &w->message_cap, messages) ||
+		!db_grow(&w->spread_id, &w->spread_cap, w->province_count)) return 0;
+	{
+		int32_t ncap = 0, *nbuf = NULL;
+		if (!db_grow(&nbuf, &ncap, w->province_count)) return 0;
+		if (w->spread_n && w->spread_n != nbuf) HeapFree(GetProcessHeap(), 0, w->spread_n);
+		w->spread_n = nbuf;
+	}
+	return 1;
+}
+
+static int db_apply_one(struct db_world *w, int kind, int32_t a, int32_t b) {
+	switch (kind) {
+	case DB_ZEAL:
+		if (a < 0 || a >= w->center_count) return 0;
+		w->centers[a].zeal = (uint32_t)b;
+		return 1;
+	case DB_QUIET:
+		w->quiet_count += a;
+		return 1;
+	case DB_FLAG:
+		if (a < 0 || a >= w->country_count) return 0;
+		w->countries[a].flag = (uint8_t)(w->countries[a].flag | (uint8_t)b);
+		return 1;
+	case DB_MOD:
+		if (a < 0 || a >= w->country_count) return 0;
+		w->countries[a].modifier_acc += b;
+		return 1;
+	case DB_AUTO:
+		if (a < 0 || a >= w->country_count) return 0;
+		w->countries[a].autonomy_acc += b;
+		return 1;
+	case DB_FIRED:
+		if (w->fired_count >= w->fired_cap) return 0;
+		w->fired[w->fired_count++] = a;
+		return 1;
+	case DB_SAME:
+		if (w->same_count >= w->same_cap) return 0;
+		w->same_tag[w->same_count++] = a;
+		return 1;
+	case DB_MSG:
+		if (w->message_count >= w->message_cap) return 0;
+		w->messages[w->message_count++] = a;
+		return 1;
+	case DB_SPREAD:
+		if (w->spread_count >= w->spread_cap) return 0;
+		w->spread_id[w->spread_count] = a;
+		w->spread_n[w->spread_count] = b;
+		w->spread_count += 1;
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static int db_emit(struct db_world *direct, struct db_part *part, int kind, int32_t a, int32_t b) {
+	if (direct) return db_apply_one(direct, kind, a, b);
+	if (!part || part->op_count >= part->op_cap || !part->ops) {
+		if (part) part->overflow = 1;
+		return 0;
+	}
+	part->ops[part->op_count].kind = kind;
+	part->ops[part->op_count].a = a;
+	part->ops[part->op_count].b = b;
+	part->op_count += 1;
+	return 1;
+}
+
+static int db_scratch(struct db_part *part) {
+	void *block = daily_a_route_alloc(32);
+	if (!block) {
+		if (part) part->overflow = 1;
+		return 0;
+	}
+	memset(block, 0x5A, 32);
+	daily_a_route_free(block, 32);
+	return 1;
+}
+
+static void db_warmup(struct db_world *w) {
+	void *block;
+	if (w->singleton) return;
+	block = daily_a_route_alloc(32);
+	if (block) {
+		memset(block, 1, 32);
+		daily_a_route_free(block, 32);
+	}
+	w->singleton = 1;
+}
+
+static int db_walk1(struct db_part *part, struct db_world *direct, struct db_world *src, int index) {
+	struct db_center *center;
+	struct db_country *row;
+	uint32_t zeal, country;
+	int32_t modifier, autonomy;
+	int message;
+	if (index < 0 || index >= src->center_count) return 0;
+	center = &src->centers[index];
+	zeal = center->zeal + src->zeal_step;
+	center->zeal = zeal;
+	if (!db_emit(direct, part, DB_ZEAL, index, (int32_t)zeal)) return 0;
+	if (zeal < DB_THRESHOLD) {
+		if (center->quiet == 0 && !db_emit(direct, part, DB_QUIET, 1, 0)) return 0;
+		return 1;
+	}
+	if (!db_scratch(part) || !db_scratch(part)) return 0;
+	country = center->country;
+	if (country >= (uint32_t)src->country_count) {
+		if (part) part->overflow = 1;
+		return 0;
+	}
+	row = &src->countries[country];
+	modifier = (int32_t)(zeal ^ row->id);
+	autonomy = (int32_t)(row->tag * 3u);
+	if (!db_emit(direct, part, DB_FLAG, (int32_t)country, 1) ||
+		!db_emit(direct, part, DB_MOD, (int32_t)country, modifier) ||
+		!db_emit(direct, part, DB_AUTO, (int32_t)country, autonomy) ||
+		!db_emit(direct, part, DB_FIRED, index, (int32_t)row->id)) return 0;
+	if (row->tag == src->player_tag && !db_emit(direct, part, DB_SAME, (int32_t)row->id, 0)) return 0;
+	for (message = 0; message < src->message_factor; ++message) {
+		long long id = (long long)index * src->message_factor + message;
+		if (id > INT32_MAX || !db_emit(direct, part, DB_MSG, (int32_t)id, 0)) {
+			if (part) part->overflow = 1;
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int db_spread_blocked(const struct db_world *w, const int32_t *fired, int32_t fired_n, uint32_t province_id) {
+	int32_t i;
+	for (i = 0; i < fired_n; ++i) {
+		int32_t center = fired[i];
+		uint32_t country;
+		if (center < 0 || center >= w->center_count) continue;
+		country = w->centers[center].country;
+		if (country < (uint32_t)w->country_count && w->countries[country].id == province_id) return 1;
+	}
+	return 0;
+}
+
+static int db_walk2(struct db_part *part, struct db_world *direct, struct db_world *src, int index,
+		const uint8_t *flags, const int32_t *fired, int32_t fired_n) {
+	struct db_province *province;
+	uint32_t country;
+	int count, flagged;
+	if (index < 0 || index >= src->province_count) return 0;
+	province = &src->provinces[index];
+	country = province->country;
+	if (country >= (uint32_t)src->country_count) return 1;
+	flagged = flags ? (flags[country] & 1) != 0 : (src->countries[country].flag & 1) != 0;
+	if (!flagged || (province->gate & 0x10) == 0) return 1;
+	if (db_spread_blocked(src, fired, fired_n, province->id)) return 1;
+	count = (int)(province->id % 5u);
+	if (count <= 0) return 1;
+	if (!db_scratch(part)) return 0;
+	return db_emit(direct, part, DB_SPREAD, (int32_t)province->id, count);
+}
+
+static VOID CALLBACK db_work(PTP_CALLBACK_INSTANCE instance, PVOID param, PTP_WORK work) {
+	struct db_part *part = param;
+	int index;
+	(void)instance;
+	(void)work;
+	da_tls_part = NULL;
+	da_tls_arena = part->arena;
+	if (part->walk == 1) {
+		for (index = part->to - 1; index >= part->from; --index)
+			if (!db_walk1(part, NULL, part->src, index)) break;
+	} else {
+		for (index = part->from; index < part->to; ++index)
+			if (!db_walk2(part, NULL, part->src, index, part->flags, part->fired, part->fired_n)) break;
+	}
+	da_tls_arena = NULL;
+}
+
+static int db_ops_for(int count, int each, unsigned *out) {
+	if (count < 0 || each < 1 || (unsigned)count > UINT_MAX / (unsigned)each) return 0;
+	*out = (unsigned)count * (unsigned)each;
+	return 1;
+}
+
+static int db_slice(struct db_world *src, int walk, int high_first, const uint8_t *flags,
+		const int32_t *fired, int32_t fired_n, int ops_each, struct db_part **out_parts, int *out_n) {
+	SYSTEM_INFO info;
+	struct db_part *parts;
+	int count = walk == 1 ? src->center_count : src->province_count;
+	int n, i, cursor;
+	size_t budget = 0;
+	*out_parts = NULL;
+	*out_n = 0;
+	if (count == 0) return 1;
+	GetSystemInfo(&info);
+	n = (int)info.dwNumberOfProcessors;
+	if (n < 1) n = 1;
+	if (n > MAX_WORKERS) n = MAX_WORKERS;
+	if (n > count) n = count;
+	if (daily_b_calls == 0) n = 1;
+	else if (!ensure_active_pool(n)) n = 1;
+	parts = DAILY_A_HEAP("db-parts", HEAP_ZERO_MEMORY, sizeof(*parts) * (size_t)n);
+	if (!parts) return 0;
+	if (!daily_mul_size((size_t)count, DAILY_ENTRY_BUDGET, &budget)) {
+		HeapFree(GetProcessHeap(), 0, parts);
+		return 0;
+	}
+	cursor = high_first ? count : 0;
+	for (i = 0; i < n; ++i) {
+		int share = high_first ? cursor / (n - i) : (count - cursor) / (n - i);
+		unsigned cap = 0;
+		parts[i].src = src;
+		parts[i].walk = walk;
+		parts[i].flags = flags;
+		parts[i].fired = fired;
+		parts[i].fired_n = fired_n;
+		parts[i].from = high_first ? cursor - share : cursor;
+		parts[i].to = high_first ? cursor : cursor + share;
+		cursor = high_first ? parts[i].from : parts[i].to;
+		if (!db_ops_for(share, ops_each, &cap)) {
+			int k;
+			for (k = 0; k < i; ++k) if (parts[k].ops) HeapFree(GetProcessHeap(), 0, parts[k].ops);
+			HeapFree(GetProcessHeap(), 0, parts);
+			return 0;
+		}
+		parts[i].op_cap = cap;
+		parts[i].ops = cap ? DAILY_A_HEAP("db-ops", HEAP_ZERO_MEMORY, sizeof(struct db_op) * cap) : NULL;
+		parts[i].arena = daily_a_arena_get(i);
+		if ((cap && !parts[i].ops) || !parts[i].arena ||
+			!daily_a_arena_ensure(parts[i].arena, budget) ||
+			!daily_a_arena_prepare(parts[i].arena)) {
+			int k;
+			for (k = 0; k <= i; ++k) if (parts[k].ops) HeapFree(GetProcessHeap(), 0, parts[k].ops);
+			HeapFree(GetProcessHeap(), 0, parts);
+			return 0;
+		}
+	}
+	if (n == 1) db_work(NULL, &parts[0], NULL);
+	else {
+		PTP_WORK works[MAX_WORKERS];
+		int submitted = 0;
+		for (i = 0; i < n; ++i) {
+			works[i] = CreateThreadpoolWork(db_work, &parts[i], &active_environment);
+			if (!works[i]) db_work(NULL, &parts[i], NULL);
+			else { SubmitThreadpoolWork(works[i]); ++submitted; }
+		}
+		if (submitted) CloseThreadpoolCleanupGroupMembers(active_group, FALSE, NULL);
+	}
+	*out_parts = parts;
+	*out_n = n;
+	return 1;
+}
+
+static int db_overflow(struct db_part *parts, int n) {
+	int i;
+	for (i = 0; i < n; ++i) if (parts[i].overflow) return 1;
+	return 0;
+}
+
+static void db_release(struct db_part *parts, int n) {
+	int i;
+	if (!parts) return;
+	for (i = 0; i < n; ++i) if (parts[i].ops) HeapFree(GetProcessHeap(), 0, parts[i].ops);
+	HeapFree(GetProcessHeap(), 0, parts);
+}
+
+static int db_apply_parts(struct db_world *w, struct db_part *parts, int n) {
+	int s, o;
+	for (s = 0; s < n; ++s)
+		for (o = 0; o < (int)parts[s].op_count; ++o)
+			if (!db_apply_one(w, parts[s].ops[o].kind, parts[s].ops[o].a, parts[s].ops[o].b)) return 0;
+	return 1;
+}
+
+__declspec(dllexport) unsigned daily_b_layout(void) {
+	return (unsigned)sizeof(struct db_world) ^ 0x0B170000u;
+}
+
+__declspec(dllexport) void daily_b_serial(void *opaque) {
+	struct db_world *w = opaque;
+	int index;
+	if (!db_world_ok(w) || !db_prepare(w)) return;
+	db_warmup(w);
+	for (index = w->center_count - 1; index >= 0; --index) db_walk1(NULL, w, w, index);
+	for (index = 0; index < w->province_count; ++index)
+		db_walk2(NULL, w, w, index, NULL, w->fired, w->fired_count);
+}
+
+static int daily_b_dispatch(struct db_world *w) {
+	struct db_center *copy = NULL;
+	struct db_world snap;
+	struct db_part *walk1 = NULL, *walk2 = NULL;
+	uint8_t *flags = NULL;
+	int32_t *fired = NULL, fired_n = 0;
+	int n1 = 0, n2 = 0, i, o, ops_each, centers;
+	size_t bytes = 0;
+	unsigned ops = 0;
+	char text[512];
+	struct daily_a_arena_totals totals;
+	if (!db_world_ok(w) || !db_prepare(w)) return 0;
+	if (w->message_factor > INT32_MAX - 6) return 0;
+	ops_each = 6 + w->message_factor;
+	centers = w->center_count;
+	if (centers && (!daily_mul_size((size_t)centers, sizeof(*copy), &bytes) ||
+		!(copy = DAILY_A_HEAP("db-snap", 0, bytes)))) return 0;
+	if (centers) memcpy(copy, w->centers, bytes);
+	snap = *w;
+	snap.centers = copy ? copy : w->centers;
+	if (!db_slice(&snap, 1, 1, NULL, NULL, 0, ops_each, &walk1, &n1) || db_overflow(walk1, n1)) goto abandon;
+	flags = centers ? DAILY_A_HEAP("db-flags", HEAP_ZERO_MEMORY, (size_t)w->country_count) : NULL;
+	fired = centers ? DAILY_A_HEAP("db-fired", 0, sizeof(int32_t) * (size_t)centers) : NULL;
+	if (centers && (!flags || !fired)) goto abandon;
+	for (i = 0; i < n1; ++i) {
+		for (o = 0; o < (int)walk1[i].op_count; ++o) {
+			struct db_op *op = &walk1[i].ops[o];
+			if (op->kind == DB_FLAG && op->a >= 0 && op->a < w->country_count) flags[op->a] = (uint8_t)(flags[op->a] | 1);
+			else if (op->kind == DB_FIRED && fired_n < centers) fired[fired_n++] = op->a;
+		}
+	}
+	if (!db_slice(w, 2, 0, flags, fired, fired_n, 1, &walk2, &n2) || db_overflow(walk2, n2)) goto abandon;
+	db_warmup(w);
+	if (!db_apply_parts(w, walk1, n1) || !db_apply_parts(w, walk2, n2)) goto abandon;
+	for (i = 0; i < n1; ++i) ops += walk1[i].op_count;
+	for (i = 0; i < n2; ++i) ops += walk2[i].op_count;
+	InterlockedIncrement(&daily_b_calls);
+	daily_a_arena_totals_snapshot(&totals);
+	snprintf(text, sizeof(text),
+		"calls=%ld\ncenters=%d\nprovinces=%d\nfactor=%d\nworkers=%d\nops=%u\n"
+		"arena-allocs=%llu\narena-frees=%llu\narena-live=%llu\narena-oversized=%llu\n",
+		daily_b_calls, w->center_count, w->province_count, w->message_factor, n1 > n2 ? n1 : n2, ops,
+		(unsigned long long)totals.allocs, (unsigned long long)totals.frees,
+		(unsigned long long)totals.live, (unsigned long long)totals.oversized_fallbacks);
+	write_proof("daily-b-real.txt", text);
+	db_release(walk1, n1);
+	db_release(walk2, n2);
+	if (copy) HeapFree(GetProcessHeap(), 0, copy);
+	if (flags) HeapFree(GetProcessHeap(), 0, flags);
+	if (fired) HeapFree(GetProcessHeap(), 0, fired);
+	return 1;
+abandon:
+	db_release(walk1, n1);
+	db_release(walk2, n2);
+	if (copy) HeapFree(GetProcessHeap(), 0, copy);
+	if (flags) HeapFree(GetProcessHeap(), 0, flags);
+	if (fired) HeapFree(GetProcessHeap(), 0, fired);
+	write_proof("daily-b-dispatch.txt", "stage=preflight-fallback\n");
+	return 0;
+}
+
+static void daily_b_detour(void *world) {
+	void (*native)(void *);
+	if (!daily_b_next || !*daily_b_next) return;
+	native = (void (*)(void *))(*daily_b_next);
+	if (InterlockedCompareExchange(&daily_b_running, 1, 0) != 0) {
+		native(world);
+		return;
+	}
+	if (!daily_b_ready || !daily_b_dispatch(world)) native(world);
+	InterlockedExchange(&daily_b_running, 0);
+}
+
+static int32_t install_daily_b(const FochHostApi *host, int *found, void **site_out) {
+	static const char pattern[] = "48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 28 EC FF FF";
+	HMODULE exe;
+	void *site = NULL, *real_site = NULL;
+	int32_t rc;
+	*found = 0;
+	*site_out = NULL;
+	daily_b_real_site = NULL;
+	if (host->find_pattern(host, (FochStr){ pattern, sizeof(pattern) - 1 }, &real_site) == FOCH_OK)
+		daily_b_real_site = real_site;
+	if (!daily_b_enabled) return FOCH_OK;
+	exe = GetModuleHandleA(NULL);
+	{
+		typedef void *(*AddrFn)(void);
+		AddrFn addr = exe ? (AddrFn)GetProcAddress(exe, "fixture_daily_b_addr") : NULL;
+		site = addr ? addr() : NULL;
+	}
+	if (!site) return FOCH_OK;
+	*found = 1;
+	*site_out = site;
+	if (!daily_a_readable(host->exe_base, host->exe_size, site, 16)) return FOCH_E_INVALID;
+	daily_b_install_started = 1;
+	rc = owned_create(host, site, (void *)daily_b_detour, 10, &daily_b_next, &daily_b_hook);
+	if (rc != FOCH_OK) return rc;
+	rc = owned_enable(host, daily_b_hook);
+	if (rc != FOCH_OK) return rc;
+	daily_b_ready = 1;
+	return FOCH_OK;
+}
+
 static void *build_monthly_loop(const FochHostApi *host, const unsigned char *site) {
 	unsigned char *copy;
 	unsigned calls[2] = { 0x13, 0x3A };
@@ -2237,14 +2827,15 @@ static void *build_monthly_loop(const FochHostApi *host, const unsigned char *si
 
 static int32_t init(const FochHostApi *host) {
 	static const char pattern[] = "49 8B 87 E8 1C 00 00 45 0F B6 C4 41 0F B6 D5";
-	void *site = NULL, *state_site = NULL, *active_at = NULL, *daily_a_at = NULL, *target = NULL;
+	void *site = NULL, *state_site = NULL, *active_at = NULL, *daily_a_at = NULL, *daily_b_at = NULL, *target = NULL;
 	unsigned char *code;
 	int32_t rel = 0, rc = FOCH_E_INVALID, rollback_rc = FOCH_OK, commit_rc = FOCH_OK;
 	int found = FOCH_E_NOT_FOUND, created = FOCH_E_INVALID, enabled = FOCH_E_INVALID;
 	int state_found = FOCH_E_NOT_FOUND, state_created = 0, state_enabled = 0;
 	int active_found = FOCH_E_NOT_FOUND, active_created = 0, active_enabled = 0;
 	int daily_a_found = FOCH_E_NOT_FOUND, daily_a_rc = FOCH_OK;
-	char proof[1024];
+	int daily_b_found = 0, daily_b_rc = FOCH_OK;
+	char proof[1280];
 	capture_proof_root();
 	plugin_status = (FochStatus){ sizeof(FochStatus), FOCH_STATE_INITIALIZING, 0, { NULL, 0 } };
 	if (!host || host->size < offsetof(FochHostApi, hook_set_enabled) + sizeof(host->hook_set_enabled) ||
@@ -2256,6 +2847,8 @@ static int32_t init(const FochHostApi *host) {
 	owned_count = owned_pending = 0;
 	owned_preparing = 1;
 	daily_a_install_started = daily_a_ready = daily_a_enabled = 0;
+	daily_b_install_started = daily_b_ready = daily_b_enabled = 0;
+	daily_b_real_site = NULL;
 	country_splitting = states_done = active_running = active_enter_body = state_async = 0;
 	active_pred = NULL;
 	active_real = 0;
@@ -2294,6 +2887,13 @@ static int32_t init(const FochHostApi *host) {
 	/* An unselected or unsupported daily profile does not remove the
 	 * selected monthly/state/active members. A failed installation does. */
 	if (daily_a_rc != FOCH_OK && daily_a_install_started) { rc = daily_a_rc; goto finished; }
+	{
+		char value[8];
+		DWORD len = GetEnvironmentVariableA("FOCH_DAILY_B", value, sizeof(value));
+		if (len > 0 && len < sizeof(value) && value[0] == '1') daily_b_enabled = 1;
+	}
+	daily_b_rc = install_daily_b(host, &daily_b_found, &daily_b_at);
+	if (daily_b_rc != FOCH_OK && daily_b_install_started) { rc = daily_b_rc; goto finished; }
 	commit_rc = owned_commit(host);
 	rc = commit_rc;
 finished:
@@ -2301,7 +2901,7 @@ finished:
 		rollback_rc = owned_rollback(host);
 		if (rollback_rc == FOCH_OK) {
 			country_splitting = states_done = active_running = active_enter_body = state_async = 0;
-			daily_a_ready = 0;
+			daily_a_ready = daily_b_ready = 0;
 			if (country_body && !VirtualFree(country_body, 0, MEM_RELEASE)) rollback_rc = FOCH_E_MEMORY;
 			else country_body = NULL;
 			if (active_body && !VirtualFree(active_body, 0, MEM_RELEASE)) rollback_rc = FOCH_E_MEMORY;
@@ -2320,12 +2920,14 @@ finished:
 		"state-found=%d\nstate-created=%d\nstate-enabled=%d\nstate=%p\n"
 		"active-found=%d\nactive-created=%d\nactive-enabled=%d\nactive=%p\nactive-real=%d\n"
 		"daily-a-found=%d\ndaily-a-rc=%d\ndaily-a=%p\ndaily-a-ready=%d\ndaily-a-alloc=%d\ndaily-a-step=%d\n"
-		"daily-a-enabled=%d\ninit-rc=%d\ncommit-rc=%d\nrollback-rc=%d\n",
+		"daily-a-enabled=%d\ndaily-b-found=%d\ndaily-b-rc=%d\ndaily-b=%p\ndaily-b-ready=%d\n"
+		"daily-b-enabled=%d\ndaily-b-real=%p\ninit-rc=%d\ncommit-rc=%d\nrollback-rc=%d\n",
 		found, created, enabled, site, (void *)country_monthly,
 		state_found, state_created, state_enabled, state_site,
 		active_found, active_created, active_enabled, active_at, active_real,
 		daily_a_found, daily_a_rc, daily_a_at, daily_a_ready, daily_a_alloc_failed, daily_a_step,
-		daily_a_enabled, rc, commit_rc, rollback_rc);
+		daily_a_enabled, daily_b_found, daily_b_rc, daily_b_at, daily_b_ready,
+		daily_b_enabled, daily_b_real_site, rc, commit_rc, rollback_rc);
 	write_proof("countries-entry.txt", proof);
 	host->report(host, &plugin_status);
 	return rc;
