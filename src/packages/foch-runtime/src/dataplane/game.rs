@@ -39,8 +39,9 @@ impl Eu4Game {
 			.read_ptr(manager + country_manager::INDEX_ARRAY)?;
 		let count = self
 			.memory
-			.read_i32(self.context + super::layout::COUNTRIES_COUNT)? as usize;
-		(1..=1024).contains(&count).then_some(Countries {
+			.read_i32(self.context + super::layout::COUNTRIES_COUNT)
+			.and_then(valid_country_count)?;
+		Some(Countries {
 			memory: self.memory,
 			pointers,
 			count,
@@ -51,8 +52,11 @@ impl Eu4Game {
 	pub fn trade_nodes(&self) -> Option<TradeNodes> {
 		let db = self.context + super::layout::DB_IN_CONTEXT;
 		let nodes = self.memory.read_ptr(db + db::NODES)?;
-		let count = self.memory.read_i32(db + db::NODE_COUNT)? as usize;
-		(20..=512).contains(&count).then_some(TradeNodes {
+		let count = self
+			.memory
+			.read_i32(db + db::NODE_COUNT)
+			.and_then(valid_trade_node_count)?;
+		Some(TradeNodes {
 			memory: self.memory,
 			db,
 			nodes,
@@ -391,9 +395,50 @@ impl Province {
 	}
 }
 
+/// Maximum trade-node count accepted by [`Eu4Game::trade_nodes`].
+///
+/// Overhaul mods can replace the trade map with either fewer than 20 nodes
+/// (small regional scenarios) or more than 512 nodes; only zero, negative, and
+/// clearly corrupt counts are rejected.
+pub const MAX_TRADE_NODES: usize = 4096;
+
+fn valid_country_count(raw: i32) -> Option<usize> {
+	let count = usize::try_from(raw).ok()?;
+	(1..=i16::MAX as usize).contains(&count).then_some(count)
+}
+
+fn valid_trade_node_count(raw: i32) -> Option<usize> {
+	let count = usize::try_from(raw).ok()?;
+	(1..=MAX_TRADE_NODES).contains(&count).then_some(count)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn entity_count_gates_support_small_and_large_overhaul_mods() {
+		assert_eq!(valid_country_count(0), None);
+		assert_eq!(valid_country_count(-5), None);
+		assert_eq!(valid_country_count(1), Some(1));
+		assert_eq!(valid_country_count(1500), Some(1500));
+		assert_eq!(
+			valid_country_count(i16::MAX as i32),
+			Some(i16::MAX as usize)
+		);
+		assert_eq!(valid_country_count(i16::MAX as i32 + 1), None);
+
+		assert_eq!(valid_trade_node_count(0), None);
+		assert_eq!(valid_trade_node_count(-1), None);
+		assert_eq!(valid_trade_node_count(5), Some(5));
+		assert_eq!(valid_trade_node_count(80), Some(80));
+		assert_eq!(valid_trade_node_count(1024), Some(1024));
+		assert_eq!(
+			valid_trade_node_count(MAX_TRADE_NODES as i32),
+			Some(MAX_TRADE_NODES)
+		);
+		assert_eq!(valid_trade_node_count(MAX_TRADE_NODES as i32 + 1), None);
+	}
 
 	fn pack_tag(tag: [u8; 3], index: i16, valid_flag: u8) -> u64 {
 		let idx = index.to_le_bytes();
