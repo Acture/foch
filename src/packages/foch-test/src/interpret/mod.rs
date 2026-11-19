@@ -533,6 +533,9 @@ struct World {
 	/// answer the trigger family (offensive for the attacker,
 	/// defensive for the defender).
 	wars: BTreeMap<Tag, BTreeSet<Tag>>,
+	/// The same wars indexed from the defender: a defender is at war too,
+	/// and which side declared stays distinguishable.
+	wars_against: BTreeMap<Tag, BTreeSet<Tag>>,
 	alliances: BTreeMap<Tag, BTreeSet<Tag>>,
 	/// Enum and number slots a case can write; absent means unknown, and an
 	/// unwritten read refuses rather than guessing a starting value.
@@ -774,6 +777,7 @@ impl<'a> Interpreter<'a> {
 			scheduled: BTreeMap::new(),
 			deliveries: 0,
 			wars: BTreeMap::new(),
+			wars_against: BTreeMap::new(),
 			alliances: BTreeMap::new(),
 			religions: BTreeMap::new(),
 			cultures: BTreeMap::new(),
@@ -1984,6 +1988,11 @@ impl<'a> Interpreter<'a> {
 					.entry(ctx.current.clone())
 					.or_default()
 					.insert(who.clone());
+				world
+					.wars_against
+					.entry(who.clone())
+					.or_default()
+					.insert(ctx.current.clone());
 				world.note(
 					&ctx.current,
 					Observed::WarChanged {
@@ -2003,6 +2012,12 @@ impl<'a> Interpreter<'a> {
 					set.remove(&other);
 				}
 				if let Some(set) = world.wars.get_mut(&other) {
+					set.remove(&ctx.current);
+				}
+				if let Some(set) = world.wars_against.get_mut(&ctx.current) {
+					set.remove(&other);
+				}
+				if let Some(set) = world.wars_against.get_mut(&other) {
 					set.remove(&ctx.current);
 				}
 				world.note(
@@ -2336,23 +2351,33 @@ impl<'a> Interpreter<'a> {
 					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
 				)
 				.map_err(|reason| format!("{where_}: {reason}"))?;
-				let (attacker, defender) = if key == "offensive_war_with" {
-					(&ctx.current, &other)
+				// The direction a war was declared in stays recorded:
+				// offensive reads the declarer's index, defensive the
+				// defender's.
+				if key == "offensive_war_with" {
+					world
+						.wars
+						.get(&ctx.current)
+						.is_some_and(|set| set.contains(&other))
 				} else {
-					(&other, &ctx.current)
-				};
-				world
-					.wars
-					.get(attacker)
-					.is_some_and(|set| set.contains(defender))
+					world
+						.wars_against
+						.get(&ctx.current)
+						.is_some_and(|set| set.contains(&other))
+				}
 			}
 			"is_at_war" => {
 				let wanted =
 					boolean(value).ok_or_else(|| format!("{where_}: is_at_war needs yes or no"))?;
+				// Either side of any war: a defender is at war too.
 				let at_war = world
 					.wars
 					.get(&ctx.current)
-					.is_some_and(|set| !set.is_empty());
+					.is_some_and(|set| !set.is_empty())
+					|| world
+						.wars_against
+						.get(&ctx.current)
+						.is_some_and(|set| !set.is_empty());
 				at_war == wanted
 			}
 			"alliance_with" => {
@@ -3250,6 +3275,59 @@ test = {
 				Outcome::Pass,
 				"{first:?} then {second:?}: {verdict:#?}"
 			);
+		}
+	}
+
+	#[test]
+	fn a_defender_knows_it_is_at_war() {
+		// The review counterexample: SWE declares on DAN. DAN's
+		// defensive_war_with = SWE held, but is_at_war = yes was false because
+		// only the attacker's out-edge was registered. Both sides of a war
+		// know it, and white_peace ends it for both.
+		const CASES: &str = r#"test = {
+	name = attacker_view
+	time = 1444.11.11
+	tag = SWE
+	effect = { declare_war_with_cb = { who = DAN cb = cb_conquest } }
+	expect = { offensive_war_with = DAN is_at_war = yes }
+}
+test = {
+	name = defender_view
+	time = 1444.11.11
+	tag = DAN
+	effect = { SWE = { declare_war_with_cb = { who = DAN cb = cb_conquest } } }
+	expect = { defensive_war_with = SWE is_at_war = yes }
+}
+test = {
+	name = after_peace
+	time = 1444.11.11
+	tag = SWE
+	effect = { declare_war_with_cb = { who = DAN cb = cb_conquest } white_peace = DAN }
+	expect = { NOT = { offensive_war_with = DAN } is_at_war = no }
+}
+test = {
+	name = defender_after_peace
+	time = 1444.11.11
+	tag = DAN
+	effect = {
+		SWE = { declare_war_with_cb = { who = DAN cb = cb_conquest } }
+		white_peace = SWE
+	}
+	expect = { NOT = { defensive_war_with = SWE } is_at_war = no }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		for name in [
+			"attacker_view",
+			"defender_view",
+			"after_peace",
+			"defender_after_peace",
+		] {
+			let verdict = case(&result, name);
+			assert_eq!(verdict.outcome, Outcome::Pass, "{name}: {verdict:#?}");
 		}
 	}
 
