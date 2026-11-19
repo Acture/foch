@@ -9,7 +9,7 @@ use crate::model::{
 	CaseName, ContentId, GameDate, Marker, Marks, NodeId, Start, Step, Tag, TestCase, XFail,
 };
 use crate::source::SourceFile;
-use foch::game::eu4::script::parser::AstStatement;
+use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
 use foch_annotation::builtin::{PARAMETRIZE, REGISTRY, TEST};
 use foch_annotation::extract::{Annotation, Applied, Target, extract_parsed};
 use foch_annotation::value::{EventId, Value};
@@ -130,6 +130,7 @@ fn bind(
 	)?;
 	let mut fields = CaseFields::default();
 	let (mut effect, mut days, mut expect) = (None, None, None);
+	let mut receipts = Vec::new();
 	for argument in &applied.annotation.arguments {
 		if fields.set(&argument.name, &argument.value)? {
 			continue;
@@ -138,6 +139,23 @@ fn bind(
 			("effect", Value::Effects(block)) => effect = Some(block.clone()),
 			("advance_days", Value::Integer(value)) => days = Some((*value, argument.span.clone())),
 			("expect", Value::Conditions(clauses)) => expect = Some(clauses.clone()),
+			// A receipt expectation rides the plan like the tests/ block
+			// form: the raw entries re-parse through the shared parser.
+			("expect_receipt", Value::Effects(block)) => {
+				let parsed =
+					parse_clausewitz_content(crate::game_path(file.path.as_str()), &block.text);
+				if !parsed.diagnostics.is_empty() {
+					return Err(format!(
+						"expect_receipt block at {} does not parse",
+						block.span
+					));
+				}
+				receipts.push(super::receipt_step(
+					file,
+					&parsed.ast.statements,
+					argument.span.clone(),
+				)?);
+			}
 			(other, _) => return Err(format!("#test parameter {other} is not supported here")),
 		}
 	}
@@ -155,6 +173,7 @@ fn bind(
 	if let Some(clauses) = expect {
 		steps.push(Step::Expect { clauses });
 	}
+	steps.extend(receipts);
 	total_days(&steps)?;
 
 	let mut marks = marks(&applied.modifiers)?;

@@ -78,6 +78,13 @@ pub const TEST_PARAMS: &[ParamSchema] = &[
 		example: "\"slot_a\"",
 	},
 	ParamSchema {
+		name: "expect_receipt",
+		value_type: ValueType::Effects,
+		required: false,
+		description: "Expect a plugin receipt from the host event stream: plugin/case/request correlation plus exact-string fields and numeric = { field = { min = .. max = .. } } ranges.",
+		example: "{ plugin = \"dev.foch.x\" case = my_case request = r1 status = paid }",
+	},
+	ParamSchema {
 		name: "cheat",
 		value_type: ValueType::Text,
 		required: false,

@@ -502,6 +502,71 @@ fn offline_is_not_bound_to_the_runners_start_dates() {
 }
 
 #[test]
+fn inline_test_annotations_accept_expect_receipt() {
+	// The peace line's repro: an inline #test block with expect_receipt was
+	// rejected at collection ("unknown #test parameter expect_receipt"),
+	// blocking every annotated receipt fixture before the game. The schema
+	// declares it and the annotated case collects and compiles, numeric
+	// range included.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/events")).unwrap();
+	fs::write(
+		dir.path().join("mod/events/cases.txt"),
+		r#"namespace = cases
+#test(time=1444.11.11, tag=SWE, name=rosetta, expect={ has_country_flag = ready })
+country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = { set_country_flag = ready } option = { name = OK } }
+#test(time=1444.11.11, tag=SWE, name=paid_up, expect_receipt={ plugin = "dev.foch.x" case = paid_up request = r1 status = paid numeric = { gold = { min = 100 max = 500 } } })
+country_event = { id = cases.2 hidden = yes is_triggered_only = yes immediate = { set_country_flag = staged } option = { name = OK } }"#,
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	let nodes: Vec<_> = report["cases"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|case| case["node_id"].as_str().unwrap_or_default())
+		.collect();
+	assert!(
+		nodes.iter().any(|node| node.contains("rosetta")),
+		"{nodes:?}"
+	);
+	assert!(
+		nodes.iter().any(|node| node.contains("paid_up")),
+		"{nodes:?}"
+	);
+	// The receipt step rides the plan: bundles compile without a game.
+	let out = dir.path().join("annotated-out");
+	let compiled = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--no-run",
+			"--format",
+			"json",
+			"--out",
+			out.to_str().unwrap(),
+		],
+	);
+	assert!(
+		compiled.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&compiled.stdout),
+		String::from_utf8_lossy(&compiled.stderr)
+	);
+}
+
+#[test]
 fn console_steps_ride_the_command_channel_in_order() {
 	// task_a7a3061a7932: cheat / save / reload steps are console steps; the
 	// bundle emits them, in step order, on the verified startup channel

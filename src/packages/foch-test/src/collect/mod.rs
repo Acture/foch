@@ -341,148 +341,7 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			let AstValue::Block { items, .. } = value else {
 				return Err("expect_receipt must be a block".into());
 			};
-			let mut plugin: Option<String> = None;
-			let mut fields: Vec<(String, String)> = Vec::new();
-			let mut numeric: Vec<crate::model::ReceiptRange> = Vec::new();
-			for item in items {
-				let AstStatement::Assignment { key, value, .. } = item else {
-					// Comments are fine; a bare item drops a constraint the
-					// author wrote, so it is a collection error.
-					if matches!(item, AstStatement::Comment { .. }) {
-						continue;
-					}
-					return Err(
-						"expect_receipt holds an entry without a key; every constraint 						 must be key = value"
-							.into(),
-					);
-				};
-				let AstValue::Scalar {
-					value:
-						ScalarValue::Identifier(text)
-						| ScalarValue::String(text)
-						| ScalarValue::Number(text),
-					..
-				} = value
-				else {
-					// A nested block of field = { min = .. max = .. } ranges;
-					// every other block-shaped field is unreadable.
-					if key != "numeric" {
-						return Err(format!("expect_receipt field {key} needs a plain value"));
-					}
-					let AstValue::Block { items, .. } = value else {
-						return Err(
-							"numeric must be a block of field = { min = .. max = .. }".into()
-						);
-					};
-					for entry in items {
-						let AstStatement::Assignment {
-							key: field, value, ..
-						} = entry
-						else {
-							if matches!(entry, AstStatement::Comment { .. }) {
-								continue;
-							}
-							return Err(
-								"numeric holds field = { min = .. max = .. } entries".into()
-							);
-						};
-						let AstValue::Block { items, .. } = value else {
-							return Err(format!(
-								"numeric field {field} needs a min = .. and/or max = .. block"
-							));
-						};
-						if fields.iter().any(|(existing, _)| existing == field) {
-							return Err(format!(
-								"expect_receipt field {field} is constrained twice, once as an exact string and once numerically; keep one form"
-							));
-						}
-						if numeric.iter().any(|range| range.field == *field) {
-							return Err(format!("numeric constrains {field} twice"));
-						}
-						let (mut min, mut max) = (None, None);
-						for bound in items {
-							let AstStatement::Assignment { key, value, .. } = bound else {
-								if matches!(bound, AstStatement::Comment { .. }) {
-									continue;
-								}
-								return Err(format!(
-									"numeric field {field} holds min and/or max bounds"
-								));
-							};
-							let AstValue::Scalar {
-								value: ScalarValue::Number(text),
-								..
-							} = value
-							else {
-								return Err(format!(
-									"numeric bound {key} of {field} needs a number"
-								));
-							};
-							let parsed: f64 = text.parse().map_err(|_| {
-								format!("numeric bound {key} of {field} is not a number")
-							})?;
-							if !parsed.is_finite() {
-								return Err(format!(
-									"numeric bound {key} of {field} must be finite"
-								));
-							}
-							match key.as_str() {
-								"min" => min = Some(parsed),
-								"max" => max = Some(parsed),
-								other => {
-									return Err(format!(
-										"numeric field {field} takes min and/or max, not {other}"
-									));
-								}
-							}
-						}
-						if min.is_none() && max.is_none() {
-							return Err(format!(
-								"numeric field {field} needs at least one of min or max"
-							));
-						}
-						numeric.push(crate::model::ReceiptRange {
-							field: field.clone(),
-							min,
-							max,
-						});
-					}
-					continue;
-				};
-				if key == "plugin" {
-					if plugin.is_some() {
-						return Err("expect_receipt names plugin twice".into());
-					}
-					plugin = Some(text.clone());
-				} else if let Some(previous) = fields.iter().find(|(existing, _)| existing == key) {
-					return Err(format!(
-						"expect_receipt field {key} is given twice ({:?} and {:?}); \
-						 conflicting correlation constraints cannot be honored",
-						previous.1, text,
-					));
-				} else {
-					fields.push((key.clone(), text.clone()));
-				}
-			}
-			let plugin =
-				plugin.ok_or_else(|| "expect_receipt needs a plugin = ... field".to_string())?;
-			// Correlation is mandatory: the receipt must name the case it
-			// belongs to and carry a request token the fixture issued with
-			// the command. Without both, a same-session receipt for another
-			// case could satisfy this step.
-			for required in ["case", "request"] {
-				if !fields.iter().any(|(key, _)| key == required) {
-					return Err(format!(
-						"expect_receipt needs a {required} = ... field correlating it to 						 one command of this case"
-					));
-				}
-			}
-			Step::ExpectReceipt {
-				plugin,
-				fields,
-				numeric,
-				span: span(),
-			}
+			receipt_step(file, items, span())?
 		}
 		(_, None) => return Ok(None),
 		("effect", Some(Value::Effects(block))) => Step::Effect { block },
@@ -507,6 +366,145 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 		},
 		_ => unreachable!("step types are fixed by the schema"),
 	}))
+}
+
+/// Parse one `expect_receipt` block's entries, shared by the `tests/` block
+/// path and the inline `#test` annotation path.
+fn receipt_step(
+	file: &SourceFile,
+	items: &[AstStatement],
+	span: SourceSpan,
+) -> Result<Step, String> {
+	let _ = file;
+	let mut plugin: Option<String> = None;
+	let mut fields: Vec<(String, String)> = Vec::new();
+	let mut numeric: Vec<crate::model::ReceiptRange> = Vec::new();
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			// Comments are fine; a bare item drops a constraint the
+			// author wrote, so it is a collection error.
+			if matches!(item, AstStatement::Comment { .. }) {
+				continue;
+			}
+			return Err(
+				"expect_receipt holds an entry without a key; every constraint must be key = value"
+					.into(),
+			);
+		};
+		let AstValue::Scalar {
+			value:
+				ScalarValue::Identifier(text) | ScalarValue::String(text) | ScalarValue::Number(text),
+			..
+		} = value
+		else {
+			// A nested block of field = { min = .. max = .. } ranges;
+			// every other block-shaped field is unreadable.
+			if key != "numeric" {
+				return Err(format!("expect_receipt field {key} needs a plain value"));
+			}
+			let AstValue::Block { items, .. } = value else {
+				return Err("numeric must be a block of field = { min = .. max = .. }".into());
+			};
+			for entry in items {
+				let AstStatement::Assignment {
+					key: field, value, ..
+				} = entry
+				else {
+					if matches!(entry, AstStatement::Comment { .. }) {
+						continue;
+					}
+					return Err("numeric holds field = { min = .. max = .. } entries".into());
+				};
+				let AstValue::Block { items, .. } = value else {
+					return Err(format!(
+						"numeric field {field} needs a min = .. and/or max = .. block"
+					));
+				};
+				if fields.iter().any(|(existing, _)| existing == field) {
+					return Err(format!(
+						"expect_receipt field {field} is constrained twice, once as an exact string and once numerically; keep one form"
+					));
+				}
+				if numeric.iter().any(|range| range.field == *field) {
+					return Err(format!("numeric constrains {field} twice"));
+				}
+				let (mut min, mut max) = (None, None);
+				for bound in items {
+					let AstStatement::Assignment { key, value, .. } = bound else {
+						if matches!(bound, AstStatement::Comment { .. }) {
+							continue;
+						}
+						return Err(format!("numeric field {field} holds min and/or max bounds"));
+					};
+					let AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} = value
+					else {
+						return Err(format!("numeric bound {key} of {field} needs a number"));
+					};
+					let parsed: f64 = text
+						.parse()
+						.map_err(|_| format!("numeric bound {key} of {field} is not a number"))?;
+					if !parsed.is_finite() {
+						return Err(format!("numeric bound {key} of {field} must be finite"));
+					}
+					match key.as_str() {
+						"min" => min = Some(parsed),
+						"max" => max = Some(parsed),
+						other => {
+							return Err(format!(
+								"numeric field {field} takes min and/or max, not {other}"
+							));
+						}
+					}
+				}
+				if min.is_none() && max.is_none() {
+					return Err(format!(
+						"numeric field {field} needs at least one of min or max"
+					));
+				}
+				numeric.push(crate::model::ReceiptRange {
+					field: field.clone(),
+					min,
+					max,
+				});
+			}
+			continue;
+		};
+		if key == "plugin" {
+			if plugin.is_some() {
+				return Err("expect_receipt names plugin twice".into());
+			}
+			plugin = Some(text.clone());
+		} else if let Some(previous) = fields.iter().find(|(existing, _)| existing == key) {
+			return Err(format!(
+				"expect_receipt field {key} is given twice ({:?} and {:?}); \
+				 conflicting correlation constraints cannot be honored",
+				previous.1, text,
+			));
+		} else {
+			fields.push((key.clone(), text.clone()));
+		}
+	}
+	let plugin = plugin.ok_or_else(|| "expect_receipt needs a plugin = ... field".to_string())?;
+	// Correlation is mandatory: the receipt must name the case it belongs
+	// to and carry a request token the fixture issued with the command.
+	// Without both, a same-session receipt for another case could satisfy
+	// this step.
+	for required in ["case", "request"] {
+		if !fields.iter().any(|(key, _)| key == required) {
+			return Err(format!(
+				"expect_receipt needs a {required} = ... field correlating it to one command of this case"
+			));
+		}
+	}
+	Ok(Step::ExpectReceipt {
+		plugin,
+		fields,
+		numeric,
+		span,
+	})
 }
 
 /// A save slot name becomes one console line (`save_game <slot>`), so it
