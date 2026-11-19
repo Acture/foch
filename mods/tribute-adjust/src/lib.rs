@@ -11,6 +11,7 @@
 
 mod coefficient;
 mod config;
+mod panel;
 mod signature;
 mod subject_types;
 
@@ -22,6 +23,7 @@ use std::sync::RwLock;
 
 /// The runtime configuration the hot path reads and the panel writes.
 static CONFIG: RwLock<coefficient::TributeConfig> = RwLock::new(coefficient::TributeConfig::ONCE);
+static WATCH: std::sync::Mutex<Option<config::ConfigWatch>> = std::sync::Mutex::new(None);
 
 /// Why the plugin is not active; reported through status/detail. The string
 /// is leaked once per refusal — refusals happen at most once per launch.
@@ -46,9 +48,14 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 	};
 	let data_dir = unsafe { (host.dir)(host, dir::DATA) };
 	let data_dir = unsafe { data_dir.as_str() }.unwrap_or_default();
-	let config = coefficient::TributeConfig::from_manifest_config(config_json)
+	let baseline = coefficient::TributeConfig::from_manifest_config(config_json);
+	let config = baseline
+		.clone()
 		.overlay_data_file(std::path::Path::new(data_dir));
 	*CONFIG.write().unwrap() = config;
+	if !data_dir.is_empty() {
+		install_runtime_watch(std::path::PathBuf::from(data_dir), baseline);
+	}
 
 	// The signature table gates everything: no verified table, no hook.
 	let table = match signature::load_embedded() {
@@ -77,6 +84,11 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 
 	let exe_sha256 = unsafe { host.exe_sha256.as_str() }.unwrap_or_default();
 	let dataplane_supported = dataplane::supports_build(exe_sha256);
+	detour::set_exe_base(if dataplane_supported {
+		host.exe_base as usize
+	} else {
+		0
+	});
 	log_line(
 		host,
 		log::INFO,
@@ -320,11 +332,50 @@ pub extern "C" fn foch_plugin_get_api(host_abi_major: u32) -> *const FochPluginA
 	&PLUGIN_API
 }
 
+pub use coefficient::TributeConfig;
+pub use panel::SliderModel;
+pub use subject_types::SubjectTypeGraph;
+
 fn log_line(host: &FochHostApi, level: i32, message: &str) {
 	unsafe { (host.log)(host, level, FochStr::from_str(message)) };
 }
 
+fn install_runtime_watch(dir: std::path::PathBuf, baseline: coefficient::TributeConfig) {
+	*WATCH.lock().unwrap() = Some(config::ConfigWatch::new(dir, baseline));
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn clear_runtime_watch() {
+	if let Ok(mut watch) = WATCH.lock() {
+		*watch = None;
+	}
+}
+
+pub(crate) fn poll_runtime_at(now_ms: u64) {
+	let replacement = {
+		let Ok(mut guard) = WATCH.lock() else {
+			return;
+		};
+		let Some(watch) = guard.as_mut() else {
+			return;
+		};
+		watch.poll(now_ms)
+	};
+	if let Some(config) = replacement {
+		*CONFIG.write().unwrap() = config;
+	}
+}
+
+fn poll_runtime() {
+	let now = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|elapsed| elapsed.as_millis() as u64)
+		.unwrap_or(0);
+	poll_runtime_at(now);
+}
+
 fn active_coefficient(tag: &str, kind: &str) -> f64 {
+	poll_runtime();
 	let config = CONFIG.read().unwrap();
 	let types = subject_types::ACTIVE.read().unwrap();
 	config.coefficient(tag, kind, &types)
@@ -349,10 +400,13 @@ fn result_name(code: i32) -> &'static str {
 /// `CCountry + layout::country::TAG` (`+0x20`).
 mod detour {
 	use foch_plugin_sdk::{FochHook, FochHostApi, result};
-	use foch_runtime::dataplane::{Memory, game, layout::country};
+	use foch_runtime::dataplane::{
+		Memory, game,
+		layout::{country, province},
+	};
 	use std::ffi::c_void;
 	use std::sync::Mutex;
-	use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+	use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 	/// Tribute payment command amount offset (`i32`, milli-ducats) in `FUN_140b1c800`.
 	const COMMAND_AMOUNT_OFFSET: usize = 0x1c;
@@ -363,6 +417,31 @@ mod detour {
 	/// registry of up to `i16::MAX` countries for overhaul mods. Indices are
 	/// zero-based, so `i16::MAX` itself is not a valid index into that registry.
 	const MAX_COUNTRY_INDEX: usize = i16::MAX as usize;
+	/// `std::vector<int32>` of province ids on `FUN_1403f1510`'s third argument.
+	const SUBJECT_PROVINCE_BEGIN: usize = 0x88;
+	const SUBJECT_PROVINCE_END: usize = 0x90;
+	/// Packed country identity on `CProvince` (same qword layout as
+	/// [`country::TAG`]). Static 1.37.5: the income function compares its
+	/// index bits with the income recipient. Not live-verified.
+	pub(crate) const PROVINCE_OWNER: usize = 0x468;
+	/// Refuse a province-id span longer than this before touching it.
+	const MAX_PROVINCE_SPAN: usize = 4096;
+	/// How many ids the hot path inspects looking for a subject owner.
+	const MAX_PROVINCE_SCAN: usize = 32;
+	const MAX_PROVINCE_ID: i32 = 65_535;
+
+	static EXE_BASE: AtomicUsize = AtomicUsize::new(0);
+	#[cfg(test)]
+	static PROVINCE_CONTEXT: AtomicUsize = AtomicUsize::new(0);
+
+	pub(crate) fn set_exe_base(base: usize) {
+		EXE_BASE.store(base, Ordering::Relaxed);
+	}
+
+	#[cfg(test)]
+	pub(crate) fn set_province_context_for_test(context: usize) {
+		PROVINCE_CONTEXT.store(context, Ordering::Relaxed);
+	}
 
 	/// The host-owned trampoline cell; call through `*next` on every call.
 	static NEXT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
@@ -414,6 +493,82 @@ mod detour {
 		let tag_addr = country_addr.checked_add(country::TAG)?;
 		let packed = memory.read_qword(tag_addr)?;
 		decode_packed_country_tag(packed, false)
+	}
+
+	fn province_context(memory: &Memory) -> Option<usize> {
+		#[cfg(test)]
+		{
+			let forced = PROVINCE_CONTEXT.load(Ordering::Relaxed);
+			if forced != 0 {
+				return Some(forced);
+			}
+		}
+		let base = EXE_BASE.load(Ordering::Relaxed);
+		if base <= 0x1_0000 {
+			return None;
+		}
+		memory.read_ptr(base + foch_runtime::dataplane::layout::CONTEXT_GLOBAL_RVA)
+	}
+
+	/// Subject tag for `FUN_1403f1510`.
+	///
+	/// The third argument is not a `CCountry`. It holds province ids at
+	/// `+0x88`/`+0x90`. Each id indexes `context + CPROVINCES` with stride
+	/// `CPROVINCE_SIZE`, and `CProvince + 0x468` is a packed country identity.
+	/// The income function keeps provinces whose owner index matches the
+	/// recipient, so those owners are the overlord. The first owner with a
+	/// different index is the subject. Anything unreadable, oversized, or
+	/// identical to the overlord yields `None` and the kind coefficient.
+	pub(crate) fn subject_tag_from_provinces(
+		memory: &Memory,
+		subject: usize,
+		context: usize,
+		overlord_index: Option<u16>,
+	) -> Option<String> {
+		let begin = memory.read_qword(subject.checked_add(SUBJECT_PROVINCE_BEGIN)?)? as usize;
+		let end = memory.read_qword(subject.checked_add(SUBJECT_PROVINCE_END)?)? as usize;
+		if begin == 0 && end == 0 {
+			return None;
+		}
+		if begin <= 0x1_0000 || end < begin || !(end - begin).is_multiple_of(4) {
+			return None;
+		}
+		let count = (end - begin) / 4;
+		if count == 0 || count > MAX_PROVINCE_SPAN {
+			return None;
+		}
+		let provinces = memory.read_ptr(context.checked_add(province::CPROVINCES)?)?;
+		if !provinces.is_multiple_of(8) {
+			return None;
+		}
+		let scan = count.min(MAX_PROVINCE_SCAN);
+		for index in 0..scan {
+			let Some(id) = memory.read_i32(begin + index * 4) else {
+				continue;
+			};
+			if !(0..=MAX_PROVINCE_ID).contains(&id) {
+				continue;
+			}
+			let Some(province_addr) =
+				provinces.checked_add((id as usize).saturating_mul(province::CPROVINCE_SIZE))
+			else {
+				continue;
+			};
+			let Some(owner_addr) = province_addr.checked_add(PROVINCE_OWNER) else {
+				continue;
+			};
+			let Some(packed) = memory.read_qword(owner_addr) else {
+				continue;
+			};
+			let Some((tag, owner_index)) = decode_packed_country_tag(packed, false) else {
+				continue;
+			};
+			if overlord_index == Some(owner_index) {
+				continue;
+			}
+			return Some(tag);
+		}
+		None
 	}
 
 	/// Resolve the subject tag from `tribute_executor`'s `partner: u64` argument.
@@ -512,7 +667,15 @@ mod detour {
 		if before == 0 {
 			return;
 		}
-		let subject_tag = read_country_tag(&memory, subject as usize).map(|(tag, _)| tag);
+		let overlord = read_country_tag(&memory, country as usize);
+		let subject_tag = province_context(&memory).and_then(|context| {
+			subject_tag_from_provinces(
+				&memory,
+				subject as usize,
+				context,
+				overlord.as_ref().map(|(_, index)| *index),
+			)
+		});
 		let desired = crate::active_coefficient(subject_tag.as_deref().unwrap_or(""), "vassal");
 		let scale = residual_scale(desired, applied_vassal_scale());
 		let mut after = before;
@@ -533,12 +696,9 @@ mod detour {
 			&& !seen.iter().any(|&(_, s)| s == key)
 		{
 			seen.push((after as i64, key));
-			let overlord_tag = read_country_tag(&memory, country as usize).map(|(tag, _)| tag);
-			// Static 1.37.5 layout (capstone only, not live-verified). country+0x24b0
-			// is a pointer vector: end at +0x24b8, stride 8. This argument is
-			// *(*(*(element + 0x10) + 0x10)), and that object holds province ids
-			// in a vector at +0x88/+0x90. The subject-type key and copy_from
-			// parent are not on it, so the tag read below stays a guarded probe.
+			let overlord_tag = overlord.as_ref().map(|(tag, _)| tag.as_str());
+			// The third argument is the province-list object, not a CCountry.
+			// `subject_tag` came from CProvince+0x468 via that list.
 			let mut slot = [0u8; 0x40];
 			let slot_ok = memory.read_bytes(subject as usize, &mut slot).is_some();
 			let slot_hex = slot
@@ -550,7 +710,7 @@ mod detour {
 				"subject income {} -> {} (x{desired:.2}) overlord={} subject={} slot={} c={:#x} s={:#x}",
 				before,
 				after,
-				overlord_tag.as_deref().unwrap_or("?"),
+				overlord_tag.unwrap_or("?"),
 				subject_tag.as_deref().unwrap_or("?"),
 				if slot_ok { slot_hex.as_str() } else { "-" },
 				country as i64,
@@ -774,6 +934,8 @@ mod tests {
 	impl ResetSubjectTypes {
 		fn clear() -> Self {
 			*subject_types::ACTIVE.write().unwrap() = subject_types::SubjectTypeGraph::EMPTY;
+			detour::set_province_context_for_test(0);
+			clear_runtime_watch();
 			Self
 		}
 
@@ -785,9 +947,47 @@ mod tests {
 
 	impl Drop for ResetSubjectTypes {
 		fn drop(&mut self) {
+			detour::set_province_context_for_test(0);
+			clear_runtime_watch();
 			if let Ok(mut active) = subject_types::ACTIVE.write() {
 				*active = subject_types::SubjectTypeGraph::EMPTY;
 			}
+		}
+	}
+
+	/// Third-argument stand-in: province ids at +0x88/+0x90, owners at
+	/// `CProvince+0x468`, and a decoy packed tag at +0x20 that must be ignored.
+	#[allow(dead_code)] // the vecs keep the synthetic game objects alive
+	struct ProvinceSubject {
+		ids: Vec<i32>,
+		provinces: Vec<u64>,
+		context: Vec<u64>,
+		subject: Vec<u64>,
+	}
+
+	fn province_subject(owners: &[([u8; 3], i16)], decoy: u64) -> ProvinceSubject {
+		let stride_qwords = foch_runtime::dataplane::layout::province::CPROVINCE_SIZE / 8;
+		let mut provinces = vec![0_u64; stride_qwords * owners.len().max(1) + 1];
+		let mut ids = Vec::with_capacity(owners.len());
+		for (index, (tag, country_index)) in owners.iter().enumerate() {
+			ids.push(index as i32);
+			let slot = index * stride_qwords + detour::PROVINCE_OWNER / 8;
+			provinces[slot] = pack_country_tag(tag, *country_index, 0);
+		}
+		let mut context = vec![0_u64; 0x1cb0 / 8];
+		context[foch_runtime::dataplane::layout::province::CPROVINCES / 8] =
+			provinces.as_ptr() as u64;
+		let mut subject = vec![0_u64; 0xA0 / 8];
+		subject[foch_runtime::dataplane::layout::country::TAG / 8] = decoy;
+		subject[0x88 / 8] = ids.as_ptr() as u64;
+		// SAFETY: `ids` is not mutated after this pointer is stored, and the
+		// buffer outlives every read in the test.
+		subject[0x90 / 8] = unsafe { ids.as_ptr().add(ids.len()) as u64 };
+		ProvinceSubject {
+			ids,
+			provinces,
+			context,
+			subject,
 		}
 	}
 
@@ -939,20 +1139,25 @@ mod tests {
 		};
 		cfg.kind_percent.insert("vassal".into(), 50);
 		cfg.tag_percent.insert("WLS".into(), 150);
+		// Decoy at subject+0x20. Reading arg3 as a CCountry would apply this
+		// instead of the province owner.
+		cfg.tag_percent.insert("MUG".into(), 10);
 		*CONFIG.write().unwrap() = cfg;
 
 		let mut overlord = fake_country(b"ENG", 10, 1);
-		let mut wls = fake_country(b"WLS", 11, 1);
-		let mut sco = fake_country(b"SCO", 12, 1);
-		let mut half_init = vec![0_u64; 16];
+		let wls = province_subject(&[(*b"WLS", 11)], pack_country_tag(b"MUG", 99, 1));
+		let mut sco = vec![0_u64; 0xA0 / 8];
+		let mut half_init = vec![0_u64; 0xA0 / 8];
+		detour::set_province_context_for_test(wls.context.as_ptr() as usize);
 
-		// 1. No define patch: WLS gets 150% (1500), SCO gets vassal 50% (500).
+		// 1. No define patch: WLS comes from CProvince+0x468 (1500). The decoy
+		//    tag at +0x20 is ignored. An empty province list falls back to vassal.
 		let mut out = 0_i32;
 		unsafe {
 			detour::subject_income(
 				overlord.as_mut_ptr().cast(),
 				&mut out,
-				wls.as_mut_ptr().cast(),
+				wls.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
 			);
 		}
@@ -985,7 +1190,7 @@ mod tests {
 			detour::subject_income(
 				overlord.as_mut_ptr().cast(),
 				&mut out,
-				wls.as_mut_ptr().cast(),
+				wls.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
 			);
 		}
@@ -1020,7 +1225,7 @@ mod tests {
 			detour::subject_income(
 				overlord.as_mut_ptr().cast(),
 				&mut out,
-				wls.as_mut_ptr().cast(),
+				wls.subject.as_ptr() as *mut u8,
 				std::ptr::null_mut(),
 			);
 		}
@@ -1059,7 +1264,7 @@ mod tests {
 		*CONFIG.write().unwrap() = cfg;
 
 		let mut overlord = fake_country(b"ENG", 10, 1);
-		let mut sco = fake_country(b"SCO", 12, 1);
+		let mut sco = vec![0_u64; 0xA0 / 8];
 		let mut out = 0_i32;
 		unsafe {
 			detour::subject_income(
@@ -1070,6 +1275,139 @@ mod tests {
 			);
 		}
 		assert_eq!(out, 250);
+	}
+
+	#[test]
+	fn province_owner_matching_the_overlord_is_not_the_subject_tag() {
+		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		let _types = ResetSubjectTypes::clear();
+		unsafe extern "C" fn original(
+			_country: *mut u8,
+			out: *mut i32,
+			_subject: *mut u8,
+			_tooltip: *mut u8,
+		) {
+			if !out.is_null() {
+				unsafe { *out = 1000 };
+			}
+		}
+		static mut CELL: detour::SubjectOriginal = original as detour::SubjectOriginal;
+		detour::set_next_subject_for_test((&raw const CELL) as *mut std::ffi::c_void);
+		detour::set_applied_scales(1.0, 1.0);
+		let mut cfg = coefficient::TributeConfig {
+			enabled: true,
+			global_percent: 100,
+			..coefficient::TributeConfig::ONCE
+		};
+		cfg.kind_percent.insert("vassal".into(), 50);
+		cfg.tag_percent.insert("ENG".into(), 200);
+		cfg.tag_percent.insert("WLS".into(), 150);
+		*CONFIG.write().unwrap() = cfg;
+
+		let mut overlord = fake_country(b"ENG", 10, 1);
+		let both = province_subject(&[(*b"ENG", 10), (*b"WLS", 11)], 0);
+		detour::set_province_context_for_test(both.context.as_ptr() as usize);
+		let mut out = 0_i32;
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				both.subject.as_ptr() as *mut u8,
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 1500, "the later non-overlord owner is the subject");
+
+		let only_overlord = province_subject(&[(*b"ENG", 10)], 0);
+		detour::set_province_context_for_test(only_overlord.context.as_ptr() as usize);
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				only_overlord.subject.as_ptr() as *mut u8,
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 500, "an overlord-only owner falls back to the kind");
+
+		let mut corrupt = [0_u64; 0xA0 / 8];
+		corrupt[0x88 / 8] = 0x2_0000;
+		corrupt[0x90 / 8] = 0x2_0000 + 4 * 5_000;
+		assert!(
+			detour::subject_tag_from_provinces(
+				&Memory,
+				corrupt.as_ptr() as usize,
+				only_overlord.context.as_ptr() as usize,
+				Some(10),
+			)
+			.is_none()
+		);
+	}
+
+	#[test]
+	fn a_saved_config_reloads_on_the_hot_path_after_the_debounce() {
+		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		let _types = ResetSubjectTypes::clear();
+		let dir = tempfile::tempdir().unwrap();
+		let baseline = coefficient::TributeConfig {
+			enabled: true,
+			global_percent: 100,
+			..coefficient::TributeConfig::ONCE
+		};
+		install_runtime_watch(dir.path().to_path_buf(), baseline.clone());
+		*CONFIG.write().unwrap() = baseline;
+		let path = dir.path().join(config::DATA_FILE);
+		std::fs::write(&path, r#"{"kind_percent":{"vassal":25}}"#).unwrap();
+		std::fs::File::options()
+			.write(true)
+			.open(&path)
+			.unwrap()
+			.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_001))
+			.unwrap();
+		poll_runtime_at(5_000);
+		assert_eq!(CONFIG.read().unwrap().kind_percent.get("vassal"), Some(&25));
+
+		std::fs::write(&path, r#"{"kind_percent":{"vassal":10}}"#).unwrap();
+		std::fs::File::options()
+			.write(true)
+			.open(&path)
+			.unwrap()
+			.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_002))
+			.unwrap();
+		poll_runtime_at(5_100);
+		assert_eq!(
+			CONFIG.read().unwrap().kind_percent.get("vassal"),
+			Some(&25),
+			"a save inside the debounce window waits"
+		);
+		poll_runtime_at(5_000 + config::RELOAD_DEBOUNCE_MS);
+		assert_eq!(CONFIG.read().unwrap().kind_percent.get("vassal"), Some(&10));
+
+		unsafe extern "C" fn original(
+			_country: *mut u8,
+			out: *mut i32,
+			_subject: *mut u8,
+			_tooltip: *mut u8,
+		) {
+			if !out.is_null() {
+				unsafe { *out = 1000 };
+			}
+		}
+		static mut CELL: detour::SubjectOriginal = original as detour::SubjectOriginal;
+		detour::set_next_subject_for_test((&raw const CELL) as *mut std::ffi::c_void);
+		detour::set_applied_scales(1.0, 1.0);
+		let mut overlord = fake_country(b"ENG", 10, 1);
+		let mut subject = vec![0_u64; 0xA0 / 8];
+		let mut out = 0_i32;
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				subject.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 100);
 	}
 
 	#[test]

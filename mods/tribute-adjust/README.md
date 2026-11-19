@@ -28,8 +28,8 @@
 | vassal/colony 收入类别号 | 待运行时识别:`AddIncome` hook pattern 已就绪,先挂日志再启用缩放 |
 | **真机数值验证(朝贡)** | **完成**:MNG 1444+60 天(ai=on 跨年):100% ≥195 / 50% [175,185) / 0% [140,160) |
 | **真机数值验证(附庸)** | **完成**:ENG 释放威尔士(base_tax+8 放大信号),vassal_share 0.4→0 [55,70) vs 0.4→0.8 [70,85) |
-| tag ↔ 国家 映射 | 完成(`foch_runtime::dataplane` 守卫读取 `country+0x20` 内联三字 ASCII tag，`tribute_executor` / `subject_income` 按 tag 覆盖与残差缩放已接通单测，待真机回归) |
-| 游戏内滑块面板(Ctrl+Shift+T,ImGui) | 待做 |
+| tag ↔ 国家 映射 | `tribute_executor` 仍读 `CCountry+0x20`。`subject_income` 的第 3 参数改走省份 id 向量（`+0x88/+0x90` → `context+0x1ca8` → `CProvince+0x468`），宗主自己的省份身份会跳过；未实机回归 |
+| 滑块面板 | 独立 `tribute-panel`（不注入、不挂钩 DX11）。Save 写入 `tribute-config.json`，插件每 250ms 防抖热加载 |
 
 签名表条目 `unverified` 时插件 init 会 REFUSE 并说明缺口——绝不按猜测 hook。
 当前表内三个 pattern 均已在本 exe 内验证唯一匹配(exe sha256 随表锁定)。注意:hook 点必须满足宿主
@@ -41,6 +41,8 @@
 ```sh
 cargo build -p foch-eu4-tribute --release
 # 产物 foch_eu4_tribute.dll 与 foch-plugin.toml、signatures/ 一起即一个插件包
+# 独立滑块（不注入游戏）:
+# tribute-panel --data-dir <插件数据目录> --root <游戏目录> --root <mod目录>
 ```
 
 ## 部署
@@ -55,7 +57,8 @@ foch plugin plan && foch plugin launch
 
 manifest config(`enabled`、`global_percent`、`tag_overrides` JSON 字符串)为基线;
 插件数据目录下的 `tribute-config.json`(完整 `TributeConfig` JSON)覆盖之,是滑块面板
-的持久化格式。宿主尚无热回调,面板将直接改进程内运行态配置并防抖写盘。
+的持久化格式。插件在结算热路径上每 250ms 至多查看一次该文件的修改时间,变更后刷新
+进程内配置,不必重启游戏。
 
 ## 为新游戏版本补签名
 

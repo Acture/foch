@@ -73,6 +73,11 @@ impl SubjectTypeGraph {
 		self.parents.contains_key(key)
 	}
 
+	/// Defined subject-type keys, in sorted order.
+	pub fn keys(&self) -> impl Iterator<Item = &str> {
+		self.parents.keys().map(String::as_str)
+	}
+
 	pub fn parent(&self, key: &str) -> Option<&str> {
 		self.parents.get(key).and_then(Option::as_deref)
 	}

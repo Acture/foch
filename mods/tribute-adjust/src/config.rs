@@ -102,7 +102,9 @@ impl TributeConfig {
 	}
 
 	/// Persist as `tribute-config.json`, atomically enough for a slider panel.
-	#[allow(dead_code)] // until the slider panel lands
+	///
+	/// The panel binary is the caller. A cdylib build does not see that use.
+	#[cfg_attr(not(test), allow(dead_code))]
 	pub fn write_data_file(&self, data_dir: &Path) -> std::io::Result<()> {
 		std::fs::create_dir_all(data_dir)?;
 		let text = serde_json::to_string_pretty(self)?;
@@ -111,6 +113,116 @@ impl TributeConfig {
 		std::fs::write(&staging, text)?;
 		std::fs::rename(&staging, &target)
 	}
+}
+
+/// How long the hot path waits between `tribute-config.json` stat calls.
+pub const RELOAD_DEBOUNCE_MS: u64 = 250;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileStamp {
+	modified_ns: u128,
+	len: u64,
+}
+
+/// Manifest baseline plus the data-file watch. The hot path polls this at
+/// most once per [`RELOAD_DEBOUNCE_MS`] so a slider save is picked up without
+/// statting on every subject.
+#[derive(Debug)]
+pub struct ConfigWatch {
+	data_dir: PathBuf,
+	baseline: TributeConfig,
+	debounce_ms: u64,
+	last_poll_ms: u64,
+	armed: bool,
+	stamp: Option<FileStamp>,
+}
+
+impl ConfigWatch {
+	pub fn new(data_dir: PathBuf, baseline: TributeConfig) -> Self {
+		let stamp = file_stamp(&data_dir.join(DATA_FILE));
+		Self {
+			data_dir,
+			baseline,
+			debounce_ms: RELOAD_DEBOUNCE_MS,
+			last_poll_ms: 0,
+			armed: false,
+			stamp,
+		}
+	}
+
+	/// `Some` when the runtime config should be replaced. A corrupt file keeps
+	/// the previous config (the stamp still advances, so a bad save is not
+	/// retried until the file changes again). A missing file restores the
+	/// manifest baseline.
+	pub fn poll(&mut self, now_ms: u64) -> Option<TributeConfig> {
+		if self.armed && now_ms.saturating_sub(self.last_poll_ms) < self.debounce_ms {
+			return None;
+		}
+		self.armed = true;
+		self.last_poll_ms = now_ms;
+		let path = self.data_dir.join(DATA_FILE);
+		let stamp = file_stamp(&path);
+		if stamp == self.stamp {
+			return None;
+		}
+		self.stamp = stamp;
+		match read_overlay(&self.baseline, &path) {
+			Overlay::Applied(config) => Some(config),
+			Overlay::Missing => Some(self.baseline.clone()),
+			Overlay::Corrupt => None,
+		}
+	}
+}
+
+enum Overlay {
+	Applied(TributeConfig),
+	Missing,
+	Corrupt,
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+	let meta = std::fs::metadata(path).ok()?;
+	let modified_ns = meta
+		.modified()
+		.ok()
+		.and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+		.map(|duration| duration.as_nanos())
+		.unwrap_or(0);
+	Some(FileStamp {
+		modified_ns,
+		len: meta.len(),
+	})
+}
+
+fn read_overlay(baseline: &TributeConfig, path: &Path) -> Overlay {
+	let text = match std::fs::read_to_string(path) {
+		Ok(text) => text,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Overlay::Missing,
+		Err(_) => return Overlay::Corrupt,
+	};
+	let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+		return Overlay::Corrupt;
+	};
+	Overlay::Applied(apply_overlay(baseline.clone(), &value))
+}
+
+fn apply_overlay(mut config: TributeConfig, value: &serde_json::Value) -> TributeConfig {
+	if let Some(enabled) = value.get("enabled").and_then(serde_json::Value::as_bool) {
+		config.enabled = enabled;
+	}
+	if let Some(percent) = value
+		.get("global_percent")
+		.and_then(serde_json::Value::as_i64)
+	{
+		config.global_percent = clamp_percent(percent);
+	}
+	if let Some(kinds) = value.get("kind_percent") {
+		config.kind_percent = percent_map(kinds, false);
+	}
+	if let Some(tags) = value.get("tag_percent") {
+		config.tag_percent = percent_map(tags, true);
+	}
+	config
 }
 
 #[cfg(test)]
@@ -168,6 +280,51 @@ mod tests {
 		let reloaded = TributeConfig::default().overlay_data_file(&dir);
 		assert_eq!(reloaded, config);
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn watch_reloads_after_the_debounce_and_ignores_a_corrupt_save() {
+		let dir = tempfile_dir();
+		let baseline = TributeConfig::from_manifest_config(r#"{"global_percent":80}"#);
+		write_stamped(
+			&dir.join(DATA_FILE),
+			r#"{"global_percent":40,"kind_percent":{"vassal":25}}"#,
+			1,
+		);
+		let mut watch = ConfigWatch::new(dir.clone(), baseline.clone());
+		assert!(
+			watch.poll(1_000).is_none(),
+			"init already applied this stamp"
+		);
+
+		write_stamped(
+			&dir.join(DATA_FILE),
+			r#"{"global_percent":40,"enabled":false}"#,
+			2,
+		);
+		assert!(
+			watch.poll(1_100).is_none(),
+			"inside the debounce window the new file is not read"
+		);
+		let reloaded = watch.poll(1_000 + RELOAD_DEBOUNCE_MS).unwrap();
+		assert!(!reloaded.enabled);
+		assert_eq!(reloaded.global_percent, 40);
+
+		write_stamped(&dir.join(DATA_FILE), "not json", 3);
+		assert!(watch.poll(2_000).is_none(), "corrupt json does not replace");
+		let _ = std::fs::remove_file(dir.join(DATA_FILE));
+		let restored = watch.poll(3_000).unwrap();
+		assert_eq!(restored, baseline);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	fn write_stamped(path: &Path, body: &str, seconds: u64) {
+		std::fs::write(path, body).unwrap();
+		let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+		file.set_modified(
+			std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + seconds),
+		)
+		.unwrap();
 	}
 
 	fn tempfile_dir() -> PathBuf {
