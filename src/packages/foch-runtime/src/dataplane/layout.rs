@@ -15,6 +15,9 @@ pub const EXPECTED_EXE_SHA256: &str =
 /// image+0x75d690. Its prologue tiles exactly the 14 whole bytes the
 /// host's hook gate steals.
 pub const TICK_RVA: usize = 0x75d690;
+/// Byte pattern of [`TICK_RVA`], passed to the host pattern scan by
+/// [`super::resolve_monthly_tick`].
+pub(crate) const TICK_PATTERN: &str = "88 54 24 10 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 28 F1 FF FF 48 81 EC D8 0F 00 00 4C 8B F9 BA FF FF FF FF";
 /// The global game-context pointer variable, `image+0x233fe78`: the
 /// value stored there is the hook's first argument and the base the
 /// trade database is embedded in.
@@ -162,6 +165,7 @@ pub mod country {
 	/// MSVC `std::vector` header of this country's subjects. Statically
 	/// identified for EU4 1.37.5; pending live Foch game-session
 	/// verification.
+	#[allow(dead_code)]
 	pub const SUBJECTS_VEC: usize = 0x24b0;
 	/// Tributary tribute-type discriminator (`u8`). Statically identified
 	/// for EU4 1.37.5; pending live Foch game-session verification.
