@@ -1,6 +1,18 @@
-//! Locate and validate independent DLL artifacts without loading or executing them.
+//! Host DLL artifact validation and reusable inline-hooking / trampoline
+//! mechanics (`image`, `prologue`, and on Windows x64 `link` and `query`).
+//!
+//! `DllMain`, the `VERSION.dll` forwarding exports, and the independent
+//! `cdylib` remain isolated in `foch-runtime-host` so host exports never
+//! pollute the CLI or native plugins.
 //!
 //! PE field layout: https://learn.microsoft.com/windows/win32/debug/pe-format
+
+pub mod image;
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub mod link;
+pub mod prologue;
+#[cfg(all(windows, target_arch = "x86_64"))]
+pub mod query;
 
 use std::{
 	collections::BTreeMap,

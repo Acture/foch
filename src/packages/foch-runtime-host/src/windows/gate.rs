@@ -1,8 +1,8 @@
 //! One-shot gate: restore bytes before their first execution; no relocated
 //! instructions, permanent detours, or remote-process writes are involved.
 
-use crate::image::{self, GATE_BYTES};
 use core::{arch::naked_asm, ffi::c_void};
+use foch_runtime::host::image::{self, GATE_BYTES};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::Win32::System::{
 	Diagnostics::Debug::FlushInstructionCache,

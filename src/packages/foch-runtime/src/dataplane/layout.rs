@@ -178,3 +178,59 @@ pub mod ui {
 	/// The bit ChangeTreasury sets when the player's treasury moved.
 	pub const TREASURY_DIRTY: i32 = 0x40;
 }
+
+/// Campaign identity and calendar clock embedded in the game context.
+///
+/// Statically identified for EU4 1.37.5 via save/load paths; pending live
+/// Foch game-session verification.
+pub mod campaign {
+	/// 16-byte campaign GUID stored in the game context.
+	pub const GUID: usize = 0x24d4;
+	/// Current game clock in hours (`i32`) stored in the game context.
+	pub const CURRENT_HOURS: usize = 0x1dd0;
+	/// Engine calendar epoch in hours (`1444`-compatible day-zero origin).
+	pub const CALENDAR_EPOCH_HOURS: i64 = 43_800_000;
+}
+
+/// Active-war registry in the game context and `CWar` object layout.
+///
+/// Statically identified for EU4 1.37.5; pending live Foch game-session
+/// verification.
+pub mod war {
+	/// Pointer to the active `CWar*` array inside the game context.
+	pub const ACTIVE_WARS: usize = 0x1e30;
+	/// Packed `(capacity: i32, count: i32)` qword for the active-war array.
+	pub const ARRAY_COUNTS: usize = 0x1e38;
+	/// Upper bound on active wars accepted before refusing a corrupt count.
+	pub const MAX_WARS: usize = 4096;
+	/// Declaration hour inside `CWar`. `CWar::CWar` (`FUN_140d859b0`) stores
+	/// [`UNSET_HOUR`] here; declaration (`FUN_140501290`) copies
+	/// [`campaign::CURRENT_HOURS`] over it.
+	pub const STARTED: usize = 0x24;
+	/// Sentinel value stored at [`STARTED`] before a war is declared.
+	pub const UNSET_HOUR: i32 = 0x029c_77f8;
+	/// No `CWar` serial field was identified in EU4 1.37.5 (`+0x138` stays
+	/// zero); serial remains `0` until a real field is proven.
+	pub const UNIDENTIFIED_SERIAL: u32 = 0;
+	/// MSVC `std::vector` of packed attacker identities inside `CWar`.
+	pub const ATTACKERS: usize = 0x48;
+	/// MSVC `std::vector` of packed defender identities inside `CWar`.
+	pub const DEFENDERS: usize = 0x78;
+	/// Packed country identity of the original attacker inside `CWar`.
+	pub const ORIGINAL_ATTACKER: usize = 0x150;
+	/// Packed country identity of the original defender inside `CWar`.
+	pub const ORIGINAL_DEFENDER: usize = 0x158;
+}
+
+/// Per-country diplomacy relation array (`CCountry + COUNTRY_RELATIONS`).
+///
+/// Statically identified for EU4 1.37.5 via the `truce_with` trigger;
+/// pending live Foch game-session verification.
+pub mod diplomacy {
+	/// Pointer to the per-target-country relation array inside `CCountry`.
+	pub const COUNTRY_RELATIONS: usize = 0x1510;
+	/// Byte stride of one target country's relation record.
+	pub const RELATION_SIZE: usize = 0x48;
+	/// Flag byte inside a relation record whose bit `0` marks an active truce.
+	pub const TRUCE_FLAGS: usize = 0x45;
+}

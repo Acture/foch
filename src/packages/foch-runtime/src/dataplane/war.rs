@@ -1,4 +1,4 @@
-//! Read-only EU4 war fields through the shared data plane.
+//! Read-only EU4 war, diplomacy, and campaign-clock views through the data plane.
 //!
 //! Participant vectors, original principals and the declaration hour are
 //! statically identified for the data plane's pinned executable. No CWar
@@ -15,43 +15,15 @@
 //! as token-table names, with no direct code reference. No `CCountry` field
 //! pointing at a `CSubjectType` was identified.
 
-use super::{Country, CountryId, JoinRefusal, War, WarId, World};
-use crate::dataplane::{Eu4Game, Memory, decode_packed_tag, layout::country};
+use super::layout::{campaign, country, diplomacy, war};
+use super::{Eu4Game, Memory, decode_packed_tag};
+use crate::war::{Country, CountryId, JoinRefusal, War, WarId, World};
 use std::collections::{BTreeMap, BTreeSet};
 
-// War-specific fields belong here; the common registry, reader and executable
-// layout remain owned by dataplane. These are not configurable offsets.
-const ATTACKERS: usize = 0x48;
-const DEFENDERS: usize = 0x78;
-const ORIGINAL_ATTACKER: usize = 0x150;
-const ORIGINAL_DEFENDER: usize = 0x158;
 /// Packed country indexes are non-negative `i16` values, and the country
 /// registry accepts at most `i16::MAX` entries. Participant vectors use that
 /// same ceiling so an overhaul mod is not truncated at 1,024 countries.
 const MAX_PARTICIPANTS: usize = i16::MAX as usize;
-/// Declaration hour. `CWar::CWar` (`FUN_140d859b0` in the pinned 1.37.5 image)
-/// stores the unset-date sentinel here; the declaration path `FUN_140501290`
-/// then copies the global game context's dword at `+0x1dd0` (the same
-/// `CURRENT_HOURS` the campaign stamp reads) over that sentinel. The
-/// constructor also copies that clock into `+0x1a4` and `+0x1a8`; those are
-/// separate timestamps and are not the field the declaration publishes.
-const STARTED: usize = 0x24;
-/// Immediate written to [`STARTED`] before the declaration path replaces it.
-const UNSET_HOUR: i32 = 0x029c_77f8;
-/// The pinned image's war constructor zeroes `+0x138` and no later writer in
-/// the declaration path or the `source\war.cpp` methods assigns a unique id.
-/// Serial stays 0 until a field is actually identified. Two live wars that
-/// share a start day and both principals then fail [`World::validate`].
-const UNIDENTIFIED_SERIAL: u32 = 0;
-const ACTIVE_WARS: usize = 0x1e30;
-const WAR_ARRAY_COUNTS: usize = 0x1e38;
-const MAX_WARS: usize = 4096;
-const DIPLOMACY: usize = 0x1510;
-const RELATION_SIZE: usize = 0x48;
-const TRUCE_FLAGS: usize = 0x45;
-const CAMPAIGN_GUID: usize = 0x24d4;
-const CURRENT_HOURS: usize = 0x1dd0;
-const CALENDAR_EPOCH_HOURS: i64 = 43_800_000;
 
 /// Identity and calendar metadata serialized by the pinned engine.
 ///
@@ -83,9 +55,9 @@ impl CampaignStamp {
 			};
 			let mut guid = [0u8; 16];
 			for (index, word) in guid.chunks_exact_mut(4).enumerate() {
-				word.copy_from_slice(&field(CAMPAIGN_GUID + index * 4)?.to_le_bytes());
+				word.copy_from_slice(&field(campaign::GUID + index * 4)?.to_le_bytes());
 			}
-			Ok((guid, field(CURRENT_HOURS)?))
+			Ok((guid, field(campaign::CURRENT_HOURS)?))
 		};
 		let (guid, hours) = sample()?;
 		if sample()? != (guid, hours) {
@@ -110,7 +82,7 @@ impl CampaignStamp {
 }
 
 fn calendar_day(hours: i32) -> i32 {
-	((i64::from(hours) - CALENDAR_EPOCH_HOURS).div_euclid(24)) as i32
+	((i64::from(hours) - campaign::CALENDAR_EPOCH_HOURS).div_euclid(24)) as i32
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,16 +163,16 @@ impl WarRoster {
 		memory: &Memory,
 		context: usize,
 	) -> Result<Vec<(usize, Self)>, String> {
-		let counts = qword(memory, context, WAR_ARRAY_COUNTS)?;
+		let counts = qword(memory, context, war::ARRAY_COUNTS)?;
 		let capacity = counts as u32 as i32;
 		let count = (counts >> 32) as u32 as i32;
-		if capacity < 0 || count < 0 || count > capacity || capacity as usize > MAX_WARS {
+		if capacity < 0 || count < 0 || count > capacity || capacity as usize > war::MAX_WARS {
 			return Err("invalid active-war array capacity or count".into());
 		}
 		if count == 0 {
 			return Ok(vec![]);
 		}
-		let begin = qword(memory, context, ACTIVE_WARS)? as usize;
+		let begin = qword(memory, context, war::ACTIVE_WARS)? as usize;
 		if begin <= 0x1_0000 || !begin.is_multiple_of(8) {
 			return Err("active-war array is unavailable".into());
 		}
@@ -227,10 +199,18 @@ impl WarRoster {
 	/// Memory plausibility checks alone do not prove object lifetime or type.
 	pub unsafe fn read(memory: &Memory, address: usize) -> Result<Self, String> {
 		let roster = Self {
-			original_attacker: CountryRef::from_packed(qword(memory, address, ORIGINAL_ATTACKER)?)?,
-			original_defender: CountryRef::from_packed(qword(memory, address, ORIGINAL_DEFENDER)?)?,
-			attackers: participants(memory, address, ATTACKERS)?,
-			defenders: participants(memory, address, DEFENDERS)?,
+			original_attacker: CountryRef::from_packed(qword(
+				memory,
+				address,
+				war::ORIGINAL_ATTACKER,
+			)?)?,
+			original_defender: CountryRef::from_packed(qword(
+				memory,
+				address,
+				war::ORIGINAL_DEFENDER,
+			)?)?,
+			attackers: participants(memory, address, war::ATTACKERS)?,
+			defenders: participants(memory, address, war::DEFENDERS)?,
 		};
 		if roster.original_attacker.id == roster.original_defender.id {
 			return Err("original war principals contradict one another".into());
@@ -332,16 +312,16 @@ pub unsafe fn read_world(
 		let hours = memory
 			.read_i32(
 				address
-					.checked_add(STARTED)
+					.checked_add(war::STARTED)
 					.ok_or_else(|| "war start date is unavailable".to_string())?,
 			)
 			.ok_or_else(|| "war start date is unavailable".to_string())?;
-		if hours == UNSET_HOUR {
+		if hours == war::UNSET_HOUR {
 			return Err("war start date is unset".into());
 		}
 		wars.push(War {
 			id: WarId {
-				serial: UNIDENTIFIED_SERIAL,
+				serial: war::UNIDENTIFIED_SERIAL,
 				started: calendar_day(hours),
 				declarer: roster.original_attacker.id,
 				declared_on: roster.original_defender.id,
@@ -400,7 +380,7 @@ pub unsafe fn check_country_restrictions(
 		return Err(JoinRefusal::Subject);
 	}
 	let relations = address
-		.checked_add(DIPLOMACY)
+		.checked_add(diplomacy::COUNTRY_RELATIONS)
 		.and_then(|field| memory.read_ptr(field))
 		.ok_or_else(|| JoinRefusal::Unsupported("native diplomacy array is unavailable".into()))?;
 	for enemy in enemies {
@@ -413,7 +393,7 @@ pub unsafe fn check_country_restrictions(
 			));
 		}
 		let flags = relations
-			.checked_add(enemy.id.0 as usize * RELATION_SIZE + TRUCE_FLAGS)
+			.checked_add(enemy.id.0 as usize * diplomacy::RELATION_SIZE + diplomacy::TRUCE_FLAGS)
 			.and_then(|address| memory.read_u8(address))
 			.ok_or_else(|| JoinRefusal::Unsupported("native truce flag is unavailable".into()))?;
 		// This is the same bit read by EU4's truce_with country trigger.
@@ -464,7 +444,7 @@ mod tests {
 	}
 
 	impl Scene {
-		fn build(countries: &[(usize, [u8; 3], bool)], war: bool) -> Self {
+		fn build(countries: &[(usize, [u8; 3], bool)], war_active: bool) -> Self {
 			let count = countries
 				.iter()
 				.map(|(index, _, _)| index + 1)
@@ -495,29 +475,29 @@ mod tests {
 				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
 				0x0f, 0x10,
 			];
-			write_bytes(&mut scene.context, CAMPAIGN_GUID, &guid);
+			write_bytes(&mut scene.context, campaign::GUID, &guid);
 			write_i32(
 				&mut scene.context,
-				CURRENT_HOURS,
-				(CALENDAR_EPOCH_HOURS + 24 * 40) as i32,
+				campaign::CURRENT_HOURS,
+				(campaign::CALENDAR_EPOCH_HOURS + 24 * 40) as i32,
 			);
 			write_i32(&mut scene.context, layout::COUNTRIES_COUNT, count as i32);
-			if war {
+			if war_active {
 				let declarer = countries.last().unwrap();
 				let target = countries.first().unwrap();
 				scene.attackers = vec![pack_tag(declarer.1, declarer.0 as u16, 1)];
 				scene.defenders = vec![pack_tag(target.1, target.0 as u16, 1)];
 				write_i32(
 					&mut scene.war,
-					STARTED,
-					(CALENDAR_EPOCH_HOURS + 24 * 10) as i32,
+					war::STARTED,
+					(campaign::CALENDAR_EPOCH_HOURS + 24 * 10) as i32,
 				);
 			}
-			scene.link(war);
+			scene.link(war_active);
 			scene
 		}
 
-		fn link(&mut self, war: bool) {
+		fn link(&mut self, war_active: bool) {
 			let countries: Vec<_> = self
 				.countries
 				.iter()
@@ -529,22 +509,22 @@ mod tests {
 			self.manager[layout::country_manager::INDEX_ARRAY / 8] = self.pointers.as_ptr() as u64;
 			self.image[layout::COUNTRY_MANAGER_GLOBAL_RVA / 8] = self.manager.as_ptr() as u64;
 			self.image[layout::CONTEXT_GLOBAL_RVA / 8] = self.context.as_ptr() as u64;
-			if !war {
+			if !war_active {
 				return;
 			}
 			let attackers = self.attackers.as_ptr() as u64;
 			let defenders = self.defenders.as_ptr() as u64;
-			self.war[ATTACKERS / 8] = attackers;
-			self.war[ATTACKERS / 8 + 1] = attackers + 8;
-			self.war[ATTACKERS / 8 + 2] = attackers + 8;
-			self.war[DEFENDERS / 8] = defenders;
-			self.war[DEFENDERS / 8 + 1] = defenders + 8;
-			self.war[DEFENDERS / 8 + 2] = defenders + 8;
-			self.war[ORIGINAL_ATTACKER / 8] = self.attackers[0];
-			self.war[ORIGINAL_DEFENDER / 8] = self.defenders[0];
+			self.war[war::ATTACKERS / 8] = attackers;
+			self.war[war::ATTACKERS / 8 + 1] = attackers + 8;
+			self.war[war::ATTACKERS / 8 + 2] = attackers + 8;
+			self.war[war::DEFENDERS / 8] = defenders;
+			self.war[war::DEFENDERS / 8 + 1] = defenders + 8;
+			self.war[war::DEFENDERS / 8 + 2] = defenders + 8;
+			self.war[war::ORIGINAL_ATTACKER / 8] = self.attackers[0];
+			self.war[war::ORIGINAL_DEFENDER / 8] = self.defenders[0];
 			self.war_list[0] = self.war.as_ptr() as u64;
-			self.context[ACTIVE_WARS / 8] = self.war_list.as_ptr() as u64;
-			self.context[WAR_ARRAY_COUNTS / 8] = 1u64 | (1u64 << 32);
+			self.context[war::ACTIVE_WARS / 8] = self.war_list.as_ptr() as u64;
+			self.context[war::ARRAY_COUNTS / 8] = 1u64 | (1u64 << 32);
 		}
 
 		fn read(&self, revision: u64) -> Result<World, String> {
@@ -623,7 +603,7 @@ mod tests {
 	#[test]
 	fn read_world_rejects_an_unset_start_and_a_registry_mismatch() {
 		let mut unset = Scene::build(&[(0, *b"FRA", true), (1, *b"HAB", true)], true);
-		write_i32(&mut unset.war, STARTED, UNSET_HOUR);
+		write_i32(&mut unset.war, war::STARTED, war::UNSET_HOUR);
 		assert_eq!(unset.read(1).unwrap_err(), "war start date is unset");
 
 		let mut mismatched = Scene::build(&[(0, *b"FRA", true), (1, *b"HAB", true)], true);

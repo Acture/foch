@@ -6,8 +6,8 @@
 //! unknown opcodes and truncated instructions are refused. The executable
 //! entry gate has its own fixed window and does not use this decoder.
 
-pub(crate) const MIN_STEAL: usize = 14;
-pub(crate) const MAX_STEAL: usize = 28;
+pub const MIN_STEAL: usize = 14;
+pub const MAX_STEAL: usize = 28;
 
 struct Insn {
 	len: usize,
@@ -19,7 +19,7 @@ struct Insn {
 	rip_disp: usize,
 }
 
-pub(crate) fn steal_len(bytes: &[u8]) -> Option<usize> {
+pub fn steal_len(bytes: &[u8]) -> Option<usize> {
 	let bytes = &bytes[..bytes.len().min(MAX_STEAL)];
 	let mut at = 0;
 	while at < MIN_STEAL {
@@ -33,7 +33,7 @@ pub(crate) fn steal_len(bytes: &[u8]) -> Option<usize> {
 }
 
 /// A RIP-relative disp32 inside a stolen window.
-pub(crate) struct RipOperand {
+pub struct RipOperand {
 	/// Byte offset of the disp32 within the window.
 	pub disp_at: usize,
 	/// Byte offset just past the instruction holding it: the RIP the disp
@@ -44,7 +44,7 @@ pub(crate) struct RipOperand {
 /// Every RIP-relative operand in the first `len` bytes of `bytes`, in order.
 /// The window must be the one [`steal_len`] accepted; a decode failure or a
 /// RIP operand past `len` yields `None`.
-pub(crate) fn rip_operands(bytes: &[u8], len: usize) -> Option<Vec<RipOperand>> {
+pub fn rip_operands(bytes: &[u8], len: usize) -> Option<Vec<RipOperand>> {
 	let mut out = Vec::new();
 	let mut at = 0;
 	while at < len {

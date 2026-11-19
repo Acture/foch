@@ -11,6 +11,7 @@ pub mod game;
 pub mod layout;
 pub mod memory;
 pub mod routes;
+pub mod war;
 
 pub use flags::{CountryFlag, CountryFlags, FlagReadError};
 pub use game::{
@@ -19,6 +20,7 @@ pub use game::{
 };
 pub use memory::{Memory, StdVector, is_key_byte, is_name_byte, read_sso};
 pub use routes::{RouteMutation, live_order};
+pub use war::{CampaignStamp, CountryRef, WarRoster, check_country_restrictions, read_world};
 
 /// A host-computed executable digest must match before using the pinned layout.
 pub fn supports_build(exe_sha256: &str) -> bool {

@@ -4,12 +4,8 @@
 //! The prologue jump is installed once, while entry init is still open, and
 //! later enables only republish the chain. Allocations live until process exit.
 
-use super::{gate, query};
-use crate::{
-	image,
-	pattern::{self, Found, Pattern},
-	prologue,
-};
+use super::{image, prologue, query};
+use crate::pattern::{self, Found, Pattern};
 use foch_plugin_sdk as abi;
 use std::{
 	ffi::c_void,
@@ -32,7 +28,7 @@ const JUMP_BYTES: usize = prologue::MIN_STEAL;
 const HOOK_MAGIC: u64 = 0xF0C4_4800_4E00_0001;
 const PATCH_MAGIC: u64 = 0xF0C4_4800_4E00_0002;
 
-pub(super) struct Linker {
+pub struct Linker {
 	sites: Vec<Site>,
 	patches: Vec<usize>,
 	seq: u64,
@@ -67,8 +63,14 @@ struct PatchNode {
 	enabled: bool,
 }
 
+impl Default for Linker {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Linker {
-	pub(super) fn new() -> Self {
+	pub fn new() -> Self {
 		let mut system: SYSTEM_INFO = unsafe { std::mem::zeroed() };
 		unsafe { GetSystemInfo(&mut system) };
 		Self {
@@ -80,11 +82,16 @@ impl Linker {
 		}
 	}
 
-	pub(super) fn open_init(&mut self, open: bool) {
+	pub fn open_init(&mut self, open: bool) {
 		self.init_open = open;
 	}
 
-	pub(super) fn hook_create(
+	/// Register an inline hook at `target` redirecting to `detour`.
+	///
+	/// # Safety
+	/// `target` and `detour` must be valid code addresses for the process
+	/// lifetime, and `next`/`hook` must point to writable output slots.
+	pub unsafe fn hook_create(
 		&mut self,
 		target: *mut c_void,
 		detour: *mut c_void,
@@ -142,7 +149,13 @@ impl Linker {
 		self.push_hook(index, detour as usize, priority, seq, next, hook)
 	}
 
-	pub(super) fn hook_set_enabled(&mut self, hook: *mut abi::FochHook, enabled: i32) -> i32 {
+	/// Enable or disable a hook created by [`Self::hook_create`].
+	///
+	/// # Safety
+	/// `hook` must be a handle returned by this linker (or null/invalid, which
+	/// returns `E_INVALID`), and initial site installation must occur while no
+	/// other thread is executing the stolen prologue window.
+	pub unsafe fn hook_set_enabled(&mut self, hook: *mut abi::FochHook, enabled: i32) -> i32 {
 		let Some(node) = hook_ptr(hook) else {
 			return abi::result::E_INVALID;
 		};
@@ -166,7 +179,12 @@ impl Linker {
 		abi::result::OK
 	}
 
-	pub(super) fn patch_create(
+	/// Register a byte patch at `address`.
+	///
+	/// # Safety
+	/// `address` and `bytes` must remain valid readable ranges of `len` bytes
+	/// during creation, and `patch` must point to a writable output slot.
+	pub unsafe fn patch_create(
 		&mut self,
 		address: *mut c_void,
 		bytes: *const u8,
@@ -207,7 +225,12 @@ impl Linker {
 		abi::result::OK
 	}
 
-	pub(super) fn patch_set_enabled(&mut self, patch: *mut abi::FochPatch, enabled: i32) -> i32 {
+	/// Apply or revert a byte patch created by [`Self::patch_create`].
+	///
+	/// # Safety
+	/// `patch` must be a handle returned by this linker, and no concurrent
+	/// thread may execute or race against the patched bytes while toggling.
+	pub unsafe fn patch_set_enabled(&mut self, patch: *mut abi::FochPatch, enabled: i32) -> i32 {
 		let Some(node) = patch_ptr(patch) else {
 			return abi::result::E_INVALID;
 		};
@@ -284,7 +307,19 @@ impl Linker {
 	}
 }
 
-pub(super) fn find_in_module(exe_size: usize, text: &str, address: *mut *mut c_void) -> i32 {
+/// Search executable sections of the mapped PE image at `image_base` for a
+/// unique pattern match.
+///
+/// # Safety
+/// `image_base` must point to a mapped module image of at least `exe_size`
+/// bytes (or null, which returns `E_INVALID`), and `address` must point to a
+/// writable output slot.
+pub unsafe fn find_in_module(
+	image_base: *const u8,
+	exe_size: usize,
+	text: &str,
+	address: *mut *mut c_void,
+) -> i32 {
 	if address.is_null() {
 		return abi::result::E_INVALID;
 	}
@@ -292,10 +327,10 @@ pub(super) fn find_in_module(exe_size: usize, text: &str, address: *mut *mut c_v
 	let Some(pattern) = Pattern::parse(text) else {
 		return abi::result::E_INVALID;
 	};
-	if exe_size == 0 {
+	if image_base.is_null() || exe_size == 0 {
 		return abi::result::E_INVALID;
 	}
-	let base = gate::image_base() as *const u8;
+	let base = image_base;
 	let Some(headers) = image_header(base, exe_size) else {
 		return abi::result::E_INVALID;
 	};
@@ -845,6 +880,56 @@ mod tests {
 		slot.store(next as usize, Ordering::Release);
 	}
 
+	struct TestLinker(Linker);
+
+	impl std::ops::Deref for TestLinker {
+		type Target = Linker;
+		fn deref(&self) -> &Self::Target {
+			&self.0
+		}
+	}
+
+	impl std::ops::DerefMut for TestLinker {
+		fn deref_mut(&mut self) -> &mut Self::Target {
+			&mut self.0
+		}
+	}
+
+	impl TestLinker {
+		fn new() -> Self {
+			Self(Linker::new())
+		}
+
+		fn hook_create(
+			&mut self,
+			target: *mut c_void,
+			detour: *mut c_void,
+			priority: i32,
+			next: *mut *const *const c_void,
+			hook: *mut *mut abi::FochHook,
+		) -> i32 {
+			unsafe { self.0.hook_create(target, detour, priority, next, hook) }
+		}
+
+		fn hook_set_enabled(&mut self, hook: *mut abi::FochHook, enabled: i32) -> i32 {
+			unsafe { self.0.hook_set_enabled(hook, enabled) }
+		}
+
+		fn patch_create(
+			&mut self,
+			address: *mut c_void,
+			bytes: *const u8,
+			len: usize,
+			patch: *mut *mut abi::FochPatch,
+		) -> i32 {
+			unsafe { self.0.patch_create(address, bytes, len, patch) }
+		}
+
+		fn patch_set_enabled(&mut self, patch: *mut abi::FochPatch, enabled: i32) -> i32 {
+			unsafe { self.0.patch_set_enabled(patch, enabled) }
+		}
+	}
+
 	#[test]
 	fn hooks_chain_by_priority_then_registration_and_disable_skips() {
 		ORDER.lock().unwrap().clear();
@@ -856,7 +941,7 @@ mod tests {
 			prologue::steal_len(unsafe { std::slice::from_raw_parts(target, JUMP_BYTES) }),
 			Some(JUMP_BYTES)
 		);
-		let mut linker = Linker::new();
+		let mut linker = TestLinker::new();
 		linker.open_init(true);
 		let mut next_lo = std::ptr::null();
 		let mut hook_lo = std::ptr::null_mut();
@@ -963,7 +1048,7 @@ mod tests {
 
 	#[test]
 	fn unrelocatable_and_foreign_prologues_are_refused() {
-		let mut linker = Linker::new();
+		let mut linker = TestLinker::new();
 		linker.open_init(true);
 		let short = code(32);
 		unsafe { short.write(0xC3) };
@@ -984,7 +1069,7 @@ mod tests {
 		// A RIP-relative load is no longer an unsupported prologue: the hook
 		// installs and the trampoline rewrites the disp32 to the same target.
 		{
-			let mut linker = Linker::new();
+			let mut linker = TestLinker::new();
 			linker.open_init(true);
 			let rip = code(32);
 			// mov rax,[rip+0x10]; nop*9 — the load reads the qword that
@@ -1006,7 +1091,7 @@ mod tests {
 				),
 				abi::result::OK
 			);
-			NEXT_LO.store(next as usize, Ordering::Release);
+			assert!(!next.is_null());
 			assert_eq!(linker.hook_set_enabled(cell, 1), abi::result::OK);
 			let site = &linker.sites[0];
 			let moved: [u8; 4] = unsafe {
@@ -1054,7 +1139,7 @@ mod tests {
 
 	#[test]
 	fn patches_restore_bytes_and_refuse_hook_overlap() {
-		let mut linker = Linker::new();
+		let mut linker = TestLinker::new();
 		linker.open_init(true);
 		let mem = code(64);
 		unsafe { std::ptr::write_bytes(mem, 0x90, 64) };
@@ -1207,7 +1292,7 @@ mod tests {
 			unsafe { std::ptr::copy_nonoverlapping(original.as_ptr(), target, original.len()) };
 			let f: unsafe extern "C" fn(u64, u64) -> u64 = unsafe { std::mem::transmute(target) };
 			assert_eq!(unsafe { f(7, 11) }, 18);
-			let mut linker = Linker::new();
+			let mut linker = TestLinker::new();
 			linker.open_init(true);
 			let mut low = std::ptr::null_mut();
 			let mut high = std::ptr::null_mut();
@@ -1266,7 +1351,7 @@ mod tests {
 			target // first complete boundary at 17
 		};
 		let target = make_target();
-		let mut linker = Linker::new();
+		let mut linker = TestLinker::new();
 		linker.open_init(true);
 		let mut next = std::ptr::null();
 		let mut hook = std::ptr::null_mut();
@@ -1362,7 +1447,7 @@ mod tests {
 	#[test]
 	fn page_end_14_bytes_work_and_longer_crossing_spans_are_refused() {
 		use windows_sys::Win32::System::Memory::PAGE_NOACCESS;
-		let mut linker = Linker::new();
+		let mut linker = TestLinker::new();
 		linker.open_init(true);
 		let page = linker.page_size;
 		let memory = code(page * 2);
@@ -1414,19 +1499,27 @@ mod tests {
 	#[test]
 	fn pattern_search_reports_not_found_or_a_real_match() {
 		let mut address = std::ptr::dangling_mut::<c_void>();
+		let base = unsafe {
+			windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null())
+		} as *const u8;
+		assert!(!base.is_null());
 		assert_eq!(
-			find_in_module(0, "90", &mut address),
+			unsafe { find_in_module(base, 0, "90", &mut address) },
+			abi::result::E_INVALID
+		);
+		assert!(address.is_null());
+		assert_eq!(
+			unsafe { find_in_module(std::ptr::null(), 0x1000, "90", &mut address) },
 			abi::result::E_INVALID
 		);
 		assert!(address.is_null());
 		let mut info: windows_sys::Win32::System::ProcessStatus::MODULEINFO =
 			unsafe { std::mem::zeroed() };
-		let base = gate::image_base();
 		assert_ne!(
 			unsafe {
 				windows_sys::Win32::System::ProcessStatus::K32GetModuleInformation(
 					GetCurrentProcess(),
-					base.cast(),
+					base.cast_mut().cast(),
 					&mut info,
 					size_of::<windows_sys::Win32::System::ProcessStatus::MODULEINFO>() as u32,
 				)
@@ -1434,14 +1527,17 @@ mod tests {
 			0
 		);
 		assert_eq!(
-			find_in_module(info.SizeOfImage as usize, "?? ??", &mut address),
+			unsafe { find_in_module(base, info.SizeOfImage as usize, "?? ??", &mut address) },
 			abi::result::E_INVALID
 		);
-		let code = find_in_module(
-			info.SizeOfImage as usize,
-			"CC CC CC CC CC CC CC CC CC CC",
-			&mut address,
-		);
+		let code = unsafe {
+			find_in_module(
+				base,
+				info.SizeOfImage as usize,
+				"CC CC CC CC CC CC CC CC CC CC",
+				&mut address,
+			)
+		};
 		assert!(matches!(
 			code,
 			abi::result::E_NOT_FOUND | abi::result::E_AMBIGUOUS | abi::result::OK
@@ -1469,7 +1565,7 @@ mod tests {
 			if index == 0 {
 				assert_eq!(unsafe { original() }, 7);
 			}
-			let mut linker = Linker::new();
+			let mut linker = TestLinker::new();
 			linker.open_init(true);
 			let mut next = std::ptr::null();
 			let mut hook = std::ptr::null_mut();

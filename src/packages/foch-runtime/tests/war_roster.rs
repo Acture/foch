@@ -1,11 +1,11 @@
 #![cfg(windows)]
 
 use foch_runtime::{
-	dataplane::Memory,
-	war::{
-		CountryId, JoinRefusal,
-		eu4::{CampaignStamp, WarRoster, check_country_restrictions},
+	dataplane::{
+		Memory,
+		war::{CampaignStamp, WarRoster, check_country_restrictions},
 	},
+	war::{CountryId, JoinRefusal},
 };
 
 fn packed(tag: &[u8; 3], index: u16) -> u64 {
