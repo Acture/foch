@@ -2,7 +2,7 @@
 //! side's terms into the active offer for the submitted action and restores
 //! the editor afterwards; the native evaluation of a merged offer is verified
 //! only in game, so anything unexpected still refuses to submit.
-use crate::{bridge, composition, native, probe, profile, settlement, ui};
+use crate::{bridge, composition, contract, native, probe, profile, settlement, ui};
 use core::ffi::c_void;
 use foch_plugin_sdk::{self as abi, FochHostApi, FochPluginApi, FochStatus, FochStr};
 use foch_runtime::dataplane::{self, Memory};
@@ -128,6 +128,9 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 	}
 	// The probe rides the economy tick even when the editor redirects are off
 	// or failed: it only reads flags and emits a receipt.
+	if !noop {
+		install_rebuild_hook(host);
+	}
 	install_tick_probe(host);
 	// The host retains the plugin even after a failed partial patch rollback.
 	abi::result::OK
@@ -294,27 +297,32 @@ unsafe extern "system" fn send(view: *mut u8) {
 					giver: parties.0,
 					receiver: parties.1,
 				});
-				// The native rebuild priced every merged clause positively.
-				// The give side must count against the deal: apply it once
-				// negated to cancel what the rebuild added, and once more to
-				// subtract its value, so the cached total becomes the net
-				// deal that native validation and AI evaluation read. A
-				// zeroed ducats contributes nothing on either pass.
-				let give_side: &[composition::Clause] = if plan.active == composition::Side::Receive
-				{
-					&merged
+				// Ducat amounts are already netted above. A second rebuild lets the
+				// hook's give-side correction see those amounts. Without the
+				// hook, append's rebuild priced the pre-net clauses positively,
+				// so apply the two negate passes directly. A zeroed ducats
+				// clause contributes nothing on either pass.
+				if rebuild_hook_installed() {
+					engine
+						.rebuild_cost(active_ptr)
+						.map_err(|_| "cannot rebuild the merged peace terms")?;
 				} else {
-					&plan.restore
-				};
-				let direction = u32::from(
-					native::offer_direction(active_ptr.cast_const())
-						.map_err(|_| "cannot read the merged offer direction")?,
-				);
-				for clause in give_side {
-					for negate in [true, true] {
-						engine
-							.apply_clause_cost(active_ptr, clause, direction, negate)
-							.map_err(|_| "cannot reprice the merged peace terms")?;
+					let give_side: &[composition::Clause] =
+						if plan.active == composition::Side::Receive {
+							&merged
+						} else {
+							&plan.restore
+						};
+					let direction = u32::from(
+						native::offer_direction(active_ptr.cast_const())
+							.map_err(|_| "cannot read the merged offer direction")?,
+					);
+					for clause in give_side {
+						for negate in [true, true] {
+							engine
+								.apply_clause_cost(active_ptr, clause, direction, negate)
+								.map_err(|_| "cannot reprice the merged peace terms")?;
+						}
 					}
 				}
 				let net = engine
@@ -512,6 +520,134 @@ fn observe_probe(context: usize) -> Result<Option<String>, String> {
 	probe::interpret(&snapshots)
 		.map(|found| found.map(|submission| submission.receipt()))
 		.map_err(|error| error.to_string())
+}
+
+static REBUILD_CELL: AtomicUsize = AtomicUsize::new(0);
+static REPRICE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+fn rebuild_hook_installed() -> bool {
+	REBUILD_CELL.load(Ordering::Acquire) != 0
+}
+
+/// Installs the cost-rebuild hook. One-direction offers fall through to the
+/// original function. A mixed offer is repriced after that original returns,
+/// so later callers (`0x598ed0`, `Execute`, the peace view, and any AI path
+/// that calls this function) read the signed total instead of the all-positive
+/// sum. A refused prologue leaves the editor running without the hook.
+fn install_rebuild_hook(host: *const FochHostApi) {
+	let host_ref = unsafe { &*host };
+	let Some(target) = (host_ref.exe_base as usize).checked_add(profile::REBUILD_COST.rva) else {
+		log(abi::log::WARN, "peace rebuild address overflowed");
+		return;
+	};
+	if profile::REBUILD_COST.rva >= host_ref.exe_size
+		|| !profile::REBUILD_COST
+			.original
+			.starts_with(contract::REBUILD_PROLOGUE)
+	{
+		log(
+			abi::log::WARN,
+			"peace rebuild prologue is not the hookable window",
+		);
+		return;
+	}
+	let mut next: *const *const c_void = std::ptr::null();
+	let mut hook: *mut abi::FochHook = std::ptr::null_mut();
+	let code = unsafe {
+		(host_ref.hook_create)(
+			host,
+			target as *mut c_void,
+			rebuild_detour as *mut c_void,
+			0,
+			&mut next,
+			&mut hook,
+		)
+	};
+	if code != abi::result::OK || next.is_null() || hook.is_null() {
+		log(
+			abi::log::WARN,
+			&format!("peace rebuild hook refused by the host: code {code}"),
+		);
+		return;
+	}
+	REBUILD_CELL.store(next as usize, Ordering::Release);
+	let enabled = unsafe { (host_ref.hook_set_enabled)(host, hook, 1) };
+	if enabled != abi::result::OK {
+		REBUILD_CELL.store(0, Ordering::Release);
+		log(
+			abi::log::WARN,
+			&format!("peace rebuild hook could not be enabled: code {enabled}"),
+		);
+	} else {
+		log(abi::log::INFO, "peace rebuild hook installed");
+	}
+}
+
+/// Forwards the pinned cost rebuild, then restores a mixed offer's signed
+/// headline. A one-direction offer has no swapped party and is not written.
+///
+/// # Safety
+/// Installed only on the verified rebuild prologue. The host owns the next
+/// cell for the process lifetime. `offer` is the original `rcx`.
+unsafe extern "system" fn rebuild_detour(offer: *mut u8) {
+	let cell = REBUILD_CELL.load(Ordering::Acquire) as *const *const c_void;
+	if cell.is_null() {
+		return;
+	}
+	let next = unsafe { *cell };
+	if next.is_null() {
+		return;
+	}
+	let original: unsafe extern "system" fn(*mut u8) = unsafe { std::mem::transmute(next) };
+	unsafe { original(offer) };
+	if offer.is_null() {
+		return;
+	}
+	if REPRICE_DEPTH.fetch_add(1, Ordering::AcqRel) != 0 {
+		REPRICE_DEPTH.fetch_sub(1, Ordering::AcqRel);
+		return;
+	}
+	let outcome = catch_unwind(AssertUnwindSafe(|| unsafe { reprice_mixed_offer(offer) }));
+	REPRICE_DEPTH.fetch_sub(1, Ordering::AcqRel);
+	if outcome.is_err() {
+		log(
+			abi::log::WARN,
+			"peace rebuild hook left the vanilla total in place",
+		);
+	}
+}
+
+unsafe fn reprice_mixed_offer(offer: *mut u8) -> Result<(), native::NativeError> {
+	let engine = engine()?;
+	let draft = unsafe { engine.read_draft(offer) }?;
+	let direction = native::offer_direction(offer)?;
+	let mut relations = Vec::with_capacity(draft.selected.len());
+	for clause in &draft.selected {
+		let (giver, receiver) = native::clause_parties(clause.address)?;
+		relations.push(contract::party_relation(
+			draft.giver,
+			draft.receiver,
+			giver,
+			receiver,
+		));
+	}
+	let Some(indexes) = contract::mixed_give_indexes(direction, &relations) else {
+		return Ok(());
+	};
+	let vanilla = unsafe { engine.score_total(offer) }?;
+	let repriced = (|| -> Result<(), native::NativeError> {
+		for index in indexes {
+			let clause = &draft.selected[index];
+			for negate in [true, true] {
+				unsafe { engine.apply_clause_cost(offer, clause, u32::from(direction), negate) }?;
+			}
+		}
+		Ok(())
+	})();
+	if repriced.is_err() {
+		let _ = unsafe { engine.set_score_total(offer, vanilla) };
+	}
+	repriced
 }
 
 /// Installs the economy-tick hook used by the directed-pacts probe. A
@@ -758,6 +894,19 @@ mod tests {
 	use super::{PROBE_DONE, TICK_CELL, tick_detour};
 	use core::ffi::c_void;
 	use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+	#[test]
+	fn rebuild_detour_forwards_a_null_offer_and_skips_repricing() {
+		static CALLS: AtomicUsize = AtomicUsize::new(0);
+		unsafe extern "system" fn next(offer: *mut u8) {
+			CALLS.store(1 + usize::from(offer.is_null()), Ordering::Release);
+		}
+		let cell = AtomicPtr::new(next as *mut c_void);
+		super::REBUILD_CELL.store(cell.as_ptr() as usize, Ordering::Release);
+		unsafe { super::rebuild_detour(std::ptr::null_mut()) };
+		assert_eq!(CALLS.load(Ordering::Acquire), 2);
+		super::REBUILD_CELL.store(0, Ordering::Release);
+	}
 
 	#[test]
 	fn tick_detour_forwards_every_flag_and_rereads_the_cell() {

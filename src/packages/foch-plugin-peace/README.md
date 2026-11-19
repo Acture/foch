@@ -29,10 +29,21 @@ The pricing chain above is verified by disassembly of the pinned image only
 `src/contract.rs` records that static read. It is not an in-game result.
 
 The cost rebuild at `0x978b20` always passes `negate = 0` and the offer's
-direction byte, then overwrites the cached total at `+0xf0`. The copy
+direction byte, then overwrites the cached total at `+0xf0`. Its first 15
+bytes are three home-slot saves, which the host `steal_len` accepts. The
+plugin hooks that prologue. A one-direction offer is left exactly as the
+original function wrote it. A mixed offer, one that has both a same-party
+clause and a swapped-party clause, then gets the send path's two `negate = 1`
+passes on the give side only, so `Execute`, the command at `0x598ed0`, and
+any other caller of this function read the signed total. Kind 0's accumulator
+negates the per-mille add when that byte is set and then calls `0x99e430`;
+other kinds' accumulators were not each traced, and the extra totals records
+from those two passes are **not verified in game**. The copy
 constructor copies that dword and does not call the rebuild. `GetCost` reads
 the dword and does not call the rebuild. `CPeaceOffer::Execute` calls the
-rebuild before it walks clauses, so a net total does not survive execution.
+rebuild before it walks clauses; with the hook installed, the signed total
+is written back before `Execute` continues. Without the hook, a net total
+does not survive that call.
 The function that calls `Execute` (`0x598ed0`, no
 `CExecutePeaceOfferCommand` string in the image) also rebuilds its embedded
 offer at `+0x48` after two lookups succeed. A separate `GetCost` caller at
@@ -42,15 +53,23 @@ reading the player's net total. Which of these the accepting AI uses is
 
 The offer's kind table is 40 slots in this image (constructor immediate
 `0x28`, clone rejects kind `>= 40`). That is a layout limit, not a list of
-vanilla treaty names. Kind 0's execute returns immediately when the amount
-at clause `+0x30` is zero. Kind 3 is the annex execute already described in
-`trust`. Kind 39's execute reads the clause's own receiver and a pointer at
-`+0x30`; the other slots were not classified one by one. Scripted treaties
-in `common/peace_treaties` and subject types reached through `create_subject`
-(including `copy_from`) stay an opaque target word. How a mixed treaty
-settles for provinces, money, war reparations, subject clauses, or a modded
-treaty is **not verified in game**. Test only in a disposable EU4 campaign
-profile. Startup alone does not verify any of this.
+vanilla treaty names. `CPeaceOffer::Execute` calls each clause's `vtable+0xF0`
+with the offer in `r8` and the offer's receiver in `r9`. For 37 of the 40
+slots that entry is the stub at `0xe66b0`, which writes zero through its
+second argument and does not read the offer. Kind 0's `vtable+0x98`
+(`0x9b4040`) returns immediately when the amount at clause `+0x30` is zero
+and does not read an offer direction byte in that body. Kind 3's
+`vtable+0xF0` compares the offer receiver `Execute` passed in with the
+clause's own receiver. Kind 39's `vtable+0x98` reads the clause's receiver
+and the pointer at `+0x30`; that is the scripted-treaty shape, still not
+named by a symbol. `Execute_CedeProvinces` (`0x990ed0`) saves its offer
+argument and does not read it back. The string `war_reparations` is present
+and was not tied to an execute. Scripted treaties in `common/peace_treaties`
+and subject types reached through `create_subject` (including `copy_from`)
+stay an opaque target word. How a mixed treaty settles for provinces, money,
+war reparations, subject clauses, or a modded treaty is **not verified in
+game**. Test only in a disposable EU4 campaign profile. Startup alone does
+not verify any of this.
 
 The agreement text keeps the game's own clause bytes, including a non-English
 UI, and adds only the numeric net line plus `(+)` / `(-)`.
