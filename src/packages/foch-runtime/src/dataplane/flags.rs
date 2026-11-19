@@ -8,13 +8,13 @@ use super::{CountryView, Memory, StdVector, is_name_byte, layout, read_sso, supp
 use std::collections::BTreeSet;
 
 // Keep static candidates out of layout's live-verified field set.
-const COUNTRY_FLAGS: usize = 0x270;
-const FLAG_IDS: usize = 0x10;
-const FLAG_DATES: usize = 0x28;
-const FLAG_NAMES_RVA: usize = 0x2357d80;
+pub(crate) const COUNTRY_FLAGS: usize = 0x270;
+pub(crate) const FLAG_IDS: usize = 0x10;
+pub(crate) const FLAG_DATES: usize = 0x28;
+pub(crate) const FLAG_NAMES_RVA: usize = 0x2357d80;
 const MAX_FLAGS: usize = 4096;
 const MAX_NAMES: usize = 32768; // The engine's IDs are signed 16-bit values.
-const STRING_SIZE: usize = 32;
+pub(crate) const STRING_SIZE: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CountryFlag {

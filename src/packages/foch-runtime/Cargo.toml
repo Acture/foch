@@ -25,6 +25,9 @@ default = ["runner"]
 # The out-of-process test runner drags the analysis crates; plugins
 # consume the data plane alone with default-features = false.
 runner = ["dep:foch", "dep:foch-test"]
+# Windows-only synthetic EU4 memory (`dataplane::testing`). Production
+# plugin builds leave this off so the helper is not linked into a DLL.
+test-support = []
 
 [dependencies]
 foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }

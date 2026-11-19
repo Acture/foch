@@ -32,6 +32,25 @@ impl Eu4Game {
 		(stored == candidate).then_some(stored)
 	}
 
+	/// Read the pinned global context pointer and build a game view.
+	///
+	/// Hooks that are not passed the game context use this instead of knowing
+	/// the context slot's image offset. `None` when the image base is
+	/// implausible or the stored pointer is not a plausible context address.
+	pub fn from_exe_base(exe_base: usize) -> Option<Self> {
+		if exe_base <= 0x1_0000 {
+			return None;
+		}
+		let memory = Memory;
+		let slot = exe_base.checked_add(super::layout::CONTEXT_GLOBAL_RVA)?;
+		let context = memory.read_ptr(slot)?;
+		Some(Self {
+			memory,
+			exe_base,
+			context,
+		})
+	}
+
 	/// A game view whose tick argument matches the pinned global context pointer.
 	pub fn from_tick(exe_base: usize, candidate_context: usize) -> Option<Self> {
 		let memory = Memory;
@@ -844,6 +863,8 @@ mod tests {
 	fn from_tick_rejects_an_unknown_image_base() {
 		assert!(Eu4Game::from_tick(0, 0x100_000).is_none());
 		assert!(Eu4Game::from_tick(0x1_0000, 0x100_000).is_none());
+		assert!(Eu4Game::from_exe_base(0).is_none());
+		assert!(Eu4Game::from_exe_base(0x1_0000).is_none());
 	}
 
 	#[test]
@@ -935,6 +956,9 @@ mod tests {
 		let context_addr = context.as_ptr() as usize;
 		assert!(Eu4Game::from_tick(exe_base, exe_base).is_none());
 		let game = Eu4Game::from_tick(exe_base, context_addr).expect("context global");
+		let from_base = Eu4Game::from_exe_base(exe_base).expect("global context slot");
+		assert_eq!(from_base.context, context_addr);
+		assert_eq!(from_base.exe_base, exe_base);
 		// SAFETY: the synthetic objects above stay allocated for this call.
 		unsafe { game.pay_country(0, 50) }.expect("pay");
 		let paid = game.countries().unwrap().country(0).unwrap();
