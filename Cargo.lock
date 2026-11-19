@@ -1457,6 +1457,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "foch-plugin-sdk",
+ "foch-runtime",
  "serde",
  "serde_json",
  "tempfile",

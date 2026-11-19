@@ -99,12 +99,22 @@ pub enum ReadKind {
 	Discriminant,
 	/// Read a pointer to the tag string.
 	TagPointer,
+	/// Read an inline packed country tag (`CCountry+0x20`: 3-byte ASCII tag + NUL + i16 index).
+	InlineTag,
 }
 
 impl SignatureTable {
-	/// A table is usable only when every pattern is verified and every kind
+	/// A table is usable only when every pattern is verified, any pinned
+	/// executable digest matches the shared data plane, and every kind
 	/// value maps to a known subject kind key.
 	pub fn usable(&self) -> Result<(), String> {
+		if !self.exe_sha256.is_empty() && !foch_runtime::dataplane::supports_build(&self.exe_sha256)
+		{
+			return Err(format!(
+				"exe_sha256 for {} does not match foch_runtime::dataplane",
+				self.game_version
+			));
+		}
 		if self.tribute_settlement.status != PatternStatus::Verified {
 			return Err(format!(
 				"tribute_settlement pattern for {} is {}",
@@ -239,5 +249,11 @@ mod tests {
 		// The 1.37.5 table ships verified patterns; gaps must close, not open.
 		assert!(table.usable().is_ok(), "{:?}", table.usable().err());
 		assert_eq!(table.exe_sha256.len(), 64);
+		assert!(foch_runtime::dataplane::supports_build(&table.exe_sha256));
+		assert_eq!(table.subject_tag.kind, ReadKind::InlineTag);
+		assert_eq!(
+			table.subject_tag.offsets,
+			vec![foch_runtime::dataplane::layout::country::TAG as u32]
+		);
 	}
 }

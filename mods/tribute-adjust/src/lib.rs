@@ -15,6 +15,7 @@ mod signature;
 use foch_plugin_sdk::{
 	ABI_MAJOR, ABI_MINOR, FochHostApi, FochPluginApi, FochStatus, FochStr, dir, log, result, state,
 };
+use foch_runtime::dataplane::{self, Memory};
 use std::sync::RwLock;
 
 /// The runtime configuration the hot path reads and the panel writes.
@@ -69,82 +70,93 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 	let offset = table.tribute_settlement.offset;
 	let address = ((address as usize).wrapping_add_signed(offset as isize)) as *mut u8;
 
-	// Per-subject income probe (vassal/colony/... category 2 monthly).
+	// Reset define-scale tracking before attaching hooks or applying patches.
+	detour::set_applied_scales(1.0, 1.0);
+
+	let exe_sha256 = unsafe { host.exe_sha256.as_str() }.unwrap_or_default();
+	let dataplane_supported = dataplane::supports_build(exe_sha256);
+	log_line(
+		host,
+		log::INFO,
+		&format!("dataplane build match: {dataplane_supported}"),
+	);
+
+	// Per-subject income hook (vassal/colony/... category 2 monthly + UI).
 	let subject_pattern = FochStr::from_str(&table.subject_income.pattern);
 	let mut subject_address = std::ptr::null_mut();
 	let subject_found = unsafe { (host.find_pattern)(host, subject_pattern, &mut subject_address) };
-	let subject_probe = if subject_found == result::OK {
+	let (subject_hooked, subject_probe) = if subject_found == result::OK {
 		match detour::attach_subject_probe(host, subject_address as *mut u8) {
-			Ok(()) => " + subject-income probe",
+			Ok(()) => (true, " + subject-income hook"),
 			Err(error) => {
 				log_line(
 					host,
 					log::WARN,
-					&format!("subject-income probe skipped: {error}"),
+					&format!("subject-income hook skipped: {error}"),
 				);
-				""
+				(false, "")
 			}
 		}
 	} else {
-		""
+		(false, "")
 	};
 
-	// The scaling itself: patch the tribute define constants. Every monthly
-	// tribute payment (cash, power, manpower) is computed from these, so one
-	// patch scales the whole system; the hooks above stay as probes.
+	// Baseline scaling via the tribute define constants. Per-tag overrides
+	// are layered on top in `tribute_executor` and `subject_income` using the
+	// residual multiplier `desired / applied_define_scale`.
 	{
-		let coefficient = {
+		let (coefficient, vassal_coefficient, has_tag_overrides) = {
 			let config = CONFIG.read().unwrap();
-			config.coefficient("", coefficient::SubjectKind::Tributary)
-		};
-		let vassal_coefficient = {
-			let config = CONFIG.read().unwrap();
-			config.coefficient("", coefficient::SubjectKind::Vassal)
+			(
+				config.coefficient("", coefficient::SubjectKind::Tributary),
+				config.coefficient("", coefficient::SubjectKind::Vassal),
+				!config.tag_percent.is_empty(),
+			)
 		};
 		log_line(
 			host,
 			log::INFO,
-			&format!("coefficients: tribute {coefficient}, vassal {vassal_coefficient}"),
+			&format!(
+				"coefficients: tribute {coefficient}, vassal {vassal_coefficient}, tag_overrides {has_tag_overrides}"
+			),
 		);
+		let mut applied_tribute = 1.0_f64;
+		let mut applied_vassal = 1.0_f64;
 		if coefficient != 1.0 || vassal_coefficient != 1.0 {
 			let base = host.exe_base as usize;
-			// The defines live deep in .data; a runtime image smaller than the
-			// real one (the host test fixture) simply has nothing to patch.
-			if table.defines.vassal_share as usize + 4 >= host.exe_size {
-				log_line(host, log::INFO, "define patch skipped: image too small");
+			// Hardcoded define RVAs are pinned to the verified 1.37.5 build;
+			// skip them when the build digest does not match or the image is
+			// a small host test fixture.
+			if !dataplane_supported || table.defines.vassal_share as usize + 4 >= host.exe_size {
+				log_line(
+					host,
+					log::INFO,
+					"define patch skipped: unverified build or image too small",
+				);
 			} else {
-				for (name, rva, is_float, coefficient) in [
-					("cash_rate", table.defines.cash_rate, false, coefficient),
-					("adm_rate", table.defines.adm_rate, true, coefficient),
-					("dip_rate", table.defines.dip_rate, true, coefficient),
-					("mil_rate", table.defines.mil_rate, true, coefficient),
-					(
-						"manpower_rate",
-						table.defines.manpower_rate,
-						true,
-						coefficient,
-					),
-					(
-						"vassal_share",
-						table.defines.vassal_share,
-						true,
-						vassal_coefficient,
-					),
-				] {
+				// If subject_income is hooked and the user configured 0% vassal
+				// baseline alongside per-tag overrides, leave vassal_share
+				// untouched so subject_income can still scale non-zero tag
+				// overrides instead of receiving 0 from the engine.
+				let patch_vassal_define = vassal_coefficient != 1.0
+					&& !(subject_hooked && vassal_coefficient == 0.0 && has_tag_overrides);
+				let memory = Memory;
+				let patch_define = |name: &str,
+				                    rva: u32,
+				                    is_float: bool,
+				                    scale: f64|
+				 -> Result<(), String> {
 					let address = base + rva as usize;
 					// The cash rate is a milli-percent int; the power/manpower rates
 					// are IEEE f32 constants, so scale through the bit pattern.
-					let (before, after) = unsafe {
-						if is_float {
-							let raw = *(address as *const f32);
-							(
-								raw.to_bits() as i64,
-								(raw * coefficient as f32).to_bits() as i64,
-							)
-						} else {
-							let raw = *(address as *const i32);
-							(raw as i64, (raw as f64 * coefficient).round() as i64)
-						}
+					let raw_i32 = memory
+						.read_i32(address)
+						.ok_or_else(|| format!("read define {name}: unreadable"))?;
+					let (before, after) = if is_float {
+						let raw = f32::from_bits(raw_i32 as u32);
+						(raw.to_bits() as i64, (raw * scale as f32).to_bits() as i64)
+					} else {
+						(raw_i32 as i64, (raw_i32 as f64 * scale).round() as i64)
 					};
 					let bytes = (after as u32).to_le_bytes();
 					let mut patch: *mut foch_plugin_sdk::FochPatch = std::ptr::null_mut();
@@ -152,20 +164,48 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 						(host.patch_create)(host, address as *mut _, bytes.as_ptr(), 4, &mut patch)
 					};
 					if created != result::OK {
-						return refuse(format!("patch {name}: {}", result_name(created)));
+						return Err(format!("patch {name}: {}", result_name(created)));
 					}
 					let enabled = unsafe { (host.patch_set_enabled)(host, patch, 1) };
 					if enabled != result::OK {
-						return refuse(format!("patch {name}: {}", result_name(enabled)));
+						return Err(format!("patch {name}: {}", result_name(enabled)));
 					}
 					log_line(
 						host,
 						log::INFO,
 						&format!("define {name}: {before} -> {after}"),
 					);
+					Ok(())
+				};
+
+				if coefficient != 1.0 {
+					for (name, rva, is_float) in [
+						("cash_rate", table.defines.cash_rate, false),
+						("adm_rate", table.defines.adm_rate, true),
+						("dip_rate", table.defines.dip_rate, true),
+						("mil_rate", table.defines.mil_rate, true),
+						("manpower_rate", table.defines.manpower_rate, true),
+					] {
+						if let Err(detail) = patch_define(name, rva, is_float, coefficient) {
+							return refuse(detail);
+						}
+					}
+					applied_tribute = coefficient;
+				}
+				if patch_vassal_define {
+					if let Err(detail) = patch_define(
+						"vassal_share",
+						table.defines.vassal_share,
+						true,
+						vassal_coefficient,
+					) {
+						return refuse(detail);
+					}
+					applied_vassal = vassal_coefficient;
 				}
 			}
 		}
+		detour::set_applied_scales(applied_tribute, applied_vassal);
 	}
 
 	// Income probe: the add_income pattern from the same table.
@@ -292,22 +332,105 @@ fn result_name(code: i32) -> &'static str {
 	}
 }
 
-/// The settlement detour. Facts from the signature table, not choices:
-/// `int* GetTributeAmount(int* out, CCountry* subject, u8 type)` — x64
-/// Microsoft ABI, so RCX/RDX/R8 arrive as the three parameters below.
+/// Settlement and subject-income detours.
+///
+/// Every game-memory read and write goes through `foch_runtime::dataplane::Memory`
+/// so null, unmapped, or half-initialized objects degrade to `None` instead of
+/// faulting. Country tags are decoded from the inline packed identity at
+/// `CCountry + layout::country::TAG` (`+0x20`).
 mod detour {
 	use foch_plugin_sdk::{FochHook, FochHostApi, result};
+	use foch_runtime::dataplane::{Memory, game, layout::country};
 	use std::ffi::c_void;
-	use std::sync::atomic::{AtomicPtr, Ordering};
+	use std::sync::Mutex;
+	use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+
+	/// Tribute payment command amount offset (`i32`, milli-ducats) in `FUN_140b1c800`.
+	const COMMAND_AMOUNT_OFFSET: usize = 0x1c;
+	/// Monthly accumulated income bank (`i32`) on `CCountry`, banked by `ApplyMonthlyIncome`.
+	const COUNTRY_MONTHLY_INCOME_BANK: usize = 0x68;
+	/// Upper bound on engine country indices (matches `foch_runtime::dataplane::game::Countries`).
+	const MAX_COUNTRY_INDEX: usize = 1024;
 
 	/// The host-owned trampoline cell; call through `*next` on every call.
 	static NEXT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-	/// Test-only: point the chain cell at a stub original.
+	/// Baseline scale already baked into engine defines by `init()`, stored as
+	/// `f64::to_bits()`. Detours apply the residual `desired / applied` so
+	/// normal subjects are never double-scaled while per-tag overrides still hit
+	/// their exact target percentage.
+	static APPLIED_TRIBUTE_SCALE: AtomicU64 = AtomicU64::new(1.0_f64.to_bits());
+	static APPLIED_VASSAL_SCALE: AtomicU64 = AtomicU64::new(1.0_f64.to_bits());
+
+	pub(crate) fn set_applied_scales(tribute: f64, vassal: f64) {
+		APPLIED_TRIBUTE_SCALE.store(tribute.to_bits(), Ordering::Relaxed);
+		APPLIED_VASSAL_SCALE.store(vassal.to_bits(), Ordering::Relaxed);
+	}
+
+	fn applied_tribute_scale() -> f64 {
+		f64::from_bits(APPLIED_TRIBUTE_SCALE.load(Ordering::Relaxed))
+	}
+
+	fn applied_vassal_scale() -> f64 {
+		f64::from_bits(APPLIED_VASSAL_SCALE.load(Ordering::Relaxed))
+	}
+
+	pub(crate) fn residual_scale(desired: f64, applied_define_scale: f64) -> f64 {
+		if applied_define_scale > 0.0 && (applied_define_scale - 1.0).abs() > f64::EPSILON {
+			desired / applied_define_scale
+		} else {
+			desired
+		}
+	}
+
+	/// Decode a packed EU4 country identity qword via the shared dataplane
+	/// decoder (`foch_runtime::dataplane::game::decode_packed_tag`); the
+	/// local copy was removed in favor of the master-pinned implementation.
+	pub(crate) fn decode_packed_country_tag(
+		packed: u64,
+		require_valid_flag: bool,
+	) -> Option<(String, u16)> {
+		let decoded = game::decode_packed_tag(packed, require_valid_flag)?;
+		if decoded.index as usize >= MAX_COUNTRY_INDEX {
+			return None;
+		}
+		Some((decoded.tag, decoded.index))
+	}
+
+	/// Guarded read of a country's inline packed tag and index at `country + country::TAG`.
+	pub(crate) fn read_country_tag(memory: &Memory, country_addr: usize) -> Option<(String, u16)> {
+		let tag_addr = country_addr.checked_add(country::TAG)?;
+		let packed = memory.read_qword(tag_addr)?;
+		decode_packed_country_tag(packed, false)
+	}
+
+	/// Resolve the subject tag from `tribute_executor`'s `partner: u64` argument.
+	///
+	/// Accepts either a packed `CCountryTag` passed by value (high validity byte
+	/// non-zero, never collides with a canonical x64 user-mode pointer) or a
+	/// `CCountry*` pointer whose `+0x20` holds the inline packed tag.
+	pub(crate) fn resolve_partner_tag(memory: &Memory, partner: u64) -> Option<String> {
+		if let Some((tag, _)) = decode_packed_country_tag(partner, true) {
+			return Some(tag);
+		}
+		if partner > 0x1_0000 && partner & 7 == 0 {
+			return read_country_tag(memory, partner as usize).map(|(tag, _)| tag);
+		}
+		None
+	}
+
+	/// Test-only: point the tribute chain cell at a stub original.
 	#[cfg(test)]
 	pub(crate) fn set_next_for_test(cell: *mut c_void) {
 		NEXT.store(cell, Ordering::Relaxed);
 	}
+
+	/// Test-only: point the subject_income chain cell at a stub original.
+	#[cfg(test)]
+	pub(crate) fn set_next_subject_for_test(cell: *mut c_void) {
+		NEXT_SUBJECT.store(cell, Ordering::Relaxed);
+	}
+
 	/// Kept alive for the process lifetime so a future disable path can reach
 	/// the host handle; never dereferenced here.
 	static mut HOOK: *mut FochHook = std::ptr::null_mut();
@@ -318,23 +441,34 @@ mod detour {
 	static NEXT_SUBJECT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 	pub(crate) type Original = unsafe extern "C" fn(*mut u8, u64);
+	pub(crate) type SubjectOriginal = unsafe extern "C" fn(*mut u8, *mut i32, *mut u8, *mut u8);
 
 	pub(crate) unsafe extern "C" fn tribute_executor(command: *mut u8, partner: u64) {
 		let cell = NEXT.load(Ordering::Relaxed);
 		if cell.is_null() {
 			return;
 		}
-		let config = crate::CONFIG.read().unwrap();
-		// Tag lookup is not mapped yet (see signatures table), so tag
-		// overrides fall back to the tributary kind coefficient.
-		let coefficient = config.coefficient("", crate::coefficient::SubjectKind::Tributary);
-		let coefficient_value = coefficient;
-		if coefficient != 1.0 {
-			unsafe {
-				let amount = command.add(0x1c) as *mut i32;
-				let before = *amount;
-				*amount = (before as f64 * coefficient).round() as i32;
-				log_transfer(before, *amount, coefficient_value);
+		let memory = Memory;
+		let tag = resolve_partner_tag(&memory, partner);
+		let desired = {
+			let config = crate::CONFIG.read().unwrap();
+			config.coefficient(
+				tag.as_deref().unwrap_or(""),
+				crate::coefficient::SubjectKind::Tributary,
+			)
+		};
+		let scale = residual_scale(desired, applied_tribute_scale());
+		if (scale - 1.0).abs() > f64::EPSILON
+			&& let Some(amount_addr) = (command as usize).checked_add(COMMAND_AMOUNT_OFFSET)
+			&& let Some(before) = memory.read_i32(amount_addr)
+		{
+			let after = (before as f64 * scale).round() as i32;
+			if after != before {
+				// SAFETY: `command + 0x1c` is the engine-owned command amount
+				// field on the game thread, with no Rust alias.
+				if unsafe { memory.write_i32(amount_addr, after) }.is_some() {
+					log_transfer(tag.as_deref().unwrap_or("?"), before, after, desired);
+				}
 			}
 		}
 		// SAFETY: the chain cell is re-read per call per the ABI contract.
@@ -343,14 +477,14 @@ mod detour {
 	}
 
 	/// Every income category the game actually pays, observed on the real
-	/// monthly tick: (category, amount) pairs, first-sight only. This is the
-	/// probe that maps `vassal_income` and friends to their enum values.
-	static mut SEEN_CATEGORIES: Vec<(i32, i32)> = Vec::new();
+	/// monthly tick: (category, amount) pairs, first-sight only.
+	static SEEN_CATEGORIES: Mutex<Vec<(i32, i32)>> = Mutex::new(Vec::new());
 
-	static mut SEEN_SUBJECT_INCOME: Vec<(i64, i64)> = Vec::new();
+	static SEEN_SUBJECT_INCOME: Mutex<Vec<(i64, i64)>> = Mutex::new(Vec::new());
 
-	/// Per-subject income contribution probe: dump the amount and the head of
-	/// the subject object so a real-game run reveals the kind discriminant.
+	/// Per-subject income contribution (`FUN_1403f1510`): resolves the subject's
+	/// 3-letter tag via `dataplane::Memory`, applies any per-tag / residual
+	/// scaling to `*out`, and records first-sight probe data safely.
 	pub(crate) unsafe extern "C" fn subject_income(
 		country: *mut u8,
 		out: *mut i32,
@@ -361,30 +495,59 @@ mod detour {
 		if cell.is_null() {
 			return;
 		}
-		type SubjectOriginal = unsafe extern "C" fn(*mut u8, *mut i32, *mut u8, *mut u8);
 		// SAFETY: the chain cell is re-read per call per the ABI contract.
 		let original: SubjectOriginal = unsafe { *(cell as *const SubjectOriginal) };
 		unsafe { original(country, out, subject, tooltip) };
-		unsafe {
-			let amount = *out;
-			if amount != 0 {
-				let seen = &raw mut SEEN_SUBJECT_INCOME;
-				// Zero dereference beyond the arguments themselves: during loading
-				// the objects may be half-initialized, so only pointer identities
-				// are recorded, never their memory.
-				let key = subject as i64;
-				if (*seen).len() < 500 && !(*seen).iter().any(|&(_, s)| s == key) {
-					(*seen).push((amount as i64, key));
-					log_line_raw(&format!(
-						"subject income {amount} args c={:#x} s={:#x} t={:#x}",
-						country as i64, key, tooltip as i64
-					));
+
+		let memory = Memory;
+		let Some(before) = memory.read_i32(out as usize) else {
+			return;
+		};
+		if before == 0 {
+			return;
+		}
+		let subject_tag = read_country_tag(&memory, subject as usize).map(|(tag, _)| tag);
+		let desired = {
+			let config = crate::CONFIG.read().unwrap();
+			config.coefficient(
+				subject_tag.as_deref().unwrap_or(""),
+				crate::coefficient::SubjectKind::Vassal,
+			)
+		};
+		let scale = residual_scale(desired, applied_vassal_scale());
+		let mut after = before;
+		if (scale - 1.0).abs() > f64::EPSILON {
+			let scaled = (before as f64 * scale).round() as i32;
+			if scaled != before {
+				// SAFETY: `out` is the engine-provided i32 out-parameter on the
+				// game thread, already populated by `original`, with no Rust alias.
+				if unsafe { memory.write_i32(out as usize, scaled) }.is_some() {
+					after = scaled;
 				}
 			}
 		}
+
+		let key = subject as i64;
+		if let Ok(mut seen) = SEEN_SUBJECT_INCOME.try_lock()
+			&& seen.len() < 500
+			&& !seen.iter().any(|&(_, s)| s == key)
+		{
+			seen.push((after as i64, key));
+			let overlord_tag = read_country_tag(&memory, country as usize).map(|(tag, _)| tag);
+			log_line_raw(&format!(
+				"subject income {} -> {} (x{desired:.2}) overlord={} subject={} args c={:#x} s={:#x} t={:#x}",
+				before,
+				after,
+				overlord_tag.as_deref().unwrap_or("?"),
+				subject_tag.as_deref().unwrap_or("?"),
+				country as i64,
+				key,
+				tooltip as i64
+			));
+		}
 	}
 
-	static mut SEEN_MONTHLY: Vec<(i32, i32)> = Vec::new();
+	static SEEN_MONTHLY: Mutex<Vec<(u16, i32)>> = Mutex::new(Vec::new());
 
 	unsafe extern "C" fn monthly_apply(country: *mut u8, flush: u8) {
 		let cell = NEXT_MONTHLY.load(Ordering::Relaxed);
@@ -395,16 +558,25 @@ mod detour {
 		// SAFETY: the chain cell is re-read per call per the ABI contract.
 		let original: MonthlyOriginal = unsafe { *(cell as *const MonthlyOriginal) };
 		unsafe { original(country, flush) };
-		unsafe {
-			let country_index = ((*(country.add(0x20) as *const u64)) >> 0x30) as u16 as i32;
-			let amount = *(country.add(0x68) as *const i32);
-			let seen = &raw mut SEEN_MONTHLY;
-			if (*seen).len() < 3000 && !(*seen).iter().any(|(c, _)| *c == country_index) {
-				(*seen).push((country_index, amount));
-				log_line_raw(&format!(
-					"monthly income country {country_index} banks {amount}"
-				));
-			}
+
+		let memory = Memory;
+		let Some((tag, country_index)) = read_country_tag(&memory, country as usize) else {
+			return;
+		};
+		let Some(amount) = (country as usize)
+			.checked_add(COUNTRY_MONTHLY_INCOME_BANK)
+			.and_then(|addr| memory.read_i32(addr))
+		else {
+			return;
+		};
+		if let Ok(mut seen) = SEEN_MONTHLY.try_lock()
+			&& seen.len() < 3000
+			&& !seen.iter().any(|(c, _)| *c == country_index)
+		{
+			seen.push((country_index, amount));
+			log_line_raw(&format!(
+				"monthly income {tag} ({country_index}) banks {amount}"
+			));
 		}
 	}
 
@@ -417,15 +589,19 @@ mod detour {
 		// SAFETY: the chain cell is re-read per call per the ABI contract.
 		let original: IncomeOriginal = unsafe { *(cell as *const IncomeOriginal) };
 		unsafe { original(country, category, amount, flag) };
-		unsafe {
-			let seen = &raw mut SEEN_CATEGORIES;
-			if (*seen).len() < 400 && !(*seen).iter().any(|(c, _)| *c == category) {
-				(*seen).push((category, *amount));
-				log_line_raw(&format!(
-					"income category {category:#x} first seen amount {}",
-					*amount
-				));
-			}
+
+		let memory = Memory;
+		let Some(value) = memory.read_i32(amount as usize) else {
+			return;
+		};
+		if let Ok(mut seen) = SEEN_CATEGORIES.try_lock()
+			&& seen.len() < 400
+			&& !seen.iter().any(|(c, _)| *c == category)
+		{
+			seen.push((category, value));
+			log_line_raw(&format!(
+				"income category {category:#x} first seen amount {value}"
+			));
 		}
 	}
 
@@ -437,12 +613,12 @@ mod detour {
 		unsafe { ((*host).log)(host, crate::log::INFO, crate::FochStr::from_str(message)) };
 	}
 
-	fn log_transfer(before: i32, after: i32, coefficient: f64) {
+	fn log_transfer(tag: &str, before: i32, after: i32, coefficient: f64) {
 		let host = HOST.load(Ordering::Relaxed) as *const FochHostApi;
 		if host.is_null() {
 			return;
 		}
-		let message = format!("tribute transfer {before} -> {after} (x{coefficient:.2})");
+		let message = format!("tribute transfer [{tag}] {before} -> {after} (x{coefficient:.2})");
 		unsafe { ((*host).log)(host, crate::log::INFO, crate::FochStr::from_str(&message)) };
 	}
 
@@ -575,7 +751,25 @@ mod detour {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::sync::Mutex;
 	use std::sync::atomic::{AtomicI32, Ordering};
+
+	/// Serialize tests that mutate process-wide detour statics (`CONFIG`, `NEXT`, etc.).
+	static DETOUR_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+	fn pack_country_tag(tag: &[u8; 3], index: i16, valid_flag: u8) -> u64 {
+		let idx = index.to_le_bytes();
+		u64::from_le_bytes([tag[0], tag[1], tag[2], 0, idx[0], idx[1], 0, valid_flag])
+	}
+
+	/// Build an 8-byte-aligned fake `CCountry` buffer with its inline packed
+	/// identity at `layout::country::TAG` (`+0x20`).
+	fn fake_country(tag: &[u8; 3], index: i16, valid_flag: u8) -> Vec<u64> {
+		let mut buf = vec![0_u64; 16];
+		let slot = foch_runtime::dataplane::layout::country::TAG / 8;
+		buf[slot] = pack_country_tag(tag, index, valid_flag);
+		buf
+	}
 
 	#[test]
 	fn the_entry_point_rejects_other_abi_majors() {
@@ -594,6 +788,7 @@ mod tests {
 	/// chain cell is honored exactly as the host ABI prescribes.
 	#[test]
 	fn the_detour_scales_the_command_amount_before_the_original() {
+		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
 		static SEEN: AtomicI32 = AtomicI32::new(i32::MIN);
 		unsafe extern "C" fn original(command: *mut u8, _partner: u64) {
 			unsafe {
@@ -604,6 +799,7 @@ mod tests {
 		static mut CELL: detour::Original = original as detour::Original;
 		let cell = (&raw const CELL) as *mut std::ffi::c_void;
 		detour::set_next_for_test(cell);
+		detour::set_applied_scales(1.0, 1.0);
 
 		*CONFIG.write().unwrap() = coefficient::TributeConfig {
 			enabled: true,
@@ -630,5 +826,209 @@ mod tests {
 		command[0x1c..0x20].copy_from_slice(&1000i32.to_le_bytes());
 		unsafe { detour::tribute_executor(command.as_mut_ptr(), 0) };
 		assert_eq!(SEEN.load(Ordering::SeqCst), 1000);
+	}
+
+	#[test]
+	fn tribute_executor_resolves_tag_overrides_and_avoids_double_scaling() {
+		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		static SEEN: AtomicI32 = AtomicI32::new(i32::MIN);
+		unsafe extern "C" fn original(command: *mut u8, _partner: u64) {
+			unsafe {
+				SEEN.store(*(command.add(0x1c) as *const i32), Ordering::SeqCst);
+			}
+		}
+		static mut CELL: detour::Original = original as detour::Original;
+		detour::set_next_for_test((&raw const CELL) as *mut std::ffi::c_void);
+		detour::set_applied_scales(1.0, 1.0);
+
+		let mut cfg = coefficient::TributeConfig {
+			enabled: true,
+			global_percent: 50,
+			..coefficient::TributeConfig::ONCE
+		};
+		cfg.tag_percent.insert("KOR".into(), 150);
+		cfg.tag_percent.insert("MUG".into(), 25);
+		*CONFIG.write().unwrap() = cfg;
+
+		// 1. Packed CTag passed by value in `partner`.
+		let mut command = [0u8; 0x20];
+		command[0x1c..0x20].copy_from_slice(&1000i32.to_le_bytes());
+		let kor_packed = pack_country_tag(b"KOR", 42, 1);
+		unsafe { detour::tribute_executor(command.as_mut_ptr(), kor_packed) };
+		assert_eq!(SEEN.load(Ordering::SeqCst), 1500);
+
+		// 2. CCountry* pointer passed in `partner` (tag read at +0x20 via dataplane::Memory).
+		let mug_country = fake_country(b"MUG", 77, 1);
+		command[0x1c..0x20].copy_from_slice(&1000i32.to_le_bytes());
+		unsafe { detour::tribute_executor(command.as_mut_ptr(), mug_country.as_ptr() as u64) };
+		assert_eq!(SEEN.load(Ordering::SeqCst), 250);
+
+		// 3. When defines already applied 0.5x, residual scaling avoids double-scaling
+		//    un-overridden tags (JPN stays 500) while lifting KOR from 500 -> 1500.
+		detour::set_applied_scales(0.5, 1.0);
+		let jpn_packed = pack_country_tag(b"JPN", 55, 1);
+		command[0x1c..0x20].copy_from_slice(&500i32.to_le_bytes());
+		unsafe { detour::tribute_executor(command.as_mut_ptr(), jpn_packed) };
+		assert_eq!(SEEN.load(Ordering::SeqCst), 500);
+
+		command[0x1c..0x20].copy_from_slice(&500i32.to_le_bytes());
+		unsafe { detour::tribute_executor(command.as_mut_ptr(), kor_packed) };
+		assert_eq!(SEEN.load(Ordering::SeqCst), 1500);
+
+		detour::set_applied_scales(1.0, 1.0);
+	}
+
+	#[test]
+	fn subject_income_scales_per_tag_and_guards_invalid_subject_pointers() {
+		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
+		unsafe extern "C" fn original(
+			_country: *mut u8,
+			out: *mut i32,
+			_subject: *mut u8,
+			_tooltip: *mut u8,
+		) {
+			if !out.is_null() {
+				unsafe { *out = 1000 };
+			}
+		}
+		static mut CELL: detour::SubjectOriginal = original as detour::SubjectOriginal;
+		detour::set_next_subject_for_test((&raw const CELL) as *mut std::ffi::c_void);
+		detour::set_applied_scales(1.0, 1.0);
+
+		let mut cfg = coefficient::TributeConfig {
+			enabled: true,
+			global_percent: 100,
+			..coefficient::TributeConfig::ONCE
+		};
+		cfg.kind_percent.insert("vassal".into(), 50);
+		cfg.tag_percent.insert("WLS".into(), 150);
+		*CONFIG.write().unwrap() = cfg;
+
+		let mut overlord = fake_country(b"ENG", 10, 1);
+		let mut wls = fake_country(b"WLS", 11, 1);
+		let mut sco = fake_country(b"SCO", 12, 1);
+		let mut half_init = vec![0_u64; 16];
+
+		// 1. No define patch: WLS gets 150% (1500), SCO gets vassal 50% (500).
+		let mut out = 0_i32;
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				wls.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 1500);
+
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				sco.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 500);
+
+		// 2. Define patch already scaled vassal_share by 0.5: residual scaling
+		//    leaves SCO at 1000 (no double scaling) and lifts WLS to 3000 (3x residual).
+		detour::set_applied_scales(1.0, 0.5);
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				sco.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 1000);
+
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				wls.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 3000);
+
+		// 3. Half-initialized (zeroed) and null/unmapped subject pointers never
+		//    fault and fall back cleanly to the vassal kind coefficient.
+		detour::set_applied_scales(1.0, 1.0);
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				half_init.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 500);
+
+		unsafe {
+			detour::subject_income(
+				std::ptr::null_mut(),
+				&mut out,
+				0x1000 as *mut u8,
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 500);
+
+		// 4. Disabled passthrough leaves `*out` untouched.
+		CONFIG.write().unwrap().enabled = false;
+		unsafe {
+			detour::subject_income(
+				overlord.as_mut_ptr().cast(),
+				&mut out,
+				wls.as_mut_ptr().cast(),
+				std::ptr::null_mut(),
+			);
+		}
+		assert_eq!(out, 1000);
+	}
+
+	#[test]
+	fn packed_country_tag_validation_rejects_malformed_and_null_page() {
+		let memory = Memory;
+		// Valid packed tag.
+		let valid = pack_country_tag(b"C01", 300, 1);
+		assert_eq!(
+			detour::decode_packed_country_tag(valid, true),
+			Some(("C01".into(), 300))
+		);
+		// Missing valid flag rejected when required (distinguishes canonical x64 pointers).
+		let no_flag = pack_country_tag(b"C01", 300, 0);
+		assert_eq!(detour::decode_packed_country_tag(no_flag, true), None);
+		assert_eq!(
+			detour::decode_packed_country_tag(no_flag, false),
+			Some(("C01".into(), 300))
+		);
+		// Non-zero byte 3 (not NUL-terminated), lowercase chars, negative or >=1024 index.
+		assert_eq!(
+			detour::decode_packed_country_tag(
+				u64::from_le_bytes([b'F', b'R', b'A', b'X', 1, 0, 0, 1]),
+				false
+			),
+			None
+		);
+		assert_eq!(
+			detour::decode_packed_country_tag(pack_country_tag(b"fra", 1, 1), false),
+			None
+		);
+		assert_eq!(
+			detour::decode_packed_country_tag(pack_country_tag(b"FRA", -1, 1), false),
+			None
+		);
+		assert_eq!(
+			detour::decode_packed_country_tag(pack_country_tag(b"FRA", 1024, 1), false),
+			None
+		);
+		// Null page / overflow refused without faulting.
+		assert_eq!(detour::read_country_tag(&memory, 0), None);
+		assert_eq!(detour::read_country_tag(&memory, 0x1000), None);
+		assert_eq!(detour::read_country_tag(&memory, usize::MAX), None);
 	}
 }

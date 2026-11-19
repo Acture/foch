@@ -74,12 +74,11 @@ kind = "discriminant"
 provenance = "140b1a180 switch param_3; 1402f7e90 checks *(u8*)(country+0x28a6)"
 
 [subject_tag]
-# Not yet mapped: country object id pair is at +0x20 (high u16 = country
-# index into the DAT_14233d8d0+0x118 array); the tag string lookup is still
-# open. Until then tag overrides fall back to the tributary kind coefficient.
+# Inline packed country identity at CCountry+0x20 (foch_runtime::dataplane::layout::country::TAG):
+# bytes[0..3] = 3-byte uppercase/digit ASCII tag, bytes[3] = 0, bytes[4..6] = i16 country index.
 offsets = [0x20]
-kind = "tag_pointer"
-provenance = "partial: country id pair confirmed, string table unresolved"
+kind = "inline_tag"
+provenance = "verified: foch_runtime::dataplane::layout::country::TAG and CountryRef::from_packed"
 
 [[kind_values]]
 value = 1

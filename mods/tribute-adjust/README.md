@@ -25,7 +25,7 @@
 | vassal/colony 收入类别号 | 待运行时识别:`AddIncome` hook pattern 已就绪,先挂日志再启用缩放 |
 | **真机数值验证(朝贡)** | **完成**:MNG 1444+60 天(ai=on 跨年):100% ≥195 / 50% [175,185) / 0% [140,160) |
 | **真机数值验证(附庸)** | **完成**:ENG 释放威尔士(base_tax+8 放大信号),vassal_share 0.4→0 [55,70) vs 0.4→0.8 [70,85) |
-| tag ↔ 国家 映射 | 部分(country+0x20 id 对已确认,字符串表未定位;tag 覆盖暂回退类别系数) |
+| tag ↔ 国家 映射 | 完成(`foch_runtime::dataplane` 守卫读取 `country+0x20` 内联三字 ASCII tag，`tribute_executor` / `subject_income` 按 tag 覆盖与残差缩放已接通单测，待真机回归) |
 | 游戏内滑块面板(Ctrl+Shift+T,ImGui) | 待做 |
 
 签名表条目 `unverified` 时插件 init 会 REFUSE 并说明缺口——绝不按猜测 hook。
