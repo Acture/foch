@@ -2,6 +2,7 @@
 
 pub mod composition;
 pub mod native;
+mod probe;
 pub mod profile;
 pub mod settlement;
 pub mod trust;

@@ -2,10 +2,10 @@
 //! side's terms into the active offer for the submitted action and restores
 //! the editor afterwards; the native evaluation of a merged offer is verified
 //! only in game, so anything unexpected still refuses to submit.
-use crate::{bridge, composition, native, profile, settlement, ui};
+use crate::{bridge, composition, native, probe, profile, settlement, ui};
 use core::ffi::c_void;
 use foch_plugin_sdk::{self as abi, FochHostApi, FochPluginApi, FochStatus, FochStr};
-use foch_runtime::dataplane::Memory;
+use foch_runtime::dataplane::{self, Memory};
 use std::{
 	panic::{AssertUnwindSafe, catch_unwind},
 	sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicUsize, Ordering},
@@ -16,6 +16,7 @@ static HOST: AtomicPtr<FochHostApi> = AtomicPtr::new(std::ptr::null_mut());
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static STATE: AtomicI32 = AtomicI32::new(abi::state::INACTIVE);
 static WARNED: AtomicBool = AtomicBool::new(false);
+static PROBE_DONE: AtomicBool = AtomicBool::new(false);
 
 /// One submitted mixed offer awaiting settlement: a plugin-owned snapshot of
 /// the give side's terms plus the submitted parties. The execution hook
@@ -125,6 +126,9 @@ unsafe extern "C" fn init(host: *const FochHostApi) -> i32 {
 			log(abi::log::ERROR, &error.to_string());
 		}
 	}
+	// The probe rides the economy tick even when the editor redirects are off
+	// or failed: it only reads flags and emits a receipt.
+	install_tick_probe(host);
 	// The host retains the plugin even after a failed partial patch rollback.
 	abi::result::OK
 }
@@ -439,6 +443,132 @@ fn receipt(payload: &[(&str, &str)]) {
 	);
 }
 
+// ── Tick-based probe entry ─────────────────────────────────────────────
+
+/// Host-owned cell holding the next economy-tick detour. Re-read on every
+/// call so a later hook can relink the chain.
+static TICK_CELL: AtomicUsize = AtomicUsize::new(0);
+
+/// Forwards the pinned economy update, then reads `foch_peace_probe_*` flags.
+/// The signature matches the trade plugin's detour: `(context, flag) -> ()`.
+///
+/// # Safety
+/// Installed only on the verified economy-update prologue. The host owns the
+/// next cell for the process lifetime.
+unsafe extern "C" fn tick_detour(context: *mut c_void, flag: u8) {
+	let cell = TICK_CELL.load(Ordering::Acquire) as *const *const c_void;
+	if cell.is_null() {
+		return;
+	}
+	let next = unsafe { *cell };
+	if next.is_null() {
+		return;
+	}
+	let original: unsafe extern "C" fn(*mut c_void, u8) = unsafe { std::mem::transmute(next) };
+	unsafe { original(context, flag) };
+	if PROBE_DONE.load(Ordering::Acquire) {
+		return;
+	}
+	let outcome = catch_unwind(AssertUnwindSafe(|| observe_probe(context as usize)));
+	match outcome {
+		Ok(Ok(None)) => {}
+		Ok(Ok(Some(line))) => {
+			PROBE_DONE.store(true, Ordering::Release);
+			log(
+				abi::log::INFO,
+				"Peace probe submitted a constructed mixed offer",
+			);
+			log(abi::log::INFO, &line);
+		}
+		Ok(Err(reason)) => {
+			PROBE_DONE.store(true, Ordering::Release);
+			log(abi::log::ERROR, &reason);
+		}
+		Err(_) => {
+			PROBE_DONE.store(true, Ordering::Release);
+			log(abi::log::WARN, "Panic while reading the peace probe flags");
+		}
+	}
+}
+
+fn observe_probe(context: usize) -> Result<Option<String>, String> {
+	let base = BASE.load(Ordering::Acquire);
+	if dataplane::Eu4Game::context_of(&Memory, base, context).is_none() {
+		return Ok(None);
+	}
+	let host = HOST.load(Ordering::Acquire);
+	if host.is_null() {
+		return Ok(None);
+	}
+	let digest = unsafe { (*host).exe_sha256.as_str() }
+		.unwrap_or("")
+		.to_owned();
+	let game = dataplane::Eu4Game {
+		memory: Memory,
+		exe_base: base,
+		context,
+	};
+	let snapshots = unsafe { probe::snapshots(&game, &digest) };
+	probe::interpret(&snapshots)
+		.map(|found| found.map(|submission| submission.receipt()))
+		.map_err(|error| error.to_string())
+}
+
+/// Installs the economy-tick hook used by the directed-pacts probe. A
+/// signature or RVA mismatch leaves the editor running and the probe dark.
+fn install_tick_probe(host: *const FochHostApi) {
+	let host_ref = unsafe { &*host };
+	let base = host_ref.exe_base as usize;
+	let Some(tick) = base.checked_add(dataplane::layout::TICK_RVA) else {
+		log(abi::log::WARN, "peace probe tick address overflowed");
+		return;
+	};
+	if host_ref.exe_base.is_null() || dataplane::layout::TICK_RVA >= host_ref.exe_size {
+		log(
+			abi::log::WARN,
+			"peace probe tick lies outside the game image",
+		);
+		return;
+	}
+	let mut resolved = std::ptr::null_mut();
+	let code = unsafe {
+		(host_ref.find_pattern)(host, FochStr::from_str(probe::TICK_PATTERN), &mut resolved)
+	};
+	if code != abi::result::OK || resolved as usize != tick {
+		log(
+			abi::log::WARN,
+			"peace probe tick signature did not match the pinned economy update",
+		);
+		return;
+	}
+	let mut next: *const *const c_void = std::ptr::null();
+	let mut hook: *mut abi::FochHook = std::ptr::null_mut();
+	let code = unsafe {
+		(host_ref.hook_create)(
+			host,
+			resolved,
+			tick_detour as *mut c_void,
+			0,
+			&mut next,
+			&mut hook,
+		)
+	};
+	if code != abi::result::OK || next.is_null() || hook.is_null() {
+		log(
+			abi::log::WARN,
+			&format!("peace probe tick hook refused by the host: code {code}"),
+		);
+		return;
+	}
+	TICK_CELL.store(next as usize, Ordering::Release);
+	let enabled = unsafe { (host_ref.hook_set_enabled)(host, hook, 1) };
+	if enabled != abi::result::OK {
+		log(abi::log::WARN, "peace probe tick hook could not be enabled");
+	} else {
+		log(abi::log::INFO, "peace probe tick hook installed");
+	}
+}
+
 /// Runs every executed peace offer. If a mixed submission's give side was
 /// dropped by the response pipeline, its snapshot's terms are injected back
 /// into the settling offer first — with the same net repricing — so both
@@ -620,5 +750,37 @@ unsafe extern "system" fn execute(offer: *mut u8) {
 			abi::log::INFO,
 			"executed peace offer outside the verified editor layout",
 		),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{PROBE_DONE, TICK_CELL, tick_detour};
+	use core::ffi::c_void;
+	use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+	#[test]
+	fn tick_detour_forwards_every_flag_and_rereads_the_cell() {
+		static RECEIVED: AtomicUsize = AtomicUsize::new(0);
+		unsafe extern "C" fn first(context: *mut c_void, flag: u8) {
+			RECEIVED.store((context as usize) ^ usize::from(flag), Ordering::Release);
+		}
+		unsafe extern "C" fn second(context: *mut c_void, flag: u8) {
+			RECEIVED.store(
+				0x1_000 + usize::from(flag) + (context as usize & 0xff),
+				Ordering::Release,
+			);
+		}
+		let cell = AtomicPtr::new(first as *mut c_void);
+		TICK_CELL.store(cell.as_ptr() as usize, Ordering::Release);
+		PROBE_DONE.store(false, Ordering::Release);
+		unsafe { tick_detour(0x2400usize as *mut c_void, 7) };
+		assert_eq!(RECEIVED.load(Ordering::Acquire), 0x2400 ^ 7);
+		cell.store(second as *mut c_void, Ordering::Release);
+		unsafe { tick_detour(0x30usize as *mut c_void, 9) };
+		assert_eq!(RECEIVED.load(Ordering::Acquire), 0x1_000 + 9 + 0x30);
+		TICK_CELL.store(0, Ordering::Release);
+		unsafe { tick_detour(0x2400usize as *mut c_void, 1) };
+		assert_eq!(RECEIVED.load(Ordering::Acquire), 0x1_000 + 9 + 0x30);
 	}
 }

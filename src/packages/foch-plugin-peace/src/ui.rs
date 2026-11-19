@@ -10,6 +10,10 @@ const GIVE_HEADING: &[u8] = b"\n\nYOU GIVE (-)\n";
 /// visible without scrolling.
 const NET_HEADING: &[u8] = b"NET DEAL: ";
 const NET_TAIL: &[u8] = b"\n\n";
+/// Appended to the demand tab's existing localized title.
+pub const DEMAND_TAB_MARKER: &[u8] = b" (+)";
+/// Appended to the offer tab's existing localized title.
+pub const OFFER_TAB_MARKER: &[u8] = b" (-)";
 
 /// Renders a cached per-mille warscore value as a signed percent string.
 pub fn permille_percent(value: i32) -> String {
@@ -57,6 +61,23 @@ pub fn agreement_summary(
 	text.extend_from_slice(GIVE_HEADING);
 	text.extend_from_slice(give);
 	CString::new(text).map_err(|_| "native peace summary contains an embedded NUL")
+}
+
+/// Keeps the widget's current title — the game's localization, or a UI mod's
+/// replacement — and appends one direction marker. A title that already ends
+/// with that marker is unchanged, so a summary refresh does not stack suffixes.
+pub fn annotated_tab_title(original: &[u8], marker: &[u8]) -> Result<CString, &'static str> {
+	if marker != DEMAND_TAB_MARKER && marker != OFFER_TAB_MARKER {
+		return Err("unknown peace tab marker");
+	}
+	let body = original.strip_suffix(marker).unwrap_or(original);
+	if body.len().saturating_add(marker.len()) > 256 {
+		return Err("localized tab title is too long");
+	}
+	let mut text = Vec::with_capacity(body.len() + marker.len());
+	text.extend_from_slice(body);
+	text.extend_from_slice(marker);
+	CString::new(text).map_err(|_| "localized tab title contains an embedded NUL")
 }
 
 #[cfg(windows)]
@@ -195,12 +216,14 @@ pub(crate) mod windows {
 		}
 		let combined = agreement_summary(&receive, &give, receive_score, give_score)?;
 		unsafe { set_text(base, desc, &combined) };
-		for (name, title) in [
-			(c"demand_tab_title", c"Receive (+)"),
-			(c"offer_tab_title", c"Give (-)"),
+		for (name, marker) in [
+			(c"demand_tab_title", DEMAND_TAB_MARKER),
+			(c"offer_tab_title", OFFER_TAB_MARKER),
 		] {
 			if let Some(text) = unsafe { find_text(view, name) } {
-				unsafe { set_text(base, text, title) };
+				let original = unsafe { read_text(text) }?;
+				let title = annotated_tab_title(&original, marker)?;
+				unsafe { set_text(base, text, &title) };
 			}
 		}
 		Ok(())
@@ -326,5 +349,41 @@ mod tests {
 	#[test]
 	fn rejects_nul_that_would_hide_the_rest_of_the_agreement() {
 		assert!(agreement_summary(b"one\0two", b"three", 0, 0).is_err());
+	}
+
+	#[test]
+	fn tab_titles_keep_the_localized_text_and_append_a_direction_marker() {
+		let demand = annotated_tab_title("需求".as_bytes(), DEMAND_TAB_MARKER).unwrap();
+		let offer = annotated_tab_title(b"\xa7Y\xc8\xce\xa7!", OFFER_TAB_MARKER).unwrap();
+		assert_eq!(demand.to_bytes(), "需求 (+)".as_bytes());
+		assert_eq!(offer.to_bytes(), b"\xa7Y\xc8\xce\xa7! (-)");
+		assert_eq!(
+			annotated_tab_title(demand.to_bytes(), DEMAND_TAB_MARKER)
+				.unwrap()
+				.to_bytes(),
+			demand.to_bytes()
+		);
+		let custom = annotated_tab_title(b"Spoils", DEMAND_TAB_MARKER).unwrap();
+		assert_eq!(custom.to_bytes(), b"Spoils (+)");
+		assert!(
+			!custom
+				.to_bytes()
+				.windows(7)
+				.any(|bytes| bytes == b"Receive")
+		);
+		assert!(!offer.to_bytes().windows(4).any(|bytes| bytes == b"Give"));
+	}
+
+	#[test]
+	fn tab_titles_reject_a_nul_and_an_oversized_localization() {
+		assert!(annotated_tab_title(b"one\0two", DEMAND_TAB_MARKER).is_err());
+		assert!(annotated_tab_title(&vec![b'x'; 253], OFFER_TAB_MARKER).is_err());
+		assert!(annotated_tab_title(b"Demand", b" (?)").is_err());
+		assert_eq!(
+			annotated_tab_title(b"", DEMAND_TAB_MARKER)
+				.unwrap()
+				.to_bytes(),
+			b" (+)"
+		);
 	}
 }
