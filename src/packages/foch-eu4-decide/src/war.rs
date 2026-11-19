@@ -2,11 +2,11 @@
 //!
 //! Participant ids sit in the two lists on the war. A country's provinces are a
 //! linked list at [`country::PROVINCES`]. Each province is
-//! [`shared_province::CPROVINCE_SIZE`] bytes, which is the stride multiplied by
-//! the index stored in the list node.
+//! [`foch_runtime::dataplane::Province::record_span`] bytes, which is the stride
+//! multiplied by the index stored in the list node.
 
 use foch_eu4_state::candidates::{country, province, war};
-use foch_runtime::dataplane::layout::{country as shared_country, province as shared_province};
+use foch_runtime::dataplane::{CountryView, Province};
 
 const WAR_BYTES: usize = 0x1c0;
 const COUNTRY_BYTES: usize = 0x1900;
@@ -76,7 +76,7 @@ impl WarObjects {
 	pub fn add_province(&mut self, owner: u16, controller: u16, flags: u8) -> usize {
 		self.ensure_country(owner);
 		self.ensure_country(controller);
-		let mut province = vec![0; shared_province::CPROVINCE_SIZE];
+		let mut province = vec![0; Province::record_span()];
 		write_u32(&mut province, province::MARK, self.provinces.len() as u32);
 		write_u64(&mut province, province::OWNER_INDEX, country_id(owner));
 		write_u64(&mut province, province::CONTROLLER, country_id(controller));
@@ -97,11 +97,8 @@ impl WarObjects {
 
 	pub fn set_treasury(&mut self, country: u16, value: i32) {
 		self.ensure_country(country);
-		write_i32(
-			&mut self.countries[usize::from(country)],
-			shared_country::TREASURY,
-			value,
-		);
+		CountryView::write_treasury_record(&mut self.countries[usize::from(country)], value)
+			.expect("country record includes the treasury field");
 	}
 
 	/// Change one province's controller and occupied flags, the way a
@@ -289,7 +286,7 @@ mod tests {
 		assert!(war.province_is_occupied(province));
 		assert_eq!(read_i32(war.country(1), country::MANPOWER), 12_000);
 		assert_eq!(read_i32(war.country(1), country::MANPOWER_MAX), 20_000);
-		assert_eq!(read_i32(war.country(1), shared_country::TREASURY), 350);
+		assert_eq!(CountryView::treasury_record(war.country(1)), Some(350));
 		assert_eq!(read_u32(war.country(2), country::MARK), province as u32);
 		assert_eq!(
 			country_index(read_u64(war.country(2), country::OVERLORD)),

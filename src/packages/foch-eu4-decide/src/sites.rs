@@ -1,12 +1,12 @@
 //! Load functions in the installed EU4 1.37.5 `eu4.exe`.
 //!
 //! `1.37.5.json` records a different binary hash, so these RVAs belong only to
-//! [`foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256`]. [`LoadSite::load_rva`]
+//! [`foch_runtime::dataplane::pinned_exe_sha256`]. [`LoadSite::load_rva`]
 //! is the function that merges one directory into the database. When it returns,
 //! the database holds one object per key. The name to copy is the string on that
 //! object, at [`EntryName::offset`].
 //!
-//! Live-memory struct field offsets live in [`foch_runtime::dataplane::layout`]
+//! Live-memory struct field offsets live in the shared dataplane views
 //! (verified) and [`foch_eu4_state::candidates`] (candidate), never duplicated here.
 
 use crate::LoadedDatabase;
@@ -213,8 +213,8 @@ pub const CALC_MANPOWER_INCREASE: GameFn = GameFn {
 	],
 };
 
-/// Writes the treasury. The log is `SetTreasury, %s, %d`. The value is stored at
-/// [`foch_runtime::dataplane::layout::country::TREASURY`].
+/// Writes the treasury. The log is `SetTreasury, %s, %d`. The value is the
+/// country view's treasury ([`foch_runtime::dataplane::CountryView::treasury`]).
 pub const SET_TREASURY: GameFn = GameFn {
 	name: "SetTreasury",
 	rva: 0x0033_84c0,
@@ -338,7 +338,7 @@ mod tests {
 		let digest = sha256(&bytes);
 		assert_eq!(
 			digest,
-			foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256,
+			foch_runtime::dataplane::pinned_exe_sha256(),
 			"eu4.exe hash changed; RVAs are stale"
 		);
 		for site in SITES {

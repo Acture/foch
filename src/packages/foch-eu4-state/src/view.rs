@@ -509,9 +509,9 @@ mod tests {
 	#[cfg(windows)]
 	#[test]
 	fn verified_game_reads_controller_occupied_and_mark_from_province_buffer() {
-		let mut words = vec![0_u64; shared::CPROVINCE_SIZE / 8];
+		let mut words = vec![0_u64; Province::record_span() / 8];
 		let base = words.as_mut_ptr() as *mut u8;
-		// SAFETY: every offset is inside `words` (length `CPROVINCE_SIZE`),
+		// SAFETY: every offset is inside `words` (one province record),
 		// which is validated by `candidates::tests`.
 		unsafe {
 			let mark = 0x1234_5678_u32.to_le_bytes();
@@ -524,7 +524,7 @@ mod tests {
 			);
 			*base.add(candidates::province::FLAGS) = candidates::province::OCCUPIED_MASK | 0x01;
 		}
-		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let expected = foch_runtime::dataplane::pinned_exe_sha256();
 		let game = VerifiedGame::new(Memory, base as usize, expected)
 			.expect("shared pinned digest must open the gate");
 		let province = base as usize;
@@ -602,7 +602,7 @@ mod tests {
 			write_qword(base + candidates::combat_side::AMOUNT_LIST, dice as u64);
 			write_i32(base + candidates::combat_side::REGIMENT_COUNT, 1);
 		}
-		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let expected = foch_runtime::dataplane::pinned_exe_sha256();
 		let game = VerifiedGame::new(Memory, base, expected).expect("pinned digest opens the gate");
 		let counts = game.regiment_counts(base).expect("walk");
 		assert_eq!(counts.infantry, 10);
@@ -632,7 +632,7 @@ mod tests {
 				(second + candidates::unit::STRIDE) as u64,
 			);
 		}
-		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let expected = foch_runtime::dataplane::pinned_exe_sha256();
 		let game = VerifiedGame::new(Memory, base, expected).expect("pinned digest opens the gate");
 		assert_eq!(game.present_unit_types(base), Some(vec![4]));
 		let record = base + 0x300;

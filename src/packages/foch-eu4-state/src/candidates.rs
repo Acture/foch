@@ -52,8 +52,8 @@ pub mod province {
 	pub const LINK_NEXT: usize = 0x10;
 }
 
-/// Candidate fields on `CCountry` beyond the verified
-/// [`foch_runtime::dataplane::layout::country`] fields (`TAG`, `TREASURY`).
+/// Candidate fields on `CCountry` beyond the verified country view
+/// ([`foch_runtime::dataplane::CountryView::treasury`] and the packed tag).
 pub mod country {
 	/// Current manpower on the country object (`SetManpower`).
 	pub const MANPOWER: usize = 0xdb8;

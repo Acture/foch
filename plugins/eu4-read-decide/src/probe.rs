@@ -3,7 +3,7 @@
 //! Configuration (`{"probe":true,"graph":"…","weights":"…","our_tag":"SWE",
 //! "our_index":N}`) gates everything; without it the plugin stays
 //! REFUSED and installs nothing. The hook rides the shared verified
-//! monthly tick (pattern-checked at `layout::TICK_RVA`), reads one
+//! monthly tick ([`foch_runtime::dataplane::resolve_monthly_tick`]), reads one
 //! frame through the gated candidate readers, scores it with the
 //! loaded GeneralGnn, and logs a single `FOCH_RECEIPT/1` line. The
 //! detour only ever reads — no game memory writes, no orders.
@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use foch_plugin_sdk::{FochHostApi, FochStr, log, result};
 use foch_runtime::dataplane::Memory;
-use foch_runtime::dataplane::layout;
 
 use serde::Deserialize;
 
@@ -22,10 +21,6 @@ use crate::decide::suggest;
 use crate::frame::{ArmySnapshot, DynamicProvince, FrameInput, WarFacts, assemble};
 use crate::graph::{self, StaticGraph};
 use crate::terrain::TerrainCodec;
-
-/// The pattern the host must find at the tick RVA before any hook is
-/// installed — identical to the trade line's verified probe.
-const TICK_PATTERN: &str = "48 89 5C 24 ?? 48 89 6C 24 ?? 57 48 81 EC";
 
 struct Probe {
 	host: usize,
@@ -183,18 +178,9 @@ pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), Str
 	let gnn = foch_eu4_gnn::GeneralGnn::from_json(&weights)
 		.ok_or("weight asset rejected: malformed or mismatched shapes")?;
 
-	let tick = (host.exe_base as usize)
-		.checked_add(layout::TICK_RVA)
-		.ok_or("tick address overflow")?;
-	let required = layout::CONTEXT_GLOBAL_RVA.max(layout::COUNTRY_MANAGER_GLOBAL_RVA) + 8;
-	if host.exe_base.is_null() || host.exe_size < required || layout::TICK_RVA >= host.exe_size {
-		return Err("host image does not contain the pinned game fields".into());
-	}
-	let mut resolved = std::ptr::null_mut();
-	let code = unsafe { (host.find_pattern)(host, FochStr::from_str(TICK_PATTERN), &mut resolved) };
-	if code != result::OK || resolved as usize != tick {
-		return Err("verified monthly tick signature or RVA did not match".into());
-	}
+	// SAFETY: `host` is the live table for this plugin init. The resolved
+	// pointer is the pinned monthly tick inside that image.
+	let resolved = unsafe { foch_runtime::dataplane::resolve_monthly_tick(host) }?;
 	let mut next = std::ptr::null();
 	let mut hook = std::ptr::null_mut();
 	let code = unsafe {
