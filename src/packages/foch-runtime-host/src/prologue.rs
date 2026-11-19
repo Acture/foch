@@ -389,6 +389,13 @@ mod tests {
 		let mut call = [0x90; 14];
 		call[..5].copy_from_slice(&[0xE8, 0, 0, 0, 0]);
 		assert_eq!(steal_len(&call), None);
+		// Pinned EU4 1.37.5 cost rebuild at 0x978b20: three home-slot saves.
+		let rebuild = [
+			0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+			0x18,
+		];
+		assert_eq!(steal_len(&rebuild), Some(15));
+		assert!(rip_operands(&rebuild, 15).unwrap().is_empty());
 		let mut split = [0x90; 16];
 		split[..10].copy_from_slice(&[0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0]);
 		split[10..15].copy_from_slice(&[0xB8, 1, 0, 0, 0]);
