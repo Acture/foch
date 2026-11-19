@@ -207,16 +207,38 @@ def _lea_targets(image: PEImage, targets: frozenset[int]) -> tuple[int, ...]:
 	return tuple(insns)
 
 
-def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
-	"""Handler begins found in the static registration tables.
+def _cstring_at(image: PEImage, address: int) -> str | None:
+	"""A short ASCII C string at a loaded-image address, if one is there."""
+	if address < image.image_base:
+		return None
+	rva: int = address - image.image_base
+	for section in image.sections:
+		if not section.contains_rva(rva):
+			continue
+		if rva >= section.rva + section.file_size:
+			return None
+		offset: int = section.offset_of(rva)
+		end: int = image.data.find(b"\0", offset, min(offset + 80, len(image.data)))
+		if end <= offset:
+			return None
+		raw: bytes = image.data[offset:end]
+		if raw and all(32 <= byte < 127 for byte in raw):
+			return raw.decode("ascii")
+		return None
+	return None
 
-	Effect families register through initialized data: a qword holding the
-	keyword string's address sits in a table entry whose neighborhood
-	carries the handler's code address (verified against EU4 1.37.5, whose
-	effect table reads {kind, name, 0, parameter text, 0, 0, tooltip,
-	handler}). A window of qwords around each pointer hit is scanned for
-	values that are recorded function begins; only unambiguous hits —
-	exactly one — are returned, never guesses.
+
+def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
+	"""Script-handler begins named by a static registration record.
+
+	The record that carries a keyword pointer puts the handler six qwords
+	later (verified on the synthetic effect entry and on EU4 1.37.5). A
+	wider neighborhood also sees the console-command table, whose records
+	share that handler slot but then point at an argument hint such as
+	``<Flag>`` or ``<Amount>``. Those are console commands, not the script
+	effect or trigger, so a hint drops the hit instead of pinning it.
+	Only an unambiguous remaining handler is returned; several candidates
+	or none is not a guess.
 	"""
 	text = next((s for s in image.sections if s.name == ".text"), None)
 	if text is None:
@@ -225,9 +247,9 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 	text_end = text.rva + max(text.virtual_size, text.file_size) + image.image_base
 	starts = set(image.function_starts)
 	handlers: list[int] = []
-	# The neighborhood window around a pointer hit: the first read dips 8
-	# bytes behind the hit and the last needs 8 bytes at hit + 0x38.
-	window_last = 0x38 + 8
+	# Name pointer, then the handler qword at +0x30, then the qword at
+	# +0x40 that a console command uses for its argument hint.
+	window_last = 0x40 + 8
 	# Only hits inside a section's raw extent count; anything past the
 	# section table is overlay noise an appended blob can plant at will.
 	backed = tuple(
@@ -243,10 +265,17 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 				and position + window_last <= len(image.data)
 				and any(begin <= position < end for begin, end in backed)
 			):
-				for offset in range(-8, 0x40, 8):
-					value = struct.unpack_from("<Q", image.data, position + offset)[0]
-					if text_begin <= value < text_end and value in starts:
-						handlers.append(value)
+				hint = _cstring_at(
+					image, struct.unpack_from("<Q", image.data, position + 0x40)[0]
+				)
+				# Console commands document their argument here. The script
+				# tables do not, so this is a shape check, not a name list.
+				if hint is not None and hint.startswith("<"):
+					position = image.data.find(needle, position + 1)
+					continue
+				value = struct.unpack_from("<Q", image.data, position + 0x30)[0]
+				if text_begin <= value < text_end and value in starts:
+					handlers.append(value)
 			position = image.data.find(needle, position + 1)
 	unique = set(handlers)
 	return tuple(sorted(unique)) if len(unique) == 1 else ()

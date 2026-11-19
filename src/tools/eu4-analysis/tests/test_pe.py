@@ -225,6 +225,49 @@ class TableHandlers(unittest.TestCase):
 			(IMAGE_BASE + TEXT_RVA + 0x110,),
 		)
 
+	def test_a_console_argument_hint_is_not_a_script_handler(self) -> None:
+		"""``<Flag>`` at +0x40 marks a console command, not the script effect.
+
+		EU4 1.37.5's command table uses the same handler slot as the
+		synthetic effect entry, then points at an argument hint. Pinning
+		that function would claim the console wrapper is the script effect.
+		"""
+		from eu4_analysis.pe import table_handlers
+
+		hint = b"<Flag>\0"
+		# Keywords occupy the front of .rdata; the entry follows them.
+		name_at = 8  # second qword of the entry
+		entry = struct.pack(
+			"<QQQQQQQQ",
+			1,
+			IMAGE_BASE + RDATA_RVA,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x40,
+			0,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x80,
+			IMAGE_BASE + TEXT_RVA + 0x110,
+		)
+		keyword_bytes = len(b"set_country_flag\0")
+		# Name sits at byte 8 of the entry; the hint qword is 0x40 past that,
+		# which is 8 bytes after the 64-byte record.
+		hint_rva = RDATA_RVA + keyword_bytes + len(entry) + 8 + 8
+		blob = build_pe(
+			("set_country_flag",),
+			(TEXT_RVA, b"\x90" * 0x110),
+			(TEXT_RVA + 0x110, b"\x90" * 0x20),
+			extra_rdata=entry
+			+ struct.pack("<Q", 1)
+			+ struct.pack("<Q", IMAGE_BASE + hint_rva)
+			+ hint,
+		)
+		self.assertEqual(name_at + 0x40, len(entry) + 8)
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_binary(path)
+		self.assertEqual(table_handlers(image, "set_country_flag"), ())
+
 	def test_two_pointer_hits_naming_the_same_handler_still_pin(self) -> None:
 		"""Two table entries naming the same handler agree; that is one."""
 		from eu4_analysis.pe import table_handlers

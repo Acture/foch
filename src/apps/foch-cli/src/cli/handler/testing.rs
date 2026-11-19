@@ -21,7 +21,7 @@ use foch_test::{
 	Interpretation, LayerFile, Outcome, ProjectFacts, RelPath, Report, RunArtifacts, RunContext,
 	Selector, SemanticsCatalog, SourceFile, SourceKind, Status, blocks_run, check_capabilities,
 	collect, compile, expand, group, interpret, judge, lint, overlay_decisions, overlay_history,
-	reconcile,
+	overlay_subject_types, reconcile,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -282,7 +282,12 @@ fn replace_paths_of(root: &Path) -> Result<Vec<String>> {
 /// path order; the caller orders the layers.
 fn read_content_layer(root: &Path, replace_paths: Vec<String>) -> Result<ContentLayer> {
 	let mut files = Vec::new();
-	for directory in ["decisions", "history/countries", "history/provinces"] {
+	for directory in [
+		"decisions",
+		"history/countries",
+		"history/provinces",
+		"common/subject_types",
+	] {
 		for path in directory_files(root, directory)? {
 			let relative = path
 				.strip_prefix(root)?
@@ -331,6 +336,10 @@ fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 			observe: !args.no_observe,
 			seed: None,
 			history: Some(timeline),
+			subject_types: Some(
+				overlay_subject_types(&layers)
+					.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?,
+			),
 		},
 	);
 	let requested_output = match &args.out {

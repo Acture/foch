@@ -832,3 +832,32 @@ fn offline_folds_mod_history_at_the_case_date() {
 		"{outcomes:?}"
 	);
 }
+
+#[test]
+fn offline_resolves_a_mod_subject_type() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/common/subject_types")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path()
+			.join("mod/common/subject_types/00_subject_types.txt"),
+		"default = {}\nee_tributary = { copy_from = default }\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/case.txt"),
+		"test = {\n\tname = subject\n\ttime = 1444.11.11\n\ttag = SWE\n\teffect = { create_subject = { subject_type = ee_tributary subject = NOR } }\n\texpect = { NOR = { is_subject_of = SWE is_subject_of_type = ee_tributary } }\n}\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"stdout={} stderr={}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert_eq!(json(&output)["results"][0]["outcome"], "pass");
+}

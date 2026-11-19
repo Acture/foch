@@ -50,6 +50,7 @@ fn interpret_fixture() -> foch_test::Interpretation {
 			observe: false,
 			seed: None,
 			history: None,
+			subject_types: None,
 		},
 	)
 }
@@ -203,6 +204,7 @@ fn interpret_corpus() -> foch_test::Interpretation {
 			observe: false,
 			seed: None,
 			history: None,
+			subject_types: None,
 		},
 	)
 }

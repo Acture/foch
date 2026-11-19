@@ -477,6 +477,76 @@
         "modeled start": "0"
       },
       "handler": null
+    },
+    "is_subject": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "yes when the country has an overlord"
+      },
+      "handler": null
+    },
+    "is_subject_of": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "the country's overlord is the named tag"
+      },
+      "handler": null
+    },
+    "is_subject_of_type": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "exact resolved subject type name"
+      },
+      "handler": null
+    },
+    "create_subject": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "current scope becomes overlord; subject_type must resolve in the ordered overlay"
+      },
+      "handler": null
+    },
+    "create_vassal": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a vassal link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "vassalize": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a vassal link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "release": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a vassal link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "create_march": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a march link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "create_union": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a personal_union link when that type resolves"
+      },
+      "handler": null
+    },
+    "grant_independence": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "clears the current country's subject link"
+      },
+      "handler": null
     }
   }
 }

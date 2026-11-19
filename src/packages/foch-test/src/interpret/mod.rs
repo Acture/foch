@@ -40,8 +40,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 pub use overlay::{
-	ContentLayer, CountrySlice, HistoryTimeline, LayerFile, ProvinceSlice, fold_history,
-	overlay_decisions, overlay_history,
+	ContentLayer, CountrySlice, HistoryTimeline, LayerFile, ProvinceSlice, SubjectTypeSet,
+	fold_history, overlay_decisions, overlay_history, overlay_subject_types,
 };
 pub use pins::{EvidenceStatus, HandlerPin, SemanticsCatalog};
 
@@ -68,11 +68,18 @@ const BUILTIN_EFFECTS: &[&str] = &[
 	"clr_country_flag",
 	"clr_global_flag",
 	"country_event",
+	"create_march",
+	"create_subject",
+	"create_union",
+	"create_vassal",
+	"grant_independence",
 	"log",
 	"random",
+	"release",
 	"set_country_flag",
 	"set_global_flag",
 	"set_variable",
+	"vassalize",
 ];
 const BUILTIN_TRIGGERS: &[&str] = &[
 	"always",
@@ -80,6 +87,9 @@ const BUILTIN_TRIGGERS: &[&str] = &[
 	"has_country_flag",
 	"has_global_flag",
 	"has_variable",
+	"is_subject",
+	"is_subject_of",
+	"is_subject_of_type",
 	"tag",
 ];
 
@@ -215,6 +225,9 @@ pub struct InterpretOptions {
 	/// Dated history from the ordered playset. Each case applies the blocks
 	/// on or before its own start date.
 	pub history: Option<HistoryTimeline>,
+	/// Subject types from the ordered playset. Absent means none resolve;
+	/// vanilla type names are not assumed.
+	pub subject_types: Option<SubjectTypeSet>,
 }
 
 /// Starting state the caller supplies from the game's own history files:
@@ -523,6 +536,7 @@ pub fn interpret(
 		observe: options.observe,
 		seed: options.seed.as_ref(),
 		history: options.history.as_ref(),
+		subject_types: options.subject_types.as_ref(),
 	};
 	Interpretation {
 		layer: LAYER,
@@ -571,9 +585,17 @@ struct World {
 	named: BTreeSet<Tag>,
 	/// Player-facing numeric stats; absent entries read as the modeled 0.
 	numbers: BTreeMap<Tag, BTreeMap<&'static str, f64>>,
+	/// Subject → overlord and subject type. One country has at most one overlord.
+	subjects: BTreeMap<Tag, SubjectLink>,
 	/// Observer mode: the run trace, recorded only when asked for.
 	trace: Vec<Observation>,
 	recording: bool,
+}
+
+/// A country's overlord and the subject type of that link.
+struct SubjectLink {
+	overlord: Tag,
+	kind: String,
 }
 
 impl World {
@@ -603,6 +625,37 @@ impl World {
 
 	fn country_mut(&mut self, tag: &Tag) -> &mut CountryState {
 		self.countries.entry(tag.clone()).or_default()
+	}
+
+	fn overlord_of(&self, tag: &Tag) -> Option<Tag> {
+		self.subjects.get(tag).map(|link| link.overlord.clone())
+	}
+
+	/// Record `subject` under `overlord`. A link that would make either
+	/// country its own overlord, directly or through the chain, is refused.
+	fn link_subject(&mut self, subject: Tag, overlord: Tag, kind: String) -> Result<(), String> {
+		if subject == overlord {
+			return Err(format!("{subject} cannot be its own subject"));
+		}
+		let mut cursor = Some(overlord.clone());
+		let mut guard = 0usize;
+		while let Some(tag) = cursor {
+			if tag == subject {
+				return Err(format!(
+					"linking {subject} under {overlord} would cycle the subject chain"
+				));
+			}
+			cursor = self.subjects.get(&tag).map(|link| link.overlord.clone());
+			guard += 1;
+			if guard > 64 {
+				return Err("subject chain is too deep to link".into());
+			}
+		}
+		self.named.insert(subject.clone());
+		self.named.insert(overlord.clone());
+		self.subjects
+			.insert(subject, SubjectLink { overlord, kind });
+		Ok(())
 	}
 }
 
@@ -670,6 +723,9 @@ impl ScopeCtx {
 enum ScopeKey {
 	Alias(&'static str),
 	Tag,
+	/// The current country's overlord. Resolved at execution; the scan still
+	/// walks the block, because whether a subject link exists is runtime state.
+	Overlord,
 }
 
 /// Whether `key` opens a scope block in this context. `NOT`/`AND` are logic
@@ -677,6 +733,9 @@ enum ScopeKey {
 /// condition blocks, exactly as the lint's footprint over-approximation
 /// decides.
 fn scope_key(key: &str, context: Context) -> Option<ScopeKey> {
+	if key == "overlord" {
+		return Some(ScopeKey::Overlord);
+	}
 	if let Some(alias) = ALIASES.iter().find(|alias| **alias == key) {
 		return Some(ScopeKey::Alias(alias));
 	}
@@ -731,6 +790,8 @@ struct Interpreter<'a> {
 	seed: Option<&'a SeedFacts>,
 	/// Dated history, folded at each case's start date.
 	history: Option<&'a HistoryTimeline>,
+	/// Resolved subject types. A missing set resolves nothing.
+	subject_types: Option<&'a SubjectTypeSet>,
 	/// Observer mode: record each case's run trace.
 	observe: bool,
 }
@@ -809,6 +870,7 @@ impl<'a> Interpreter<'a> {
 			government_ranks: BTreeMap::new(),
 			named: BTreeSet::from([case.start.tag.clone()]),
 			numbers: BTreeMap::new(),
+			subjects: BTreeMap::new(),
 			trace: Vec::new(),
 			recording: self.observe,
 		};
@@ -1797,6 +1859,24 @@ impl<'a> Interpreter<'a> {
 	}
 
 	/// Execute one authored effect block in the given scope.
+	/// `name` may be used only when the ordered subject-type overlay resolved it.
+	fn require_subject_type(&self, name: &str, where_: &SourceSpan) -> Result<(), String> {
+		let Some(set) = self.subject_types else {
+			return Err(format!(
+				"{where_}: subject type {name} is not in the ordered subject_types overlay"
+			));
+		};
+		if set.resolved.contains(name) {
+			return Ok(());
+		}
+		if let Some(reason) = set.unresolved.get(name) {
+			return Err(format!("{where_}: subject type {name} {reason}"));
+		}
+		Err(format!(
+			"{where_}: subject type {name} is not in the ordered subject_types overlay"
+		))
+	}
+
 	fn exec_block(
 		&self,
 		world: &mut World,
@@ -1945,6 +2025,10 @@ impl<'a> Interpreter<'a> {
 					format!("{where_}: {alias} has no scope to name at this position")
 				})?,
 				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
+				ScopeKey::Overlord => match world.overlord_of(&ctx.current) {
+					Some(overlord) => overlord,
+					None => return Ok(()),
+				},
 			};
 			world.named.insert(tag.clone());
 			return self.exec_statements(world, &ctx.enter(&tag), items, where_, visited);
@@ -2181,6 +2265,57 @@ impl<'a> Interpreter<'a> {
 					},
 				);
 			}
+			"create_subject" => {
+				let (subject, kind) = subject_creation(value).ok_or_else(|| {
+					format!("{where_}: create_subject needs subject_type and who or subject")
+				})?;
+				self.require_subject_type(&kind, where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), kind)
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"create_vassal" | "vassalize" | "release" => {
+				let subject = Tag::parse(
+					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				self.require_subject_type("vassal", where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), "vassal".into())
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"create_march" => {
+				let subject = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: create_march needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				self.require_subject_type("march", where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), "march".into())
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"create_union" => {
+				let subject = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: create_union needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				self.require_subject_type("personal_union", where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), "personal_union".into())
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"grant_independence" => {
+				let free = boolean(value).ok_or_else(|| {
+					format!(
+						"{where_}: grant_independence needs yes, or a block the model does not read"
+					)
+				})?;
+				if free {
+					world.subjects.remove(&ctx.current);
+				}
+			}
 			"every_country" => {
 				self.catalog
 					.permits(key)
@@ -2372,6 +2507,10 @@ impl<'a> Interpreter<'a> {
 					format!("{where_}: {alias} has no scope to name at this position")
 				})?,
 				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
+				ScopeKey::Overlord => match world.overlord_of(&ctx.current) {
+					Some(overlord) => overlord,
+					None => return Ok(false),
+				},
 			};
 			return self.eval_statements(world, &ctx.enter(&tag), items, where_, depth + 1);
 		}
@@ -2467,6 +2606,32 @@ impl<'a> Interpreter<'a> {
 						.get(&ctx.current)
 						.is_some_and(|set| !set.is_empty());
 				at_war == wanted
+			}
+			"is_subject" => {
+				let wanted = boolean(value)
+					.ok_or_else(|| format!("{where_}: is_subject needs yes or no"))?;
+				world.subjects.contains_key(&ctx.current) == wanted
+			}
+			"is_subject_of" => {
+				let overlord = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: is_subject_of needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				world
+					.subjects
+					.get(&ctx.current)
+					.is_some_and(|link| link.overlord == overlord)
+			}
+			"is_subject_of_type" => {
+				let kind = name_of(value)
+					.ok_or_else(|| format!("{where_}: is_subject_of_type needs a subject type"))?
+					.to_string();
+				self.require_subject_type(&kind, where_)?;
+				world
+					.subjects
+					.get(&ctx.current)
+					.is_some_and(|link| link.kind == kind)
 			}
 			"alliance_with" => {
 				let other = Tag::parse(
@@ -2697,6 +2862,28 @@ fn split_chance(items: &[AstStatement]) -> Option<(f64, Vec<AstStatement>)> {
 	chance.map(|chance| (chance, body))
 }
 
+/// `create_subject`: the subject tag (`who` or `subject`) and `subject_type`.
+fn subject_creation(value: &AstValue) -> Option<(Tag, String)> {
+	let AstValue::Block { items, .. } = value else {
+		return None;
+	};
+	let mut kind = None;
+	let mut subject = None;
+	for statement in items {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		match key.as_str() {
+			"subject_type" => kind = name_of(value).map(str::to_string),
+			"who" | "subject" => {
+				subject = name_of(value).and_then(|text| Tag::parse(text).ok());
+			}
+			_ => {}
+		}
+	}
+	Some((subject?, kind?))
+}
+
 /// `limit` block and body of an `if`/`else_if` block; `None` unless exactly
 /// one `limit` is present.
 fn split_limit(items: &[AstStatement]) -> Option<(Vec<AstStatement>, Vec<AstStatement>)> {
@@ -2886,6 +3073,7 @@ mod tests {
 				observe: false,
 				seed: None,
 				history: None,
+				subject_types: None,
 			},
 		)
 	}
@@ -4425,6 +4613,7 @@ test = {
 				observe: true,
 				seed: None,
 				history: None,
+				subject_types: None,
 			},
 		);
 		let trace = &case(&observed, "observed").trace;
@@ -4574,6 +4763,7 @@ test = {
 				observe: false,
 				seed: Some(seed),
 				history: None,
+				subject_types: None,
 			},
 		);
 		let seeded_read = case(&result, "seeded_read");
@@ -4866,6 +5056,7 @@ test = {
 				observe: true,
 				seed: None,
 				history: None,
+				subject_types: None,
 			},
 		);
 		let toggled = case(&result, "toggled");
@@ -4918,6 +5109,7 @@ test = {
 				observe: true,
 				seed: None,
 				history: None,
+				subject_types: None,
 			},
 		);
 		let any_command = case(&result, "any_command");
@@ -5009,6 +5201,7 @@ test = {
 				observe: false,
 				seed: None,
 				history: Some(timeline),
+				subject_types: None,
 			},
 		);
 		assert_eq!(
@@ -5035,6 +5228,101 @@ test = {
 			not_yet.unsupported[0].contains("unknown until the case writes it"),
 			"{:#?}",
 			not_yet.unsupported
+		);
+	}
+
+	#[test]
+	fn subject_links_use_resolved_types_and_the_overlord_scope() {
+		let types = overlay_subject_types(&[ContentLayer {
+			replace_paths: Vec::new(),
+			files: vec![LayerFile {
+				path: "common/subject_types/00_subject_types.txt".into(),
+				text: "default = {}\nvassal = { copy_from = default }\nee_tributary = { copy_from = vassal }\n".into(),
+			}],
+		}])
+		.unwrap();
+		const CASES: &str = r#"test = {
+	name = linked
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		create_subject = { subject_type = ee_tributary subject = NOR }
+		NOR = { overlord = { set_country_flag = paid } }
+	}
+	expect = {
+		NOR = {
+			is_subject = yes
+			is_subject_of = SWE
+			is_subject_of_type = ee_tributary
+			overlord = { has_country_flag = paid }
+		}
+	}
+}
+test = {
+	name = freed
+	time = 1444.11.11
+	tag = NOR
+	effect = {
+		SWE = { create_vassal = NOR }
+		grant_independence = yes
+	}
+	expect = { is_subject = no }
+}
+test = {
+	name = unknown_type
+	time = 1444.11.11
+	tag = SWE
+	effect = { create_march = DAN }
+	expect = { always = yes }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: false,
+				seed: None,
+				history: None,
+				subject_types: Some(types),
+			},
+		);
+		assert_eq!(
+			case(&result, "linked").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "linked")
+		);
+		assert_eq!(
+			case(&result, "freed").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "freed")
+		);
+		let unknown = case(&result, "unknown_type");
+		assert_eq!(unknown.outcome, Outcome::Unsupported);
+		assert!(
+			unknown.unsupported[0].contains("march"),
+			"{:#?}",
+			unknown.unsupported
 		);
 	}
 

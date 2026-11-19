@@ -15,7 +15,7 @@ use crate::source::RelPath;
 use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
 use foch_annotation::value::scalar;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One layer of an ordered playset. Vanilla has an empty `replace_paths`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +51,17 @@ pub struct CountrySlice {
 	pub culture: Option<String>,
 	pub government: Option<String>,
 	pub government_rank: Option<i64>,
+}
+
+/// Subject types after `copy_from` resolution. A name in `resolved` may be
+/// used by `create_subject` and `is_subject_of_type`. A name in `unresolved`
+/// was declared, but its `copy_from` chain does not close.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubjectTypeSet {
+	pub resolved: BTreeSet<String>,
+	/// The `copy_from` parent each resolved type names, when it names one.
+	pub copy_from: BTreeMap<String, String>,
+	pub unresolved: BTreeMap<String, String>,
 }
 
 /// One province history assignment group.
@@ -377,6 +388,95 @@ fn province_id(path: &str) -> Option<u32> {
 	(id >= 1).then_some(id)
 }
 
+/// Subject types visible after the ordered playset, with `copy_from` resolved.
+///
+/// A later layer replaces the same relative path outright. Within the
+/// surviving files, a repeated type name keeps a `copy_from` the later block
+/// writes and otherwise keeps the earlier one. `replace_path` of
+/// `common/subject_types` (or a directory above it) drops every earlier file
+/// first. Vanilla type names are not filled in when the files do not ship them.
+pub fn overlay_subject_types(layers: &[ContentLayer]) -> Result<SubjectTypeSet, String> {
+	let mut copy_from: BTreeMap<String, Option<String>> = BTreeMap::new();
+	for file in visible_files(layers)
+		.into_iter()
+		.filter(|file| is_under(&file.path, "common/subject_types"))
+	{
+		for (name, parent) in subject_type_blocks(&file.path, &file.text)? {
+			let slot = copy_from.entry(name).or_insert(None);
+			if let Some(parent) = parent {
+				*slot = Some(parent);
+			}
+		}
+	}
+	Ok(resolve_subject_types(copy_from))
+}
+
+fn subject_type_blocks(path: &str, text: &str) -> Result<Vec<(String, Option<String>)>, String> {
+	let mut found = Vec::new();
+	for statement in parse_file(path, text)? {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		let mut parent = None;
+		for item in items {
+			let AstStatement::Assignment {
+				key: field, value, ..
+			} = item
+			else {
+				continue;
+			};
+			if field == "copy_from" {
+				parent = scalar(&value).ok();
+			}
+		}
+		found.push((key, parent));
+	}
+	Ok(found)
+}
+
+fn resolve_subject_types(types: BTreeMap<String, Option<String>>) -> SubjectTypeSet {
+	let mut resolved = BTreeSet::new();
+	let mut copy_from = BTreeMap::new();
+	let mut unresolved = BTreeMap::new();
+	for name in types.keys() {
+		let mut seen = BTreeSet::new();
+		let mut cursor = name.clone();
+		loop {
+			if !seen.insert(cursor.clone()) {
+				unresolved.insert(name.clone(), format!("copy_from cycle through {cursor}"));
+				break;
+			}
+			let Some(parent) = types.get(&cursor) else {
+				unresolved.insert(
+					name.clone(),
+					format!("copy_from {cursor} is not a subject type in the ordered overlay"),
+				);
+				break;
+			};
+			match parent.clone() {
+				None => {
+					resolved.insert(name.clone());
+					if let Some(parent) = types.get(name).cloned().flatten() {
+						copy_from.insert(name.clone(), parent);
+					}
+					break;
+				}
+				Some(parent) => cursor = parent,
+			}
+		}
+	}
+	SubjectTypeSet {
+		resolved,
+		copy_from,
+		unresolved,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -670,5 +770,73 @@ mod tests {
 		let early = fold_history(&timeline, GameDate::parse("1444.11.11").unwrap());
 		assert_eq!(early.countries[&Tag::parse("SWE").unwrap()].religion, None);
 		assert!(early.tags.contains(&Tag::parse("SWE").unwrap()));
+	}
+
+	#[test]
+	fn subject_types_follow_playset_order_and_copy_from() {
+		let vanilla = layer(
+			&[],
+			&[(
+				"common/subject_types/zzz_vanilla.txt",
+				"default = {}\nvassal = { copy_from = default }\nmy_type = { copy_from = default }\n",
+			)],
+		);
+		let later = layer(
+			&[],
+			&[(
+				"common/subject_types/aaa_mod.txt",
+				"other = {}\nmy_type = { copy_from = other }\nee_tributary = { copy_from = vassal }\n",
+			)],
+		);
+		let set = overlay_subject_types(&[vanilla, later]).unwrap();
+		assert!(set.resolved.contains("ee_tributary"));
+		assert_eq!(
+			set.copy_from.get("my_type").map(String::as_str),
+			Some("other")
+		);
+		assert!(set.unresolved.is_empty());
+	}
+
+	#[test]
+	fn replace_path_drops_subject_types_a_custom_type_still_copies() {
+		let vanilla = layer(
+			&[],
+			&[(
+				"common/subject_types/00_subject_types.txt",
+				"default = {}\nvassal = { copy_from = default }\n",
+			)],
+		);
+		let overhaul = layer(
+			&["common/subject_types"],
+			&[(
+				"common/subject_types/overhaul.txt",
+				"default = {}\nee_vassal = { copy_from = default }\nbroken = { copy_from = vassal }\n",
+			)],
+		);
+		let set = overlay_subject_types(&[vanilla, overhaul]).unwrap();
+		assert!(set.resolved.contains("ee_vassal"));
+		assert!(!set.resolved.contains("vassal"));
+		assert!(
+			set.unresolved
+				.get("broken")
+				.is_some_and(|reason| reason.contains("vassal")),
+			"{:?}",
+			set.unresolved
+		);
+	}
+
+	#[test]
+	fn a_copy_from_cycle_does_not_resolve() {
+		let layer = layer(
+			&[],
+			&[(
+				"common/subject_types/00.txt",
+				"left = { copy_from = right }\nright = { copy_from = left }\n",
+			)],
+		);
+		let set = overlay_subject_types(&[layer]).unwrap();
+		assert!(set.resolved.is_empty());
+		assert!(set.unresolved.contains_key("left"));
+		assert!(set.unresolved.contains_key("right"));
 	}
 }
