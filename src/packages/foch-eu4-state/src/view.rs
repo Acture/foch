@@ -197,6 +197,57 @@ impl VerifiedGame {
 		(count >= 0).then_some(count)
 	}
 
+	/// Present unit type words from the combat-side vector
+	/// ([`candidates::combat_side::IDENTITIES`]). Elements with a zero
+	/// present byte or marker 7 are omitted, matching `UNIT_LOSSES`.
+	/// `None` is a malformed header, never an empty stand. An empty
+	/// vector is `Some` of an empty list. Types are not classified into
+	/// infantry, cavalry and artillery, and morale is not read.
+	pub fn present_unit_types(&self, side: usize) -> Option<Vec<i16>> {
+		let begin_at = side.checked_add(candidates::combat_side::IDENTITIES)?;
+		let end_at = side.checked_add(candidates::combat_side::UNIT_END)?;
+		let begin = self.memory.read_qword(begin_at)? as usize;
+		let end = self.memory.read_qword(end_at)? as usize;
+		if begin == 0 && end == 0 {
+			return Some(Vec::new());
+		}
+		if begin <= 0x1_0000 || end < begin {
+			return None;
+		}
+		let bytes = end - begin;
+		if !bytes.is_multiple_of(candidates::unit::STRIDE) {
+			return None;
+		}
+		let count = bytes / candidates::unit::STRIDE;
+		if count > 512 {
+			return None;
+		}
+		let mut types = Vec::new();
+		for index in 0..count {
+			let element = begin + index * candidates::unit::STRIDE;
+			let present = self
+				.memory
+				.read_u8(element.checked_add(candidates::unit::PRESENT)?)?;
+			if present == 0 {
+				continue;
+			}
+			let marker = self
+				.memory
+				.read_u8(element.checked_add(candidates::unit::MARKER)?)?;
+			if marker == 7 {
+				continue;
+			}
+			let low = self
+				.memory
+				.read_u8(element.checked_add(candidates::unit::TYPE)?)?;
+			let high = self
+				.memory
+				.read_u8(element.checked_add(candidates::unit::TYPE + 1)?)?;
+			types.push(i16::from_le_bytes([low, high]));
+		}
+		Some(types)
+	}
+
 	/// Infantry / cavalry / artillery amounts from the named-amount list
 	/// on a combat-side object ([`candidates::combat_side::AMOUNT_LIST`]).
 	///
@@ -499,6 +550,35 @@ mod tests {
 	}
 
 	#[cfg(windows)]
+	#[test]
+	fn present_unit_types_skip_absent_and_marker_seven() {
+		let mut words = vec![0_u64; 0x80];
+		let base = words.as_mut_ptr() as usize;
+		let first = base + 0x200;
+		let second = first + candidates::unit::STRIDE;
+		unsafe {
+			write_i16(first + candidates::unit::TYPE, 4);
+			write_u8(first + candidates::unit::PRESENT, 1);
+			write_i16(second + candidates::unit::TYPE, 9);
+			write_u8(second + candidates::unit::MARKER, 7);
+			write_u8(second + candidates::unit::PRESENT, 1);
+			write_qword(base + candidates::combat_side::IDENTITIES, first as u64);
+			write_qword(
+				base + candidates::combat_side::UNIT_END,
+				(second + candidates::unit::STRIDE) as u64,
+			);
+		}
+		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
+		let game = VerifiedGame::new(Memory, base, expected).expect("pinned digest opens the gate");
+		assert_eq!(game.present_unit_types(base), Some(vec![4]));
+		unsafe {
+			write_qword(base + candidates::combat_side::IDENTITIES, 0);
+			write_qword(base + candidates::combat_side::UNIT_END, 0);
+		}
+		assert_eq!(game.present_unit_types(base), Some(Vec::new()));
+	}
+
+	#[cfg(windows)]
 	unsafe fn write_sso(addr: usize, name: &str) {
 		let base = addr as *mut u8;
 		unsafe {
@@ -514,6 +594,20 @@ mod tests {
 	unsafe fn write_i32(addr: usize, value: i32) {
 		unsafe {
 			core::ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), addr as *mut u8, 4);
+		}
+	}
+
+	#[cfg(windows)]
+	unsafe fn write_u8(addr: usize, value: u8) {
+		unsafe {
+			*(addr as *mut u8) = value;
+		}
+	}
+
+	#[cfg(windows)]
+	unsafe fn write_i16(addr: usize, value: i16) {
+		unsafe {
+			core::ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), addr as *mut u8, 2);
 		}
 	}
 

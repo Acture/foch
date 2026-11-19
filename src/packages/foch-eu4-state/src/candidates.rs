@@ -115,10 +115,12 @@ pub mod template {
 /// (`FUN_140221750` at combat.cpp:0x727 calls `FUN_14021c980`; battle
 /// setup `FUN_140237f90` calls `FUN_140237120` / `FUN_14021c7a0` on the
 /// two sides at `+0x20` / `+0x28`). A province's stacks are still armies
-/// whose [`army::LOCATION`] points at the province. The global army array
-/// and the current-morale field were not pinned: the `morale` hit at
-/// `0x14104eb76` is a 7-byte string compare on a virtual call, not a
-/// dword. These offsets stay candidates until a live read confirms them.
+/// whose [`army::LOCATION`] points at the province. `FUN_1401a5e50`
+/// stores the country pointer on the army and does not link the army
+/// into a country-owned vector, so the global army-array root stays
+/// unpinned. Current morale is still unpinned: `FUN_1401dd600` caches a
+/// dword on a different object. These offsets stay candidates until a
+/// live read confirms them.
 pub mod combat_side {
 	/// Linked list of named amounts. Head pointer. Node layout is [`amount`].
 	/// `FUN_14021c980` walks `node = [rcx+0x50]`, `next = [node+0x50]`.
@@ -132,12 +134,34 @@ pub mod combat_side {
 	pub const ENGAGED_LIST: usize = 0xe8;
 	/// Bool gate for [`ENGAGED_LIST`] (`[side+0x169]`).
 	pub const ENGAGED: usize = 0x169;
-	/// Begin of a 0x20-byte identity vector (end at `+0x108`). Element
-	/// `+0x10` is a packed identity; bits 32..48 are a country index.
-	/// `FUN_14021c7a0` returns one of these.
+	/// Begin of the 0x20-byte unit vector `UNIT_LOSSES` (`FUN_1402209c0`)
+	/// walks. End is [`UNIT_END`]. `BATTLE_RESULTS` (`FUN_140237d50`)
+	/// passes each side (`battle+0x20` / `battle+0x28`) to that walk.
+	/// Element layout is [`unit`].
 	pub const IDENTITIES: usize = 0x100;
+	/// End pointer of the unit vector, one qword after [`IDENTITIES`].
+	pub const UNIT_END: usize = 0x108;
 	/// Dword count that selects `FUN_14021c7a0`'s early identity return.
 	pub const IDENTITY_COUNT: usize = 0xf8;
+}
+
+/// One element of the combat-side unit vector ([`combat_side::IDENTITIES`],
+/// stride [`STRIDE`]). `UNIT_LOSSES` skips an element whose present byte
+/// is zero or whose marker byte is 7, then sign-extends the type word.
+/// Three further type ids compared against globals are also skipped;
+/// those globals were not pinned, so a reader must not invent them.
+/// This is not yet the infantry/cavalry/artillery split, and it is not
+/// a current-morale field.
+pub mod unit {
+	pub const STRIDE: usize = 0x20;
+	/// Packed identity qword. Bits 32..48 are a country index.
+	pub const IDENTITY: usize = 0x10;
+	/// Signed type word (`movsx eax, word ptr [elem+0x14]`).
+	pub const TYPE: usize = 0x14;
+	/// Marker byte. `UNIT_LOSSES` skips the element when this is 7.
+	pub const MARKER: usize = 0x16;
+	/// Present byte. Zero means the element is skipped.
+	pub const PRESENT: usize = 0x17;
 }
 
 /// One node of [`combat_side::AMOUNT_LIST`].
@@ -173,9 +197,12 @@ pub mod army {
 	pub const CAV_FIRE: usize = 0x128;
 	pub const ART_FIRE: usize = 0x12c;
 	pub const ART_SHOCK: usize = 0x130;
-	/// Country pointer (registry-resolved).
+	/// Country pointer. `FUN_1401a5e50` stores the registry lookup at
+	/// `0x1401a6301` (`mov [rdi+0x21c], rcx`). The setter does not push
+	/// the army onto a country-owned list; that root is still unpinned.
 	pub const COUNTRY: usize = 0x21c;
-	/// Location: a province pointer into the shared layout's array.
+	/// Location: province pointer `id * 0x2e10 + *(world+0x1ca8)`, stored
+	/// at `0x1401a603d` after the id-vector bounds check at world+0x1c90.
 	pub const LOCATION: usize = 0x228;
 	/// Region pointer, `index × 0x58` into the region table.
 	pub const REGION: usize = 0x250;
@@ -230,7 +257,12 @@ mod tests {
 			assert!(combat_side::REGIMENT_COUNT.is_multiple_of(4));
 			assert!(combat_side::ENGAGED_LIST.is_multiple_of(8));
 			assert!(combat_side::IDENTITIES.is_multiple_of(8));
+			assert!(combat_side::UNIT_END == combat_side::IDENTITIES + 8);
 			assert!(combat_side::IDENTITY_COUNT.is_multiple_of(4));
+			assert!(unit::STRIDE == 0x20);
+			assert!(unit::TYPE + 2 == unit::MARKER);
+			assert!(unit::MARKER + 1 == unit::PRESENT);
+			assert!(unit::PRESENT < unit::STRIDE);
 			assert!(amount::COUNT.is_multiple_of(4));
 			assert!(amount::NEXT.is_multiple_of(8));
 			assert!(amount::NAME < amount::NAME_2);

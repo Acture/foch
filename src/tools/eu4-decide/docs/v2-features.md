@@ -15,7 +15,8 @@ feature = f(modifiers) + E_id
 `f` is a small map from the category's continuous mechanics to the same
 width the rest of the node embedding expects. `E_id` is a residual
 embedding looked up by category id. The two terms are added, so a wrong
-or missing id cannot erase the mechanic signal.
+or missing id cannot erase the mechanic signal. The trainer implements
+this in `eu4_decide._residual.ResidualCategory`.
 
 ## Identifiers
 
