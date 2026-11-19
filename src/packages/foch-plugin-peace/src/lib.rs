@@ -4,6 +4,7 @@ pub mod composition;
 pub mod native;
 pub mod profile;
 pub mod settlement;
+pub mod trust;
 pub mod ui;
 
 #[cfg(all(windows, target_arch = "x86_64"))]
