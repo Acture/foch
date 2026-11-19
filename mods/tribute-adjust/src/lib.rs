@@ -534,15 +534,26 @@ mod detour {
 		{
 			seen.push((after as i64, key));
 			let overlord_tag = read_country_tag(&memory, country as usize).map(|(tag, _)| tag);
+			// Relation-slot dump: the subject argument of FUN_1403f1510 is the
+			// element the overlord's SUBJECTS_VEC iteration hands over; its byte
+			// layout across known subject kinds is what pins the kind
+			// discriminant. 0x40 bytes cover the observed header + floats.
+			let mut slot = [0u8; 0x40];
+			let slot_ok = memory.read_bytes(subject as usize, &mut slot).is_some();
+			let slot_hex = slot
+				.iter()
+				.map(|b| format!("{b:02x}"))
+				.collect::<Vec<_>>()
+				.join("");
 			log_line_raw(&format!(
-				"subject income {} -> {} (x{desired:.2}) overlord={} subject={} args c={:#x} s={:#x} t={:#x}",
+				"subject income {} -> {} (x{desired:.2}) overlord={} subject={} slot={} c={:#x} s={:#x}",
 				before,
 				after,
 				overlord_tag.as_deref().unwrap_or("?"),
 				subject_tag.as_deref().unwrap_or("?"),
+				if slot_ok { slot_hex.as_str() } else { "-" },
 				country as i64,
 				key,
-				tooltip as i64
 			));
 		}
 	}

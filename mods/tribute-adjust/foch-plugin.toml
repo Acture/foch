@@ -14,7 +14,7 @@ game = "eu4"
 # Signatures are only maintained for this exact build; a refusal on any other
 # version is the intended behavior, not a bug.
 game_versions = "1.37.5"
-abi_major = 1
+abi_major = 0
 
 [entry]
 kind = "native"
