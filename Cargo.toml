@@ -12,6 +12,7 @@ members = [
 	"src/packages/foch-eu4-decide",
 	"plugins/eu4-dynamic-trade-blackhole",
 	"plugins/eu4-directed-pacts",
+	"plugins/eu4-read-decide",
 	"src/packages/foch-test",
 	"src/apps/foch-cli",
 	"src/apps/foch-desktop/src-tauri",

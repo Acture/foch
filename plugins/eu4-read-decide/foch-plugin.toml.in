@@ -1,0 +1,26 @@
+schema = 1
+
+[plugin]
+id = "dev.foch.read-decide"
+name = "EU4 Read-Only Territory Decide"
+version = "0.0.1"
+license = "AGPL-3.0-only"
+description = "GNN territory suggestions over live state; this build reads nothing until engine session wiring lands."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "=1.37.5"
+abi_major = 0
+
+[entry]
+kind = "native"
+path = "plugins/foch_plugin_read_decide.dll"
+phase = "entry"
+
+[[files]]
+path = "plugins/foch_plugin_read_decide.dll"
+sha256 = "@DLL_SHA256@"
+
+[lifecycle]
+restart_required = true

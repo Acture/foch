@@ -1499,6 +1499,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-plugin-read-decide"
+version = "0.0.1"
+dependencies = [
+ "foch-eu4-gnn",
+ "foch-eu4-state",
+ "foch-plugin-sdk",
+ "foch-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "foch-plugin-sdk"
 version = "0.0.1"
 
