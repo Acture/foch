@@ -1,7 +1,20 @@
 //! Exact-build boundary for the native peace editor.
+//!
+//! Verified pricing chain of the 1.37.5 image (by disassembly; no runtime
+//! observation yet): `CPeaceOffer::GetCost` (0x979060) reads the cached total
+//! dword at offer +0xf0; the give-direction read only adds a 0.5% tolerance.
+//! The native cost rebuild prices every selected clause through the treaty
+//! vtable's +0x118 accumulator `(treaty, totals, direction, negate)`, whose
+//! last argument selects the sign — the rebuild always passes 0, so a merged
+//! offer's cached total is the SUM of both directions until the plugin
+//! re-applies the give side with `negate` set. The per-clause magnitude comes
+//! from two price columns selected by the shared +0x140 direction predicate
+//! (0x99cf20), which inspects the treaty's own giver/receiver parties. The
+//! warscore guard that shows `CANNOT_OFFER_TOO_HIGH_WARSCORE` is 0x97a1c0.
+//! Treaty vtables hang off the kind-dispatched clone switch at 0x9a1040; the
+//! base vtable 0x1c41668 keeps +0x78/+0x118 pure.
 use foch_plugin_sdk::FochHostApi;
-
-pub const EXE_SHA256: &str = "c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e";
+use foch_runtime::dataplane::{Memory, supports_build};
 
 #[derive(Clone, Copy)]
 pub struct CodeSite {
@@ -31,10 +44,20 @@ pub const SEND_CALLBACK: CodeSite = CodeSite {
 	rva: 0x13096b6,
 	original: &[0x48, 0x8d, 0x05, 0xf3, 0x5a, 0x00, 0x00],
 };
+
+/// Call inside SEND that constructs the 0x210-byte peace action from the
+/// active offer. The action stores the direction byte at +0x41, copy-constructs
+/// the offer at +0x48 (one `OFFER_SIZE` span) and sets its submitted flag at
+/// +0x208. Verified by disassembly of the 1.37.5 image; not yet redirected.
 pub const ACTION_CONSTRUCTOR_CALL: CodeSite = CodeSite {
 	rva: 0x130f22f,
 	original: &[0xe8, 0xbc, 0x98, 0x28, 0xff],
 };
+/// Call into the treaty execution path for an accepted action; the execute
+/// function is `CPeaceOffer::Execute` (log string at 0x1cd0db0) and updates
+/// the war score through 0x990770 (`Execute_UpdateWarScoreImpact`). Whether
+/// the receiving AI re-runs the all-positive rebuild on its offer copy —
+/// discarding the plugin's net pricing — is verified only in game.
 pub const EXECUTE_CALL: CodeSite = CodeSite {
 	rva: 0x59a6ea,
 	original: &[0xe8, 0x41, 0xc0, 0x3d, 0x00],
@@ -145,7 +168,7 @@ pub unsafe fn verify(host: &FochHostApi) -> Result<(), &'static str> {
 	{
 		return Err("incompatible Foch plugin host");
 	}
-	if unsafe { host.exe_sha256.as_str() } != Some(EXE_SHA256) {
+	if !unsafe { host.exe_sha256.as_str() }.is_some_and(supports_build) {
 		return Err("the peace editor supports only its verified EU4 executable");
 	}
 	if host.exe_base.is_null() || host.exe_size == 0 {
@@ -158,6 +181,8 @@ pub unsafe fn verify(host: &FochHostApi) -> Result<(), &'static str> {
 	{
 		return Err("invalid game image extent");
 	}
+	let memory = Memory;
+	let base = host.exe_base as usize;
 	for site in CHECKS {
 		let end = site
 			.rva
@@ -166,15 +191,15 @@ pub unsafe fn verify(host: &FochHostApi) -> Result<(), &'static str> {
 		if end > host.exe_size {
 			return Err("native peace editor code lies outside the game image");
 		}
-		// Read only the checked code range, not discarded PE sections or gaps.
-		let bytes = unsafe {
-			std::slice::from_raw_parts(
-				host.exe_base.cast::<u8>().add(site.rva),
-				site.original.len(),
-			)
-		};
-		if bytes != site.original {
-			return Err("native peace editor code differs from the supported profile");
+		// Read only the checked code range through the guarded reader.
+		let site_addr = base.checked_add(site.rva).ok_or("invalid code site")?;
+		for (offset, &expected) in site.original.iter().enumerate() {
+			let actual = memory
+				.read_u8(site_addr + offset)
+				.ok_or("native peace editor code is unreadable")?;
+			if actual != expected {
+				return Err("native peace editor code differs from the supported profile");
+			}
 		}
 	}
 	Ok(())

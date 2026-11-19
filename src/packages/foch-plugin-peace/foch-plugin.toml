@@ -2,10 +2,10 @@ schema = 1
 
 [plugin]
 id = "io.github.acture.foch-peace"
-name = "Foch bilateral peace preview"
-version = "0.0.2"
+name = "Foch bilateral peace"
+version = "0.0.19"
 authors = ["Foch contributors"]
-description = "Experimental two-direction peace summary. Mixed submission is not implemented."
+description = "Experimental two-direction peace submission with net pricing, native net display and an execution observer."
 
 [target]
 platform = "windows-x86_64"

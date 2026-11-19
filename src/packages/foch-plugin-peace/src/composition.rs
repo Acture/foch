@@ -22,6 +22,15 @@ pub enum Side {
 	Give,
 }
 
+impl Side {
+	pub fn opposite(self) -> Self {
+		match self {
+			Side::Receive => Side::Give,
+			Side::Give => Side::Receive,
+		}
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
 	pub clause: Clause,

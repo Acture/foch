@@ -14,3 +14,4 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }
+foch-runtime = { path = "../foch-runtime", version = "=0.0.2", default-features = false }
