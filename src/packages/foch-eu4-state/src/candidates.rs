@@ -202,8 +202,15 @@ pub mod army {
 	/// the army onto a country-owned list; that root is still unpinned.
 	pub const COUNTRY: usize = 0x21c;
 	/// Location: province pointer `id * 0x2e10 + *(world+0x1ca8)`, stored
-	/// at `0x1401a603d` after the id-vector bounds check at world+0x1c90.
+	/// at `0x1401a603d` when save key `0x30fe` is applied.
 	pub const LOCATION: usize = 0x228;
+	/// Nested save object for key `0x30ff` (`lea rcx, [army+0x230]` then
+	/// a virtual writer). Not identified as the regiment vector: the
+	/// literals `regiment`, `morale`, and `strength` have no code xref.
+	pub const SAVE_CHILD_A: usize = 0x230;
+	/// Nested save object for the next key, `0x3100`, at `army+0x234`.
+	/// Same limit as [`SAVE_CHILD_A`].
+	pub const SAVE_CHILD_B: usize = 0x234;
 	/// Region pointer, `index × 0x58` into the region table.
 	pub const REGION: usize = 0x250;
 }
@@ -251,6 +258,9 @@ mod tests {
 			assert!(army::COMBAT_WIDTH.is_multiple_of(4));
 			assert!(army::ID.is_multiple_of(4));
 			assert!(army::LEADER.is_multiple_of(8));
+			assert!(army::LOCATION == 0x228);
+			assert!(army::SAVE_CHILD_A + 4 == army::SAVE_CHILD_B);
+			assert!(army::COUNTRY + 0x14 == army::SAVE_CHILD_A);
 
 			assert!(combat_side::AMOUNT_LIST.is_multiple_of(8));
 			assert!(combat_side::REGIMENTS.is_multiple_of(8));

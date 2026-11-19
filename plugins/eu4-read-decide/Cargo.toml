@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 foch-plugin-sdk = "0.0.1"
+foch-eu4-decide = { path = "../../src/packages/foch-eu4-decide" }
 foch-eu4-gnn = { path = "../../src/packages/foch-eu4-gnn" }
 foch-eu4-state = { path = "../../src/packages/foch-eu4-state" }
 foch-runtime = { path = "../../src/packages/foch-runtime", default-features = false }

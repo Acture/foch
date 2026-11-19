@@ -49,7 +49,9 @@ pub struct CategoryDef {
 }
 
 impl Mechanics {
-	fn vector(&self) -> [f32; 5] {
+	/// The five axes the residual head consumes, with the same neutral
+	/// defaults as the trainer (`movement_cost` and `supply_limit` are 1).
+	pub fn axes(&self) -> [f32; 5] {
 		[
 			self.movement_cost.unwrap_or(1.0),
 			self.defence.unwrap_or(0.0),
@@ -120,11 +122,11 @@ impl TerrainCodec {
 		{
 			return slot;
 		}
-		let vector = definition.mechanics.vector();
+		let vector = definition.mechanics.axes();
 		let mut best = 0usize;
 		let mut best_distance = f32::INFINITY;
 		for (slot, (_, bucket_mechanics)) in self.buckets.iter().enumerate() {
-			let bucket_vector = bucket_mechanics.vector();
+			let bucket_vector = bucket_mechanics.axes();
 			let distance = vector
 				.iter()
 				.zip(bucket_vector)
@@ -144,13 +146,34 @@ impl TerrainCodec {
 	pub fn drain_unknown(&mut self) -> BTreeMap<String, usize> {
 		std::mem::take(&mut self.unknown_seen)
 	}
+
+	/// Mechanics registered for `name`, or the neutral defaults when the
+	/// active files do not define it. This is the vector the residual
+	/// head scores.
+	pub fn mechanics_of(&self, name: &str) -> Mechanics {
+		self.categories
+			.get(&name.to_ascii_lowercase())
+			.map(|definition| definition.mechanics)
+			.unwrap_or_default()
+	}
+
+	/// Inference score `f(modifiers) + E_id`. Unknown names and categories
+	/// whose mechanics differ from the exported row use `E_id = 0`.
+	pub fn residual_score(
+		&self,
+		model: &foch_eu4_decide::ResidualCategory,
+		name: &str,
+	) -> Vec<f32> {
+		let mechanics = self.mechanics_of(name);
+		model.score(name, mechanics.axes())
+	}
 }
 
 /// Max absolute value of each mechanic across the five bucket profiles.
 fn axis_scale(buckets: &[(String, Mechanics); 5]) -> [f32; 5] {
 	let mut scale = [0.0f32; 5];
 	for (_, mechanics) in buckets {
-		for (slot, value) in mechanics.vector().into_iter().enumerate() {
+		for (slot, value) in mechanics.axes().into_iter().enumerate() {
 			scale[slot] = scale[slot].max(value.abs());
 		}
 	}
@@ -378,5 +401,44 @@ mod tests {
 		let mut codec = TerrainCodec::from_sources(&[vanilla(), overlay]);
 		assert_eq!(codec.bucket("haunted_bog"), 4);
 		assert!(codec.drain_unknown().is_empty());
+	}
+
+	#[test]
+	fn the_residual_forward_keeps_vanilla_ids_and_zeros_mod_ids() {
+		let model = foch_eu4_decide::ResidualCategory::from_json(
+			r#"{
+			"kind": "residual-category",
+			"names": ["plains"],
+			"modifiers": [[1.0, 0.0, 0.0, 4.0, 0.0]],
+			"f0_weight": [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+			"f0_bias": [0, 0],
+			"f2_weight": [[1, 0], [0, 1]],
+			"f2_bias": [0, 0],
+			"embedding": [[9, 9], [1, 0]]
+		}"#,
+		)
+		.expect("residual document");
+		let vanilla = [
+			"categories = {",
+			"plains = { movement_cost = 1.0 supply_limit = 4 }",
+			"haunted_bog = { movement_cost = 3 defence = 1 attrition = 2 }",
+			"}",
+		]
+		.join("\n");
+		let codec = TerrainCodec::from_sources(&[vanilla]);
+		assert_eq!(codec.residual_score(&model, "plains"), vec![2.0, 0.0]);
+		assert_eq!(codec.residual_score(&model, "haunted_bog"), vec![3.0, 1.0]);
+		let edited = [
+			"categories = {",
+			"plains = { movement_cost = 9 supply_limit = 4 }",
+			"}",
+		]
+		.join("\n");
+		let codec = TerrainCodec::from_sources(&[edited]);
+		assert_eq!(
+			model.resolve("plains", codec.mechanics_of("plains").axes()),
+			0
+		);
+		assert_eq!(codec.residual_score(&model, "plains"), vec![9.0, 0.0]);
 	}
 }

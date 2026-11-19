@@ -16,6 +16,7 @@ mod pipeline;
 mod policy;
 pub use foch_eu4_gnn::{GeneralGnn, HEADS, NODE, RULES};
 pub mod policy_net;
+mod residual;
 mod reward;
 mod rollout;
 mod rules;
@@ -47,6 +48,7 @@ pub use pipeline::{
 pub use policy::{
 	FEATURES, GovernmentKind, Policy, Situation, active_channels, channel_of_name, encode,
 };
+pub use residual::ResidualCategory;
 pub use reward::{Channel, Horizons, Yields, adversarial_reward};
 pub use rollout::{Draw, Episode, MergedObjects, Rollout, SampledArmy, draw_for, fit, train};
 pub use rules::ScoreRules;

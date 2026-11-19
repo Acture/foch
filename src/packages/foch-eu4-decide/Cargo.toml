@@ -13,8 +13,6 @@ publish = false
 foch-eu4-gnn = { path = "../foch-eu4-gnn" }
 foch-eu4-state = { path = "../foch-eu4-state" }
 foch-runtime = { path = "../foch-runtime", default-features = false }
-sha2.workspace = true
-
-[dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true

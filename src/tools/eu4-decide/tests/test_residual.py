@@ -73,6 +73,40 @@ class ResidualCategoryTest(unittest.TestCase):
 		kept = scored[~dropped]
 		self.assertTrue(torch.allclose(kept, torch.ones_like(kept)))
 
+	def test_export_document_feeds_the_rust_forward(self) -> None:
+		import json
+		import tempfile
+		from pathlib import Path
+
+		from eu4_decide._export_gnn import export_residual
+
+		module = ResidualCategory(CategoryTable.build(VANILLA), width=4, dropout=0.40)
+		with torch.no_grad():
+			module.embedding.weight.zero_()
+			module.embedding.weight[1].fill_(1.0)
+			module.f[0].weight.zero_()
+			module.f[0].bias.zero_()
+			module.f[2].weight.copy_(torch.eye(4))
+			module.f[2].bias.zero_()
+		document = module.export_document()
+		self.assertEqual(document["kind"], "residual-category")
+		self.assertEqual(document["names"], ["plains", "marsh"])
+		self.assertEqual(document["embedding"][0], [0.0, 0.0, 0.0, 0.0])
+		plains = module.score("plains", VANILLA["plains"])
+		bog = module.score("haunted_bog", {"movement_cost": 2.5, "defence": 4.0})
+		self.assertTrue(torch.isfinite(plains).all())
+		self.assertTrue(torch.isfinite(bog).all())
+		self.assertEqual(
+			module.resolve("haunted_bog", bog.new_tensor([2.5, 4.0, 0.0, 1.0, 0.0])),
+			UNK,
+		)
+		with tempfile.TemporaryDirectory() as directory:
+			path = Path(directory) / "residual.json"
+			export_residual(module, str(path))
+			loaded = json.loads(path.read_text(encoding="utf-8"))
+		self.assertEqual(loaded["kind"], "residual-category")
+		self.assertEqual(loaded["names"], ["plains", "marsh"])
+
 
 def _vec(values: dict[str, float]) -> torch.Tensor:
 	from eu4_decide._residual import mechanic_vector

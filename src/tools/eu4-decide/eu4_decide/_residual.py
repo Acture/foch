@@ -133,6 +133,22 @@ class ResidualCategory(nn.Module):
 		residual[used == UNK] = 0
 		return self.f(modifiers) + residual
 
+	def export_document(self) -> dict[str, object]:
+		"""JSON document the Rust `ResidualCategory::from_json` loads."""
+		self.eval()
+		state = self.state_dict()
+		return {
+			"kind": "residual-category",
+			"mechanics": list(MECHANICS),
+			"names": list(self._names),
+			"modifiers": self.trained.detach().tolist(),
+			"f0_weight": state["f.0.weight"].detach().tolist(),
+			"f0_bias": state["f.0.bias"].detach().tolist(),
+			"f2_weight": state["f.2.weight"].detach().tolist(),
+			"f2_bias": state["f.2.bias"].detach().tolist(),
+			"embedding": state["embedding.weight"].detach().tolist(),
+		}
+
 	def score(self, name: str, values: dict[str, float]) -> torch.Tensor:
 		"""Inference score for one category. Unseen or edited values use ``E_id = 0``."""
 		modifiers = mechanic_vector(values).unsqueeze(0)
