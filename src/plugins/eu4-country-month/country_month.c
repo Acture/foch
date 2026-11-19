@@ -2293,13 +2293,18 @@ static int32_t install_daily_a(const FochHostApi *host, int *found, void **site_
    effects; the game thread replays that log in element order. Reservation
    failure or a log that would pass its cap leaves the world untouched and
    the original body runs instead.
-   The installed 0xa89360 body stays native. 0x93d750 (country_cached_data.cpp,
-   CCountryModifiers) returns without a global store on its two ordinary
-   paths, but when the state dword at this+8 is 1 it is the CALCULATING
-   re-entry assert and calls 0x14d6110. That callee's fast path writes the
-   caller's buffer pointer and three dwords through fixed RIP slots on every
-   entry, so it is a cross-thread shared write, not a one-shot singleton.
-   FOCH_DAILY_B=1 therefore hooks only the fixture stand-in. */
+   The installed 0xa89360 body stays native. 0x93d750's own stores are
+   stack slots; its only immediate 1 is mov bl,1 on the assert path, and it
+   never writes the state dword at this+8. The four sites in 0xa1a9a0 pass
+   country_table[tag_index]+0x28c0, with the index taken from the current
+   object's tag at +0x468, so the object is not proven to be that object.
+   When the dword is already 1 the function is the CALCULATING re-entry
+   assert and calls 0x14d6110, whose fast path writes the caller's buffer
+   pointer and three dwords through fixed RIP slots on every entry.
+   The next daily-chain callee after 0x759640 and 0xa89360 is 0x1d0e20
+   (called from 0x75c895, 22 back-edges, one pointer-array walk). Its body
+   has no RIP store, but callee 0xd405b0 writes 1 through RIP bytes, so the
+   walk is not taken over. FOCH_DAILY_B=1 hooks only the fixture stand-in. */
 
 #define DB_ZEAL 1
 #define DB_QUIET 2
