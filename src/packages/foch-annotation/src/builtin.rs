@@ -64,6 +64,20 @@ pub const TEST_PARAMS: &[ParamSchema] = &[
 		example: "{ has_country_flag = reform_done }",
 	},
 	ParamSchema {
+		name: "save",
+		value_type: ValueType::Text,
+		required: false,
+		description: "Persist the campaign to this save slot through the console channel (save_game); reload boundaries are recorded in the judged notes.",
+		example: "\"slot_a\"",
+	},
+	ParamSchema {
+		name: "reload",
+		value_type: ValueType::Text,
+		required: false,
+		description: "Reload the campaign from this save slot through the console channel (load); expects after it assert what survived the cycle.",
+		example: "\"slot_a\"",
+	},
+	ParamSchema {
 		name: "cheat",
 		value_type: ValueType::Text,
 		required: false,

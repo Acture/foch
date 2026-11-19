@@ -311,6 +311,18 @@ pub enum Step {
 		command: String,
 		span: SourceSpan,
 	},
+	/// Persist the campaign to a save slot through the console channel.
+	Save {
+		/// The save slot name, emitted as `save_game <slot>`.
+		slot: String,
+		span: SourceSpan,
+	},
+	/// Reload the campaign from a save slot through the console channel.
+	Reload {
+		/// The save slot name, emitted as `load <slot>`.
+		slot: String,
+		span: SourceSpan,
+	},
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -382,6 +394,8 @@ impl TestCase {
 				}
 				Step::TakeDecision { name, .. } => format!("take_decision {name}"),
 				Step::Cheat { command, .. } => format!("cheat {command}"),
+				Step::Save { slot, .. } => format!("save {slot}"),
+				Step::Reload { slot, .. } => format!("reload {slot}"),
 				Step::ExpectReceipt { plugin, fields, .. } => format!(
 					"expect_receipt {plugin} {}",
 					fields

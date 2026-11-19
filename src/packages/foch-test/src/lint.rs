@@ -111,6 +111,7 @@ pub fn lint(expanded: &Expanded, facts: &ProjectFacts) -> LintResult {
 				Step::AdvanceDays { .. } => {}
 				Step::TakeDecision { .. } => {}
 				Step::Cheat { .. } => {}
+				Step::Save { .. } | Step::Reload { .. } => {}
 				// Receipts judge against the host stream, not the model.
 				Step::ExpectReceipt { .. } => {}
 			}

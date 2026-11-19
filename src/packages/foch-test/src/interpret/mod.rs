@@ -867,6 +867,8 @@ impl<'a> Interpreter<'a> {
 				Step::Expect { .. } => "expect",
 				Step::TakeDecision { .. } => "take_decision",
 				Step::Cheat { .. } => "cheat",
+				Step::Save { .. } => "save",
+				Step::Reload { .. } => "reload",
 				Step::ExpectReceipt { .. } => "expect_receipt",
 			};
 			world.note(
@@ -921,6 +923,19 @@ impl<'a> Interpreter<'a> {
 							std::mem::take(&mut world.trace),
 						);
 					}
+				}
+				// The scan refuses save/reload steps before execution; if the
+				// two ever disagree the case still reports a clean refusal
+				// instead of panicking.
+				Step::Save { span, .. } | Step::Reload { span, .. } => {
+					return unsupported(
+						vec![format!(
+							"{span}: save/reload cycles run on the real game; the model 							 does not serialize campaign state"
+						)],
+						failures,
+						passed,
+						std::mem::take(&mut world.trace),
+					);
 				}
 				Step::Cheat { command, .. } => match cheat_kind(command) {
 					Ok(CheatKind::Mapped { slot, amount }) => {
@@ -1202,6 +1217,11 @@ impl<'a> Interpreter<'a> {
 				// Cheats pass the scan unmolested; mapped commands that
 				// are malformed surface at execution with the reason.
 				Step::Cheat { .. } => {}
+				Step::Save { slot, span } | Step::Reload { slot, span } => {
+					reasons.push(format!(
+						"{span}: save/reload cycles run on the real game; the model 						 does not serialize campaign state (slot {slot})"
+					));
+				}
 				Step::ExpectReceipt { span, .. } => {
 					reasons.push(format!(
 						"{span}: plugin receipts need a real game session; \
@@ -3231,6 +3251,33 @@ test = {
 				"{first:?} then {second:?}: {verdict:#?}"
 			);
 		}
+	}
+
+	#[test]
+	fn save_reload_cycles_are_refused_offline() {
+		// The offline model does not serialize campaign state; the cycle runs
+		// on the real game and the case says so instead of passing.
+		const CASES: &str = r#"test = {
+	name = cycler
+	time = 1444.11.11
+	tag = SWE
+	save = "slot_a"
+	effect = { set_country_flag = staged }
+	reload = "slot_a"
+	expect = { has_country_flag = staged }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "cycler");
+		assert_eq!(verdict.outcome, Outcome::Unsupported, "{verdict:#?}");
+		assert!(
+			verdict.unsupported[0].contains("does not serialize"),
+			"{:#?}",
+			verdict.unsupported
+		);
 	}
 
 	#[test]

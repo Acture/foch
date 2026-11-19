@@ -412,8 +412,32 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			command,
 			span: span(),
 		},
+		("save", Some(Value::Text(slot))) => Step::Save {
+			slot: save_slot(&slot)?,
+			span: span(),
+		},
+		("reload", Some(Value::Text(slot))) => Step::Reload {
+			slot: save_slot(&slot)?,
+			span: span(),
+		},
 		_ => unreachable!("step types are fixed by the schema"),
 	}))
+}
+
+/// A save slot name becomes one console line (`save_game <slot>`), so it
+/// may only carry characters the console reads as one token.
+fn save_slot(slot: &str) -> Result<String, String> {
+	if !slot.is_empty()
+		&& slot
+			.bytes()
+			.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+	{
+		Ok(slot.to_string())
+	} else {
+		Err(format!(
+			"save slot {slot:?} must be a non-empty name of letters, digits, _ or -"
+		))
+	}
 }
 
 fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Value>, String> {
@@ -421,9 +445,11 @@ fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<V
 		// expect_receipt has its own block shape; step() parses it.
 		"expect_receipt" => Ok(None),
 		"effect" | "expect" | "advance_days" => typed(file, key, value).map(Some),
-		"take_decision" | "cheat" => parse_value(&file.path, &file.text, value, ValueType::Text)
-			.map(Some)
-			.map_err(|message| format!("{key}: {message}")),
+		"take_decision" | "cheat" | "save" | "reload" => {
+			parse_value(&file.path, &file.text, value, ValueType::Text)
+				.map(Some)
+				.map_err(|message| format!("{key}: {message}"))
+		}
 		"fire" => parse_value(&file.path, &file.text, value, ValueType::EventId)
 			.map(Some)
 			.map_err(|message| format!("fire: {message}")),

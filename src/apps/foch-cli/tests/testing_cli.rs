@@ -502,6 +502,82 @@ fn offline_is_not_bound_to_the_runners_start_dates() {
 }
 
 #[test]
+fn console_steps_ride_the_command_channel_in_order() {
+	// task_a7a3061a7932: cheat / save / reload steps are console steps; the
+	// bundle emits them, in step order, on the verified startup channel
+	// before the test script runs.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = {
+	name = cycle
+	time = 1444.11.11
+	tag = SWE
+	cheat = "cash 500"
+	save = "slot_a"
+	effect = { set_country_flag = staged }
+	reload = "slot_a"
+	advance_days = 1
+	expect = { has_country_flag = staged }
+}"#,
+	)
+	.unwrap();
+	let out = dir.path().join("cycle-out");
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--no-run",
+			"--format",
+			"json",
+			"--out",
+			out.to_str().unwrap(),
+		],
+	);
+	assert!(
+		output.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	let bundles = report["bundles"].as_array().unwrap();
+	assert_eq!(bundles.len(), 1);
+	let bundle: Value =
+		serde_json::from_slice(&fs::read(bundles[0].as_str().unwrap()).unwrap()).unwrap();
+	let commands = bundle["files"]["commands.txt"].as_str().unwrap();
+	assert!(
+		commands.starts_with("speed 0\ncash 500\nsave_game slot_a\nload slot_a\nrun "),
+		"console steps keep their step order on the startup channel: {commands:?}"
+	);
+	assert!(commands.ends_with("_start.txt\nspeed 5\n"), "{commands:?}");
+}
+
+#[test]
+fn a_save_slot_must_be_one_console_token() {
+	// The slot becomes one console line, so path separators, quotes and
+	// whitespace are refused at collection instead of riding the console.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = { name = inject time = 1444.11.11 tag = SWE save = "../evil; save_game x" expect = { always = yes } }"#,
+	)
+	.unwrap();
+	let output = run(dir.path(), &["test", "mod", "--no-run"]);
+	assert!(!output.status.success());
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(text.contains("letters, digits"), "{text}");
+	assert!(!text.contains("panicked"), "{text}");
+}
+
+#[test]
 fn offline_conflicts_with_plugins_as_a_flag_error() {
 	// --offline silently ignored --with-plugins and interpreted the run; the
 	// combination must be a clap conflict before any playset or host is

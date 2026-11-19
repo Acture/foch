@@ -5,7 +5,7 @@
 //! absorbs assertion failures, never crashes" hold in one place.
 
 use crate::compile::{Bundle, CheckKind, PlannedCheck, RunContext, compile};
-use crate::model::{CaseIndex, ContentId, GameDate, NodeId, Start};
+use crate::model::{CaseIndex, ContentId, GameDate, NodeId, Start, Step};
 use crate::plan::{Isolation, Plan};
 use crate::source::SourceSpan;
 use serde::{Deserialize, Serialize};
@@ -210,6 +210,24 @@ pub fn judge(bundle: &Bundle, plan: &Plan, artifacts: &RunArtifacts) -> Vec<Case
 				notes: runtime.clone(),
 			};
 			result.notes.extend(info.iter().cloned());
+			// Save/reload boundaries are session facts, not verdicts: the
+			// judged record states where the cycle ran so a result never
+			// silently crosses a reload.
+			for (index, step) in case.steps.iter().enumerate() {
+				match step {
+					Step::Save { slot, .. } => {
+						result
+							.notes
+							.push(format!("save slot {slot} at step {index}"));
+					}
+					Step::Reload { slot, .. } => {
+						result
+							.notes
+							.push(format!("reload slot {slot} at step {index}"));
+					}
+					_ => {}
+				}
+			}
 			let records = match &records {
 				Ok(records) => records.get(&index).cloned().unwrap_or_default(),
 				Err(message) => {
@@ -836,6 +854,73 @@ fn expect_date(actual: GameDate, expected: GameDate, stage: &str) -> Result<(), 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn save_reload_boundaries_are_recorded_as_notes() {
+		use crate::collect::collect;
+		use crate::compile::{RunContext, compile};
+		use crate::model::RunId;
+		use crate::plan::{ExpandOptions, GroupOptions};
+		use crate::source::{RelPath, SourceFile, SourceKind};
+		use crate::{ProjectFacts, expand, group, lint};
+
+		let sources = [SourceFile {
+			mod_name: "Cycle".into(),
+			path: RelPath::new("tests/a.txt").unwrap(),
+			kind: SourceKind::TestsDir,
+			text: r#"test = {
+	name = cycle
+	time = 1444.11.11
+	tag = SWE
+	cheat = "cash 500"
+	save = "slot_a"
+	effect = { set_country_flag = staged }
+	reload = "slot_a"
+	expect = { has_country_flag = staged }
+}"#
+			.into(),
+		}];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(expanded, &linted, &GroupOptions::default());
+		let context = RunContext {
+			run_id: RunId::parse("run-1").unwrap(),
+			mod_name: "Cycle".into(),
+		};
+		let bundle = compile(&plan, plan.sessions[0].id, &context).unwrap();
+		let artifacts = RunArtifacts {
+			game_log: None,
+			error_log: None,
+			exit: RunnerExit::Success,
+			timing: Default::default(),
+			profile_untouched: true,
+			host_events: None,
+			host_launch_id: None,
+		};
+		let results = judge(&bundle, &plan, &artifacts);
+		assert!(
+			results[0]
+				.notes
+				.iter()
+				.any(|note| note == "save slot slot_a at step 1"),
+			"{:#?}",
+			results[0].notes
+		);
+		assert!(
+			results[0]
+				.notes
+				.iter()
+				.any(|note| note == "reload slot slot_a at step 3"),
+			"{:#?}",
+			results[0].notes
+		);
+	}
 
 	#[test]
 	fn error_entries_group_continuation_lines() {
