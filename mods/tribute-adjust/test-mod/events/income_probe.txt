@@ -1,10 +1,55 @@
 namespace = income_probe
 
-#test(time=1444.11.11, tag=MNG, name="treasury ge 155", ai=on, advance_days=60, expect={ treasury = 155 })
-#test(time=1444.11.11, tag=MNG, name="treasury ge 165", ai=on, advance_days=60, expect={ treasury = 165 })
-#test(time=1444.11.11, tag=MNG, name="treasury ge 175", ai=on, advance_days=60, expect={ treasury = 175 })
-#test(time=1444.11.11, tag=MNG, name="treasury ge 185", ai=on, advance_days=60, expect={ treasury = 185 })
-#test(time=1444.11.11, tag=MNG, name="treasury ge 195", ai=on, advance_days=60, expect={ treasury = 195 })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 155", ai=on, advance_days=60, expect={ treasury = 155 },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
+#     })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 165", ai=on, advance_days=60, expect={ treasury = 165 },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
+#     })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 175", ai=on, advance_days=60, expect={ treasury = 175 },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
+#     })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 185", ai=on, advance_days=60, expect={ treasury = 185 },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
+#     })
+#test(time=1444.11.11, tag=MNG, name="treasury ge 195", ai=on, advance_days=60, expect={ treasury = 195 },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
+#     })
 country_event = {
 	id = income_probe.1
 	title = none

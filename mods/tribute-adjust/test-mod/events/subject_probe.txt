@@ -4,6 +4,14 @@ namespace = subject_probe
 #     ai=on, advance_days=60,
 #     expect={
 #         NOR = { is_subject_of_type = personal_union }
+#     },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = DAN
+#         request = 1
+#         type = subject_income
+#         kind = vassal
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 1 } after = { min = 0 } }
 #     })
 country_event = {
 	id = subject_probe.1

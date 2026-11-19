@@ -29,6 +29,7 @@
 | **真机数值验证(朝贡)** | **完成**:MNG 1444+60 天(ai=on 跨年):100% ≥195 / 50% [175,185) / 0% [140,160) |
 | **真机数值验证(附庸)** | **完成**:ENG 释放威尔士(base_tax+8 放大信号),vassal_share 0.4→0 [55,70) vs 0.4→0.8 [70,85) |
 | tag ↔ 国家 映射 | `tribute_executor` 仍读 `CCountry+0x20`。`subject_income` 的第 3 参数改走省份 id 向量（`+0x88/+0x90` → `context+0x1ca8` → `CProvince+0x468`），宗主自己的省份身份会跳过；未实机回归 |
+| 回执 | 两条热路径写 `FOCH_RECEIPT/1`（`case`/`request`/`type`/`kind`/`tag`/`scale`/`before`/`after` 全是字符串）。`test-mod` 用 `expect_receipt` 加 `numeric` 区间；`foch test --collect-only` 与 `--no-run` 不启动游戏 |
 | 滑块面板 | 独立 `tribute-panel`（不注入、不挂钩 DX11）。Save 写入 `tribute-config.json`，插件每 250ms 防抖热加载 |
 
 签名表条目 `unverified` 时插件 init 会 REFUSE 并说明缺口——绝不按猜测 hook。

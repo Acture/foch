@@ -519,6 +519,11 @@ mod detour {
 	/// recipient, so those owners are the overlord. The first owner with a
 	/// different index is the subject. Anything unreadable, oversized, or
 	/// identical to the overlord yields `None` and the kind coefficient.
+	///
+	/// The vector element itself (`FUN_140abbf00`) only uses `element+0x10`
+	/// to reach this same province-id object. That function loads no type
+	/// name and does not reference `copy_from`; a `CSubjectType` key is not
+	/// established on `element` or `*(element+0x10)`.
 	pub(crate) fn subject_tag_from_provinces(
 		memory: &Memory,
 		subject: usize,
@@ -619,18 +624,28 @@ mod detour {
 		let tag = resolve_partner_tag(&memory, partner);
 		let desired = crate::active_coefficient(tag.as_deref().unwrap_or(""), "tributary");
 		let scale = residual_scale(desired, applied_tribute_scale());
-		if (scale - 1.0).abs() > f64::EPSILON
-			&& let Some(amount_addr) = (command as usize).checked_add(COMMAND_AMOUNT_OFFSET)
+		if let Some(amount_addr) = (command as usize).checked_add(COMMAND_AMOUNT_OFFSET)
 			&& let Some(before) = memory.read_i32(amount_addr)
 		{
-			let after = (before as f64 * scale).round() as i32;
-			if after != before {
-				// SAFETY: `command + 0x1c` is the engine-owned command amount
-				// field on the game thread, with no Rust alias.
-				if unsafe { memory.write_i32(amount_addr, after) }.is_some() {
-					log_transfer(tag.as_deref().unwrap_or("?"), before, after, desired);
+			let mut after = before;
+			if (scale - 1.0).abs() > f64::EPSILON {
+				let scaled = (before as f64 * scale).round() as i32;
+				if scaled != before {
+					// SAFETY: `command + 0x1c` is the engine-owned command amount
+					// field on the game thread, with no Rust alias.
+					if unsafe { memory.write_i32(amount_addr, scaled) }.is_some() {
+						log_transfer(tag.as_deref().unwrap_or("?"), before, scaled, desired);
+						after = scaled;
+					}
 				}
 			}
+			let reported = tag.as_deref().unwrap_or("");
+			let case = if reported.is_empty() {
+				"untagged"
+			} else {
+				reported
+			};
+			emit_receipt("tribute", case, "tributary", reported, scale, before, after);
 		}
 		// SAFETY: the chain cell is re-read per call per the ABI contract.
 		let original: Original = unsafe { *(cell as *const Original) };
@@ -689,6 +704,25 @@ mod detour {
 				}
 			}
 		}
+		let reported = subject_tag.as_deref().unwrap_or("");
+		let case = overlord
+			.as_ref()
+			.map(|(tag, _)| tag.as_str())
+			.filter(|tag| !tag.is_empty())
+			.unwrap_or(if reported.is_empty() {
+				"untagged"
+			} else {
+				reported
+			});
+		emit_receipt(
+			"subject_income",
+			case,
+			"vassal",
+			reported,
+			scale,
+			before,
+			after,
+		);
 
 		let key = subject as i64;
 		if let Ok(mut seen) = SEEN_SUBJECT_INCOME.try_lock()
@@ -783,6 +817,64 @@ mod detour {
 			return;
 		}
 		unsafe { ((*host).log)(host, crate::log::INFO, crate::FochStr::from_str(message)) };
+	}
+
+	/// `FOCH_RECEIPT/1` payload. Every value is a string; envelope keys stay
+	/// with the host. `case` correlates to the country the test named, and
+	/// `request` is the stable token `1` for this hook's monthly observation.
+	pub(crate) fn receipt_message(
+		hook: &str,
+		case: &str,
+		kind: &str,
+		tag: &str,
+		scale: f64,
+		before: i32,
+		after: i32,
+	) -> String {
+		let status = if after != before {
+			"scaled"
+		} else {
+			"passthrough"
+		};
+		let payload = serde_json::json!({
+			"case": case,
+			"request": "1",
+			"type": hook,
+			"status": status,
+			"tag": tag,
+			"kind": kind,
+			"scale": receipt_number(scale),
+			"before": before.to_string(),
+			"after": after.to_string(),
+		});
+		format!("FOCH_RECEIPT/1 {payload}")
+	}
+
+	fn receipt_number(value: f64) -> String {
+		if !value.is_finite() {
+			return "0".to_string();
+		}
+		let text = format!("{value:.6}");
+		let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+		if trimmed.is_empty() || trimmed == "-" {
+			"0".to_string()
+		} else {
+			trimmed.to_string()
+		}
+	}
+
+	fn emit_receipt(
+		hook: &str,
+		case: &str,
+		kind: &str,
+		tag: &str,
+		scale: f64,
+		before: i32,
+		after: i32,
+	) {
+		log_line_raw(&receipt_message(
+			hook, case, kind, tag, scale, before, after,
+		));
 	}
 
 	fn log_transfer(tag: &str, before: i32, after: i32, coefficient: f64) {
@@ -1003,6 +1095,34 @@ mod tests {
 		let slot = foch_runtime::dataplane::layout::country::TAG / 8;
 		buf[slot] = pack_country_tag(tag, index, valid_flag);
 		buf
+	}
+
+	#[test]
+	fn receipt_payload_is_only_strings() {
+		let scaled =
+			detour::receipt_message("subject_income", "ENG", "vassal", "WAL", 1.5, 1000, 1500);
+		assert!(scaled.starts_with("FOCH_RECEIPT/1 "));
+		let payload: serde_json::Value =
+			serde_json::from_str(scaled.strip_prefix("FOCH_RECEIPT/1 ").unwrap()).unwrap();
+		let object = payload.as_object().unwrap();
+		assert!(object.values().all(serde_json::Value::is_string));
+		assert_eq!(object["case"], "ENG");
+		assert_eq!(object["request"], "1");
+		assert_eq!(object["type"], "subject_income");
+		assert_eq!(object["kind"], "vassal");
+		assert_eq!(object["tag"], "WAL");
+		assert_eq!(object["scale"], "1.5");
+		assert_eq!(object["before"], "1000");
+		assert_eq!(object["after"], "1500");
+		assert_eq!(object["status"], "scaled");
+		for forbidden in ["plugin_id", "run_id", "format", "phase"] {
+			assert!(!object.contains_key(forbidden), "{forbidden}");
+		}
+		let same = detour::receipt_message("tribute", "KOR", "tributary", "KOR", 1.0, 40, 40);
+		let passthrough: serde_json::Value =
+			serde_json::from_str(same.strip_prefix("FOCH_RECEIPT/1 ").unwrap()).unwrap();
+		assert_eq!(passthrough["status"], "passthrough");
+		assert_eq!(passthrough["scale"], "1");
 	}
 
 	#[test]

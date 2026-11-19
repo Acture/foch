@@ -5,6 +5,15 @@ namespace = tribute_smoke
 #     advance_days=35,
 #     expect={
 #         KOR = { is_subject_of_type = tributary_state }
+#     },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
 #     })
 country_event = {
 	id = tribute_smoke.1
