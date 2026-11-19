@@ -375,9 +375,19 @@ pub fn run_session(
 	Ok(outcome)
 }
 
+/// Paths EU4 parses itself. `fs::canonicalize` yields a Windows verbatim
+/// `\\?\` prefix; the game's argument and descriptor readers do not accept it.
+fn game_facing_path(path: &Path) -> String {
+	foch::plugin::deployment::path_text(path)
+		.unwrap_or_else(|_| path.to_string_lossy().into_owned())
+}
+
 /// Launch args: the throwaway user directory plus the bundle's own args.
 fn launch_args(bundle: &Bundle, user_dir: &Path) -> Vec<OsString> {
-	let mut args = vec![OsString::from(format!("-userdir={}", user_dir.display()))];
+	let mut args = vec![OsString::from(format!(
+		"-userdir={}",
+		game_facing_path(user_dir)
+	))];
 	args.extend(bundle.launch.args.iter().map(OsString::from));
 	args
 }
@@ -592,7 +602,7 @@ fn assemble_profile(
 }
 
 fn write_descriptor(path: &Path, name: &str, mod_path: &Path) -> io::Result<()> {
-	let normalized = mod_path.to_string_lossy().replace('\\', "/");
+	let normalized = game_facing_path(mod_path).replace('\\', "/");
 	fs::write(path, format!("name=\"{name}\"\npath=\"{normalized}\"\n"))
 }
 
@@ -670,6 +680,18 @@ fn stage_host(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn game_facing_path_strips_the_windows_verbatim_prefix() {
+		assert_eq!(
+			game_facing_path(Path::new(r"\\?\C:\Games\EU4\userdir")),
+			r"C:\Games\EU4\userdir"
+		);
+		assert_eq!(
+			game_facing_path(Path::new(r"\\?\UNC\server\share\userdir")),
+			r"\\server\share\userdir"
+		);
+	}
 
 	#[cfg(any(unix, windows))]
 	#[test]
