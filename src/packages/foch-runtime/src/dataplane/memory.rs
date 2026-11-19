@@ -90,6 +90,17 @@ impl Memory {
 		self.copy_read(addr, &mut out).then(|| out[0])
 	}
 
+	/// Reads `out.len()` bytes via a single guarded kernel copy. An empty
+	/// read succeeds without touching memory; returns `None` below the
+	/// null-page gate, on address overflow, or on a partial/refused copy.
+	#[cfg(windows)]
+	pub fn read_bytes(&self, addr: usize, out: &mut [u8]) -> Option<()> {
+		if out.is_empty() {
+			return Some(());
+		}
+		self.copy_read(addr, out).then_some(())
+	}
+
 	/// Writes eight bytes; the address must be aligned. On `None` a
 	/// prefix of the value may have been written — there is no rollback.
 	///
@@ -185,6 +196,11 @@ impl Memory {
 		None
 	}
 
+	#[cfg(not(windows))]
+	pub fn read_bytes(&self, _addr: usize, _out: &mut [u8]) -> Option<()> {
+		None
+	}
+
 	/// Unsupported target: declines without touching memory.
 	///
 	/// # Safety
@@ -260,6 +276,54 @@ fn writable_unguarded(addr: usize, len: usize) -> bool {
 	info.Protect
 		& (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)
 		!= 0
+}
+
+/// Guarded MSVC `std::vector` header (`{ begin, end, capacity }`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StdVector {
+	pub begin: usize,
+	pub end: usize,
+	pub capacity: usize,
+}
+
+impl StdVector {
+	/// Reads a three-qword MSVC `std::vector` header and checks
+	/// stride-independent bounds (`begin <= end <= capacity`, and either an
+	/// empty null vector or a `begin` pointer above the null page).
+	pub fn read(memory: &Memory, addr: usize) -> Option<Self> {
+		let begin = memory.read_qword(addr)? as usize;
+		let end = memory.read_qword(addr.checked_add(8)?)? as usize;
+		let capacity = memory.read_qword(addr.checked_add(16)?)? as usize;
+		let header = Self {
+			begin,
+			end,
+			capacity,
+		};
+		header.bounds_valid().then_some(header)
+	}
+
+	fn bounds_valid(&self) -> bool {
+		self.end >= self.begin
+			&& self.capacity >= self.end
+			&& ((self.begin == 0 && self.capacity == 0) || self.begin > 0x1_0000)
+	}
+
+	/// Validates alignment, bounds, stride divisibility, and element count
+	/// against `max_elements`, returning the element count.
+	pub fn len(&self, stride: usize, max_elements: usize) -> Option<usize> {
+		if stride == 0 || !self.bounds_valid() {
+			return None;
+		}
+		let alignment = 1usize << stride.trailing_zeros().min(3);
+		if !self.begin.is_multiple_of(alignment)
+			|| !(self.end - self.begin).is_multiple_of(stride)
+			|| !(self.capacity - self.begin).is_multiple_of(stride)
+		{
+			return None;
+		}
+		let count = (self.end - self.begin) / stride;
+		(count <= max_elements).then_some(count)
+	}
 }
 
 /// Reads an MSVC SSO `std::string` layout: size at `+0x10`, capacity at
@@ -613,5 +677,84 @@ mod tests {
 		// Restore before drop frees the region.
 		let mut back = 0_u32;
 		let _ = unsafe { VirtualProtect(address as *mut core::ffi::c_void, 8, old, &mut back) };
+	}
+
+	#[test]
+	fn read_bytes_reads_valid_ranges_and_rejects_invalid_ones() {
+		let memory = Memory;
+		let source: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+		let address = source.as_ptr() as usize;
+
+		let mut out = [0_u8; 10];
+		assert_eq!(memory.read_bytes(address + 3, &mut out), Some(()));
+		assert_eq!(out, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+		// Empty slice succeeds without touching memory.
+		assert_eq!(memory.read_bytes(address, &mut []), Some(()));
+
+		// Null-page and overflowing ranges are refused.
+		assert_eq!(memory.read_bytes(0x1000, &mut out), None);
+		assert_eq!(memory.read_bytes(usize::MAX - 2, &mut out), None);
+
+		// Partial reads across a committed/reserved boundary are refused whole.
+		let pages = GuardPages::new().expect("reserve the guard pages");
+		let mut cross = [0_u8; 4];
+		assert_eq!(memory.read_bytes(pages.boundary(), &mut cross), None);
+		assert_eq!(memory.read_bytes(pages.dark(), &mut cross), None);
+	}
+
+	#[test]
+	fn std_vector_validates_bounds_alignment_stride_and_limit() {
+		let memory = Memory;
+		let data = [0_u64; 8];
+		let base = data.as_ptr() as usize;
+
+		// Empty null vector is valid.
+		let empty_header = [0_u64, 0, 0];
+		let empty = StdVector::read(&memory, empty_header.as_ptr() as usize).unwrap();
+		assert_eq!(
+			empty,
+			StdVector {
+				begin: 0,
+				end: 0,
+				capacity: 0,
+			}
+		);
+		assert_eq!(empty.len(8, 16), Some(0));
+
+		// Populated vector with extra reserved capacity.
+		let header = [base as u64, (base + 24) as u64, (base + 64) as u64];
+		let vec = StdVector::read(&memory, header.as_ptr() as usize).unwrap();
+		assert_eq!(vec.len(8, 16), Some(3));
+		assert_eq!(vec.len(8, 3), Some(3));
+		assert_eq!(vec.len(8, 2), None); // exceeds max_elements
+		assert_eq!(vec.len(0, 16), None); // zero stride
+		assert_eq!(vec.len(16, 16), None); // end - begin (24) not multiple of 16
+
+		// Empty vector with reserved capacity.
+		let reserved = [base as u64, base as u64, (base + 16) as u64];
+		let reserved_vec = StdVector::read(&memory, reserved.as_ptr() as usize).unwrap();
+		assert_eq!(reserved_vec.len(8, 16), Some(0));
+
+		// Misaligned begin fails alignment check for stride 8, passes for stride 1.
+		let misaligned = [(base + 1) as u64, (base + 9) as u64, (base + 17) as u64];
+		let misaligned_vec = StdVector::read(&memory, misaligned.as_ptr() as usize).unwrap();
+		assert_eq!(misaligned_vec.len(8, 16), None);
+		assert_eq!(misaligned_vec.len(1, 16), Some(8));
+
+		// Non-multiple capacity fails stride check.
+		let bad_cap = [base as u64, (base + 8) as u64, (base + 12) as u64];
+		let bad_cap_vec = StdVector::read(&memory, bad_cap.as_ptr() as usize).unwrap();
+		assert_eq!(bad_cap_vec.len(8, 16), None);
+
+		// Invalid bounds rejected at read time.
+		for bad in [
+			[(base + 16) as u64, base as u64, (base + 16) as u64], // end < begin
+			[base as u64, (base + 16) as u64, (base + 8) as u64],  // capacity < end
+			[0_u64, 0, 16],                                        // null begin with nonzero capacity
+			[0x1000_u64, 0x1008, 0x1008],                          // begin inside null page
+		] {
+			assert_eq!(StdVector::read(&memory, bad.as_ptr() as usize), None);
+		}
 	}
 }

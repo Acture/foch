@@ -182,6 +182,38 @@ impl NodeView {
 	}
 }
 
+/// Decoded EU4 packed country identity (`[tag; 3], 0, index: i16, _, valid_flag`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackedCountryTag {
+	pub tag: String,
+	pub index: u16,
+}
+
+/// Decodes an EU4 packed country identity qword.
+///
+/// The low three bytes must be ASCII uppercase letters or digits, byte 3 must
+/// be NUL, and bytes 4..6 must hold a non-negative signed 16-bit country index.
+/// When `require_valid_flag` is `true`, byte 7 must also be non-zero (used for
+/// optional references such as `country::OVERLORD` and war participants).
+pub fn decode_packed_tag(packed: u64, require_valid_flag: bool) -> Option<PackedCountryTag> {
+	let bytes = packed.to_le_bytes();
+	let index = i16::from_le_bytes([bytes[4], bytes[5]]);
+	if (require_valid_flag && bytes[7] == 0)
+		|| bytes[3] != 0
+		|| index < 0
+		|| !bytes[..3]
+			.iter()
+			.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+	{
+		return None;
+	}
+	let tag = String::from_utf8(bytes[..3].to_vec()).ok()?;
+	Some(PackedCountryTag {
+		tag,
+		index: index as u16,
+	})
+}
+
 /// One country.
 pub struct CountryView {
 	memory: Memory,
@@ -189,6 +221,12 @@ pub struct CountryView {
 }
 
 impl CountryView {
+	/// Constructs a country view from a raw `CCountry*` address after checking
+	/// basic pointer plausibility (above the null page and 8-byte aligned).
+	pub fn from_ptr(memory: Memory, address: usize) -> Option<CountryView> {
+		(address > 0x1_0000 && address.is_multiple_of(8)).then_some(CountryView { memory, address })
+	}
+
 	/// Read just the tag of the country at `address`, without the full
 	/// view (the registry holds the addresses already).
 	pub fn tag_at(memory: &Memory, address: usize) -> String {
@@ -208,6 +246,43 @@ impl CountryView {
 	/// The tag from the packed identity qword's low bytes.
 	pub fn tag(&self) -> String {
 		Self::tag_at(&self.memory, self.address)
+	}
+
+	/// Checked tag read from the packed identity qword (`country::TAG`).
+	pub fn try_tag(&self) -> Option<String> {
+		let packed = self
+			.memory
+			.read_qword(self.address.checked_add(country::TAG)?)?;
+		decode_packed_tag(packed, false).map(|decoded| decoded.tag)
+	}
+
+	/// Country index from the packed identity qword (`country::TAG`).
+	pub fn index(&self) -> Option<u16> {
+		let packed = self
+			.memory
+			.read_qword(self.address.checked_add(country::TAG)?)?;
+		decode_packed_tag(packed, false).map(|decoded| decoded.index)
+	}
+
+	/// Monthly income bank (`i32`, thousandths) at `country::MONTHLY_INCOME_BANK`.
+	pub fn monthly_income_bank(&self) -> Option<i32> {
+		self.memory
+			.read_i32(self.address.checked_add(country::MONTHLY_INCOME_BANK)?)
+	}
+
+	/// Tributary tribute-type discriminator (`u8`) at `country::TRIBUTE_TYPE`.
+	pub fn tribute_type(&self) -> Option<u8> {
+		self.memory
+			.read_u8(self.address.checked_add(country::TRIBUTE_TYPE)?)
+	}
+
+	/// Decoded overlord packed country identity at `country::OVERLORD`, or
+	/// `None` when independent (valid flag byte 7 is zero) or unreadable.
+	pub fn overlord_tag(&self) -> Option<PackedCountryTag> {
+		let packed = self
+			.memory
+			.read_qword(self.address.checked_add(country::OVERLORD)?)?;
+		decode_packed_tag(packed, true)
 	}
 
 	/// Read candidate country-flag fields, using the actual host's executable
@@ -313,5 +388,85 @@ impl Province {
 	/// Base manpower (thousandths).
 	pub fn manpower(&self) -> Option<i32> {
 		self.memory.read_i32(self.address + province::MANPOWER)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn pack_tag(tag: [u8; 3], index: i16, valid_flag: u8) -> u64 {
+		let idx = index.to_le_bytes();
+		u64::from_le_bytes([tag[0], tag[1], tag[2], 0, idx[0], idx[1], 0, valid_flag])
+	}
+
+	#[test]
+	fn decode_packed_tag_validates_format_index_and_valid_flag() {
+		let valid = pack_tag(*b"MNG", 42, 1);
+		let expected = PackedCountryTag {
+			tag: "MNG".to_string(),
+			index: 42,
+		};
+		assert_eq!(decode_packed_tag(valid, true), Some(expected.clone()));
+		assert_eq!(decode_packed_tag(valid, false), Some(expected));
+
+		// Valid flag unset: accepted when optional, rejected when required.
+		let unset_flag = pack_tag(*b"D01", 0, 0);
+		assert_eq!(decode_packed_tag(unset_flag, true), None);
+		assert_eq!(
+			decode_packed_tag(unset_flag, false),
+			Some(PackedCountryTag {
+				tag: "D01".to_string(),
+				index: 0,
+			})
+		);
+
+		// Non-zero NUL slot at byte 3 is rejected.
+		let bad_nul = u64::from_le_bytes([b'F', b'R', b'A', b'X', 1, 0, 0, 1]);
+		assert_eq!(decode_packed_tag(bad_nul, false), None);
+
+		// Lowercase / non-alphanumeric tag bytes are rejected.
+		assert_eq!(decode_packed_tag(pack_tag(*b"fra", 1, 1), false), None);
+		assert_eq!(decode_packed_tag(pack_tag(*b"FR\0", 1, 1), false), None);
+
+		// Negative signed index is rejected.
+		assert_eq!(decode_packed_tag(pack_tag(*b"FRA", -1, 1), false), None);
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn country_view_from_ptr_and_readers() {
+		let memory = Memory;
+		assert!(CountryView::from_ptr(memory, 0).is_none());
+		assert!(CountryView::from_ptr(memory, 0x1000).is_none());
+		assert!(CountryView::from_ptr(memory, 0x1_0000).is_none());
+
+		let mut raw = vec![0_u64; 0x2900 / 8];
+		let base = raw.as_mut_ptr() as usize;
+		assert!(CountryView::from_ptr(memory, base + 1).is_none());
+
+		raw[country::TAG / 8] = pack_tag(*b"KOR", 17, 0);
+		raw[country::MONTHLY_INCOME_BANK / 8] = 123_456_i32 as u32 as u64;
+		raw[country::OVERLORD / 8] = pack_tag(*b"MNG", 5, 0); // independent (flag == 0)
+		let bytes =
+			unsafe { core::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u8, raw.len() * 8) };
+		bytes[country::TRIBUTE_TYPE] = 2;
+
+		let view = CountryView::from_ptr(memory, base).expect("valid aligned country pointer");
+		assert_eq!(view.try_tag().as_deref(), Some("KOR"));
+		assert_eq!(view.index(), Some(17));
+		assert_eq!(view.monthly_income_bank(), Some(123_456));
+		assert_eq!(view.tribute_type(), Some(2));
+		assert_eq!(view.overlord_tag(), None);
+
+		// Mark overlord valid flag non-zero to simulate a subject.
+		raw[country::OVERLORD / 8] = pack_tag(*b"MNG", 5, 1);
+		assert_eq!(
+			view.overlord_tag(),
+			Some(PackedCountryTag {
+				tag: "MNG".to_string(),
+				index: 5,
+			})
+		);
 	}
 }
