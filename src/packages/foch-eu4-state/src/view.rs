@@ -197,6 +197,30 @@ impl VerifiedGame {
 		(count >= 0).then_some(count)
 	}
 
+	/// Army pointers from the country save vector
+	/// ([`candidates::country::ARMY_LIST`]). `None` means the header is
+	/// malformed. An empty vector is an empty list. Static candidate;
+	/// not a live-verified country field.
+	pub fn save_army_pointers(&self, country: usize) -> Option<Vec<usize>> {
+		save_record_pointers(
+			&self.memory,
+			country,
+			candidates::country::ARMY_LIST,
+			candidates::country::ARMY_LIST_END,
+			candidates::country::ARMY_RECORD,
+			candidates::country::ARMY_RECORD_PTR,
+		)
+	}
+
+	/// Strength thousandths on the regiment save object
+	/// ([`candidates::regiment::STRENGTH`]). `None` if the address
+	/// cannot be read. `1000` is a real full-strength value, not a
+	/// missing field.
+	pub fn regiment_strength(&self, regiment: usize) -> Option<i32> {
+		self.memory
+			.read_i32(regiment.checked_add(candidates::regiment::STRENGTH)?)
+	}
+
 	/// Present unit type words from the combat-side vector
 	/// ([`candidates::combat_side::IDENTITIES`]). Elements with a zero
 	/// present byte or marker 7 are omitted, matching `UNIT_LOSSES`.
@@ -353,6 +377,46 @@ pub fn counts_from_named(entries: &[(String, i32)]) -> Option<RegimentCounts> {
 		}
 	}
 	(recognized || !other).then_some(counts)
+}
+
+/// The pure extraction behind [`VerifiedGame::owner_country_index`] and
+/// [`VerifiedGame::controller_index`]: bits 32..48 hold the country index.
+fn save_record_pointers(
+	memory: &foch_runtime::dataplane::Memory,
+	object: usize,
+	begin_at: usize,
+	end_at: usize,
+	stride: usize,
+	pointer_at: usize,
+) -> Option<Vec<usize>> {
+	let begin = memory.read_qword(object.checked_add(begin_at)?)? as usize;
+	let end = memory.read_qword(object.checked_add(end_at)?)? as usize;
+	if begin == 0 && end == 0 {
+		return Some(Vec::new());
+	}
+	if begin <= 0x1_0000 || end < begin || !stride.is_multiple_of(8) {
+		return None;
+	}
+	let bytes = end - begin;
+	if !bytes.is_multiple_of(stride) {
+		return None;
+	}
+	let count = bytes / stride;
+	if count > 512 {
+		return None;
+	}
+	let mut pointers = Vec::with_capacity(count);
+	for index in 0..count {
+		let slot = begin + index * stride + pointer_at;
+		let pointer = memory.read_qword(slot)? as usize;
+		if pointer != 0 && pointer <= 0x1_0000 {
+			return None;
+		}
+		if pointer != 0 {
+			pointers.push(pointer);
+		}
+	}
+	Some(pointers)
 }
 
 /// The pure extraction behind [`VerifiedGame::owner_country_index`] and
@@ -571,6 +635,19 @@ mod tests {
 		let expected = foch_runtime::dataplane::layout::EXPECTED_EXE_SHA256;
 		let game = VerifiedGame::new(Memory, base, expected).expect("pinned digest opens the gate");
 		assert_eq!(game.present_unit_types(base), Some(vec![4]));
+		let record = base + 0x300;
+		let army = base + 0x340;
+		unsafe {
+			write_qword(record + candidates::country::ARMY_RECORD_PTR, army as u64);
+			write_qword(base + candidates::country::ARMY_LIST, record as u64);
+			write_qword(
+				base + candidates::country::ARMY_LIST_END,
+				(record + candidates::country::ARMY_RECORD) as u64,
+			);
+			write_i32(army + candidates::regiment::STRENGTH, 750);
+		}
+		assert_eq!(game.save_army_pointers(base), Some(vec![army]));
+		assert_eq!(game.regiment_strength(army), Some(750));
 		unsafe {
 			write_qword(base + candidates::combat_side::IDENTITIES, 0);
 			write_qword(base + candidates::combat_side::UNIT_END, 0);

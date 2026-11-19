@@ -1202,6 +1202,11 @@ impl Campaign {
 	}
 
 	/// What kind of war: 0 occupy, 1 battles, 2 defend.
+	///
+	/// This is the current simulator channel. An unseen or numerically
+	/// edited casus belli is not a fourth class here; score it with
+	/// [`crate::ResidualCategory`] so the id embedding is zero and the
+	/// mechanic vector still contributes.
 	pub fn goal_type(&self) -> f32 {
 		match self.wargoal.as_str() {
 			"superiority" => 1.0,
@@ -1210,16 +1215,27 @@ impl Campaign {
 		}
 	}
 
+	/// Zero-shot casus-belli score. `modifiers` are the CB's own numbers.
+	/// A name the exported table does not contain, or a known name whose
+	/// numbers no longer match, uses `E_id = 0`.
+	pub fn wargoal_score(&self, model: &crate::ResidualCategory, modifiers: [f32; 5]) -> Vec<f32> {
+		model.score(&self.wargoal, modifiers)
+	}
+
 	/// One number for "can I win a fight". Positive means press.
 	/// Per-province features for one candidate destination.
 	pub fn province_features(&self, index: u32) -> [f32; PROVINCE_FEATURES] {
 		let province = &self.map.provinces[index as usize];
 		let mut out = [0.0; PROVINCE_FEATURES];
-		let terrain_index = TERRAINS
+		// A category the five vanilla rows do not match — a mod name, or
+		// a vanilla name whose mechanics were edited — stays an all-zero
+		// one-hot. Movement cost below still carries the mechanic.
+		if let Some(terrain_index) = TERRAINS
 			.iter()
 			.position(|terrain| *terrain == province.terrain)
-			.unwrap_or(0);
-		out[terrain_index] = 1.0;
+		{
+			out[terrain_index] = 1.0;
+		}
 		out[5] = province.terrain.movement_cost;
 		out[6] = self.map.travel_days(self.our_position, index) as f32 / 48.0;
 		out[7] = f32::from(index == self.goal);
@@ -1502,6 +1518,43 @@ mod tests {
 				assert!((points + (0.1 + losses / 20.0)).abs() < 1e-4);
 			}
 		}
+	}
+
+	#[test]
+	fn unknown_terrain_and_an_unseen_casus_belli_keep_mechanics_without_a_vanilla_id() {
+		let mut campaign = Campaign::generate(4, "careful_personality", "superiority");
+		campaign.map.provinces[0].terrain = Terrain {
+			name: "haunted_bog",
+			movement_cost: 3.0,
+			attacker_pips: -1,
+			attrition: 0.05,
+		};
+		let features = campaign.province_features(0);
+		assert_eq!(&features[..5], &[0.0; 5]);
+		assert_eq!(features[5], 3.0);
+
+		let model = crate::ResidualCategory::from_json(
+			r#"{
+			"kind": "residual-category",
+			"names": ["superiority"],
+			"modifiers": [[1.0, 0.4, 0.0, 1.0, 0.0]],
+			"f0_weight": [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+			"f0_bias": [0, 0],
+			"f2_weight": [[1, 0], [0, 1]],
+			"f2_bias": [0, 0],
+			"embedding": [[9, 9], [1, 0]]
+		}"#,
+		)
+		.expect("cb head");
+		let vanilla = [1.0, 0.4, 0.0, 1.0, 0.0];
+		let edited = [9.0, 0.4, 0.0, 1.0, 0.0];
+		let custom = [2.0, 0.1, 1.0, 0.0, 0.5];
+		assert_eq!(campaign.wargoal_score(&model, vanilla), vec![2.0, 0.4]);
+		campaign.wargoal = "my_mod_cb".to_string();
+		assert_eq!(campaign.wargoal_score(&model, custom), vec![2.0, 0.1]);
+		campaign.wargoal = "superiority".to_string();
+		assert_eq!(model.resolve("superiority", edited), 0);
+		assert_eq!(campaign.wargoal_score(&model, edited), vec![9.0, 0.4]);
 	}
 
 	#[test]

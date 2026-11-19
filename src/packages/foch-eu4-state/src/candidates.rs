@@ -68,6 +68,53 @@ pub mod country {
 	/// Overlord country id read while resolving the other side of a
 	/// province.
 	pub const OVERLORD: usize = 0x18f0;
+	/// Save-side army vector begin. End is [`ARMY_LIST_END`]. The writer
+	/// at `0x140d6c7d0` emits token `army` (`0x28a0`) once per 0x10-byte
+	/// record and takes the army pointer from record+[`ARMY_RECORD_PTR`].
+	/// The same function emits `navy` (`0x28a1`) from [`NAVY_LIST`].
+	/// There is no RTTI name on that function; the army/navy pair is the
+	/// evidence it is the country military save. Static only.
+	pub const ARMY_LIST: usize = 0x50;
+	/// End pointer of [`ARMY_LIST`]. Count is `(end - begin) / 0x10`.
+	pub const ARMY_LIST_END: usize = 0x58;
+	/// Bytes per army record in [`ARMY_LIST`].
+	pub const ARMY_RECORD: usize = 0x10;
+	/// Pointer inside one army record.
+	pub const ARMY_RECORD_PTR: usize = 0x8;
+	/// Navy vector begin, sibling of [`ARMY_LIST`]. End at +0x70.
+	pub const NAVY_LIST: usize = 0x68;
+	/// End pointer of [`NAVY_LIST`].
+	pub const NAVY_LIST_END: usize = 0x70;
+}
+
+/// Save container that emits `regiment` (`0x28a2`) or `ship` (`0x28a3`).
+///
+/// `FUN_140d3d750` walks a pointer vector at +0x20/+0x28 (stride 8) and
+/// calls the element's virtual save. This is not the AssignLeader army
+/// object: that object's id dword sits at `army::ID` (`+0x24`), which
+/// overlaps a qword begin pointer. Static only.
+pub mod unit_container {
+	/// Begin pointer. End is [`REGIMENTS_END`].
+	pub const REGIMENTS: usize = 0x20;
+	/// End pointer of [`REGIMENTS`].
+	pub const REGIMENTS_END: usize = 0x28;
+	/// Element stride. Each element is one pointer.
+	pub const STRIDE: usize = 8;
+}
+
+/// One regiment as saved under token `strength` (`0x28a9`).
+///
+/// The writer loads a dword at +0xb0 and skips the token when the value
+/// is 1000, the full-strength thousandths sentinel. The function is not
+/// RTTI-named. The `morale` token (`0x28a8`) is written from a combat
+/// object at +0x50 (next to attacker/defender/location) and from a
+/// smaller object at +0x18; neither is this strength object, so regiment
+/// morale stays unpinned.
+pub mod regiment {
+	/// Strength in thousandths. `1000` means full and is omitted on save.
+	pub const STRENGTH: usize = 0xb0;
+	/// Value the saver treats as "do not write strength".
+	pub const FULL_STRENGTH: i32 = 1000;
 }
 
 /// Candidate fields on a war object (`WAR_SCORE_TOTAL` / `WAR_SCORE_SIDE`).
@@ -198,8 +245,9 @@ pub mod army {
 	pub const ART_FIRE: usize = 0x12c;
 	pub const ART_SHOCK: usize = 0x130;
 	/// Country pointer. `FUN_1401a5e50` stores the registry lookup at
-	/// `0x1401a6301` (`mov [rdi+0x21c], rcx`). The setter does not push
-	/// the army onto a country-owned list; that root is still unpinned.
+	/// `0x1401a6301` (`mov [rdi+0x21c], rcx`). The country-side army
+	/// list is the save vector [`super::country::ARMY_LIST`], not a
+	/// write in this setter.
 	pub const COUNTRY: usize = 0x21c;
 	/// Location: province pointer `id * 0x2e10 + *(world+0x1ca8)`, stored
 	/// at `0x1401a603d` when save key `0x30fe` is applied.
@@ -249,6 +297,16 @@ mod tests {
 			assert!(country::PROVINCES.is_multiple_of(8));
 			assert!(country::MARK.is_multiple_of(4));
 			assert!(country::OVERLORD.is_multiple_of(8));
+			assert!(country::ARMY_LIST.is_multiple_of(8));
+			assert!(country::ARMY_LIST_END == country::ARMY_LIST + 8);
+			assert!(country::ARMY_RECORD == 0x10);
+			assert!(country::ARMY_RECORD_PTR < country::ARMY_RECORD);
+			assert!(country::NAVY_LIST == country::ARMY_LIST + 0x18);
+			assert!(country::NAVY_LIST_END == country::NAVY_LIST + 8);
+			assert!(unit_container::REGIMENTS_END == unit_container::REGIMENTS + 8);
+			assert!(unit_container::STRIDE == 8);
+			assert!(regiment::STRENGTH == 0xb0);
+			assert!(regiment::FULL_STRENGTH == 1000);
 
 			assert!(war::SIDE_A.is_multiple_of(8));
 			assert!(war::SIDE_B.is_multiple_of(8));
