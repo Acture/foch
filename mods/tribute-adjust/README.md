@@ -1,4 +1,8 @@
+![Tribute Adjust — Live 0%–200% Subject & Tributary Slider Panel](workshop/thumbnail.png)
+
 # Tribute Adjust (`foch-eu4-tribute`)
+
+> Steam Workshop companion mod & store copy: [descriptor.mod](workshop/descriptor.mod) · [foch-companion.toml](workshop/foch-companion.toml) · [English BBCode](workshop/STEAM_WORKSHOP_EN.bbcode) · [中文 BBCode](workshop/STEAM_WORKSHOP_ZH.bbcode)
 
 **Tribute Adjust**（插件 ID：`dev.foch.eu4-tribute-adjust`）是基于 Foch 原生插件宿主（`foch-runtime-host`）的《欧陆风云 4》（EU4）Windows x64 原生 DLL 插件。它按可配置百分比（`0`–`200`%）直接缩放每个属国向宗主国缴纳的**最终朝贡与附庸月度收入金额**，而不修改 `tribute_income_modifier`、`vassal_income` 等脚本修正本身，从根源上解决中后期修正堆高后属国财政破产或上供比例失衡的问题。
 
