@@ -228,17 +228,16 @@ def _cstring_at(image: PEImage, address: int) -> str | None:
 	return None
 
 
-def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
-	"""Script-handler begins named by a static registration record.
+def string_sites(image: PEImage, keyword: str) -> tuple[tuple[str, int | None], ...]:
+	"""Pointer hits of `keyword`: ``("handler", va)`` or ``("console", va)``.
 
 	The record that carries a keyword pointer puts the handler six qwords
 	later (verified on the synthetic effect entry and on EU4 1.37.5). A
 	wider neighborhood also sees the console-command table, whose records
 	share that handler slot but then point at an argument hint such as
 	``<Flag>`` or ``<Amount>``. Those are console commands, not the script
-	effect or trigger, so a hint drops the hit instead of pinning it.
-	Only an unambiguous remaining handler is returned; several candidates
-	or none is not a guess.
+	effect or trigger. ``va`` is a ``.pdata`` function start when the slot
+	points at one, and ``None`` when the console hint is not a function.
 	"""
 	text = next((s for s in image.sections if s.name == ".text"), None)
 	if text is None:
@@ -246,7 +245,6 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 	text_begin = text.rva + image.image_base
 	text_end = text.rva + max(text.virtual_size, text.file_size) + image.image_base
 	starts = set(image.function_starts)
-	handlers: list[int] = []
 	# Name pointer, then the handler qword at +0x30, then the qword at
 	# +0x40 that a console command uses for its argument hint.
 	window_last = 0x40 + 8
@@ -256,6 +254,7 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 		(section.file_offset, section.file_offset + section.file_size)
 		for section in image.sections
 	)
+	sites: list[tuple[str, int | None]] = []
 	for rva in keyword_rvas(image, keyword):
 		needle = struct.pack("<Q", image.image_base + rva)
 		position = image.data.find(needle)
@@ -268,17 +267,72 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 				hint = _cstring_at(
 					image, struct.unpack_from("<Q", image.data, position + 0x40)[0]
 				)
+				value = struct.unpack_from("<Q", image.data, position + 0x30)[0]
+				handler = (
+					value
+					if text_begin <= value < text_end and value in starts
+					else None
+				)
 				# Console commands document their argument here. The script
 				# tables do not, so this is a shape check, not a name list.
 				if hint is not None and hint.startswith("<"):
-					position = image.data.find(needle, position + 1)
-					continue
-				value = struct.unpack_from("<Q", image.data, position + 0x30)[0]
-				if text_begin <= value < text_end and value in starts:
-					handlers.append(value)
+					sites.append(("console", handler))
+				elif handler is not None:
+					sites.append(("handler", handler))
 			position = image.data.find(needle, position + 1)
+	return tuple(sites)
+
+
+def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
+	"""Script-handler begins named by a static registration record.
+
+	A console-command hint drops the hit instead of pinning it. Only an
+	unambiguous remaining handler is returned; several candidates or none
+	is not a guess.
+	"""
+	handlers = [
+		handler
+		for kind, handler in string_sites(image, keyword)
+		if kind == "handler" and handler is not None
+	]
 	unique = set(handlers)
 	return tuple(sorted(unique)) if len(unique) == 1 else ()
+
+
+def baseline_observation(image: PEImage, keyword: str) -> tuple[str, tuple[int, ...]]:
+	"""String-scan status and the console handlers that were rejected.
+
+	``pinned`` is the old registration-table result. ``rejected_console_cmd``
+	means every record that named the keyword was a console command. This
+	does not promote a console wrapper to a script handler.
+	"""
+	if not keyword_rvas(image, keyword):
+		return "string_absent", ()
+	sites = string_sites(image, keyword)
+	handlers = {
+		handler for kind, handler in sites if kind == "handler" and handler is not None
+	}
+	consoles = tuple(
+		sorted(
+			{
+				handler
+				for kind, handler in sites
+				if kind == "console" and handler is not None
+			}
+		)
+	)
+	if len(handlers) == 1:
+		return "pinned", consoles
+	if len(handlers) > 1:
+		return "ambiguous", consoles
+	if any(kind == "console" for kind, _handler in sites):
+		return "rejected_console_cmd", consoles
+	return "no_handler", consoles
+
+
+def baseline_status(image: PEImage, keyword: str) -> str:
+	"""How the ASCII string scan classifies `keyword`."""
+	return baseline_observation(image, keyword)[0]
 
 
 def keyword_reference_functions(

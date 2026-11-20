@@ -12,12 +12,25 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from . import pe
 from .models import Function, FunctionEvidence
+from .pe import PEImage
+from .tokens import (
+	GOLD_TOKENS,
+	PINNED_EU4_SHA256,
+	Calibration,
+	DebugHandler,
+	TokenTable,
+	calibrate,
+	debug_handlers,
+	discover_token_table,
+)
 from .x86 import Pointer, StringValue, trace
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -214,3 +227,177 @@ def pin_catalog(
 	# Unresolved names ride along in the artifact; foch-test ignores extra keys.
 	catalog["missing"] = missing
 	return SemanticsResult(catalog, tuple(missing))
+
+
+def _handler_record(handler: DebugHandler, image_base: int) -> dict[str, object]:
+	return {
+		"address": handler.address,
+		"debug_string": handler.string,
+		"debug_string_rva": handler.string_rva,
+		"end": handler.end,
+		"evidence": "debug_string",
+		"lea_rva": handler.lea_rva,
+		"prologue": handler.prologue,
+		"prologue_hex": handler.prologue_hex,
+		"rva": handler.address - image_base,
+		"symbol": f"sub_{handler.address:x}",
+	}
+
+
+def _token_field(table: TokenTable | None, name: str, trusted: bool) -> int | None:
+	if not trusted or table is None:
+		return None
+	return table.id_of(name)
+
+
+def _treatment(
+	name: str,
+	kind: str,
+	table: TokenTable | None,
+	trusted: bool,
+	handlers: dict[str, DebugHandler],
+	ambiguous: frozenset[str],
+	image_base: int,
+) -> tuple[str, str | None, int | None, dict[str, object] | None]:
+	"""Status, failure, token id, and handler record.
+
+	A debug-string function is a handler pin. A calibrated token id without
+	that function stays ``token_only`` and is never reported as pinned.
+	"""
+	handler = handlers.get(name)
+	if handler is not None and handler.kind == kind:
+		return (
+			"pinned",
+			None,
+			_token_field(table, name, trusted),
+			_handler_record(handler, image_base),
+		)
+	if not trusted:
+		failure = "token_table_absent" if table is None else "token_table_uncalibrated"
+		return "unpinned", failure, None, None
+	assert table is not None
+	ids = table.ids_of(name)
+	if len(ids) > 1:
+		return "unpinned", "token_ambiguous", None, None
+	if len(ids) == 0:
+		return "unpinned", "token_absent", None, None
+	if name in ambiguous:
+		return "token_only", "handler_ambiguous", ids[0], None
+	if handler is not None and handler.kind != kind:
+		return "token_only", "kind_mismatch", ids[0], None
+	return "token_only", "handler_unproven", ids[0], None
+
+
+def _calibration_record(result: Calibration) -> dict[str, object]:
+	return {
+		"checks": [
+			{
+				"expected": expected,
+				"found": found,
+				"match": found == expected,
+				"name": name,
+			}
+			for name, expected, found in result.checks
+		],
+		"matched": result.matched,
+		"passed": result.passed,
+		"total": result.total,
+	}
+
+
+def _table_record(table: TokenTable | None) -> dict[str, object] | None:
+	if table is None:
+		return None
+	return {
+		"first_rva": table.first_rva,
+		"id_width": table.id_width,
+		"last_rva": table.last_rva,
+		"records": len(table.entries),
+		"section": table.section,
+		"stride": table.stride,
+	}
+
+
+def review_catalog(
+	image: PEImage,
+	catalog: dict,
+	*,
+	game_version: str,
+	gold: Mapping[str, int] | None = None,
+) -> dict:
+	"""Baseline string scan versus token-table plus debug-string handlers.
+
+	The catalog's embedded handler pins are not copied. This report is the
+	read-only evidence for one executable.
+	"""
+	if catalog.get("format") != 1:
+		raise ValueError(f"unsupported semantics format {catalog.get('format')}")
+	expected = GOLD_TOKENS if gold is None else gold
+	table = discover_token_table(image)
+	checked = calibrate(table, expected)
+	handlers, ambiguous = debug_handlers(image)
+	primitives: dict[str, dict[str, object]] = {}
+	baseline_counts: Counter[str] = Counter()
+	treatment_counts: Counter[str] = Counter()
+	failure_counts: Counter[str] = Counter()
+	for name, primitive in catalog["primitives"].items():
+		kind = primitive.get("kind")
+		if kind not in {"effect", "trigger"}:
+			raise ValueError(f"primitive {name} has unknown kind {kind!r}")
+		baseline, consoles = pe.baseline_observation(image, name)
+		status, failure, token_id, handler = _treatment(
+			name,
+			kind,
+			table,
+			checked.passed,
+			handlers,
+			ambiguous,
+			image.image_base,
+		)
+		baseline_counts[baseline] += 1
+		treatment_counts[status] += 1
+		if failure is not None:
+			failure_counts[failure] += 1
+		record: dict[str, object] = {
+			"baseline": baseline,
+			"console_handlers": list(consoles),
+			"failure": failure,
+			"handler": handler,
+			"kind": kind,
+			"token_id": token_id,
+			"treatment": status,
+		}
+		primitives[name] = record
+	total = len(primitives)
+	if (
+		sum(treatment_counts.values()) != total
+		or sum(baseline_counts.values()) != total
+	):
+		raise RuntimeError("review counts do not cover every primitive")
+	return {
+		"binary_sha256": image.sha256,
+		"calibration": _calibration_record(checked),
+		"comparison": {
+			"baseline": {
+				"ambiguous": baseline_counts["ambiguous"],
+				"no_handler": baseline_counts["no_handler"],
+				"pinned": baseline_counts["pinned"],
+				"rejected_console_cmd": baseline_counts["rejected_console_cmd"],
+				"string_absent": baseline_counts["string_absent"],
+			},
+			"failures": dict(sorted(failure_counts.items())),
+			"total": total,
+			"treatment": {
+				"pinned": treatment_counts["pinned"],
+				"token_only": treatment_counts["token_only"],
+				"unpinned": treatment_counts["unpinned"],
+			},
+		},
+		"format": 1,
+		"game_version": game_version,
+		"kind": "semantics-pin-review",
+		"pinned_binary_match": image.sha256 == PINNED_EU4_SHA256,
+		"pinned_binary_sha256": PINNED_EU4_SHA256,
+		"primitives": primitives,
+		"token_table": _table_record(table),
+	}

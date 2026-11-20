@@ -12,13 +12,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import builtins
+from .binary import read_binary as read_image
 from .builtins import BuiltinOptions
 from .catalog import CatalogDiscovery, CatalogReport, discover_catalog
 from .families import DEFAULT_BOOTSTRAP, Discovery, FamilyQuery, discover_family
 from .ghidra import GhidraSession, validate_output_directory
 from .load_rules import LoadRules, discover_load_rules, parse_rules, with_prior_build
 from .models import Function, FunctionEvidence
-from .semantics import SemanticsQuery, pin_catalog
+from .pe import PEImage
+from .semantics import SemanticsQuery, load_catalog, pin_catalog, review_catalog
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class Options:
 	query: CatalogQuery | FamilyQuery | SemanticsQuery | str
 	rules_directory: Path | None
 	semantics_output: Path | None = None
+	offline: bool = False
 
 
 def label(value: str) -> str:
@@ -69,6 +72,11 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 		required=True,
 		type=Path,
 		help="Where the pinned catalog artifact is written for review",
+	)
+	semantics.add_argument(
+		"--offline",
+		action="store_true",
+		help="Read the PE only; do not start EU4 or Ghidra",
 	)
 	for command in (discover, inspect, semantics):
 		command.add_argument("--binary", required=True, type=Path)
@@ -107,7 +115,8 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 	args: argparse.Namespace = parser.parse_args(argv)
 	if args.command == "builtins":
 		return BuiltinOptions(args.output)
-	if args.ghidra is None:
+	offline = bool(getattr(args, "offline", False))
+	if args.ghidra is None and not offline:
 		parser.error("set --ghidra or GHIDRA_INSTALL_DIR")
 	if args.timeout <= 0:
 		parser.error("--timeout must be positive")
@@ -129,15 +138,19 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 	else:
 		query = args.symbol
 	semantic_output = args.output.resolve() if args.command == "semantics" else None
+	installation = (
+		args.binary.resolve().parent if args.ghidra is None else args.ghidra.resolve()
+	)
 	return Options(
 		args.binary.resolve(),
-		args.ghidra.resolve(),
+		installation,
 		args.workspace.resolve(),
 		args.game_version,
 		args.timeout,
 		query,
 		args.rules_dir.resolve() if args.command == "discover" else None,
 		semantic_output,
+		offline,
 	)
 
 
@@ -156,9 +169,47 @@ def write_json(path: Path, value: object) -> None:
 	LOGGER.info("Wrote %s", path)
 
 
+def _review_offline(options: Options) -> None:
+	if not isinstance(options.query, SemanticsQuery):
+		raise TypeError("offline review is the semantics command")
+	output = options.semantics_output
+	if output is None:
+		raise ValueError("semantics review requires --output")
+	game_directory = options.binary.resolve().parent
+	if output.resolve().is_relative_to(game_directory):
+		raise ValueError("output must be outside the game installation")
+	image = read_image(options.binary)
+	if not isinstance(image, PEImage):
+		raise TypeError("offline semantics review reads a PE executable")
+	report = review_catalog(
+		image,
+		load_catalog(options.query.catalog),
+		game_version=options.game_version,
+	)
+	write_json(output, report)
+	comparison = report["comparison"]
+	treatment = comparison["treatment"]
+	baseline = comparison["baseline"]
+	LOGGER.info(
+		"Semantics review: calibration %s (%s/%s); baseline pinned %s "
+		"rejected_console_cmd %s; treatment pinned %s token_only %s unpinned %s",
+		report["calibration"]["passed"],
+		report["calibration"]["matched"],
+		report["calibration"]["total"],
+		baseline["pinned"],
+		baseline["rejected_console_cmd"],
+		treatment["pinned"],
+		treatment["token_only"],
+		treatment["unpinned"],
+	)
+
+
 def run(options: Options | BuiltinOptions) -> None:
 	if isinstance(options, BuiltinOptions):
 		builtins.run(options)
+		return
+	if isinstance(options.query, SemanticsQuery) and options.offline:
+		_review_offline(options)
 		return
 	if options.rules_directory is not None:
 		validate_output_directory(
