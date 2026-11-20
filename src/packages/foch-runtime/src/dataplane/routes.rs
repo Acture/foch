@@ -9,12 +9,13 @@
 //! byte-exact vanilla layout.
 
 use super::Memory;
-use super::layout::{def, node, route};
+use super::profile::{LayoutProfile, default_profile};
 
 /// The per-node mutation state: the vanilla route entries and steering
 /// weights captured before the first mutation, plus the live closed
 /// flags.
 pub struct RouteMutation {
+	profile: &'static LayoutProfile,
 	def: usize,
 	routes_begin: usize,
 	original_routes: Vec<u8>,
@@ -40,17 +41,34 @@ impl RouteMutation {
 		definition: usize,
 		routes: (usize, usize),
 	) -> Option<RouteMutation> {
+		Self::capture_with(default_profile(), memory, node, definition, routes)
+	}
+
+	pub(crate) fn capture_with(
+		profile: &'static LayoutProfile,
+		memory: &Memory,
+		node: usize,
+		definition: usize,
+		routes: (usize, usize),
+	) -> Option<RouteMutation> {
 		let (begin, end) = routes;
-		let count = end.checked_sub(begin)? / route::SIZE;
-		let mut original_routes = Vec::with_capacity(count * route::SIZE);
-		for offset in 0..count * route::SIZE {
+		let stride = profile.route_size.offset;
+		if stride == 0 {
+			return None;
+		}
+		let count = end.checked_sub(begin)? / stride;
+		let mut original_routes = Vec::with_capacity(count * stride);
+		for offset in 0..count * stride {
 			original_routes.push(memory.read_u8(begin + offset)?);
 		}
 		// The steering weights pair with the routes entry for entry;
 		// when they do not, route reordering alone still holds and the
 		// weights keep their live order.
-		let weights_begin = memory.read_ptr(node + node::WEIGHTS);
-		let weights_end = memory.read_ptr(node + node::WEIGHTS + 8);
+		let weights_begin = memory.read_ptr(node.checked_add(profile.node_weights.offset)?);
+		let weights_end = memory.read_ptr(
+			node.checked_add(profile.node_weights.offset)?
+				.checked_add(8)?,
+		);
 		let paired = matches!((weights_begin, weights_end), (Some(a), Some(e)) if e >= a && (e - a) / 4 == count);
 		let (weights_begin, original_weights) =
 			if let Some(begin) = paired.then_some(weights_begin).flatten() {
@@ -63,6 +81,7 @@ impl RouteMutation {
 				(None, Vec::new())
 			};
 		Some(RouteMutation {
+			profile,
 			def: definition,
 			routes_begin: begin,
 			original_routes,
@@ -101,7 +120,10 @@ impl RouteMutation {
 		// stay inside the captured original capacity, and the caller
 		// runs on the game thread where the route tables are stable.
 		unsafe {
-			let stride = route::SIZE;
+			let stride = self.profile.route_size.offset;
+			if stride == 0 {
+				return None;
+			}
 			for (live_slot, vanilla_slot) in live_order(&self.closed).iter().enumerate() {
 				let source = vanilla_slot * stride;
 				let target = self.routes_begin + live_slot * stride;
@@ -119,7 +141,10 @@ impl RouteMutation {
 			// parked tail keeps observe-side permutation recovery simple.
 			let open_count = self.closed.iter().filter(|c| !**c).count();
 			let new_end = self.routes_begin + open_count * stride;
-			memory.write_qword(self.def + def::ROUTES_END, new_end as u64)
+			memory.write_qword(
+				self.def.checked_add(self.profile.def_routes_end.offset)?,
+				new_end as u64,
+			)
 		}
 	}
 }

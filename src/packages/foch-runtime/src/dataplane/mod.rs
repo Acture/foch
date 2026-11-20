@@ -1,8 +1,10 @@
 //! The EU4 data plane: typed, guarded access to the live game.
 //!
 //! Plugins build their policies on these views instead of carrying
-//! their own offset tables and pointer walkers. The layout is pinned to
-//! one executable ([`pinned_exe_sha256`]) and is a crate-private detail.
+//! their own offset tables and pointer walkers. Offsets come from
+//! compiled-in JSON profiles selected by executable digest
+//! ([`pinned_exe_sha256`] is the default build) and are a crate-private
+//! detail.
 //! [`Memory`] uses checked kernel copies on Windows; complete readable
 //! ranges can still hold the wrong object or stale state. Callers must
 //! establish identity, type, lifetime and game-thread stability.
@@ -13,6 +15,7 @@ pub mod flags;
 pub mod game;
 pub(crate) mod layout;
 pub mod memory;
+pub(crate) mod profile;
 pub mod routes;
 #[cfg(all(windows, feature = "test-support"))]
 pub mod testing;
@@ -29,15 +32,16 @@ pub use war::{CampaignStamp, CountryRef, WarRoster, check_country_restrictions, 
 
 use foch_plugin_sdk::{FochHostApi, FochStr, result};
 
-/// A host-computed executable digest must match [`pinned_exe_sha256`]
-/// before using the pinned data plane.
+/// A host-computed executable digest must match a compiled-in profile
+/// before using the data plane. Matching is the exact digest, never a
+/// version string.
 pub fn supports_build(exe_sha256: &str) -> bool {
-	exe_sha256 == layout::EXPECTED_EXE_SHA256
+	layout::profile_for_build(exe_sha256).is_some()
 }
 
-/// The executable digest this data plane is pinned to.
+/// The executable digest of the default compiled-in profile.
 pub fn pinned_exe_sha256() -> &'static str {
-	layout::EXPECTED_EXE_SHA256
+	layout::default_profile().exe_sha256.as_str()
 }
 
 /// Resolve the pinned monthly economy tick and cross-check the host pattern scan.
@@ -58,33 +62,38 @@ pub unsafe fn resolve_monthly_tick(
 	// A mismatched build is rejected before the platform gate so callers
 	// never scan an image this data plane does not describe.
 	let digest = unsafe { host.exe_sha256.as_str() }.unwrap_or("");
-	if !supports_build(digest) {
+	let Some(profile) = layout::profile_for_build(digest) else {
 		return Err("host executable digest does not match the pinned build");
-	}
+	};
 	if !cfg!(all(windows, target_arch = "x86_64")) {
 		return Err("monthly tick resolution requires Windows x64");
 	}
 	if host.exe_base.is_null() {
 		return Err("host image base is null");
 	}
-	let tick_end = layout::TICK_RVA
-		.checked_add(1)
-		.ok_or("tick address overflow")?;
-	let globals_end = layout::CONTEXT_GLOBAL_RVA
-		.max(layout::COUNTRY_MANAGER_GLOBAL_RVA)
+	let tick_rva = profile.monthly_tick.rva;
+	let tick_end = tick_rva.checked_add(1).ok_or("tick address overflow")?;
+	let globals_end = profile
+		.context_global
+		.offset
+		.max(profile.country_manager_global.offset)
 		.checked_add(8)
 		.ok_or("tick address overflow")?;
 	if host.exe_size < tick_end.max(globals_end) {
 		return Err("host image does not contain the pinned game fields");
 	}
 	let tick = (host.exe_base as usize)
-		.checked_add(layout::TICK_RVA)
+		.checked_add(tick_rva)
 		.ok_or("tick address overflow")?;
 	let mut resolved = core::ptr::null_mut();
 	// SAFETY: the caller supplies a live find_pattern callback. The pattern
-	// string is a static literal and is only borrowed for this synchronous call.
+	// lives in the compiled-in profile and is only borrowed for this call.
 	let code = unsafe {
-		(host.find_pattern)(host, FochStr::from_str(layout::TICK_PATTERN), &mut resolved)
+		(host.find_pattern)(
+			host,
+			FochStr::from_str(&profile.monthly_tick.pattern),
+			&mut resolved,
+		)
 	};
 	if code != result::OK || resolved.is_null() || resolved as usize != tick {
 		return Err("verified monthly callback signature or RVA did not match");
@@ -188,7 +197,8 @@ mod tests {
 			FIND_CALLS.fetch_add(1, Ordering::Relaxed);
 			// SAFETY: the test pattern is a static literal borrowed for this call.
 			let seen = unsafe { pattern.as_str() }.unwrap_or("");
-			if seen != layout::TICK_PATTERN {
+			let expected = super::profile::default_profile();
+			if seen != expected.monthly_tick.pattern {
 				return result::E_INVALID;
 			}
 			match FIND_MODE.load(Ordering::Relaxed) {
@@ -203,7 +213,8 @@ mod tests {
 					// SAFETY: `host` is the live table passed to resolve_monthly_tick.
 					let base = unsafe { (*host).exe_base } as usize;
 					unsafe {
-						*out = base.wrapping_add(layout::TICK_RVA) as *mut core::ffi::c_void;
+						*out = base.wrapping_add(super::profile::default_profile().monthly_tick.rva)
+							as *mut core::ffi::c_void;
 					}
 					result::OK
 				}
@@ -293,7 +304,8 @@ mod tests {
 			unsafe { resolve_monthly_tick(&null_base) }.unwrap_err(),
 			"host image base is null"
 		);
-		let short = host(pinned, 0x1400_0000, layout::TICK_RVA);
+		let pinned_profile = super::profile::default_profile();
+		let short = host(pinned, 0x1400_0000, pinned_profile.monthly_tick.rva);
 		assert_eq!(
 			unsafe { resolve_monthly_tick(&short) }.unwrap_err(),
 			"host image does not contain the pinned game fields"
@@ -301,7 +313,10 @@ mod tests {
 		let globals_clipped = host(
 			pinned,
 			0x1400_0000,
-			layout::CONTEXT_GLOBAL_RVA.max(layout::COUNTRY_MANAGER_GLOBAL_RVA),
+			pinned_profile
+				.context_global
+				.offset
+				.max(pinned_profile.country_manager_global.offset),
 		);
 		assert_eq!(
 			unsafe { resolve_monthly_tick(&globals_clipped) }.unwrap_err(),
@@ -327,6 +342,6 @@ mod tests {
 		FIND_MODE.store(2, Ordering::Relaxed);
 		let matched = host(pinned, 0x1400_0000, 0x300_0000);
 		let tick = unsafe { resolve_monthly_tick(&matched) }.unwrap();
-		assert_eq!(tick as usize, 0x1400_0000 + layout::TICK_RVA);
+		assert_eq!(tick as usize, 0x1400_0000 + pinned_profile.monthly_tick.rva);
 	}
 }

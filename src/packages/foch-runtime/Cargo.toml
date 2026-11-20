@@ -11,6 +11,7 @@ readme = "../../apps/foch-cli/README.md"
 # The published crate carries its sources and license texts only; the
 # loader fixtures and tests stay in the repository.
 include = [
+	"/profiles/**",
 	"/src/**",
 	"/LICENSE",
 	"/LICENSE-MERGIRAF.txt",
