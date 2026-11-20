@@ -1212,3 +1212,50 @@ fn whole_tree_documents_feed_ui_localisation_csv_and_json_analysis() {
 				&& finding.message.contains("TEST_WINDOW_TT"))
 	);
 }
+
+#[test]
+fn check_reads_a_mod_directory_that_holds_descriptor_mod() {
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("companion");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::write(
+		root.join("descriptor.mod"),
+		"name=\"Dynamic Trade Blackhole (Foch Companion)\"\nsupported_version=\"1.37.*\"\npicture=\"thumbnail.png\"\ntags={\n\t\"Balance\"\n\t\"Gameplay\"\n\t\"Trade\"\n\t\"Utilities\"\n}\n",
+	)
+	.expect("write descriptor");
+	fs::write(
+		root.join("events").join("companion.txt"),
+		"namespace = sample_ns\n",
+	)
+	.expect("write event");
+
+	let result = run_checks_no_base(request_for(&root));
+	assert!(result.fatal_errors.is_empty(), "{:?}", result.fatal_errors);
+	assert!(
+		result.analysis_meta.text_documents >= 1,
+		"{:?}",
+		result.analysis_meta
+	);
+	assert!(result.findings.is_empty(), "{:?}", result.findings);
+	assert!(
+		result.advisory_findings.is_empty(),
+		"{:?}",
+		result.advisory_findings
+	);
+}
+
+#[test]
+fn check_rejects_a_directory_without_descriptor_mod() {
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("empty");
+	fs::create_dir(&root).expect("create dir");
+	let result = run_checks_no_base(request_for(&root));
+	assert!(
+		result
+			.fatal_errors
+			.iter()
+			.any(|error| error.contains("descriptor.mod")),
+		"{:?}",
+		result.fatal_errors
+	);
+}

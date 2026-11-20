@@ -204,6 +204,9 @@ fn load_dlc_load_source(
 	config: &Config,
 	preloaded_playset: Option<&Playset>,
 ) -> Result<LoadedInputSource, InputResolveError> {
+	if preloaded_playset.is_none() && path.is_dir() {
+		return load_mod_directory_source(path, config);
+	}
 	let playlist = match preloaded_playset {
 		Some(playset) => playset.clone(),
 		None => Playset::from_dlc_load(path).map_err(input_error_from_playset_parse)?,
@@ -212,6 +215,49 @@ fn load_dlc_load_source(
 		source_path: path.to_path_buf(),
 		source_root: source_root_for(path),
 		playlist,
+		config: config.clone(),
+	})
+}
+
+/// A mod directory is one enabled mod: `foch check ./my-mod` reads its
+/// `descriptor.mod` and the files the game would load from that folder.
+fn load_mod_directory_source(
+	path: &Path,
+	config: &Config,
+) -> Result<LoadedInputSource, InputResolveError> {
+	let descriptor = path.join("descriptor.mod");
+	if !descriptor.is_file() {
+		return Err(InputResolveError {
+			kind: InputResolveErrorKind::Io,
+			path: path.to_path_buf(),
+			message: format!(
+				"{} is a directory without descriptor.mod; pass dlc_load.json, foch.toml, or a mod directory",
+				path.display()
+			),
+		});
+	}
+	let name = path
+		.file_name()
+		.and_then(|name| name.to_str())
+		.filter(|name| !name.is_empty())
+		.unwrap_or("mod")
+		.to_string();
+	Ok(LoadedInputSource {
+		source_path: path.to_path_buf(),
+		source_root: path.to_path_buf(),
+		playlist: Playset {
+			game: Eu4,
+			name: name.clone(),
+			mods: vec![PlaysetEntry {
+				id: Some(name.clone()),
+				display_name: Some(name),
+				enabled: true,
+				position: Some(0),
+				steam_id: None,
+				workshop_identity: None,
+				root_path: Some(path.to_path_buf()),
+			}],
+		},
 		config: config.clone(),
 	})
 }
