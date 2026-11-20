@@ -24,7 +24,7 @@
 //! object-address argument. The free functions remain for a caller that has
 //! already checked the context or `CCountry*` address.
 
-use super::layout::{campaign, country, diplomacy, war};
+use super::profile::{LayoutProfile, default_profile};
 use super::{Eu4Game, Memory, decode_packed_tag};
 use crate::war::{Country, CountryId, JoinRefusal, War, WarId, World};
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,6 +55,14 @@ impl CampaignStamp {
 	/// and clock fields. The repeated read detects some changes; it does not
 	/// replace that lifetime and coherence requirement or make a snapshot atomic.
 	pub unsafe fn read(memory: &Memory, context: usize) -> Result<Self, String> {
+		unsafe { Self::read_with(default_profile(), memory, context) }
+	}
+
+	pub(crate) unsafe fn read_with(
+		profile: &'static LayoutProfile,
+		memory: &Memory,
+		context: usize,
+	) -> Result<Self, String> {
 		let sample = || -> Result<([u8; 16], i32), String> {
 			let field = |offset| {
 				context
@@ -64,9 +72,11 @@ impl CampaignStamp {
 			};
 			let mut guid = [0u8; 16];
 			for (index, word) in guid.chunks_exact_mut(4).enumerate() {
-				word.copy_from_slice(&field(campaign::GUID + index * 4)?.to_le_bytes());
+				word.copy_from_slice(
+					&field(profile.campaign_guid.offset + index * 4)?.to_le_bytes(),
+				);
 			}
-			Ok((guid, field(campaign::CURRENT_HOURS)?))
+			Ok((guid, field(profile.campaign_current_hours.offset)?))
 		};
 		let (guid, hours) = sample()?;
 		if sample()? != (guid, hours) {
@@ -85,13 +95,13 @@ impl CampaignStamp {
 		}
 		Ok(Self {
 			campaign,
-			day: calendar_day(hours),
+			day: calendar_day(hours, profile.campaign_calendar_epoch_hours),
 		})
 	}
 }
 
-fn calendar_day(hours: i32) -> i32 {
-	((i64::from(hours) - campaign::CALENDAR_EPOCH_HOURS).div_euclid(24)) as i32
+fn calendar_day(hours: i32, epoch: i64) -> i32 {
+	((i64::from(hours) - epoch).div_euclid(24)) as i32
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,8 +166,16 @@ impl WarRoster {
 	/// As `read`, for the live global game context, its complete active-war
 	/// pointer array and every CWar allocation and vector it references.
 	pub unsafe fn read_active(memory: &Memory, context: usize) -> Result<Vec<Self>, String> {
+		unsafe { Self::read_active_with(default_profile(), memory, context) }
+	}
+
+	pub(crate) unsafe fn read_active_with(
+		profile: &'static LayoutProfile,
+		memory: &Memory,
+		context: usize,
+	) -> Result<Vec<Self>, String> {
 		// SAFETY: same caller contract as the entries variant this delegates to.
-		unsafe { Self::read_active_entries(memory, context) }
+		unsafe { Self::read_active_entries_with(profile, memory, context) }
 			.map(|entries| entries.into_iter().map(|(_, roster)| roster).collect())
 	}
 
@@ -172,16 +190,25 @@ impl WarRoster {
 		memory: &Memory,
 		context: usize,
 	) -> Result<Vec<(usize, Self)>, String> {
-		let counts = qword(memory, context, war::ARRAY_COUNTS)?;
+		unsafe { Self::read_active_entries_with(default_profile(), memory, context) }
+	}
+
+	pub(crate) unsafe fn read_active_entries_with(
+		profile: &'static LayoutProfile,
+		memory: &Memory,
+		context: usize,
+	) -> Result<Vec<(usize, Self)>, String> {
+		let counts = qword(memory, context, profile.war_array_counts.offset)?;
 		let capacity = counts as u32 as i32;
 		let count = (counts >> 32) as u32 as i32;
-		if capacity < 0 || count < 0 || count > capacity || capacity as usize > war::MAX_WARS {
+		if capacity < 0 || count < 0 || count > capacity || capacity as usize > profile.war_max_wars
+		{
 			return Err("invalid active-war array capacity or count".into());
 		}
 		if count == 0 {
 			return Ok(vec![]);
 		}
-		let begin = qword(memory, context, war::ACTIVE_WARS)? as usize;
+		let begin = qword(memory, context, profile.war_active_wars.offset)? as usize;
 		if begin <= 0x1_0000 || !begin.is_multiple_of(8) {
 			return Err("active-war array is unavailable".into());
 		}
@@ -193,7 +220,9 @@ impl WarRoster {
 					return Err("invalid or duplicate active-war object".into());
 				}
 				// SAFETY: the caller retains every complete engine object for the read.
-				unsafe { Self::read(memory, address).map(|roster| (address, roster)) }
+				unsafe {
+					Self::read_roster(profile, memory, address).map(|roster| (address, roster))
+				}
 			})
 			.collect()
 	}
@@ -207,19 +236,27 @@ impl WarRoster {
 	/// vectors covering their advertised ranges for the whole read. Shared
 	/// Memory plausibility checks alone do not prove object lifetime or type.
 	pub unsafe fn read(memory: &Memory, address: usize) -> Result<Self, String> {
+		unsafe { Self::read_roster(default_profile(), memory, address) }
+	}
+
+	pub(crate) unsafe fn read_roster(
+		profile: &'static LayoutProfile,
+		memory: &Memory,
+		address: usize,
+	) -> Result<Self, String> {
 		let roster = Self {
 			original_attacker: CountryRef::from_packed(qword(
 				memory,
 				address,
-				war::ORIGINAL_ATTACKER,
+				profile.war_original_attacker.offset,
 			)?)?,
 			original_defender: CountryRef::from_packed(qword(
 				memory,
 				address,
-				war::ORIGINAL_DEFENDER,
+				profile.war_original_defender.offset,
 			)?)?,
-			attackers: participants(memory, address, war::ATTACKERS)?,
-			defenders: participants(memory, address, war::DEFENDERS)?,
+			attackers: participants(memory, address, profile.war_attackers.offset)?,
+			defenders: participants(memory, address, profile.war_defenders.offset)?,
 		};
 		if roster.original_attacker.id == roster.original_defender.id {
 			return Err("original war principals contradict one another".into());
@@ -266,14 +303,24 @@ pub unsafe fn read_world(
 	context: usize,
 	revision: u64,
 ) -> Result<World, String> {
-	let stamp = unsafe { CampaignStamp::read(memory, context) }?;
+	unsafe { read_world_with(default_profile(), memory, exe_base, context, revision) }
+}
+
+pub(crate) unsafe fn read_world_with(
+	profile: &'static LayoutProfile,
+	memory: &Memory,
+	exe_base: usize,
+	context: usize,
+	revision: u64,
+) -> Result<World, String> {
+	let stamp = unsafe { CampaignStamp::read_with(profile, memory, context) }?;
 	let game = Eu4Game {
 		memory: *memory,
 		exe_base,
 		context,
 	};
 	let registry = game
-		.countries()
+		.countries_with(profile)
 		.ok_or_else(|| "country registry is unavailable".to_string())?;
 	let mut countries = BTreeMap::new();
 	for index in 0..registry.count() {
@@ -303,7 +350,7 @@ pub unsafe fn read_world(
 	if countries.is_empty() {
 		return Err("country registry yielded no valid countries".into());
 	}
-	let entries = unsafe { WarRoster::read_active_entries(memory, context) }?;
+	let entries = unsafe { WarRoster::read_active_entries_with(profile, memory, context) }?;
 	let mut wars = Vec::with_capacity(entries.len());
 	for (address, roster) in entries {
 		for country in [&roster.original_attacker, &roster.original_defender]
@@ -321,17 +368,17 @@ pub unsafe fn read_world(
 		let hours = memory
 			.read_i32(
 				address
-					.checked_add(war::STARTED)
+					.checked_add(profile.war_started.offset)
 					.ok_or_else(|| "war start date is unavailable".to_string())?,
 			)
 			.ok_or_else(|| "war start date is unavailable".to_string())?;
-		if hours == war::UNSET_HOUR {
+		if hours == profile.war_unset_hour {
 			return Err("war start date is unset".into());
 		}
 		wars.push(War {
 			id: WarId {
-				serial: war::UNIDENTIFIED_SERIAL,
-				started: calendar_day(hours),
+				serial: profile.war_unidentified_serial,
+				started: calendar_day(hours, profile.campaign_calendar_epoch_hours),
 				declarer: roster.original_attacker.id,
 				declared_on: roster.original_defender.id,
 			},
@@ -372,10 +419,23 @@ pub unsafe fn check_country_restrictions(
 	expected: &CountryRef,
 	enemies: &[CountryRef],
 ) -> Result<(), JoinRefusal> {
+	unsafe {
+		check_country_restrictions_with(default_profile(), memory, address, expected, enemies)
+	}
+}
+
+pub(crate) unsafe fn check_country_restrictions_with(
+	profile: &'static LayoutProfile,
+	memory: &Memory,
+	address: usize,
+	expected: &CountryRef,
+	enemies: &[CountryRef],
+) -> Result<(), JoinRefusal> {
 	let unavailable = |reason: String| JoinRefusal::Unsupported(reason);
-	let actual =
-		CountryRef::from_packed(qword(memory, address, country::TAG).map_err(unavailable)?)
-			.map_err(unavailable)?;
+	let actual = CountryRef::from_packed(
+		qword(memory, address, profile.country_tag.offset).map_err(unavailable)?,
+	)
+	.map_err(unavailable)?;
 	if actual != *expected {
 		return Err(JoinRefusal::Unsupported(
 			"entering country's engine identity changed".into(),
@@ -384,12 +444,12 @@ pub unsafe fn check_country_restrictions(
 	// Byte 7 of the overlord packed identity is the subject flag. Tributaries
 	// and custom subject types keep that byte set. File-level subject-type
 	// policy does not identify which type this country is, so they stay refused.
-	let overlord = qword(memory, address, country::OVERLORD).map_err(unavailable)?;
+	let overlord = qword(memory, address, profile.country_overlord.offset).map_err(unavailable)?;
 	if overlord >> 56 != 0 {
 		return Err(JoinRefusal::Subject);
 	}
 	let relations = address
-		.checked_add(diplomacy::COUNTRY_RELATIONS)
+		.checked_add(profile.diplomacy_country_relations.offset)
 		.and_then(|field| memory.read_ptr(field))
 		.ok_or_else(|| JoinRefusal::Unsupported("native diplomacy array is unavailable".into()))?;
 	for enemy in enemies {
@@ -402,7 +462,10 @@ pub unsafe fn check_country_restrictions(
 			));
 		}
 		let flags = relations
-			.checked_add(enemy.id.0 as usize * diplomacy::RELATION_SIZE + diplomacy::TRUCE_FLAGS)
+			.checked_add(
+				enemy.id.0 as usize * profile.diplomacy_relation_size.offset
+					+ profile.diplomacy_truce_flags.offset,
+			)
 			.and_then(|address| memory.read_u8(address))
 			.ok_or_else(|| JoinRefusal::Unsupported("native truce flag is unavailable".into()))?;
 		// This is the same bit read by EU4's truce_with country trigger.
@@ -416,7 +479,10 @@ pub unsafe fn check_country_restrictions(
 #[cfg(all(test, windows))]
 mod tests {
 	use super::*;
-	use crate::dataplane::layout;
+
+	fn profile() -> &'static crate::dataplane::profile::LayoutProfile {
+		crate::dataplane::profile::default_profile()
+	}
 
 	struct Scene {
 		image: Vec<u64>,
@@ -460,7 +526,7 @@ mod tests {
 				.max()
 				.unwrap();
 			let mut scene = Self {
-				image: vec![0; layout::CONTEXT_GLOBAL_RVA / 8 + 1],
+				image: vec![0; profile().context_global.offset / 8 + 1],
 				context: vec![0; 0x2500 / 8],
 				manager: vec![0; 0x120 / 8],
 				pointers: vec![0; count],
@@ -468,9 +534,10 @@ mod tests {
 					.iter()
 					.map(|(index, tag, independent)| {
 						let mut country = vec![0; 0x1900 / 8];
-						country[layout::country::TAG / 8] = pack_tag(*tag, *index as u16, 1);
+						country[profile().country_tag.offset / 8] =
+							pack_tag(*tag, *index as u16, 1);
 						if !independent {
-							country[layout::country::OVERLORD / 8] = 1u64 << 56;
+							country[profile().country_overlord.offset / 8] = 1u64 << 56;
 						}
 						(*index, country)
 					})
@@ -484,13 +551,17 @@ mod tests {
 				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
 				0x0f, 0x10,
 			];
-			write_bytes(&mut scene.context, campaign::GUID, &guid);
+			write_bytes(&mut scene.context, profile().campaign_guid.offset, &guid);
 			write_i32(
 				&mut scene.context,
-				campaign::CURRENT_HOURS,
-				(campaign::CALENDAR_EPOCH_HOURS + 24 * 40) as i32,
+				profile().campaign_current_hours.offset,
+				(profile().campaign_calendar_epoch_hours + 24 * 40) as i32,
 			);
-			write_i32(&mut scene.context, layout::COUNTRIES_COUNT, count as i32);
+			write_i32(
+				&mut scene.context,
+				profile().countries_count.offset,
+				count as i32,
+			);
 			if war_active {
 				let declarer = countries.last().unwrap();
 				let target = countries.first().unwrap();
@@ -498,8 +569,8 @@ mod tests {
 				scene.defenders = vec![pack_tag(target.1, target.0 as u16, 1)];
 				write_i32(
 					&mut scene.war,
-					war::STARTED,
-					(campaign::CALENDAR_EPOCH_HOURS + 24 * 10) as i32,
+					profile().war_started.offset,
+					(profile().campaign_calendar_epoch_hours + 24 * 10) as i32,
 				);
 			}
 			scene.link(war_active);
@@ -515,25 +586,26 @@ mod tests {
 			for (index, address) in countries {
 				self.pointers[index] = address;
 			}
-			self.manager[layout::country_manager::INDEX_ARRAY / 8] = self.pointers.as_ptr() as u64;
-			self.image[layout::COUNTRY_MANAGER_GLOBAL_RVA / 8] = self.manager.as_ptr() as u64;
-			self.image[layout::CONTEXT_GLOBAL_RVA / 8] = self.context.as_ptr() as u64;
+			self.manager[profile().country_manager_index_array.offset / 8] =
+				self.pointers.as_ptr() as u64;
+			self.image[profile().country_manager_global.offset / 8] = self.manager.as_ptr() as u64;
+			self.image[profile().context_global.offset / 8] = self.context.as_ptr() as u64;
 			if !war_active {
 				return;
 			}
 			let attackers = self.attackers.as_ptr() as u64;
 			let defenders = self.defenders.as_ptr() as u64;
-			self.war[war::ATTACKERS / 8] = attackers;
-			self.war[war::ATTACKERS / 8 + 1] = attackers + 8;
-			self.war[war::ATTACKERS / 8 + 2] = attackers + 8;
-			self.war[war::DEFENDERS / 8] = defenders;
-			self.war[war::DEFENDERS / 8 + 1] = defenders + 8;
-			self.war[war::DEFENDERS / 8 + 2] = defenders + 8;
-			self.war[war::ORIGINAL_ATTACKER / 8] = self.attackers[0];
-			self.war[war::ORIGINAL_DEFENDER / 8] = self.defenders[0];
+			self.war[profile().war_attackers.offset / 8] = attackers;
+			self.war[profile().war_attackers.offset / 8 + 1] = attackers + 8;
+			self.war[profile().war_attackers.offset / 8 + 2] = attackers + 8;
+			self.war[profile().war_defenders.offset / 8] = defenders;
+			self.war[profile().war_defenders.offset / 8 + 1] = defenders + 8;
+			self.war[profile().war_defenders.offset / 8 + 2] = defenders + 8;
+			self.war[profile().war_original_attacker.offset / 8] = self.attackers[0];
+			self.war[profile().war_original_defender.offset / 8] = self.defenders[0];
 			self.war_list[0] = self.war.as_ptr() as u64;
-			self.context[war::ACTIVE_WARS / 8] = self.war_list.as_ptr() as u64;
-			self.context[war::ARRAY_COUNTS / 8] = 1u64 | (1u64 << 32);
+			self.context[profile().war_active_wars.offset / 8] = self.war_list.as_ptr() as u64;
+			self.context[profile().war_array_counts.offset / 8] = 1u64 | (1u64 << 32);
 		}
 
 		fn read(&self, revision: u64) -> Result<World, String> {
@@ -612,11 +684,15 @@ mod tests {
 	#[test]
 	fn read_world_rejects_an_unset_start_and_a_registry_mismatch() {
 		let mut unset = Scene::build(&[(0, *b"FRA", true), (1, *b"HAB", true)], true);
-		write_i32(&mut unset.war, war::STARTED, war::UNSET_HOUR);
+		write_i32(
+			&mut unset.war,
+			profile().war_started.offset,
+			profile().war_unset_hour,
+		);
 		assert_eq!(unset.read(1).unwrap_err(), "war start date is unset");
 
 		let mut mismatched = Scene::build(&[(0, *b"FRA", true), (1, *b"HAB", true)], true);
-		mismatched.countries[0].1[layout::country::TAG / 8] = pack_tag(*b"ENG", 0, 1);
+		mismatched.countries[0].1[profile().country_tag.offset / 8] = pack_tag(*b"ENG", 0, 1);
 		assert_eq!(
 			mismatched.read(1).unwrap_err(),
 			"war participant differs from the real country registry"
