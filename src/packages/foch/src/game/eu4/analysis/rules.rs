@@ -37,12 +37,15 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 			}));
 		}
 
-		if entry
-			.steam_id
-			.as_deref()
-			.map(str::trim)
-			.unwrap_or("")
-			.is_empty()
+		// A directory input already names its files through root_path. Launcher
+		// playset entries do not, so they still need a steam id.
+		if entry.root_path.is_none()
+			&& entry
+				.steam_id
+				.as_deref()
+				.map(str::trim)
+				.unwrap_or("")
+				.is_empty()
 		{
 			findings.push(new_finding(FindingArgs {
 				rule_id: "missing-playset-field",
@@ -927,6 +930,42 @@ mod tests {
 			param_bindings: Vec::new(),
 			schema_alias: false,
 		}
+	}
+
+	#[test]
+	fn a_local_mod_directory_does_not_need_a_steam_id() {
+		let local = PlaysetEntry {
+			id: Some("workshop".to_string()),
+			display_name: Some("Bilateral Peace (Foch Companion)".to_string()),
+			enabled: true,
+			position: Some(0),
+			root_path: Some(PathBuf::from("workshop")),
+			..PlaysetEntry::default()
+		};
+		let ctx = CheckContext {
+			playlist_path: PathBuf::from("workshop"),
+			playlist: Playset {
+				mods: vec![local],
+				..Playset::default()
+			},
+			mods: Vec::new(),
+			semantic_index: SemanticIndex::default(),
+		};
+		assert!(check_required_fields(&ctx).is_empty());
+
+		let mut launcher = ctx.playlist.mods[0].clone();
+		launcher.root_path = None;
+		let missing = CheckContext {
+			playlist: Playset {
+				mods: vec![launcher],
+				..Playset::default()
+			},
+			..ctx
+		};
+		let findings = check_required_fields(&missing);
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "missing-playset-field");
+		assert!(findings[0].message.contains("steamId"));
 	}
 
 	fn context(mods: Vec<ModCandidate>, semantic_index: SemanticIndex) -> CheckContext {
