@@ -2,11 +2,12 @@
 
 Index 0 is ``<UNK>`` and its embedding row is the zero vector. Training
 replaces the real id with 0 on each example with probability ``p`` in
-``[0.30, 0.50]``; the mechanic vector is never dropped. At inference an
-id the table does not contain, and a known id whose mechanics no longer
-match the values it was registered with, both resolve to 0. A mod can
-therefore change a terrain's numbers or invent a category and still
-score through ``f``.
+``[0.30, 0.50]``; the mechanic vector is never dropped. ``p == 0`` is
+the ablation control that disables id dropout, not a product setting.
+At inference an id the table does not contain, and a known id whose
+mechanics no longer match the values it was registered with, both
+resolve to 0. A mod can therefore change a terrain's numbers or invent
+a category and still score through ``f``.
 """
 
 from __future__ import annotations
@@ -52,6 +53,15 @@ class CategoryTable:
 		rows = torch.stack([mechanic_vector(entries[name]) for name in names])
 		return CategoryTable(names, rows)
 
+	@staticmethod
+	def from_rows(names: tuple[str, ...] | list[str], modifiers: torch.Tensor) -> CategoryTable:
+		"""Register pre-packed mechanic rows. Callers own the axis order."""
+		labels = tuple(names)
+		rows = modifiers.detach().to(dtype=torch.float32)
+		if tuple(rows.shape) != (len(labels), len(MECHANICS)):
+			raise ValueError(f"modifiers must be [{len(labels)}, {len(MECHANICS)}]")
+		return CategoryTable(labels, rows.contiguous().clone())
+
 	def id_of(self, name: str, modifiers: torch.Tensor) -> int:
 		"""Resolve a category. Unknown names and edited numbers are ``<UNK>``."""
 		try:
@@ -65,18 +75,33 @@ class CategoryTable:
 
 
 class ResidualCategory(nn.Module):
-	"""``f(modifiers) + E_id`` with frozen ``<UNK> = 0``."""
+	"""``f(modifiers) + E_id`` with frozen ``<UNK> = 0``.
 
-	def __init__(self, table: CategoryTable, width: int, dropout: float = 0.40) -> None:
+	Product training uses ``dropout`` in ``[DROPOUT_MIN, DROPOUT_MAX]``.
+	Exactly ``0`` keeps every id so an ablation can show the shortcut
+	that appears when ``E_id`` is never dropped.
+	"""
+
+	def __init__(
+		self,
+		table: CategoryTable,
+		width: int,
+		dropout: float = 0.40,
+		mechanics: tuple[str, ...] | None = None,
+	) -> None:
 		super().__init__()
-		if not DROPOUT_MIN <= dropout <= DROPOUT_MAX:
+		if dropout != 0.0 and not DROPOUT_MIN <= dropout <= DROPOUT_MAX:
 			raise ValueError(
-				f"id dropout must be in [{DROPOUT_MIN}, {DROPOUT_MAX}], got {dropout}"
+				f"id dropout must be 0 or in [{DROPOUT_MIN}, {DROPOUT_MAX}], got {dropout}"
 			)
 		if width < 1:
 			raise ValueError("width must be positive")
+		chosen = MECHANICS if mechanics is None else tuple(mechanics)
+		if len(chosen) != len(MECHANICS):
+			raise ValueError(f"expected {len(MECHANICS)} mechanics, got {len(chosen)}")
 		self.dropout = dropout
 		self.width = width
+		self._mechanics = chosen
 		mechanic_dim = len(MECHANICS)
 		self.f = nn.Sequential(
 			nn.Linear(mechanic_dim, width),
@@ -139,7 +164,7 @@ class ResidualCategory(nn.Module):
 		state = self.state_dict()
 		return {
 			"kind": "residual-category",
-			"mechanics": list(MECHANICS),
+			"mechanics": list(self._mechanics),
 			"names": list(self._names),
 			"modifiers": self.trained.detach().tolist(),
 			"f0_weight": state["f.0.weight"].detach().tolist(),

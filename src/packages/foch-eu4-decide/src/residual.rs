@@ -211,4 +211,61 @@ mod tests {
 		assert_eq!(model.score("haunted_bog", bog), vec![3.0, 1.0]);
 		assert!(ResidualCategory::from_json("{}").is_none());
 	}
+
+	#[test]
+	fn ablation_export_matches_python_on_every_distribution() {
+		let raw = include_str!("../tests/fixtures/residual_ablation.json");
+		let root: Value = serde_json::from_str(raw).expect("ablation fixture");
+		let terrain =
+			ResidualCategory::from_json(&root["terrain"].to_string()).expect("terrain head");
+		let cb = ResidualCategory::from_json(&root["cb"].to_string()).expect("cb head");
+		let cases = root["cases"].as_array().expect("cases");
+		assert!(!cases.is_empty());
+		let mut seen = std::collections::BTreeSet::new();
+		let mut worst = 0.0f32;
+		let mut worst_at = String::new();
+		for case in cases {
+			let distribution = case["distribution"].as_str().expect("distribution");
+			let head = case["head"].as_str().expect("head");
+			let name = case["name"].as_str().expect("name");
+			seen.insert(distribution);
+			let modifiers = five(case.get("modifiers").expect("modifiers"));
+			let expected = numbers(case.get("score").expect("score")).expect("score");
+			let model = match head {
+				"terrain" => &terrain,
+				"cb" => &cb,
+				other => panic!("unknown head {other}"),
+			};
+			let got = model.score(name, modifiers);
+			assert_eq!(got.len(), expected.len(), "{distribution} {head} {name}");
+			for (index, (left, right)) in got.iter().zip(expected).enumerate() {
+				let error = (left - right).abs();
+				if error > worst {
+					worst = error;
+					worst_at = format!("{distribution}/{head}/{name}[{index}]");
+				}
+			}
+		}
+		for required in [
+			"vanilla_id",
+			"vanilla_stat_modified",
+			"overhaul_unseen_terrain",
+			"overhaul_unseen_cb",
+		] {
+			assert!(seen.contains(required), "missing {required}");
+		}
+		assert!(
+			worst < 1.0e-5,
+			"python/rust max abs {worst:.3e} at {worst_at}"
+		);
+		println!("ablation parity max abs {worst:.3e} at {worst_at}");
+	}
+
+	fn five(value: &Value) -> [f32; 5] {
+		let flat = numbers(value).expect("five modifiers");
+		assert_eq!(flat.len(), MECHANICS.len());
+		let mut axes = [0.0f32; 5];
+		axes.copy_from_slice(&flat);
+		axes
+	}
 }

@@ -21,6 +21,7 @@ VANILLA = {
 class ResidualCategoryTest(unittest.TestCase):
 	def test_dropout_must_stay_inside_the_training_band(self) -> None:
 		table = CategoryTable.build(VANILLA)
+		ResidualCategory(table, width=4, dropout=0.0)
 		ResidualCategory(table, width=4, dropout=DROPOUT_MIN)
 		ResidualCategory(table, width=4, dropout=DROPOUT_MAX)
 		with self.assertRaises(ValueError):
@@ -52,6 +53,20 @@ class ResidualCategoryTest(unittest.TestCase):
 		with torch.no_grad():
 			only_f = module.f(modifiers).squeeze(0)
 		self.assertTrue(torch.allclose(bog, only_f))
+
+	def test_zero_dropout_is_the_ablation_control_and_keeps_ids(self) -> None:
+		module = ResidualCategory(CategoryTable.build(VANILLA), width=4, dropout=0.0)
+		with torch.no_grad():
+			for layer in module.f:
+				if isinstance(layer, torch.nn.Linear):
+					layer.weight.zero_()
+					layer.bias.zero_()
+			module.embedding.weight[1].fill_(1.0)
+		modifiers = _vec(VANILLA["plains"]).unsqueeze(0).expand(64, -1).contiguous()
+		ids = torch.ones(64, dtype=torch.long)
+		module.train()
+		scored = module(modifiers, ids, generator=torch.Generator().manual_seed(0))
+		self.assertTrue(torch.allclose(scored, torch.ones_like(scored)))
 
 	def test_training_drops_ids_and_keeps_modifiers(self) -> None:
 		module = ResidualCategory(CategoryTable.build(VANILLA), width=4, dropout=0.40)
