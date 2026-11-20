@@ -8,6 +8,7 @@ use super::HandlerResult;
 use crate::cli::arg::{
 	CheckOutputFormat, PluginArgs, PluginCommand, PluginImportArgs, PluginInstallArgs,
 	PluginLaunchArgs, PluginListArgs, PluginPlanArgs, PluginStatusArgs, PluginToggleArgs,
+	PluginTransport,
 };
 use foch::game::eu4::Eu4;
 use foch::game::eu4::base::snapshot::{data_root, detect_game_version, resolve_game_root};
@@ -187,23 +188,44 @@ fn read_package_dir(root: &Path) -> std::io::Result<Vec<store::ArchiveEntry>> {
 }
 
 fn install_plugins(args: &PluginInstallArgs, config: &Config) -> HandlerResult {
+	if args.all && args.sha256.is_some() {
+		return Err("--sha256 applies to one downloaded archive, not --all".into());
+	}
+	let transport = plugin::select_transport(
+		args.transport.map(transport_name).as_deref(),
+		env_nonempty("FOCH_PLUGIN_TRANSPORT").as_deref(),
+	)?;
+	let mirror =
+		plugin::select_mirror(&args.mirror, env_nonempty("FOCH_PLUGIN_MIRROR").as_deref())?;
+	let options = plugin::FetchOptions {
+		transport,
+		mirror,
+		sha256: args.sha256.clone(),
+		region: None,
+		asset_origin: None,
+	};
 	let data_root = data_root();
 	let game_root = resolve_game_root(config, &Eu4);
 	match (args.spec.as_deref(), args.all) {
 		(Some(spec), false) => {
 			// Registry adapters first; any other owner/repo spec resolves
-			// its release dynamically with gh.
+			// its release with the selected transport.
 			if let Ok(release) = plugin::github::resolve(spec) {
-				install_release(release, &data_root, game_root.as_deref())?;
+				install_release(release, &data_root, game_root.as_deref(), &options)?;
 			} else {
 				let (repo, reference) = plugin::github::split_install_spec(spec)?;
-				let dynamic = plugin::github::resolve_dynamic(&repo, reference.as_deref())?;
-				install_dynamic_release(&dynamic, &data_root, game_root.as_deref())?;
+				let dynamic = plugin::github::resolve_dynamic_with_transport(
+					&repo,
+					reference.as_deref(),
+					options.transport,
+					&plugin::ApiQuery::default(),
+				)?;
+				install_dynamic_release(&dynamic, &data_root, game_root.as_deref(), &options)?;
 			}
 		}
 		(None, true) => {
 			for release in plugin::github::releases() {
-				install_release(release, &data_root, game_root.as_deref())?;
+				install_release(release, &data_root, game_root.as_deref(), &options)?;
 			}
 		}
 		(Some(_), true) => {
@@ -218,13 +240,19 @@ fn install_release(
 	release: &plugin::github::Release,
 	data_root: &Path,
 	game_root: Option<&Path>,
+	options: &plugin::FetchOptions,
 ) -> HandlerResult {
+	let mut options = options.clone();
+	if options.sha256.is_none() {
+		options.sha256.clone_from(&release.sha256);
+	}
 	install_from(
 		&release.repo,
 		&release.tag,
 		&release.asset,
 		data_root,
 		game_root,
+		&options,
 		|bytes| plugin::github::package_from_zip(bytes, release),
 	)
 }
@@ -233,6 +261,7 @@ fn install_dynamic_release(
 	release: &plugin::github::DynamicRelease,
 	data_root: &Path,
 	game_root: Option<&Path>,
+	options: &plugin::FetchOptions,
 ) -> HandlerResult {
 	install_from(
 		&release.repo,
@@ -240,6 +269,7 @@ fn install_dynamic_release(
 		&release.asset,
 		data_root,
 		game_root,
+		options,
 		plugin::github::package_from_own_zip,
 	)
 }
@@ -250,37 +280,16 @@ fn install_from(
 	asset_name: &str,
 	data_root: &Path,
 	game_root: Option<&Path>,
+	options: &plugin::FetchOptions,
 	package: impl FnOnce(&[u8]) -> Result<plugin::store::ValidatedPackage, plugin::github::GithubError>,
 ) -> HandlerResult {
-	let download_dir = fresh_download_dir()?;
-	let gh = std::process::Command::new("gh")
-		.args(plugin::github::download_args(
-			repo,
-			tag,
-			asset_name,
-			&download_dir.0,
-		))
-		.output()
-		.map_err(|error| -> Box<dyn std::error::Error> {
-			if error.kind() == std::io::ErrorKind::NotFound {
-				"gh was not found on PATH. Install GitHub CLI to download plugin releases.".into()
-			} else {
-				format!("could not run gh: {error}").into()
-			}
-		})?;
-	if !gh.status.success() {
-		let stderr = String::from_utf8_lossy(&gh.stderr);
-		return Err(format!("gh release download failed for {repo}@{tag}: {stderr}").into());
-	}
-	let asset = download_dir.0.join(asset_name);
-	let bytes = store::read_package_file(&asset).map_err(|_| {
-		std::io::Error::other(format!("gh did not write {asset_name} for {repo}@{tag}"))
-	})?;
-	let validated = package(&bytes)?;
+	let fetched = plugin::fetch_release_asset(repo, tag, asset_name, options)?;
+	println!("Downloaded {asset_name} from {repo}@{tag} {}", fetched.via);
+	let validated = package(&fetched.bytes)?;
 	let destination = store::version_dir(&data_root.join("plugins/store"), &validated);
-	for source in std::iter::once(download_dir.0.as_path()).chain(game_root) {
-		plugin::deployment::ensure_outside_game(source, data_root)?;
-		plugin::deployment::ensure_outside_game(source, &destination)?;
+	if let Some(game_root) = game_root {
+		plugin::deployment::ensure_outside_game(game_root, data_root)?;
+		plugin::deployment::ensure_outside_game(game_root, &destination)?;
 	}
 	let store_root = plugin::paths::prepare_store_root(data_root)?;
 	let id = &validated.manifest.plugin.id;
@@ -310,32 +319,19 @@ fn install_from(
 	Ok(0)
 }
 
-struct DownloadDir(PathBuf);
-
-impl Drop for DownloadDir {
-	fn drop(&mut self) {
-		let _ = std::fs::remove_dir_all(&self.0);
+fn transport_name(transport: PluginTransport) -> String {
+	match transport {
+		PluginTransport::Auto => "auto".to_string(),
+		PluginTransport::Http => "http".to_string(),
+		PluginTransport::Gh => "gh".to_string(),
 	}
 }
 
-fn fresh_download_dir() -> std::io::Result<DownloadDir> {
-	let nanos = std::time::SystemTime::now()
-		.duration_since(std::time::UNIX_EPOCH)
-		.map(|duration| duration.as_nanos())
-		.unwrap_or(0);
-	let parent = std::env::temp_dir().join("foch-plugin-install");
-	std::fs::create_dir_all(&parent)?;
-	for salt in 0..16 {
-		let path = parent.join(format!("{}-{nanos}-{salt}", std::process::id()));
-		match std::fs::create_dir(&path) {
-			Ok(()) => return Ok(DownloadDir(path)),
-			Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-			Err(error) => return Err(error),
-		}
-	}
-	Err(std::io::Error::other(
-		"could not create a plugin download directory",
-	))
+fn env_nonempty(key: &str) -> Option<String> {
+	std::env::var(key)
+		.ok()
+		.map(|value| value.trim().to_string())
+		.filter(|value| !value.is_empty())
 }
 
 /// Split a `plugin[@tag-or-hash]` reference: `Acture/x@v0.1.0` pins the

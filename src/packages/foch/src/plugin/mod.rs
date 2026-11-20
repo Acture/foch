@@ -15,6 +15,7 @@ pub mod planner;
 pub mod registry;
 pub mod selection;
 pub mod store;
+pub mod transport;
 
 pub use manifest::{Manifest, ManifestError};
 pub use planner::{
@@ -23,3 +24,8 @@ pub use planner::{
 };
 pub use selection::Selections;
 pub use store::{ImportError, Installed, ValidatedPackage, catalog, install, validate};
+pub use transport::{
+	ApiQuery, DownloadRoute, FetchOptions, InstallTransport, MAX_DOWNLOAD_BYTES, MirrorPolicy,
+	ResolvedRelease, TransportError, detect_china_region, fetch_release_asset,
+	resolve_dynamic_http, select_mirror, select_transport, verify_sha256,
+};
