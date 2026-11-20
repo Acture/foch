@@ -1,3 +1,5 @@
+![Foch — Safe EU4 Modding Runtime & Playset Merger](../../../docs/assets/foch-hero.png)
+
 # Foch Desktop
 
 Player-facing Tauri application for Foch's EU4 inspect/analyze/review workflow.
