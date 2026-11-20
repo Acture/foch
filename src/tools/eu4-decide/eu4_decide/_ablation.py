@@ -1,27 +1,31 @@
 """Fixed-seed ablation of residual categories on overhaul mods.
 
-The generator is synthetic, CPU-only, and finishes in a few seconds. A
-decision is one march under one casus belli. Its reward is linear in the
-normalized terrain mechanics (march cost, defence dice, combat width,
-supply, attrition) and CB mechanics (AE, prestige, province warscore,
-warscore cost, ticking warscore), plus a small residual that exists only
-for an unmodified vanilla id.
+The generator is synthetic and CPU-only. A decision is one march under
+one casus belli. Its reward is linear in the normalized terrain
+mechanics (march cost, defence dice, combat width, supply, attrition)
+and CB mechanics (AE, prestige, province warscore, warscore cost,
+ticking warscore), plus a small residual that exists only for an
+unmodified vanilla id.
 
 Training pairs are vanilla terrains and vanilla casus belli. Group A is
 the least-squares one-hot of those ids: unseen terrain falls back to
 ``plains``, unseen CB to ``conquest``, and edited numbers are ignored.
 Group B is ``f(modifiers)`` with ``E_id`` held at 0. Group C is
 ``ResidualCategory`` (``f + E_id``) at id-dropout ``p in {0, 0.3, 0.5}``.
-Dropout models warm up the embedding first. Training then stops once the
-dropout loss is fit, so ``p = 0`` can finish from ``E_id`` alone while
-``p > 0`` still has to learn ``f`` on the dropped rows. At test time an
-edited or unknown id contributes ``E_id = 0``.
+
+B and every C arm share one Xavier initialization of ``f``, one AdamW
+learning rate, one weight decay, and one fixed step count. ``f`` is not
+frozen and training does not stop early. ``E_id[0]`` (``<UNK>``) stays
+the zero row. At test time an edited or unknown id contributes
+``E_id = 0``. Metrics are the mean and sample standard deviation over
+``TRAIN_SEEDS``. The Rust fixture is the seed ``EXPORT_SEED`` C50 export.
 """
 
 from __future__ import annotations
 
 import json
 import random
+import statistics
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,14 +35,15 @@ from torch import nn
 
 from eu4_decide._residual import CategoryTable, ResidualCategory
 
-SEED = 20261120
+# Held-out groups stay on this seed. Training seeds vary initialization only.
+EVAL_SEED = 20261120
+EXPORT_SEED = 0
+TRAIN_SEEDS = (0, 1, 2, 3, 4)
 WIDTH = 16
-STEPS = 420
-WARMUP = 80
-STOP_MSE = 1.0e-4
-F_LR = 0.03
-EMBED_LR = 0.2
-F_DECAY = 0.02
+STEPS = 2000
+# PyTorch AdamW defaults, one group for ``f`` and ``E_id``.
+LR = 1e-3
+WEIGHT_DECAY = 1e-2
 GROUPS = 64
 GROUP_SIZE = 4
 MARGIN = 0.35
@@ -471,8 +476,8 @@ class ResidualDecision(nn.Module):
 		)
 		self.terrain_names = terrain.names
 		self.cb_names = cb.names
-		_open_mechanic_layers(self.terrain)
-		_open_mechanic_layers(self.cb)
+		_init_mechanic_layers(self.terrain)
+		_init_mechanic_layers(self.cb)
 
 	def score_batch(
 		self,
@@ -494,16 +499,17 @@ class ResidualDecision(nn.Module):
 			return self.score_batch(rows.terrain, terrain_ids, rows.cb, cb_ids)
 
 
-def _open_mechanic_layers(module: ResidualCategory) -> None:
-	"""Start ``f`` at zero so an id lookup can absorb labels before ``f`` moves."""
-	first = module.f[0]
+def _init_mechanic_layers(module: ResidualCategory) -> None:
+	"""Xavier on both linear maps. The last layer is not zeroed."""
 	last = module.f[2]
-	if not isinstance(first, nn.Linear) or not isinstance(last, nn.Linear):
+	if not isinstance(module.f[0], nn.Linear) or not isinstance(last, nn.Linear):
 		raise TypeError("residual f must stay Linear-ReLU-Linear")
-	nn.init.xavier_uniform_(first.weight)
-	nn.init.constant_(first.bias, 0.05)
-	nn.init.zeros_(last.weight)
-	nn.init.zeros_(last.bias)
+	for layer in module.f:
+		if isinstance(layer, nn.Linear):
+			nn.init.xavier_uniform_(layer.weight)
+			nn.init.zeros_(layer.bias)
+	if float(last.weight.detach().abs().sum()) == 0.0:
+		raise RuntimeError("f last layer was initialized to zero")
 
 
 def _resolved_ids(
@@ -531,27 +537,22 @@ def _clamp_unknown(model: ResidualDecision) -> None:
 		model.cb.embedding.weight[0].zero_()
 
 
-def _dropout_loss(
-	model: ResidualDecision,
-	rows: Rows,
-	terrain_ids: torch.Tensor,
-	cb_ids: torch.Tensor,
-	seed: int,
-) -> float:
-	"""Mean training loss over four fixed dropout masks. ``p = 0`` has no mask noise."""
+@dataclass(frozen=True)
+class _GradMass:
+	"""Mean per-step gradient L2. A diagnostic of where each arm spends updates."""
+
+	f: float
+	embed: float
+	steps: int
+
+
+def _grad_l2(model: ResidualDecision, kind: str) -> float:
 	total = 0.0
-	model.train()
-	with torch.no_grad():
-		for mask in range(4):
-			predicted = model.score_batch(
-				rows.terrain,
-				terrain_ids,
-				rows.cb,
-				cb_ids,
-				generator=torch.Generator().manual_seed(seed + mask),
-			)
-			total += float(torch.mean((predicted - rows.reward) ** 2))
-	return total / 4
+	for name, param in model.named_parameters():
+		selected = "embedding" in name if kind == "embed" else "embedding" not in name
+		if selected and param.grad is not None:
+			total += float(param.grad.detach().square().sum())
+	return total**0.5
 
 
 def _train_residual(
@@ -559,38 +560,30 @@ def _train_residual(
 	rows: Rows,
 	*,
 	steps: int,
-	warmup: int,
 	seed: int,
-) -> int:
-	"""Train until the dropout loss is fit, or ``steps``. ``f`` stays frozen during warmup.
+) -> _GradMass:
+	"""Joint AdamW for exactly ``steps``. ``f`` and ``E_id`` share one group.
 
-	``p = 0`` can reach the stop from embeddings alone, so its mechanic map never
-	leaves the zero output it started with. ``p > 0`` cannot, and keeps training ``f``.
+	``<UNK>`` stays the zero row. Nothing is frozen and nothing stops early,
+	so ``p = 0`` and ``p > 0`` receive the same number of updates. The returned
+	gradient norms are the mean L2 over those steps, not a training signal.
 	"""
-	f_params = [param for name, param in model.named_parameters() if "embedding" not in name]
-	embed_params = [param for name, param in model.named_parameters() if "embedding" in name]
-	optimizer = torch.optim.AdamW(
-		[
-			{"params": f_params, "lr": F_LR, "weight_decay": F_DECAY},
-			{"params": embed_params, "lr": EMBED_LR, "weight_decay": 0.0},
-		]
-	)
+	optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+	if len(optimizer.param_groups) != 1:
+		raise RuntimeError("joint training uses one AdamW group")
+	group = optimizer.param_groups[0]
+	if group["lr"] != LR or group["weight_decay"] != WEIGHT_DECAY:
+		raise RuntimeError("f and E_id must share LR and weight decay")
 	terrain_ids = _known_ids(rows.terrain_names, model.terrain_names)
 	cb_ids = _known_ids(rows.cb_names, model.cb_names)
 	if model.mechanics_only:
 		terrain_ids = torch.zeros_like(terrain_ids)
 		cb_ids = torch.zeros_like(cb_ids)
 	generator = torch.Generator().manual_seed(seed)
-	ran = steps
-	for step in range(steps):
-		if step >= warmup and _dropout_loss(model, rows, terrain_ids, cb_ids, seed + 9000) < STOP_MSE:
-			ran = step
-			break
+	grad_f = 0.0
+	grad_embed = 0.0
+	for _step in range(steps):
 		model.train()
-		learn_mechanics = step >= warmup
-		for param in f_params:
-			param.requires_grad_(learn_mechanics)
-		optimizer.param_groups[0]["lr"] = F_LR if learn_mechanics else 0.0
 		predicted = model.score_batch(
 			rows.terrain,
 			terrain_ids,
@@ -601,13 +594,13 @@ def _train_residual(
 		loss = torch.mean((predicted - rows.reward) ** 2)
 		optimizer.zero_grad(set_to_none=True)
 		loss.backward()
+		grad_f += _grad_l2(model, "f")
+		grad_embed += _grad_l2(model, "embed")
 		optimizer.step()
 		_clamp_unknown(model)
 	model.eval()
 	_clamp_unknown(model)
-	for param in f_params:
-		param.requires_grad_(True)
-	return ran
+	return _GradMass(grad_f / steps, grad_embed / steps, steps)
 
 
 def _spearman_lists(left: list[float], right: list[float]) -> float:
@@ -749,25 +742,59 @@ def fixture_path() -> Path:
 
 @dataclass(frozen=True)
 class AblationReport:
+	"""Five-seed mean in ``metrics`` and sample standard deviation in ``metric_std``."""
+
 	metrics: dict[str, dict[str, Metric]]
+	metric_std: dict[str, dict[str, Metric]]
 	train_mse: dict[str, float]
+	train_mse_std: dict[str, float]
 	f_l2: dict[str, float]
+	f_l2_std: dict[str, float]
 	embed_l2: dict[str, float]
+	embed_l2_std: dict[str, float]
+	grad_f: dict[str, float]
+	grad_f_std: dict[str, float]
+	grad_embed: dict[str, float]
+	grad_embed_std: dict[str, float]
 	steps_run: dict[str, int]
+	seeds: tuple[int, ...]
 	reversal: dict[str, float]
 	fixture: dict[str, object]
 	reference_error: float
 
 	def table(self) -> str:
-		header = f"{'distribution':<28} {'model':<6} {'MSE':>10} {'Top1':>8} {'Spearman':>10}"
+		header = (
+			f"{'distribution':<28} {'model':<6} "
+			f"{'MSE':>22} {'Top1':>22} {'Spearman':>22}"
+		)
 		lines = [header, "-" * len(header)]
 		for distribution in DISTRIBUTIONS:
 			for model in MODELS:
 				metric = self.metrics[distribution][model]
+				spread = self.metric_std[distribution][model]
 				lines.append(
-					f"{distribution:<28} {model:<6} {metric.mse:10.4f} "
-					f"{metric.top1:8.4f} {metric.spearman:10.4f}"
+					f"{distribution:<28} {model:<6} "
+					f"{metric.mse:10.6f} ± {spread.mse:8.6f} "
+					f"{metric.top1:10.6f} ± {spread.top1:8.6f} "
+					f"{metric.spearman:10.6f} ± {spread.spearman:8.6f}"
 				)
+		return "\n".join(lines)
+
+	def norms(self) -> str:
+		"""Final parameter L2 and mean per-step gradient L2. ``A`` has neither."""
+		header = (
+			f"{'model':<6} {'||f||_2':>22} {'||E_id||_2':>22} "
+			f"{'grad ||f||':>22} {'grad ||E_id||':>22}"
+		)
+		lines = [header, "-" * len(header)]
+		for model in ("B", "C0", "C30", "C50"):
+			lines.append(
+				f"{model:<6} "
+				f"{self.f_l2[model]:10.6f} ± {self.f_l2_std[model]:8.6f} "
+				f"{self.embed_l2[model]:10.6f} ± {self.embed_l2_std[model]:8.6f} "
+				f"{self.grad_f[model]:10.6f} ± {self.grad_f_std[model]:8.6f} "
+				f"{self.grad_embed[model]:10.6f} ± {self.grad_embed_std[model]:8.6f}"
+			)
 		return "\n".join(lines)
 
 
@@ -775,13 +802,8 @@ def _predict(model: OneHotDecision | ResidualDecision, rows: Rows) -> torch.Tens
 	return model.predict(rows)
 
 
-def run_ablation(seed: int = SEED) -> AblationReport:
-	"""Train A/B/C on vanilla ids and score the four held-out distributions."""
-	torch.set_num_threads(1)
-	pools = load_pools()
-	reversal = preference_reversal(pools)
-	train = _all_pairs(pools["terrain"], pools["cb"])
-	evals = {
+def _evaluation_sets(pools: dict[str, Pool], seed: int = EVAL_SEED) -> dict[str, Rows]:
+	return {
 		"vanilla_id": _build_groups(
 			random.Random(seed + 1),
 			pools["terrain"],
@@ -819,42 +841,43 @@ def run_ablation(seed: int = SEED) -> AblationReport:
 			vary_cb=True,
 		),
 	}
-	torch.manual_seed(seed)
-	baseline = _fit_one_hot(train, pools["terrain"], pools["cb"])
-	torch.manual_seed(seed + 10)
-	mechanics = ResidualDecision(pools["terrain"], pools["cb"], 0.0, mechanics_only=True)
-	steps_run = {
-		"B": _train_residual(mechanics, train, steps=STEPS, warmup=0, seed=seed + 11)
-	}
-	dropout_models: dict[str, ResidualDecision] = {}
-	for label, dropout in (("C0", 0.0), ("C30", 0.3), ("C50", 0.5)):
-		torch.manual_seed(seed + 20)
-		model = ResidualDecision(pools["terrain"], pools["cb"], dropout, mechanics_only=False)
-		steps_run[label] = _train_residual(
-			model, train, steps=STEPS, warmup=WARMUP, seed=seed + 21
-		)
-		dropout_models[label] = model
-	models: dict[str, OneHotDecision | ResidualDecision] = {
-		"A": baseline,
-		"B": mechanics,
-		**dropout_models,
-	}
-	metrics = {
-		distribution: {label: _metric(_predict(model, rows), rows) for label, model in models.items()}
-		for distribution, rows in evals.items()
-	}
-	train_mse = {
-		label: float(torch.mean((_predict(model, train) - train.reward) ** 2))
-		for label, model in models.items()
-	}
-	f_l2 = {label: _l2(model, "f") for label, model in models.items() if label != "A"}
-	embed_l2 = {label: _l2(model, "embed") for label, model in models.items() if label != "A"}
-	if embed_l2["B"] > 1e-6:
-		raise RuntimeError("pure mechanics leaked an id embedding")
-	exported = dropout_models["C50"]
-	_clamp_unknown(exported)
-	terrain_doc = exported.terrain.export_document()
-	cb_doc = exported.cb.export_document()
+
+
+def _spread(values: list[float]) -> tuple[float, float]:
+	mean = sum(values) / len(values)
+	if len(values) < 2:
+		return mean, 0.0
+	return mean, statistics.stdev(values)
+
+
+def _mean_metric(group: list[Metric]) -> tuple[Metric, Metric]:
+	mse, mse_std = _spread([item.mse for item in group])
+	top, top_std = _spread([item.top1 for item in group])
+	rank, rank_std = _spread([item.spearman for item in group])
+	return Metric(mse, top, rank), Metric(mse_std, top_std, rank_std)
+
+
+@dataclass(frozen=True)
+class _SeedRun:
+	metrics: dict[str, dict[str, Metric]]
+	train_mse: dict[str, float]
+	f_l2: dict[str, float]
+	embed_l2: dict[str, float]
+	grad_f: dict[str, float]
+	grad_embed: dict[str, float]
+	steps_run: dict[str, int]
+	fixture: dict[str, object] | None
+	reference_error: float | None
+
+
+def _export_c50(
+	model: ResidualDecision,
+	pools: dict[str, Pool],
+	seed: int,
+) -> tuple[dict[str, object], float]:
+	_clamp_unknown(model)
+	terrain_doc = model.terrain.export_document()
+	cb_doc = model.cb.export_document()
 	supports = {
 		"vanilla_id": (("terrain", pools["terrain"]), ("cb", pools["cb"])),
 		"vanilla_stat_modified": (
@@ -864,7 +887,7 @@ def run_ablation(seed: int = SEED) -> AblationReport:
 		"overhaul_unseen_terrain": (("terrain", pools["unseen_terrain"]), ("cb", pools["cb"])),
 		"overhaul_unseen_cb": (("terrain", pools["terrain"]), ("cb", pools["unseen_cb"])),
 	}
-	heads = {"terrain": exported.terrain, "cb": exported.cb}
+	heads = {"terrain": model.terrain, "cb": model.cb}
 	cases: list[dict[str, object]] = []
 	for distribution, sides in supports.items():
 		for head, pool in sides:
@@ -885,25 +908,186 @@ def run_ablation(seed: int = SEED) -> AblationReport:
 		naive = _naive_score(document, str(case["name"]), list(restored_case["modifiers"]))
 		for left, right in zip(naive, case["score"], strict=True):  # type: ignore[arg-type]
 			reference_error = max(reference_error, abs(left - float(right)))
-	return AblationReport(
+	return fixture, reference_error
+
+
+def _run_seed(
+	seed: int,
+	pools: dict[str, Pool],
+	train: Rows,
+	evals: dict[str, Rows],
+	baseline: OneHotDecision,
+	*,
+	export: bool,
+) -> _SeedRun:
+	"""One initialization. B and every C arm start from that same ``f``."""
+	arms: tuple[tuple[str, float, bool], ...] = (
+		("B", 0.0, True),
+		("C0", 0.0, False),
+		("C30", 0.3, False),
+		("C50", 0.5, False),
+	)
+	models: dict[str, OneHotDecision | ResidualDecision] = {"A": baseline}
+	steps_run: dict[str, int] = {}
+	grad_f: dict[str, float] = {}
+	grad_embed: dict[str, float] = {}
+	for label, dropout, mechanics_only in arms:
+		torch.manual_seed(seed)
+		model = ResidualDecision(
+			pools["terrain"],
+			pools["cb"],
+			dropout,
+			mechanics_only=mechanics_only,
+		)
+		trace = _train_residual(model, train, steps=STEPS, seed=seed)
+		models[label] = model
+		steps_run[label] = trace.steps
+		grad_f[label] = trace.f
+		grad_embed[label] = trace.embed
+	metrics = {
+		distribution: {
+			label: _metric(_predict(model, rows), rows) for label, model in models.items()
+		}
+		for distribution, rows in evals.items()
+	}
+	train_mse = {
+		label: float(torch.mean((_predict(model, train) - train.reward) ** 2))
+		for label, model in models.items()
+	}
+	f_l2 = {label: _l2(model, "f") for label, model in models.items() if label != "A"}
+	embed_l2 = {label: _l2(model, "embed") for label, model in models.items() if label != "A"}
+	if embed_l2["B"] > 1e-6:
+		raise RuntimeError("pure mechanics leaked an id embedding")
+	fixture = None
+	reference_error = None
+	if export:
+		exported = models["C50"]
+		if not isinstance(exported, ResidualDecision):
+			raise TypeError("C50 must be a residual decision")
+		fixture, reference_error = _export_c50(exported, pools, seed)
+	return _SeedRun(
 		metrics=metrics,
 		train_mse=train_mse,
 		f_l2=f_l2,
 		embed_l2=embed_l2,
+		grad_f=grad_f,
+		grad_embed=grad_embed,
 		steps_run=steps_run,
-		reversal=reversal,
 		fixture=fixture,
 		reference_error=reference_error,
 	)
 
 
+def run_ablation(seeds: tuple[int, ...] = TRAIN_SEEDS) -> AblationReport:
+	"""Train A/B/C on vanilla ids and score the four held-out distributions.
+
+	Every neural arm uses ``LR``, ``WEIGHT_DECAY``, and ``STEPS``. The held-out
+	groups are drawn once from ``EVAL_SEED``. ``seeds`` varies only the shared
+	Xavier initialization (and the aligned dropout masks).
+	"""
+	if len(seeds) < 1:
+		raise ValueError("ablation needs at least one training seed")
+	if EXPORT_SEED not in seeds:
+		raise ValueError("the Rust fixture seed must be one of the training seeds")
+	torch.set_num_threads(1)
+	pools = load_pools()
+	reversal = preference_reversal(pools)
+	train = _all_pairs(pools["terrain"], pools["cb"])
+	evals = _evaluation_sets(pools)
+	baseline = _fit_one_hot(train, pools["terrain"], pools["cb"])
+	runs = [
+		_run_seed(
+			seed,
+			pools,
+			train,
+			evals,
+			baseline,
+			export=seed == EXPORT_SEED,
+		)
+		for seed in seeds
+	]
+	metrics: dict[str, dict[str, Metric]] = {}
+	metric_std: dict[str, dict[str, Metric]] = {}
+	for distribution in DISTRIBUTIONS:
+		metrics[distribution] = {}
+		metric_std[distribution] = {}
+		for model in MODELS:
+			mean, spread = _mean_metric([run.metrics[distribution][model] for run in runs])
+			metrics[distribution][model] = mean
+			metric_std[distribution][model] = spread
+	neural = ("B", "C0", "C30", "C50")
+
+	def spread_field(field: str) -> tuple[dict[str, float], dict[str, float]]:
+		means: dict[str, float] = {}
+		stds: dict[str, float] = {}
+		for label in neural:
+			mean, spread = _spread([getattr(run, field)[label] for run in runs])
+			means[label] = mean
+			stds[label] = spread
+		return means, stds
+
+	train_mse, train_mse_std = _spread_labeled([run.train_mse for run in runs], MODELS)
+	f_l2, f_l2_std = spread_field("f_l2")
+	embed_l2, embed_l2_std = spread_field("embed_l2")
+	grad_f, grad_f_std = spread_field("grad_f")
+	grad_embed, grad_embed_std = spread_field("grad_embed")
+	steps_run = {label: STEPS for label in neural}
+	for run in runs:
+		if run.steps_run != steps_run:
+			raise RuntimeError("every arm must run the same fixed step count")
+	exported = next(run for run in runs if run.fixture is not None)
+	if exported.fixture is None or exported.reference_error is None:
+		raise RuntimeError("seed 0 did not export C50")
+	return AblationReport(
+		metrics=metrics,
+		metric_std=metric_std,
+		train_mse=train_mse,
+		train_mse_std=train_mse_std,
+		f_l2=f_l2,
+		f_l2_std=f_l2_std,
+		embed_l2=embed_l2,
+		embed_l2_std=embed_l2_std,
+		grad_f=grad_f,
+		grad_f_std=grad_f_std,
+		grad_embed=grad_embed,
+		grad_embed_std=grad_embed_std,
+		steps_run=steps_run,
+		seeds=seeds,
+		reversal=reversal,
+		fixture=exported.fixture,
+		reference_error=exported.reference_error,
+	)
+
+
+def _spread_labeled(
+	rows: list[dict[str, float]],
+	labels: tuple[str, ...],
+) -> tuple[dict[str, float], dict[str, float]]:
+	means: dict[str, float] = {}
+	stds: dict[str, float] = {}
+	for label in labels:
+		mean, spread = _spread([row[label] for row in rows])
+		means[label] = mean
+		stds[label] = spread
+	return means, stds
+
+
 def main() -> None:
 	report = run_ablation()
+	print(
+		f"AdamW lr {LR:g} weight_decay {WEIGHT_DECAY:g} steps {STEPS} "
+		f"seeds {report.seeds} eval_seed {EVAL_SEED} export_seed {EXPORT_SEED}"
+	)
 	print(report.table())
+	print(report.norms())
 	print("reversal", {key: round(value, 4) for key, value in report.reversal.items()})
-	print("train_mse", {key: round(value, 6) for key, value in report.train_mse.items()})
-	print("f_l2", {key: round(value, 4) for key, value in report.f_l2.items()})
-	print("embed_l2", {key: round(value, 4) for key, value in report.embed_l2.items()})
+	print(
+		"train_mse",
+		{
+			key: f"{report.train_mse[key]:.6f} ± {report.train_mse_std[key]:.6f}"
+			for key in MODELS
+		},
+	)
 	print("steps", report.steps_run)
 	print(f"reference_max_abs {report.reference_error:.3e}")
 	path = fixture_path()
