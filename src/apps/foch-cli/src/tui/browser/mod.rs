@@ -1,15 +1,18 @@
-//! The read-only analysis browser that bare `foch` opens: inspect the current
-//! EU4 input, run the complete N-way merge analysis, and browse every review
-//! unit. It never records decisions, builds artifacts, or writes output.
+//! The browser that bare `foch` opens. Merge review inspects the current EU4
+//! input and browses every review unit without recording a merge decision.
+//! Launch & Plugins and Network & Settings share the plugin service: they can
+//! enable a plugin, edit its config, install a release, stage a runtime, and
+//! save interface preferences.
 
 mod app;
 mod quiet_stderr;
 mod render;
 mod session;
+mod text;
 
 pub use app::{
 	AnalysisSettings, AnalysisView, App, DISPOSITIONS, Effect, Focus, HitAreas, InputPane,
-	KEY_HELP, OPTION_COUNT, Phase, Screen, disposition_label,
+	KEY_HELP, OPTION_COUNT, Phase, Screen, TopTab, disposition_label,
 };
 pub use render::{draw, selected_text, unit_detail};
 pub use session::{

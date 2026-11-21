@@ -28,7 +28,18 @@ pub fn handle_plugin(args: &PluginArgs, config: Config) -> HandlerResult {
 		PluginCommand::Enable(toggle) => set_enabled(toggle, true),
 		PluginCommand::Disable(toggle) => set_enabled(toggle, false),
 		PluginCommand::Plan(plan) => plan_launch(plan, &config),
-		PluginCommand::Launch(launch) => launch_plugins(launch, &config),
+		PluginCommand::Launch(launch) => {
+			let report = launch_plugins(launch, &config)?;
+			match launch.plan.format {
+				CheckOutputFormat::Json => print_json(&report.record)?,
+				CheckOutputFormat::Text => {
+					for line in &report.lines {
+						println!("{line}");
+					}
+				}
+			}
+			Ok(0)
+		}
 		PluginCommand::Status(status) => show_status(status),
 	}
 }
@@ -191,12 +202,24 @@ fn install_plugins(args: &PluginInstallArgs, config: &Config) -> HandlerResult {
 	if args.all && args.sha256.is_some() {
 		return Err("--sha256 applies to one downloaded archive, not --all".into());
 	}
-	let transport = plugin::select_transport(
-		args.transport.map(transport_name).as_deref(),
-		env_nonempty("FOCH_PLUGIN_TRANSPORT").as_deref(),
-	)?;
-	let mirror =
-		plugin::select_mirror(&args.mirror, env_nonempty("FOCH_PLUGIN_MIRROR").as_deref())?;
+	let saved = saved_transport_config();
+	let transport_overridden =
+		args.transport.is_some() || env_nonempty("FOCH_PLUGIN_TRANSPORT").is_some();
+	let mirror_overridden = args.mirror.iter().any(|value| !value.trim().is_empty())
+		|| env_nonempty("FOCH_PLUGIN_MIRROR").is_some();
+	let transport = if transport_overridden {
+		plugin::select_transport(
+			args.transport.map(transport_name).as_deref(),
+			env_nonempty("FOCH_PLUGIN_TRANSPORT").as_deref(),
+		)?
+	} else {
+		saved.transport
+	};
+	let mirror = if mirror_overridden {
+		plugin::select_mirror(&args.mirror, env_nonempty("FOCH_PLUGIN_MIRROR").as_deref())?
+	} else {
+		saved.mirror
+	};
 	let options = plugin::FetchOptions {
 		transport,
 		mirror,
@@ -207,33 +230,51 @@ fn install_plugins(args: &PluginInstallArgs, config: &Config) -> HandlerResult {
 	let data_root = data_root();
 	let game_root = resolve_game_root(config, &Eu4);
 	match (args.spec.as_deref(), args.all) {
-		(Some(spec), false) => {
-			// Registry adapters first; any other owner/repo spec resolves
-			// its release with the selected transport.
-			if let Ok(release) = plugin::github::resolve(spec) {
-				install_release(release, &data_root, game_root.as_deref(), &options)?;
-			} else {
-				let (repo, reference) = plugin::github::split_install_spec(spec)?;
-				let dynamic = plugin::github::resolve_dynamic_with_transport(
-					&repo,
-					reference.as_deref(),
-					options.transport,
-					&plugin::ApiQuery::default(),
-				)?;
-				install_dynamic_release(&dynamic, &data_root, game_root.as_deref(), &options)?;
-			}
-		}
+		(Some(spec), false) => emit(install_one_spec(spec, config, options)?),
 		(None, true) => {
+			let mut lines = Vec::new();
 			for release in plugin::github::releases() {
-				install_release(release, &data_root, game_root.as_deref(), &options)?;
+				lines.extend(install_release(
+					release,
+					&data_root,
+					game_root.as_deref(),
+					&options,
+				)?);
 			}
+			emit(lines)
 		}
-		(Some(_), true) => {
-			return Err("pass a plugin spec or --all, not both".into());
-		}
-		(None, false) => return Err("pass a plugin spec or --all".into()),
+		(Some(_), true) => Err("pass a plugin spec or --all, not both".into()),
+		(None, false) => Err("pass a plugin spec or --all".into()),
+	}
+}
+
+fn emit(lines: Vec<String>) -> HandlerResult {
+	for line in lines {
+		println!("{line}");
 	}
 	Ok(0)
+}
+
+/// Install one plugin spec and return the same lines the CLI prints.
+pub(crate) fn install_one_spec(
+	spec: &str,
+	config: &Config,
+	options: plugin::FetchOptions,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+	let data_root = data_root();
+	let game_root = resolve_game_root(config, &Eu4);
+	if let Ok(release) = plugin::github::resolve(spec) {
+		install_release(release, &data_root, game_root.as_deref(), &options)
+	} else {
+		let (repo, reference) = plugin::github::split_install_spec(spec)?;
+		let dynamic = plugin::github::resolve_dynamic_with_transport(
+			&repo,
+			reference.as_deref(),
+			options.transport,
+			&plugin::ApiQuery::default(),
+		)?;
+		install_dynamic_release(&dynamic, &data_root, game_root.as_deref(), &options)
+	}
 }
 
 fn install_release(
@@ -241,7 +282,7 @@ fn install_release(
 	data_root: &Path,
 	game_root: Option<&Path>,
 	options: &plugin::FetchOptions,
-) -> HandlerResult {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
 	let mut options = options.clone();
 	if options.sha256.is_none() {
 		options.sha256.clone_from(&release.sha256);
@@ -262,7 +303,7 @@ fn install_dynamic_release(
 	data_root: &Path,
 	game_root: Option<&Path>,
 	options: &plugin::FetchOptions,
-) -> HandlerResult {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
 	install_from(
 		&release.repo,
 		&release.tag,
@@ -282,9 +323,13 @@ fn install_from(
 	game_root: Option<&Path>,
 	options: &plugin::FetchOptions,
 	package: impl FnOnce(&[u8]) -> Result<plugin::store::ValidatedPackage, plugin::github::GithubError>,
-) -> HandlerResult {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+	let mut lines = Vec::new();
 	let fetched = plugin::fetch_release_asset(repo, tag, asset_name, options)?;
-	println!("Downloaded {asset_name} from {repo}@{tag} {}", fetched.via);
+	lines.push(format!(
+		"Downloaded {asset_name} from {repo}@{tag} {}",
+		fetched.via
+	));
 	let validated = package(&fetched.bytes)?;
 	let destination = store::version_dir(&data_root.join("plugins/store"), &validated);
 	if let Some(game_root) = game_root {
@@ -296,27 +341,44 @@ fn install_from(
 	let version = &validated.manifest.plugin.version;
 	match plugin::install(&store_root, &validated)? {
 		plugin::Installed::New(path) => {
-			println!(
+			lines.push(format!(
 				"Installed {id} {version} from {repo}@{tag} into {}",
 				path.display()
-			);
+			));
 		}
 		plugin::Installed::AlreadyPresent(path) => {
-			println!(
+			lines.push(format!(
 				"{id} {version} from {repo}@{tag} is already in the store ({})",
 				path.display()
-			);
+			));
 		}
 	}
 	for conflict in &validated.manifest.conflicts {
-		println!(
+		lines.push(format!(
 			"Conflicts with {} ({})",
 			conflict.id,
 			conflict.reason.as_deref().unwrap_or("overlapping hooks")
-		);
+		));
 	}
-	println!("Enable it with: foch plugin enable {id} --playset default --version {version}");
-	Ok(0)
+	lines.push(format!(
+		"Enable it with: foch plugin enable {id} --playset default --version {version}"
+	));
+	Ok(lines)
+}
+
+/// Saved UI settings fill in when the command line and the environment are
+/// both silent. A missing settings file keeps the historical `auto` default.
+fn saved_transport_config() -> plugin::TransportConfig {
+	let Ok(path) = plugin::preferences_path() else {
+		return plugin::TransportConfig::default();
+	};
+	match plugin::UserPreferences::load(&path) {
+		Ok(preferences) => preferences.to_transport_config(),
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+			plugin::TransportConfig::default()
+		}
+		Err(_) => plugin::TransportConfig::default(),
+	}
 }
 
 fn transport_name(transport: PluginTransport) -> String {
@@ -557,12 +619,23 @@ fn plan_launch(args: &PluginPlanArgs, config: &Config) -> HandlerResult {
 	Ok(if resolution.is_launchable() { 0 } else { 1 })
 }
 
+pub(crate) struct LaunchReport {
+	pub directory: PathBuf,
+	pub lines: Vec<String>,
+	pub record: serde_json::Value,
+	pub plugin_count: usize,
+	pub version_dll: bool,
+}
+
 fn print_json(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
 	println!("{}", serde_json::to_string_pretty(value)?);
 	Ok(())
 }
 
-fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
+pub(crate) fn launch_plugins(
+	args: &PluginLaunchArgs,
+	config: &Config,
+) -> Result<LaunchReport, Box<dyn std::error::Error>> {
 	if !cfg!(all(windows, target_arch = "x86_64")) {
 		return Err("plugin launch requires Windows x64".into());
 	}
@@ -621,6 +694,8 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		&directory.join("userdir.txt"),
 		user_dir.to_string_lossy().as_bytes(),
 	)?;
+	let plugin_count = prepared.artifacts.len();
+	let version_dll = directory.join("VERSION.dll").is_file();
 	let mut record = json!({
 		"format":1, "run_id":run_id, "playset":args.plan.playset, "runtime":directory,
 		"user_dir":user_dir, "game_version":raw_version,
@@ -652,28 +727,32 @@ fn launch_plugins(args: &PluginLaunchArgs, config: &Config) -> HandlerResult {
 		}
 		Ok(Some(child))
 	})?;
-	match args.plan.format {
-		CheckOutputFormat::Json => print_json(&record)?,
-		CheckOutputFormat::Text => {
-			println!(
-				"{}: {}",
-				if args.prepare_only {
-					"Prepared runtime"
-				} else {
-					"Started EU4"
-				},
-				directory.display()
-			);
-			if let Some(child) = &child {
-				println!("PID: {}", child.id());
-			}
-			println!(
-				"Read states: foch plugin status --run-dir \"{}\"",
-				directory.display()
-			);
-		}
+	let mut lines = vec![format!(
+		"{}: {}",
+		if args.prepare_only {
+			"Prepared runtime"
+		} else {
+			"Started EU4"
+		},
+		directory.display()
+	)];
+	if let Some(child) = &child {
+		lines.push(format!("PID: {}", child.id()));
 	}
-	Ok(0)
+	lines.push(format!(
+		"Read states: foch plugin status --run-dir \"{}\"",
+		directory.display()
+	));
+	if version_dll {
+		lines.push(format!("VERSION.dll staged; {plugin_count} plugins"));
+	}
+	Ok(LaunchReport {
+		directory,
+		lines,
+		record,
+		plugin_count,
+		version_dll,
+	})
 }
 
 /// Create the proxy host exclusively and write through the new handle.
