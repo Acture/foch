@@ -1,5 +1,5 @@
 use foch::check::{run_checks, run_checks_with_options};
-use foch::input::{CheckOptions, Config, InputRequest};
+use foch::input::{CheckOptions, Config, InputRequest, resolve_input_summary};
 use foch::merge::{CancellationToken, MergeAnalysisOptions, NoopProgressObserver, analyze_merge};
 use foch::model::{
 	CheckResult, Finding, GamePath, GamePathBuf, MergePlanEntry, MergePlanResult,
@@ -1241,6 +1241,48 @@ fn check_reads_a_mod_directory_that_holds_descriptor_mod() {
 		result.advisory_findings.is_empty(),
 		"{:?}",
 		result.advisory_findings
+	);
+}
+
+/// A Workshop companion may ship `descriptor.mod` and a `foch.toml` that only
+/// declares `[[plugins]]`. That is still a mod directory: check and inspect
+/// must not treat the missing `[project]` table as an error.
+#[test]
+fn check_and_inspect_a_companion_mod_with_plugins_only_foch_toml() {
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("companion");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::write(
+		root.join("descriptor.mod"),
+		"name=\"Dynamic Trade Blackhole (Foch Companion)\"\nsupported_version=\"1.37.*\"\npicture=\"thumbnail.png\"\ntags={\n\t\"Balance\"\n\t\"Gameplay\"\n\t\"Trade\"\n\t\"Utilities\"\n}\n",
+	)
+	.expect("write descriptor");
+	fs::write(
+		root.join("events").join("companion.txt"),
+		"namespace = sample_ns\n",
+	)
+	.expect("write event");
+	fs::write(
+		root.join("foch.toml"),
+		"[[plugins]]\nid = \"dev.foch.eu4-dynamic-trade-blackhole\"\nrepo = \"Acture/eu4-dynamic-trade-blackhole\"\ngame_versions = \"=1.37.5\"\nrequired = true\nmin_version = \"0.1.0\"\n",
+	)
+	.expect("write plugin declaration");
+
+	let request = request_for(&root);
+	let result = run_checks_no_base(request.clone());
+	assert!(result.fatal_errors.is_empty(), "{:?}", result.fatal_errors);
+	assert!(result.findings.is_empty(), "{:?}", result.findings);
+	assert!(
+		result.advisory_findings.is_empty(),
+		"{:?}",
+		result.advisory_findings
+	);
+	let summary = resolve_input_summary(&request).expect("inspect companion mod");
+	assert_eq!(summary.mods.len(), 1, "{summary:?}");
+	assert!(
+		summary.mods[0].descriptor_error.is_none(),
+		"{:?}",
+		summary.mods[0].descriptor_error
 	);
 }
 

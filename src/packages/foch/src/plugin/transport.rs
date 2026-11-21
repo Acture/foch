@@ -133,6 +133,28 @@ impl fmt::Debug for Bearer {
 	}
 }
 
+/// Saved or selected download transport and mirror, shared by the CLI, TUI,
+/// and desktop app.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransportConfig {
+	pub transport: InstallTransport,
+	pub mirror: MirrorPolicy,
+}
+
+impl Default for TransportConfig {
+	fn default() -> Self {
+		Self {
+			transport: InstallTransport::Auto,
+			mirror: MirrorPolicy::Auto,
+		}
+	}
+}
+
+/// Locale tags the host exposes for language and China-mirror detection.
+pub fn system_locale_hints() -> Vec<String> {
+	host_locale_hints()
+}
+
 /// Knobs for one install download. `region` and `asset_origin` override host
 /// detection and `https://github.com` so tests can stay on loopback.
 #[derive(Clone, Debug)]
@@ -642,7 +664,7 @@ fn normalize_all<'a>(
 	prefixes.map(normalize_mirror_prefix).collect()
 }
 
-fn normalize_mirror_prefix(raw: &str) -> Result<String, TransportError> {
+pub(crate) fn normalize_mirror_prefix(raw: &str) -> Result<String, TransportError> {
 	let raw = raw.trim();
 	if raw.is_empty()
 		|| !raw.is_ascii()

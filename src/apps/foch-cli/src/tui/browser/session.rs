@@ -12,6 +12,7 @@ use foch::merge::{CancellationToken, MergeError, MergeProgress, ProgressObserver
 
 use super::app::{AnalysisView, App, AppCommand, Effect, Phase};
 use crate::cli::arg::MergeArgs;
+use crate::cli::arg::{CheckOutputFormat, PluginLaunchArgs, PluginPlanArgs};
 use crate::cli::handler::merge::{PreparedMerge, prepare_merge};
 
 /// What an analysis of an inspected input reads, as `foch merge` takes it.
@@ -84,6 +85,11 @@ enum WorkerMessage {
 		generation: u64,
 		result: Result<Vec<String>, String>,
 	},
+	PluginDone {
+		token: u64,
+		banner: Result<String, String>,
+		run_dir: Option<PathBuf>,
+	},
 	BuildStage {
 		generation: u64,
 		name: String,
@@ -114,6 +120,7 @@ pub struct Session {
 	tx: Sender<WorkerMessage>,
 	rx: Receiver<WorkerMessage>,
 	generation: u64,
+	plugin_token: u64,
 	pending: Option<AnalysisInput>,
 	cancellation: Option<CancellationToken>,
 	busy: bool,
@@ -123,11 +130,12 @@ impl Session {
 	pub fn new(source: Arc<dyn BrowserSource>) -> Self {
 		let (tx, rx) = mpsc::channel();
 		let mut session = Self {
-			app: App::default(),
+			app: App::for_bare_foch(),
 			source,
 			tx,
 			rx,
 			generation: 0,
+			plugin_token: 0,
 			pending: None,
 			cancellation: None,
 			busy: false,
@@ -160,6 +168,25 @@ impl Session {
 				let analyzed = matches!(self.app.phase, Phase::Reviewed(_) | Phase::Failed(_));
 				self.start_inspection(analyzed);
 			}
+			Some(AppCommand::RefreshPlugins) => self.start_inspection(false),
+			Some(AppCommand::PrepareOnly) => self.start_launch(true),
+			Some(AppCommand::LaunchGame) => self.start_launch(false),
+			Some(AppCommand::InstallPlugin) => {
+				if let Some(spec) = self
+					.app
+					.plugin_overview
+					.as_ref()
+					.and_then(|overview| overview.plugins.get(self.app.plugin_cursor))
+					.and_then(|plugin| plugin.install_spec.clone())
+				{
+					self.start_install(spec);
+				} else {
+					self.app.refusal = Some(
+						"Select a plugin with an owner/repo, or press I to type one.".to_string(),
+					);
+				}
+			}
+			Some(AppCommand::InstallSpec(spec)) => self.start_install(spec),
 			None => {}
 		}
 		true
@@ -232,6 +259,7 @@ impl Session {
 					self.app.source_path = Some(path.clone());
 				}
 				self.pending = analysis;
+				self.app.reload_plugins();
 				if self.app.take_analyze_after_inspection() {
 					self.start_analysis();
 				}
@@ -257,6 +285,20 @@ impl Session {
 				self.app.built(result);
 				// The new base data changes what can be analyzed.
 				self.start_inspection(false);
+				true
+			}
+			WorkerMessage::PluginDone {
+				token,
+				banner,
+				run_dir,
+			} if token == self.plugin_token => {
+				match banner {
+					Ok(text) => self.app.note_plugin_result(text, run_dir),
+					Err(error) => {
+						self.app.banner = None;
+						self.app.refusal = Some(error);
+					}
+				}
 				true
 			}
 			WorkerMessage::Analyzed { generation, result } if generation == self.generation => {
@@ -357,6 +399,90 @@ impl Session {
 			.unwrap_or_else(|panic| Err(format!("analysis panicked: {}", panic_text(&*panic))))
 			.map(Box::new);
 			let _ = tx.send(WorkerMessage::Analyzed { generation, result });
+		});
+	}
+
+	/// Stage a runtime, or start EU4, on a background thread. `prepare_only`
+	/// never calls the game executable.
+	fn start_launch(&mut self, prepare_only: bool) {
+		let playset = self.app.playset_name.clone();
+		let game_path = self
+			.app
+			.input
+			.as_ref()
+			.and_then(|input| input.game.install_path.clone());
+		self.spawn_plugin(move || {
+			let config = foch::input::load_config_read_only().unwrap_or_default();
+			let args = PluginLaunchArgs {
+				plan: PluginPlanArgs {
+					playset,
+					game_path,
+					format: CheckOutputFormat::Text,
+				},
+				host_dll: None,
+				runtime_base: None,
+				user_dir: None,
+				prepare_only,
+				game_args: Vec::new(),
+			};
+			match crate::cli::handler::plugin::launch_plugins(&args, &config) {
+				Ok(report) => {
+					let dll = if report.version_dll {
+						"VERSION.dll"
+					} else {
+						"no VERSION.dll"
+					};
+					Ok((
+						format!(
+							"{}\n{dll}; {} plugins",
+							report.lines.join("\n"),
+							report.plugin_count
+						),
+						Some(report.directory),
+					))
+				}
+				Err(error) => Err(error.to_string()),
+			}
+		});
+	}
+
+	fn start_install(&mut self, spec: String) {
+		let saved = self.app.preferences.to_transport_config();
+		self.spawn_plugin(move || {
+			let config = foch::input::load_config_read_only().unwrap_or_default();
+			let options = foch::plugin::FetchOptions {
+				transport: saved.transport,
+				mirror: saved.mirror,
+				sha256: None,
+				region: None,
+				asset_origin: None,
+			};
+			crate::cli::handler::plugin::install_one_spec(&spec, &config, options)
+				.map(|lines| (lines.join("\n"), None))
+				.map_err(|error| error.to_string())
+		});
+	}
+
+	fn spawn_plugin(
+		&mut self,
+		work: impl FnOnce() -> Result<(String, Option<PathBuf>), String> + Send + 'static,
+	) {
+		self.plugin_token = self.plugin_token.wrapping_add(1);
+		let token = self.plugin_token;
+		let tx = self.tx.clone();
+		std::thread::spawn(move || {
+			let result = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|panic| {
+				Err(format!("plugin work panicked: {}", panic_text(&*panic)))
+			});
+			let (banner, run_dir) = match result {
+				Ok((text, directory)) => (Ok(text), directory),
+				Err(error) => (Err(error), None),
+			};
+			let _ = tx.send(WorkerMessage::PluginDone {
+				token,
+				banner,
+				run_dir,
+			});
 		});
 	}
 

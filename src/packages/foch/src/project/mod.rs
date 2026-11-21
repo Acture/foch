@@ -42,6 +42,104 @@ pub struct Project {
 	/// Reviewed syntax repairs of mod script files.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub repairs: Vec<SourceRepairEntry>,
+	/// Companion plugins this playset or mod asks Foch to install and enable.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub plugins: Vec<PluginDeclaration>,
+}
+
+/// One companion or mod plugin a `foch.toml` asks the playset to provide.
+///
+/// A mod directory may carry only `[[plugins]]` and no `[project]` table.
+/// That file is a declaration for discovery, not a playset manifest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginDeclaration {
+	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub repo: Option<String>,
+	#[serde(
+		default = "default_plugin_game",
+		skip_serializing_if = "is_default_plugin_game"
+	)]
+	pub game: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub game_versions: Option<String>,
+	#[serde(
+		default = "default_plugin_required",
+		skip_serializing_if = "is_default_plugin_required"
+	)]
+	pub required: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub min_version: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub sha256: Option<String>,
+}
+
+fn default_plugin_game() -> String {
+	"eu4".to_string()
+}
+
+fn is_default_plugin_game(game: &str) -> bool {
+	game == "eu4"
+}
+
+fn default_plugin_required() -> bool {
+	true
+}
+
+fn is_default_plugin_required(required: &bool) -> bool {
+	*required
+}
+
+fn is_plugin_sha256(value: &str) -> bool {
+	value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_plugins(plugins: &[PluginDeclaration]) -> Result<(), String> {
+	let mut seen = HashSet::new();
+	for (index, plugin) in plugins.iter().enumerate() {
+		let entry = format!("[[plugins]] entry {}", index + 1);
+		if plugin.id.is_empty() || plugin.id.chars().any(char::is_whitespace) {
+			return Err(format!(
+				"{entry}: id must be a non-empty identifier without whitespace"
+			));
+		}
+		if !seen.insert(plugin.id.clone()) {
+			return Err(format!("{entry}: duplicate plugin id `{}`", plugin.id));
+		}
+		if plugin.game.is_empty() || plugin.game.chars().any(char::is_whitespace) {
+			return Err(format!(
+				"{entry}: game must be a non-empty identifier without whitespace"
+			));
+		}
+		if plugin
+			.repo
+			.as_deref()
+			.is_some_and(|repo| repo.trim().is_empty())
+		{
+			return Err(format!("{entry}: repo must be non-empty when set"));
+		}
+		if plugin
+			.game_versions
+			.as_deref()
+			.is_some_and(|versions| versions.trim().is_empty())
+		{
+			return Err(format!("{entry}: game_versions must be non-empty when set"));
+		}
+		if let Some(version) = &plugin.min_version
+			&& semver::Version::parse(version).is_err()
+		{
+			return Err(format!(
+				"{entry}: min_version `{version}` is not a semver version"
+			));
+		}
+		if let Some(digest) = &plugin.sha256
+			&& !is_plugin_sha256(digest)
+		{
+			return Err(format!("{entry}: sha256 must be 64 hexadecimal digits"));
+		}
+	}
+	Ok(())
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,6 +170,8 @@ struct RawProject {
 	gui: GuiConfig,
 	#[serde(default)]
 	repairs: Vec<SourceRepairEntry>,
+	#[serde(default)]
+	plugins: Vec<PluginDeclaration>,
 }
 
 impl<'de> Deserialize<'de> for Project {
@@ -84,6 +184,7 @@ impl<'de> Deserialize<'de> for Project {
 		raw.cultures.validate().map_err(serde::de::Error::custom)?;
 		raw.gui.validate().map_err(serde::de::Error::custom)?;
 		repairs::validate_repairs(&raw.repairs).map_err(serde::de::Error::custom)?;
+		validate_plugins(&raw.plugins).map_err(serde::de::Error::custom)?;
 		Ok(Self {
 			project: raw.project,
 			overrides: raw.overrides,
@@ -92,6 +193,7 @@ impl<'de> Deserialize<'de> for Project {
 			cultures: raw.cultures,
 			gui: raw.gui,
 			repairs: raw.repairs,
+			plugins: raw.plugins,
 		})
 	}
 }
@@ -760,6 +862,16 @@ impl Project {
 				}
 				if config.emit.is_some() {
 					merged.emit = config.emit;
+				}
+				for plugin in config.plugins {
+					if merged
+						.plugins
+						.iter()
+						.any(|existing| existing.id == plugin.id)
+					{
+						continue;
+					}
+					merged.plugins.push(plugin);
 				}
 			}
 		}
@@ -1940,5 +2052,94 @@ handler = "last_writer"
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
 		// empty leaf address — leaf matcher can't match
 		assert_eq!(map.lookup(game_path("common/foo.txt"), "no-id", ""), None);
+	}
+
+	#[test]
+	fn plugins_only_foch_toml_parses_without_a_project_table() {
+		let digest = "ab".repeat(32);
+		let source = format!(
+			r#"
+[[plugins]]
+id = "dev.foch.eu4-dynamic-trade-blackhole"
+repo = "Acture/eu4-dynamic-trade-blackhole"
+game_versions = "=1.37.5"
+min_version = "0.1.0"
+sha256 = "{digest}"
+"#
+		);
+		let config = Project::from_toml_str(&source).expect("plugins-only config");
+		assert!(config.project.is_none());
+		assert_eq!(config.plugins.len(), 1);
+		let plugin = &config.plugins[0];
+		assert_eq!(plugin.id, "dev.foch.eu4-dynamic-trade-blackhole");
+		assert_eq!(
+			plugin.repo.as_deref(),
+			Some("Acture/eu4-dynamic-trade-blackhole")
+		);
+		assert_eq!(plugin.game, "eu4");
+		assert!(plugin.required);
+		assert_eq!(plugin.min_version.as_deref(), Some("0.1.0"));
+		assert_eq!(plugin.sha256.as_deref(), Some(digest.as_str()));
+		let encoded = toml::to_string(&config).expect("serialize");
+		assert!(!encoded.contains("[project]"));
+		assert_eq!(Project::from_toml_str(&encoded).unwrap(), config);
+	}
+
+	#[test]
+	fn an_empty_project_omits_plugins_when_serialized() {
+		let encoded = toml::to_string(&Project::default()).expect("serialize");
+		assert!(!encoded.contains("plugins"));
+	}
+
+	#[test]
+	fn plugin_declarations_reject_invalid_fields() {
+		let digest = "ab".repeat(32);
+		let valid = format!(
+			"[[plugins]]\nid = \"dev.foch.sample\"\nrepo = \"Acture/sample\"\nmin_version = \"0.1.0\"\nsha256 = \"{digest}\"\n"
+		);
+		let cases = [
+			valid.replace("dev.foch.sample", ""),
+			valid.replace("dev.foch.sample", "has space"),
+			format!("{valid}{valid}"),
+			valid.replace("0.1.0", "not-a-version"),
+			valid.replace(&digest, &"ab".repeat(31)),
+			valid.replace(&digest, &format!("gg{}", "ab".repeat(31))),
+			valid.replace("Acture/sample", ""),
+			valid.replace("repo = \"Acture/sample\"\n", "repo = \"\"\ngame = \"\"\n"),
+			format!("{valid}unknown = true\n"),
+		];
+		for invalid in cases {
+			assert!(
+				Project::from_toml_str(&invalid).is_err(),
+				"accepted {invalid}"
+			);
+		}
+	}
+
+	#[test]
+	fn merged_configs_keep_the_first_plugin_id() {
+		let temp = TempDir::new().expect("temp dir");
+		let first = temp.path().join("first.toml");
+		let second = temp.path().join("second.toml");
+		fs::write(
+			&first,
+			"[[plugins]]\nid = \"dev.foch.sample\"\nrepo = \"Acture/first\"\n[[plugins]]\nid = \"dev.foch.other\"\n",
+		)
+		.expect("write first");
+		fs::write(
+			&second,
+			"[[plugins]]\nid = \"dev.foch.sample\"\nrepo = \"Acture/second\"\n[[plugins]]\nid = \"dev.foch.third\"\n",
+		)
+		.expect("write second");
+		let merged = Project::try_load_from_paths(vec![first, second]).expect("merge");
+		assert_eq!(
+			merged
+				.plugins
+				.iter()
+				.map(|plugin| plugin.id.as_str())
+				.collect::<Vec<_>>(),
+			vec!["dev.foch.sample", "dev.foch.other", "dev.foch.third"]
+		);
+		assert_eq!(merged.plugins[0].repo.as_deref(), Some("Acture/first"));
 	}
 }
