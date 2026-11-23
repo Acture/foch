@@ -1429,11 +1429,16 @@ dependencies = [
 name = "foch-desktop"
 version = "0.0.2"
 dependencies = [
+ "dirs",
  "foch",
+ "foch-runtime",
+ "semver",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
  "uuid",
 ]
 

@@ -1,25 +1,26 @@
 :root {
 	font-family: Aptos, "Segoe UI Variable", "Segoe UI", sans-serif;
-	color: #19212a;
-	background: #dce1e2;
+	color: #e7eef6;
+	background: #0d1219;
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
 	-webkit-font-smoothing: antialiased;
-	--canvas: #dce1e2;
-	--panel: #f7f8f5;
-	--panel-soft: #edf0ee;
-	--ink: #19212a;
-	--muted: #647079;
-	--line: #bac3c5;
-	--line-strong: #89969a;
-	--imperial-blue: #293e5b;
-	--imperial-blue-deep: #1f3047;
-	--safe: #267567;
-	--copy: #426f9f;
-	--choice: #a86f1f;
-	--unsupported: #73597d;
-	--failure: #b64f45;
-	--deferred: #717980;
+	--canvas: #0d1219;
+	--panel: #131c28;
+	--panel-soft: #182230;
+	--ink: #e7eef6;
+	--muted: #93a4b5;
+	--line: #2a3848;
+	--line-strong: #3d4e62;
+	--imperial-blue: #182230;
+	--imperial-blue-deep: #0d1219;
+	--safe: #4ade80;
+	--copy: #38bdf8;
+	--choice: #d4a84f;
+	--unsupported: #c4b5fd;
+	--failure: #f0a8a2;
+	--deferred: #93a4b5;
+	--brass: #d4a84f;
 }
 
 * {
@@ -800,7 +801,7 @@ select:focus-visible {
 	border: 1px solid var(--line-strong);
 	border-radius: 2px;
 	color: var(--ink);
-	background: #fff;
+	background: #182230;
 	font-size: 0.73rem;
 }
 .unit-tools input {
@@ -1187,5 +1188,208 @@ select:focus-visible {
 	}
 	.progress-track > span {
 		transition: none;
+	}
+}
+
+.app-frame {
+	display: grid;
+	grid-template-columns: 15.5rem minmax(0, 1fr);
+	min-height: 100vh;
+	background: #0d1219;
+	color: #e7eef6;
+}
+
+.side-nav {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	padding: 1.25rem 0.9rem;
+	background: #131c28;
+	border-right: 1px solid #2a3848;
+}
+
+.side-nav .brand-lockup {
+	height: auto;
+	padding: 0 0.35rem 1rem;
+	border: 0;
+	border-bottom: 1px solid #2a3848;
+}
+
+.side-nav h1,
+.side-nav p {
+	margin: 0;
+}
+
+.side-nav p,
+.section-kicker,
+.readiness-card span,
+.plugin-card small {
+	color: var(--muted);
+}
+
+.nav-tabs {
+	display: grid;
+	gap: 0.35rem;
+}
+
+.nav-tab {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	padding: 0.7rem 0.75rem;
+	border: 1px solid transparent;
+	border-radius: 0.55rem;
+	color: #d5dee8;
+	background: transparent;
+	text-align: left;
+}
+
+.nav-tab-active {
+	color: #d4a84f;
+	background: #1c2836;
+	border-color: #3d4e62;
+}
+
+.nav-badge {
+	min-width: 1.3rem;
+	padding: 0.05rem 0.35rem;
+	border-radius: 999px;
+	color: #0d1219;
+	background: #d4a84f;
+	font-size: 0.75rem;
+	text-align: center;
+}
+
+.play-panel,
+.plugins-panel,
+.settings-panel {
+	display: grid;
+	gap: 1rem;
+	padding: 1.4rem 1.5rem 2rem;
+}
+
+.readiness-cards,
+.launch-actions,
+.banner-actions,
+.install-form {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	align-items: center;
+}
+
+.readiness-card,
+.plugin-card,
+.companion-banner,
+.order-panel,
+.status-panel,
+.modal-card,
+.settings-row {
+	padding: 0.9rem 1rem;
+	border: 1px solid #2a3848;
+	border-radius: 0.7rem;
+	background: #131c28;
+}
+
+.readiness-card {
+	display: grid;
+	gap: 0.2rem;
+	min-width: 12rem;
+}
+
+.readiness-card strong,
+.plugin-card-heading strong {
+	color: #e7eef6;
+}
+
+.companion-banner {
+	border-color: #d4a84f;
+}
+
+.order-panel ol,
+.status-panel ul,
+.plugin-list {
+	display: grid;
+	gap: 0.45rem;
+	margin: 0.6rem 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.order-panel li,
+.status-panel li,
+.plugin-card-heading,
+.config-row,
+.settings-row {
+	display: flex;
+	justify-content: space-between;
+	gap: 0.75rem;
+	align-items: center;
+}
+
+.conflict-badge,
+.conflict-copy {
+	color: #d4a84f;
+}
+
+.plugin-list {
+	margin-top: 0.4rem;
+}
+
+.plugin-card {
+	display: grid;
+	gap: 0.45rem;
+}
+
+.config-row,
+.settings-row {
+	align-items: center;
+}
+
+.config-row input[type="range"] {
+	width: min(16rem, 100%);
+	accent-color: #d4a84f;
+}
+
+.install-form input,
+.settings-row input,
+.settings-row select,
+.plugin-card input[type="text"],
+.plugin-card input[type="number"] {
+	min-width: 14rem;
+	padding: 0.45rem 0.6rem;
+	border: 1px solid #3d4e62;
+	border-radius: 0.45rem;
+	color: #e7eef6;
+	background: #0d1219;
+}
+
+.modal-backdrop {
+	position: fixed;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	background: rgb(8 12 18 / 72%);
+}
+
+.modal-card {
+	width: min(32rem, calc(100vw - 2rem));
+	display: grid;
+	gap: 0.8rem;
+}
+
+.path-value {
+	overflow-wrap: anywhere;
+	color: #38bdf8;
+}
+
+@media (max-width: 860px) {
+	.app-frame {
+		grid-template-columns: 1fr;
+	}
+
+	.nav-tabs {
+		grid-template-columns: 1fr 1fr;
 	}
 }

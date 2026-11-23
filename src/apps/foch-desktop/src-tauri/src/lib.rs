@@ -1,6 +1,7 @@
 mod backend;
 mod commands;
 mod dto;
+mod plugin_backend;
 mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -14,6 +15,15 @@ pub fn run() {
 			commands::get_merge_analysis_summary,
 			commands::list_merge_units,
 			commands::get_merge_unit,
+			commands::get_plugin_overview,
+			commands::install_plugin,
+			commands::import_plugin_dir,
+			commands::set_plugin_enabled,
+			commands::update_plugin_config,
+			commands::launch_eu4_with_plugins,
+			commands::get_launch_status,
+			commands::get_desktop_settings,
+			commands::save_desktop_settings,
 		])
 		.run(tauri::generate_context!())
 		.expect("failed to run Foch desktop");
@@ -33,6 +43,7 @@ mod tests {
 			include_str!("backend.rs"),
 			include_str!("commands.rs"),
 			include_str!("state.rs"),
+			include_str!("plugin_backend.rs"),
 		] {
 			assert!(!source.contains("std::process::Command"));
 			assert!(!source.contains("Command::new"));
