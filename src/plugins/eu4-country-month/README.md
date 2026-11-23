@@ -97,6 +97,52 @@ serial paths to prevent cross-country data races and unsynchronized RIP-relative
   `0xd405b0` writes `1` through fixed RIP-relative global bytes, making concurrent worker execution
   unsafe.
 
+### Next callees on the pinned 1.37.5 image
+
+Read-only disassembly of `eu4.exe` SHA-256
+`c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e` (image base
+`0x140000000`, bounds from `.pdata`). A RIP store is a memory operand based on
+`rip` that the instruction writes. Allocator calls are `0x1a332d4` (the `E8` at
+daily-A body `0x7596a0+0xA4`, and again at `+0x32B` and `+0x3D1`) and free thunk
+`0x17394f0` (`jmp 0x175da20`, then `jmp 0x1a46238`), including those calls one
+hop down. Nothing in this table is hooked.
+
+The monthly tick is `0x75d690`–`0x75e189` and already contains the hooked country
+loop at `0x75dd30`. The daily parent is `0x75bbe0`–`0x75c9ef` (`0x75c895` is
+inside it) and calls `0x759640`, `0xa89360`, and `0x1d0e20`.
+
+The unhooked sites still match this image: `0x14d6110` has seven RIP stores, the
+first at `0x14d6186`; `0xd405b0` has three, the first at `0xd405ec`. `0x93d750`,
+`0x1d0e20`, and `0xa89360` still have none in their own bodies.
+
+| RVA | Caller | Bytes | Class | Evidence |
+| --- | --- | --- | --- | --- |
+| `0x2f36c0` | monthly `0x75d690` | `0x47c1` | blocked by RIP store | `0x2f3741` writes a byte through `rip` |
+| `0x707aa0` | monthly | `0x11b7` | blocked by RIP store | `0x707afa` |
+| `0x75f630` | monthly | `0xc1d` | blocked by RIP store | `0x75f83d` |
+| `0x771000` | monthly | `0xbd2` | blocked by RIP store | `0x77163f` increments a `rip` dword |
+| `0x1b69a0` | monthly | `0x97f` | blocked by RIP store | `0x1b6c31` increments a `rip` dword |
+| `0x14d4c80` | monthly | `0x143` | blocked by RIP store | `0x14d4ce0` plus 16 more RIP stores in that body |
+| `0xd8ba80` | daily A `0x759640` | `0x106e` | blocked by RIP store | `0xd8bae2` |
+| `0xd8e6b0` | daily A | `0xfde` | blocked by RIP store | `0xd8e70d` |
+| `0x2e9ab0` | daily A | `0x841` | blocked by RIP store | callee `0x798dc0` writes at `0x798e6b` |
+| `0x759030` | daily A | `0x602` | blocked by shared free | seven direct calls to `0x17394f0`; the body itself has no RIP store |
+| `0x760250` | daily parent `0x75bbe0` | `0x850` | blocked by RIP store | `0x760299` |
+| `0x70af70` | daily parent | `0x920` | blocked by RIP store | `0x70b002` |
+| `0x75b4b0` | daily parent | `0x727` | blocked by RIP store | `0x75b6a0` |
+| `0x93ca70` | daily parent | `0x6bd` | blocked by RIP store | callee `0x14d6110` writes at `0x14d6186` |
+| `0xacfae0` | daily parent | `0xae7` | blocked by shared object writes | no RIP store and no alloc/free in two hops; reads `.data` `0x233fe78` and writes `[rsi+0x370]` / `[rsi+0x374]` |
+| `0x758f30` | daily A body `0x7596a0+0x25E` and `+0x274` | `0xfe` | clean read-only predicate | no call, no RIP store, no object store; reads `.data` `0x233d8d0` and province records of stride `0x2e10` |
+
+`0x14c71b0` (monthly callee, `0x124` bytes) has no RIP store and no allocator
+call. It steps an MT19937 object (`0x9908b0df`, index at `+0x9c0`) and writes
+that object, so it is not a country/province parallel candidate. `0x170c30`
+calls `0x1a332d4`. `0x7e2770` and `0xaee0c0` reach `0x17394f0`.
+
+On this image the byte at `0x7596a0+0x35F` is `48 89 45 48`, not `E8`. The free
+call in the daily-A body is at `+0x3C4`. `DA_FREE_SITE` is unchanged, so a real
+install still fails closed on that check.
+
 ---
 
 ## Overhaul Mod & Large-World Scaling
