@@ -4,7 +4,9 @@ import {
 	type CSSProperties,
 	type FormEvent,
 	type JSX,
+	createContext,
 	useCallback,
+	useContext,
 	useEffect,
 	useMemo,
 	useState,
@@ -15,11 +17,13 @@ import {
 	type AnalysisInputMode,
 	type AnalysisInputScope,
 	type DesktopClient,
+	type DesktopPluginOverview,
+	type DesktopPreferences,
+	type EffectiveLanguage,
 	type InputInspection,
 	type InputRecoveryOption,
-	type MergeAnalysisStage,
-	type MergeAnalysisState,
 	type MergeAnalysisSummary,
+	type MergeAnalysisState,
 	type MergeDisposition,
 	type MergeUnitDetail,
 	type MergeUnitListItem,
@@ -29,39 +33,21 @@ import {
 	parseDesktopCommandError,
 	tauriDesktopClient,
 } from "./api";
+import { type Copy, copyFor } from "./i18n";
+import { PlayPanel, PluginsPanel, SettingsPanel } from "./panels";
+
+const CopyContext = createContext<Copy>(copyFor("en"));
+
+function useCopy(): Copy {
+	return useContext(CopyContext);
+}
+
+type DesktopTab = "play" | "plugins" | "merge" | "settings";
 
 const PAGE_SIZE = 12;
 const MAX_QUERY_CHARS: number = 256;
 const OMITTED_MOD_PREVIEW_LIMIT: number = 5;
 const MAX_CONSECUTIVE_POLL_FAILURES: number = 3;
-
-const DISPOSITION_LABELS: Record<MergeDisposition, string> = {
-	safe: "Safe merge",
-	copy: "Copy through",
-	needs_user_choice: "Needs a choice",
-	unsupported_input: "Unsupported input",
-	engine_failure: "Engine failure",
-	deferred: "Deferred",
-};
-
-const STAGE_LABELS: Record<MergeAnalysisStage, string> = {
-	inventory: "Scan load order",
-	resolve_input: "Read playset",
-	semantic_merge: "Compare merge units",
-	validate_output: "Check results",
-	freeze_artifacts: "Prepare review",
-	complete: "Complete",
-};
-
-const ANALYSIS_STATE_LABELS: Record<MergeAnalysisState, string> = {
-	queued: "Queued",
-	running: "Analyzing",
-	ready: "Review ready",
-	ready_with_deferrals: "Review required",
-	blocked: "Review blocked",
-	cancelled: "Cancelled",
-	failed: "Analysis failed",
-};
 
 interface AppProps {
 	client?: DesktopClient;
@@ -152,19 +138,21 @@ function hasInputOmissions(scope: AnalysisInputScope): boolean {
 function analysisStateLabel(
 	summary: MergeAnalysisSummary,
 	inputScope: AnalysisInputScope,
+	copy: Copy,
 ): string {
-	if (!hasInputOmissions(inputScope)) return ANALYSIS_STATE_LABELS[summary.state];
-	if (summary.state === "ready") return "Incomplete review ready";
-	if (summary.state === "ready_with_deferrals") return "Incomplete review required";
-	if (summary.state === "blocked") return "Incomplete review blocked";
-	return ANALYSIS_STATE_LABELS[summary.state];
+	if (!hasInputOmissions(inputScope)) return copy.merge.state[summary.state];
+	if (summary.state === "ready") return copy.merge.incompleteReady;
+	if (summary.state === "ready_with_deferrals") return copy.merge.incompleteRequired;
+	if (summary.state === "blocked") return copy.merge.incompleteBlocked;
+	return copy.merge.state[summary.state];
 }
 
 function StatusMark({ disposition }: { disposition: MergeDisposition }): JSX.Element {
+	const copy = useCopy();
 	return (
 		<span className={`status-mark ${dispositionClass(disposition)}`}>
 			<span className="status-mark-dot" aria-hidden="true" />
-			{DISPOSITION_LABELS[disposition]}
+			{copy.merge.disposition[disposition]}
 		</span>
 	);
 }
@@ -176,6 +164,7 @@ function ReadinessRail({
 	inspection: InputInspection;
 	inputScope: AnalysisInputScope | null;
 }): JSX.Element {
+	const copy = useCopy();
 	const enabledMods =
 		inspection.playset?.mods.filter((mod): boolean => mod.enabled) ?? [];
 	const scope = inputScope ?? inspection.recovery;
@@ -186,12 +175,12 @@ function ReadinessRail({
 		inputScope !== null && hasInputOmissions(inputScope);
 	const readiness = omissionsAccepted ? "ready_with_omissions" : inspection.readiness;
 	const readinessCopy: string = omissionsAccepted
-		? "Incomplete input"
+		? copy.merge.incomplete
 		: readiness === "ready"
-			? "Ready to analyze"
+			? copy.merge.ready
 			: readiness === "ready_with_omissions"
-				? "Available mods ready"
-				: "Setup blocked";
+				? copy.merge.availableReady
+				: copy.merge.blocked;
 	const readinessSymbol: string =
 		readiness === "ready" ? "✓" : readiness === "blocked" ? "!" : "–";
 	const modCountCopy: string =
@@ -200,9 +189,9 @@ function ReadinessRail({
 			: `${scope.includedModCount}/${scope.sourceModCount}`;
 
 	return (
-		<aside className="input-rail" aria-label="Detected EU4 input">
+		<aside className="input-rail" aria-label={copy.merge.detectedInput}>
 			<div className="rail-section rail-readiness">
-				<p className="section-kicker">Input readiness</p>
+				<p className="section-kicker">{copy.merge.inputReadiness}</p>
 				<div className={`readiness-seal readiness-${readiness}`}>
 					<span aria-hidden="true">{readinessSymbol}</span>
 					<strong>{readinessCopy}</strong>
@@ -211,15 +200,15 @@ function ReadinessRail({
 
 			<div className="rail-section facts-list">
 				<div>
-					<span>Game</span>
+					<span>{copy.merge.game}</span>
 					<strong>{inspection.game.name}</strong>
 				</div>
 				<div>
 					<span>Version</span>
-					<strong>{inspection.game.version ?? "Not detected"}</strong>
+					<strong>{inspection.game.version ?? copy.merge.versionMissing}</strong>
 				</div>
 				<div>
-					<span>EU4 base</span>
+					<span>{copy.merge.base}</span>
 					<strong title={inspection.baseData.detail}>
 						{inspection.baseData.state.replace(/_/g, " ")}
 						{inspection.baseData.version !== null &&
@@ -231,23 +220,21 @@ function ReadinessRail({
 			<div className="rail-section load-order-section">
 				<div className="section-heading-row">
 					<div>
-						<p className="section-kicker">Current playset</p>
+						<p className="section-kicker">{copy.merge.currentPlayset}</p>
 						<h2 title={inspection.playset?.name ?? undefined}>
-							{inspection.playset?.name ?? "Not detected"}
+							{inspection.playset?.name ?? copy.merge.notDetected}
 						</h2>
 					</div>
 					<span
 						className="compact-count"
-						title={
-							scope === null ? "Enabled mods" : "Included mods / source playset mods"
-						}
+						title={scope === null ? copy.merge.enabledMods : copy.merge.includedMods}
 					>
 						{modCountCopy}
 					</span>
 				</div>
 
 				{inspection.playset === null ? (
-					<p className="rail-empty">No current EU4 playset was found.</p>
+					<p className="rail-empty">{copy.merge.noPlayset}</p>
 				) : (
 					<ol className="load-order" aria-label="Detected mod load order">
 						{inspection.playset.mods.map((mod): JSX.Element => {
@@ -273,7 +260,7 @@ function ReadinessRail({
 											title={mod.descriptorPath ?? undefined}
 										>
 											{mod.workshopId === null
-												? "Local mod"
+												? copy.merge.localMod
 												: `Workshop ${mod.workshopId}`}
 											{mod.version !== null && ` · v${mod.version}`}
 											{mod.workshopManifestId !== null &&
@@ -284,19 +271,19 @@ function ReadinessRail({
 												className="mod-dependencies"
 												title={mod.declaredDependencies.join(", ")}
 											>
-												Depends on: {mod.declaredDependencies.join(", ")}
+												{copy.merge.dependsOn} {mod.declaredDependencies.join(", ")}
 											</span>
 										)}
 										{mod.sourceError !== null && (
 											<span className="mod-source-error" title={mod.sourceError}>
-												Unavailable: {mod.sourceError}
+												{copy.merge.unavailablePrefix} {mod.sourceError}
 											</span>
 										)}
 									</span>
 									{unavailable ? (
-										<span className="mod-state">Unavailable</span>
+										<span className="mod-state">{copy.merge.unavailable}</span>
 									) : (
-										!mod.enabled && <span className="mod-state">Off</span>
+										!mod.enabled && <span className="mod-state">{copy.merge.off}</span>
 									)}
 								</li>
 							);
@@ -323,24 +310,26 @@ function RecoveryState({
 	onAnalyze: () => void;
 	onCheck: () => void;
 }): JSX.Element {
+	const copy = useCopy();
 	const omittedPreview = recovery.omittedMods.slice(0, OMITTED_MOD_PREVIEW_LIMIT);
 	const remainingOmittedCount: number = Math.max(
 		0,
 		recovery.omittedModCount - omittedPreview.length,
 	);
-	const modNoun: string = recovery.omittedModCount === 1 ? "mod" : "mods";
-
 	return (
 		<div className="recovery-state">
-			<p className="section-kicker">Incomplete playset</p>
+			<p className="section-kicker">{copy.merge.incompleteKicker}</p>
 			<h2>
-				{recovery.omittedModCount} Workshop {modNoun} unavailable
+				{recovery.omittedModCount}{" "}
+				{recovery.omittedModCount === 1
+					? copy.merge.workshopUnavailable
+					: copy.merge.workshopUnavailablePlural}
 			</h2>
 			<p className="state-intro">
-				Foch can analyze {recovery.includedModCount} of {recovery.sourceModCount} mods.
-				The Launcher playset and every mod file stay untouched.
+				Foch can analyze {recovery.includedModCount} of {recovery.sourceModCount} mods.{" "}
+				{copy.merge.launcherUntouched}
 			</p>
-			<ul className="omission-list" aria-label="Unavailable Workshop mods">
+			<ul className="omission-list" aria-label={copy.merge.omittedLabel}>
 				{omittedPreview.map((mod): JSX.Element => (
 					<li key={mod.id}>
 						<span>{mod.position.toString().padStart(2, "0")}</span>
@@ -354,15 +343,14 @@ function RecoveryState({
 					<li className="omission-overflow">
 						<span>+</span>
 						<div>
-							<strong>{remainingOmittedCount} more unavailable</strong>
+							<strong>
+								{remainingOmittedCount} {copy.merge.moreUnavailable}
+							</strong>
 						</div>
 					</li>
 				)}
 			</ul>
-			<p className="recovery-warning">
-				The review will be marked incomplete because unavailable mods cannot contribute
-				to its outcomes.
-			</p>
+			<p className="recovery-warning">{copy.merge.incompleteWarning}</p>
 			<div className="recovery-actions">
 				<button
 					className="primary-action analyze-action"
@@ -370,8 +358,8 @@ function RecoveryState({
 					onClick={onAnalyze}
 					disabled={checking || starting}
 				>
-					<span>{starting ? "Starting analysis…" : "Analyze available mods"}</span>
-					<small>Results will be marked incomplete</small>
+					<span>{starting ? copy.merge.starting : copy.merge.analyzeAvailable}</span>
+					<small>{copy.merge.analyzeAvailableHint}</small>
 				</button>
 				<button
 					className="secondary-action"
@@ -379,7 +367,7 @@ function RecoveryState({
 					onClick={onCheck}
 					disabled={checking || starting}
 				>
-					{checking ? "Checking…" : "Check again"}
+					{checking ? copy.merge.checking : copy.merge.checkAgain}
 				</button>
 			</div>
 			{error !== null && (
@@ -396,6 +384,7 @@ function InputScopeNotice({
 }: {
 	scope: AnalysisInputScope;
 }): JSX.Element | null {
+	const copy = useCopy();
 	if (!hasInputOmissions(scope)) return null;
 	const modNoun: string = scope.omittedModCount === 1 ? "mod" : "mods";
 	const omittedNames: string = scope.omittedMods
@@ -403,10 +392,14 @@ function InputScopeNotice({
 		.join(", ");
 
 	return (
-		<section className="input-scope-notice" role="status" aria-label="Incomplete input">
+		<section
+			className="input-scope-notice"
+			role="status"
+			aria-label={copy.merge.incomplete}
+		>
 			<span className="input-scope-mark" aria-hidden="true" />
 			<div>
-				<p className="section-kicker">Incomplete input</p>
+				<p className="section-kicker">{copy.merge.incomplete}</p>
 				<strong title={omittedNames || undefined}>
 					{scope.includedModCount} of {scope.sourceModCount} playset mods analyzed
 				</strong>
@@ -424,6 +417,7 @@ function DispositionRibbon({
 }: {
 	summary: MergeAnalysisSummary;
 }): JSX.Element {
+	const copy = useCopy();
 	const counts: Record<MergeDisposition, number> = {
 		safe: summary.counts.safe,
 		copy: summary.counts.copy,
@@ -456,7 +450,7 @@ function DispositionRibbon({
 							className={`legend-swatch ${dispositionClass(disposition)}`}
 							aria-hidden="true"
 						/>
-						<span>{DISPOSITION_LABELS[disposition]}</span>
+						<span>{copy.merge.disposition[disposition]}</span>
 						<strong>{counts[disposition]}</strong>
 					</div>
 				))}
@@ -476,6 +470,7 @@ function AnalysisHeader({
 	cancelling: boolean;
 	onCancel: () => void;
 }): JSX.Element {
+	const copy = useCopy();
 	const progress =
 		summary.totalUnits === 0
 			? 0
@@ -486,8 +481,8 @@ function AnalysisHeader({
 		<section className="analysis-header" aria-live="polite">
 			<div className="analysis-title-row">
 				<div>
-					<p className="section-kicker">Read-only analysis</p>
-					<h2>{analysisStateLabel(summary, inputScope)}</h2>
+					<p className="section-kicker">{copy.merge.readOnly}</p>
+					<h2>{analysisStateLabel(summary, inputScope, copy)}</h2>
 				</div>
 				{active && (
 					<button
@@ -495,22 +490,24 @@ function AnalysisHeader({
 						onClick={onCancel}
 						disabled={cancelling}
 					>
-						{cancelling ? "Cancelling…" : "Cancel analysis"}
+						{cancelling ? copy.merge.cancelling : copy.merge.cancel}
 					</button>
 				)}
 			</div>
 			<div className="progress-copy">
-				<strong>{STAGE_LABELS[summary.stage]}</strong>
+				<strong>{copy.merge.stage[summary.stage]}</strong>
 				<span>
 					{summary.completedUnits.toLocaleString()} /{" "}
-					{summary.totalUnits.toLocaleString()} units
+					{summary.totalUnits.toLocaleString()} {copy.merge.units}
 				</span>
-				<span>{formatElapsed(summary.elapsedMs)} elapsed</span>
+				<span>
+					{formatElapsed(summary.elapsedMs)} {copy.merge.elapsed}
+				</span>
 			</div>
 			<div
 				className="progress-track"
 				role="progressbar"
-				aria-label="Merge analysis progress"
+				aria-label={copy.merge.progress}
 				aria-valuemin={0}
 				aria-valuemax={100}
 				aria-valuenow={progress}
@@ -533,23 +530,20 @@ function ReviewUnavailablePanel({
 	inputScope: AnalysisInputScope;
 	onReset: () => void;
 }): JSX.Element {
+	const copy = useCopy();
 	const active: boolean = isAnalysisActive(state);
 	const incomplete: boolean = hasInputOmissions(inputScope);
-	const copy: { title: string; detail: string } = active
+	const panelCopy: { title: string; detail: string } = active
 		? {
-				title: incomplete
-					? "Building the available-mod review"
-					: "Building the complete review",
+				title: incomplete ? copy.merge.buildingAvailable : copy.merge.buildingComplete,
 				detail: incomplete
-					? "Results appear after every included merge unit has reached a final outcome. Unavailable mods are not represented."
-					: "Results appear after every merge unit has reached a final outcome. No partial review is shown.",
+					? copy.merge.buildingAvailableDetail
+					: copy.merge.buildingCompleteDetail,
 			}
 		: {
-				title: "No review was produced",
+				title: copy.merge.noReview,
 				detail:
-					state === "cancelled"
-						? "The analysis stopped before it produced final outcomes. Check the current input before starting again."
-						: "The analysis ended before a review was available. Check the current input, then run it again.",
+					state === "cancelled" ? copy.merge.cancelledDetail : copy.merge.endedDetail,
 			};
 
 	return (
@@ -559,12 +553,12 @@ function ReviewUnavailablePanel({
 				aria-hidden="true"
 			/>
 			<div>
-				<p className="section-kicker">Merge unit review</p>
-				<h2>{copy.title}</h2>
-				<p>{copy.detail}</p>
+				<p className="section-kicker">{copy.merge.reviewKicker}</p>
+				<h2>{panelCopy.title}</h2>
+				<p>{panelCopy.detail}</p>
 				{!active && (
 					<button className="primary-action" type="button" onClick={onReset}>
-						Check input again
+						{copy.merge.checkInputAgain}
 					</button>
 				)}
 			</div>
@@ -579,18 +573,16 @@ function AnalysisUnavailablePanel({
 	message: string | null;
 	onReset: () => void;
 }): JSX.Element {
+	const copy = useCopy();
 	return (
 		<section className="review-unavailable" role="alert">
 			<span className="review-state-mark" aria-hidden="true" />
 			<div>
-				<p className="section-kicker">Read-only analysis</p>
-				<h2>Analysis unavailable</h2>
-				<p>
-					{message ??
-						"The analysis record is no longer available. Check the current input before starting again."}
-				</p>
+				<p className="section-kicker">{copy.merge.readOnly}</p>
+				<h2>{copy.merge.analysisUnavailable}</h2>
+				<p>{message ?? copy.merge.analysisExpired}</p>
 				<button className="primary-action" type="button" onClick={onReset}>
-					Check input again
+					{copy.merge.checkInputAgain}
 				</button>
 			</div>
 		</section>
@@ -606,6 +598,7 @@ function UnitRow({
 	selected: boolean;
 	onSelect: (id: string) => void;
 }): JSX.Element {
+	const copy = useCopy();
 	return (
 		<button
 			className={`unit-row ${selected ? "unit-row-selected" : ""}`}
@@ -617,8 +610,10 @@ function UnitRow({
 			<span className="unit-path">{unit.path}</span>
 			<span className="unit-meta">
 				{unit.family} ·{" "}
-				{unit.kind === "definition_module" ? "Definition module" : "File"} ·{" "}
-				{unit.contributorCount} sources
+				{unit.kind === "definition_module"
+					? copy.merge.definitionModule
+					: copy.merge.file}{" "}
+				· {unit.contributorCount} {copy.merge.sources}
 			</span>
 			<StatusMark disposition={unit.disposition} />
 		</button>
@@ -630,77 +625,84 @@ function UnitDetailPanel({
 }: {
 	detail: AsyncValue<MergeUnitDetail>;
 }): JSX.Element {
+	const copy = useCopy();
 	if (detail.loading) {
 		return (
-			<aside className="detail-pane" aria-label="Merge unit detail">
-				<p className="panel-placeholder">Loading unit detail…</p>
+			<aside className="detail-pane" aria-label={copy.merge.unitDetail}>
+				<p className="panel-placeholder">{copy.merge.loadingDetail}</p>
 			</aside>
 		);
 	}
 	if (detail.error !== null) {
 		return (
-			<aside className="detail-pane" aria-label="Merge unit detail">
-				<p className="error-copy">Unit detail unavailable: {detail.error}</p>
+			<aside className="detail-pane" aria-label={copy.merge.unitDetail}>
+				<p className="error-copy">
+					{copy.merge.detailUnavailable} {detail.error}
+				</p>
 			</aside>
 		);
 	}
 	if (detail.value === null) {
 		return (
-			<aside className="detail-pane detail-empty" aria-label="Merge unit detail">
-				<p className="section-kicker">Unit detail</p>
-				<h2>Select a merge unit</h2>
-				<p>Choose a row to inspect its outcome and ordered contributors.</p>
+			<aside className="detail-pane detail-empty" aria-label={copy.merge.unitDetail}>
+				<p className="section-kicker">{copy.merge.unitDetail}</p>
+				<h2>{copy.merge.selectUnit}</h2>
+				<p>{copy.merge.selectUnitBody}</p>
 			</aside>
 		);
 	}
 
 	const unit = detail.value;
 	return (
-		<aside className="detail-pane" aria-label="Merge unit detail">
+		<aside className="detail-pane" aria-label={copy.merge.unitDetail}>
 			<div className="detail-heading">
-				<p className="section-kicker">Selected merge unit</p>
+				<p className="section-kicker">{copy.merge.selectedUnit}</p>
 				<h2>{unit.path}</h2>
 				<StatusMark disposition={unit.disposition} />
 			</div>
 			<dl className="detail-facts">
 				<div>
-					<dt>Family</dt>
+					<dt>{copy.merge.family}</dt>
 					<dd>{unit.family}</dd>
 				</div>
 				<div>
-					<dt>Strategy</dt>
+					<dt>{copy.merge.strategy}</dt>
 					<dd>{unit.strategy}</dd>
 				</div>
 				<div>
-					<dt>Unit</dt>
-					<dd>{unit.kind === "definition_module" ? "Definition module" : "File"}</dd>
+					<dt>{copy.merge.unit}</dt>
+					<dd>
+						{unit.kind === "definition_module"
+							? copy.merge.definitionModule
+							: copy.merge.file}
+					</dd>
 				</div>
 				{unit.outputPath !== null && (
 					<div>
-						<dt>Output</dt>
+						<dt>{copy.merge.output}</dt>
 						<dd className="path-value">{unit.outputPath}</dd>
 					</div>
 				)}
 			</dl>
 			<section className="detail-section">
-				<h3>Outcome</h3>
+				<h3>{copy.merge.outcome}</h3>
 				<p>{unit.summary}</p>
 			</section>
 			<section className="detail-section">
-				<h3>Load-order contributors</h3>
+				<h3>{copy.merge.contributors}</h3>
 				<ol className="contributor-list">
 					{unit.contributors.map((contributor): JSX.Element => (
 						<li key={`${contributor.modId}-${contributor.position}`}>
 							<span>{contributor.position.toString().padStart(2, "0")}</span>
 							<strong>{contributor.name}</strong>
-							{contributor.isBaseGame && <small>Base game</small>}
+							{contributor.isBaseGame && <small>{copy.merge.baseGame}</small>}
 						</li>
 					))}
 				</ol>
 			</section>
 			{unit.notes.length > 0 && (
 				<section className="detail-section">
-					<h3>Review notes</h3>
+					<h3>{copy.merge.notes}</h3>
 					<ul className="note-list">
 						{unit.notes.map((note): JSX.Element => (
 							<li key={note}>{note}</li>
@@ -740,6 +742,66 @@ export default function App({
 	const [searchQuery, setSearchQuery] = useState<string>("");
 	const [disposition, setDisposition] = useState<MergeDisposition | null>(null);
 	const [page, setPage] = useState<number>(1);
+	const [tab, setTab] = useState<DesktopTab>("play");
+	const [language, setLanguage] = useState<EffectiveLanguage>("en");
+	const [preferences, setPreferences] = useState<DesktopPreferences | null>(null);
+	const [overview, setOverview] =
+		useState<AsyncValue<DesktopPluginOverview>>(
+			initialAsyncValue<DesktopPluginOverview>(),
+		);
+	const copy = copyFor(language);
+	const playsetNameForPlugins =
+		inspection.value?.playset?.name ?? overview.value?.playset ?? null;
+
+	const reloadOverview = useCallback(async (): Promise<void> => {
+		setOverview((current): AsyncValue<DesktopPluginOverview> => ({
+			value: current.value,
+			loading: true,
+			error: null,
+		}));
+		try {
+			setOverview({
+				value: await client.getPluginOverview(playsetNameForPlugins),
+				loading: false,
+				error: null,
+			});
+		} catch (error: unknown) {
+			setOverview({ value: null, loading: false, error: errorMessage(error) });
+		}
+	}, [client, playsetNameForPlugins]);
+
+	useEffect((): (() => void) => {
+		let disposed = false;
+		void client.getDesktopSettings().then(
+			(value: DesktopPreferences): void => {
+				if (disposed) return;
+				setPreferences(value);
+				setLanguage(value.effectiveLanguage);
+			},
+			(): void => {
+				if (!disposed) setPreferences(null);
+			},
+		);
+		return (): void => {
+			disposed = true;
+		};
+	}, [client]);
+
+	useEffect((): (() => void) => {
+		let disposed = false;
+		void client.getPluginOverview(playsetNameForPlugins).then(
+			(value: DesktopPluginOverview): void => {
+				if (!disposed) setOverview({ value, loading: false, error: null });
+			},
+			(error: unknown): void => {
+				if (!disposed)
+					setOverview({ value: null, loading: false, error: errorMessage(error) });
+			},
+		);
+		return (): void => {
+			disposed = true;
+		};
+	}, [client, playsetNameForPlugins]);
 
 	const inspectInput = useCallback(async (): Promise<void> => {
 		setAnalysisError(null);
@@ -969,265 +1031,346 @@ export default function App({
 		(): Array<{ value: MergeDisposition; label: string }> =>
 			MERGE_DISPOSITIONS.map((value): { value: MergeDisposition; label: string } => ({
 				value,
-				label: DISPOSITION_LABELS[value],
+				label: copy.merge.disposition[value],
 			})),
-		[],
+		[copy],
 	);
+	const mergeAttention =
+		(inspection.value?.recovery?.omittedModCount ??
+			inspection.value?.playset?.mods.filter((mod): boolean => mod.sourceError !== null)
+				.length ??
+			0) + (summary?.counts.needsUserChoice ?? 0);
 
 	return (
-		<main className="app-shell">
-			<header className="app-header">
-				<div className="brand-lockup">
-					<span className="brand-monogram" aria-hidden="true">
-						F
-					</span>
-					<div>
-						<h1>Foch</h1>
-						<p>EU4 merge review</p>
+		<CopyContext.Provider value={copy}>
+			<div className="app-frame">
+				<nav className="side-nav" aria-label="Foch">
+					<div className="brand-lockup">
+						<span className="brand-monogram" aria-hidden="true">
+							F
+						</span>
+						<div>
+							<h1>Foch</h1>
+							<p>{copy.tabs.play}</p>
+						</div>
 					</div>
-				</div>
-				<div className="header-context">
-					<span>Detected input</span>
-					<strong>{playsetName}</strong>
-				</div>
-				<span className="read-only-badge">Read-only analysis</span>
-			</header>
-
-			{inspection.loading && inspection.value === null ? (
-				<section className="launch-state" aria-live="polite">
-					<span className="scan-line" aria-hidden="true" />
-					<p className="section-kicker">First-launch inspection</p>
-					<h2>Checking EU4 setup</h2>
-					<p>Detecting the game, base data, and current launcher playset.</p>
-				</section>
-			) : inspection.error !== null ? (
-				<section className="launch-state launch-error" role="alert">
-					<p className="section-kicker">Input inspection failed</p>
-					<h2>EU4 setup could not be inspected</h2>
-					<p>{inspection.error}</p>
-					<button className="primary-action" onClick={(): void => void inspectInput()}>
-						Check again
-					</button>
-				</section>
-			) : inspection.value === null ? null : (
-				<div className="workbench">
-					<ReadinessRail
-						inspection={inspection.value}
-						inputScope={analysisInputScope}
-					/>
-					<section className="analysis-workspace" aria-label="Merge analysis workspace">
-						{summary === null &&
-						inspection.value.readiness === "ready_with_omissions" &&
-						inputRecovery !== null ? (
-							<RecoveryState
-								recovery={inputRecovery}
-								checking={inspection.loading}
-								starting={starting}
-								error={analysisError}
-								onAnalyze={(): void => void startAnalysis(inputRecovery.kind)}
-								onCheck={(): void => void inspectInput()}
-							/>
-						) : summary === null && inspection.value.readiness === "blocked" ? (
-							<div className="blocked-state">
-								<p className="section-kicker">Action required</p>
-								<h2>Resolve setup blockers before analysis</h2>
-								<p className="state-intro">
-									Foch will not infer missing game or base-data inputs.
-								</p>
-								<ul className="issue-list">
-									{inspection.value.issues.map((issue): JSX.Element => (
-										<li key={issue.id}>
-											<strong>{issue.title}</strong>
-											<p>{issue.detail}</p>
-											{issue.action !== undefined && <span>{issue.action}</span>}
-										</li>
-									))}
-								</ul>
-								<button
-									className="primary-action"
-									onClick={(): void => void inspectInput()}
-									disabled={inspection.loading}
-								>
-									{inspection.loading ? "Checking…" : "Check again"}
-								</button>
-							</div>
-						) : summary === null ? (
-							<div className="ready-state">
-								<div className="readiness-thesis">
-									<p className="section-kicker">Current load order</p>
-									<h2>{inspection.value.playset?.name ?? "EU4 playset"}</h2>
-									<p>
-										Foch reads the detected load order and prepares a complete review.
-										It does not change Launcher settings, game files, or mod files.
-									</p>
-								</div>
-								<button
-									className="primary-action analyze-action"
-									onClick={(): void => void startAnalysis("complete")}
-									disabled={!canAnalyze}
-								>
-									<span>
-										{inspection.loading
-											? "Checking input…"
-											: starting
-												? "Starting analysis…"
-												: "Analyze current playset"}
-									</span>
-									<small>No mod files will be changed</small>
-								</button>
-								{analysisError !== null && (
-									<p className="error-copy">{analysisError}</p>
+					<div className="nav-tabs" role="tablist">
+						{(
+							[
+								["play", copy.tabs.play],
+								["plugins", copy.tabs.plugins],
+								["merge", copy.tabs.merge],
+								["settings", copy.tabs.settings],
+							] as const
+						).map(([id, label]): JSX.Element => (
+							<button
+								key={id}
+								type="button"
+								role="tab"
+								id={`tab-${id}`}
+								aria-selected={tab === id}
+								className={tab === id ? "nav-tab nav-tab-active" : "nav-tab"}
+								onClick={(): void => setTab(id)}
+							>
+								{label}
+								{id === "merge" && mergeAttention > 0 && (
+									<span className="nav-badge">{mergeAttention}</span>
 								)}
-							</div>
-						) : analysisInputScope === null ? null : analysisUpdateStatus ===
-						  "unavailable" ? (
-							<AnalysisUnavailablePanel
-								message={analysisError}
-								onReset={(): void => void resetAnalysis()}
-							/>
-						) : (
-							<>
-								<AnalysisHeader
-									summary={summary}
-									inputScope={analysisInputScope}
-									cancelling={cancelling}
-									onCancel={(): void => void cancelAnalysis()}
-								/>
-								<InputScopeNotice scope={analysisInputScope} />
-								{analysisError !== null && (
-									<div className="inline-error" role="alert">
-										<span>Analysis update failed: {analysisError}</span>
-										{analysisUpdateStatus === "paused" && (
-											<button
-												className="secondary-action"
-												type="button"
-												onClick={retryAnalysisUpdate}
-											>
-												Retry update
-											</button>
-										)}
-									</div>
-								)}
-								{reviewAvailable && <DispositionRibbon summary={summary} />}
-								{!reviewAvailable && (
-									<ReviewUnavailablePanel
-										state={summary.state}
-										inputScope={analysisInputScope}
-										onReset={(): void => void resetAnalysis()}
-									/>
-								)}
-								<section
-									className="unit-browser"
-									aria-labelledby="unit-browser-title"
-									hidden={!reviewAvailable}
-								>
-									<div className="unit-browser-heading">
-										<div>
-											<p className="section-kicker">Merge units</p>
-											<h2 id="unit-browser-title">
-												{pageValue.total.toLocaleString()} results
-											</h2>
-										</div>
-										<form className="unit-tools" onSubmit={submitSearch}>
-											<label>
-												<span className="sr-only">Search merge units</span>
-												<input
-													type="search"
-													placeholder="Search path or family"
-													maxLength={MAX_QUERY_CHARS}
-													value={searchDraft}
-													onChange={(event): void => setSearchDraft(event.target.value)}
-												/>
-											</label>
-											<button type="submit" className="search-action">
-												Search
-											</button>
-											<label>
-												<span className="sr-only">Filter merge units by outcome</span>
-												<select
-													aria-label="Filter merge units by outcome"
-													value={disposition ?? "all"}
-													onChange={(event): void => {
-														setPage(1);
-														setDisposition(
-															event.target.value === "all"
-																? null
-																: (event.target.value as MergeDisposition),
-														);
-													}}
-												>
-													<option value="all">All outcomes</option>
-													{dispositionOptions.map((option): JSX.Element => (
-														<option key={option.value} value={option.value}>
-															{option.label}
-														</option>
-													))}
-												</select>
-											</label>
-										</form>
-									</div>
-									<div className="unit-list" aria-busy={unitPage.loading}>
-										{unitPage.loading && pageValue.items.length === 0 ? (
-											<p className="panel-placeholder">Loading merge units…</p>
-										) : unitPage.error !== null ? (
-											<p className="error-copy">
-												Merge units unavailable: {unitPage.error}
-											</p>
-										) : pageValue.items.length === 0 ? (
-											<p className="panel-placeholder">
-												No merge units match this view.
-											</p>
-										) : (
-											pageValue.items.map((unit): JSX.Element => (
-												<UnitRow
-													key={unit.id}
-													unit={unit}
-													selected={selectedUnitId === unit.id}
-													onSelect={setSelectedUnitId}
-												/>
-											))
-										)}
-									</div>
-									<footer className="pagination" aria-label="Merge unit pages">
-										<button
-											type="button"
-											onClick={(): void => setPage(Math.max(1, displayedPage - 1))}
-											disabled={unitPage.loading || displayedPage <= 1}
-										>
-											Previous
-										</button>
-										<span>
-											Page {displayedPage} of {pageCount}
-										</span>
-										<button
-											type="button"
-											onClick={(): void =>
-												setPage(Math.min(pageCount, displayedPage + 1))
-											}
-											disabled={unitPage.loading || displayedPage >= pageCount}
-										>
-											Next
-										</button>
-									</footer>
-								</section>
-							</>
-						)}
-					</section>
-					{showBrowser ? (
-						<UnitDetailPanel
-							detail={selectedUnitId === null ? EMPTY_UNIT_DETAIL : unitDetail}
+							</button>
+						))}
+					</div>
+				</nav>
+				<main className="app-shell">
+					{tab === "play" && (
+						<PlayPanel
+							client={client}
+							playset={playsetNameForPlugins}
+							overview={overview}
+							copy={copy}
+							onReload={(): void => void reloadOverview()}
 						/>
-					) : (
-						<aside className="detail-pane detail-empty" aria-label="Merge unit detail">
-							<p className="section-kicker">Unit detail</p>
-							<h2>Analysis evidence appears here</h2>
-							<p>
-								Foch exposes focused outcomes and contributors, never raw syntax trees.
-							</p>
-						</aside>
 					)}
-				</div>
-			)}
-		</main>
+					{tab === "plugins" && (
+						<PluginsPanel
+							client={client}
+							playset={playsetNameForPlugins}
+							overview={overview}
+							copy={copy}
+							onReload={(): void => void reloadOverview()}
+						/>
+					)}
+					{tab === "settings" && (
+						<SettingsPanel
+							client={client}
+							preferences={preferences}
+							copy={copy}
+							onPreferences={setPreferences}
+							onLanguage={setLanguage}
+						/>
+					)}
+					{tab === "merge" && (
+						<>
+							<header className="app-header">
+								<div className="header-context">
+									<span>{copy.merge.detectedInput}</span>
+									<strong>{playsetName}</strong>
+								</div>
+								<span className="read-only-badge">{copy.merge.readOnlyBadge}</span>
+							</header>
+
+							{inspection.loading && inspection.value === null ? (
+								<section className="launch-state" aria-live="polite">
+									<span className="scan-line" aria-hidden="true" />
+									<p className="section-kicker">{copy.merge.checkingKicker}</p>
+									<h2>{copy.merge.checkingTitle}</h2>
+									<p>{copy.merge.checkingBody}</p>
+								</section>
+							) : inspection.error !== null ? (
+								<section className="launch-state launch-error" role="alert">
+									<p className="section-kicker">{copy.merge.inspectFailedKicker}</p>
+									<h2>{copy.merge.inspectFailedTitle}</h2>
+									<p>{inspection.error}</p>
+									<button
+										className="primary-action"
+										onClick={(): void => void inspectInput()}
+									>
+										{copy.merge.checkAgain}
+									</button>
+								</section>
+							) : inspection.value === null ? null : (
+								<div className="workbench">
+									<ReadinessRail
+										inspection={inspection.value}
+										inputScope={analysisInputScope}
+									/>
+									<section
+										className="analysis-workspace"
+										aria-label="Merge analysis workspace"
+									>
+										{summary === null &&
+										inspection.value.readiness === "ready_with_omissions" &&
+										inputRecovery !== null ? (
+											<RecoveryState
+												recovery={inputRecovery}
+												checking={inspection.loading}
+												starting={starting}
+												error={analysisError}
+												onAnalyze={(): void => void startAnalysis(inputRecovery.kind)}
+												onCheck={(): void => void inspectInput()}
+											/>
+										) : summary === null && inspection.value.readiness === "blocked" ? (
+											<div className="blocked-state">
+												<p className="section-kicker">{copy.merge.actionRequired}</p>
+												<h2>{copy.merge.resolveBlockers}</h2>
+												<p className="state-intro">{copy.merge.noInference}</p>
+												<ul className="issue-list">
+													{inspection.value.issues.map((issue): JSX.Element => (
+														<li key={issue.id}>
+															<strong>{issue.title}</strong>
+															<p>{issue.detail}</p>
+															{issue.action !== undefined && (
+																<span>{issue.action}</span>
+															)}
+														</li>
+													))}
+												</ul>
+												<button
+													className="primary-action"
+													onClick={(): void => void inspectInput()}
+													disabled={inspection.loading}
+												>
+													{inspection.loading
+														? copy.merge.checking
+														: copy.merge.checkAgain}
+												</button>
+											</div>
+										) : summary === null ? (
+											<div className="ready-state">
+												<div className="readiness-thesis">
+													<p className="section-kicker">
+														{copy.merge.currentLoadOrder}
+													</p>
+													<h2>{inspection.value.playset?.name ?? "EU4 playset"}</h2>
+													<p>{copy.merge.readOnlyBody}</p>
+												</div>
+												<button
+													className="primary-action analyze-action"
+													onClick={(): void => void startAnalysis("complete")}
+													disabled={!canAnalyze}
+												>
+													<span>
+														{inspection.loading
+															? copy.merge.checking
+															: starting
+																? copy.merge.starting
+																: copy.merge.analyzeCurrent}
+													</span>
+													<small>{copy.merge.analyzeCurrentHint}</small>
+												</button>
+												{analysisError !== null && (
+													<p className="error-copy">{analysisError}</p>
+												)}
+											</div>
+										) : analysisInputScope === null ? null : analysisUpdateStatus ===
+										  "unavailable" ? (
+											<AnalysisUnavailablePanel
+												message={analysisError}
+												onReset={(): void => void resetAnalysis()}
+											/>
+										) : (
+											<>
+												<AnalysisHeader
+													summary={summary}
+													inputScope={analysisInputScope}
+													cancelling={cancelling}
+													onCancel={(): void => void cancelAnalysis()}
+												/>
+												<InputScopeNotice scope={analysisInputScope} />
+												{analysisError !== null && (
+													<div className="inline-error" role="alert">
+														<span>
+															{copy.merge.updateFailed} {analysisError}
+														</span>
+														{analysisUpdateStatus === "paused" && (
+															<button
+																className="secondary-action"
+																type="button"
+																onClick={retryAnalysisUpdate}
+															>
+																{copy.merge.retryUpdate}
+															</button>
+														)}
+													</div>
+												)}
+												{reviewAvailable && <DispositionRibbon summary={summary} />}
+												{!reviewAvailable && (
+													<ReviewUnavailablePanel
+														state={summary.state}
+														inputScope={analysisInputScope}
+														onReset={(): void => void resetAnalysis()}
+													/>
+												)}
+												<section
+													className="unit-browser"
+													aria-labelledby="unit-browser-title"
+													hidden={!reviewAvailable}
+												>
+													<div className="unit-browser-heading">
+														<div>
+															<p className="section-kicker">{copy.merge.mergeUnits}</p>
+															<h2 id="unit-browser-title">
+																{pageValue.total.toLocaleString()} {copy.merge.results}
+															</h2>
+														</div>
+														<form className="unit-tools" onSubmit={submitSearch}>
+															<label>
+																<span className="sr-only">{copy.merge.search}</span>
+																<input
+																	type="search"
+																	placeholder={copy.merge.searchPlaceholder}
+																	maxLength={MAX_QUERY_CHARS}
+																	value={searchDraft}
+																	onChange={(event): void =>
+																		setSearchDraft(event.target.value)
+																	}
+																/>
+															</label>
+															<button type="submit" className="search-action">
+																{copy.merge.search}
+															</button>
+															<label>
+																<span className="sr-only">{copy.merge.filter}</span>
+																<select
+																	aria-label={copy.merge.filter}
+																	value={disposition ?? "all"}
+																	onChange={(event): void => {
+																		setPage(1);
+																		setDisposition(
+																			event.target.value === "all"
+																				? null
+																				: (event.target.value as MergeDisposition),
+																		);
+																	}}
+																>
+																	<option value="all">{copy.merge.allOutcomes}</option>
+																	{dispositionOptions.map((option): JSX.Element => (
+																		<option key={option.value} value={option.value}>
+																			{option.label}
+																		</option>
+																	))}
+																</select>
+															</label>
+														</form>
+													</div>
+													<div className="unit-list" aria-busy={unitPage.loading}>
+														{unitPage.loading && pageValue.items.length === 0 ? (
+															<p className="panel-placeholder">
+																{copy.merge.loadingUnits}
+															</p>
+														) : unitPage.error !== null ? (
+															<p className="error-copy">
+																{copy.merge.unitsUnavailable} {unitPage.error}
+															</p>
+														) : pageValue.items.length === 0 ? (
+															<p className="panel-placeholder">{copy.merge.noUnits}</p>
+														) : (
+															pageValue.items.map((unit): JSX.Element => (
+																<UnitRow
+																	key={unit.id}
+																	unit={unit}
+																	selected={selectedUnitId === unit.id}
+																	onSelect={setSelectedUnitId}
+																/>
+															))
+														)}
+													</div>
+													<footer className="pagination" aria-label="Merge unit pages">
+														<button
+															type="button"
+															onClick={(): void =>
+																setPage(Math.max(1, displayedPage - 1))
+															}
+															disabled={unitPage.loading || displayedPage <= 1}
+														>
+															{copy.merge.previous}
+														</button>
+														<span>
+															{copy.merge.page} {displayedPage} of {pageCount}
+														</span>
+														<button
+															type="button"
+															onClick={(): void =>
+																setPage(Math.min(pageCount, displayedPage + 1))
+															}
+															disabled={unitPage.loading || displayedPage >= pageCount}
+														>
+															{copy.merge.next}
+														</button>
+													</footer>
+												</section>
+											</>
+										)}
+									</section>
+									{showBrowser ? (
+										<UnitDetailPanel
+											detail={selectedUnitId === null ? EMPTY_UNIT_DETAIL : unitDetail}
+										/>
+									) : (
+										<aside
+											className="detail-pane detail-empty"
+											aria-label={copy.merge.unitDetail}
+										>
+											<p className="section-kicker">{copy.merge.unitDetail}</p>
+											<h2>{copy.merge.evidenceTitle}</h2>
+											<p>{copy.merge.evidenceBody}</p>
+										</aside>
+									)}
+								</div>
+							)}
+						</>
+					)}
+				</main>
+			</div>
+		</CopyContext.Provider>
 	);
 }
