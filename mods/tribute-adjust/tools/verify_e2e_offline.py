@@ -63,16 +63,18 @@ def assert_bbcode_and_companion() -> None:
 	):
 		if needle not in descriptor:
 			raise SystemExit(f"descriptor.mod is missing {needle}")
-	companion = (WORKSHOP / "foch-companion.toml").read_text(encoding="utf-8")
+	if (WORKSHOP / "foch-companion.toml").exists():
+		raise SystemExit("foch-companion.toml must be replaced by workshop/foch.toml")
+	manifest = (WORKSHOP / "foch.toml").read_text(encoding="utf-8")
 	for needle in (
-		"schema = 1",
-		'plugin_id = "dev.foch.eu4-tribute-adjust"',
+		"[[plugins]]",
+		'id = "dev.foch.eu4-tribute-adjust"',
 		'game = "eu4"',
 		'game_versions = "=1.37.5"',
-		"requires_foch = true",
+		"required = true",
 	):
-		if needle not in companion:
-			raise SystemExit(f"foch-companion.toml is missing {needle}")
+		if needle not in manifest:
+			raise SystemExit(f"workshop/foch.toml is missing {needle}")
 	for name in (
 		"localisation/foch_ta_companion_l_english.yml",
 		"localisation/foch_ta_companion_l_simp_chinese.yml",

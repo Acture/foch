@@ -1,5 +1,0 @@
-schema = 1
-plugin_id = "dev.foch.eu4-tribute-adjust"
-game = "eu4"
-game_versions = "=1.37.5"
-requires_foch = true
