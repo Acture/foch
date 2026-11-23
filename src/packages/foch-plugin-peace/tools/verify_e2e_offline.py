@@ -108,16 +108,21 @@ def check_static() -> None:
 	if not (WORKSHOP / "thumbnail.png").is_file():
 		fail("thumbnail.png is missing")
 
-	companion = (WORKSHOP / "foch-companion.toml").read_text(encoding="utf-8")
+	if (WORKSHOP / "foch-companion.toml").exists():
+		fail("foch-companion.toml must be replaced by workshop/foch.toml")
+	companion = (WORKSHOP / "foch.toml").read_text(encoding="utf-8")
 	for needle in (
-		"schema = 1",
-		f'plugin_id = "{PLUGIN_ID}"',
+		"[[plugins]]",
+		f'id = "{PLUGIN_ID}"',
 		'game = "eu4"',
 		'game_versions = "=1.37.5"',
-		"requires_foch = true",
+		"required = true",
 	):
 		if needle not in companion:
-			fail(f"foch-companion.toml is missing {needle}")
+			fail(f"foch.toml is missing {needle}")
+	for retired in ("schema =", "plugin_id =", "requires_foch"):
+		if retired in companion:
+			fail(f"foch.toml still uses the retired companion field {retired}")
 
 	decision = (WORKSHOP / "decisions" / "foch_bp_companion.txt").read_text(encoding="utf-8")
 	event = (WORKSHOP / "events" / "foch_bp_companion.txt").read_text(encoding="utf-8")

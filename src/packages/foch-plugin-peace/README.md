@@ -2,7 +2,7 @@
 
 # Bilateral peace window
 
-> Steam Workshop companion mod & store copy: [descriptor.mod](workshop/descriptor.mod) · [foch-companion.toml](workshop/foch-companion.toml) · [English BBCode](workshop/STEAM_WORKSHOP_EN.bbcode) · [中文 BBCode](workshop/STEAM_WORKSHOP_ZH.bbcode)
+> Steam Workshop companion mod & store copy: [descriptor.mod](workshop/descriptor.mod) · [foch.toml](workshop/foch.toml) · [English BBCode](workshop/STEAM_WORKSHOP_EN.bbcode) · [中文 BBCode](workshop/STEAM_WORKSHOP_ZH.bbcode)
 
 `foch-plugin-peace` (`io.github.acture.foch-peace`) is an experimental,
 unpublished Windows x64 native plugin for Europa Universalis IV `1.37.5`. It
