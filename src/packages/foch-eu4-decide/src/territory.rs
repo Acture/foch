@@ -1,6 +1,8 @@
 //! A territorial war: provinces owned, besieged, captured, and retaken.
 
 use crate::combat::resolve_battle_slots;
+use crate::loaded::ResidualHeads;
+use crate::policy::category_score as residual_category_score;
 use crate::world::{
 	Army, CANDIDATE_LIMIT, DAYS_PER_PROVINCE, DAYS_PER_SIEGE_PHASE, DefineDraw, FOREST, HILLS,
 	MARSH, MOUNTAINS, Modifiers, PLAINS, Pips, Rng, SIEGE_WIN, Terrain, march_days,
@@ -1891,6 +1893,30 @@ impl WarCampaign {
 		out
 	}
 
+	/// Residual decision for the terrain on `province` plus one casus belli.
+	///
+	/// The province contributes its category name. Modifiers are the caller's
+	/// five mechanic axes, because this simulator does not store defence,
+	/// combat width, or supply on [`Terrain`]. An unloaded casus-belli head
+	/// contributes 0, so the score does not move with that casus belli.
+	pub fn category_score(
+		&self,
+		heads: &ResidualHeads,
+		province: u32,
+		terrain_modifiers: [f32; 5],
+		cb_name: &str,
+		cb_modifiers: [f32; 5],
+	) -> Option<f32> {
+		let terrain_name = self.map.provinces.get(province as usize)?.terrain.name;
+		Some(residual_category_score(
+			heads,
+			terrain_name,
+			terrain_modifiers,
+			cb_name,
+			cb_modifiers,
+		))
+	}
+
 	pub fn rules_vector(&self) -> [f32; 26] {
 		let our_held = self.map.held_by(Side::Ours).len();
 		let their_held = self.map.held_by(Side::Theirs).len();
@@ -2531,5 +2557,88 @@ DAN 5
 		assert!((cells[neighbor as usize][16] - 9.0 / 14.0).abs() < 1e-6);
 		assert!((cells[neighbor as usize][17] - 1.0 / 14.0).abs() < 1e-6);
 		assert!((cells[neighbor as usize][18] - 2.0 / 14.0).abs() < 1e-6);
+	}
+
+	#[test]
+	fn unseen_and_rewritten_casus_belli_move_the_decision_only_when_that_head_is_loaded() {
+		let both = ResidualHeads::load(
+			r#"{
+				"terrain": {
+					"kind": "residual-category",
+					"names": ["plains"],
+					"modifiers": [[1.0, 0.0, 0.0, 4.0, 0.0]],
+					"f0_weight": [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+					"f0_bias": [0, 0],
+					"f2_weight": [[1, 0], [0, 1]],
+					"f2_bias": [0, 0],
+					"embedding": [[9, 9], [1, 0]]
+				},
+				"cb": {
+					"kind": "residual-category",
+					"names": ["conquest"],
+					"modifiers": [[1.0, 10.0, 1.0, 1.0, 0.0]],
+					"f0_weight": [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+					"f0_bias": [0, 0],
+					"f2_weight": [[1, 0], [0, 1]],
+					"f2_bias": [0, 0],
+					"embedding": [[0, 0], [3, 0]]
+				}
+			}"#,
+		)
+		.expect("joint heads");
+		let terrain_only = ResidualHeads::load(
+			r#"{
+				"kind": "residual-category",
+				"names": ["plains"],
+				"modifiers": [[1.0, 0.0, 0.0, 4.0, 0.0]],
+				"f0_weight": [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+				"f0_bias": [0, 0],
+				"f2_weight": [[1, 0], [0, 1]],
+				"f2_bias": [0, 0],
+				"embedding": [[9, 9], [1, 0]]
+			}"#,
+		)
+		.expect("terrain export");
+		assert!(both.cb_loaded());
+		assert!(!terrain_only.cb_loaded());
+
+		let mut war = WarCampaign::new(1, "careful_personality");
+		war.map.provinces[0].terrain = PLAINS;
+		let terrain = [1.0, 0.0, 0.0, 4.0, 0.0];
+		let registered = [1.0, 10.0, 1.0, 1.0, 0.0];
+		let rewritten = [0.25, 12.0, 1.4, 0.55, 0.25];
+		let unseen = [1.8, 20.0, 0.3, 1.5, 0.2];
+		let score = |heads: &ResidualHeads, name: &str, modifiers: [f32; 5]| {
+			war.category_score(heads, 0, terrain, name, modifiers)
+				.expect("province")
+		};
+		let vanilla = score(&both, "conquest", registered);
+		let edited = score(&both, "conquest", rewritten);
+		let novel = score(&both, "eldritch_crusade", unseen);
+		assert_ne!(vanilla, edited);
+		assert_ne!(vanilla, novel);
+		let cb = both.forward().expect("forward").cb().expect("cb head");
+		assert_ne!(cb.resolve("conquest", registered), 0);
+		assert_eq!(cb.resolve("conquest", rewritten), 0);
+		assert_eq!(cb.resolve("eldritch_crusade", unseen), 0);
+		assert_eq!(
+			cb.score("conquest", rewritten),
+			cb.score("not-a-registered-casus-belli", rewritten)
+		);
+		assert_eq!(
+			cb.score("eldritch_crusade", unseen),
+			cb.score("not-a-registered-casus-belli", unseen)
+		);
+		assert_eq!(score(&terrain_only, "conquest", registered), 1.0);
+		assert_eq!(score(&terrain_only, "conquest", rewritten), 1.0);
+		assert_eq!(score(&terrain_only, "eldritch_crusade", unseen), 1.0);
+		assert_eq!(
+			score(&ResidualHeads::default(), "conquest", registered),
+			0.0
+		);
+		assert_eq!(
+			score(&ResidualHeads::default(), "eldritch_crusade", unseen),
+			0.0
+		);
 	}
 }

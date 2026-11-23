@@ -102,19 +102,47 @@ pub mod unit_container {
 	pub const STRIDE: usize = 8;
 }
 
-/// One regiment as saved under token `strength` (`0x28a9`).
+/// One object saved under token `strength` (`0x28a9`).
 ///
-/// The writer loads a dword at +0xb0 and skips the token when the value
-/// is 1000, the full-strength thousandths sentinel. The function is not
-/// RTTI-named. The `morale` token (`0x28a8`) is written from a combat
-/// object at +0x50 (next to attacker/defender/location) and from a
-/// smaller object at +0x18; neither is this strength object, so regiment
-/// morale stays unpinned.
+/// `FUN_140250570` loads the dword at [`STRENGTH`] and skips the token
+/// when the value is 1000. The same function also writes `trade_mission`,
+/// `node`, `gather_point`, and `flagship`. It does not write `morale`
+/// (`0x28a8`) or `regiment` (`0x28a2`). Static only, on the pinned exe
+/// whose 16-bit token table calibrates those ids. This is not a pinned
+/// `CRegiment` field: that RTTI string is absent, and regiment morale is
+/// not stored beside this dword. See [`super::morale_save`].
 pub mod regiment {
 	/// Strength in thousandths. `1000` means full and is omitted on save.
 	pub const STRENGTH: usize = 0xb0;
 	/// Value the saver treats as "do not write strength".
 	pub const FULL_STRENGTH: i32 = 1000;
+}
+
+/// Static saves of token `morale` (`0x28a8`). Not a live `CRegiment` pin.
+///
+/// The pinned exe's discovered 16-bit token table stores `morale` at
+/// `0x28a8`, `strength` at `0x28a9`, `regiment` at `0x28a2`, and `army`
+/// at `0x28a0` (calibration matched every gold id). `mov edx, imm32`
+/// sites of `0x28a8`, after discarding byte compares whose displacement
+/// is `0x28a8`, are the three functions below. None is proven to be
+/// `CRegiment`: there is no `CRegiment` RTTI string, and the regiment
+/// container `FUN_140d3d2f0` only emits `regiment` / `ship` before
+/// `call [rax+0x60]`. Current regiment morale stays unpinned.
+pub mod morale_save {
+	/// `FUN_140adc8f0` writes `morale` from this dword on the same object
+	/// as [`UNIT_STRENGTH`]. It also writes `drill` at +0x30 and, when
+	/// the pointer is set, `flagship` from +0x88, so a land regiment and
+	/// a ship can share the save. Static only.
+	pub const UNIT: usize = 0x2c;
+	/// `strength` (`0x28a9`) on the `FUN_140adc8f0` object, omitted when
+	/// the dword is 1000. Not [`super::regiment::STRENGTH`].
+	pub const UNIT_STRENGTH: usize = 0x28;
+	/// `FUN_14023c470` writes siege `morale` from this dword, next to
+	/// `attacker`, `defender`, and `location`. Not a regiment.
+	pub const SIEGE: usize = 0x50;
+	/// `FUN_14021a950` writes `morale` from this dword after token
+	/// `country` (`0x289d`). Not a regiment.
+	pub const AFTER_COUNTRY: usize = 0x18;
 }
 
 /// Candidate fields on a war object (`WAR_SCORE_TOTAL` / `WAR_SCORE_SIDE`).
@@ -165,7 +193,8 @@ pub mod template {
 /// whose [`army::LOCATION`] points at the province. `FUN_1401a5e50`
 /// stores the country pointer on the army and does not link the army
 /// into a country-owned vector, so the global army-array root stays
-/// unpinned. Current morale is still unpinned: `FUN_1401dd600` caches a
+/// unpinned. Current regiment morale is still unpinned: the saves in
+/// [`morale_save`] are static token sites, and `FUN_1401dd600` caches a
 /// dword on a different object. These offsets stay candidates until a
 /// live read confirms them.
 pub mod combat_side {
@@ -307,6 +336,11 @@ mod tests {
 			assert!(unit_container::STRIDE == 8);
 			assert!(regiment::STRENGTH == 0xb0);
 			assert!(regiment::FULL_STRENGTH == 1000);
+			assert!(morale_save::UNIT == 0x2c);
+			assert!(morale_save::UNIT_STRENGTH == 0x28);
+			assert!(morale_save::UNIT_STRENGTH != regiment::STRENGTH);
+			assert!(morale_save::SIEGE == 0x50);
+			assert!(morale_save::AFTER_COUNTRY == 0x18);
 
 			assert!(war::SIDE_A.is_multiple_of(8));
 			assert!(war::SIDE_B.is_multiple_of(8));

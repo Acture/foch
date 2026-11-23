@@ -20,6 +20,7 @@
 //! `MAX_WARSCORE - 1`. Ticking war score and unconditional surrender need war
 //! state this crate does not model and stay with the caller's deltas.
 
+use crate::residual::DecisionForward;
 use crate::rules::ScoreRules;
 use crate::war::{WarObjects, WarSide};
 
@@ -105,6 +106,22 @@ pub struct ProvinceCost {
 	pub autonomy: i32,
 	/// The fort condition of the `WARSCORE_NO_FORT` term.
 	pub no_fort: bool,
+}
+
+/// `mean(terrain head) + mean(casus-belli head)`.
+///
+/// No loaded forward scores 0. A forward whose casus-belli head is absent
+/// scores the terrain head only, so the casus belli arguments do not move it.
+pub fn category_decision(
+	forward: Option<&DecisionForward>,
+	terrain_name: &str,
+	terrain_modifiers: [f32; 5],
+	cb_name: &str,
+	cb_modifiers: [f32; 5],
+) -> f32 {
+	forward
+		.map(|forward| forward.score(terrain_name, terrain_modifiers, cb_name, cb_modifiers))
+		.unwrap_or(0.0)
 }
 
 /// One province's war-score cost in thousandths of a point, in the order the

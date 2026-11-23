@@ -39,22 +39,23 @@ pub use general::{
 	warscore_per_cost,
 };
 pub use ideas::{EMBED, HashEmbed, NameTable, hadamard_row};
-pub use loaded::{LoadedDatabase, LoadedSnapshot};
+pub use loaded::{LoadedDatabase, LoadedSnapshot, ResidualHeads};
 pub use offline::{InterestPrediction, Month, TargetOutcomes, TargetScore, monthly};
 pub use pipeline::{
 	DefineNote, OrderScore, Pipeline, PipelineInput, PipelineOutput, TrackedObjects, WEIGHT_DECAY,
 	run,
 };
 pub use policy::{
-	FEATURES, GovernmentKind, Policy, Situation, active_channels, channel_of_name, encode,
+	FEATURES, GovernmentKind, Policy, Situation, active_channels, category_score, channel_of_name,
+	encode,
 };
-pub use residual::ResidualCategory;
+pub use residual::{DecisionForward, ResidualCategory};
 pub use reward::{Channel, Horizons, Yields, adversarial_reward};
 pub use rollout::{Draw, Episode, MergedObjects, Rollout, SampledArmy, draw_for, fit, train};
 pub use rules::ScoreRules;
 pub use score::{
 	PROVINCE_COST_BASE, PROVINCE_COST_MAX, PROVINCE_COST_MIN, ProvinceCost, WarScoreInput,
-	WarScoreRules, province_cost, side_total_points, war_score,
+	WarScoreRules, category_decision, province_cost, side_total_points, war_score,
 };
 pub use sites::{
 	ADD_EFFECTIVE_WAR_SCORE, ASSIGN_LEADER, BATTLE_RESULTS, CALC_MANPOWER_INCREASE, DEFINES_LOAD,

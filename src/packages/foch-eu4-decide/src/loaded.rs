@@ -5,6 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::residual::DecisionForward;
+
 /// Engine databases named in the 1.37.5 load rules.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoadedDatabase {
@@ -66,6 +68,33 @@ impl LoadedSnapshot {
 	}
 }
 
+/// Residual heads loaded beside the name databases.
+///
+/// `load` accepts the joint document or a terrain-only `residual-category`
+/// export. No `cb` object means the casus-belli head stays unloaded.
+#[derive(Clone, Debug, Default)]
+pub struct ResidualHeads {
+	forward: Option<DecisionForward>,
+}
+
+impl ResidualHeads {
+	pub fn load(text: &str) -> Option<Self> {
+		Some(Self {
+			forward: Some(DecisionForward::from_json(text)?),
+		})
+	}
+
+	pub fn forward(&self) -> Option<&DecisionForward> {
+		self.forward.as_ref()
+	}
+
+	pub fn cb_loaded(&self) -> bool {
+		self.forward
+			.as_ref()
+			.is_some_and(DecisionForward::cb_loaded)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -93,5 +122,24 @@ mod tests {
 			loaded.reform_names().collect::<Vec<_>>(),
 			vec!["merchant_republic"]
 		);
+	}
+
+	#[test]
+	fn a_terrain_export_loads_without_a_casus_belli_head() {
+		let heads = ResidualHeads::load(
+			r#"{
+				"kind": "residual-category",
+				"names": ["plains"],
+				"modifiers": [[1.0, 0.0, 0.0, 4.0, 0.0]],
+				"f0_weight": [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+				"f0_bias": [0, 0],
+				"f2_weight": [[1, 0], [0, 1]],
+				"f2_bias": [0, 0],
+				"embedding": [[0, 0], [1, 0]]
+			}"#,
+		)
+		.expect("terrain export");
+		assert!(!heads.cb_loaded());
+		assert!(ResidualHeads::load(r#"{"cb": {"kind": "nope"}}"#).is_none());
 	}
 }

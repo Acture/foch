@@ -8,7 +8,9 @@
 
 use crate::attitude::{Choice, Interest};
 use crate::ideas::{EMBED, NameTable, mean_names, sum_names};
+use crate::loaded::ResidualHeads;
 use crate::reward::Channel;
+use crate::score::category_decision;
 
 pub const PERSONALITY_LIMIT: usize = 3;
 pub const ATTRIBUTE_LIMIT: usize = 8;
@@ -204,6 +206,27 @@ impl Policy {
 		}
 		scores.choice()
 	}
+}
+
+/// Category scalar for one terrain and one casus belli.
+///
+/// Interest choice stays on [`Policy::decide`]. This term follows the loaded
+/// residual heads: with no casus-belli head it does not change when that
+/// name or its modifiers change.
+pub fn category_score(
+	heads: &ResidualHeads,
+	terrain_name: &str,
+	terrain_modifiers: [f32; 5],
+	cb_name: &str,
+	cb_modifiers: [f32; 5],
+) -> f32 {
+	category_decision(
+		heads.forward(),
+		terrain_name,
+		terrain_modifiers,
+		cb_name,
+		cb_modifiers,
+	)
 }
 
 /// A known name selects its reward head. Any other name, including unseen ones, uses default.

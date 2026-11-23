@@ -101,6 +101,85 @@ impl ResidualCategory {
 	}
 }
 
+/// Terrain and casus-belli heads on one decide forward.
+///
+/// The scalar is `mean(f_t + E_t) + mean(f_c + E_c)`, matching the trainer's
+/// `ResidualDecision`. A missing head contributes nothing. A terrain-only
+/// export therefore ignores the casus belli name and its modifiers.
+#[derive(Clone, Debug)]
+pub struct DecisionForward {
+	terrain: Option<ResidualCategory>,
+	cb: Option<ResidualCategory>,
+}
+
+impl DecisionForward {
+	/// Load `{ "terrain": <residual-category>, "cb": <residual-category> }`.
+	/// Either object may be absent. A bare `residual-category` document is
+	/// the terrain head alone, which is what terrain exports already are.
+	pub fn from_json(text: &str) -> Option<Self> {
+		let root: Value = serde_json::from_str(text).ok()?;
+		if root.get("kind").and_then(Value::as_str) == Some("residual-category") {
+			return Some(Self {
+				terrain: Some(ResidualCategory::from_json(text)?),
+				cb: None,
+			});
+		}
+		let terrain = optional_head(root.get("terrain"))?;
+		let cb = optional_head(root.get("cb"))?;
+		if terrain.is_none() && cb.is_none() {
+			return None;
+		}
+		Some(Self { terrain, cb })
+	}
+
+	pub fn cb_loaded(&self) -> bool {
+		self.cb.is_some()
+	}
+
+	pub fn terrain(&self) -> Option<&ResidualCategory> {
+		self.terrain.as_ref()
+	}
+
+	pub fn cb(&self) -> Option<&ResidualCategory> {
+		self.cb.as_ref()
+	}
+
+	/// Inference score. Unseen and stat-modified categories use `E_id = 0`
+	/// inside whichever head is loaded.
+	pub fn score(
+		&self,
+		terrain_name: &str,
+		terrain_modifiers: [f32; 5],
+		cb_name: &str,
+		cb_modifiers: [f32; 5],
+	) -> f32 {
+		let mut total = 0.0;
+		if let Some(head) = &self.terrain {
+			total += mean(&head.score(terrain_name, terrain_modifiers));
+		}
+		if let Some(head) = &self.cb {
+			total += mean(&head.score(cb_name, cb_modifiers));
+		}
+		total
+	}
+}
+
+fn optional_head(value: Option<&Value>) -> Option<Option<ResidualCategory>> {
+	match value {
+		None => Some(None),
+		Some(value) => ResidualCategory::from_json(&value.to_string()).map(Some),
+	}
+}
+
+fn mean(values: &[f32]) -> f32 {
+	let width = values.len() as f32;
+	if width == 0.0 {
+		0.0
+	} else {
+		values.iter().sum::<f32>() / width
+	}
+}
+
 fn same_mechanics(trained: [f32; 5], modifiers: [f32; 5]) -> bool {
 	trained.iter().zip(modifiers).all(|(left, right)| {
 		let scale = left.abs().max(right.abs());
@@ -259,6 +338,141 @@ mod tests {
 			"python/rust max abs {worst:.3e} at {worst_at}"
 		);
 		println!("ablation parity max abs {worst:.3e} at {worst_at}");
+	}
+
+	#[test]
+	fn casus_belli_changes_the_decision_only_through_mechanics_when_the_id_is_unknown() {
+		let raw = include_str!("../tests/fixtures/residual_ablation.json");
+		let root: Value = serde_json::from_str(raw).expect("ablation fixture");
+		let forward = DecisionForward::from_json(raw).expect("both heads");
+		assert!(forward.cb_loaded());
+		let terrain_only =
+			DecisionForward::from_json(&root["terrain"].to_string()).expect("terrain export");
+		assert!(!terrain_only.cb_loaded());
+
+		let shared = shared_cb_name(&root);
+		let terrain = case(&root, "vanilla_id", "terrain", None);
+		let registered = case(&root, "vanilla_id", "cb", Some(shared.as_str()));
+		let rewritten = case(
+			&root,
+			"vanilla_stat_modified",
+			"cb",
+			Some(registered.name.as_str()),
+		);
+		let unseen = case(&root, "overhaul_unseen_cb", "cb", None);
+		assert_eq!(registered.name, "conquest");
+		assert_eq!(unseen.name, "eldritch_crusade");
+		assert_ne!(registered.name, unseen.name);
+		assert_ne!(registered.modifiers, rewritten.modifiers);
+
+		let cb = forward.cb().expect("cb head");
+		assert_ne!(cb.resolve(&registered.name, registered.modifiers), 0);
+		assert_eq!(cb.resolve(&rewritten.name, rewritten.modifiers), 0);
+		assert_eq!(cb.resolve(&unseen.name, unseen.modifiers), 0);
+		let rewritten_only = cb.score(&rewritten.name, rewritten.modifiers);
+		let unseen_only = cb.score(&unseen.name, unseen.modifiers);
+		assert_eq!(
+			rewritten_only,
+			cb.score("overhaul-cb-absent-from-the-table", rewritten.modifiers)
+		);
+		assert_eq!(
+			unseen_only,
+			cb.score("overhaul-cb-absent-from-the-table", unseen.modifiers)
+		);
+
+		let vanilla = forward.score(
+			&terrain.name,
+			terrain.modifiers,
+			&registered.name,
+			registered.modifiers,
+		);
+		let edited = forward.score(
+			&terrain.name,
+			terrain.modifiers,
+			&rewritten.name,
+			rewritten.modifiers,
+		);
+		let novel = forward.score(
+			&terrain.name,
+			terrain.modifiers,
+			&unseen.name,
+			unseen.modifiers,
+		);
+		assert_ne!(vanilla, edited);
+		assert_ne!(vanilla, novel);
+		let terrain_mean = mean(
+			&forward
+				.terrain()
+				.expect("terrain")
+				.score(&terrain.name, terrain.modifiers),
+		);
+		assert!((edited - (terrain_mean + mean(&rewritten_only))).abs() < 1.0e-5);
+		assert!((novel - (terrain_mean + mean(&unseen_only))).abs() < 1.0e-5);
+
+		let without_cb = [
+			terrain_only.score(
+				&terrain.name,
+				terrain.modifiers,
+				&registered.name,
+				registered.modifiers,
+			),
+			terrain_only.score(
+				&terrain.name,
+				terrain.modifiers,
+				&rewritten.name,
+				rewritten.modifiers,
+			),
+			terrain_only.score(
+				&terrain.name,
+				terrain.modifiers,
+				&unseen.name,
+				unseen.modifiers,
+			),
+		];
+		assert!(without_cb.windows(2).all(|pair| pair[0] == pair[1]));
+		assert!((without_cb[0] - terrain_mean).abs() < 1.0e-5);
+	}
+
+	struct Sample {
+		name: String,
+		modifiers: [f32; 5],
+	}
+
+	fn shared_cb_name(root: &Value) -> String {
+		let vanilla = cases(root, "vanilla_id", "cb");
+		let modified = cases(root, "vanilla_stat_modified", "cb");
+		vanilla
+			.iter()
+			.map(|case| case["name"].as_str().expect("name").to_string())
+			.find(|name| {
+				modified
+					.iter()
+					.any(|case| case["name"].as_str() == Some(name.as_str()))
+			})
+			.expect("a rewritten casus belli keeps its name")
+	}
+
+	fn case(root: &Value, distribution: &str, head: &str, name: Option<&str>) -> Sample {
+		let found = cases(root, distribution, head)
+			.into_iter()
+			.find(|case| name.is_none_or(|wanted| case["name"].as_str() == Some(wanted)))
+			.expect("fixture case");
+		Sample {
+			name: found["name"].as_str().expect("name").to_string(),
+			modifiers: five(found.get("modifiers").expect("modifiers")),
+		}
+	}
+
+	fn cases<'a>(root: &'a Value, distribution: &str, head: &str) -> Vec<&'a Value> {
+		root["cases"]
+			.as_array()
+			.expect("cases")
+			.iter()
+			.filter(|case| {
+				case["distribution"].as_str() == Some(distribution)
+					&& case["head"].as_str() == Some(head)
+			})
+			.collect()
 	}
 
 	fn five(value: &Value) -> [f32; 5] {
