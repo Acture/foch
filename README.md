@@ -42,7 +42,7 @@ All channels report one identity: `foch --version` prints `foch-cli <version>` a
 
 Foch manages native Windows x64 EU4 DLL plugins per playset and launches EU4 from a disposable short-path **`RuntimeLayer`**. Your Steam installation and source mods remain **100% read-only**.
 
-#### 3-Command Plugin Flow
+#### 3-Command Plugin Flow (CLI, 3-Tab TUI, or Desktop GUI)
 
 ```sh
 # 1. Install a registered plugin ID or any GitHub release (owner/repo[@tag|@latest])
@@ -56,7 +56,13 @@ foch plugin enable io.github.yozoratempest.eu4-unicode-patch --playset default
 foch plugin launch --playset default
 ```
 
-Need to inspect what loaded or check why a plugin refused activation?
+Prefer an interactive interface over subcommands?
+
+- **Bare `foch` (3-Tab Bilingual TUI):** Run `foch` with no arguments to open the terminal interface on **`[1] Launch & Plugins`** by default (`Space` to toggle a plugin, `i` to install the selected registry/declared plugin or `I` to install any `owner/repo[@tag]` spec via HTTPS/China mirrors, `c` to edit schema-driven `[config.*]` fields, `p` to dry-run prepare a `RuntimeLayer`, `L` to confirm and launch EU4, `s` to refresh post-launch plugin states, and `1`/`2`/`3` or `F1`–`F3` to switch between **`[1] Launch & Plugins`**, **`[2] Merge Review`**, and **`[3] Network & Settings`**).
+- **`foch-desktop` (4-Tab Bilingual GUI):** [`src/apps/foch-desktop`](./src/apps/foch-desktop/README.md) provides a Tauri + React desktop interface opening on **`Play & Launch`** with **`Plugins`**, **`Merge & Conflicts`**, and **`Settings`** tabs, sharing the same `selections.toml` and `ui-settings.toml` state as the CLI and TUI.
+- **Automatic Companion Mod Discovery (`foch.toml` `[[plugins]]`):** Steam Workshop companion mods can declare required or recommended native DLL plugins in their `foch.toml` (`[[plugins]]`). Both bare `foch` and `foch-desktop` automatically discover `[[plugins]]` declarations across your active playset, warn when a declared plugin is missing or disabled, and offer direct install actions.
+
+Need to inspect what loaded or check why a plugin refused activation from scripts?
 
 ```sh
 foch plugin list --playset default
@@ -135,7 +141,7 @@ foch merge "/path/to/Paradox Interactive/Europa Universalis IV/dlc_load.json" \
   --confirm
 ```
 
-You can also run bare `foch` with no arguments to open an interactive, read-only terminal browser over your current EU4 Launcher playset and its full merge analysis.
+You can also run bare `foch` with no arguments to open the 3-tab bilingual terminal interface (**`[1] Launch & Plugins`** by default, **`[2] Merge Review`** for read-only playset inspection and full merge analysis browsing, and **`[3] Network & Settings`**, switchable via `1`/`2`/`3` or `F1`–`F3`).
 
 #### 3. Read-Only & Non-Silent-Overwrite Conflict Policy
 
@@ -182,7 +188,7 @@ Run `foch <command> --help` for authoritative flags and examples.
 
 | Command | Purpose |
 | --- | --- |
-| `foch` | Open the read-only terminal browser over the current EU4 playset and its full merge analysis. |
+| `foch` | Open the 3-tab bilingual terminal interface: `[1] Launch & Plugins` (default: `Space` toggle, `i`/`I` HTTP/China-mirror install, `c` schema config, `p` dry-run prepare, `L` isolated launch, `s` status), `[2] Merge Review` (read-only playset and merge analysis browser), and `[3] Network & Settings` (`ui-settings.toml`), switchable with `1`/`2`/`3` or `F1`–`F3`. |
 | `foch plugin <subcommand>` | Manage native DLL plugins: `list`, `import`, `install` (`--transport auto\|http\|gh`, `--mirror auto\|direct\|cn\|URL`, `--sha256`, `--all`), `enable`, `disable`, `plan`, `launch`, `status`. |
 | `foch data <subcommand>` | Build (`foch data build eu4 --from-game-path ... --game-version auto --install`), install, and list EU4 base-data snapshots. |
 | `foch input inspect [INPUT_SOURCE]` | Show the game root and ordered mod inputs Foch will use (`--format json` supported without `INPUT_SOURCE`). |
@@ -204,8 +210,8 @@ The root `Cargo.toml` is a virtual Cargo workspace alongside Bun packages for th
 
 | Package / Directory | Version | Role |
 | --- | --- | --- |
-| [`src/apps/foch-cli`](./src/apps/foch-cli/README.md) | `0.0.2` | The `foch` CLI executable, TUI analysis browser, conflict reviewer, and test-only merge-quality acceptance harness. |
-| [`src/apps/foch-desktop`](./src/apps/foch-desktop/README.md) | `0.0.2` | Tauri + React desktop app linked directly to `foch` for read-only input inspection, merge analysis progress, and paginated unit review. |
+| [`src/apps/foch-cli`](./src/apps/foch-cli/README.md) | `0.0.2` | The `foch` CLI executable, 3-tab bilingual TUI (`Launch & Plugins`, `Merge Review`, `Network & Settings`), conflict reviewer, and test-only merge-quality acceptance harness. |
+| [`src/apps/foch-desktop`](./src/apps/foch-desktop/README.md) | `0.0.2` | Tauri + React 4-tab bilingual (`简体中文` / `English`) desktop app (`Play & Launch`, `Plugins`, `Merge & Conflicts`, `Settings`) linked directly to `foch` and `foch-runtime` for native plugin management, schema-driven `[config.*]` controls, isolated EU4 launch, and read-only merge analysis review. |
 | [`src/packages/foch`](./src/packages/foch) | `0.0.2` | Core Rust library: EU4 playset & input resolution, embedded CWT schema engine, semantic index, deterministic merge kernel, and native DLL plugin management (`foch::plugin`). |
 | [`src/packages/foch-runtime`](./src/packages/foch-runtime/README.md) | `0.0.2` | Typed EU4 `1.37.5` data plane, offline PE host/plugin export validator, hook prologue planner, and isolated out-of-process game runner (`RuntimeLayer`). |
 | [`src/packages/foch-runtime-host`](./src/packages/foch-runtime-host/README.md) | `0.0.2` | Independent Windows x64 `cdylib` (`foch_runtime_host.dll` / `foch_runtime.dll`) implementing the `VERSION.dll` proxy and Foch native plugin host ABI. |
@@ -230,8 +236,8 @@ Foch documents its exact verified capabilities and limits without overclaiming. 
    - Foch passes its unit/integration test suite (2,367 workspace tests) and bounded real Workshop probes (such as the 2-mod Ricefarmer merge and 4-mod Chinese localisation + Europa Expanded `partial_success` merge documented in [`docs/project-status.md`](./docs/project-status.md)).
    - However, the fixed **14-case, 26-item Workshop acceptance cohort** (`cargo acceptance`) has **not** yet been accepted end-to-end for the current product, and static checks do not prove in-game playability across arbitrary modlists.
 3. **Desktop App Scope (`foch-desktop`):**
-   - `foch-desktop` currently implements the read-only **inspect / analyze / review** workflow (`inspect_input`, `start_merge_analysis`, `cancel_merge_analysis`, `get_merge_analysis_summary`, `list_merge_units`, `get_merge_unit`), including in-memory `without_unavailable_mods` recovery.
-   - Desktop commit/export, a durable interactive `MergeSession` API, and desktop plugin management UI are **not** implemented in this checkpoint.
+   - `foch-desktop` implements a 4-tab bilingual (`简体中文` / `English`) GUI (**`Play & Launch`** [default], **`Plugins`**, **`Merge & Conflicts`**, and **`Settings`**) backed by 15 Tauri commands linked directly to `foch` and `foch-runtime`: companion `foch.toml` (`[[plugins]]`) discovery, HTTPS/China-mirror plugin installation and local directory import, schema-driven `[config.*]` controls, dry-run preparation and confirmed isolated EU4 launch, shared `ui-settings.toml` preferences, and the APP-003 read-only merge inspect/analyze/review workflow (including in-memory `without_unavailable_mods` recovery).
+   - Desktop merge commit/export and a durable interactive `MergeSession` API remain deferred, `foch-desktop` is not yet distributed in standard CLI release channels (run from source), and native EU4 launch requires Windows x64 (`win32-x64`) with `foch-runtime-host`.
 4. **Optional Windows Plugin Host (`foch-runtime-host`) & Plugin Verification:**
    - Standard CLI installation channels install `foch` only; they do not bundle `foch_runtime.dll`. To run `foch plugin launch` or `foch test --with-plugins` on Windows x64, build `foch-runtime-host` from source or extract the optional `foch-runtime-host-VERSION-win32-x64.zip` bundle beside `foch.exe`.
    - Loading a DLL in the host or passing PE export validation does not by itself prove in-game gameplay correctness; each plugin reports its own `active` / `refused` / `failed` state. In particular, `eu4-dynamic-trade-blackhole` is verified end-to-end in 800-day real game sessions, whereas `eu4-directed-pacts` refuses normal gameplay activation (`reason 201`) and provides only an offline pact library and a read-only war-roster diagnostic probe.
@@ -286,7 +292,7 @@ bun run --cwd src/apps/vscode-foch smoke
 - [DLL Plugin Runtime & Services](./src/packages/foch-runtime/README.md)
 - [Windows DLL Host Deployment](./src/packages/foch-runtime-host/README.md)
 - [Inline EU4 Runtime Tests & Runner Contract](./docs/foch-runtime-tests.md)
-- [`foch.toml` Project Manifest Reference](./docs/foch-project-manifest.md)
+- [`foch.toml` Project Manifest Reference](./docs/foch-project-manifest.md) (including `[[plugins]]` companion native plugin declarations discovered automatically by bare `foch` TUI and `foch-desktop`)
 - [Conflict Resolution DSL (`[[resolutions]]`)](./docs/foch-toml-resolutions.md)
 - [Mod Authoring Product Design](./docs/foch-authoring-design.md)
 - [VS Code / LSP Preview](./docs/lsp-0.1-preview.md)
