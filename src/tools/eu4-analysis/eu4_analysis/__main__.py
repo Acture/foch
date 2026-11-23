@@ -192,13 +192,15 @@ def _review_offline(options: Options) -> None:
 	baseline = comparison["baseline"]
 	LOGGER.info(
 		"Semantics review: calibration %s (%s/%s); baseline pinned %s "
-		"rejected_console_cmd %s; treatment pinned %s token_only %s unpinned %s",
+		"rejected_console_cmd %s; treatment pinned %s factory_pinned %s "
+		"token_only %s unpinned %s",
 		report["calibration"]["passed"],
 		report["calibration"]["matched"],
 		report["calibration"]["total"],
 		baseline["pinned"],
 		baseline["rejected_console_cmd"],
 		treatment["pinned"],
+		treatment["factory_pinned"],
 		treatment["token_only"],
 		treatment["unpinned"],
 	)
