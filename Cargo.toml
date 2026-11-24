@@ -28,6 +28,7 @@ categories = ["command-line-utilities", "development-tools"]
 # plugin clone pulls the same crate from crates.io.
 [patch.crates-io]
 foch-plugin-sdk = { path = "src/packages/foch-plugin-sdk" }
+foch-runtime = { path = "src/packages/foch-runtime" }
 
 [workspace.dependencies]
 foch-runtime = { path = "src/packages/foch-runtime", version = "=0.0.2" }
