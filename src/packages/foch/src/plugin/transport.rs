@@ -1641,11 +1641,16 @@ mod tests {
 
 	#[test]
 	fn oversized_response_stream_fails_closed() {
+		// Linux auto-tunes loopback TCP buffers well past the cap before the
+		// client aborts (this repo's WSL kernel allows a 32 MiB receive
+		// buffer plus a 4 MiB send buffer), so offer far more excess than
+		// any socket can swallow and grant slack for that buffering.
+		const EXCESS: u64 = 128 * 1024 * 1024;
 		let produced = Arc::new(AtomicUsize::new(0));
 		let count = Arc::clone(&produced);
 		let server = serve(move |request| {
 			let reader = CountingReader {
-				left: MAX_DOWNLOAD_BYTES + 2 * 1024 * 1024,
+				left: MAX_DOWNLOAD_BYTES + EXCESS,
 				produced: Arc::clone(&count),
 			};
 			let response = tiny_http::Response::new(
@@ -1676,8 +1681,10 @@ mod tests {
 			"{message}"
 		);
 		let sent = produced.load(Ordering::SeqCst) as u64;
+		// The 48 MiB slack covers kernel socket buffering on Linux (auto-tuned
+		// buffers reached ~36 MiB here) and the small buffers Windows uses.
 		assert!(
-			sent < MAX_DOWNLOAD_BYTES + 1024 * 1024,
+			sent < MAX_DOWNLOAD_BYTES + 48 * 1024 * 1024,
 			"stream was not capped, sent {sent}"
 		);
 		let limited = read_capped(InfiniteReader { reads: 0 }, 1000).unwrap_err();
