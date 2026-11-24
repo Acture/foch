@@ -1259,8 +1259,11 @@ fn host_locale_hints() -> Vec<String> {
 			hints.push(value);
 		}
 	}
-	if let Some(locale) = windows_user_locale() {
-		hints.push(locale);
+	#[cfg(windows)]
+	{
+		if let Some(locale) = windows_user_locale() {
+			hints.push(locale);
+		}
 	}
 	hints
 }
