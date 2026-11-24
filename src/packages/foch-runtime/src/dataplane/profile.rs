@@ -440,7 +440,9 @@ pub(crate) fn bind_game(exe_base: usize, context: usize, profile: &'static Layou
 	lock(&*BINDINGS).insert((exe_base, context), profile);
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only counterpart of [`bind_game`]: the Windows profile tests unwind
+/// their synthetic bindings through the `BindGuard` drop guard.
+#[cfg(all(test, windows))]
 pub(crate) fn unbind_game(exe_base: usize, context: usize) {
 	lock(&*BINDINGS).remove(&(exe_base, context));
 }

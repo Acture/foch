@@ -240,10 +240,12 @@ fn experiment_a_profiles_differ_before_any_memory_access() {
 	assert!(super::super::Eu4Game::from_tick_for_build("not-a-digest", 0x20_0000, 1).is_none());
 }
 
+#[cfg(windows)]
 struct BindGuard {
 	keys: Vec<(usize, usize)>,
 }
 
+#[cfg(windows)]
 impl Drop for BindGuard {
 	fn drop(&mut self) {
 		for (exe_base, context) in &self.keys {
