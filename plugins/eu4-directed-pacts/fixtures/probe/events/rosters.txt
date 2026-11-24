@@ -1,0 +1,18 @@
+namespace = foch_dp_probe
+
+# The tests/ case invokes this setup and judges both native assertions and
+# independent observations from the explicitly selected read diagnostic.
+country_event = {
+	id = foch_dp_probe.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		set_country_flag = foch_dp_roster_flag
+		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+		ENG = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}

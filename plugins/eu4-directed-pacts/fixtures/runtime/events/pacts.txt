@@ -1,0 +1,180 @@
+namespace = foch_dp_fixture
+
+# These are native integration fixtures, not passing gameplay evidence.
+# Request flags require the directed-pact engine adapter. A missing adapter
+# cannot satisfy the positive result flags or actual war assertions below.
+
+#test(time=1444.11.11, tag=SWE, name=defense_exact_war, session=alone, advance_days=2,
+# expect={ has_country_flag = foch_dp_fulfilled_1
+# is_in_war = { attacker_leader = HAB defender_leader = FRA defenders = SWE }
+# NOT = { war_with = ENG } })
+country_event = {
+	id = foch_dp_fixture.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		DAN = { break_union = SWE }
+		FRA = { set_country_flag = foch_dp_cmd_propose_SWE_HAB_defense_365 }
+		SWE = { set_country_flag = foch_dp_cmd_accept_1 }
+		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+		ENG = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}
+
+#test(time=1444.11.11, tag=SWE, name=unrelated_war, session=alone, advance_days=2,
+# expect={ has_country_flag = foch_dp_accepted_1 NOT = { war_with = ENG } })
+country_event = {
+	id = foch_dp_fixture.2
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		DAN = { break_union = SWE }
+		FRA = { set_country_flag = foch_dp_cmd_propose_SWE_HAB_both_365 }
+		SWE = { set_country_flag = foch_dp_cmd_accept_1 }
+		ENG = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}
+
+#test(time=1444.11.11, tag=SWE, name=defense_excludes_attack, session=alone, advance_days=2,
+# expect={ has_country_flag = foch_dp_accepted_1 NOT = { war_with = HAB } })
+country_event = {
+	id = foch_dp_fixture.3
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		DAN = { break_union = SWE }
+		FRA = { set_country_flag = foch_dp_cmd_propose_SWE_HAB_defense_365 }
+		SWE = { set_country_flag = foch_dp_cmd_accept_1 }
+		FRA = { declare_war_with_cb = { who = HAB casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}
+
+#test(time=1444.11.11, tag=SWE, name=attack_exact_war, session=alone, advance_days=2,
+# expect={ has_country_flag = foch_dp_fulfilled_1
+# is_in_war = { attacker_leader = FRA defender_leader = HAB attackers = SWE } })
+country_event = {
+	id = foch_dp_fixture.4
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		DAN = { break_union = SWE }
+		FRA = { set_country_flag = foch_dp_cmd_propose_SWE_HAB_attack_365 }
+		SWE = { set_country_flag = foch_dp_cmd_accept_1 }
+		FRA = { declare_war_with_cb = { who = HAB casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}
+
+#test(time=1444.11.11, tag=SWE, name=duplicate_pulse, session=alone, advance_days=3,
+# expect={ has_country_flag = foch_dp_fulfilled_1
+# check_variable = { which = foch_dp_join_count value = 1 }
+# NOT = { check_variable = { which = foch_dp_join_count value = 2 } } })
+country_event = {
+	id = foch_dp_fixture.5
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		DAN = { break_union = SWE }
+		FRA = { set_country_flag = foch_dp_cmd_propose_SWE_HAB_defense_365 }
+		SWE = { set_country_flag = foch_dp_cmd_accept_1 }
+		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+		country_event = { id = foch_dp_fixture.201 days = 1 }
+		country_event = { id = foch_dp_fixture.201 days = 2 }
+	}
+	option = { name = OK }
+}
+
+#test(time=1444.11.11, tag=FRA, name=subject_refusal, session=alone, advance_days=2,
+# expect={ has_country_flag = foch_dp_error_subject SWE = { NOT = { war_with = HAB } } })
+country_event = {
+	id = foch_dp_fixture.6
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		set_country_flag = foch_dp_cmd_propose_SWE_HAB_defense_365
+		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}
+
+#test(time=1444.11.11, tag=FRA, name=expired_pact, session=alone, advance_days=3,
+# expect={ has_country_flag = foch_dp_expired_1 SWE = { NOT = { war_with = HAB } } })
+country_event = {
+	id = foch_dp_fixture.7
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		DAN = { break_union = SWE }
+		set_country_flag = foch_dp_cmd_propose_SWE_HAB_defense_1
+		SWE = { set_country_flag = foch_dp_cmd_accept_1 }
+		country_event = { id = foch_dp_fixture.202 days = 2 }
+	}
+	option = { name = OK }
+}
+
+#test(time=1444.11.11, tag=SWE, name=recipient_rejects, session=alone, advance_days=2,
+# expect={ has_country_flag = foch_dp_rejected_1 NOT = { war_with = HAB } })
+country_event = {
+	id = foch_dp_fixture.8
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		DAN = { break_union = SWE }
+		FRA = { set_country_flag = foch_dp_cmd_propose_SWE_HAB_defense_365 }
+		SWE = { set_country_flag = foch_dp_cmd_reject_1 }
+		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}
+
+country_event = {
+	id = foch_dp_fixture.201
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { set_country_flag = foch_dp_cmd_list }
+	option = { name = OK }
+}
+
+country_event = {
+	id = foch_dp_fixture.202
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		set_country_flag = foch_dp_cmd_list
+		HAB = { declare_war_with_cb = { who = FRA casus_belli = cb_insult } }
+	}
+	option = { name = OK }
+}

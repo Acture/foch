@@ -1,0 +1,15 @@
+[package]
+name = "foch-eu4-state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Live EU4 game-state data plane adapter: candidate offsets and the 29-column feature plane over the shared foch-runtime dataplane"
+publish = false
+
+[dependencies]
+# The data plane only: default features would drag the analysis crates
+# through the test runner into this library.
+foch-runtime = { path = "../foch-runtime", default-features = false }
