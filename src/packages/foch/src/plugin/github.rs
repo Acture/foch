@@ -1,9 +1,18 @@
 //! Pinned GitHub releases for the Steam DLL plugins Foch installs.
 //!
-//! `foch plugin install` downloads one of these assets with `gh release download`.
-//! The management process never scans the game `plugins` directory. Proxy loaders
-//! are dropped by [`super::store::adapt`]; each release also names files that must
-//! not be stored, such as EU4dll's x86 `Plugin.dll` and its autoupdaters.
+//! `foch plugin install` downloads a release over HTTPS. `gh release download`
+//! remains available with `--transport gh`, and as a fallback when HTTPS fails
+//! and the GitHub CLI is already on PATH. The management process never scans the
+//! game `plugins` directory. Proxy loaders are dropped by [`super::store::adapt`];
+//! each release also names files that must not be stored, such as EU4dll's x86
+//! `Plugin.dll` and its autoupdaters.
+
+pub use super::transport::{
+	ApiQuery, CHINA_MIRROR_PREFIXES, DownloadRoute, FetchOptions, FetchedAsset, InstallTransport,
+	MAX_DOWNLOAD_BYTES, MirrorChain, MirrorPolicy, RegionHint, ResolvedRelease, TransportError,
+	apply_mirror, detect_china_region, fetch_release_asset, release_download_url,
+	resolve_dynamic_http, resolve_mirror_chain, select_mirror, select_transport, verify_sha256,
+};
 
 use super::store::{self, ArchiveEntry, ImportError, ValidatedPackage};
 use std::collections::BTreeSet;
@@ -20,6 +29,8 @@ pub struct Release {
 	pub repo: String,
 	pub tag: String,
 	pub asset: String,
+	/// SHA-256 of the release zip, when the registry pins one.
+	pub sha256: Option<String>,
 	/// Built-in adapter id the asset is bound to.
 	pub adapter: String,
 	/// Package-relative paths dropped before the adapter is bound.
@@ -28,7 +39,7 @@ pub struct Release {
 
 const MAX_ENTRIES: usize = 256;
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+const MAX_TOTAL_BYTES: usize = super::transport::MAX_DOWNLOAD_BYTES as usize;
 
 /// The registered releases, in registry order.
 pub fn releases() -> &'static [Release] {
@@ -41,6 +52,7 @@ pub fn releases() -> &'static [Release] {
 					repo: plugin.repo.clone(),
 					tag: plugin.tag.clone(),
 					asset: plugin.asset.clone(),
+					sha256: plugin.sha256.clone(),
 					adapter: plugin.id.clone(),
 					omit: plugin.omit.clone(),
 				})
@@ -125,27 +137,8 @@ pub struct DynamicRelease {
 /// Resolve any repository's release with the GitHub CLI. `reference` is
 /// a tag, `latest` for the newest release, or `None` for latest.
 pub fn resolve_dynamic(repo: &str, reference: Option<&str>) -> Result<DynamicRelease, GithubError> {
-	let repo = repo.trim().trim_end_matches(".git");
-	if repo.is_empty()
-		|| !repo
-			.split('/')
-			.all(|segment| !segment.is_empty() && !segment.starts_with('.'))
-	{
-		return Err(GithubError::UnknownSpec(repo.to_string()));
-	}
-	let tag = match reference {
-		None | Some("latest") => None,
-		Some(tag)
-			if tag.starts_with('v') || tag.chars().next().is_some_and(|c| c.is_ascii_digit()) =>
-		{
-			Some(tag.to_string())
-		}
-		Some(other) => {
-			return Err(GithubError::UnknownSpec(format!(
-				"{repo}@{other}: install references are release tags or latest"
-			)));
-		}
-	};
+	let (repo, tag) = super::transport::dynamic_target(repo, reference)
+		.map_err(|error| GithubError::UnknownSpec(error.to_string()))?;
 	let mut args = vec!["release".to_string(), "view".to_string()];
 	if let Some(tag) = &tag {
 		args.push(tag.clone());
@@ -171,7 +164,6 @@ pub fn resolve_dynamic(repo: &str, reference: Option<&str>) -> Result<DynamicRel
 		.and_then(|value| value.as_str())
 		.unwrap_or_default()
 		.to_string();
-	let short = repo.rsplit('/').next().unwrap_or_default();
 	let assets: Vec<String> = view
 		.get("assets")
 		.and_then(|value| value.as_array())
@@ -184,22 +176,40 @@ pub fn resolve_dynamic(repo: &str, reference: Option<&str>) -> Result<DynamicRel
 		})
 		.unwrap_or_default();
 	// Prefer a zip whose name carries the repository's, then any zip.
-	let asset = assets
-		.iter()
-		.find(|name| name.ends_with(".zip") && name.to_lowercase().contains(&short.to_lowercase()))
-		.or_else(|| assets.iter().find(|name| name.ends_with(".zip")))
-		.ok_or_else(|| {
-			GithubError::UnknownSpec(format!(
-				"{repo}@{resolved_tag} ships no zip asset (assets: {})",
-				assets.join(", ")
-			))
-		})?
-		.clone();
+	let asset = super::transport::select_zip_asset(&repo, &assets).ok_or_else(|| {
+		GithubError::UnknownSpec(format!(
+			"{repo}@{resolved_tag} ships no zip asset (assets: {})",
+			assets.join(", ")
+		))
+	})?;
 	Ok(DynamicRelease {
-		repo: repo.to_string(),
+		repo,
 		tag: resolved_tag,
 		asset,
 	})
+}
+
+/// Resolve a dynamic release with the same transport rules as asset download.
+pub fn resolve_dynamic_with_transport(
+	repo: &str,
+	reference: Option<&str>,
+	transport: InstallTransport,
+	api: &ApiQuery,
+) -> Result<DynamicRelease, TransportError> {
+	super::transport::with_gh_fallback(
+		transport,
+		|| {
+			resolve_dynamic_http(repo, reference, api).map(|release| DynamicRelease {
+				repo: release.repo,
+				tag: release.tag,
+				asset: release.asset,
+			})
+		},
+		|| {
+			resolve_dynamic(repo, reference)
+				.map_err(|error| TransportError::Spec(error.to_string()))
+		},
+	)
 }
 
 /// Split an install spec into `(repo, reference)`; `owner/repo` URLs and
@@ -229,18 +239,7 @@ pub fn split_install_spec(spec: &str) -> Result<(String, Option<String>), Github
 
 /// Arguments for `gh release download`, excluding the `gh` program name.
 pub fn download_args(repo: &str, tag: &str, asset: &str, dest: &Path) -> Vec<OsString> {
-	vec![
-		"release".into(),
-		"download".into(),
-		tag.into(),
-		"--repo".into(),
-		repo.into(),
-		"--pattern".into(),
-		asset.into(),
-		"--dir".into(),
-		dest.as_os_str().to_os_string(),
-		"--clobber".into(),
-	]
+	super::transport::gh_download_args(repo, tag, asset, dest)
 }
 
 /// Extract a release zip, drop its omitted paths, and bind the built-in adapter.
