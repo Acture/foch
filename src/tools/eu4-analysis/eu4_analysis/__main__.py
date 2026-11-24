@@ -8,23 +8,19 @@ import logging
 import os
 import re
 import tempfile
-import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import builtins
+from .binary import read_binary as read_image
 from .builtins import BuiltinOptions
 from .catalog import CatalogDiscovery, CatalogReport, discover_catalog
 from .families import DEFAULT_BOOTSTRAP, Discovery, FamilyQuery, discover_family
 from .ghidra import GhidraSession, validate_output_directory
 from .load_rules import LoadRules, discover_load_rules, parse_rules, with_prior_build
 from .models import Function, FunctionEvidence
-from .semantics import (
-	DEFAULT_EFFECT_PATTERNS,
-	DEFAULT_TRIGGER_PATTERNS,
-	SemanticsQuery,
-	pin_catalog,
-)
+from .pe import PEImage
+from .semantics import SemanticsQuery, load_catalog, pin_catalog, review_catalog
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -42,19 +38,10 @@ class Options:
 	workspace: Path
 	game_version: str
 	timeout: int
-	query: CatalogQuery | FamilyQuery | str
+	query: CatalogQuery | FamilyQuery | SemanticsQuery | str
 	rules_directory: Path | None
-
-
-@dataclass(frozen=True)
-class SemanticsOptions:
-	binary: Path
-	installation: Path
-	workspace: Path
-	game_version: str
-	timeout: int
-	query: SemanticsQuery
-	output: Path
+	semantics_output: Path | None = None
+	offline: bool = False
 
 
 def label(value: str) -> str:
@@ -63,7 +50,7 @@ def label(value: str) -> str:
 	return value
 
 
-def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions | SemanticsOptions:
+def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions:
 	parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
 	commands = parser.add_subparsers(dest="command", required=True)
 	discover = commands.add_parser(
@@ -77,8 +64,19 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions | Sema
 	)
 	inspect = commands.add_parser("inspect", help="Export one function and its calls")
 	semantics = commands.add_parser(
-		"semantics",
-		help="Pin the offline model's primitives to decompiled handlers",
+		"semantics", help="Pin catalog handlers from decompiled registrations"
+	)
+	semantics.add_argument("--catalog", required=True, type=Path)
+	semantics.add_argument(
+		"--output",
+		required=True,
+		type=Path,
+		help="Where the pinned catalog artifact is written for review",
+	)
+	semantics.add_argument(
+		"--offline",
+		action="store_true",
+		help="Read the PE only; do not start EU4 or Ghidra",
 	)
 	for command in (discover, inspect, semantics):
 		command.add_argument("--binary", required=True, type=Path)
@@ -114,53 +112,14 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions | Sema
 	inspect.add_argument(
 		"--symbol", required=True, help="Glob matching one function address"
 	)
-	semantics.add_argument(
-		"--catalog",
-		required=True,
-		type=Path,
-		help="The foch-test semantics.json to read and replace",
-	)
-	semantics.add_argument(
-		"--output",
-		required=True,
-		type=Path,
-		help="Candidate pinned catalog destination; review before replacing the embedded file",
-	)
-	semantics.add_argument(
-		"--effect-registry",
-		action="append",
-		metavar="GLOB",
-		help="Symbol pattern of an effect registry (repeatable; default: %(default)s)",
-		default=list(DEFAULT_EFFECT_PATTERNS),
-	)
-	semantics.add_argument(
-		"--trigger-registry",
-		action="append",
-		metavar="GLOB",
-		help="Symbol pattern of a trigger registry (repeatable; default: %(default)s)",
-		default=list(DEFAULT_TRIGGER_PATTERNS),
-	)
 	args: argparse.Namespace = parser.parse_args(argv)
 	if args.command == "builtins":
 		return BuiltinOptions(args.output)
-	if args.ghidra is None:
+	offline = bool(getattr(args, "offline", False))
+	if args.ghidra is None and not offline:
 		parser.error("set --ghidra or GHIDRA_INSTALL_DIR")
 	if args.timeout <= 0:
 		parser.error("--timeout must be positive")
-	if args.command == "semantics":
-		return SemanticsOptions(
-			args.binary.resolve(),
-			args.ghidra.resolve(),
-			args.workspace.resolve(),
-			args.game_version,
-			args.timeout,
-			SemanticsQuery(
-				args.catalog.resolve(),
-				tuple(args.effect_registry),
-				tuple(args.trigger_registry),
-			),
-			args.output.resolve(),
-		)
 	query: CatalogQuery | FamilyQuery | str
 	if args.command == "discover":
 		if args.record and not args.registry:
@@ -174,74 +133,85 @@ def parse_args(argv: list[str] | None = None) -> Options | BuiltinOptions | Sema
 			if args.registry
 			else CatalogQuery(args.bootstrap, args.limit)
 		)
+	elif args.command == "semantics":
+		query = SemanticsQuery(catalog=args.catalog.resolve())
 	else:
 		query = args.symbol
+	semantic_output = args.output.resolve() if args.command == "semantics" else None
+	installation = (
+		args.binary.resolve().parent if args.ghidra is None else args.ghidra.resolve()
+	)
 	return Options(
 		args.binary.resolve(),
-		args.ghidra.resolve(),
+		installation,
 		args.workspace.resolve(),
 		args.game_version,
 		args.timeout,
 		query,
 		args.rules_dir.resolve() if args.command == "discover" else None,
+		semantic_output,
+		offline,
 	)
 
 
 def write_json(path: Path, value: object) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
-	with tempfile.NamedTemporaryFile(
-		mode="w",
-		encoding="utf-8",
-		dir=path.parent,
-		prefix=f".{path.name}.",
-		delete=False,
-	) as temporary:
-		temporary_path: Path = Path(temporary.name)
-		try:
+	# Windows cannot replace a file that is still open, so the handle is
+	# closed by the with-block before the atomic rename.
+	handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+	temporary_path: Path = Path(name)
+	try:
+		with os.fdopen(handle, "w", encoding="utf-8") as temporary:
 			temporary.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
-			temporary.flush()
-			# Windows scanners briefly lock freshly created files; retry the
-			# atomic replace and fall back to a plain write.
-			for attempt in range(10):
-				try:
-					temporary_path.replace(path)
-					break
-				except PermissionError:
-					if attempt == 9:
-						path.write_text(
-							json.dumps(value, indent=2, sort_keys=True) + "\n",
-							encoding="utf-8",
-						)
-					else:
-						time.sleep(0.2 * (attempt + 1))
-		finally:
-			try:
-				temporary_path.unlink(missing_ok=True)
-			except PermissionError:
-				pass
+		os.replace(temporary_path, path)
+	finally:
+		temporary_path.unlink(missing_ok=True)
 	LOGGER.info("Wrote %s", path)
 
 
-def run(options: Options | BuiltinOptions | SemanticsOptions) -> None:
+def _review_offline(options: Options) -> None:
+	if not isinstance(options.query, SemanticsQuery):
+		raise TypeError("offline review is the semantics command")
+	output = options.semantics_output
+	if output is None:
+		raise ValueError("semantics review requires --output")
+	game_directory = options.binary.resolve().parent
+	if output.resolve().is_relative_to(game_directory):
+		raise ValueError("output must be outside the game installation")
+	image = read_image(options.binary)
+	if not isinstance(image, PEImage):
+		raise TypeError("offline semantics review reads a PE executable")
+	report = review_catalog(
+		image,
+		load_catalog(options.query.catalog),
+		game_version=options.game_version,
+	)
+	write_json(output, report)
+	comparison = report["comparison"]
+	treatment = comparison["treatment"]
+	baseline = comparison["baseline"]
+	LOGGER.info(
+		"Semantics review: calibration %s (%s/%s); baseline pinned %s "
+		"rejected_console_cmd %s; treatment pinned %s factory_pinned %s "
+		"token_only %s unpinned %s",
+		report["calibration"]["passed"],
+		report["calibration"]["matched"],
+		report["calibration"]["total"],
+		baseline["pinned"],
+		baseline["rejected_console_cmd"],
+		treatment["pinned"],
+		treatment["factory_pinned"],
+		treatment["token_only"],
+		treatment["unpinned"],
+	)
+
+
+def run(options: Options | BuiltinOptions) -> None:
 	if isinstance(options, BuiltinOptions):
 		builtins.run(options)
 		return
-	if isinstance(options, SemanticsOptions):
-		with GhidraSession(
-			options.binary, options.installation, options.workspace, options.timeout
-		) as analysis:
-			result = pin_catalog(
-				analysis,
-				options.query,
-				game_version=options.game_version,
-				binary_sha256=analysis.image.sha256,
-			)
-			write_json(options.output, result.catalog)
-			LOGGER.info(
-				"Semantics: %d primitives; %d missing handlers",
-				len(result.catalog["primitives"]),
-				len(result.missing),
-			)
+	if isinstance(options.query, SemanticsQuery) and options.offline:
+		_review_offline(options)
 		return
 	if options.rules_directory is not None:
 		validate_output_directory(
@@ -292,6 +262,21 @@ def run(options: Options | BuiltinOptions | SemanticsOptions) -> None:
 				sum(item.status == "unknown" for item in catalog.report.entries),
 				sum(item.status == "error" for item in catalog.report.entries),
 				sum(item.status == "pending" for item in catalog.report.entries),
+			)
+		elif isinstance(options.query, SemanticsQuery):
+			result = pin_catalog(
+				analysis,
+				options.query,
+				game_version=options.game_version,
+				binary_sha256=analysis.image.sha256,
+			)
+			assert options.semantics_output is not None
+			write_json(options.semantics_output, result.catalog)
+			LOGGER.info(
+				"Semantics: %d primitives, %d missing (catalog stays %s)",
+				len(result.catalog["primitives"]),
+				len(result.missing),
+				result.catalog["status"],
 			)
 		elif isinstance(options.query, FamilyQuery):
 			result: Discovery = discover_family(

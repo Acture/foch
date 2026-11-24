@@ -111,11 +111,79 @@ def catalog_file(directory: Path, primitives: dict) -> Path:
 	return path
 
 
+class CliEntry(unittest.TestCase):
+	"""The registered `python -m eu4_analysis semantics` entry, end to end.
+
+	The GhidraSession is mocked with the same fake the unit tests use; the
+	argument parsing, the command dispatch and the artifact write are the
+	real production path.
+	"""
+
+	def test_the_registered_command_pins_through_the_real_entry(self) -> None:
+		import types
+		import unittest.mock
+
+		from eu4_analysis import __main__ as entry
+
+		fake = analysis()
+		with tempfile.TemporaryDirectory() as temporary:
+			base: Path = Path(temporary)
+			catalog: Path = catalog_file(
+				base,
+				{
+					"set_country_flag": {"kind": "effect", "facts": {}, "handler": None},
+					"clr_country_flag": {"kind": "effect", "facts": {}, "handler": None},
+				},
+			)
+			output: Path = base / "out" / "semantics.json"
+
+			class FakeSession:
+				"""Forwards the analysis protocol and an image identity."""
+
+				def __init__(self, *args: object) -> None:
+					pass
+
+				def __enter__(self) -> "FakeSession":
+					return self
+
+				def __exit__(self, *args: object) -> None:
+					pass
+
+				image = types.SimpleNamespace(sha256="ab" * 32)
+				find = staticmethod(fake.find)
+				at = staticmethod(fake.at)
+				inspect = staticmethod(fake.inspect)
+
+			with unittest.mock.patch.object(entry, "GhidraSession", FakeSession):
+				options = entry.parse_args(
+					[
+						"semantics",
+						"--catalog",
+						str(catalog),
+						"--output",
+						str(output),
+						"--binary",
+						str(base / "eu4.exe"),
+						"--game-version",
+						"1.37.5",
+						"--ghidra",
+						str(base),
+					]
+				)
+				entry.run(options)
+			written: dict = json.loads(output.read_text(encoding="utf-8"))
+			# set_country_flag has a registration; clr_country_flag does not,
+			# so the artifact stays unpinned and names the missing one.
+			self.assertEqual(written["status"], "unpinned")
+			self.assertEqual(written["missing"], ["clr_country_flag"])
+			handler: dict | None = written["primitives"]["set_country_flag"]["handler"]
+			self.assertIsNotNone(handler)
+			self.assertEqual(handler["address"], 0x2000)
+
+
 class LocateHandlers(unittest.TestCase):
 	def test_a_registration_pins_the_handler_argument(self) -> None:
-		handler = locate(
-			analysis(), "set_country_flag", DEFAULT_EFFECT_PATTERNS
-		)
+		handler = locate(analysis(), "set_country_flag", DEFAULT_EFFECT_PATTERNS)
 		self.assertIsNotNone(handler)
 		assert handler is not None
 		self.assertEqual(handler.address, 0x2000)
@@ -126,8 +194,9 @@ class LocateHandlers(unittest.TestCase):
 
 	def test_a_stripped_pe_image_locates_through_string_references(self) -> None:
 		"""The Windows path: no symbols, discovery by keyword reference."""
-		from eu4_analysis.pe import read_binary
 		from test_pe import RDATA_RVA, TEXT_RVA, build_pe, registry_function
+
+		from eu4_analysis.pe import read_binary
 
 		begin, code = registry_function("set_country_flag", RDATA_RVA, TEXT_RVA + 0x100)
 		blob: bytes = build_pe(("set_country_flag",), (begin, code))
@@ -159,11 +228,15 @@ class LocateHandlers(unittest.TestCase):
 		self.assertEqual(handler.address, IMAGE_BASE + TEXT_RVA + 0x100)
 
 	def test_pin_records_the_pseudocode_digest(self) -> None:
-		pinned = pin(analysis(), Function(0x2000, 0x2100, ("CCountry::SetCountryFlag",)))
+		pinned = pin(
+			analysis(), Function(0x2000, 0x2100, ("CCountry::SetCountryFlag",))
+		)
 		self.assertEqual(pinned["symbol"], "CCountry::SetCountryFlag")
 		self.assertEqual(
 			pinned["pseudocode_sha256"],
-			hashlib.sha256(b"void SetCountryFlag(flags) { flags.insert(name); }").hexdigest(),
+			hashlib.sha256(
+				b"void SetCountryFlag(flags) { flags.insert(name); }"
+			).hexdigest(),
 		)
 
 
