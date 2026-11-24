@@ -1504,6 +1504,25 @@ fn native_initializes_before_main_and_reports_configuration_and_state() {
 }
 
 #[test]
+fn diagnostic_active_state_cannot_activate_a_distinct_pact_identity() {
+	let rt = Runtime::new();
+	// These are compiled C fixtures, not EU4 or a successful pact adapter.
+	// The real host must attribute their states to the plan's distinct IDs.
+	let pact_id = "dev.foch.directed-pacts";
+	let probe_id = "dev.foch.directed-pacts.roster-probe";
+	let mut refused = rt.plugin("bad_abi", "native", "entry");
+	refused["id"] = pact_id.into();
+	let mut diagnostic = rt.plugin("native", "native", "entry");
+	diagnostic["id"] = probe_id.into();
+	rt.plan(vec![refused, diagnostic]);
+	let events = rt.run("plain");
+	assert_eq!(states(&events, pact_id).last(), Some(&"refused"));
+	assert!(!states(&events, pact_id).contains(&"active"));
+	assert_eq!(states(&events, probe_id).last(), Some(&"active"));
+	assert!(!states(&events, "native").contains(&"active"));
+}
+
+#[test]
 fn legacy_sync_poll_refusal_and_timeout_are_actual_states() {
 	let rt = Runtime::new();
 	let mut plugins = Vec::new();
