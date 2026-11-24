@@ -251,6 +251,9 @@ pub fn compile(
 	let mut windows = Vec::new();
 	let mut next_event = 1u32;
 	let mut end_date = session.date;
+	// Console commands from every case of this session, in step order: they
+	// ride the verified startup console channel before the test script.
+	let mut console: Vec<String> = Vec::new();
 	for &index in &session.cases {
 		let planned = plan.case(index);
 		let case = &planned.case;
@@ -298,14 +301,29 @@ pub fn compile(
 			}
 		}
 		let mut pending_days: Option<u32> = None;
-		let mut cheats: Vec<String> = Vec::new();
 		for (step_index, step) in case.steps.iter().enumerate() {
 			let step_index = step_index as u32;
 			match step {
-				Step::TakeDecision { .. } => unreachable!("refused before writing"),
+				// A decision step is refused by the second match below with a
+				// clean CompileError instead of panicking here.
+				Step::TakeDecision { .. } => {}
+				// Console steps ride the verified console channel in step
+				// order: cheats verbatim, save/reload as their console verbs.
 				Step::Cheat { command, .. } => {
-					cheats.push(command.clone());
+					console.push(command.clone());
+					continue;
 				}
+				Step::Save { slot, .. } => {
+					console.push(format!("save_game {slot}"));
+					continue;
+				}
+				Step::Reload { slot, .. } => {
+					console.push(format!("load {slot}"));
+					continue;
+				}
+				// Receipts are judged from the host event stream, not the
+				// engine log; the generated script stays untouched.
+				Step::ExpectReceipt { .. } => {}
 				Step::AdvanceDays { days, .. } => {
 					*pending_days.get_or_insert(0) += days;
 					continue;
@@ -335,7 +353,9 @@ pub fn compile(
 					}
 				}
 				Step::AdvanceDays { .. } => unreachable!("handled above"),
-				Step::Cheat { .. } => unreachable!("collected above"),
+				Step::Cheat { .. } => {}
+				Step::Save { .. } | Step::Reload { .. } => {}
+				Step::ExpectReceipt { .. } => {}
 				Step::TakeDecision { name, span } => {
 					return Err(fail(
 						Some(span),
@@ -366,7 +386,12 @@ pub fn compile(
 	)?;
 	let start_file = format!("{namespace}_start.txt");
 	let start = canonical(&start, "generated start effects")?;
-	let mut commands = format!("speed 0\nrun {start_file}\n");
+	let mut commands = String::from("speed 0\n");
+	for command in &console {
+		commands.push_str(command);
+		commands.push('\n');
+	}
+	commands.push_str(&format!("run {start_file}\n"));
 	if end_date != session.date {
 		commands.push_str("speed 5\n");
 	}

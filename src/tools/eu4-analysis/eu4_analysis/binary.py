@@ -5,10 +5,6 @@ from __future__ import annotations
 import bisect
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-	from .pe import PEImage
 
 
 @dataclass(frozen=True)
@@ -43,14 +39,16 @@ class BinaryImage:
 		)
 
 
-def read_binary(path: Path) -> BinaryImage | PEImage:
+def read_binary(path: Path) -> BinaryImage:
 	"""Read one supported executable: a PE image by its `MZ` DOS header, else Mach-O."""
 	with path.open("rb") as image:
 		pe: bool = image.read(2) == b"MZ"
 	if pe:
-		from .pe import read_pe_image
+		# The full PEImage, not the symbol-less summary: the registration-
+		# table scan the semantics extractor needs lives on it.
+		from .pe import read_binary as read_pe
 
-		return read_pe_image(path)
+		return read_pe(path)
 	from .macho import read_macho_image
 
 	return read_macho_image(path)

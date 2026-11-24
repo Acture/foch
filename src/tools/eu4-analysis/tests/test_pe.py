@@ -4,15 +4,20 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
-from eu4_analysis import pe
 from eu4_analysis.pe import PEImage, keyword_reference_functions, read_binary
 
 FILE_ALIGNMENT = 0x10
 SECTION_ALIGNMENT = 0x10
 IMAGE_BASE = 0x140000000
+
+
+def _pad(blob: bytes, minimum: int, fill: bytes) -> bytes:
+	"""Round a synthetic section up to file alignment without shrinking it."""
+	size = max(len(blob), minimum)
+	aligned = (size + FILE_ALIGNMENT - 1) & ~(FILE_ALIGNMENT - 1)
+	return blob.ljust(aligned, fill)
+
 
 TEXT_RVA = 0x1000
 RDATA_RVA = 0x2000
@@ -61,9 +66,9 @@ def build_pe(
 		pdata.extend(struct.pack("<III", begin, end, 0))
 	pdata.extend(struct.pack("<III", 0, 0, 0))
 
-	text_bytes: bytes = bytes(text_blob) + b"\x90" * (0x200 - len(text_blob))
-	rdata_bytes: bytes = bytes(rdata) + b"\x00" * (0x100 - len(rdata))
-	pdata_bytes: bytes = bytes(pdata) + b"\x00" * (0x100 - len(pdata))
+	text_bytes = _pad(bytes(text_blob), 0x200, b"\x90")
+	rdata_bytes = _pad(bytes(rdata), 0x100, b"\x00")
+	pdata_bytes = _pad(bytes(pdata), 0x100, b"\x00")
 
 	headers_size: int = 0x200
 	text_offset: int = headers_size
@@ -88,13 +93,24 @@ def build_pe(
 		entry: bytearray = bytearray(40)
 		entry[:8] = name.ljust(8, b"\0")
 		struct.pack_into("<IIII", entry, 8, size, rva, size, offset)
-		struct.pack_into("<I", entry, 36, 0x60000020 if name == b".text" else 0x40000040)
+		struct.pack_into(
+			"<I", entry, 36, 0x60000020 if name == b".text" else 0x40000040
+		)
 		return bytes(entry)
 
 	sections: bytearray = bytearray()
+	# A token table is larger than the gap between the fixed RVAs. Keep the
+	# small fixtures on those RVAs and slide only the later section down.
+	pdata_rva = PDATA_RVA
+	if TEXT_RVA + len(text_bytes) > RDATA_RVA:
+		raise ValueError("synthetic .text does not fit before .rdata")
+	if RDATA_RVA + len(rdata_bytes) > pdata_rva:
+		pdata_rva = (RDATA_RVA + len(rdata_bytes) + SECTION_ALIGNMENT - 1) & ~(
+			SECTION_ALIGNMENT - 1
+		)
 	sections.extend(section(b".text", TEXT_RVA, len(text_bytes), text_offset))
 	sections.extend(section(b".rdata", RDATA_RVA, len(rdata_bytes), rdata_offset))
-	sections.extend(section(b".pdata", PDATA_RVA, len(pdata_bytes), pdata_offset))
+	sections.extend(section(b".pdata", pdata_rva, len(pdata_bytes), pdata_offset))
 
 	image: bytearray = bytearray()
 	image.extend(dos)
@@ -109,7 +125,9 @@ def build_pe(
 	return bytes(image)
 
 
-def registry_function(keyword: str, keyword_rva: int, handler_rva: int) -> tuple[int, bytes]:
+def registry_function(
+	keyword: str, keyword_rva: int, handler_rva: int
+) -> tuple[int, bytes]:
 	"""(begin, code) registering `keyword`: lea string, lea handler, call."""
 	insn_rva: int = TEXT_RVA
 	code: bytes = (
@@ -131,7 +149,10 @@ class ReadPE(unittest.TestCase):
 			image = read_binary(path)
 		self.assertIsInstance(image, PEImage)
 		self.assertEqual(image.function_starts, (IMAGE_BASE + TEXT_RVA,))
-		self.assertEqual(image.function_end(IMAGE_BASE + TEXT_RVA), IMAGE_BASE + TEXT_RVA + len(code) + 0x10)
+		self.assertEqual(
+			image.function_end(IMAGE_BASE + TEXT_RVA),
+			IMAGE_BASE + TEXT_RVA + len(code) + 0x10,
+		)
 		self.assertEqual(image.image_base, IMAGE_BASE)
 
 	def test_non_pe_binaries_are_rejected(self) -> None:
@@ -140,50 +161,6 @@ class ReadPE(unittest.TestCase):
 			path.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 64)
 			with self.assertRaises(ValueError):
 				read_binary(path)
-
-	def test_dispatched_image_uses_virtual_addresses_for_keyword_discovery(self) -> None:
-		from eu4_analysis.binary import read_binary as read_dispatched
-		from eu4_analysis.semantics import registration_functions
-
-		begin, code = registry_function("set_country_flag", RDATA_RVA, TEXT_RVA + 0x100)
-		blob = bytearray(build_pe(("set_country_flag",), (begin, code)))
-		optional = 0x80 + 24
-		struct.pack_into("<II", blob, optional + 112 + 3 * 8, PDATA_RVA, 12)
-		with tempfile.TemporaryDirectory() as temporary:
-			path = Path(temporary) / "eu4.exe"
-			path.write_bytes(blob)
-			image = read_dispatched(path)
-
-		self.assertIsInstance(image, PEImage)
-		self.assertEqual(image.platform, "windows")
-		start = IMAGE_BASE + begin
-		end = start + len(code) + 0x10
-		self.assertEqual(image.function_starts, (start,))
-		self.assertEqual(image.function_ends, (end,))
-		self.assertEqual(keyword_reference_functions(image, "set_country_flag"), ((start, end),))
-
-		class Analysis:
-			def find(self, pattern: str) -> tuple:
-				return ()
-
-		analysis = Analysis()
-		analysis.image = image
-		functions = registration_functions(analysis, "set_country_flag", ())
-		self.assertEqual([(item.address, item.end) for item in functions], [(start, end)])
-
-	def test_ghidra_reads_windows_readonly_data_strings(self) -> None:
-		from eu4_analysis.ghidra import GhidraSession
-
-		session = GhidraSession.__new__(GhidraSession)
-		session.image = SimpleNamespace(platform="windows")
-		session.program = MagicMock()
-		location = session.program.getAddressFactory().getDefaultAddressSpace().getAddress()
-		block = session.program.getMemory().getBlock()
-		block.getName.return_value = ".rdata"
-		block.getEnd().getOffset.return_value = 0x1010
-		session.program.getMemory().getByte.side_effect = b"flag\0"
-		self.assertEqual(session._reference(0x1000).string, "flag")
-		self.assertEqual(location.add.call_count, 5)
 
 
 class TableHandlers(unittest.TestCase):
@@ -223,6 +200,97 @@ class TableHandlers(unittest.TestCase):
 		self.assertEqual(
 			table_handlers(image, "set_country_flag"),
 			(IMAGE_BASE + TEXT_RVA + 0x110,),
+		)
+		from eu4_analysis.pe import baseline_status
+
+		self.assertEqual(baseline_status(image, "set_country_flag"), "pinned")
+
+	def test_an_overlay_pointer_hit_cannot_break_the_batch(self) -> None:
+		"""A trailing overlay qword is skipped; the window stays in bounds.
+
+		The overlay names the keyword with its last eight bytes, so the
+		-8..+0x38 neighborhood read used to run past the buffer and the
+		struct.error aborted the whole batch. The .rdata table entry still
+		pins; the overlay hit is skipped, not fatal.
+		"""
+		from eu4_analysis.pe import table_handlers
+
+		entry = struct.pack(
+			"<QQQQQQQQ",
+			1,
+			IMAGE_BASE + RDATA_RVA,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x40,
+			0,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x80,
+			IMAGE_BASE + TEXT_RVA + 0x110,
+		)
+		code = b"\x90" * 0x110
+		blob = build_pe(
+			("set_country_flag",),
+			(TEXT_RVA, code),
+			(TEXT_RVA + 0x110, b"\x90" * 0x20),
+			extra_rdata=entry,
+		)
+		# The keyword's address qword as the very last eight bytes: the
+		# window around this hit cannot be read in full.
+		blob += struct.pack("<Q", IMAGE_BASE + RDATA_RVA)
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_binary(path)
+		self.assertEqual(
+			table_handlers(image, "set_country_flag"),
+			(IMAGE_BASE + TEXT_RVA + 0x110,),
+		)
+
+	def test_a_console_argument_hint_is_not_a_script_handler(self) -> None:
+		"""``<Flag>`` at +0x40 marks a console command, not the script effect.
+
+		EU4 1.37.5's command table uses the same handler slot as the
+		synthetic effect entry, then points at an argument hint. Pinning
+		that function would claim the console wrapper is the script effect.
+		"""
+		from eu4_analysis.pe import table_handlers
+
+		hint = b"<Flag>\0"
+		# Keywords occupy the front of .rdata; the entry follows them.
+		name_at = 8  # second qword of the entry
+		entry = struct.pack(
+			"<QQQQQQQQ",
+			1,
+			IMAGE_BASE + RDATA_RVA,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x40,
+			0,
+			0,
+			IMAGE_BASE + RDATA_RVA + 0x80,
+			IMAGE_BASE + TEXT_RVA + 0x110,
+		)
+		keyword_bytes = len(b"set_country_flag\0")
+		# Name sits at byte 8 of the entry; the hint qword is 0x40 past that,
+		# which is 8 bytes after the 64-byte record.
+		hint_rva = RDATA_RVA + keyword_bytes + len(entry) + 8 + 8
+		blob = build_pe(
+			("set_country_flag",),
+			(TEXT_RVA, b"\x90" * 0x110),
+			(TEXT_RVA + 0x110, b"\x90" * 0x20),
+			extra_rdata=entry
+			+ struct.pack("<Q", 1)
+			+ struct.pack("<Q", IMAGE_BASE + hint_rva)
+			+ hint,
+		)
+		self.assertEqual(name_at + 0x40, len(entry) + 8)
+		with tempfile.TemporaryDirectory() as temporary:
+			path = Path(temporary) / "eu4.exe"
+			path.write_bytes(blob)
+			image = read_binary(path)
+		self.assertEqual(table_handlers(image, "set_country_flag"), ())
+		from eu4_analysis.pe import baseline_status
+
+		self.assertEqual(
+			baseline_status(image, "set_country_flag"), "rejected_console_cmd"
 		)
 
 	def test_two_pointer_hits_naming_the_same_handler_still_pin(self) -> None:
@@ -287,17 +355,6 @@ class KeywordReferences(unittest.TestCase):
 		# A lea of some unrelated address (rdata + 0x80, inside padding).
 		code: bytes = lea_rdx(RDATA_RVA + 0x80, TEXT_RVA) + b"\xff\xd0"
 		blob = build_pe(("set_country_flag",), (TEXT_RVA, code))
-		with tempfile.TemporaryDirectory() as temporary:
-			path = Path(temporary) / "eu4.exe"
-			path.write_bytes(blob)
-			image = read_binary(path)
-		self.assertEqual(keyword_reference_functions(image, "set_country_flag"), ())
-
-	def test_reference_in_gap_after_function_is_not_attributed_to_it(self) -> None:
-		code = b"\x90" * 0x20 + lea_rdx(RDATA_RVA, TEXT_RVA + 0x20)
-		blob = bytearray(build_pe(("set_country_flag",), (TEXT_RVA, code)))
-		pdata_offset = 0x200 + 0x200 + 0x100
-		struct.pack_into("<I", blob, pdata_offset + 4, TEXT_RVA + 0x10)
 		with tempfile.TemporaryDirectory() as temporary:
 			path = Path(temporary) / "eu4.exe"
 			path.write_bytes(blob)

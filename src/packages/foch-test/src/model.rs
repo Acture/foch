@@ -295,12 +295,84 @@ pub enum Step {
 		name: String,
 		span: SourceSpan,
 	},
+	/// Expect a plugin receipt: a `FOCH_RECEIPT/1` message the plugin
+	/// reported through the host log channel during this session. The
+	/// engine never sees this; the judge matches it against the session's
+	/// preserved host event stream.
+	ExpectReceipt {
+		/// Host-stamped plugin identity to match.
+		plugin: String,
+		/// Required payload fields, matched as exact strings.
+		fields: Vec<(String, String)>,
+		/// Required numeric payload ranges, matched by value: receipts emit
+		/// every payload as a string, so the judge parses the field and
+		/// compares it against the inclusive bounds.
+		#[serde(default)]
+		numeric: Vec<ReceiptRange>,
+		span: SourceSpan,
+	},
 	/// Run a console cheat command as setup (`cash 500`, `adm 100`, ...).
 	Cheat {
 		command: String,
 		span: SourceSpan,
 	},
+	/// Persist the campaign to a save slot through the console channel.
+	Save {
+		/// The save slot name, emitted as `save_game <slot>`.
+		slot: String,
+		span: SourceSpan,
+	},
+	/// Reload the campaign from a save slot through the console channel.
+	Reload {
+		/// The save slot name, emitted as `load <slot>`.
+		slot: String,
+		span: SourceSpan,
+	},
 }
+
+/// One inclusive numeric constraint on a receipt payload field: at least
+/// one bound is set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+// Eq by hand: the bounds are finite (collection refuses NaN and inf), so
+// no NaN corner weakens the equality the rest of the model relies on.
+pub struct ReceiptRange {
+	pub field: String,
+	pub min: Option<f64>,
+	pub max: Option<f64>,
+}
+
+impl ReceiptRange {
+	/// Whether `value` (a receipt payload string) satisfies the range; a
+	/// missing or non-numeric payload never matches.
+	pub fn accepts(&self, value: Option<&str>) -> bool {
+		let Some(parsed) = value.and_then(|text| text.parse::<f64>().ok()) else {
+			return false;
+		};
+		if let Some(min) = self.min
+			&& parsed < min
+		{
+			return false;
+		}
+		if let Some(max) = self.max
+			&& parsed > max
+		{
+			return false;
+		}
+		true
+	}
+
+	/// The constraint as written, for failure messages.
+	pub fn describe(&self) -> String {
+		match (self.min, self.max) {
+			(Some(min), Some(max)) => format!("{}={}..{}", self.field, min, max),
+			(Some(min), None) => format!("{}>={}", self.field, min),
+			(None, Some(max)) => format!("{}<={}", self.field, max),
+			(None, None) => format!("{} unconstrained", self.field),
+		}
+	}
+}
+
+impl Eq for ReceiptRange {}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
@@ -339,11 +411,13 @@ pub struct TestCase {
 
 impl TestCase {
 	/// A case without any expectation only proves that its steps completed.
+	/// Plugin receipts are expectations too: they assert what a loaded
+	/// plugin actually did during the session.
 	pub fn is_smoke(&self) -> bool {
 		!self
 			.steps
 			.iter()
-			.any(|step| matches!(step, Step::Expect { .. }))
+			.any(|step| matches!(step, Step::Expect { .. } | Step::ExpectReceipt { .. }))
 	}
 
 	pub(crate) fn compute_content_id(&mut self) {
@@ -369,6 +443,16 @@ impl TestCase {
 				}
 				Step::TakeDecision { name, .. } => format!("take_decision {name}"),
 				Step::Cheat { command, .. } => format!("cheat {command}"),
+				Step::Save { slot, .. } => format!("save {slot}"),
+				Step::Reload { slot, .. } => format!("reload {slot}"),
+				Step::ExpectReceipt { plugin, fields, .. } => format!(
+					"expect_receipt {plugin} {}",
+					fields
+						.iter()
+						.map(|(key, value)| format!("{key}={value}"))
+						.collect::<Vec<_>>()
+						.join(" ")
+				),
 			})
 			.collect();
 		let identity = Identity {
@@ -396,8 +480,8 @@ pub struct Fixture {
 	pub check: Vec<Clause>,
 }
 
-/// A top-level decision from `common/decisions/`, keyed by its definition
-/// name; the body holds potential/allow/effect as authored.
+/// One country decision from `decisions/*.txt`, keyed by the name nested
+/// under `country_decisions`. The body holds potential/allow/effect as authored.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DecisionInfo {
 	pub name: String,

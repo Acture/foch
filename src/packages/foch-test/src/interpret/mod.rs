@@ -2,9 +2,10 @@
 //! model of EU4 semantics instead of launching the game.
 //!
 //! The model is organized by [`pins::SemanticsCatalog`]: every primitive the
-//! interpreter executes is an entry whose semantics are pinned to a
-//! decompiled handler function, and a pinned catalog refuses anything whose
-//! evidence is missing. The interpreter is an author-feedback layer, like a
+//! interpreter executes is a catalog entry. A `pinned` catalog additionally
+//! ties each entry to a decompiled handler function and refuses anything
+//! whose evidence is missing; the embedded seed is `unpinned`, and every
+//! result records that its semantics are not evidence-backed. The interpreter is an author-feedback layer, like a
 //! compiler's, not a verification oracle: cases using anything outside the
 //! modeled set are refused with all of their reasons at once, never
 //! approximated, mirroring how [`crate::compile::check_capabilities`]
@@ -21,6 +22,7 @@
 //! base snapshot, so both reading and writing them is refused rather than
 //! guessed.
 
+mod overlay;
 pub mod pins;
 
 use crate::lint::ProjectFacts;
@@ -37,7 +39,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-pub use pins::{EvidenceStatus, SemanticsCatalog};
+pub use overlay::{
+	ContentLayer, CountrySlice, HistoryTimeline, LayerFile, ProvinceSlice, SubjectTypeSet,
+	SubjectWarPolicy, fold_history, overlay_decisions, overlay_history, overlay_subject_types,
+};
+pub use pins::{EvidenceStatus, HandlerPin, SemanticsCatalog};
 
 /// Marks every offline result, in JSON and in reports, as its own layer.
 pub const LAYER: &str = "offline";
@@ -49,6 +55,51 @@ const MAX_EVENT_DELIVERIES: usize = 4096;
 /// Upper bound of nested scripted-trigger inlining, so mutually inlining
 /// definitions cannot recurse forever.
 const MAX_SCRIPTED_DEPTH: u32 = 256;
+
+/// The primitive names the interpreter implements itself, by context.
+/// Static on purpose: a catalog that omits an entry cannot un-make a
+/// builtin, so a scripted definition never shadows one and a missing entry
+/// still refuses at the gate below. Keep in sync with the match arms of
+/// `exec_assignment` and `eval_assignment`; the structural passthroughs
+/// (`EFFECT_CONTROL`/`CONDITION_CONTROL`) are not catalog primitives and
+/// are not listed here.
+const BUILTIN_EFFECTS: &[&str] = &[
+	"change_variable",
+	"clr_country_flag",
+	"clr_global_flag",
+	"country_event",
+	"create_march",
+	"create_subject",
+	"create_union",
+	"create_vassal",
+	"grant_independence",
+	"log",
+	"random",
+	"release",
+	"set_country_flag",
+	"set_global_flag",
+	"set_variable",
+	"vassalize",
+];
+const BUILTIN_TRIGGERS: &[&str] = &[
+	"always",
+	"check_variable",
+	"has_country_flag",
+	"has_global_flag",
+	"has_variable",
+	"is_subject",
+	"is_subject_of",
+	"is_subject_of_type",
+	"tag",
+];
+
+/// Whether `key` names a builtin primitive in this context.
+fn builtin(key: &str, context: Context) -> bool {
+	match context {
+		Context::Effect => BUILTIN_EFFECTS.contains(&key),
+		Context::Condition => BUILTIN_TRIGGERS.contains(&key),
+	}
+}
 
 /// Blocks that structure effects without changing scope.
 const EFFECT_CONTROL: &[&str] = &[
@@ -168,10 +219,15 @@ pub struct InterpretOptions {
 	pub mod_name: String,
 	/// Record each case's run trace (observer mode).
 	pub observe: bool,
-	/// Starting state from the game's history files, when a game install is
-	/// available; without it the model world is only the countries a case
-	/// names and unwritten slots refuse.
+	/// Starting state already folded for one date. Ignored when [`Self::history`]
+	/// is set, because each case folds the timeline at its own start date.
 	pub seed: Option<SeedFacts>,
+	/// Dated history from the ordered playset. Each case applies the blocks
+	/// on or before its own start date.
+	pub history: Option<HistoryTimeline>,
+	/// Subject types from the ordered playset. Absent means none resolve;
+	/// vanilla type names are not assumed.
+	pub subject_types: Option<SubjectTypeSet>,
 }
 
 /// Starting state the caller supplies from the game's own history files:
@@ -182,6 +238,20 @@ pub struct InterpretOptions {
 pub struct SeedFacts {
 	pub tags: BTreeSet<Tag>,
 	pub countries: BTreeMap<Tag, SeededCountry>,
+	/// Provinces that survived the history overlay, folded at the same date
+	/// as `countries`. Ids are whatever the files named, with no vanilla cap.
+	#[serde(default)]
+	pub provinces: BTreeMap<u32, ProvinceSeed>,
+}
+
+/// A province's scripted slots at one date. Absent fields were not written
+/// by the history that applies on that date.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProvinceSeed {
+	pub owner: Option<Tag>,
+	pub controller: Option<Tag>,
+	pub religion: Option<String>,
+	pub culture: Option<String>,
 }
 
 /// A country's scripted starting slots; `None` stays unknown until written.
@@ -440,15 +510,24 @@ pub fn interpret(
 	catalog: &SemanticsCatalog,
 	options: &InterpretOptions,
 ) -> Interpretation {
+	let mut scripted_effects = BTreeMap::new();
+	let mut scripted_triggers = BTreeMap::new();
+	for definition in &plan.scripted {
+		match definition.kind {
+			ScriptedKind::Effect => {
+				scripted_effects.insert(definition.name.as_str(), definition);
+			}
+			ScriptedKind::Trigger => {
+				scripted_triggers.insert(definition.name.as_str(), definition);
+			}
+		}
+	}
 	let interpreter = Interpreter {
 		facts,
 		catalog,
 		events: plan.events.iter().map(|event| (&event.id, event)).collect(),
-		scripted: plan
-			.scripted
-			.iter()
-			.map(|definition| (definition.name.as_str(), definition))
-			.collect(),
+		scripted_effects,
+		scripted_triggers,
 		decisions: plan
 			.decisions
 			.iter()
@@ -456,6 +535,8 @@ pub fn interpret(
 			.collect(),
 		observe: options.observe,
 		seed: options.seed.as_ref(),
+		history: options.history.as_ref(),
+		subject_types: options.subject_types.as_ref(),
 	};
 	Interpretation {
 		layer: LAYER,
@@ -488,6 +569,9 @@ struct World {
 	/// answer the trigger family (offensive for the attacker,
 	/// defensive for the defender).
 	wars: BTreeMap<Tag, BTreeSet<Tag>>,
+	/// The same wars indexed from the defender: a defender is at war too,
+	/// and which side declared stays distinguishable.
+	wars_against: BTreeMap<Tag, BTreeSet<Tag>>,
 	alliances: BTreeMap<Tag, BTreeSet<Tag>>,
 	/// Enum and number slots a case can write; absent means unknown, and an
 	/// unwritten read refuses rather than guessing a starting value.
@@ -501,9 +585,17 @@ struct World {
 	named: BTreeSet<Tag>,
 	/// Player-facing numeric stats; absent entries read as the modeled 0.
 	numbers: BTreeMap<Tag, BTreeMap<&'static str, f64>>,
+	/// Subject → overlord and subject type. One country has at most one overlord.
+	subjects: BTreeMap<Tag, SubjectLink>,
 	/// Observer mode: the run trace, recorded only when asked for.
 	trace: Vec<Observation>,
 	recording: bool,
+}
+
+/// A country's overlord and the subject type of that link.
+struct SubjectLink {
+	overlord: Tag,
+	kind: String,
 }
 
 impl World {
@@ -533,6 +625,37 @@ impl World {
 
 	fn country_mut(&mut self, tag: &Tag) -> &mut CountryState {
 		self.countries.entry(tag.clone()).or_default()
+	}
+
+	fn overlord_of(&self, tag: &Tag) -> Option<Tag> {
+		self.subjects.get(tag).map(|link| link.overlord.clone())
+	}
+
+	/// Record `subject` under `overlord`. A link that would make either
+	/// country its own overlord, directly or through the chain, is refused.
+	fn link_subject(&mut self, subject: Tag, overlord: Tag, kind: String) -> Result<(), String> {
+		if subject == overlord {
+			return Err(format!("{subject} cannot be its own subject"));
+		}
+		let mut cursor = Some(overlord.clone());
+		let mut guard = 0usize;
+		while let Some(tag) = cursor {
+			if tag == subject {
+				return Err(format!(
+					"linking {subject} under {overlord} would cycle the subject chain"
+				));
+			}
+			cursor = self.subjects.get(&tag).map(|link| link.overlord.clone());
+			guard += 1;
+			if guard > 64 {
+				return Err("subject chain is too deep to link".into());
+			}
+		}
+		self.named.insert(subject.clone());
+		self.named.insert(overlord.clone());
+		self.subjects
+			.insert(subject, SubjectLink { overlord, kind });
+		Ok(())
 	}
 }
 
@@ -600,6 +723,9 @@ impl ScopeCtx {
 enum ScopeKey {
 	Alias(&'static str),
 	Tag,
+	/// The current country's overlord. Resolved at execution; the scan still
+	/// walks the block, because whether a subject link exists is runtime state.
+	Overlord,
 }
 
 /// Whether `key` opens a scope block in this context. `NOT`/`AND` are logic
@@ -607,6 +733,9 @@ enum ScopeKey {
 /// condition blocks, exactly as the lint's footprint over-approximation
 /// decides.
 fn scope_key(key: &str, context: Context) -> Option<ScopeKey> {
+	if key == "overlord" {
+		return Some(ScopeKey::Overlord);
+	}
 	if let Some(alias) = ALIASES.iter().find(|alias| **alias == key) {
 		return Some(ScopeKey::Alias(alias));
 	}
@@ -650,12 +779,19 @@ struct Interpreter<'a> {
 	catalog: &'a SemanticsCatalog,
 	events: BTreeMap<&'a EventId, &'a EventInfo>,
 	/// The mod's scripted definitions, inlined wherever their names appear in
-	/// the matching kind of block.
-	scripted: BTreeMap<&'a str, &'a ScriptedDef>,
+	/// the matching kind of block. The two kinds index separately, so one
+	/// name may serve as both an effect and a trigger; within one kind the
+	/// later source keeps the existing last-wins boundary.
+	scripted_effects: BTreeMap<&'a str, &'a ScriptedDef>,
+	scripted_triggers: BTreeMap<&'a str, &'a ScriptedDef>,
 	/// The mod's decisions, applied by `take_decision` steps.
 	decisions: BTreeMap<&'a str, &'a DecisionInfo>,
 	/// Starting state from the game's history files, when supplied.
 	seed: Option<&'a SeedFacts>,
+	/// Dated history, folded at each case's start date.
+	history: Option<&'a HistoryTimeline>,
+	/// Resolved subject types. A missing set resolves nothing.
+	subject_types: Option<&'a SubjectTypeSet>,
 	/// Observer mode: record each case's run trace.
 	observe: bool,
 }
@@ -726,6 +862,7 @@ impl<'a> Interpreter<'a> {
 			scheduled: BTreeMap::new(),
 			deliveries: 0,
 			wars: BTreeMap::new(),
+			wars_against: BTreeMap::new(),
 			alliances: BTreeMap::new(),
 			religions: BTreeMap::new(),
 			cultures: BTreeMap::new(),
@@ -733,11 +870,19 @@ impl<'a> Interpreter<'a> {
 			government_ranks: BTreeMap::new(),
 			named: BTreeSet::from([case.start.tag.clone()]),
 			numbers: BTreeMap::new(),
+			subjects: BTreeMap::new(),
 			trace: Vec::new(),
 			recording: self.observe,
 		};
-		if let Some(seed) = self.seed {
-			// The seeded world is the countries existing at the bookmark;
+		let folded = self
+			.history
+			.map(|timeline| fold_history(timeline, case.start.date));
+		// A timeline is folded at this case's date. A snapshot seed is the
+		// caller's already-folded bookmark and applies only when no timeline
+		// was given.
+		let seed = folded.as_ref().or(self.seed);
+		if let Some(seed) = seed {
+			// The seeded world is the countries existing at this date;
 			// every_country iterates it instead of the case's named set.
 			for (tag, country) in &seed.countries {
 				if let Some(religion) = &country.religion {
@@ -819,6 +964,9 @@ impl<'a> Interpreter<'a> {
 				Step::Expect { .. } => "expect",
 				Step::TakeDecision { .. } => "take_decision",
 				Step::Cheat { .. } => "cheat",
+				Step::Save { .. } => "save",
+				Step::Reload { .. } => "reload",
+				Step::ExpectReceipt { .. } => "expect_receipt",
 			};
 			world.note(
 				&case.start.tag,
@@ -837,6 +985,20 @@ impl<'a> Interpreter<'a> {
 							std::mem::take(&mut world.trace),
 						);
 					}
+				}
+				// The scan refuses receipt steps before execution; if the two
+				// ever disagree the case still reports a clean refusal
+				// instead of panicking.
+				Step::ExpectReceipt { span, .. } => {
+					return unsupported(
+						vec![format!(
+							"{span}: plugin receipts need a real game session; \
+							 run this case with --with-plugins instead of --offline"
+						)],
+						failures,
+						passed,
+						std::mem::take(&mut world.trace),
+					);
 				}
 				Step::Fire { event, .. } => {
 					let mut visited = BTreeSet::new();
@@ -858,6 +1020,19 @@ impl<'a> Interpreter<'a> {
 							std::mem::take(&mut world.trace),
 						);
 					}
+				}
+				// The scan refuses save/reload steps before execution; if the
+				// two ever disagree the case still reports a clean refusal
+				// instead of panicking.
+				Step::Save { span, .. } | Step::Reload { span, .. } => {
+					return unsupported(
+						vec![format!(
+							"{span}: save/reload cycles run on the real game; the model 							 does not serialize campaign state"
+						)],
+						failures,
+						passed,
+						std::mem::take(&mut world.trace),
+					);
 				}
 				Step::Cheat { command, .. } => match cheat_kind(command) {
 					Ok(CheatKind::Mapped { slot, amount }) => {
@@ -1014,9 +1189,16 @@ impl<'a> Interpreter<'a> {
 	/// scheduling order within a date.
 	fn advance(&self, world: &mut World, days: u32) -> Result<(), String> {
 		let new_date = world.date.add_days(days)?;
-		while let Some((due, batch)) = world.scheduled.pop_first()
+		// Peek before removing: an event scheduled past the new date stays
+		// scheduled for a later advance. Popping first would drop exactly
+		// that not-yet-due event.
+		while let Some((&due, _)) = world.scheduled.first_key_value()
 			&& due <= new_date
 		{
+			let (_, batch) = world
+				.scheduled
+				.pop_first()
+				.expect("the peeked earliest entry exists");
 			world.date = due;
 			for (event, ctx) in batch {
 				world.deliveries += 1;
@@ -1048,11 +1230,28 @@ impl<'a> Interpreter<'a> {
 		event: &EventId,
 		visited: &mut BTreeSet<String>,
 	) -> Result<(), String> {
+		// The visited set is the active delivery stack, not a history: an
+		// event already delivering in this chain is a cycle, while the same
+		// id fired again after its delivery returned runs again.
 		if !visited.insert(event.to_string()) {
 			return Err(format!(
 				"event {event} fires itself through immediate blocks; the model refuses the cycle"
 			));
 		}
+		let result = self.deliver_event(world, ctx, event, visited);
+		visited.remove(&event.to_string());
+		result
+	}
+
+	/// Run one collected event's `immediate` block in `ctx`; the caller owns
+	/// the cycle bookkeeping.
+	fn deliver_event(
+		&self,
+		world: &mut World,
+		ctx: &ScopeCtx,
+		event: &EventId,
+		visited: &mut BTreeSet<String>,
+	) -> Result<(), String> {
 		let info = self
 			.events
 			.get(event)
@@ -1115,6 +1314,17 @@ impl<'a> Interpreter<'a> {
 				// Cheats pass the scan unmolested; mapped commands that
 				// are malformed surface at execution with the reason.
 				Step::Cheat { .. } => {}
+				Step::Save { slot, span } | Step::Reload { slot, span } => {
+					reasons.push(format!(
+						"{span}: save/reload cycles run on the real game; the model 						 does not serialize campaign state (slot {slot})"
+					));
+				}
+				Step::ExpectReceipt { span, .. } => {
+					reasons.push(format!(
+						"{span}: plugin receipts need a real game session; \
+						 run this case with --with-plugins instead of --offline"
+					));
+				}
 				Step::AdvanceDays { .. } => {}
 			}
 		}
@@ -1284,7 +1494,7 @@ impl<'a> Interpreter<'a> {
 			self.scan_statements(items, where_, context, scope.enter(), seen, reasons);
 			return;
 		}
-		if context == Context::Effect && (key == "random" || key == "random_list") {
+		if context == Context::Effect && key == "random" {
 			if let Err(reason) = self.catalog.permits(key) {
 				reasons.push(self.refusal(key, &reason, context, where_));
 				return;
@@ -1293,34 +1503,18 @@ impl<'a> Interpreter<'a> {
 				reasons.push(format!("{where_}: {key} must be a block"));
 				return;
 			};
-			if key == "random" {
-				match split_chance(items) {
-					Some((chance, body)) => {
-						if !(chance == 0.0 || chance == 100.0) {
-							reasons.push(format!(
-								"{where_}: random with chance {chance} needs the game's RNG; 								 the offline model only decides the constant corners 0 and 100"
-							));
-						}
-						self.scan_statements(&body, where_, context, scope, seen, reasons);
-					}
-					None => reasons.push(format!(
-						"{where_}: random needs a constant chance to be decided offline"
-					)),
-				}
-			} else {
-				for (guard, body) in branches(items) {
-					if !guard.is_empty() {
-						self.scan_statements(
-							&guard,
-							where_,
-							Context::Condition,
-							scope,
-							seen,
-							reasons,
-						);
+			match split_chance(items) {
+				Some((chance, body)) => {
+					if !(chance == 0.0 || chance == 100.0) {
+						reasons.push(format!(
+							"{where_}: random with chance {chance} needs the game's RNG; 							 the offline model only decides the constant corners 0 and 100"
+						));
 					}
 					self.scan_statements(&body, where_, context, scope, seen, reasons);
 				}
+				None => reasons.push(format!(
+					"{where_}: random needs a constant chance to be decided offline"
+				)),
 			}
 			return;
 		}
@@ -1332,10 +1526,52 @@ impl<'a> Interpreter<'a> {
 			}
 			return;
 		}
+		if context == Context::Effect && key == "every_country" {
+			// The pin gate applies to the iterator itself and to every
+			// statement inside it. A missing handler on `every_country` does
+			// not skip the nested check: the precheck lists every reason.
+			if let Err(reason) = self.catalog.permits(key) {
+				reasons.push(self.refusal(key, &reason, context, where_));
+			}
+			let AstValue::Block { items, .. } = value else {
+				reasons.push(format!("{where_}: every_country must be a block"));
+				return;
+			};
+			self.scan_every_country(items, where_, scope, seen, reasons);
+			return;
+		}
 		if let Some(definition) = self.scripted_in(key, context) {
+			// A scripted name that collides with a catalog primitive would
+			// resolve differently in the scan and in execution; refuse the
+			// call so the verdict cannot outrun the evidence.
+			if builtin(key, context) || self.catalog.primitives.contains_key(key) {
+				reasons.push(format!(
+					"{where_}: scripted {} {key} collides with a modeled primitive; 					 rename the definition",
+					Self::kind_word(context)
+				));
+				return;
+			}
 			// A scripted definition inlines its body; the kind must fit the
 			// block. Cycles are caught at execution, as event chains are.
-			if !seen.insert(format!("scripted:{key}")) {
+			// The call's operand is validated before the dedup so every call
+			// site is checked, not only the first.
+			match context {
+				Context::Condition => {
+					// A trigger call is bare, `= yes`, or `= no` (negated);
+					// any other operand is not a call the model can read.
+					if boolean(value).is_none() {
+						reasons.push(format!(
+							"{where_}: scripted trigger {key} is called with an operand 							 the model does not read; use a bare call, = yes or = no"
+						));
+					}
+				}
+				Context::Effect => {
+					reasons.push(format!(
+						"{where_}: scripted effect {key} is called bare, without = ..."
+					));
+				}
+			}
+			if !seen.insert(format!("scripted:{}:{key}", Self::kind_word(context))) {
 				return;
 			}
 			self.scan_statements(
@@ -1348,7 +1584,7 @@ impl<'a> Interpreter<'a> {
 			);
 			return;
 		}
-		if let Some(definition) = self.scripted.get(key) {
+		if let Some(definition) = self.scripted_any(key) {
 			let kind = match definition.kind {
 				ScriptedKind::Trigger => "trigger",
 				ScriptedKind::Effect => "effect",
@@ -1430,7 +1666,14 @@ impl<'a> Interpreter<'a> {
 		reasons: &mut Vec<String>,
 	) {
 		if let Some(definition) = self.scripted_in(name, context) {
-			if !seen.insert(format!("scripted:{name}")) {
+			if builtin(name, context) || self.catalog.primitives.contains_key(name) {
+				reasons.push(format!(
+					"{where_}: scripted {} {name} collides with a modeled primitive; 					 rename the definition",
+					Self::kind_word(context)
+				));
+				return;
+			}
+			if !seen.insert(format!("scripted:{}:{name}", Self::kind_word(context))) {
 				return;
 			}
 			self.scan_statements(
@@ -1443,7 +1686,7 @@ impl<'a> Interpreter<'a> {
 			);
 			return;
 		}
-		if let Some(definition) = self.scripted.get(name) {
+		if let Some(definition) = self.scripted_any(name) {
 			let kind = match definition.kind {
 				ScriptedKind::Trigger => "trigger",
 				ScriptedKind::Effect => "effect",
@@ -1468,14 +1711,27 @@ impl<'a> Interpreter<'a> {
 
 	/// The scripted definition named `key` when its kind fits this context.
 	fn scripted_in<'d>(&'d self, key: &str, context: Context) -> Option<&'d ScriptedDef> {
-		let wanted = match context {
-			Context::Effect => ScriptedKind::Effect,
-			Context::Condition => ScriptedKind::Trigger,
-		};
-		match self.scripted.get(key) {
-			Some(definition) if definition.kind == wanted => Some(*definition),
-			_ => None,
+		match context {
+			Context::Effect => self.scripted_effects.get(key).copied(),
+			Context::Condition => self.scripted_triggers.get(key).copied(),
 		}
+	}
+
+	/// The word for a scripted definition's kind in call-stack keys.
+	fn kind_word(context: Context) -> &'static str {
+		match context {
+			Context::Effect => "effect",
+			Context::Condition => "trigger",
+		}
+	}
+
+	/// A scripted definition of either kind under `name`, for messages about
+	/// a kind mismatch.
+	fn scripted_any<'d>(&'d self, key: &str) -> Option<&'d ScriptedDef> {
+		self.scripted_effects
+			.get(key)
+			.or_else(|| self.scripted_triggers.get(key))
+			.copied()
 	}
 
 	/// A `country_event = { id = ... days = ... }` effect: the target must be
@@ -1491,6 +1747,46 @@ impl<'a> Interpreter<'a> {
 		match country_event_args(value) {
 			Ok(args) => self.scan_event(&args.event, where_, scope, seen, reasons),
 			Err(reason) => reasons.push(format!("{where_}: {reason}")),
+		}
+	}
+
+	/// `every_country`: `limit` is a condition (zero or one), the rest are
+	/// effects. Both are scanned even when the iterator itself failed the
+	/// pin gate.
+	fn scan_every_country(
+		&self,
+		items: &[AstStatement],
+		where_: &SourceSpan,
+		scope: ScanScope,
+		seen: &mut BTreeSet<String>,
+		reasons: &mut Vec<String>,
+	) {
+		let mut limits = 0;
+		for statement in items {
+			match statement {
+				AstStatement::Comment { .. } => continue,
+				AstStatement::Assignment { key, value, .. } if key == "limit" => {
+					limits += 1;
+					let AstValue::Block { items, .. } = value else {
+						reasons.push(format!("{where_}: limit must be a block"));
+						continue;
+					};
+					self.scan_statements(items, where_, Context::Condition, scope, seen, reasons);
+				}
+				other => self.scan_statements(
+					std::slice::from_ref(other),
+					where_,
+					Context::Effect,
+					scope,
+					seen,
+					reasons,
+				),
+			}
+		}
+		if limits > 1 {
+			reasons.push(format!(
+				"{where_}: every_country needs exactly one limit block"
+			));
 		}
 	}
 
@@ -1563,6 +1859,24 @@ impl<'a> Interpreter<'a> {
 	}
 
 	/// Execute one authored effect block in the given scope.
+	/// `name` may be used only when the ordered subject-type overlay resolved it.
+	fn require_subject_type(&self, name: &str, where_: &SourceSpan) -> Result<(), String> {
+		let Some(set) = self.subject_types else {
+			return Err(format!(
+				"{where_}: subject type {name} is not in the ordered subject_types overlay"
+			));
+		};
+		if set.resolved.contains(name) {
+			return Ok(());
+		}
+		if let Some(reason) = set.unresolved.get(name) {
+			return Err(format!("{where_}: subject type {name} {reason}"));
+		}
+		Err(format!(
+			"{where_}: subject type {name} is not in the ordered subject_types overlay"
+		))
+	}
+
 	fn exec_block(
 		&self,
 		world: &mut World,
@@ -1600,18 +1914,22 @@ impl<'a> Interpreter<'a> {
 							"{where_}: {name} reached execution without passing the offline scan"
 						)
 					})?;
-					if !visited.insert(format!("scripted:{name}")) {
+					// Active call stack: inlining itself is a cycle; a later
+					// second call after returning runs again.
+					if !visited.insert(format!("scripted:effect:{name}")) {
 						return Err(format!(
 							"{where_}: {name} inlines itself through scripted definitions; the 							 model refuses the cycle"
 						));
 					}
-					self.exec_statements(
+					let result = self.exec_statements(
 						world,
 						ctx,
 						&parse(&definition.body),
 						&definition.origin,
 						visited,
-					)?;
+					);
+					visited.remove(&format!("scripted:effect:{name}"));
+					result?;
 					index += 1;
 				}
 				AstStatement::Item { .. } => {
@@ -1622,13 +1940,19 @@ impl<'a> Interpreter<'a> {
 						return Err(format!("{where_}: if must be a block"));
 					};
 					let mut chain = index + 1;
-					while chain < statements.len()
-						&& matches!(
-							&statements[chain],
+					// Comments between the branches are not chain
+					// terminators; any other statement ends the chain and
+					// keeps its own turn.
+					while chain < statements.len() {
+						match &statements[chain] {
 							AstStatement::Assignment { key, .. }
-								if key == "else_if" || key == "else"
-						) {
-						chain += 1;
+								if key == "else_if" || key == "else" =>
+							{
+								chain += 1;
+							}
+							AstStatement::Comment { .. } => chain += 1,
+							_ => break,
+						}
 					}
 					self.exec_conditional(
 						world,
@@ -1701,9 +2025,22 @@ impl<'a> Interpreter<'a> {
 					format!("{where_}: {alias} has no scope to name at this position")
 				})?,
 				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
+				ScopeKey::Overlord => match world.overlord_of(&ctx.current) {
+					Some(overlord) => overlord,
+					None => return Ok(()),
+				},
 			};
 			world.named.insert(tag.clone());
 			return self.exec_statements(world, &ctx.enter(&tag), items, where_, visited);
+		}
+		// The primitive that actually runs honors the handler gate; the scan
+		// is not the only line of defense. The static table decides what is
+		// a builtin, so a catalog that omits the entry refuses here instead
+		// of silently running the arm.
+		if builtin(key, Context::Effect) {
+			self.catalog
+				.permits(key)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
 		}
 		match key {
 			"set_country_flag" | "clr_country_flag" => {
@@ -1820,6 +2157,11 @@ impl<'a> Interpreter<'a> {
 					.entry(ctx.current.clone())
 					.or_default()
 					.insert(who.clone());
+				world
+					.wars_against
+					.entry(who.clone())
+					.or_default()
+					.insert(ctx.current.clone());
 				world.note(
 					&ctx.current,
 					Observed::WarChanged {
@@ -1839,6 +2181,12 @@ impl<'a> Interpreter<'a> {
 					set.remove(&other);
 				}
 				if let Some(set) = world.wars.get_mut(&other) {
+					set.remove(&ctx.current);
+				}
+				if let Some(set) = world.wars_against.get_mut(&ctx.current) {
+					set.remove(&other);
+				}
+				if let Some(set) = world.wars_against.get_mut(&other) {
 					set.remove(&ctx.current);
 				}
 				world.note(
@@ -1917,7 +2265,61 @@ impl<'a> Interpreter<'a> {
 					},
 				);
 			}
+			"create_subject" => {
+				let (subject, kind) = subject_creation(value).ok_or_else(|| {
+					format!("{where_}: create_subject needs subject_type and who or subject")
+				})?;
+				self.require_subject_type(&kind, where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), kind)
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"create_vassal" | "vassalize" | "release" => {
+				let subject = Tag::parse(
+					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				self.require_subject_type("vassal", where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), "vassal".into())
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"create_march" => {
+				let subject = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: create_march needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				self.require_subject_type("march", where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), "march".into())
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"create_union" => {
+				let subject = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: create_union needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				self.require_subject_type("personal_union", where_)?;
+				world
+					.link_subject(subject, ctx.current.clone(), "personal_union".into())
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"grant_independence" => {
+				let free = boolean(value).ok_or_else(|| {
+					format!(
+						"{where_}: grant_independence needs yes, or a block the model does not read"
+					)
+				})?;
+				if free {
+					world.subjects.remove(&ctx.current);
+				}
+			}
 			"every_country" => {
+				self.catalog
+					.permits(key)
+					.map_err(|reason| format!("{where_}: {reason}"))?;
 				let AstValue::Block { items, .. } = value else {
 					return Err(format!("{where_}: every_country must be a block"));
 				};
@@ -1997,46 +2399,25 @@ impl<'a> Interpreter<'a> {
 					}
 				}
 			}
-			"random_list" => {
-				let AstValue::Block { items, .. } = value else {
-					return Err(format!("{where_}: random_list must be a block"));
-				};
-				// With exactly one surviving branch the roll has a single
-				// outcome; anything else needs the game's RNG.
-				let mut surviving = Vec::new();
-				for (limit, body) in branches(items) {
-					if limit.is_empty() || self.eval_statements(world, ctx, &limit, where_, 0)? {
-						surviving.push(body);
-					}
-				}
-				match surviving.len() {
-					1 => return self.exec_statements(world, ctx, &surviving[0], where_, visited),
-					0 => {
-						return Err(format!(
-							"{where_}: no random_list branch survives its trigger, and the model 							 does not know the game's fallback"
-						));
-					}
-					count => {
-						return Err(format!(
-							"{where_}: random_list with {count} surviving branches needs the 							 game's RNG; the model only runs when exactly one branch's trigger 							 holds"
-						));
-					}
-				}
-			}
 			other => {
 				if let Some(definition) = self.scripted_in(other, Context::Effect) {
-					if !visited.insert(format!("scripted:{other}")) {
+					// Active call stack: a definition inlining itself is a
+					// cycle; the same definition called again after returning
+					// runs again.
+					if !visited.insert(format!("scripted:effect:{other}")) {
 						return Err(format!(
 							"{where_}: {other} inlines itself through scripted definitions; the 							 model refuses the cycle"
 						));
 					}
-					return self.exec_statements(
+					let result = self.exec_statements(
 						world,
 						ctx,
 						&parse(&definition.body),
 						&definition.origin,
 						visited,
 					);
+					visited.remove(&format!("scripted:effect:{other}"));
+					return result;
 				}
 				return Err(format!(
 					"{where_}: {key} reached execution without passing the offline scan"
@@ -2126,8 +2507,20 @@ impl<'a> Interpreter<'a> {
 					format!("{where_}: {alias} has no scope to name at this position")
 				})?,
 				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
+				ScopeKey::Overlord => match world.overlord_of(&ctx.current) {
+					Some(overlord) => overlord,
+					None => return Ok(false),
+				},
 			};
 			return self.eval_statements(world, &ctx.enter(&tag), items, where_, depth + 1);
+		}
+		// Same gate as execution: the trigger that actually decides honors
+		// the handler evidence, not only the scan that approved the plan —
+		// and a catalog omitting the entry refuses instead of deciding.
+		if builtin(key, Context::Condition) {
+			self.catalog
+				.permits(key)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
 		}
 		let country = world.country(&ctx.current);
 		Ok(match key {
@@ -2185,24 +2578,60 @@ impl<'a> Interpreter<'a> {
 					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country tag"))?,
 				)
 				.map_err(|reason| format!("{where_}: {reason}"))?;
-				let (attacker, defender) = if key == "offensive_war_with" {
-					(&ctx.current, &other)
+				// The direction a war was declared in stays recorded:
+				// offensive reads the declarer's index, defensive the
+				// defender's.
+				if key == "offensive_war_with" {
+					world
+						.wars
+						.get(&ctx.current)
+						.is_some_and(|set| set.contains(&other))
 				} else {
-					(&other, &ctx.current)
-				};
-				world
-					.wars
-					.get(attacker)
-					.is_some_and(|set| set.contains(defender))
+					world
+						.wars_against
+						.get(&ctx.current)
+						.is_some_and(|set| set.contains(&other))
+				}
 			}
 			"is_at_war" => {
 				let wanted =
 					boolean(value).ok_or_else(|| format!("{where_}: is_at_war needs yes or no"))?;
+				// Either side of any war: a defender is at war too.
 				let at_war = world
 					.wars
 					.get(&ctx.current)
-					.is_some_and(|set| !set.is_empty());
+					.is_some_and(|set| !set.is_empty())
+					|| world
+						.wars_against
+						.get(&ctx.current)
+						.is_some_and(|set| !set.is_empty());
 				at_war == wanted
+			}
+			"is_subject" => {
+				let wanted = boolean(value)
+					.ok_or_else(|| format!("{where_}: is_subject needs yes or no"))?;
+				world.subjects.contains_key(&ctx.current) == wanted
+			}
+			"is_subject_of" => {
+				let overlord = Tag::parse(
+					name_of(value)
+						.ok_or_else(|| format!("{where_}: is_subject_of needs a country tag"))?,
+				)
+				.map_err(|reason| format!("{where_}: {reason}"))?;
+				world
+					.subjects
+					.get(&ctx.current)
+					.is_some_and(|link| link.overlord == overlord)
+			}
+			"is_subject_of_type" => {
+				let kind = name_of(value)
+					.ok_or_else(|| format!("{where_}: is_subject_of_type needs a subject type"))?
+					.to_string();
+				self.require_subject_type(&kind, where_)?;
+				world
+					.subjects
+					.get(&ctx.current)
+					.is_some_and(|link| link.kind == kind)
 			}
 			"alliance_with" => {
 				let other = Tag::parse(
@@ -2257,17 +2686,53 @@ impl<'a> Interpreter<'a> {
 				};
 				let mut verdicts = Vec::new();
 				for statement in items {
-					let AstStatement::Assignment { key, value, .. } = statement else {
-						continue;
-					};
-					verdicts.push(self.eval_assignment(
-						world,
-						ctx,
-						key,
-						value,
-						where_,
-						depth + 1,
-					)?);
+					match statement {
+						AstStatement::Assignment { key, value, .. } => {
+							verdicts.push(self.eval_assignment(
+								world,
+								ctx,
+								key,
+								value,
+								where_,
+								depth + 1,
+							)?);
+						}
+						AstStatement::Item {
+							value:
+								AstValue::Scalar {
+									value: ScalarValue::Identifier(name),
+									..
+								},
+							..
+						} => {
+							// A bare identifier names a scripted trigger; EU4
+							// reads it as its own conjunctive condition.
+							let definition =
+								self.scripted_in(name, Context::Condition).ok_or_else(|| {
+									format!(
+										"{where_}: {name} reached evaluation without 											 passing the scan"
+									)
+								})?;
+							verdicts.push(self.eval_statements(
+								world,
+								ctx,
+								&parse(&definition.body),
+								&definition.origin,
+								depth + 1,
+							)?);
+						}
+						AstStatement::Comment { .. } => {}
+						other => {
+							return Err(format!(
+								"{where_}: {key} cannot evaluate {other:?} inside a logic block"
+							));
+						}
+					}
+				}
+				if verdicts.is_empty() {
+					return Err(format!(
+						"{where_}: {key} with no conditions cannot be decided offline"
+					));
 				}
 				match key {
 					"OR" => verdicts.iter().any(|&holds| holds),
@@ -2279,13 +2744,21 @@ impl<'a> Interpreter<'a> {
 			}
 			other => {
 				if let Some(definition) = self.scripted_in(other, Context::Condition) {
-					return self.eval_statements(
+					// `= yes` affirms the scripted trigger's body, `= no`
+					// negates it; any other operand is refused.
+					let Some(operand) = boolean(value) else {
+						return Err(format!(
+							"{where_}: scripted trigger {other} is called with an operand 							 the model does not read"
+						));
+					};
+					let holds = self.eval_statements(
 						world,
 						ctx,
 						&parse(&definition.body),
 						&definition.origin,
 						depth + 1,
-					);
+					)?;
+					return Ok(if operand { holds } else { !holds });
 				}
 				return Err(format!(
 					"{where_}: {key} reached evaluation without passing the offline scan"
@@ -2389,41 +2862,26 @@ fn split_chance(items: &[AstStatement]) -> Option<(f64, Vec<AstStatement>)> {
 	chance.map(|chance| (chance, body))
 }
 
-/// The weighted branches of a `random_list` block: each numeric-keyed block
-/// contributes its optional `trigger` limit and its effect body.
-fn branches(items: &[AstStatement]) -> Vec<(Vec<AstStatement>, Vec<AstStatement>)> {
-	let mut branches = Vec::new();
+/// `create_subject`: the subject tag (`who` or `subject`) and `subject_type`.
+fn subject_creation(value: &AstValue) -> Option<(Tag, String)> {
+	let AstValue::Block { items, .. } = value else {
+		return None;
+	};
+	let mut kind = None;
+	let mut subject = None;
 	for statement in items {
 		let AstStatement::Assignment { key, value, .. } = statement else {
 			continue;
 		};
-		if key.bytes().any(|byte| !byte.is_ascii_digit()) {
-			continue;
-		}
-		let AstValue::Block { items, .. } = value else {
-			continue;
-		};
-		branches.push(split_guard(items));
-	}
-	branches
-}
-
-/// The `trigger` guard block and the effect body of a random_list branch.
-fn split_guard(items: &[AstStatement]) -> (Vec<AstStatement>, Vec<AstStatement>) {
-	let mut guard = Vec::new();
-	let mut body = Vec::new();
-	for statement in items {
-		match statement {
-			AstStatement::Assignment { key, value, .. } if key == "trigger" => {
-				if let AstValue::Block { items, .. } = value {
-					guard = items.clone();
-				}
+		match key.as_str() {
+			"subject_type" => kind = name_of(value).map(str::to_string),
+			"who" | "subject" => {
+				subject = name_of(value).and_then(|text| Tag::parse(text).ok());
 			}
-			AstStatement::Comment { .. } => {}
-			other => body.push(other.clone()),
+			_ => {}
 		}
 	}
-	(guard, body)
+	Some((subject?, kind?))
 }
 
 /// `limit` block and body of an `if`/`else_if` block; `None` unless exactly
@@ -2614,6 +3072,8 @@ mod tests {
 				mod_name: "Offline Mod".into(),
 				observe: false,
 				seed: None,
+				history: None,
+				subject_types: None,
 			},
 		)
 	}
@@ -2828,6 +3288,712 @@ mod tests {
 		);
 		let after = case(&result, "after_due");
 		assert_eq!(after.outcome, Outcome::Pass, "{:#?}", after.failures);
+	}
+
+	#[test]
+	fn logic_blocks_evaluate_bare_scripted_triggers() {
+		// A bare identifier inside AND/OR/NOT names a scripted trigger; the
+		// review counterexample: AND = { is_false } passed vacuously and
+		// OR = { is_true } failed, both from skipping the bare items.
+		const CASES: &str = r#"test = {
+	name = and_false
+	time = 1444.11.11
+	tag = SWE
+	expect = { AND = { is_false } }
+}
+test = {
+	name = or_true
+	time = 1444.11.11
+	tag = SWE
+	expect = { OR = { is_true } }
+}
+test = {
+	name = not_false
+	time = 1444.11.11
+	tag = SWE
+	expect = { NOT = { is_false } }
+}
+test = {
+	name = mixed_and
+	time = 1444.11.11
+	tag = SWE
+	effect = { set_country_flag = ready }
+	expect = { AND = { has_country_flag = ready is_true } }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/false.txt",
+				SourceKind::Scripted,
+				"is_false = { always = no }",
+			),
+			file(
+				"common/scripted_triggers/true.txt",
+				SourceKind::Scripted,
+				"is_true = { always = yes }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(
+			&sources,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		assert_eq!(case(&result, "and_false").outcome, Outcome::Fail);
+		assert_eq!(case(&result, "or_true").outcome, Outcome::Pass);
+		assert_eq!(case(&result, "not_false").outcome, Outcome::Pass);
+		assert_eq!(
+			case(&result, "mixed_and").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "mixed_and")
+		);
+	}
+
+	/// A pinned catalog built from the embedded seed with synthetic
+	/// handlers, minus one primitive — the partial-catalog shape of the
+	/// external review repro.
+	fn pinned_without(name: &str) -> SemanticsCatalog {
+		let mut catalog = SemanticsCatalog::embedded();
+		catalog.status = EvidenceStatus::Pinned;
+		catalog.game_version = Some("synthetic".into());
+		catalog.binary_sha256 = Some("0".repeat(64));
+		for primitive in catalog.primitives.values_mut() {
+			primitive.handler = Some(HandlerPin {
+				symbol: "synthetic".into(),
+				address: 1,
+				end: 2,
+				pseudocode_sha256: "0".repeat(64),
+			});
+		}
+		catalog.primitives.remove(name);
+		catalog
+	}
+
+	#[test]
+	fn an_omitted_catalog_primitive_cannot_run_through_a_scripted_shadow() {
+		// The review repro: with `always` removed from a pinned catalog, a
+		// scripted trigger named `always` made the scan resolve the call as
+		// the scripted body while evaluation ran the builtin arm and the
+		// case passed with pinned evidence. The builtin table is static, so
+		// the missing entry cannot un-make the builtin: the call collides in
+		// the scan and the executed builtin would refuse at the gate anyway.
+		const SHADOW: &str = "always = { tag = DAN }";
+		const CASES: &str = r#"test = {
+	name = missing_gate
+	time = 1444.11.11
+	tag = SWE
+	expect = { always = yes }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/shadow.txt",
+				SourceKind::Scripted,
+				SHADOW,
+			),
+			file("tests/repro.txt", SourceKind::TestsDir, CASES),
+		];
+		let catalog = pinned_without("always");
+		let result = interpret_sources(&sources, &ProjectFacts::default(), &catalog);
+		assert_eq!(result.evidence, EvidenceStatus::Pinned);
+		let verdict = case(&result, "missing_gate");
+		assert_ne!(verdict.outcome, Outcome::Pass, "{verdict:#?}");
+		assert!(
+			verdict.unsupported[0].contains("collides"),
+			"{:#?}",
+			verdict.unsupported
+		);
+	}
+
+	#[test]
+	fn a_partial_catalog_still_supports_unrelated_cases_and_legal_scripted() {
+		// The same partial catalog (still missing `always`) runs a case that
+		// never touches the omitted primitive, including a legal scripted
+		// pair that collides with nothing.
+		const CASES: &str = r#"test = {
+	name = untouched
+	time = 1444.11.11
+	tag = SWE
+	effect = { prep }
+	expect = { is_ready }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_effects/prep.txt",
+				SourceKind::Scripted,
+				"prep = { set_country_flag = ready }",
+			),
+			file(
+				"common/scripted_triggers/ready.txt",
+				SourceKind::Scripted,
+				"is_ready = { has_country_flag = ready }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let catalog = pinned_without("always");
+		let result = interpret_sources(&sources, &ProjectFacts::default(), &catalog);
+		let verdict = case(&result, "untouched");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{verdict:#?}");
+	}
+
+	#[test]
+	fn a_scripted_name_cannot_shadow_a_catalog_primitive() {
+		// A scripted trigger named after a catalog primitive resolves as the
+		// scripted body in the scan but as the primitive in evaluation: with
+		// `always = { always = no }` defined, `expect = { always = yes }`
+		// passed although the definition the scan approved evaluates false.
+		// The assignment-form effect twin of this shadow is refused by the
+		// bare-call rule and stays refused here.
+		let text = r#"{
+			"format": 1,
+			"status": "pinned",
+			"game_version": "1.37.5",
+			"binary_sha256": "abc",
+			"primitives": {
+				"always": {
+					"kind": "trigger",
+					"facts": {},
+					"handler": {
+						"symbol": "CDebug::Always",
+						"address": 16,
+						"end": 64,
+						"pseudocode_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+					}
+				},
+				"set_country_flag": {
+					"kind": "effect",
+					"facts": {},
+					"handler": null
+				},
+				"has_country_flag": {
+					"kind": "trigger",
+					"facts": {},
+					"handler": {
+						"symbol": "CCountry::HasFlag",
+						"address": 80,
+						"end": 128,
+						"pseudocode_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+					}
+				}
+			}
+		}"#;
+		let pinned = SemanticsCatalog::parse(text).unwrap();
+		const CASES: &str = r#"test = {
+	name = trigger_shadow
+	time = 1444.11.11
+	tag = SWE
+	expect = { always = yes }
+}
+test = {
+	name = effect_shadow
+	time = 1444.11.11
+	tag = SWE
+	effect = { set_country_flag = x }
+	expect = { has_country_flag = x }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/always.txt",
+				SourceKind::Scripted,
+				"always = { always = no }",
+			),
+			file(
+				"common/scripted_effects/shadow.txt",
+				SourceKind::Scripted,
+				"set_country_flag = { set_country_flag = x }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(&sources, &ProjectFacts::default(), &pinned);
+		for name in ["trigger_shadow", "effect_shadow"] {
+			let verdict = case(&result, name);
+			assert_ne!(verdict.outcome, Outcome::Pass, "{name}: {verdict:#?}");
+			assert!(
+				verdict.unsupported[0].contains("collides"),
+				"{name}: {:#?}",
+				verdict.unsupported
+			);
+		}
+	}
+
+	#[test]
+	fn one_scripted_name_serves_both_its_kinds() {
+		// `shared` is defined once as an effect and once as a trigger; the
+		// later source must not erase the earlier kind, in either input
+		// order.
+		const EFFECT: (&str, &str) = (
+			"common/scripted_effects/shared.txt",
+			"shared = { set_country_flag = ready }",
+		);
+		const TRIGGER: (&str, &str) = (
+			"common/scripted_triggers/shared.txt",
+			"shared = { has_country_flag = ready }",
+		);
+		const CASES: &str = r#"test = {
+	name = both_kinds
+	time = 1444.11.11
+	tag = SWE
+	effect = { shared }
+	expect = { shared }
+}"#;
+		for (first, second) in [(EFFECT, TRIGGER), (TRIGGER, EFFECT)] {
+			let sources = [
+				file(first.0, SourceKind::Scripted, first.1),
+				file(second.0, SourceKind::Scripted, second.1),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			];
+			let result = interpret_sources(
+				&sources,
+				&ProjectFacts::default(),
+				&SemanticsCatalog::embedded(),
+			);
+			let verdict = case(&result, "both_kinds");
+			assert_eq!(
+				verdict.outcome,
+				Outcome::Pass,
+				"{first:?} then {second:?}: {verdict:#?}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_defender_knows_it_is_at_war() {
+		// The review counterexample: SWE declares on DAN. DAN's
+		// defensive_war_with = SWE held, but is_at_war = yes was false because
+		// only the attacker's out-edge was registered. Both sides of a war
+		// know it, and white_peace ends it for both.
+		const CASES: &str = r#"test = {
+	name = attacker_view
+	time = 1444.11.11
+	tag = SWE
+	effect = { declare_war_with_cb = { who = DAN cb = cb_conquest } }
+	expect = { offensive_war_with = DAN is_at_war = yes }
+}
+test = {
+	name = defender_view
+	time = 1444.11.11
+	tag = DAN
+	effect = { SWE = { declare_war_with_cb = { who = DAN cb = cb_conquest } } }
+	expect = { defensive_war_with = SWE is_at_war = yes }
+}
+test = {
+	name = after_peace
+	time = 1444.11.11
+	tag = SWE
+	effect = { declare_war_with_cb = { who = DAN cb = cb_conquest } white_peace = DAN }
+	expect = { NOT = { offensive_war_with = DAN } is_at_war = no }
+}
+test = {
+	name = defender_after_peace
+	time = 1444.11.11
+	tag = DAN
+	effect = {
+		SWE = { declare_war_with_cb = { who = DAN cb = cb_conquest } }
+		white_peace = SWE
+	}
+	expect = { NOT = { defensive_war_with = SWE } is_at_war = no }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		for name in [
+			"attacker_view",
+			"defender_view",
+			"after_peace",
+			"defender_after_peace",
+		] {
+			let verdict = case(&result, name);
+			assert_eq!(verdict.outcome, Outcome::Pass, "{name}: {verdict:#?}");
+		}
+	}
+
+	#[test]
+	fn save_reload_cycles_are_refused_offline() {
+		// The offline model does not serialize campaign state; the cycle runs
+		// on the real game and the case says so instead of passing.
+		const CASES: &str = r#"test = {
+	name = cycler
+	time = 1444.11.11
+	tag = SWE
+	save = "slot_a"
+	effect = { set_country_flag = staged }
+	reload = "slot_a"
+	expect = { has_country_flag = staged }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "cycler");
+		assert_eq!(verdict.outcome, Outcome::Unsupported, "{verdict:#?}");
+		assert!(
+			verdict.unsupported[0].contains("does not serialize"),
+			"{:#?}",
+			verdict.unsupported
+		);
+	}
+
+	#[test]
+	fn a_comment_does_not_break_an_if_else_chain() {
+		// A comment line between the branches is not a chain terminator;
+		// the else must still belong to the if when it executes.
+		const CASES: &str = r#"test = {
+	name = then_ran
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		if = { limit = { always = yes } set_country_flag = good }
+		# a comment between the branches
+		else = { set_country_flag = bad }
+	}
+	expect = { has_country_flag = good NOT = { has_country_flag = bad } }
+}
+test = {
+	name = else_ran
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		if = { limit = { always = no } set_country_flag = good }
+		# a comment between the branches
+		else = { set_country_flag = bad }
+	}
+	expect = { NOT = { has_country_flag = good } has_country_flag = bad }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		for name in ["then_ran", "else_ran"] {
+			let verdict = case(&result, name);
+			assert_eq!(verdict.outcome, Outcome::Pass, "{name}: {verdict:#?}");
+		}
+	}
+
+	#[test]
+	fn comments_across_an_else_if_chain_keep_their_branches() {
+		const CASES: &str = r#"test = {
+	name = middle_branch
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		if = { limit = { always = no } set_country_flag = first }
+		# why not
+		else_if = { limit = { always = yes } set_country_flag = middle }
+		# fallback
+		else = { set_country_flag = last }
+	}
+	expect = {
+		NOT = { has_country_flag = first }
+		has_country_flag = middle
+		NOT = { has_country_flag = last }
+	}
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "middle_branch");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict);
+	}
+
+	#[test]
+	fn a_scripted_trigger_call_honors_its_yes_no_operand() {
+		// is_ready = no negates the scripted trigger; treating every call
+		// as the bare form read `no` as `yes` and passed the wrong verdict.
+		const CASES: &str = r#"test = {
+	name = refused
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_ready = no }
+}
+test = {
+	name = granted
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_ready = yes }
+}
+test = {
+	name = false_negated
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_false = no }
+}
+test = {
+	name = false_affirmed
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_false = yes }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/ready.txt",
+				SourceKind::Scripted,
+				"is_ready = { always = yes }",
+			),
+			file(
+				"common/scripted_triggers/false.txt",
+				SourceKind::Scripted,
+				"is_false = { always = no }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(
+			&sources,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		assert_eq!(
+			case(&result, "refused").outcome,
+			Outcome::Fail,
+			"is_ready = no must not pass as if it were yes"
+		);
+		assert_eq!(case(&result, "granted").outcome, Outcome::Pass);
+		assert_eq!(
+			case(&result, "false_negated").outcome,
+			Outcome::Pass,
+			"negating an always-no trigger holds"
+		);
+		assert_eq!(case(&result, "false_affirmed").outcome, Outcome::Fail);
+	}
+
+	#[test]
+	fn a_scripted_trigger_with_an_unmodeled_operand_is_refused() {
+		const CASES: &str = r#"test = {
+	name = odd_operand
+	time = 1444.11.11
+	tag = SWE
+	expect = { is_ready = maybe }
+}"#;
+		let sources = [
+			file(
+				"common/scripted_triggers/ready.txt",
+				SourceKind::Scripted,
+				"is_ready = { always = yes }",
+			),
+			file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+		];
+		let result = interpret_sources(
+			&sources,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "odd_operand");
+		assert_eq!(verdict.outcome, Outcome::Unsupported, "{:#?}", verdict);
+		assert!(
+			verdict.unsupported[0].contains("= yes or = no"),
+			"{:#?}",
+			verdict.unsupported
+		);
+	}
+
+	#[test]
+	fn an_empty_logic_block_is_not_vacuously_true() {
+		const CASES: &str = r#"test = {
+	name = empty_and
+	time = 1444.11.11
+	tag = SWE
+	expect = { AND = { } }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "empty_and");
+		assert_eq!(verdict.outcome, Outcome::Unsupported, "{:#?}", verdict);
+	}
+
+	#[test]
+	fn sequential_same_id_events_are_not_a_cycle() {
+		// Firing B twice in a row from one immediate block is legal script;
+		// only an event already delivering in the current chain is a cycle.
+		const DOUBLE: &str = r#"country_event = {
+	id = cases.9
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { country_event = { id = cases.10 } country_event = { id = cases.10 } }
+	option = { name = OK }
+}"#;
+		const TICK: &str = r#"country_event = {
+	id = cases.10
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { change_variable = { which = ticks value = 1 } }
+	option = { name = OK }
+}"#;
+		const CASES: &str = r#"test = {
+	name = double_fire
+	time = 1444.11.11
+	tag = SWE
+	fire = cases.9
+	expect = { check_variable = { which = ticks value = 2 } }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"events/cases.txt",
+					SourceKind::Inline,
+					&format!(
+						"namespace = cases
+{DOUBLE}
+{TICK}"
+					),
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "double_fire");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict);
+	}
+
+	#[test]
+	fn a_self_firing_event_is_still_refused() {
+		const LOOP: &str = r#"country_event = {
+	id = cases.11
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { country_event = { id = cases.11 } }
+	option = { name = OK }
+}"#;
+		const CASES: &str = r#"test = {
+	name = self_fire
+	time = 1444.11.11
+	tag = SWE
+	fire = cases.11
+	expect = { always = yes }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"events/cases.txt",
+					SourceKind::Inline,
+					&format!(
+						"namespace = cases
+{LOOP}"
+					),
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "self_fire");
+		assert_eq!(verdict.outcome, Outcome::Unsupported);
+		assert!(
+			verdict.unsupported[0].contains("refuses the cycle"),
+			"{:#?}",
+			verdict.unsupported
+		);
+	}
+
+	#[test]
+	fn sequential_scripted_calls_are_not_a_cycle() {
+		// Calling one scripted effect twice from one block runs both; only a
+		// definition inlining itself is a cycle.
+		const CASES: &str = r#"test = {
+	name = twice
+	time = 1444.11.11
+	tag = SWE
+	effect = { tick tick }
+	expect = { check_variable = { which = ticks value = 2 } }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"common/scripted_effects/tick.txt",
+					SourceKind::Scripted,
+					"tick = { change_variable = { which = ticks value = 1 } }",
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "twice");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict);
+	}
+
+	#[test]
+	fn a_self_inlining_scripted_effect_is_still_refused() {
+		const CASES: &str = r#"test = {
+	name = self_inline
+	time = 1444.11.11
+	tag = SWE
+	effect = { spin }
+	expect = { always = yes }
+}"#;
+		let result = interpret_sources(
+			&[
+				file(
+					"common/scripted_effects/spin.txt",
+					SourceKind::Scripted,
+					"spin = { spin }",
+				),
+				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
+			],
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+		);
+		let verdict = case(&result, "self_inline");
+		assert_eq!(verdict.outcome, Outcome::Unsupported);
+		assert!(
+			verdict.unsupported[0].contains("refuses the cycle"),
+			"{:#?}",
+			verdict.unsupported
+		);
+	}
+
+	#[test]
+	fn a_not_yet_due_event_survives_an_advance_that_ends_earlier() {
+		// days = 2 split across two advance_days = 1 steps: the first
+		// advance ends before the event is due, so the flag must still be
+		// absent (NOT holds), and the second advance delivers it. Popping
+		// the earliest entry before comparing dates drops exactly this
+		// event on the first advance.
+		const TIMER: &str = r#"country_event = {
+	id = cases.4
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { country_event = { id = cases.1 days = 2 } }
+	option = { name = OK }
+}"#;
+		const SPLIT: &str = r#"test = {
+	name = split_advance
+	time = 1444.11.11
+	tag = SWE
+	fire = cases.4
+	advance_days = 1
+	expect = { NOT = { has_country_flag = called } }
+	advance_days = 1
+	expect = { has_country_flag = called }
+}"#;
+		let result = scenario(
+			&format!(
+				"{EVENT}
+{TIMER}"
+			),
+			SPLIT,
+		);
+		let verdict = case(&result, "split_advance");
+		assert_eq!(verdict.outcome, Outcome::Pass, "{:#?}", verdict.failures);
 	}
 
 	#[test]
@@ -3341,19 +4507,22 @@ test = {
 	}
 
 	#[test]
-	fn random_list_runs_when_exactly_one_branch_survives() {
+	fn random_list_is_refused_with_its_weights_unread() {
+		// The review counterexample: a weight-0 branch is not a certain pick,
+		// and the model does not read the weights at all, so every
+		// random_list is refused instead of running a "single survivor".
 		const CASES: &str = r#"test = {
-	name = single_branch
+	name = zero_weight
+	time = 1444.11.11
+	tag = SWE
+	effect = { random_list = { 0 = { set_country_flag = never } } }
+	expect = { has_country_flag = never }
+}
+test = {
+	name = one_of_two
 	time = 1444.11.11
 	tag = SWE
 	effect = { random_list = { 50 = { trigger = { always = no } set_country_flag = lost } 50 = { set_country_flag = won } } }
-	expect = { has_country_flag = won NOT = { has_country_flag = lost } }
-}
-test = {
-	name = two_branches
-	time = 1444.11.11
-	tag = SWE
-	effect = { random_list = { 50 = { set_country_flag = left } 50 = { set_country_flag = right } } }
 	expect = { always = yes }
 }"#;
 		let result = interpret_sources(
@@ -3361,16 +4530,19 @@ test = {
 			&ProjectFacts::default(),
 			&SemanticsCatalog::embedded(),
 		);
-		let single = case(&result, "single_branch");
-		assert_eq!(single.outcome, Outcome::Pass, "{:#?}", single);
-		let two = case(&result, "two_branches");
-		assert_eq!(two.outcome, Outcome::Unsupported);
-		assert!(
-			two.unsupported[0].contains("surviving branches")
-				&& two.unsupported[0].contains("game's RNG"),
-			"{:#?}",
-			two.unsupported
-		);
+		for name in ["zero_weight", "one_of_two"] {
+			let verdict = case(&result, name);
+			assert_eq!(
+				verdict.outcome,
+				Outcome::Unsupported,
+				"{name}: {verdict:#?}"
+			);
+			assert!(
+				verdict.unsupported[0].contains("random_list"),
+				"{name}: {:#?}",
+				verdict.unsupported
+			);
+		}
 	}
 
 	#[test]
@@ -3440,6 +4612,8 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: true,
 				seed: None,
+				history: None,
+				subject_types: None,
 			},
 		);
 		let trace = &case(&observed, "observed").trace;
@@ -3577,6 +4751,7 @@ test = {
 				)
 			})
 			.collect(),
+			provinces: BTreeMap::new(),
 		};
 		let result = interpret(
 			&plan,
@@ -3587,6 +4762,8 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: false,
 				seed: Some(seed),
+				history: None,
+				subject_types: None,
 			},
 		);
 		let seeded_read = case(&result, "seeded_read");
@@ -3641,10 +4818,101 @@ test = {
 		assert_eq!(iterate.outcome, Outcome::Pass, "{:#?}", iterate);
 	}
 
-	const DECISION_FILE: &str = r#"unify_japan_test = {
-	potential = { tag = SWE }
-	allow = { has_country_flag = ready }
-	effect = { set_country_flag = decided }
+	fn pinned_catalog(body: &str) -> SemanticsCatalog {
+		let text = format!(
+			r#"{{
+			"format": 1,
+			"status": "pinned",
+			"game_version": "1.37.5",
+			"binary_sha256": "abc",
+			"primitives": {{ {body} }}
+		}}"#
+		);
+		SemanticsCatalog::parse(&text).unwrap()
+	}
+
+	const PINNED_HANDLER: &str = r#""handler": {
+		"symbol": "CCountry::Example",
+		"address": 16,
+		"end": 64,
+		"pseudocode_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	}"#;
+
+	/// An unpinned effect inside `every_country` is still refused. The
+	/// iterator's own handler must not hide the nested pin check.
+	#[test]
+	fn every_country_precheck_does_not_bypass_an_unpinned_body() {
+		let catalog = pinned_catalog(&format!(
+			r#"
+			"every_country": {{ "kind": "effect", "facts": {{}}, {PINNED_HANDLER} }},
+			"set_country_flag": {{ "kind": "effect", "facts": {{}}, {PINNED_HANDLER} }},
+			"has_country_flag": {{ "kind": "trigger", "facts": {{}}, {PINNED_HANDLER} }},
+			"add_prestige": {{ "kind": "effect", "facts": {{}}, "handler": null }}
+			"#
+		));
+		const CASES: &str = r#"test = {
+	name = bypass
+	time = 1444.11.11
+	tag = SWE
+	effect = { every_country = { add_prestige = 1 set_country_flag = seen } }
+	expect = { has_country_flag = seen }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&catalog,
+		);
+		let bypass = case(&result, "bypass");
+		assert_eq!(bypass.outcome, Outcome::Unsupported);
+		assert!(
+			bypass
+				.unsupported
+				.iter()
+				.any(|reason| reason.contains("add_prestige")
+					&& reason.contains("no decompiled handler evidence")),
+			"{:#?}",
+			bypass.unsupported
+		);
+	}
+
+	/// A missing handler on `every_country` still scans the limit and the body.
+	#[test]
+	fn every_country_precheck_lists_nested_unpinned_reasons_too() {
+		let catalog = pinned_catalog(
+			r#"
+			"every_country": { "kind": "effect", "facts": {}, "handler": null },
+			"always": { "kind": "trigger", "facts": {}, "handler": null },
+			"add_prestige": { "kind": "effect", "facts": {}, "handler": null }
+			"#,
+		);
+		const CASES: &str = r#"test = {
+	name = all_reasons
+	time = 1444.11.11
+	tag = SWE
+	effect = { every_country = { limit = { always = yes } add_prestige = 1 } }
+}"#;
+		let result = interpret_sources(
+			&[file("tests/scenario.txt", SourceKind::TestsDir, CASES)],
+			&ProjectFacts::default(),
+			&catalog,
+		);
+		let reasons = case(&result, "all_reasons").unsupported.join("\n");
+		assert!(reasons.contains("every_country"), "{reasons}");
+		assert!(reasons.contains("always"), "{reasons}");
+		assert!(reasons.contains("add_prestige"), "{reasons}");
+		assert_eq!(
+			reasons.matches("no decompiled handler evidence").count(),
+			3,
+			"{reasons}"
+		);
+	}
+
+	const DECISION_FILE: &str = r#"country_decisions = {
+	unify_japan_test = {
+		potential = { tag = SWE }
+		allow = { has_country_flag = ready }
+		effect = { set_country_flag = decided }
+	}
 }"#;
 
 	#[test]
@@ -3659,11 +4927,7 @@ test = {
 }"#;
 		let result = interpret_sources(
 			&[
-				file(
-					"common/decisions/test.txt",
-					SourceKind::Decisions,
-					DECISION_FILE,
-				),
+				file("decisions/test.txt", SourceKind::Decisions, DECISION_FILE),
 				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
 			],
 			&ProjectFacts::default(),
@@ -3684,11 +4948,7 @@ test = {
 }"#;
 		let result = interpret_sources(
 			&[
-				file(
-					"common/decisions/test.txt",
-					SourceKind::Decisions,
-					DECISION_FILE,
-				),
+				file("decisions/test.txt", SourceKind::Decisions, DECISION_FILE),
 				file("tests/scenario.txt", SourceKind::TestsDir, CASES),
 			],
 			&ProjectFacts::default(),
@@ -3795,6 +5055,8 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: true,
 				seed: None,
+				history: None,
+				subject_types: None,
 			},
 		);
 		let toggled = case(&result, "toggled");
@@ -3846,6 +5108,8 @@ test = {
 				mod_name: "Offline Mod".into(),
 				observe: true,
 				seed: None,
+				history: None,
+				subject_types: None,
 			},
 		);
 		let any_command = case(&result, "any_command");
@@ -3858,6 +5122,207 @@ test = {
 			)),
 			"{:#?}",
 			any_command.trace
+		);
+	}
+
+	#[test]
+	fn history_date_blocks_follow_each_case_date() {
+		let timeline = overlay_history(&[
+			ContentLayer {
+				replace_paths: Vec::new(),
+				files: vec![
+					LayerFile {
+						path: "history/countries/SWE - Sweden.txt".into(),
+						text: "religion = catholic\nprimary_culture = swedish\n1500.1.1 = { religion = protestant }\n".into(),
+					},
+					LayerFile {
+						path: "history/countries/DAN - Denmark.txt".into(),
+						text: "1500.1.1 = { religion = protestant }\n".into(),
+					},
+				],
+			},
+			ContentLayer {
+				replace_paths: Vec::new(),
+				files: vec![LayerFile {
+					path: "history/countries/Q01 - Custom.txt".into(),
+					text: "religion = norse\n".into(),
+				}],
+			},
+		])
+		.unwrap();
+		const CASES: &str = r#"test = {
+	name = early
+	time = 1444.11.11
+	tag = SWE
+	expect = { religion = catholic NOT = { religion = protestant } }
+}
+test = {
+	name = later
+	time = 1500.1.1
+	tag = SWE
+	expect = { religion = protestant primary_culture = swedish }
+}
+test = {
+	name = custom
+	time = 1444.11.11
+	tag = Q01
+	expect = { religion = norse }
+}
+test = {
+	name = not_yet
+	time = 1444.11.11
+	tag = DAN
+	expect = { religion = protestant }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: false,
+				seed: None,
+				history: Some(timeline),
+				subject_types: None,
+			},
+		);
+		assert_eq!(
+			case(&result, "early").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "early")
+		);
+		assert_eq!(
+			case(&result, "later").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "later")
+		);
+		assert_eq!(
+			case(&result, "custom").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "custom")
+		);
+		let not_yet = case(&result, "not_yet");
+		assert_eq!(not_yet.outcome, Outcome::Unsupported);
+		assert!(
+			not_yet.unsupported[0].contains("unknown until the case writes it"),
+			"{:#?}",
+			not_yet.unsupported
+		);
+	}
+
+	#[test]
+	fn subject_links_use_resolved_types_and_the_overlord_scope() {
+		let types = overlay_subject_types(&[ContentLayer {
+			replace_paths: Vec::new(),
+			files: vec![LayerFile {
+				path: "common/subject_types/00_subject_types.txt".into(),
+				text: "default = {}\nvassal = { copy_from = default }\nee_tributary = { copy_from = vassal }\n".into(),
+			}],
+		}])
+		.unwrap();
+		const CASES: &str = r#"test = {
+	name = linked
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		create_subject = { subject_type = ee_tributary subject = NOR }
+		NOR = { overlord = { set_country_flag = paid } }
+	}
+	expect = {
+		NOR = {
+			is_subject = yes
+			is_subject_of = SWE
+			is_subject_of_type = ee_tributary
+			overlord = { has_country_flag = paid }
+		}
+	}
+}
+test = {
+	name = freed
+	time = 1444.11.11
+	tag = NOR
+	effect = {
+		SWE = { create_vassal = NOR }
+		grant_independence = yes
+	}
+	expect = { is_subject = no }
+}
+test = {
+	name = unknown_type
+	time = 1444.11.11
+	tag = SWE
+	effect = { create_march = DAN }
+	expect = { always = yes }
+}"#;
+		let sources = [file("tests/scenario.txt", SourceKind::TestsDir, CASES)];
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		let result = interpret(
+			&plan,
+			&ProjectFacts::default(),
+			&SemanticsCatalog::embedded(),
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: false,
+				seed: None,
+				history: None,
+				subject_types: Some(types),
+			},
+		);
+		assert_eq!(
+			case(&result, "linked").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "linked")
+		);
+		assert_eq!(
+			case(&result, "freed").outcome,
+			Outcome::Pass,
+			"{:#?}",
+			case(&result, "freed")
+		);
+		let unknown = case(&result, "unknown_type");
+		assert_eq!(unknown.outcome, Outcome::Unsupported);
+		assert!(
+			unknown.unsupported[0].contains("march"),
+			"{:#?}",
+			unknown.unsupported
 		);
 	}
 

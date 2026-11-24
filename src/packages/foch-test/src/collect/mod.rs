@@ -133,23 +133,59 @@ pub fn collect(files: &[SourceFile]) -> Collection {
 	collection
 }
 
-/// Collect top-level decision definitions from `common/decisions/`.
+/// Collect country decisions from `decisions/*.txt`.
+///
+/// The game nests each decision under `country_decisions = { ... }`. The
+/// container itself is not a decision, and a top-level `name = { ... }`
+/// outside that container is not one either.
 fn decisions_collect(file: &SourceFile, statements: &[AstStatement], out: &mut Collection) {
+	out.decisions
+		.extend(country_decisions(&file.path, &file.text, statements));
+}
+
+/// Country decisions nested in `country_decisions` blocks, in source order.
+/// A later block that repeats a name is a later definition; callers that
+/// overlay playset layers decide which one survives.
+pub(crate) fn country_decisions(
+	path: &crate::source::RelPath,
+	text: &str,
+	statements: &[AstStatement],
+) -> Vec<DecisionInfo> {
+	let mut decisions = Vec::new();
 	for statement in statements {
 		let AstStatement::Assignment {
 			key,
-			value: AstValue::Block { span, .. },
+			value: AstValue::Block { items, .. },
 			..
 		} = statement
 		else {
 			continue;
 		};
-		out.decisions.push(DecisionInfo {
-			name: key.clone(),
-			origin: SourceSpan::from_parser(&file.path, span),
-			body: file.text[span.start.offset + 1..span.end.offset - 1].into(),
-		});
+		if key != "country_decisions" {
+			continue;
+		}
+		for item in items {
+			let AstStatement::Assignment {
+				key,
+				value: AstValue::Block { span, .. },
+				..
+			} = item
+			else {
+				continue;
+			};
+			let start = span.start.offset + 1;
+			let end = span.end.offset.saturating_sub(1);
+			if start > end || end > text.len() {
+				continue;
+			}
+			decisions.push(DecisionInfo {
+				name: key.clone(),
+				origin: SourceSpan::from_parser(path, span),
+				body: text[start..end].into(),
+			});
+		}
 	}
+	decisions
 }
 
 /// Collect top-level `name = { ... }` definitions from a scripted directory.
@@ -337,6 +373,12 @@ impl CaseFields {
 fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, String> {
 	let span = || SourceSpan::from_parser(&file.path, value.span());
 	Ok(Some(match (key, typed_step(file, key, value)?) {
+		("expect_receipt", _) => {
+			let AstValue::Block { items, .. } = value else {
+				return Err("expect_receipt must be a block".into());
+			};
+			receipt_step(file, items, span())?
+		}
 		(_, None) => return Ok(None),
 		("effect", Some(Value::Effects(block))) => Step::Effect { block },
 		("expect", Some(Value::Conditions(clauses))) => Step::Expect { clauses },
@@ -350,16 +392,183 @@ fn step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Step>, 
 			command,
 			span: span(),
 		},
+		("save", Some(Value::Text(slot))) => Step::Save {
+			slot: save_slot(&slot)?,
+			span: span(),
+		},
+		("reload", Some(Value::Text(slot))) => Step::Reload {
+			slot: save_slot(&slot)?,
+			span: span(),
+		},
 		_ => unreachable!("step types are fixed by the schema"),
 	}))
 }
 
+/// Parse one `expect_receipt` block's entries, shared by the `tests/` block
+/// path and the inline `#test` annotation path.
+fn receipt_step(
+	file: &SourceFile,
+	items: &[AstStatement],
+	span: SourceSpan,
+) -> Result<Step, String> {
+	let _ = file;
+	let mut plugin: Option<String> = None;
+	let mut fields: Vec<(String, String)> = Vec::new();
+	let mut numeric: Vec<crate::model::ReceiptRange> = Vec::new();
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			// Comments are fine; a bare item drops a constraint the
+			// author wrote, so it is a collection error.
+			if matches!(item, AstStatement::Comment { .. }) {
+				continue;
+			}
+			return Err(
+				"expect_receipt holds an entry without a key; every constraint must be key = value"
+					.into(),
+			);
+		};
+		let AstValue::Scalar {
+			value:
+				ScalarValue::Identifier(text) | ScalarValue::String(text) | ScalarValue::Number(text),
+			..
+		} = value
+		else {
+			// A nested block of field = { min = .. max = .. } ranges;
+			// every other block-shaped field is unreadable.
+			if key != "numeric" {
+				return Err(format!("expect_receipt field {key} needs a plain value"));
+			}
+			let AstValue::Block { items, .. } = value else {
+				return Err("numeric must be a block of field = { min = .. max = .. }".into());
+			};
+			for entry in items {
+				let AstStatement::Assignment {
+					key: field, value, ..
+				} = entry
+				else {
+					if matches!(entry, AstStatement::Comment { .. }) {
+						continue;
+					}
+					return Err("numeric holds field = { min = .. max = .. } entries".into());
+				};
+				let AstValue::Block { items, .. } = value else {
+					return Err(format!(
+						"numeric field {field} needs a min = .. and/or max = .. block"
+					));
+				};
+				if fields.iter().any(|(existing, _)| existing == field) {
+					return Err(format!(
+						"expect_receipt field {field} is constrained twice, once as an exact string and once numerically; keep one form"
+					));
+				}
+				if numeric.iter().any(|range| range.field == *field) {
+					return Err(format!("numeric constrains {field} twice"));
+				}
+				let (mut min, mut max) = (None, None);
+				for bound in items {
+					let AstStatement::Assignment { key, value, .. } = bound else {
+						if matches!(bound, AstStatement::Comment { .. }) {
+							continue;
+						}
+						return Err(format!("numeric field {field} holds min and/or max bounds"));
+					};
+					let AstValue::Scalar {
+						value: ScalarValue::Number(text),
+						..
+					} = value
+					else {
+						return Err(format!("numeric bound {key} of {field} needs a number"));
+					};
+					let parsed: f64 = text
+						.parse()
+						.map_err(|_| format!("numeric bound {key} of {field} is not a number"))?;
+					if !parsed.is_finite() {
+						return Err(format!("numeric bound {key} of {field} must be finite"));
+					}
+					match key.as_str() {
+						"min" => min = Some(parsed),
+						"max" => max = Some(parsed),
+						other => {
+							return Err(format!(
+								"numeric field {field} takes min and/or max, not {other}"
+							));
+						}
+					}
+				}
+				if min.is_none() && max.is_none() {
+					return Err(format!(
+						"numeric field {field} needs at least one of min or max"
+					));
+				}
+				numeric.push(crate::model::ReceiptRange {
+					field: field.clone(),
+					min,
+					max,
+				});
+			}
+			continue;
+		};
+		if key == "plugin" {
+			if plugin.is_some() {
+				return Err("expect_receipt names plugin twice".into());
+			}
+			plugin = Some(text.clone());
+		} else if let Some(previous) = fields.iter().find(|(existing, _)| existing == key) {
+			return Err(format!(
+				"expect_receipt field {key} is given twice ({:?} and {:?}); \
+				 conflicting correlation constraints cannot be honored",
+				previous.1, text,
+			));
+		} else {
+			fields.push((key.clone(), text.clone()));
+		}
+	}
+	let plugin = plugin.ok_or_else(|| "expect_receipt needs a plugin = ... field".to_string())?;
+	// Correlation is mandatory: the receipt must name the case it belongs
+	// to and carry a request token the fixture issued with the command.
+	// Without both, a same-session receipt for another case could satisfy
+	// this step.
+	for required in ["case", "request"] {
+		if !fields.iter().any(|(key, _)| key == required) {
+			return Err(format!(
+				"expect_receipt needs a {required} = ... field correlating it to one command of this case"
+			));
+		}
+	}
+	Ok(Step::ExpectReceipt {
+		plugin,
+		fields,
+		numeric,
+		span,
+	})
+}
+
+/// A save slot name becomes one console line (`save_game <slot>`), so it
+/// may only carry characters the console reads as one token.
+fn save_slot(slot: &str) -> Result<String, String> {
+	if !slot.is_empty()
+		&& slot
+			.bytes()
+			.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+	{
+		Ok(slot.to_string())
+	} else {
+		Err(format!(
+			"save slot {slot:?} must be a non-empty name of letters, digits, _ or -"
+		))
+	}
+}
+
 fn typed_step(file: &SourceFile, key: &str, value: &AstValue) -> Result<Option<Value>, String> {
 	match key {
+		// expect_receipt has its own block shape; step() parses it.
+		"expect_receipt" => Ok(None),
 		"effect" | "expect" | "advance_days" => typed(file, key, value).map(Some),
-		"take_decision" | "cheat" => parse_value(&file.path, &file.text, value, ValueType::Text)
-			.map(Some)
-			.map_err(|message| format!("{key}: {message}")),
+		"take_decision" | "cheat" | "save" | "reload" => {
+			parse_value(&file.path, &file.text, value, ValueType::Text)
+				.map(Some)
+				.map_err(|message| format!("{key}: {message}"))
+		}
 		"fire" => parse_value(&file.path, &file.text, value, ValueType::EventId)
 			.map(Some)
 			.map_err(|message| format!("fire: {message}")),

@@ -27,24 +27,54 @@ impl LaunchSpec {
 	}
 }
 
-/// A launched game, observed until it finishes or is stopped.
-pub struct GameProcess(Child);
+/// A launched game, observed until it finishes or is stopped. The launch
+/// identity is captured while the [`Child`] handle is alive, so a process
+/// that exits within seconds still leaves a truthful record.
+pub struct GameProcess {
+	child: Child,
+	identity: LaunchIdentity,
+}
+
+/// Who the runner spawned, taken from the live process handle.
+#[derive(Clone, Copy, Debug)]
+pub struct LaunchIdentity {
+	pub pid: u32,
+	/// The Windows session the process runs in, or `None` when the OS
+	/// answer is unavailable — never invented.
+	pub session_id: Option<u32>,
+}
+
+/// How a process ended, preserving the difference between an exit code, a
+/// signal kill (no code on Unix) and success.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExitRecord {
+	/// The exit code when the OS reports one; `None` for signal deaths.
+	pub code: Option<i32>,
+	pub success: bool,
+}
 
 impl GameProcess {
-	/// The exit code if the process has already exited, else `None`.
-	pub fn exit_code(&mut self) -> Option<i32> {
-		self.0
+	pub fn identity(&self) -> LaunchIdentity {
+		self.identity
+	}
+
+	/// How the process ended, if it has already exited.
+	pub fn exited(&mut self) -> Option<ExitRecord> {
+		self.child
 			.try_wait()
 			.ok()
 			.flatten()
-			.map(|status| status.code().unwrap_or(0))
+			.map(|status| ExitRecord {
+				code: status.code(),
+				success: status.success(),
+			})
 	}
 
 	/// Terminate the process. The runner owns only this process; a game that
 	/// spawns helpers of its own is responsible for them.
 	pub fn stop(&mut self) {
-		let _ = self.0.kill();
-		let _ = self.0.wait();
+		let _ = self.child.kill();
+		let _ = self.child.wait();
 	}
 }
 
@@ -61,7 +91,29 @@ pub fn spawn(spec: &LaunchSpec) -> io::Result<GameProcess> {
 		.stdin(Stdio::null())
 		.stdout(Stdio::null())
 		.stderr(Stdio::null());
-	Ok(GameProcess(command.spawn()?))
+	let child = command.spawn()?;
+	let identity = LaunchIdentity {
+		pid: child.id(),
+		session_id: windows_session_id(child.id()),
+	};
+	Ok(GameProcess { child, identity })
+}
+
+/// The Windows session id of a process id, or `None` when the OS call
+/// fails — the record states the absence rather than guessing.
+#[cfg(windows)]
+fn windows_session_id(pid: u32) -> Option<u32> {
+	let mut session_id = 0u32;
+	// SAFETY: a plain out-parameter call on a process id we own.
+	let ok = unsafe {
+		windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(pid, &mut session_id)
+	};
+	(ok != 0).then_some(session_id)
+}
+
+#[cfg(not(windows))]
+fn windows_session_id(_pid: u32) -> Option<u32> {
+	None
 }
 
 /// Link a game data directory into the runtime layer without copying it.

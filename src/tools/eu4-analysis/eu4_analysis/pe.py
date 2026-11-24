@@ -1,14 +1,4 @@
-"""Windows PE64 metadata: sections, exact .pdata function ranges, and
-keyword string references.
-
-The macOS backend reads exact boundaries from LC_FUNCTION_STARTS; x64
-Windows executables carry the same exactness in `.pdata`, where every
-RUNTIME_FUNCTION publishes its function's begin and end RVA. Symbols are
-absent on Windows, so handler discovery works from the other end: find the
-keyword string in the data sections, find the `lea` instructions in `.text`
-that reference it (RIP-relative), and read the registration call in the
-containing function.
-"""
+"""PE metadata and exact function boundaries for the supported backend."""
 
 from __future__ import annotations
 
@@ -17,6 +7,8 @@ import hashlib
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+
+from .binary import BinaryImage
 
 IMAGE_DOS_SIGNATURE = 0x5A4D  # "MZ"
 IMAGE_NT_SIGNATURE = 0x00004550  # "PE\0\0"
@@ -74,7 +66,9 @@ class PEImage:
 		)
 
 	def section_of(self, rva: int) -> Section | None:
-		return next((section for section in self.sections if section.contains_rva(rva)), None)
+		return next(
+			(section for section in self.sections if section.contains_rva(rva)), None
+		)
 
 	def bytes_of_rva(self, rva: int, size: int) -> bytes | None:
 		section = self.section_of(rva)
@@ -92,7 +86,9 @@ def _read_u64(data: bytes, offset: int) -> int:
 	return struct.unpack_from("<Q", data, offset)[0]
 
 
-def section_table(data: bytes, first_section_offset: int, count: int) -> tuple[Section, ...]:
+def section_table(
+	data: bytes, first_section_offset: int, count: int
+) -> tuple[Section, ...]:
 	sections: list[Section] = []
 	for index in range(count):
 		offset: int = first_section_offset + index * 40
@@ -100,7 +96,9 @@ def section_table(data: bytes, first_section_offset: int, count: int) -> tuple[S
 			raise ValueError("truncated section table")
 		raw_name: bytes = data[offset : offset + 8]
 		name: str = raw_name.split(b"\0", 1)[0].decode("ascii", "replace")
-		virtual_size, rva, file_size, file_offset = struct.unpack_from("<IIII", data, offset + 8)
+		virtual_size, rva, file_size, file_offset = struct.unpack_from(
+			"<IIII", data, offset + 8
+		)
 		sections.append(Section(name, rva, virtual_size, file_offset, file_size))
 	return tuple(sections)
 
@@ -111,7 +109,10 @@ def read_binary(path: Path) -> PEImage:
 	if len(data) < 0x40 or _read_u32(data, 0x3C) == 0:
 		raise ValueError("truncated DOS header")
 	pe_offset: int = _read_u32(data, 0x3C)
-	if _read_u16(data, 0) != IMAGE_DOS_SIGNATURE or _read_u32(data, pe_offset) != IMAGE_NT_SIGNATURE:
+	if (
+		_read_u16(data, 0) != IMAGE_DOS_SIGNATURE
+		or _read_u32(data, pe_offset) != IMAGE_NT_SIGNATURE
+	):
 		raise ValueError("not a PE executable")
 	machine: int = _read_u16(data, pe_offset + 4)
 	if machine != MACHINE_AMD64:
@@ -133,7 +134,9 @@ def read_binary(path: Path) -> PEImage:
 	entries: dict[int, int] = {}
 	starts: set[int] = set()
 	for offset in range(
-		pdata.file_offset, min(pdata.file_offset + pdata.file_size, len(data)) - 12 + 1, 12
+		pdata.file_offset,
+		min(pdata.file_offset + pdata.file_size, len(data)) - 12 + 1,
+		12,
 	):
 		begin, end, _ = struct.unpack_from("<III", data, offset)
 		if begin == 0:
@@ -170,7 +173,9 @@ def keyword_rvas(image: PEImage, keyword: str) -> tuple[int, ...]:
 	for section in image.sections:
 		if section.name == ".text":
 			continue
-		haystack: bytes = image.data[section.file_offset : section.file_offset + section.file_size]
+		haystack: bytes = image.data[
+			section.file_offset : section.file_offset + section.file_size
+		]
 		position: int = haystack.find(needle)
 		while position != -1:
 			found.append(section.rva + position)
@@ -202,16 +207,37 @@ def _lea_targets(image: PEImage, targets: frozenset[int]) -> tuple[int, ...]:
 	return tuple(insns)
 
 
-def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
-	"""Handler begins found in the static registration tables.
+def _cstring_at(image: PEImage, address: int) -> str | None:
+	"""A short ASCII C string at a loaded-image address, if one is there."""
+	if address < image.image_base:
+		return None
+	rva: int = address - image.image_base
+	for section in image.sections:
+		if not section.contains_rva(rva):
+			continue
+		if rva >= section.rva + section.file_size:
+			return None
+		offset: int = section.offset_of(rva)
+		end: int = image.data.find(b"\0", offset, min(offset + 80, len(image.data)))
+		if end <= offset:
+			return None
+		raw: bytes = image.data[offset:end]
+		if raw and all(32 <= byte < 127 for byte in raw):
+			return raw.decode("ascii")
+		return None
+	return None
 
-	Effect families register through initialized data: a qword holding the
-	keyword string's address sits in a table entry whose neighborhood
-	carries the handler's code address (verified against EU4 1.37.5, whose
-	effect table reads {kind, name, 0, parameter text, 0, 0, tooltip,
-	handler}). A window of qwords around each pointer hit is scanned for
-	values that are recorded function begins; only unambiguous hits —
-	exactly one — are returned, never guesses.
+
+def string_sites(image: PEImage, keyword: str) -> tuple[tuple[str, int | None], ...]:
+	"""Pointer hits of `keyword`: ``("handler", va)`` or ``("console", va)``.
+
+	The record that carries a keyword pointer puts the handler six qwords
+	later (verified on the synthetic effect entry and on EU4 1.37.5). A
+	wider neighborhood also sees the console-command table, whose records
+	share that handler slot but then point at an argument hint such as
+	``<Flag>`` or ``<Amount>``. Those are console commands, not the script
+	effect or trigger. ``va`` is a ``.pdata`` function start when the slot
+	points at one, and ``None`` when the console hint is not a function.
 	"""
 	text = next((s for s in image.sections if s.name == ".text"), None)
 	if text is None:
@@ -219,21 +245,99 @@ def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
 	text_begin = text.rva + image.image_base
 	text_end = text.rva + max(text.virtual_size, text.file_size) + image.image_base
 	starts = set(image.function_starts)
-	handlers: list[int] = []
+	# Name pointer, then the handler qword at +0x30, then the qword at
+	# +0x40 that a console command uses for its argument hint.
+	window_last = 0x40 + 8
+	# Only hits inside a section's raw extent count; anything past the
+	# section table is overlay noise an appended blob can plant at will.
+	backed = tuple(
+		(section.file_offset, section.file_offset + section.file_size)
+		for section in image.sections
+	)
+	sites: list[tuple[str, int | None]] = []
 	for rva in keyword_rvas(image, keyword):
 		needle = struct.pack("<Q", image.image_base + rva)
 		position = image.data.find(needle)
 		while position != -1:
-			for offset in range(-8, 0x40, 8):
-				value = struct.unpack_from("<Q", image.data, position + offset)[0]
-				if text_begin <= value < text_end and value in starts:
-					handlers.append(value)
+			if (
+				position >= 8
+				and position + window_last <= len(image.data)
+				and any(begin <= position < end for begin, end in backed)
+			):
+				hint = _cstring_at(
+					image, struct.unpack_from("<Q", image.data, position + 0x40)[0]
+				)
+				value = struct.unpack_from("<Q", image.data, position + 0x30)[0]
+				handler = (
+					value
+					if text_begin <= value < text_end and value in starts
+					else None
+				)
+				# Console commands document their argument here. The script
+				# tables do not, so this is a shape check, not a name list.
+				if hint is not None and hint.startswith("<"):
+					sites.append(("console", handler))
+				elif handler is not None:
+					sites.append(("handler", handler))
 			position = image.data.find(needle, position + 1)
+	return tuple(sites)
+
+
+def table_handlers(image: PEImage, keyword: str) -> tuple[int, ...]:
+	"""Script-handler begins named by a static registration record.
+
+	A console-command hint drops the hit instead of pinning it. Only an
+	unambiguous remaining handler is returned; several candidates or none
+	is not a guess.
+	"""
+	handlers = [
+		handler
+		for kind, handler in string_sites(image, keyword)
+		if kind == "handler" and handler is not None
+	]
 	unique = set(handlers)
 	return tuple(sorted(unique)) if len(unique) == 1 else ()
 
 
-def keyword_reference_functions(image: PEImage, keyword: str) -> tuple[tuple[int, int], ...]:
+def baseline_observation(image: PEImage, keyword: str) -> tuple[str, tuple[int, ...]]:
+	"""String-scan status and the console handlers that were rejected.
+
+	``pinned`` is the old registration-table result. ``rejected_console_cmd``
+	means every record that named the keyword was a console command. This
+	does not promote a console wrapper to a script handler.
+	"""
+	if not keyword_rvas(image, keyword):
+		return "string_absent", ()
+	sites = string_sites(image, keyword)
+	handlers = {
+		handler for kind, handler in sites if kind == "handler" and handler is not None
+	}
+	consoles = tuple(
+		sorted(
+			{
+				handler
+				for kind, handler in sites
+				if kind == "console" and handler is not None
+			}
+		)
+	)
+	if len(handlers) == 1:
+		return "pinned", consoles
+	if len(handlers) > 1:
+		return "ambiguous", consoles
+	if any(kind == "console" for kind, _handler in sites):
+		return "rejected_console_cmd", consoles
+	return "no_handler", consoles
+
+
+def baseline_status(image: PEImage, keyword: str) -> str:
+	"""How the ASCII string scan classifies `keyword`."""
+	return baseline_observation(image, keyword)[0]
+
+
+def keyword_reference_functions(
+	image: PEImage, keyword: str
+) -> tuple[tuple[int, int], ...]:
 	"""Functions whose code references the keyword string, begin/end pairs.
 
 	For a stripped executable this replaces symbol lookup: the containing
@@ -275,7 +379,7 @@ _SECTION_SIZE = 40
 _RUNTIME_FUNCTION_SIZE = 12
 
 
-def read_pe_image(path: Path) -> PEImage:
+def read_pe_image(path: Path) -> BinaryImage:
 	"""Use PE exception-directory function entries rather than guessing ends.
 
 	The RUNTIME_FUNCTION table the compiler emits for x64 unwinding names the
@@ -294,13 +398,13 @@ def read_pe_image(path: Path) -> PEImage:
 	section_count: int = struct.unpack_from("<H", data, pe_offset + 6)[0]
 	optional_size: int = struct.unpack_from("<H", data, pe_offset + 20)[0]
 	optional: int = pe_offset + 24
+	if struct.unpack_from("<H", data, optional)[0] != _PE32_PLUS:
+		raise ValueError("this backend supports the PE32+ EU4 executable")
 	if (
 		optional_size < _PE32_PLUS_FIXED + _DIRECTORY_COUNT_MIN * 8
 		or optional + optional_size > len(data)
 	):
 		raise ValueError("truncated optional header")
-	if struct.unpack_from("<H", data, optional)[0] != _PE32_PLUS:
-		raise ValueError("this backend supports the PE32+ EU4 executable")
 	image_base: int = struct.unpack_from("<Q", data, optional + 24)[0]
 	if (
 		section_count == 0
@@ -349,17 +453,11 @@ def read_pe_image(path: Path) -> PEImage:
 	text: tuple[bytes, int, int, int, int] = next(
 		entry for entry in sections if entry[0] == b".text"
 	)
-	return PEImage(
+	return BinaryImage(
 		path.resolve(),
 		hashlib.sha256(data).hexdigest(),
+		"windows",
 		tuple(starts),
 		image_base + text[2] + text[1],
-		image_base,
-		tuple(
-			Section(name.decode("ascii", "replace"), rva, virtual_size, raw_pointer, raw_size)
-			for name, virtual_size, rva, raw_size, raw_pointer in sections
-		),
-		data,
-		dict(zip(starts, ends)),
-		image_base,
+		tuple(ends),
 	)

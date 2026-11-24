@@ -8,7 +8,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from .binary import BinaryImage, read_binary
 from .models import Function, FunctionEvidence, Instruction, Reference
@@ -51,7 +51,7 @@ class GhidraSession:
 			raise ValueError("timeout must be positive")
 		validate_output_directory(self.image.path, self.installation, self.workspace)
 
-	def __enter__(self) -> GhidraSession:
+	def __enter__(self) -> Self:
 		import pyghidra
 		from pyghidra import HeadlessPyGhidraLauncher
 
@@ -153,7 +153,10 @@ class GhidraSession:
 		literal: str | None = None
 		if block is not None and (
 			"cstring" in str(block.getName()).lower()
-			or (self.image.platform == "windows" and str(block.getName()).lower() == ".rdata")
+			or (
+				self.image.platform == "windows"
+				and str(block.getName()).lower() == ".rdata"
+			)
 		):
 			length: int = min(512, int(block.getEnd().getOffset()) - address + 1)
 			buffer: bytearray = bytearray()

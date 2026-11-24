@@ -143,6 +143,8 @@ fn parse_test(
 				}
 				axes = parametrize(file, value)?;
 			}
+			// expect_receipt reaches step() above like effect/fire do.
+			"expect_receipt" => {}
 			other => return Err(format!("unknown test key {other}")),
 		}
 	}
@@ -151,6 +153,30 @@ fn parse_test(
 	}
 	if steps.is_empty() {
 		return Err("a test needs at least one effect, fire, advance_days or expect step".into());
+	}
+	// Two receipt expectations sharing one (plugin, case, request) triple
+	// can both be satisfied by a single receipt; distinct steps must carry
+	// distinct correlation tokens.
+	let mut seen_triples: Vec<(String, String, String)> = Vec::new();
+	for step in &steps {
+		let crate::model::Step::ExpectReceipt { plugin, fields, .. } = step else {
+			continue;
+		};
+		let value = |wanted: &str| {
+			fields
+				.iter()
+				.find(|(key, _)| key == wanted)
+				.map(|(_, value)| value.clone())
+				.unwrap_or_default()
+		};
+		let triple = (plugin.clone(), value("case"), value("request"));
+		if seen_triples.contains(&triple) {
+			return Err(format!(
+				"two expect_receipt steps share plugin/case/request {} / {} / {}; give each command its own request token so one receipt cannot satisfy both",
+				triple.0, triple.1, triple.2
+			));
+		}
+		seen_triples.push(triple);
 	}
 	total_days(&steps)?;
 	marks.session = fields.session;

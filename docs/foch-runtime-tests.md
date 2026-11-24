@@ -45,7 +45,7 @@ country_event = {
 | `ai` | 可选，默认 `off`，保证结果确定。只有测试需要 AI 决策时写 `ai=on`。 |
 | `session` | 可选，`auto`（默认）允许与兼容用例共用一局；`alone` 总是单独一局。 |
 | `player` | 可选，`yes` 表示该国必须是玩家国家，因此不与其他用例共用一局。 |
-| `use` | 可选，fixture 名列表。fixture 定义在 `tests/` 中，CLI 目前尚不收集 `tests/`。 |
+| `use` | 可选，fixture 名列表。fixture 定义在 `tests/` 中，与多步骤测试一并收集。 |
 
 修饰注解写在 `#test` 之前，只作用于紧随其后的那一个 `#test`：
 
@@ -72,7 +72,7 @@ foch test ./my-mod --out ./test-results --timeout 300
 foch test ./my-mod --game-path "D:/Games/EU4"
 ```
 
-`PATH` 可以是 mod 根目录、其 `events` 目录、一个事件 `.txt` 文件，或 `文件::事件[::名字]`。目录发现范围为 `events/**/*.txt`。用例地址形如 `mod名::events/reforms.txt::reforms.1::名字`，mod 名取 `descriptor.mod` 的 `name`，否则取目录名。
+`PATH` 可以是 mod 根目录、其 `events` 目录、一个事件 `.txt` 文件，或 `文件::事件[::名字]`。目录收集 `events/**/*.txt` 中的注解，以及 `tests/**/*.txt` 中的多步骤声明。用例地址形如 `mod名::events/reforms.txt::reforms.1::名字`，mod 名取 `descriptor.mod` 的 `name`，否则取目录名。
 
 `-k` 是关键词表达式（`and`、`or`、`not`、括号），每个词不区分大小写地匹配用例地址的子串；`-m` 是同样语法的标签表达式。零用例、无效注解或筛选无匹配均返回非零退出码。
 
@@ -94,11 +94,65 @@ foch test ./my-mod --game-path "D:/Games/EU4"
 
 游戏启动时会重写真实用户目录里的少量设置文件。运行器先备份这些文件，运行结束后按内容校验，内容若变化就从备份恢复，并把该局判为 `runtime_error`——因此内容必定与运行前一致（游戏可能改动它们的修改时间，这是无害的）。默认目录是 `文档/Paradox Interactive/Europa Universalis IV`，可用 `--eu4-user-dir` 指定。
 
-要做到游戏完全不碰真实目录（连修改时间都不变），需在文件 API 层重写路径（把游戏对真实用户目录的 `CreateFileW` 路径改写到一次性目录）；这条路线和曾经尝试并放弃的进程内重定向，记录在私有 `notes/research/eu4-headless-testing.md`。
 
 ### 共用一局
 
 运行器声明支持共用一局时，Foch 才考虑合并。同时满足这些条件的 `session=auto` 用例才放进同一局：开局日期相同、`ai=off`、不要求玩家国家、国家不同、静态分析能界定其影响范围且彼此不重叠、不涉及全局 flag。任何疑问都让用例单独运行。`--collect-only` 显示每个用例所在的一局及单独运行的原因；`--isolate` 让所有用例单独运行。共用一局时失败的用例会自动单独重跑，以单独运行的结果为准；单独运行通过时报告标出用例间干扰。
+
+## DLL 插件回执
+
+多步骤 `tests/` 声明支持 `expect_receipt`。被测插件通过 Foch 宿主日志输出
+`FOCH_RECEIPT/1 `，后接 JSON 对象；对象里的每个值都必须是字符串。例如，
+一个旗标观察插件可以约定发送：
+
+```text
+FOCH_RECEIPT/1 {"type":"country_flag","case":"flag_receipt","request":"first","status":"present"}
+```
+
+下面的 `tests/receipt_probe.txt` 示例要求插件自行实现这个观察约定，并用原生
+游戏条件检查旗标。测试脚本中的 `expect_receipt` 不会写进 EU4 事件脚本：
+
+```text
+test = {
+    name = flag_receipt
+    time = 1444.11.11
+    tag = FRA
+    session = alone
+    effect = { set_country_flag = receipt_probe }
+    advance_days = 35
+    expect = { has_country_flag = receipt_probe }
+    expect_receipt = {
+        plugin = dev.example.flag_observer
+        type = country_flag
+        case = flag_receipt
+        request = first
+        status = present
+    }
+}
+```
+
+选择已配置的原生插件 playset 后运行：
+
+```text
+foch test ./my-mod --with-plugins my-test-plugins --out ./receipt-results
+```
+
+`plugin` 匹配宿主记录的插件 ID；`case`、`request` 必填，其余字段按字符串精确
+匹配。`case` 和 `request` 是测试作者与插件约定的标签，不会自动推导自用例名。
+同一个用例中使用相同 plugin 和 case 的不同命令要使用不同的 `request`；重复的插件/字段声明、裸值和
+重复的 `(plugin, case, request)` 会在收集阶段报错。此语法只支持 `tests/` 块，
+`#test` 注解参数不支持 `expect_receipt`。
+
+宿主提供 `plugin_id`、`run_id`、`version`、`pid`、`format`、`phase`、
+`timestamp_ms`、`log_path`；这些键不能放入回执 payload。运行器每次启动都将
+本次宿主身份传回判定器。其他启动或其他插件的回执不用于本次匹配；相关插件
+最终必须为 `active`。缺少或损坏的必要日志、缺少可信启动身份、相关插件最终
+拒绝/失败均为 `runtime_error`；一份有效日志中没有匹配回执则是断言失败。
+
+日志保存在该局的 `foch-host-events.jsonl`。结果与 JUnit 使用
+`receipt.<plugin>.<序号>` 标注回执检查，并保留声明位置与可用字段诊断。
+回执证明的是插件报告的观测；验证游戏状态变化仍应配合原生 `expect`。
+这项回执形式尚无新增的真实游戏验收结论。
 
 ## 一局的产物与判定
 
@@ -127,7 +181,7 @@ EU4 每次启动都会往 `error.log` 写入与测试无关的环境条目（缺
 
 ## 代码位置
 
-注解识别、参数类型与编辑器补全在 `src/packages/foch-annotation`；用例含义、计划、生成和判定在 `src/packages/foch-test`；启动真实游戏、运行层、一次性 profile 和真实目录保护在 `src/packages/foch-runner`；CLI 只负责发现、文件输出和展示；`foch lsp`（`src/packages/foch-lsp`）只依赖注解库。设计见 [测试框架 API 设计](foch-test-framework-design.md)。
+注解识别、参数类型与编辑器补全在 `src/packages/foch-annotation`；用例含义、计划、生成和判定在 `src/packages/foch-test`；启动真实游戏、运行层、一次性 profile 和真实目录保护在 `src/packages/foch-runtime/src/runner`；CLI 只负责发现、文件输出和展示；`foch lsp`（`src/packages/foch-lsp`）只依赖注解库。
 
 ## 编辑器与后续范围
 
@@ -150,8 +204,7 @@ EU4 每次启动都会往 `error.log` 写入与测试无关的环境条目（缺
 - 逐项实验确认了运行层做法：复制 `eu4.exe` 和 DLL、链接数据目录后启动可行；短路径避开了 `MAX_PATH` 导致的贴图缺失；不经 Steam 启动（设 `SteamAppId`）不弹警告；`-userdir` 在原生 Windows 生效。
 - 关闭 AI 的控制台命令是 `ai`：同样推进两天，AI 行动次数从 1053 降到 0，测试仍通过。
 - 端到端：`foch test <fixture> -k delayed_flag` 运行真实 EU4 1.37.5，`delayed_flag` 用例的 scope、invoked、1444.11.13 的 expect 全部按日期通过，退出 0；运行前后真实用户目录的 `settings.txt`、`pdx_settings.txt`、`dlc_load.json`、`game_data.json` 四个文件内容逐字节相同（运行器备份+校验保证）。
-- 曾尝试进程内注入让游戏完全不碰真实目录，未成功，已放弃；调查与"改用 `CreateFileW` 文件 API 层重写"的后续路线记录在私有 `notes/research/eu4-headless-testing.md`。
 
 尚未验证/未完成：游戏完全不碰真实目录（需文件 API 层方案）、共用一局、任意开局日期、托管 CI（Linux + Wine）。原游戏安装目录在以上所有运行中文件数不变。
 
-产品方向见 [作者工具链设计](./foch-authoring-design.md)。这些事件测试不替代 `cargo acceptance` 的合并质量验收。不启动游戏的解释层(反编译证据钉扎的模拟)另见 [离线测试层](./foch-offline-tests.md)。
+产品方向见 [作者工具链设计](./foch-authoring-design.md)。这些事件测试不替代 `cargo acceptance` 的合并质量验收。
