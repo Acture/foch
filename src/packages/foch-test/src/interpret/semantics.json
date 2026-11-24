@@ -1,489 +1,552 @@
 {
-	"format": 1,
-	"status": "unpinned",
-	"game_version": "1.37.5",
-	"binary_sha256": null,
-	"primitives": {
-		"set_country_flag": {
-			"kind": "effect",
-			"facts": {
-				"storage": "country flag set"
-			},
-			"handler": {
-				"address": 5383986448,
-				"end": 5383986892,
-				"pseudocode_sha256": "d7e08b69f148a3546a97af2860fecba83c277cacbf5d639059f3a8178ff1405f",
-				"symbol": "sub_140e91d10"
-			}
-		},
-		"clr_country_flag": {
-			"kind": "effect",
-			"facts": {
-				"storage": "country flag set"
-			},
-			"handler": {
-				"address": 5383986896,
-				"end": 5383987334,
-				"pseudocode_sha256": "e0865eb8daf16e38642b21eebcc265d8ec2087c4a86beb18a02dda5f71011217",
-				"symbol": "sub_140e91ed0"
-			}
-		},
-		"set_global_flag": {
-			"kind": "effect",
-			"facts": {
-				"storage": "global flag set"
-			},
-			"handler": null
-		},
-		"clr_global_flag": {
-			"kind": "effect",
-			"facts": {
-				"storage": "global flag set"
-			},
-			"handler": null
-		},
-		"set_variable": {
-			"kind": "effect",
-			"facts": {
-				"operands": "which, value",
-				"storage": "country variable map"
-			},
-			"handler": null
-		},
-		"change_variable": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"operands": "which, value",
-				"storage": "country variable map"
-			},
-			"handler": null
-		},
-		"log": {
-			"kind": "effect",
-			"facts": {
-				"behavior": "writes to game.log; no state change"
-			},
-			"handler": null
-		},
-		"country_event": {
-			"kind": "effect",
-			"facts": {
-				"behavior": "fires a collected hidden event, immediately or after a delay in days",
-				"options": "a hidden event does not execute option content (verified EU4 1.37.5 native Windows 2026-11-05)"
-			},
-			"handler": null
-		},
-		"random": {
-			"kind": "effect",
-			"facts": {
-				"behavior": "decidable only at constant chance 0 and 100"
-			},
-			"handler": null
-		},
-		"random_list": {
-			"kind": "effect",
-			"facts": {
-				"behavior": "runs only when exactly one branch's trigger holds"
-			},
-			"handler": null
-		},
-		"has_country_flag": {
-			"kind": "trigger",
-			"facts": {
-				"storage": "country flag set"
-			},
-			"handler": null
-		},
-		"has_global_flag": {
-			"kind": "trigger",
-			"facts": {
-				"storage": "global flag set"
-			},
-			"handler": null
-		},
-		"has_variable": {
-			"kind": "trigger",
-			"facts": {
-				"storage": "country variable map"
-			},
-			"handler": null
-		},
-		"check_variable": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"operands": "which, value",
-				"storage": "country variable map"
-			},
-			"handler": null
-		},
-		"always": {
-			"kind": "trigger",
-			"facts": {
-				"behavior": "constant yes/no"
-			},
-			"handler": null
-		},
-		"tag": {
-			"kind": "trigger",
-			"facts": {
-				"behavior": "current scope tag equality"
-			},
-			"handler": {
-				"address": 5383823792,
-				"end": 5383824453,
-				"pseudocode_sha256": "3d375fa0c70fe44d0c1c3e54c6ab0d9e980d4dfee3fd57c4bbc7694364bdf252",
-				"symbol": "sub_140e6a1b0"
-			}
-		},
-		"declare_war_with_cb": {
-			"kind": "effect",
-			"facts": {
-				"shape": "who + casus_belli",
-				"behavior": "attacker is the current scope"
-			},
-			"handler": null
-		},
-		"white_peace": {
-			"kind": "effect",
-			"facts": {
-				"shape": "tag",
-				"behavior": "clears the war between both sides"
-			},
-			"handler": null
-		},
-		"create_alliance": {
-			"kind": "effect",
-			"facts": {
-				"shape": "tag",
-				"behavior": "mutual alliance slot"
-			},
-			"handler": null
-		},
-		"break_alliance": {
-			"kind": "effect",
-			"facts": {
-				"shape": "tag",
-				"behavior": "clears the mutual alliance slot"
-			},
-			"handler": null
-		},
-		"change_religion": {
-			"kind": "effect",
-			"facts": {
-				"slot": "religion"
-			},
-			"handler": null
-		},
-		"change_primary_culture": {
-			"kind": "effect",
-			"facts": {
-				"slot": "primary culture"
-			},
-			"handler": null
-		},
-		"change_government": {
-			"kind": "effect",
-			"facts": {
-				"slot": "government"
-			},
-			"handler": null
-		},
-		"set_government_rank": {
-			"kind": "effect",
-			"facts": {
-				"slot": "government rank"
-			},
-			"handler": null
-		},
-		"every_country": {
-			"kind": "effect",
-			"facts": {
-				"behavior": "iterates the countries the case has named (the model world), not the full game set"
-			},
-			"handler": null
-		},
-		"offensive_war_with": {
-			"kind": "trigger",
-			"facts": {
-				"behavior": "current scope declared the war"
-			},
-			"handler": null
-		},
-		"defensive_war_with": {
-			"kind": "trigger",
-			"facts": {
-				"behavior": "the other side declared the war"
-			},
-			"handler": null
-		},
-		"is_at_war": {
-			"kind": "trigger",
-			"facts": {
-				"behavior": "current scope has any war"
-			},
-			"handler": null
-		},
-		"alliance_with": {
-			"kind": "trigger",
-			"facts": {
-				"behavior": "mutual alliance slot"
-			},
-			"handler": null
-		},
-		"religion": {
-			"kind": "trigger",
-			"facts": {
-				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
-			},
-			"handler": null
-		},
-		"primary_culture": {
-			"kind": "trigger",
-			"facts": {
-				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
-			},
-			"handler": null
-		},
-		"government": {
-			"kind": "trigger",
-			"facts": {
-				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
-			},
-			"handler": null
-		},
-		"government_rank": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"unknown": "refuses until the case writes it (no base-snapshot seed yet)"
-			},
-			"handler": null
-		},
-		"add_adm_power": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"adm_power": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_dip_power": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"dip_power": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_mil_power": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"mil_power": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_treasury": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"treasury": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_stability": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"stability": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_prestige": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"prestige": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_legitimacy": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"legitimacy": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_republican_tradition": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"republican_tradition": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_devotion": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"devotion": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_horde_unity": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"horde_unity": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_absolutism": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"absolutism": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_army_tradition": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"army_tradition": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_navy_tradition": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"navy_tradition": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"add_manpower": {
-			"kind": "effect",
-			"facts": {
-				"operation": "+=",
-				"modeled start": "0"
-			},
-			"handler": null
-		},
-		"manpower": {
-			"kind": "trigger",
-			"facts": {
-				"comparison": ">=",
-				"modeled start": "0"
-			},
-			"handler": null
-		}
-	}
+  "format": 1,
+  "status": "unpinned",
+  "game_version": "1.37.5",
+  "binary_sha256": null,
+  "primitives": {
+    "set_country_flag": {
+      "kind": "effect",
+      "facts": {
+        "storage": "country flag set"
+      },
+      "handler": {
+        "address": 5383986448,
+        "end": 5383986892,
+        "pseudocode_sha256": "d7e08b69f148a3546a97af2860fecba83c277cacbf5d639059f3a8178ff1405f",
+        "symbol": "sub_140e91d10"
+      }
+    },
+    "clr_country_flag": {
+      "kind": "effect",
+      "facts": {
+        "storage": "country flag set"
+      },
+      "handler": {
+        "address": 5383986896,
+        "end": 5383987334,
+        "pseudocode_sha256": "e0865eb8daf16e38642b21eebcc265d8ec2087c4a86beb18a02dda5f71011217",
+        "symbol": "sub_140e91ed0"
+      }
+    },
+    "set_global_flag": {
+      "kind": "effect",
+      "facts": {
+        "storage": "global flag set"
+      },
+      "handler": null
+    },
+    "clr_global_flag": {
+      "kind": "effect",
+      "facts": {
+        "storage": "global flag set"
+      },
+      "handler": null
+    },
+    "set_variable": {
+      "kind": "effect",
+      "facts": {
+        "operands": "which, value",
+        "storage": "country variable map"
+      },
+      "handler": null
+    },
+    "change_variable": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "operands": "which, value",
+        "storage": "country variable map"
+      },
+      "handler": null
+    },
+    "log": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "writes to game.log; no state change"
+      },
+      "handler": null
+    },
+    "country_event": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "fires a collected hidden event, immediately or after a delay in days",
+        "options": "a hidden event does not execute option content (verified EU4 1.37.5 native Windows 2026-11-05)"
+      },
+      "handler": null
+    },
+    "random": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "decidable only at constant chance 0 and 100"
+      },
+      "handler": null
+    },
+    "has_country_flag": {
+      "kind": "trigger",
+      "facts": {
+        "storage": "country flag set"
+      },
+      "handler": null
+    },
+    "has_global_flag": {
+      "kind": "trigger",
+      "facts": {
+        "storage": "global flag set"
+      },
+      "handler": null
+    },
+    "has_variable": {
+      "kind": "trigger",
+      "facts": {
+        "storage": "country variable map"
+      },
+      "handler": null
+    },
+    "check_variable": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "operands": "which, value",
+        "storage": "country variable map"
+      },
+      "handler": null
+    },
+    "always": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "constant yes/no"
+      },
+      "handler": null
+    },
+    "tag": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "current scope tag equality"
+      },
+      "handler": {
+        "address": 5383823792,
+        "end": 5383824453,
+        "pseudocode_sha256": "3d375fa0c70fe44d0c1c3e54c6ab0d9e980d4dfee3fd57c4bbc7694364bdf252",
+        "symbol": "sub_140e6a1b0"
+      }
+    },
+    "declare_war_with_cb": {
+      "kind": "effect",
+      "facts": {
+        "shape": "who + casus_belli",
+        "behavior": "attacker is the current scope"
+      },
+      "handler": null
+    },
+    "white_peace": {
+      "kind": "effect",
+      "facts": {
+        "shape": "tag",
+        "behavior": "clears the war between both sides"
+      },
+      "handler": null
+    },
+    "create_alliance": {
+      "kind": "effect",
+      "facts": {
+        "shape": "tag",
+        "behavior": "mutual alliance slot"
+      },
+      "handler": null
+    },
+    "break_alliance": {
+      "kind": "effect",
+      "facts": {
+        "shape": "tag",
+        "behavior": "clears the mutual alliance slot"
+      },
+      "handler": null
+    },
+    "change_religion": {
+      "kind": "effect",
+      "facts": {
+        "slot": "religion"
+      },
+      "handler": null
+    },
+    "change_primary_culture": {
+      "kind": "effect",
+      "facts": {
+        "slot": "primary culture"
+      },
+      "handler": null
+    },
+    "change_government": {
+      "kind": "effect",
+      "facts": {
+        "slot": "government"
+      },
+      "handler": null
+    },
+    "set_government_rank": {
+      "kind": "effect",
+      "facts": {
+        "slot": "government rank"
+      },
+      "handler": null
+    },
+    "every_country": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "iterates the countries in the model world: the case's named set, or the history overlay folded at the case date"
+      },
+      "handler": null
+    },
+    "offensive_war_with": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "current scope declared the war"
+      },
+      "handler": null
+    },
+    "defensive_war_with": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "the other side declared the war"
+      },
+      "handler": null
+    },
+    "is_at_war": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "current scope has any war"
+      },
+      "handler": null
+    },
+    "alliance_with": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "mutual alliance slot"
+      },
+      "handler": null
+    },
+    "religion": {
+      "kind": "trigger",
+      "facts": {
+        "unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+      },
+      "handler": null
+    },
+    "primary_culture": {
+      "kind": "trigger",
+      "facts": {
+        "unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+      },
+      "handler": null
+    },
+    "government": {
+      "kind": "trigger",
+      "facts": {
+        "unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+      },
+      "handler": null
+    },
+    "government_rank": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "unknown": "refuses until the case writes it (no base-snapshot seed yet)"
+      },
+      "handler": null
+    },
+    "add_adm_power": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "adm_power": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_dip_power": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "dip_power": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_mil_power": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "mil_power": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_treasury": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "treasury": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_stability": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "stability": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_prestige": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "prestige": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_legitimacy": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "legitimacy": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_republican_tradition": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "republican_tradition": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_devotion": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "devotion": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_horde_unity": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "horde_unity": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_absolutism": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "absolutism": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_army_tradition": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "army_tradition": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_navy_tradition": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "navy_tradition": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "add_manpower": {
+      "kind": "effect",
+      "facts": {
+        "operation": "+=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "manpower": {
+      "kind": "trigger",
+      "facts": {
+        "comparison": ">=",
+        "modeled start": "0"
+      },
+      "handler": null
+    },
+    "is_subject": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "yes when the country has an overlord"
+      },
+      "handler": null
+    },
+    "is_subject_of": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "the country's overlord is the named tag"
+      },
+      "handler": null
+    },
+    "is_subject_of_type": {
+      "kind": "trigger",
+      "facts": {
+        "behavior": "exact resolved subject type name"
+      },
+      "handler": null
+    },
+    "create_subject": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "current scope becomes overlord; subject_type must resolve in the ordered overlay"
+      },
+      "handler": null
+    },
+    "create_vassal": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a vassal link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "vassalize": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a vassal link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "release": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a vassal link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "create_march": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a march link when that type resolves; does not move provinces"
+      },
+      "handler": null
+    },
+    "create_union": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "records a personal_union link when that type resolves"
+      },
+      "handler": null
+    },
+    "grant_independence": {
+      "kind": "effect",
+      "facts": {
+        "behavior": "clears the current country's subject link"
+      },
+      "handler": null
+    }
+  }
 }

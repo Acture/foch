@@ -155,6 +155,8 @@ fn artifacts(log: &str) -> RunArtifacts<'_> {
 			..Timing::default()
 		},
 		profile_untouched: true,
+		host_events: None,
+		host_launch_id: None,
 	}
 }
 

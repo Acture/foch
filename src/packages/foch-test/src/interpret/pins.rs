@@ -1,20 +1,21 @@
 //! The semantics catalog: which primitives the offline model may execute,
-//! pinned to the decompiled handler functions that define them.
+//! the facts the model implements for each, and what evidence backs them.
 //!
-//! `semantics.json` is the single source shared by the interpreter and the
-//! `eu4_analysis semantics` extractor. A primitive entry carries the facts
-//! the model implements and, once a decompilation batch has run against the
-//! symbol-bearing EU4 executable, the handler pin (address, symbol,
-//! pseudocode digest). Until then the catalog is `unpinned`: the model still
-//! interprets, but every result records that its semantics are not yet
-//! evidence-backed. In a `pinned` catalog a primitive without its handler is
-//! refused, never guessed.
+//! `semantics.json` is the single source the interpreter reads. A primitive
+//! entry carries the modeled facts and, once a reviewed decompilation batch
+//! has run against the symbol-bearing EU4 executable, the handler pin
+//! (address, symbol, pseudocode digest). Until such a batch exists the
+//! catalog is `unpinned`: the model still interprets, but every result
+//! records that its semantics are not evidence-backed. In a `pinned` catalog
+//! a primitive without its handler is refused, never guessed.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The embedded catalog seed. Replace it with a `pinned` file produced by
-/// `python -m eu4_analysis semantics` after review.
+/// The embedded catalog seed, `unpinned`. `python -m eu4_analysis
+/// semantics --catalog <seed> --output <artifact>` writes a pinning
+/// artifact against a symbol-bearing executable; replace this seed only
+/// with an artifact that passed a manual review.
 pub const EMBEDDED: &str = include_str!("semantics.json");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -159,6 +160,10 @@ mod tests {
 				"clr_global_flag",
 				"country_event",
 				"create_alliance",
+				"create_march",
+				"create_subject",
+				"create_union",
+				"create_vassal",
 				"declare_war_with_cb",
 				"defensive_war_with",
 				"devotion",
@@ -166,11 +171,15 @@ mod tests {
 				"every_country",
 				"government",
 				"government_rank",
+				"grant_independence",
 				"has_country_flag",
 				"has_global_flag",
 				"has_variable",
 				"horde_unity",
 				"is_at_war",
+				"is_subject",
+				"is_subject_of",
+				"is_subject_of_type",
 				"legitimacy",
 				"log",
 				"manpower",
@@ -180,7 +189,7 @@ mod tests {
 				"prestige",
 				"primary_culture",
 				"random",
-				"random_list",
+				"release",
 				"religion",
 				"republican_tradition",
 				"set_country_flag",
@@ -190,6 +199,7 @@ mod tests {
 				"stability",
 				"tag",
 				"treasury",
+				"vassalize",
 				"white_peace",
 			]
 		);

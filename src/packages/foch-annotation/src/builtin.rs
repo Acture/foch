@@ -64,6 +64,27 @@ pub const TEST_PARAMS: &[ParamSchema] = &[
 		example: "{ has_country_flag = reform_done }",
 	},
 	ParamSchema {
+		name: "save",
+		value_type: ValueType::Text,
+		required: false,
+		description: "Persist the campaign to this save slot through the console channel (save_game); reload boundaries are recorded in the judged notes.",
+		example: "\"slot_a\"",
+	},
+	ParamSchema {
+		name: "reload",
+		value_type: ValueType::Text,
+		required: false,
+		description: "Reload the campaign from this save slot through the console channel (load); expects after it assert what survived the cycle.",
+		example: "\"slot_a\"",
+	},
+	ParamSchema {
+		name: "expect_receipt",
+		value_type: ValueType::Effects,
+		required: false,
+		description: "Expect a plugin receipt from the host event stream: plugin/case/request correlation plus exact-string fields and numeric = { field = { min = .. max = .. } } ranges.",
+		example: "{ plugin = \"dev.foch.x\" case = my_case request = r1 status = paid }",
+	},
+	ParamSchema {
 		name: "cheat",
 		value_type: ValueType::Text,
 		required: false,

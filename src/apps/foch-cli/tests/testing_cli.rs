@@ -502,6 +502,252 @@ fn offline_is_not_bound_to_the_runners_start_dates() {
 }
 
 #[test]
+fn inline_test_annotations_accept_expect_receipt() {
+	// The peace line's repro: an inline #test block with expect_receipt was
+	// rejected at collection ("unknown #test parameter expect_receipt"),
+	// blocking every annotated receipt fixture before the game. The schema
+	// declares it and the annotated case collects and compiles, numeric
+	// range included.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/events")).unwrap();
+	fs::write(
+		dir.path().join("mod/events/cases.txt"),
+		r#"namespace = cases
+#test(time=1444.11.11, tag=SWE, name=rosetta, expect={ has_country_flag = ready })
+country_event = { id = cases.1 hidden = yes is_triggered_only = yes immediate = { set_country_flag = ready } option = { name = OK } }
+#test(time=1444.11.11, tag=SWE, name=paid_up, expect_receipt={ plugin = "dev.foch.x" case = paid_up request = r1 status = paid numeric = { gold = { min = 100 max = 500 } } })
+country_event = { id = cases.2 hidden = yes is_triggered_only = yes immediate = { set_country_flag = staged } option = { name = OK } }"#,
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	let nodes: Vec<_> = report["cases"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|case| case["node_id"].as_str().unwrap_or_default())
+		.collect();
+	assert!(
+		nodes.iter().any(|node| node.contains("rosetta")),
+		"{nodes:?}"
+	);
+	assert!(
+		nodes.iter().any(|node| node.contains("paid_up")),
+		"{nodes:?}"
+	);
+	// The receipt step rides the plan: bundles compile without a game.
+	let out = dir.path().join("annotated-out");
+	let compiled = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--no-run",
+			"--format",
+			"json",
+			"--out",
+			out.to_str().unwrap(),
+		],
+	);
+	assert!(
+		compiled.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&compiled.stdout),
+		String::from_utf8_lossy(&compiled.stderr)
+	);
+}
+
+#[test]
+fn console_steps_ride_the_command_channel_in_order() {
+	// task_a7a3061a7932: cheat / save / reload steps are console steps; the
+	// bundle emits them, in step order, on the verified startup channel
+	// before the test script runs.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = {
+	name = cycle
+	time = 1444.11.11
+	tag = SWE
+	cheat = "cash 500"
+	save = "slot_a"
+	effect = { set_country_flag = staged }
+	reload = "slot_a"
+	advance_days = 1
+	expect = { has_country_flag = staged }
+}"#,
+	)
+	.unwrap();
+	let out = dir.path().join("cycle-out");
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--no-run",
+			"--format",
+			"json",
+			"--out",
+			out.to_str().unwrap(),
+		],
+	);
+	assert!(
+		output.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	let bundles = report["bundles"].as_array().unwrap();
+	assert_eq!(bundles.len(), 1);
+	let bundle: Value =
+		serde_json::from_slice(&fs::read(bundles[0].as_str().unwrap()).unwrap()).unwrap();
+	let commands = bundle["files"]["commands.txt"].as_str().unwrap();
+	assert!(
+		commands.starts_with("speed 0\ncash 500\nsave_game slot_a\nload slot_a\nrun "),
+		"console steps keep their step order on the startup channel: {commands:?}"
+	);
+	assert!(commands.ends_with("_start.txt\nspeed 5\n"), "{commands:?}");
+}
+
+#[test]
+fn a_save_slot_must_be_one_console_token() {
+	// The slot becomes one console line, so path separators, quotes and
+	// whitespace are refused at collection instead of riding the console.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = { name = inject time = 1444.11.11 tag = SWE save = "../evil; save_game x" expect = { always = yes } }"#,
+	)
+	.unwrap();
+	let output = run(dir.path(), &["test", "mod", "--no-run"]);
+	assert!(!output.status.success());
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(text.contains("letters, digits"), "{text}");
+	assert!(!text.contains("panicked"), "{text}");
+}
+
+#[test]
+fn offline_conflicts_with_plugins_as_a_flag_error() {
+	// --offline silently ignored --with-plugins and interpreted the run; the
+	// combination must be a clap conflict before any playset or host is
+	// resolved, in either flag order.
+	let dir = fixture();
+	for args in [
+		vec![
+			"test",
+			"mod",
+			"--offline",
+			"--with-plugins",
+			"nonexistent_playset",
+		],
+		vec![
+			"test",
+			"mod",
+			"--with-plugins",
+			"nonexistent_playset",
+			"--offline",
+		],
+	] {
+		let output = run(dir.path(), &args);
+		assert!(
+			!output.status.success(),
+			"{args:?} must not run: {}",
+			String::from_utf8_lossy(&output.stdout)
+		);
+		let text = format!(
+			"{}{}",
+			String::from_utf8_lossy(&output.stdout),
+			String::from_utf8_lossy(&output.stderr)
+		);
+		assert!(
+			text.contains("--offline") && text.contains("--with-plugins"),
+			"the conflict names both flags: {text}"
+		);
+	}
+}
+
+#[test]
+fn unmapped_step_kinds_are_rejected_cleanly_at_collection() {
+	// The review repro: cheat / take_decision in a tests/ block must never
+	// panic the compile path. This branch collects both as steps, so the
+	// collection-level refusal lives on the merged core; here the invariant
+	// is the one that survived the review: the online runner stops with a
+	// clean CompileError — take_decision names --offline — and nothing
+	// panics.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = { name = cheaty time = 1444.11.11 tag = SWE cheat = "cash 500" expect = { always = yes } }"#,
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/b.txt"),
+		r#"test = { name = decided time = 1444.11.11 tag = SWE take_decision = my_decision expect = { always = yes } }"#,
+	)
+	.unwrap();
+	let output = run(dir.path(), &["test", "mod", "--no-run"]);
+	assert!(
+		!output.status.success(),
+		"the decision step stops the online run: {}",
+		String::from_utf8_lossy(&output.stdout)
+	);
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(
+		text.contains("cannot take decisions yet") && text.contains("--offline"),
+		"{text}"
+	);
+	assert!(!text.contains("panicked"), "{text}");
+}
+
+#[test]
+fn offline_refuses_plugin_receipt_steps() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/tests/a.txt"),
+		r#"test = { name = rosy time = 1444.11.11 tag = SWE effect = { set_country_flag = done } expect_receipt = { plugin = dev.foch.x case = rosy request = 1 status = passed } }"#,
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		!output.status.success(),
+		"an all-unsupported offline run exits nonzero: {}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(text.contains("receipts need a real game session"), "{text}");
+	assert!(!text.contains("panicked"), "{text}");
+}
+
+#[test]
 fn offline_refuses_runner_only_flags() {
 	let dir = fixture();
 	let output = run(dir.path(), &["test", "mod", "--offline", "--no-run"]);
@@ -511,4 +757,211 @@ fn offline_refuses_runner_only_flags() {
 		&["test", "mod", "--offline", "--with-plugins", "example"],
 	);
 	assert!(!output.status.success());
+}
+
+#[test]
+fn offline_takes_a_nested_country_decision() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/decisions")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/decisions/00_decisions.txt"),
+		"country_decisions = {\n\tmy_decision = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { always = yes }\n\t\teffect = { set_country_flag = decided }\n\t}\n}\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/case.txt"),
+		"test = { name = decided time = 1444.11.11 tag = SWE take_decision = my_decision expect = { has_country_flag = decided } }\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"stdout={} stderr={}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert_eq!(json(&output)["results"][0]["outcome"], "pass");
+}
+
+#[test]
+fn offline_folds_mod_history_at_the_case_date() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/history/countries")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/history/countries/SWE - Sweden.txt"),
+		"religion = catholic\n1500.1.1 = { religion = protestant }\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/history/countries/Q01 - Custom.txt"),
+		"religion = norse\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/case.txt"),
+		"test = { name = early time = 1444.11.11 tag = SWE expect = { religion = catholic } }\n\
+		 test = { name = later time = 1500.1.1 tag = SWE expect = { religion = protestant } }\n\
+		 test = { name = custom time = 1444.11.11 tag = Q01 expect = { religion = norse } }\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"stdout={} stderr={}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	let outcomes: Vec<_> = report["results"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|result| result["outcome"].as_str().unwrap())
+		.collect();
+	assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+	assert!(
+		outcomes.iter().all(|outcome| *outcome == "pass"),
+		"{outcomes:?}"
+	);
+}
+
+#[test]
+fn offline_resolves_a_mod_subject_type() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/common/subject_types")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path()
+			.join("mod/common/subject_types/00_subject_types.txt"),
+		"default = {}\nee_tributary = { copy_from = default }\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/case.txt"),
+		"test = {\n\tname = subject\n\ttime = 1444.11.11\n\ttag = SWE\n\teffect = { create_subject = { subject_type = ee_tributary subject = NOR } }\n\texpect = { NOR = { is_subject_of = SWE is_subject_of_type = ee_tributary } }\n}\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		output.status.success(),
+		"stdout={} stderr={}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert_eq!(json(&output)["results"][0]["outcome"], "pass");
+}
+
+#[test]
+fn companion_plugins_do_not_interfere_with_offline_tests() {
+	// A mod may declare `[[plugins]]` in its own foch.toml next to descriptor.mod
+	// and annotated events. Collection, the offline interpreter, and bundle
+	// compilation read the script and the descriptor name; the plugin table is
+	// not a test input and must not change those results.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	let root = dir.path().join("mod");
+	fs::create_dir_all(root.join("events")).unwrap();
+	fs::write(
+		root.join("descriptor.mod"),
+		"name=\"Companion Mod\"\nsupported_version=\"1.37.*\"\n",
+	)
+	.unwrap();
+	let manifest = "[[plugins]]\nid = \"dev.foch.eu4-dynamic-trade-blackhole\"\nrepo = \"Acture/eu4-dynamic-trade-blackhole\"\ngame_versions = \"=1.37.5\"\nrequired = true\nmin_version = \"0.1.0\"\n[[plugins]]\nid = \"dev.foch.sample\"\nrepo = \"Acture/sample\"\nrequired = false\n";
+	fs::write(root.join("foch.toml"), manifest).unwrap();
+	fs::write(
+		root.join("events/companion.txt"),
+		"namespace = companion\n#test(time=1444.11.11, tag=SWE, name=smoke)\ncountry_event = { id = companion.1 hidden = yes is_triggered_only = yes immediate = { set_country_flag = companion_ready } }\n#test(time=1444.11.11, tag=SWE, name=flag, expect={ has_country_flag = companion_ready })\ncountry_event = { id = companion.2 hidden = yes is_triggered_only = yes immediate = { set_country_flag = companion_ready } }\n",
+	)
+	.unwrap();
+
+	let collected = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	assert!(
+		collected.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&collected.stdout),
+		String::from_utf8_lossy(&collected.stderr)
+	);
+	let report = json(&collected);
+	assert!(
+		report["diagnostics"].as_array().unwrap().is_empty(),
+		"{report}"
+	);
+	let cases = report["cases"].as_array().unwrap();
+	assert_eq!(cases.len(), 2, "{report}");
+	assert_eq!(cases[0]["kind"], "smoke");
+	assert_eq!(cases[1]["kind"], "assertion");
+	assert!(
+		cases.iter().all(|case| case["node_id"]
+			.as_str()
+			.unwrap()
+			.starts_with("Companion Mod::events/companion.txt::")),
+		"{report}"
+	);
+
+	let offline = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		offline.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&offline.stdout),
+		String::from_utf8_lossy(&offline.stderr)
+	);
+	let offline_report = json(&offline);
+	let outcomes: Vec<_> = offline_report["results"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|result| result["outcome"].as_str().unwrap())
+		.collect();
+	assert_eq!(outcomes, ["smoke", "pass"]);
+
+	let out = dir.path().join("compiled");
+	let compiled = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--no-run",
+			"--format",
+			"json",
+			"--out",
+			out.to_str().unwrap(),
+		],
+	);
+	assert!(
+		compiled.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&compiled.stdout),
+		String::from_utf8_lossy(&compiled.stderr)
+	);
+	let compiled_report = json(&compiled);
+	let bundles = compiled_report["bundles"].as_array().unwrap();
+	assert!(!bundles.is_empty(), "{compiled_report}");
+	let mut compiled_cases = 0;
+	for path in bundles {
+		let bundle: Value =
+			serde_json::from_slice(&fs::read(path.as_str().unwrap()).unwrap()).unwrap();
+		assert_eq!(bundle["mod_name"], "Companion Mod");
+		compiled_cases += bundle["cases"].as_array().unwrap().len();
+	}
+	assert_eq!(compiled_cases, 2, "{compiled_report}");
+	assert_eq!(
+		fs::read_to_string(root.join("foch.toml")).unwrap(),
+		manifest
+	);
 }

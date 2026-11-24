@@ -16,8 +16,8 @@ pub enum SourceKind {
 	/// A file below `common/scripted_triggers/` or `common/scripted_effects/`,
 	/// whose top-level `name = { ... }` definitions the interpreter inlines.
 	Scripted,
-	/// A file below `common/decisions/`, whose top-level definitions become
-	/// decision targets for `take_decision` steps.
+	/// A file below `decisions/`. Country decisions are the nested definitions
+	/// inside `country_decisions = { ... }`, the targets of `take_decision`.
 	Decisions,
 }
 
