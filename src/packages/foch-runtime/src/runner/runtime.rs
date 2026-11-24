@@ -190,7 +190,7 @@ pub fn spawn_player(
 ) -> io::Result<std::process::Child> {
 	std::process::Command::new(directory.join("eu4.exe"))
 		.current_dir(directory)
-		.arg(format!("-userdir={}", user_dir.display()))
+		.arg(format!("-userdir={}", super::game_facing_path(user_dir)))
 		.args(args)
 		.env("SteamAppId", "236850")
 		.env("SteamGameId", "236850")

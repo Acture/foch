@@ -1,0 +1,36 @@
+[package]
+name = "foch-runtime-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "The independent Windows x64 Foch DLL plugin host"
+publish = false
+include = ["/src/**", "/build.rs", "/version.def", "/README.md"]
+
+[lib]
+name = "foch_runtime_host"
+# The rlib gives integration tests a Cargo dependency on the normal library
+# build, so clean cargo test also emits the DLL used by the loader fixtures.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+foch-runtime = { path = "../foch-runtime", version = "=0.0.2", default-features = false }
+foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+	"Win32_System_LibraryLoader",
+	"Win32_System_Memory",
+	"Win32_System_Diagnostics_Debug",
+] }
+
+[dev-dependencies]
+foch.workspace = true
+foch-runtime = { workspace = true, features = ["runner"] }
+tempfile.workspace = true
+cc = "1.2"

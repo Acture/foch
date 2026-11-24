@@ -1,39 +1,66 @@
-//! x64 instruction lengths for a 14-byte hook prologue.
+//! x64 instruction lengths for inline plugin hooks.
 //!
-//! A steal is accepted only when an instruction boundary lands on byte 14 and
-//! every instruction in that window can be copied unchanged. RIP-relative
-//! operands and relative branches need a displacement fixup, so they are
-//! refused. A return or unconditional jump means the function is shorter than
-//! the jump. Unknown opcodes are refused rather than split.
+//! Select the first complete window of 14 through 28 bytes. RIP-relative
+//! operands are allowed as long as the caller relocates their disp32 in the
+//! trampoline (see [`rip_operands`]); relative control flow, terminators,
+//! unknown opcodes and truncated instructions are refused. The executable
+//! entry gate has its own fixed window and does not use this decoder.
 
-const WINDOW: usize = 14;
+pub const MIN_STEAL: usize = 14;
+pub const MAX_STEAL: usize = 28;
 
 struct Insn {
 	len: usize,
 	rip_relative: bool,
 	relative: bool,
 	terminator: bool,
+	/// Byte offset of the disp32 inside this instruction. Only meaningful
+	/// when `rip_relative`; zero otherwise.
+	rip_disp: usize,
 }
 
-pub(crate) fn can_steal(bytes: &[u8]) -> bool {
-	if bytes.len() < WINDOW {
-		return false;
-	}
-	let bytes = &bytes[..WINDOW];
+pub fn steal_len(bytes: &[u8]) -> Option<usize> {
+	let bytes = &bytes[..bytes.len().min(MAX_STEAL)];
 	let mut at = 0;
-	while at < WINDOW {
-		let Some(insn) = decode(&bytes[at..]) else {
-			return false;
-		};
-		if insn.len == 0 || insn.rip_relative || insn.relative || insn.terminator {
-			return false;
+	while at < MIN_STEAL {
+		let insn = decode(bytes.get(at..)?)?;
+		if insn.len == 0 || insn.relative || insn.terminator {
+			return None;
+		}
+		at = at.checked_add(insn.len)?;
+	}
+	Some(at)
+}
+
+/// A RIP-relative disp32 inside a stolen window.
+pub struct RipOperand {
+	/// Byte offset of the disp32 within the window.
+	pub disp_at: usize,
+	/// Byte offset just past the instruction holding it: the RIP the disp
+	/// is relative to, as a window offset.
+	pub next: usize,
+}
+
+/// Every RIP-relative operand in the first `len` bytes of `bytes`, in order.
+/// The window must be the one [`steal_len`] accepted; a decode failure or a
+/// RIP operand past `len` yields `None`.
+pub fn rip_operands(bytes: &[u8], len: usize) -> Option<Vec<RipOperand>> {
+	let mut out = Vec::new();
+	let mut at = 0;
+	while at < len {
+		let insn = decode(bytes.get(at..)?)?;
+		if insn.len == 0 || at + insn.len > len {
+			return None;
+		}
+		if insn.rip_relative {
+			out.push(RipOperand {
+				disp_at: at + insn.rip_disp,
+				next: at + insn.len,
+			});
 		}
 		at += insn.len;
-		if at > WINDOW {
-			return false;
-		}
 	}
-	true
+	if at != len { None } else { Some(out) }
 }
 
 fn decode(code: &[u8]) -> Option<Insn> {
@@ -68,6 +95,11 @@ fn decode(code: &[u8]) -> Option<Insn> {
 			_ => break,
 		}
 	}
+	// Mixed 66/REX.W forms need opcode-specific width rules. This decoder
+	// conservatively refuses them instead of splitting an immediate.
+	if operand16 && rex_w {
+		return None;
+	}
 	if i >= code.len() {
 		return None;
 	}
@@ -89,6 +121,7 @@ fn decode_primary(op: u8, rex_w: bool, operand16: bool, code: &[u8], i: usize) -
 			rip_relative: false,
 			relative,
 			terminator,
+			rip_disp: 0,
 		})
 	};
 	match op {
@@ -146,7 +179,15 @@ fn decode_primary(op: u8, rex_w: bool, operand16: bool, code: &[u8], i: usize) -
 		| 0xFE => with_modrm(code, i, 0, false),
 		0x69 => with_modrm(code, i, iz(operand16), false),
 		0x6B | 0x80 | 0x83 | 0xC0 | 0xC1 | 0xC6 => with_modrm(code, i, 1, false),
-		0x81 | 0xC7 => with_modrm(code, i, iz(operand16), false),
+		0x81 => with_modrm(code, i, iz(operand16), false),
+		0xC7 => {
+			let operand = modrm(code, i)?;
+			// Only /0 is MOV. In particular, C7 F8 is relative XBEGIN.
+			if operand.reg != 0 {
+				return None;
+			}
+			finish(code, operand, iz(operand16), false, false)
+		}
 		0xF6 => {
 			let modrm = modrm(code, i)?;
 			let extra = if modrm.reg <= 1 { 1 } else { 0 };
@@ -175,18 +216,21 @@ fn decode_0f(code: &[u8], i: usize) -> Option<Insn> {
 			rip_relative: false,
 			relative: false,
 			terminator: false,
+			rip_disp: 0,
 		}),
 		0x0B => Some(Insn {
 			len: i,
 			rip_relative: false,
 			relative: false,
 			terminator: true,
+			rip_disp: 0,
 		}),
 		0x80..=0x8F => Some(Insn {
 			len: take(code, i, 4)?,
 			rip_relative: false,
 			relative: true,
 			terminator: false,
+			rip_disp: 0,
 		}),
 		0x00..=0x03
 		| 0x10..=0x1F
@@ -216,6 +260,9 @@ fn decode_0f(code: &[u8], i: usize) -> Option<Insn> {
 struct Modrm {
 	next: usize,
 	rip_relative: bool,
+	/// Offset of the disp32 within the instruction; only set when
+	/// `rip_relative` (it directly follows the modrm byte).
+	disp: usize,
 	reg: u8,
 }
 
@@ -226,6 +273,7 @@ fn modrm(code: &[u8], i: usize) -> Option<Modrm> {
 	let reg = (byte >> 3) & 7;
 	let rm = byte & 7;
 	let mut rip_relative = false;
+	let mut disp = 0;
 	if mode != 3 {
 		if rm == 4 {
 			let sib = *code.get(next)?;
@@ -238,6 +286,7 @@ fn modrm(code: &[u8], i: usize) -> Option<Modrm> {
 				next += 4;
 			}
 		} else if mode == 0 && rm == 5 {
+			disp = next;
 			next += 4;
 			rip_relative = true;
 		} else if mode == 1 {
@@ -252,6 +301,7 @@ fn modrm(code: &[u8], i: usize) -> Option<Modrm> {
 	Some(Modrm {
 		next,
 		rip_relative,
+		disp,
 		reg,
 	})
 }
@@ -272,6 +322,7 @@ fn finish(
 		rip_relative: modrm.rip_relative,
 		relative,
 		terminator,
+		rip_disp: if modrm.rip_relative { modrm.disp } else { 0 },
 	})
 }
 
@@ -314,28 +365,135 @@ mod tests {
 	}
 
 	#[test]
-	fn steals_only_a_relocatable_boundary_at_14() {
-		assert!(can_steal(&[0x90; 14]));
-		assert!(can_steal(&[
-			0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
-		]));
+	fn chooses_the_first_complete_relocatable_boundary() {
+		assert_eq!(steal_len(&[0x90; 14]), Some(14));
+		assert_eq!(
+			steal_len(&[
+				0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+			]),
+			Some(14)
+		);
 		let mut mov = [0x90; 14];
 		mov[..10].copy_from_slice(&[0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0]);
 		mov[10..14].copy_from_slice(&[0x48, 0x83, 0xEC, 0x20]);
-		assert!(can_steal(&mov));
-		assert!(!can_steal(&[
-			0xC3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
-		]));
+		assert_eq!(steal_len(&mov), Some(14));
+		assert_eq!(
+			steal_len(&[
+				0xC3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+			]),
+			None
+		);
 		let mut rip = [0x90; 14];
 		rip[..7].copy_from_slice(&[0x48, 0x8B, 0x05, 0, 0, 0, 0]);
-		assert!(!can_steal(&rip));
+		assert_eq!(steal_len(&rip), Some(14));
 		let mut call = [0x90; 14];
 		call[..5].copy_from_slice(&[0xE8, 0, 0, 0, 0]);
-		assert!(!can_steal(&call));
+		assert_eq!(steal_len(&call), None);
+		// Pinned EU4 1.37.5 cost rebuild at 0x978b20: three home-slot saves.
+		let rebuild = [
+			0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+			0x18,
+		];
+		assert_eq!(steal_len(&rebuild), Some(15));
+		assert!(rip_operands(&rebuild, 15).unwrap().is_empty());
 		let mut split = [0x90; 16];
 		split[..10].copy_from_slice(&[0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0]);
 		split[10..15].copy_from_slice(&[0xB8, 1, 0, 0, 0]);
-		assert!(!can_steal(&split));
-		assert!(!can_steal(&[0x90; 13]));
+		assert_eq!(steal_len(&split), Some(15));
+		assert_eq!(steal_len(&[0x90; 13]), None);
+	}
+
+	#[test]
+	fn rip_operand_positions_are_reported_for_relocation() {
+		let mut bytes = [0x90u8; 15];
+		// mov r14,[r13]; mov eax,[rip+8]; add [r14+0x18],eax
+		bytes[..3].copy_from_slice(&[0x4D, 0x8B, 0x26]);
+		bytes[3..9].copy_from_slice(&[0x8B, 0x05, 0x08, 0x00, 0x00, 0x00]);
+		bytes[9..13].copy_from_slice(&[0x41, 0x01, 0x46, 0x18]);
+		assert_eq!(steal_len(&bytes), Some(14));
+		let operands = rip_operands(&bytes, 14).unwrap();
+		assert_eq!(operands.len(), 1);
+		assert_eq!(operands[0].disp_at, 5);
+		assert_eq!(operands[0].next, 9);
+		// A jmp [rip+0] stays a terminator even though it is RIP-relative.
+		let mut jump = [0x90u8; 14];
+		jump[..6].copy_from_slice(&[0xFF, 0x25, 0, 0, 0, 0]);
+		assert_eq!(steal_len(&jump), None);
+	}
+
+	#[test]
+	fn complete_15_and_17_byte_entries_are_relocatable() {
+		let heads: &[&[u8]] = &[
+			// State entry: its stack adjustment ends at byte 17.
+			&[
+				0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
+				0x83, 0xEC, 0x28,
+			],
+			// Active-country loop: the second load ends at byte 17.
+			&[
+				0x44, 0x8B, 0xE7, 0x48, 0x8B, 0x8D, 0xE8, 0x1C, 0, 0, 0x48, 0x8B, 0x85, 0xF0, 0x1C,
+				0, 0,
+			],
+			// Monthly loop: the second movzx ends at byte 15.
+			&[
+				0x49, 0x8B, 0x87, 0xE8, 0x1C, 0, 0, 0x45, 0x0F, 0xB6, 0xC4, 0x41, 0x0F, 0xB6, 0xD5,
+			],
+			// Daily queue: its register-based SIB load fits, its store ends at 15.
+			&[
+				0x48, 0x8B, 0x50, 0x08, 0x4C, 0x8B, 0x3C, 0xCA, 0x4C, 0x89, 0xBD, 0xA8, 0, 0, 0,
+			],
+		];
+		for (head, expected) in heads.iter().zip([17, 17, 15, 15]) {
+			assert_eq!(
+				steal_len(head),
+				Some(expected),
+				"complete relocatable instruction window refused: {head:02x?}"
+			);
+		}
+	}
+	#[test]
+	fn rejects_control_flow_unknown_truncation_and_overlong_windows() {
+		for bad in [
+			vec![0xE8, 0, 0, 0, 0],
+			vec![0xE9, 0, 0, 0, 0],
+			vec![0xC3],
+			vec![0x0F, 0x0B],
+			vec![0xC5, 0xF8, 0x77],
+			vec![0xFF, 0x25, 0, 0, 0, 0],
+		] {
+			let mut bytes = bad;
+			bytes.resize(28, 0x90);
+			assert_eq!(steal_len(&bytes), None);
+		}
+		let mut truncated = vec![0x90; 13];
+		truncated.extend([0x48, 0xB8, 0]);
+		assert_eq!(steal_len(&truncated), None);
+		let mut longest = vec![0x90; 13];
+		longest.extend([0x2E; 5]);
+		longest.extend([0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0]);
+		assert_eq!(steal_len(&longest), Some(28));
+		longest.insert(13, 0x2E);
+		assert_eq!(steal_len(&longest), None);
+	}
+
+	#[test]
+	fn decoder_rejects_mixed_operand_rex_w_immediates() {
+		// This valid mov rax,7 is eight bytes, not six. Treat this prefix
+		// combination as unsupported rather than split its immediate.
+		let mut bytes = vec![0x90; 11];
+		bytes.extend([0x66, 0x48, 0xC7, 0xC0, 7, 0, 0, 0, 0xC3]);
+		assert_eq!(steal_len(&bytes), None);
+	}
+
+	#[test]
+	fn decoder_rejects_transaction_relative_control_flow() {
+		for instruction in [
+			&[0xC7, 0xF8, 0x10, 0, 0, 0][..],
+			&[0x66, 0xC7, 0xF8, 0x10, 0][..],
+		] {
+			let mut bytes = vec![0x90; 9];
+			bytes.extend(instruction);
+			assert_eq!(steal_len(&bytes), None);
+		}
 	}
 }

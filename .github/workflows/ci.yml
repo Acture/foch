@@ -128,6 +128,24 @@ jobs:
       - name: Cargo test
         run: cargo test --locked --workspace
 
+      - name: Build the CLI, host and plugin in one Windows graph
+        if: runner.os == 'Windows'
+        run: cargo build --locked -p foch-cli -p foch-runtime-host -p foch-plugin-trade-blackhole
+
+      - name: Set up Python for Windows DLL validation
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv for Windows DLL validation
+        if: runner.os == 'Windows'
+        run: python -m pip install uv==0.12.17
+
+      - name: Validate actual mixed-graph DLL roles
+        if: runner.os == 'Windows'
+        run: uv run --locked --no-dev --project src/tools/foch-dev python -m foch_dev runtime-host check --host target/debug/foch_runtime_host.dll --plugin target/debug/foch_plugin_trade_blackhole.dll
+
   tree-sitter-smoke:
     name: Tree-sitter smoke
     runs-on: ubuntu-latest

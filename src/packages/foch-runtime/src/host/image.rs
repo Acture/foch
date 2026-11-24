@@ -1,12 +1,12 @@
 //! Bounds-checked PE32+ headers used by the one-shot entry gate.
 
 #[derive(Debug)]
-pub(crate) struct Image {
+pub struct Image {
 	pub entry: usize,
 	pub size: usize,
 }
 
-pub(crate) const GATE_BYTES: usize = 14;
+pub const GATE_BYTES: usize = 14;
 const EXECUTE: usize = 0x20000000;
 
 struct Section {
@@ -15,15 +15,15 @@ struct Section {
 	characteristics: usize,
 }
 
-pub(crate) fn fits_page(address: usize, len: usize, page_size: usize) -> bool {
+pub fn fits_page(address: usize, len: usize, page_size: usize) -> bool {
 	len > 0 && page_size >= len && address % page_size <= page_size - len
 }
 
-pub(crate) fn gate_fits_page(address: usize, page_size: usize) -> bool {
+pub fn gate_fits_page(address: usize, page_size: usize) -> bool {
 	fits_page(address, GATE_BYTES, page_size)
 }
 
-pub(crate) fn inspect(headers: &[u8]) -> Result<Image, &'static str> {
+pub fn inspect(headers: &[u8]) -> Result<Image, &'static str> {
 	let (entry, size, sections) = sections(headers)?;
 	let gate_end = entry.checked_add(GATE_BYTES).ok_or("entry overflow")?;
 	let executable_entry = sections.iter().any(|section| {
@@ -39,7 +39,7 @@ pub(crate) fn inspect(headers: &[u8]) -> Result<Image, &'static str> {
 
 /// Virtual ranges of sections marked executable. Non-executable sections,
 /// including `.rdata`, are omitted.
-pub(crate) fn executable_ranges(headers: &[u8]) -> Result<Vec<(usize, usize)>, &'static str> {
+pub fn executable_ranges(headers: &[u8]) -> Result<Vec<(usize, usize)>, &'static str> {
 	let (_, _, sections) = sections(headers)?;
 	Ok(sections
 		.into_iter()

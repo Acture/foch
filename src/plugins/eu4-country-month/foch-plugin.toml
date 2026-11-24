@@ -1,0 +1,21 @@
+schema = 1
+
+[plugin]
+id = "dev.foch.eu4-country-month"
+name = "EU4 country month"
+version = "0.1.0"
+description = "Runs the installed daily active-country loop body, including its original calls. Country states still run on a pool before monthly side effects."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "*"
+abi_major = 0
+
+[entry]
+kind = "native"
+path = "eu4_country_month.dll"
+phase = "entry"
+
+[lifecycle]
+restart_required = true

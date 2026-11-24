@@ -6,11 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "The EU4 host: the in-game DLL plugin loader and the out-of-process test runner"
+description = "Typed EU4 game services and the out-of-process Foch test runner"
 readme = "../../apps/foch-cli/README.md"
 # The published crate carries its sources and license texts only; the
 # loader fixtures and tests stay in the repository.
 include = [
+	"/profiles/**",
 	"/src/**",
 	"/LICENSE",
 	"/LICENSE-MERGIRAF.txt",
@@ -18,13 +19,16 @@ include = [
 ]
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [features]
 default = ["runner"]
 # The out-of-process test runner drags the analysis crates; plugins
 # consume the data plane alone with default-features = false.
 runner = ["dep:foch", "dep:foch-test"]
+# Windows-only synthetic EU4 memory (`dataplane::testing`). Production
+# plugin builds leave this off so the helper is not linked into a DLL.
+test-support = []
 
 [dependencies]
 foch-plugin-sdk = { path = "../foch-plugin-sdk", version = "=0.0.1" }
@@ -41,8 +45,11 @@ windows-sys = { workspace = true, features = [
 	"Win32_System_Diagnostics_Debug",
 	"Win32_System_IO",
 	"Win32_System_Ioctl",
+	"Win32_System_ProcessStatus",
+	"Win32_System_RemoteDesktop",
+	"Win32_System_SystemInformation",
+	"Win32_System_Threading",
 ] }
 
 [dev-dependencies]
 tempfile.workspace = true
-cc = "1.2"

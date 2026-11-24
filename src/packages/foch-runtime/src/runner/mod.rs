@@ -75,7 +75,7 @@ pub struct RunOptions {
 pub struct HostLaunch {
 	/// The playset whose enabled plugins stage into each session.
 	pub playset: String,
-	/// The `foch_runtime.dll` to deploy as the layer's `VERSION.dll`.
+	/// The independent host DLL to deploy as the layer's `VERSION.dll`.
 	pub host_dll: PathBuf,
 }
 
@@ -321,9 +321,19 @@ pub fn run_session(
 	Ok(outcome)
 }
 
+/// Paths EU4 parses itself. `fs::canonicalize` yields a Windows verbatim
+/// `\\?\` prefix; the game's argument and descriptor readers do not accept it.
+fn game_facing_path(path: &Path) -> String {
+	foch::plugin::deployment::path_text(path)
+		.unwrap_or_else(|_| path.to_string_lossy().into_owned())
+}
+
 /// Launch args: the throwaway user directory plus the bundle's own args.
 fn launch_args(bundle: &Bundle, user_dir: &Path) -> Vec<OsString> {
-	let mut args = vec![OsString::from(format!("-userdir={}", user_dir.display()))];
+	let mut args = vec![OsString::from(format!(
+		"-userdir={}",
+		game_facing_path(user_dir)
+	))];
 	args.extend(bundle.launch.args.iter().map(OsString::from));
 	args
 }
@@ -426,7 +436,7 @@ fn assemble_profile(
 }
 
 fn write_descriptor(path: &Path, name: &str, mod_path: &Path) -> io::Result<()> {
-	let normalized = mod_path.to_string_lossy().replace('\\', "/");
+	let normalized = game_facing_path(mod_path).replace('\\', "/");
 	fs::write(path, format!("name=\"{name}\"\npath=\"{normalized}\"\n"))
 }
 
@@ -488,15 +498,7 @@ fn stage_host(
 	runtime::ensure_outside_game(&installation.game_root, &data_root)?;
 	let deployment = plugin::deployment::resolve(&game, &store_root, &selected)
 		.map_err(|error| io::Error::other(format!("plugin plan: {error}")))?;
-	let host_bytes = fs::read(&host.host_dll).map_err(|error| {
-		io::Error::other(format!(
-			"cannot read host {}: {error}; build foch-runtime and pass its path",
-			host.host_dll.display()
-		))
-	})?;
-	if store::pe_machine(&host_bytes) != Some(store::MACHINE_AMD64) {
-		return Err(io::Error::other("host DLL is not an AMD64 PE image"));
-	}
+	let host_bytes = crate::host::read(&host.host_dll)?;
 	store::create_package_file(&runtime.directory.join("VERSION.dll"), &host_bytes)?;
 	let prepared = deployment
 		.stage(
@@ -512,6 +514,18 @@ fn stage_host(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn game_facing_path_strips_the_windows_verbatim_prefix() {
+		assert_eq!(
+			game_facing_path(Path::new(r"\\?\C:\Games\EU4\userdir")),
+			r"C:\Games\EU4\userdir"
+		);
+		assert_eq!(
+			game_facing_path(Path::new(r"\\?\UNC\server\share\userdir")),
+			r"\\server\share\userdir"
+		);
+	}
 
 	#[cfg(any(unix, windows))]
 	#[test]

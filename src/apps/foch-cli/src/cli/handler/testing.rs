@@ -107,18 +107,12 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 		.as_ref()
 		.map(
 			|playset| -> std::result::Result<foch_runtime::runner::HostLaunch, String> {
-				let host_dll = std::env::current_exe()
-					.ok()
-					.and_then(|exe| exe.parent().map(|dir| dir.join("foch_runtime.dll")))
-					.filter(|path| path.is_file())
-					.ok_or_else(|| {
-						format!(
-							"cannot find foch_runtime.dll beside {}; build foch-runtime",
-							std::env::current_exe()
-								.map(|exe| exe.display().to_string())
-								.unwrap_or_default()
-						)
-					})?;
+				let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+				let directory = executable
+					.parent()
+					.ok_or("foch executable has no parent directory")?;
+				let host_dll = foch_runtime::host::resolve(directory, None)
+					.map_err(|error| error.to_string())?;
 				Ok(foch_runtime::runner::HostLaunch {
 					playset: playset.clone(),
 					host_dll,

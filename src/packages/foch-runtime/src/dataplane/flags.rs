@@ -1,0 +1,573 @@
+//! Bounded country-flag snapshots through the shared reader.
+//!
+//! The candidate fields here follow static engine serialization and flag lookup
+//! paths for the pinned executable. They have not passed a Foch game probe.
+//! Reading a snapshot grants no permission to set, remove or consume flags.
+
+use super::profile::{LayoutProfile, profile_for_build};
+use super::{CountryView, Memory, StdVector, is_name_byte, read_sso};
+use std::collections::BTreeSet;
+
+const MAX_FLAGS: usize = 4096;
+const MAX_NAMES: usize = 32768; // The engine's IDs are signed 16-bit values.
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CountryFlag {
+	pub name: String,
+	/// Engine calendar hours, preserved without an invented date conversion.
+	pub set_at_hours: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CountryFlags {
+	pub country_tag: String,
+	/// Original engine order; an empty vector is a successful empty snapshot.
+	pub flags: Vec<CountryFlag>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FlagReadError {
+	UnsupportedBuild,
+	UnsupportedPlatform,
+	Unavailable(&'static str),
+	InvalidLayout(&'static str),
+	LimitExceeded(&'static str),
+	Inconsistent,
+}
+
+impl std::fmt::Display for FlagReadError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::UnsupportedBuild => {
+				formatter.write_str("unsupported executable identity for flags")
+			}
+			Self::UnsupportedPlatform => formatter.write_str("country flags require Windows x64"),
+			Self::Unavailable(field) => {
+				write!(formatter, "country flag field unavailable: {field}")
+			}
+			Self::InvalidLayout(field) => write!(formatter, "invalid country flag layout: {field}"),
+			Self::LimitExceeded(field) => write!(formatter, "country flag limit exceeded: {field}"),
+			Self::Inconsistent => formatter.write_str("country flag snapshot is inconsistent"),
+		}
+	}
+}
+
+impl std::error::Error for FlagReadError {}
+
+fn add(address: usize, offset: usize) -> Result<usize, FlagReadError> {
+	address
+		.checked_add(offset)
+		.ok_or(FlagReadError::InvalidLayout("address overflow"))
+}
+
+fn qword(memory: &Memory, address: usize, offset: usize) -> Result<u64, FlagReadError> {
+	memory
+		.read_qword(add(address, offset)?)
+		.ok_or(FlagReadError::Unavailable("qword"))
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Vector {
+	header: StdVector,
+	count: usize,
+}
+
+impl Vector {
+	fn read(
+		memory: &Memory,
+		address: usize,
+		stride: usize,
+		limit: usize,
+	) -> Result<Self, FlagReadError> {
+		let header = StdVector {
+			begin: qword(memory, address, 0)? as usize,
+			end: qword(memory, address, 8)? as usize,
+			capacity: qword(memory, address, 16)? as usize,
+		};
+		let count = header
+			.len(stride, usize::MAX)
+			.ok_or(FlagReadError::InvalidLayout("vector bounds"))?;
+		if (header.capacity - header.begin) / stride > limit {
+			return Err(FlagReadError::LimitExceeded("vector capacity"));
+		}
+		Ok(Self { header, count })
+	}
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Sample {
+	identity: u64,
+	ids: Vector,
+	flag_ids: Vec<i16>,
+	dates: Vector,
+	names: Vector,
+	string_headers: Vec<[u64; 4]>,
+	snapshot: CountryFlags,
+}
+
+fn string_header(memory: &Memory, address: usize) -> Result<[u64; 4], FlagReadError> {
+	Ok([
+		qword(memory, address, 0)?,
+		qword(memory, address, 8)?,
+		qword(memory, address, 16)?,
+		qword(memory, address, 24)?,
+	])
+}
+
+fn sample(
+	profile: &LayoutProfile,
+	memory: &Memory,
+	address: usize,
+	names_address: usize,
+) -> Result<Sample, FlagReadError> {
+	let identity = qword(memory, address, profile.country_tag.offset)?;
+	let country_tag = CountryView::tag_text(profile, memory, address);
+	if country_tag.len() != 3
+		|| !country_tag
+			.bytes()
+			.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+	{
+		return Err(FlagReadError::InvalidLayout("country tag"));
+	}
+	let flags_address = add(address, profile.flags_country_flags.offset)?;
+	let ids = Vector::read(
+		memory,
+		add(flags_address, profile.flags_flag_ids.offset)?,
+		2,
+		MAX_FLAGS,
+	)?;
+	let dates = Vector::read(
+		memory,
+		add(flags_address, profile.flags_flag_dates.offset)?,
+		4,
+		MAX_FLAGS,
+	)?;
+	let names = Vector::read(
+		memory,
+		names_address,
+		profile.flags_string_size.offset,
+		MAX_NAMES,
+	)?;
+	if ids.count != dates.count {
+		return Err(FlagReadError::Inconsistent);
+	}
+	let mut flags = Vec::with_capacity(ids.count);
+	let mut flag_ids = Vec::with_capacity(ids.count);
+	let mut string_headers = Vec::with_capacity(ids.count);
+	let mut seen_ids = BTreeSet::new();
+	let mut seen_names = BTreeSet::new();
+	for index in 0..ids.count {
+		let id_address = add(
+			ids.header.begin,
+			index
+				.checked_mul(2)
+				.ok_or(FlagReadError::InvalidLayout("ID stride"))?,
+		)?;
+		let low = memory
+			.read_u8(id_address)
+			.ok_or(FlagReadError::Unavailable("flag ID"))?;
+		let high = memory
+			.read_u8(add(id_address, 1)?)
+			.ok_or(FlagReadError::Unavailable("flag ID"))?;
+		let id = i16::from_le_bytes([low, high]);
+		if id < 0 || id as usize >= names.count {
+			return Err(FlagReadError::InvalidLayout("flag ID"));
+		}
+		if !seen_ids.insert(id) {
+			return Err(FlagReadError::Inconsistent);
+		}
+		let string_address = add(
+			names.header.begin,
+			(id as usize)
+				.checked_mul(profile.flags_string_size.offset)
+				.ok_or(FlagReadError::InvalidLayout("name stride"))?,
+		)?;
+		let header = string_header(memory, string_address)?;
+		if header[2] > 64 || header[3] > 1_048_576 {
+			return Err(FlagReadError::LimitExceeded("flag name"));
+		}
+		if header[2] == 0 || header[3] < 15 || header[2] > header[3] {
+			return Err(FlagReadError::InvalidLayout("flag name capacity"));
+		}
+		let name = read_sso(memory, string_address, is_name_byte)
+			.ok_or(FlagReadError::Unavailable("flag name"))?;
+		if string_header(memory, string_address)? != header || !seen_names.insert(name.clone()) {
+			return Err(FlagReadError::Inconsistent);
+		}
+		let date_address = add(
+			dates.header.begin,
+			index
+				.checked_mul(4)
+				.ok_or(FlagReadError::InvalidLayout("date stride"))?,
+		)?;
+		let set_at_hours = memory
+			.read_i32(date_address)
+			.ok_or(FlagReadError::Unavailable("flag date"))?;
+		flags.push(CountryFlag { name, set_at_hours });
+		flag_ids.push(id);
+		string_headers.push(header);
+	}
+	Ok(Sample {
+		identity,
+		ids,
+		flag_ids,
+		dates,
+		names,
+		string_headers,
+		snapshot: CountryFlags { country_tag, flags },
+	})
+}
+
+fn consistent(
+	mut read: impl FnMut() -> Result<Sample, FlagReadError>,
+) -> Result<CountryFlags, FlagReadError> {
+	let first = read()?;
+	if read()? != first {
+		return Err(FlagReadError::Inconsistent);
+	}
+	Ok(first.snapshot)
+}
+
+pub(super) fn read(
+	memory: &Memory,
+	address: usize,
+	exe_base: usize,
+	host_exe_sha256: &str,
+) -> Result<CountryFlags, FlagReadError> {
+	// Callers pass FochHostApi.exe_sha256, never a substitute expected digest.
+	let Some(profile) = profile_for_build(host_exe_sha256) else {
+		return Err(FlagReadError::UnsupportedBuild);
+	};
+	if !cfg!(all(windows, target_arch = "x86_64")) {
+		return Err(FlagReadError::UnsupportedPlatform);
+	}
+	let names_address = add(exe_base, profile.flag_names.offset)?;
+	consistent(|| sample(profile, memory, address, names_address))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[cfg(windows)]
+	use crate::dataplane::game::Eu4Game;
+	use crate::dataplane::profile::default_profile;
+
+	#[test]
+	fn a_bad_digest_precedes_even_address_calculation() {
+		for digest in [
+			"".into(),
+			"c9ec55a4".into(),
+			default_profile().exe_sha256.to_uppercase(),
+			format!("{}0", default_profile().exe_sha256),
+		] {
+			assert_eq!(
+				read(&Memory, usize::MAX, usize::MAX, &digest),
+				Err(FlagReadError::UnsupportedBuild)
+			);
+		}
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn any_observed_change_between_samples_refuses_the_complete_snapshot() {
+		let mut country = vec![0u64; 0x2b0 / 8];
+		country[default_profile().country_tag.offset / 8] = u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
+		let mut ids = [0u16];
+		let mut dates = [123i32];
+		let mut names = [[u64::from_le_bytes(*b"flag\0\0\0\0"), 0, 4, 15]; 2];
+		let registry = [
+			names.as_ptr() as u64,
+			names.as_ptr() as u64 + 64,
+			names.as_ptr() as u64 + 64,
+		];
+		for (offset, begin, stride) in [
+			(0x280, ids.as_ptr() as u64, 2),
+			(0x298, dates.as_ptr() as u64, 4),
+		] {
+			country[offset / 8] = begin;
+			country[(offset + 8) / 8] = begin + stride;
+			country[(offset + 16) / 8] = begin + stride;
+		}
+		let read_once = |country: &[u64]| {
+			sample(
+				default_profile(),
+				&Memory,
+				country.as_ptr() as usize,
+				registry.as_ptr() as usize,
+			)
+		};
+		assert_eq!(
+			consistent(|| read_once(&country)).unwrap().flags[0].set_at_hours,
+			123
+		);
+		for change in 0..4 {
+			let mut calls = 0;
+			let result = consistent(|| {
+				calls += 1;
+				if calls == 2 {
+					match change {
+						0 => dates[0] += 1,
+						1 => {
+							for name in &mut names {
+								name[0] = u64::from_le_bytes(*b"FLAG\0\0\0\0");
+							}
+						}
+						2 => country[default_profile().country_tag.offset / 8] ^= 1,
+						_ => ids[0] = 1, // Same printed name at another interned ID.
+					}
+				}
+				std::hint::black_box((&ids, &dates, &names));
+				read_once(&country)
+			});
+			assert_eq!(result, Err(FlagReadError::Inconsistent));
+			assert_eq!(calls, 2);
+		}
+	}
+
+	/// Synthetic allocations exercise the actual shared kernel reader. The exact
+	/// digest is a fixture input, never evidence of a live game or verified layout.
+	#[cfg(windows)]
+	struct Fixture {
+		image: Vec<u64>,
+		context: Vec<u64>,
+		manager: Vec<u64>,
+		addresses: Vec<u64>,
+		country: Vec<u64>,
+		names: Vec<[u64; 4]>,
+		_heap_names: Vec<Vec<u8>>,
+		ids: Vec<u16>,
+		dates: Vec<i32>,
+	}
+
+	#[cfg(windows)]
+	fn vector(buffer: &mut [u64], offset: usize, pointer: usize, count: usize, stride: usize) {
+		let begin = if count == 0 { 0 } else { pointer as u64 };
+		buffer[offset / 8] = begin;
+		buffer[offset / 8 + 1] = begin + (count * stride) as u64;
+		buffer[offset / 8 + 2] = buffer[offset / 8 + 1];
+	}
+
+	#[cfg(windows)]
+	impl Fixture {
+		fn new(keys: &[&str], ids: &[u16], dates: &[i32]) -> Self {
+			let mut names = vec![];
+			let mut heap_names = vec![];
+			for name in keys {
+				let mut string = [0u64; 4];
+				if name.len() <= 15 {
+					let mut inline = [0u8; 16];
+					inline[..name.len()].copy_from_slice(name.as_bytes());
+					string[0] = u64::from_le_bytes(inline[..8].try_into().unwrap());
+					string[1] = u64::from_le_bytes(inline[8..].try_into().unwrap());
+					string[3] = 15;
+				} else {
+					let mut heap = name.as_bytes().to_vec();
+					heap.push(0);
+					string[0] = heap.as_ptr() as u64;
+					string[3] = name.len() as u64;
+					heap_names.push(heap);
+				}
+				string[2] = name.len() as u64;
+				names.push(string);
+			}
+			let mut fixture = Self {
+				image: vec![0; (0x2357d80 + 24) / 8],
+				context: vec![0; 0x1d20 / 8],
+				manager: vec![0; 0x120 / 8],
+				addresses: vec![0; 1],
+				country: vec![0; 0x2b0 / 8],
+				names,
+				_heap_names: heap_names,
+				ids: ids.into(),
+				dates: dates.into(),
+			};
+			let profile = default_profile();
+			fixture.image[profile.country_manager_global.offset / 8] =
+				fixture.manager.as_ptr() as u64;
+			fixture.manager[profile.country_manager_index_array.offset / 8] =
+				fixture.addresses.as_ptr() as u64;
+			fixture.addresses[0] = fixture.country.as_ptr() as u64;
+			fixture.context[profile.countries_count.offset / 8] = 1u64 << 32;
+			fixture.country[profile.country_tag.offset / 8] =
+				u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
+			fixture.headers();
+			fixture
+		}
+
+		fn headers(&mut self) {
+			vector(
+				&mut self.image,
+				0x2357d80,
+				self.names.as_ptr() as usize,
+				self.names.len(),
+				32,
+			);
+			vector(
+				&mut self.country,
+				0x280,
+				self.ids.as_ptr() as usize,
+				self.ids.len(),
+				2,
+			);
+			vector(
+				&mut self.country,
+				0x298,
+				self.dates.as_ptr() as usize,
+				self.dates.len(),
+				4,
+			);
+		}
+
+		fn view(&self) -> CountryView {
+			Eu4Game {
+				memory: Memory,
+				exe_base: self.image.as_ptr() as usize,
+				context: self.context.as_ptr() as usize,
+			}
+			.countries()
+			.unwrap()
+			.country(0)
+			.unwrap()
+		}
+
+		fn read(&self) -> Result<CountryFlags, FlagReadError> {
+			let game = Eu4Game {
+				memory: Memory,
+				exe_base: self.image.as_ptr() as usize,
+				context: self.context.as_ptr() as usize,
+			};
+			// SAFETY: every simulated object and referenced buffer remains live and
+			// unchanged during this synchronous synthetic read.
+			unsafe { game.country_flags(&self.view(), &default_profile().exe_sha256) }
+		}
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn country_registry_view_resolves_flag_ids_to_exact_names_and_parallel_dates() {
+		let fixture = Fixture::new(
+			&[
+				"unused",
+				"foch_dp_cmd_propose_SWE_HAB_defense_365",
+				"accepted",
+			],
+			&[2, 1],
+			&[90, 123],
+		);
+		let snapshot = fixture.read().unwrap();
+		assert_eq!(snapshot.country_tag, "FRA");
+		assert_eq!(
+			snapshot.flags,
+			vec![
+				CountryFlag {
+					name: "accepted".into(),
+					set_at_hours: 90
+				},
+				CountryFlag {
+					name: "foch_dp_cmd_propose_SWE_HAB_defense_365".into(),
+					set_at_hours: 123
+				},
+			]
+		);
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn empty_flags_are_distinct_from_unsupported_or_unreadable_fields() {
+		let mut fixture = Fixture::new(&[], &[], &[]);
+		assert!(fixture.read().unwrap().flags.is_empty());
+		for digest in ["", "c9ec55a4", "different"] {
+			assert_eq!(
+				unsafe { fixture.view().flags(usize::MAX, digest) },
+				Err(FlagReadError::UnsupportedBuild)
+			);
+		}
+		fixture.country[0x280 / 8] = 0x10000;
+		fixture.country[0x288 / 8] = 0x10002;
+		fixture.country[0x290 / 8] = 0x10002;
+		assert!(fixture.read().is_err());
+		assert!(matches!(
+			unsafe {
+				fixture
+					.view()
+					.flags(usize::MAX - 7, &default_profile().exe_sha256)
+			},
+			Err(FlagReadError::InvalidLayout(_))
+		));
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn invalid_counts_alignment_and_parallel_membership_are_refused() {
+		let mut fixture = Fixture::new(&["one", "two"], &[0, 1], &[10, 20]);
+		fixture.country[0x2a0 / 8] -= 4;
+		assert_eq!(fixture.read(), Err(FlagReadError::Inconsistent));
+		fixture.headers();
+		fixture.country[0x290 / 8] = fixture.country[0x280 / 8] + 2;
+		assert!(matches!(
+			fixture.read(),
+			Err(FlagReadError::InvalidLayout(_))
+		));
+		fixture.headers();
+		fixture.country[0x280 / 8] += 1;
+		assert!(matches!(
+			fixture.read(),
+			Err(FlagReadError::InvalidLayout(_))
+		));
+		fixture.headers();
+		fixture.country[0x288 / 8] = fixture.country[0x280 / 8] + 4097 * 2;
+		fixture.country[0x290 / 8] = fixture.country[0x288 / 8];
+		assert!(matches!(
+			fixture.read(),
+			Err(FlagReadError::LimitExceeded(_))
+		));
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn invalid_or_duplicate_ids_and_malformed_names_never_become_commands() {
+		let mut fixture = Fixture::new(&["one", "two"], &[0, 1], &[10, 20]);
+		fixture.ids[0] = u16::MAX;
+		assert!(fixture.read().is_err());
+		fixture.ids[0] = 2;
+		assert!(fixture.read().is_err());
+		fixture.ids[0] = 1;
+		assert_eq!(fixture.read(), Err(FlagReadError::Inconsistent));
+		fixture.ids[0] = 0;
+		fixture.names[0][2] = 16;
+		assert!(matches!(
+			fixture.read(),
+			Err(FlagReadError::InvalidLayout(_))
+		));
+		fixture.names[0][3] = 100;
+		fixture.names[0][2] = 65;
+		assert!(matches!(
+			fixture.read(),
+			Err(FlagReadError::LimitExceeded(_))
+		));
+		fixture.names[0] = fixture.names[1];
+		assert_eq!(fixture.read(), Err(FlagReadError::Inconsistent));
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn allocated_empty_vectors_are_valid_and_global_registry_bounds_are_checked() {
+		let mut fixture = Fixture::new(&["one"], &[0], &[10]);
+		fixture.country[0x288 / 8] = fixture.country[0x280 / 8];
+		fixture.country[0x2a0 / 8] = fixture.country[0x298 / 8];
+		assert!(fixture.read().unwrap().flags.is_empty());
+		fixture.headers();
+		let names = fixture.image[0x2357d80 / 8];
+		fixture.image[(0x2357d80 + 8) / 8] = names + 32769 * 32;
+		fixture.image[(0x2357d80 + 16) / 8] = names + 32769 * 32;
+		assert!(matches!(
+			fixture.read(),
+			Err(FlagReadError::LimitExceeded(_))
+		));
+		fixture.headers();
+		fixture.country[0x298 / 8] = 0x20000;
+		fixture.country[0x2a0 / 8] = 0x20004;
+		fixture.country[0x2a8 / 8] = 0x20004;
+		assert!(matches!(fixture.read(), Err(FlagReadError::Unavailable(_))));
+	}
+}

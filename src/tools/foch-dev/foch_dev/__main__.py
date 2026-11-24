@@ -7,7 +7,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from . import compare, crates, dist, release, smoke, versions, winget
+from . import compare, crates, dist, release, runtime_host, smoke, versions, winget
 from .contracts import verify_repository
 from .repository import find_repository
 from .schema import cwt_snapshot_hash, repository_schema_hash
@@ -46,6 +46,11 @@ def main(argv: list[str] | None = None) -> int:
 	dist.add_arguments(
 		commands.add_parser("dist", help="Build and verify release wheels and archives")
 	)
+	runtime_host.add_arguments(
+		commands.add_parser(
+			"runtime-host", help="Validate and package the optional Windows DLL host"
+		)
+	)
 	winget.add_arguments(
 		commands.add_parser(
 			"winget", help="Render and check the WinGet manifests for Acture.Foch"
@@ -79,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
 			return versions.run(args)
 		if args.command == "dist":
 			return dist.run(args)
+		if args.command == "runtime-host":
+			return runtime_host.run(args)
 		if args.command == "winget":
 			return winget.run(args)
 		if args.command == "release":

@@ -1477,11 +1477,24 @@ dependencies = [
 name = "foch-runtime"
 version = "0.0.2"
 dependencies = [
- "cc",
  "foch",
  "foch-plugin-sdk",
  "foch-test",
  "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "foch-runtime-host"
+version = "0.0.2"
+dependencies = [
+ "cc",
+ "foch",
+ "foch-plugin-sdk",
+ "foch-runtime",
  "serde_json",
  "sha2",
  "tempfile",

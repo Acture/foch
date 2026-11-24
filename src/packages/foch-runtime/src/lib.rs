@@ -1,17 +1,10 @@
-//! The in-process EU4 DLL loader. Deploy the cdylib as `VERSION.dll` only
-//! inside a Foch-owned runtime layer; see this package's README.
+//! Typed EU4 game services and the isolated out-of-process test runner.
+//! The independent `foch-runtime-host` package owns the in-process DLL.
 
 pub mod dataplane;
-#[cfg(any(test, all(windows, target_arch = "x86_64")))]
-mod image;
+pub mod host;
 pub mod pattern;
 pub mod plan;
 #[cfg(feature = "runner")]
 pub mod runner;
-// The Windows linker is the only caller. Tests still build the decoder on
-// every platform; a Linux library build does not.
-#[cfg(any(test, all(windows, target_arch = "x86_64")))]
-mod prologue;
-
-#[cfg(all(windows, target_arch = "x86_64"))]
-mod windows;
+pub mod war;
