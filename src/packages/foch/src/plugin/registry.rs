@@ -364,8 +364,12 @@ mod tests {
 	fn optional_sha256_is_64_hex_digits() {
 		let digest = "ab".repeat(32);
 		let needle = "url = \"https://github.com/YozoraTempest/EU4-Unicode-Patch/releases/download/v0.1.15/EU4UnicodePatch-1.37.5-v0.1.15.zip\"\n";
-		let text = include_str!("registry.toml")
-			.replace(needle, &format!("{needle}sha256 = \"{digest}\"\n"));
+		// include_str! keeps the checkout's line endings, and GitHub's
+		// windows-latest runners check out with core.autocrlf=true, so
+		// normalize \r\n before splicing or the needle never matches.
+		let registry = include_str!("registry.toml").replace("\r\n", "\n");
+		let text = registry.replace(needle, &format!("{needle}sha256 = \"{digest}\"\n"));
+		assert_ne!(registry, text, "the sha256 splice must change the registry");
 		let plugins = load(&text).unwrap();
 		let unicode = plugins
 			.iter()
