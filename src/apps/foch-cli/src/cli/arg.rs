@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use foch::game::eu4::{CWT_SCHEMA_OVERRIDE_ENV, EMBEDDED_CWT_SCHEMA_ID, cwt_schema_override};
 use foch::model::SymbolKind;
@@ -71,7 +71,7 @@ pub enum PluginCommand {
 	List(PluginListArgs),
 	/// Import a plugin package from an extracted directory into the store.
 	Import(PluginImportArgs),
-	/// Download a pinned GitHub release with gh and install it. Does not enable it.
+	/// Download a GitHub release and install it. Does not enable it.
 	Install(PluginInstallArgs),
 	/// Enable a plugin for a playset, pinned to an installed version.
 	Enable(PluginToggleArgs),
@@ -104,6 +104,16 @@ pub struct PluginImportArgs {
 	pub adapter: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum PluginTransport {
+	/// HTTPS first. Uses `gh` only when HTTPS fails and the GitHub CLI is on PATH.
+	Auto,
+	/// HTTPS only. Never runs `gh`.
+	Http,
+	/// `gh release view` / `gh release download` only.
+	Gh,
+}
+
 #[derive(Parser, Debug)]
 pub struct PluginInstallArgs {
 	/// owner/repo[@tag|@latest], a github.com URL, or a built-in plugin id.
@@ -112,6 +122,19 @@ pub struct PluginInstallArgs {
 	/// Install every registered GitHub release.
 	#[arg(long)]
 	pub all: bool,
+	/// Download transport. Defaults to `auto`, or `FOCH_PLUGIN_TRANSPORT` when that is set.
+	/// `auto` uses HTTPS and falls back to `gh` only if HTTPS fails and `gh` is on PATH.
+	#[arg(long, value_enum, value_name = "auto|http|gh")]
+	pub transport: Option<PluginTransport>,
+	/// Mirror policy. Defaults to `auto`, or `FOCH_PLUGIN_MIRROR` when that is set.
+	/// `auto` uses the China mirror chain on a China locale, then GitHub.
+	/// `direct` always uses github.com. `cn` always tries the China mirrors first.
+	/// A URL, or a comma-separated list, is a custom HTTPS prefix. Repeat the flag to add prefixes.
+	#[arg(long, value_name = "auto|direct|cn|URL", action = ArgAction::Append)]
+	pub mirror: Vec<String>,
+	/// Expected SHA-256 of the downloaded zip. The install stops if the bytes differ.
+	#[arg(long, value_name = "HEX")]
+	pub sha256: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -265,7 +288,7 @@ pub struct LspArgs {
 #[derive(Parser, Debug)]
 #[command(
 	about = "Check a playset and report findings, or fix its syntax errors",
-	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./foch.toml\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json\n\nSyntax fixes, as a linter's:\n  foch check ./my-mod --diff                      # show the fixes, write nothing\n  foch check ./my-mod --fix                       # fix a mod directory in place\n  foch check ./my-mod --fix --unsafe-fixes        # also fix what a merge holds for review\n  foch check ./foch.toml --fix --patch-mod ./fixes # a playset: write a patch mod\n  foch check ./foch.toml --fix --in-place         # a playset: fix the mods, backed up\n  foch check --restore <BACKUP_DIR>               # undo an in-place fix"
+	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./foch.toml\n  foch check ./my-mod\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json\n\nSyntax fixes, as a linter's:\n  foch check ./my-mod --diff                      # show the fixes, write nothing\n  foch check ./my-mod --fix                       # fix a mod directory in place\n  foch check ./my-mod --fix --unsafe-fixes        # also fix what a merge holds for review\n  foch check ./foch.toml --fix --patch-mod ./fixes # a playset: write a patch mod\n  foch check ./foch.toml --fix --in-place         # a playset: fix the mods, backed up\n  foch check --restore <BACKUP_DIR>               # undo an in-place fix"
 )]
 pub struct CheckArgs {
 	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
@@ -1067,5 +1090,69 @@ mod tests {
 			message.contains("unsupported definition kind 'garbage'"),
 			"error: {message}"
 		);
+	}
+
+	#[test]
+	fn plugin_install_defaults_transport_and_mirror() {
+		let cli = FochCli::try_parse_from(["foch", "plugin", "install", "owner/repo"])
+			.expect("parse cli");
+		let FochCliCommands::Plugin(plugin) = cli.command.expect("subcommand") else {
+			panic!("expected plugin command");
+		};
+		let PluginCommand::Install(args) = plugin.command else {
+			panic!("expected install");
+		};
+		assert_eq!(args.spec.as_deref(), Some("owner/repo"));
+		assert!(args.transport.is_none());
+		assert!(args.mirror.is_empty());
+		assert!(args.sha256.is_none());
+		assert!(!args.all);
+	}
+
+	#[test]
+	fn plugin_install_parses_transport_mirror_and_sha256() {
+		let digest = "ab".repeat(32);
+		let cli = FochCli::try_parse_from([
+			"foch",
+			"plugin",
+			"install",
+			"owner/repo",
+			"--transport",
+			"http",
+			"--mirror",
+			"https://gh-proxy.com/",
+			"--mirror",
+			"cn",
+			"--sha256",
+			&digest,
+		])
+		.expect("parse cli");
+		let FochCliCommands::Plugin(plugin) = cli.command.expect("subcommand") else {
+			panic!("expected plugin command");
+		};
+		let PluginCommand::Install(args) = plugin.command else {
+			panic!("expected install");
+		};
+		assert_eq!(args.transport, Some(PluginTransport::Http));
+		assert_eq!(
+			args.mirror,
+			vec!["https://gh-proxy.com/".to_string(), "cn".to_string()]
+		);
+		assert_eq!(args.sha256.as_deref(), Some(digest.as_str()));
+	}
+
+	#[test]
+	fn plugin_install_rejects_an_unknown_transport() {
+		let error = FochCli::try_parse_from([
+			"foch",
+			"plugin",
+			"install",
+			"owner/repo",
+			"--transport",
+			"ftp",
+		])
+		.expect_err("ftp is not a transport");
+		let message = error.to_string();
+		assert!(message.contains("ftp"), "{message}");
 	}
 }

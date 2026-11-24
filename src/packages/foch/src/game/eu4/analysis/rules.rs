@@ -37,12 +37,15 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 			}));
 		}
 
-		if entry
-			.steam_id
-			.as_deref()
-			.map(str::trim)
-			.unwrap_or("")
-			.is_empty()
+		// A local directory already names its files through root_path. Launcher
+		// entries are the ones that have to carry a Steam id.
+		if entry.root_path.is_none()
+			&& entry
+				.steam_id
+				.as_deref()
+				.map(str::trim)
+				.unwrap_or("")
+				.is_empty()
 		{
 			findings.push(new_finding(FindingArgs {
 				rule_id: "missing-playset-field",

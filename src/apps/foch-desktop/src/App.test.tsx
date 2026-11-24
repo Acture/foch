@@ -5,6 +5,11 @@ import App from "./App";
 import type {
 	AnalysisInputScope,
 	DesktopClient,
+	DesktopLaunchResult,
+	DesktopLaunchStatus,
+	DesktopPluginOverview,
+	DesktopPreferences,
+	DesktopSettingsInput,
 	InputInspection,
 	MergeAnalysisState,
 	MergeAnalysisSummary,
@@ -256,9 +261,122 @@ function analysisSummary(state: MergeAnalysisState): MergeAnalysisSummary {
 	};
 }
 
+const ENGLISH_SETTINGS: DesktopPreferences = {
+	transport: "auto",
+	mirror: "auto",
+	customMirrors: [],
+	language: "auto",
+	effectiveLanguage: "en",
+};
+
+const EMPTY_OVERVIEW: DesktopPluginOverview = {
+	playset: "Campaign 1444",
+	gameRoot: READY_INSPECTION.game.installPath,
+	gameVersion: "1.37.5",
+	hostDllAvailable: true,
+	hostDllDetail: "ready (foch_runtime_host.dll)",
+	entries: [],
+	companionWarnings: [],
+	plan: { launchable: true, order: [], errors: [], warnings: [] },
+	preferences: ENGLISH_SETTINGS,
+	problems: [],
+};
+
+const PLUGIN_OVERVIEW: DesktopPluginOverview = {
+	...EMPTY_OVERVIEW,
+	companionWarnings: [
+		"Europa Expanded declares dev.foch.sample, which is not installed",
+	],
+	entries: [
+		{
+			id: "dev.foch.sample",
+			name: "Sample",
+			description: "Declared by the playset",
+			installedVersions: [],
+			selectedVersion: null,
+			enabled: false,
+			installSpec: "Acture/sample",
+			declaredByMods: ["Europa Expanded"],
+			requiredByMods: ["Europa Expanded"],
+			conflicts: [],
+			configFields: [],
+			badge: "not_installed",
+		},
+		{
+			id: "dev.foch.slider",
+			name: "Slider",
+			description: "Tunable limit",
+			installedVersions: ["0.1.0"],
+			selectedVersion: "0.1.0",
+			enabled: true,
+			installSpec: null,
+			declaredByMods: [],
+			requiredByMods: [],
+			conflicts: ["dev.foch.other (overlapping hooks)"],
+			configFields: [
+				{
+					key: "limit",
+					kind: "int",
+					description: "Limit",
+					value: 1,
+					min: 0,
+					max: 8,
+				},
+			],
+			badge: "enabled",
+		},
+	],
+	plan: {
+		launchable: true,
+		order: ["dev.foch.slider 0.1.0"],
+		errors: [],
+		warnings: [],
+	},
+};
+
 function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
 	return {
 		inspectInput: vi.fn(async (): Promise<InputInspection> => READY_INSPECTION),
+		getPluginOverview: vi.fn(
+			async (): Promise<DesktopPluginOverview> => EMPTY_OVERVIEW,
+		),
+		installPlugin: vi.fn(async () => ({
+			id: "dev.foch.sample",
+			version: "0.1.0",
+			source: "Acture/sample@v0.1.0 via http (direct)",
+			conflicts: [],
+			alreadyPresent: false,
+		})),
+		importPluginDir: vi.fn(async () => ({
+			id: "dev.foch.local",
+			version: "0.1.0",
+			source: "local directory",
+			conflicts: [],
+			alreadyPresent: false,
+		})),
+		setPluginEnabled: vi.fn(async (): Promise<void> => undefined),
+		updatePluginConfig: vi.fn(async (): Promise<void> => undefined),
+		launchEu4WithPlugins: vi.fn(async (): Promise<DesktopLaunchResult> => ({
+			runDir: "C:\\runtime\\prepared",
+			planSha256: "abc",
+			preparedOnly: true,
+			pid: null,
+			pluginCount: 1,
+			versionDll: true,
+		})),
+		getLaunchStatus: vi.fn(async (): Promise<DesktopLaunchStatus> => ({
+			runId: "p1",
+			plugins: [{ id: "dev.foch.slider", state: "active", reason: null }],
+		})),
+		getDesktopSettings: vi.fn(
+			async (): Promise<DesktopPreferences> => ENGLISH_SETTINGS,
+		),
+		saveDesktopSettings: vi.fn(
+			async (settings: DesktopSettingsInput): Promise<DesktopPreferences> => ({
+				...settings,
+				effectiveLanguage: settings.language === "zh_cn" ? "zh-CN" : "en",
+			}),
+		),
 		startMergeAnalysis: vi.fn(async (): Promise<StartMergeAnalysisResult> => ({
 			analysisId: "analysis-1",
 			inputScope: COMPLETE_INPUT_SCOPE,
@@ -271,6 +389,12 @@ function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
 		getMergeUnit: vi.fn(async (): Promise<MergeUnitDetail> => UNIT_DETAIL),
 		...overrides,
 	};
+}
+
+function renderMerge(client: DesktopClient, pollIntervalMs = 900) {
+	const view = render(<App client={client} pollIntervalMs={pollIntervalMs} />);
+	fireEvent.click(screen.getByRole("tab", { name: /Merge & Conflicts/ }));
+	return view;
 }
 
 function deferred<T>(): {
@@ -295,7 +419,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			inspectInput: vi.fn((): Promise<InputInspection> => pendingInspection.promise),
 		});
 
-		render(<App client={client} />);
+		renderMerge(client);
 		expect(
 			screen.getByRole("heading", { name: "Checking EU4 setup" }),
 		).toBeInTheDocument();
@@ -325,7 +449,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			.mockResolvedValueOnce(READY_INSPECTION);
 		const client = createClient({ inspectInput });
 
-		render(<App client={client} />);
+		renderMerge(client);
 
 		expect(
 			await screen.findByRole("heading", {
@@ -355,7 +479,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		const startMergeAnalysis = vi.fn<DesktopClient["startMergeAnalysis"]>();
 		const client = createClient({ inspectInput, startMergeAnalysis });
 
-		render(<App client={client} />);
+		renderMerge(client);
 
 		expect(
 			await screen.findByRole("heading", { name: "1 Workshop mod unavailable" }),
@@ -395,7 +519,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			startMergeAnalysis,
 			getMergeAnalysisSummary: vi.fn(() => pendingSummary.promise),
 		});
-		render(<App client={client} pollIntervalMs={10_000} />);
+		renderMerge(client, 10_000);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze available mods/i }),
@@ -436,7 +560,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			async (): Promise<MergeUnitDetail> => UNIT_DETAIL,
 		);
 		const client = createClient({ getMergeUnit });
-		render(<App client={client} pollIntervalMs={10_000} />);
+		renderMerge(client, 10_000);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
@@ -493,7 +617,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			listMergeUnits,
 			getMergeUnit,
 		});
-		render(<App client={client} pollIntervalMs={10_000} />);
+		renderMerge(client, 10_000);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
@@ -526,7 +650,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			startMergeAnalysis,
 			getMergeAnalysisSummary: vi.fn(() => pendingSummary.promise),
 		});
-		render(<App client={client} pollIntervalMs={10_000} />);
+		renderMerge(client, 10_000);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
@@ -548,7 +672,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			.mockRejectedValueOnce({ code: "summary_unavailable", message: "temporary 3" })
 			.mockResolvedValueOnce(analysisSummary("running"));
 		const client = createClient({ getMergeAnalysisSummary });
-		render(<App client={client} pollIntervalMs={pollIntervalMs} />);
+		renderMerge(client, pollIntervalMs);
 		const analyzeButton = await screen.findByRole("button", {
 			name: /Analyze current playset/i,
 		});
@@ -616,7 +740,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 				message: "The analysis record expired",
 			});
 		const client = createClient({ getMergeAnalysisSummary });
-		render(<App client={client} pollIntervalMs={100} />);
+		renderMerge(client, 100);
 		const analyzeButton = await screen.findByRole("button", {
 			name: /Analyze current playset/i,
 		});
@@ -664,7 +788,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			async (): Promise<MergeUnitPage> => UNIT_PAGE,
 		);
 		const client = createClient({ listMergeUnits });
-		render(<App client={client} pollIntervalMs={10_000} />);
+		renderMerge(client, 10_000);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
@@ -725,7 +849,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 				unitId === secondUnit.id ? secondUnit : UNIT_DETAIL,
 		);
 		const client = createClient({ listMergeUnits, getMergeUnit });
-		render(<App client={client} pollIntervalMs={10_000} />);
+		renderMerge(client, 10_000);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
@@ -758,7 +882,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			.mockResolvedValueOnce(analysisSummary("running"))
 			.mockResolvedValueOnce(analysisSummary("cancelled"));
 		const client = createClient({ cancelMergeAnalysis, getMergeAnalysisSummary });
-		render(<App client={client} pollIntervalMs={10_000} />);
+		renderMerge(client, 10_000);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
@@ -777,5 +901,114 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
 		).toBeEnabled();
 		expect(client.inspectInput).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("Foch desktop play, plugins, and settings", (): void => {
+	it("lands on Play & Launch and shows a companion alert", async (): Promise<void> => {
+		const client = createClient({
+			getPluginOverview: vi.fn(
+				async (): Promise<DesktopPluginOverview> => PLUGIN_OVERVIEW,
+			),
+		});
+		render(<App client={client} />);
+
+		expect(screen.getByRole("heading", { name: "Play & Launch" })).toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: "Checking EU4 setup" }),
+		).not.toBeInTheDocument();
+		expect(
+			await screen.findByText(
+				"Europa Expanded declares dev.foch.sample, which is not installed",
+			),
+		).toBeInTheDocument();
+		expect(screen.getByText("dev.foch.slider 0.1.0")).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "Install Sample" }));
+		await waitFor((): void => {
+			expect(client.installPlugin).toHaveBeenCalledWith("Acture/sample", null);
+		});
+	});
+
+	it("toggles a plugin and writes a schema slider value", async (): Promise<void> => {
+		const client = createClient({
+			getPluginOverview: vi.fn(
+				async (): Promise<DesktopPluginOverview> => PLUGIN_OVERVIEW,
+			),
+		});
+		render(<App client={client} />);
+		fireEvent.click(screen.getByRole("tab", { name: "Plugins" }));
+
+		fireEvent.click(await screen.findByRole("switch", { name: "Toggle Slider" }));
+		await waitFor((): void => {
+			expect(client.setPluginEnabled).toHaveBeenCalledWith(
+				"Campaign 1444",
+				"dev.foch.slider",
+				false,
+				"0.1.0",
+			);
+		});
+
+		fireEvent.change(screen.getByRole("slider", { name: "limit" }), {
+			target: { value: "4" },
+		});
+		await waitFor((): void => {
+			expect(client.updatePluginConfig).toHaveBeenCalledWith(
+				"Campaign 1444",
+				"dev.foch.slider",
+				"limit",
+				4,
+			);
+		});
+	});
+
+	it("prepares a dry run without starting EU4", async (): Promise<void> => {
+		const client = createClient({
+			getPluginOverview: vi.fn(
+				async (): Promise<DesktopPluginOverview> => PLUGIN_OVERVIEW,
+			),
+		});
+		render(<App client={client} />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Prepare Only (Dry-Run)" }),
+		);
+		await waitFor((): void => {
+			expect(client.launchEu4WithPlugins).toHaveBeenCalledWith("Campaign 1444", true);
+		});
+		expect(await screen.findByText("Active")).toBeInTheDocument();
+		expect(screen.getByText("Prepared only")).toBeInTheDocument();
+		expect(client.launchEu4WithPlugins).not.toHaveBeenCalledWith(
+			"Campaign 1444",
+			false,
+		);
+	});
+
+	it("saves transport, mirror, and switches the interface to simplified Chinese", async (): Promise<void> => {
+		const client = createClient();
+		render(<App client={client} />);
+		fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+
+		fireEvent.change(await screen.findByRole("combobox", { name: "Transport" }), {
+			target: { value: "http" },
+		});
+		fireEvent.change(await screen.findByRole("combobox", { name: "Mirror" }), {
+			target: { value: "cn" },
+		});
+		fireEvent.change(screen.getByRole("combobox", { name: "Language" }), {
+			target: { value: "zh_cn" },
+		});
+
+		expect(await screen.findByRole("tab", { name: "插件" })).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
+		await waitFor((): void => {
+			expect(client.saveDesktopSettings).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					transport: "http",
+					mirror: "cn",
+					language: "zh_cn",
+				}),
+			);
+		});
 	});
 });
