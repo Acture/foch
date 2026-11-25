@@ -7,8 +7,8 @@ members = [
 	"src/packages/foch-plugin-sdk",
 	"src/packages/foch-runtime",
 	"src/packages/foch-runtime-host",
-	"src/packages/foch-eu4-state",
 	"src/packages/foch-eu4-gnn",
+	"src/packages/foch-eu4-state",
 	"plugins/eu4-dynamic-trade-blackhole",
 	"plugins/eu4-directed-pacts",
 	"src/packages/foch-test",
@@ -33,6 +33,7 @@ categories = ["command-line-utilities", "development-tools"]
 # plugin clone pulls the same crate from crates.io.
 [patch.crates-io]
 foch-plugin-sdk = { path = "src/packages/foch-plugin-sdk" }
+foch-runtime = { path = "src/packages/foch-runtime" }
 
 [workspace.dependencies]
 foch-runtime = { path = "src/packages/foch-runtime", version = "=0.0.2" }

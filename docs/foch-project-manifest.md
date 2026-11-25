@@ -120,3 +120,72 @@ repair is frozen with the analysis, adds its evidence to the units that read
 the file, and is checked for source drift again before commit: a file whose
 bytes no longer match the review is rejected as stale. It never writes to the
 source mod.
+
+## Companion native plugin declarations (`[[plugins]]`)
+
+A Steam Workshop companion mod—or a playset `foch.toml`—can declare the native
+Foch DLL plugins it expects inside `foch.toml` under `[[plugins]]`, without
+introducing a separate manifest filename. Because `[project]` is optional in
+the `foch.toml` schema, a mod directory can ship a `foch.toml` containing only
+`[[plugins]]` tables as a discovery declaration rather than a playset manifest:
+
+```toml
+[[plugins]]
+id = "dev.foch.eu4-dynamic-trade-blackhole"
+repo = "Acture/eu4-dynamic-trade-blackhole"
+game = "eu4"
+game_versions = "=1.37.5"
+required = true
+min_version = "0.1.0"
+sha256 = "abababababababababababababababababababababababababababababababab"
+```
+
+### `[[plugins]]` field reference
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | *(required)* | Unique plugin identifier (for example, `"dev.foch.eu4-dynamic-trade-blackhole"`). |
+| `repo` | string | omitted | Optional GitHub `owner/repo` release source used to install the plugin when it is not already in the local store. |
+| `game` | string | `"eu4"` | Target game identifier. |
+| `game_versions` | string | omitted | Optional game version requirement string (for example, `"=1.37.5"`). |
+| `required` | boolean | `true` | Whether the declaring mod requires the plugin (`true`) or lists it as optional (`false`). |
+| `min_version` | string | omitted | Optional minimum plugin version requirement in Semantic Versioning format (`X.Y.Z`). |
+| `sha256` | string | omitted | Optional expected 64-character hexadecimal SHA256 digest of the plugin release archive. |
+
+### Validation rules
+
+`[[plugins]]` entries are validated when `foch.toml` is parsed:
+
+- **Strict schema (`deny_unknown_fields`)**: unknown keys in `foch.toml` or
+  inside any `[[plugins]]` entry are rejected.
+- **Valid, unique `id`**: `id` must be a non-empty string with no whitespace,
+  and duplicate `id` values within the same `foch.toml` are rejected. When
+  multiple `foch.toml` files are merged along the config search path, the first
+  declaration for a given `id` is retained.
+- **Non-empty identifiers and strings**: `game` must be a non-empty identifier
+  without whitespace. When set, `repo` and `game_versions` must not be empty or
+  whitespace-only.
+- **Semver `min_version`**: when set, `min_version` must parse as a valid
+  Semantic Versioning (`semver::Version`) string.
+- **64-hex `sha256`**: when set, `sha256` must be exactly 64 ASCII hexadecimal
+  digits.
+
+### Mod-directory checks and automatic UI discovery
+
+- **`foch check <mod-dir>`**: passing a mod directory path to `foch check`
+  (or `foch check --fix <mod-dir>`) resolves the directory through its
+  `descriptor.mod` as a single enabled mod. A sibling `foch.toml` carrying only
+  `[[plugins]]` and no `[project]` table coexists cleanly with `descriptor.mod`
+  (whereas passing a `foch.toml` file path directly as a playset manifest still
+  requires `[project]`).
+- **Playset discovery in bare `foch` and `foch-desktop`**:
+  `discover_declared_plugins` scans `<mod-root>/foch.toml` across the active
+  playset's mods in playset order. Declarations sharing an `id` are merged into
+  a single `DeclaredModPlugin` entry that preserves first-seen order, lists all
+  declaring mods in `source_mods`, sets `required = true` if any declaring mod
+  requires the plugin, and keeps the first supplied `repo`, `game_versions`,
+  `min_version`, and `sha256`. Missing `foch.toml` files are ignored, and a
+  malformed file is surfaced as a non-fatal warning. Both the bare `foch` TUI
+  (`Launch & Plugins`) and `foch-desktop` feed these discovered declarations
+  into the shared plugin overview so missing or disabled companion plugins are
+  highlighted and can be installed from `repo` and enabled directly.

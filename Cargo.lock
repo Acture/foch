@@ -1367,6 +1367,7 @@ dependencies = [
  "steamlocate",
  "tempfile",
  "thiserror 2.0.18",
+ "tiny_http",
  "toml 0.9.12+spec-1.1.0",
  "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
@@ -1428,11 +1429,16 @@ dependencies = [
 name = "foch-desktop"
 version = "0.0.2"
 dependencies = [
+ "dirs",
  "foch",
+ "foch-runtime",
+ "semver",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
  "uuid",
 ]
 
@@ -1502,6 +1508,7 @@ name = "foch-plugin-trade-blackhole"
 version = "0.0.1"
 dependencies = [
  "foch-plugin-sdk",
+ "foch-runtime",
  "serde",
  "serde_json",
 ]

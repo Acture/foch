@@ -6,9 +6,12 @@
 //! [`FakeGame`] owns every allocation; views taken from it are raw addresses
 //! and must not be used after the scene is dropped.
 
-use super::flags::{COUNTRY_FLAGS, FLAG_DATES, FLAG_IDS, FLAG_NAMES_RVA, STRING_SIZE};
-use super::layout::{country, country_manager, db, def, node, province, route};
+use super::profile::{LayoutProfile, default_profile};
 use super::{CountryView, Eu4Game, is_name_byte};
+
+fn layout() -> &'static LayoutProfile {
+	default_profile()
+}
 
 const COUNTRY_BYTES: usize = 0x1900;
 
@@ -152,7 +155,10 @@ impl FakeGame {
 			.ok()
 			.and_then(|id| id.checked_add(1))
 			.ok_or("province id overflows")?;
-		if slots.checked_mul(province::CPROVINCE_SIZE).is_none() {
+		if slots
+			.checked_mul(layout().province_cprovince_size.offset)
+			.is_none()
+		{
 			return Err("province map overflows");
 		}
 		self.specs.provinces.push(ProvinceSpec {
@@ -186,7 +192,7 @@ impl FakeGame {
 		let end = offset
 			.checked_add(bytes.len())
 			.ok_or("province patch overflows")?;
-		if end > province::CPROVINCE_SIZE {
+		if end > layout().province_cprovince_size.offset {
 			return Err("province patch leaves the record");
 		}
 		province.patches.push((offset, bytes.to_vec()));
@@ -290,9 +296,9 @@ fn assemble(specs: &Specs) -> Result<Live, &'static str> {
 		return Err("country registry does not fit");
 	}
 	let mut live = Live {
-		image: vec![0; (FLAG_NAMES_RVA + 24).div_ceil(8)],
+		image: vec![0; (layout().flag_names.offset + 24).div_ceil(8)],
 		context: vec![0; 0x2200 / 8],
-		manager: vec![0; (country_manager::INDEX_ARRAY + 8) / 8],
+		manager: vec![0; (layout().country_manager_index_array.offset + 8) / 8],
 		pointers: vec![0; slots],
 		countries: Vec::with_capacity(specs.countries.len()),
 		flag_ids: Vec::with_capacity(specs.countries.len()),
@@ -346,24 +352,28 @@ fn plant_countries(live: &mut Live, specs: &Specs) -> Result<(), &'static str> {
 		let mut raw = vec![0u64; COUNTRY_BYTES.div_ceil(8)];
 		poke_u64(
 			&mut raw,
-			country::TAG,
+			layout().country_tag.offset,
 			pack_tag(country.tag, country.index, 1),
 		)?;
-		poke_i32(&mut raw, country::TREASURY, country.treasury)?;
+		poke_i32(&mut raw, layout().country_treasury.offset, country.treasury)?;
 		if let Some((tag, index)) = country.overlord {
-			poke_u64(&mut raw, country::OVERLORD, pack_tag(tag, index, 1))?;
+			poke_u64(
+				&mut raw,
+				layout().country_overlord.offset,
+				pack_tag(tag, index, 1),
+			)?;
 		}
 		let dates: Vec<i32> = country.flags.iter().map(|(_, hours)| *hours).collect();
 		if !ids.is_empty() {
 			write_vector(
 				&mut raw,
-				COUNTRY_FLAGS + FLAG_IDS,
+				layout().flags_country_flags.offset + layout().flags_flag_ids.offset,
 				ids.as_ptr() as u64,
 				ids.len() * 2,
 			)?;
 			write_vector(
 				&mut raw,
-				COUNTRY_FLAGS + FLAG_DATES,
+				layout().flags_country_flags.offset + layout().flags_flag_dates.offset,
 				dates.as_ptr() as u64,
 				dates.len() * 4,
 			)?;
@@ -376,9 +386,9 @@ fn plant_countries(live: &mut Live, specs: &Specs) -> Result<(), &'static str> {
 	if !live.flag_names.is_empty() {
 		write_vector(
 			&mut live.image,
-			FLAG_NAMES_RVA,
+			layout().flag_names.offset,
 			live.flag_names.as_ptr() as u64,
-			live.flag_names.len() * STRING_SIZE,
+			live.flag_names.len() * layout().flags_string_size.offset,
 		)?;
 	}
 	Ok(())
@@ -390,15 +400,20 @@ fn plant_provinces(live: &mut Live, specs: &Specs) -> Result<(), &'static str> {
 	};
 	let slots = usize::try_from(max_id).unwrap() + 1;
 	let bytes = slots
-		.checked_mul(province::CPROVINCE_SIZE)
+		.checked_mul(layout().province_cprovince_size.offset)
 		.ok_or("province map overflows")?;
 	live.provinces = vec![0; bytes.div_ceil(8)];
 	for province_spec in &specs.provinces {
-		let base = usize::try_from(province_spec.id).unwrap() * province::CPROVINCE_SIZE;
-		poke_i32(&mut live.provinces, base + province::TAX, province_spec.tax)?;
+		let base =
+			usize::try_from(province_spec.id).unwrap() * layout().province_cprovince_size.offset;
 		poke_i32(
 			&mut live.provinces,
-			base + province::MANPOWER,
+			base + layout().province_tax.offset,
+			province_spec.tax,
+		)?;
+		poke_i32(
+			&mut live.provinces,
+			base + layout().province_manpower.offset,
 			province_spec.manpower,
 		)?;
 		for (offset, bytes) in &province_spec.patches {
@@ -407,15 +422,17 @@ fn plant_provinces(live: &mut Live, specs: &Specs) -> Result<(), &'static str> {
 	}
 	poke_u64(
 		&mut live.context,
-		province::CPROVINCES,
+		layout().province_cprovinces.offset,
 		live.provinces.as_ptr() as u64,
 	)
 }
 
 fn plant_trade(live: &mut Live, specs: &Specs) -> Result<(), &'static str> {
 	for spec in &specs.nodes {
-		live.nodes.push(vec![0; (node::DEFINITION + 8).div_ceil(8)]);
-		live.defs.push(vec![0; (def::ROUTES_END + 8).div_ceil(8)]);
+		live.nodes
+			.push(vec![0; (layout().node_definition.offset + 8).div_ceil(8)]);
+		live.defs
+			.push(vec![0; (layout().def_routes_end.offset + 8).div_ceil(8)]);
 		live.members.push(
 			spec.members
 				.iter()
@@ -425,38 +442,42 @@ fn plant_trade(live: &mut Live, specs: &Specs) -> Result<(), &'static str> {
 				.map_err(|_| "trade node member province id must be positive")?,
 		);
 		live.routes
-			.push(vec![0; spec.routes.len() * route::SIZE / 8]);
+			.push(vec![0; spec.routes.len() * layout().route_size.offset / 8]);
 	}
 	let empty = &*live.empty_route as *const u64 as u64;
 	for (index, spec) in specs.nodes.iter().enumerate() {
 		let definition = live.defs[index].as_ptr() as u64;
-		poke_u64(&mut live.nodes[index], node::DEFINITION, definition)?;
+		poke_u64(
+			&mut live.nodes[index],
+			layout().node_definition.offset,
+			definition,
+		)?;
 		if !spec.members.is_empty() {
 			write_vector(
 				&mut live.defs[index],
-				def::MEMBERS,
+				layout().def_members.offset,
 				live.members[index].as_ptr() as u64,
 				spec.members.len() * 4,
 			)?;
 		}
 		if spec.routes.is_empty() {
-			poke_u64(&mut live.defs[index], def::ROUTES, empty)?;
-			poke_u64(&mut live.defs[index], def::ROUTES_END, empty)?;
+			poke_u64(&mut live.defs[index], layout().def_routes.offset, empty)?;
+			poke_u64(&mut live.defs[index], layout().def_routes_end.offset, empty)?;
 		} else {
 			let begin = live.routes[index].as_ptr() as u64;
 			for (slot, target) in spec.routes.iter().enumerate() {
 				let target_def = live.defs[*target].as_ptr() as u64;
 				poke_u64(
 					&mut live.routes[index],
-					slot * route::SIZE + route::TARGET,
+					slot * layout().route_size.offset + layout().route_target.offset,
 					target_def,
 				)?;
 			}
-			poke_u64(&mut live.defs[index], def::ROUTES, begin)?;
+			poke_u64(&mut live.defs[index], layout().def_routes.offset, begin)?;
 			poke_u64(
 				&mut live.defs[index],
-				def::ROUTES_END,
-				begin + (spec.routes.len() * route::SIZE) as u64,
+				layout().def_routes_end.offset,
+				begin + (spec.routes.len() * layout().route_size.offset) as u64,
 			)?;
 		}
 		live.node_ptrs[index] = live.nodes[index].as_ptr() as u64;
@@ -464,15 +485,15 @@ fn plant_trade(live: &mut Live, specs: &Specs) -> Result<(), &'static str> {
 	if specs.nodes.is_empty() {
 		return Ok(());
 	}
-	let db_at = super::layout::DB_IN_CONTEXT;
+	let db_at = layout().context_db.offset;
 	poke_u64(
 		&mut live.context,
-		db_at + db::NODES,
+		db_at + layout().db_nodes.offset,
 		live.node_ptrs.as_ptr() as u64,
 	)?;
 	poke_i32(
 		&mut live.context,
-		db_at + db::NODE_COUNT,
+		db_at + layout().db_node_count.offset,
 		i32::try_from(specs.nodes.len()).map_err(|_| "too many trade nodes")?,
 	)
 }
@@ -481,23 +502,23 @@ fn plant_roots(live: &mut Live, slots: usize, specs: &Specs) -> Result<(), &'sta
 	if !specs.countries.is_empty() {
 		poke_u64(
 			&mut live.manager,
-			country_manager::INDEX_ARRAY,
+			layout().country_manager_index_array.offset,
 			live.pointers.as_ptr() as u64,
 		)?;
 		poke_u64(
 			&mut live.image,
-			super::layout::COUNTRY_MANAGER_GLOBAL_RVA,
+			layout().country_manager_global.offset,
 			live.manager.as_ptr() as u64,
 		)?;
 		poke_i32(
 			&mut live.context,
-			super::layout::COUNTRIES_COUNT,
+			layout().countries_count.offset,
 			i32::try_from(slots).map_err(|_| "country registry does not fit")?,
 		)?;
 	}
 	poke_u64(
 		&mut live.image,
-		super::layout::CONTEXT_GLOBAL_RVA,
+		layout().context_global.offset,
 		live.context.as_ptr() as u64,
 	)
 }

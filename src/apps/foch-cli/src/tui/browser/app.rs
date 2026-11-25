@@ -15,6 +15,10 @@ use foch::merge::{
 	AnalyzedMerge, MergeAnalysisStatus, MergeDisposition, MergeProgress, MergeReviewSummary,
 	MergeUnitOutcome, default_merge_workers,
 };
+use foch::plugin::{
+	self, GameIdentity, LanguagePreference, MirrorPreference, PluginOverview, TransportPreference,
+	UiLanguage, UserPreferences,
+};
 use ratatui::layout::{Position, Rect};
 
 const PAGE_STEP: usize = 10;
@@ -170,6 +174,9 @@ impl InputPane {
 pub struct HitAreas {
 	pub header: Rect,
 	pub banner: Rect,
+	pub tab_launch: Rect,
+	pub tab_merge: Rect,
+	pub tab_settings: Rect,
 	pub mods: Rect,
 	pub mods_offset: usize,
 	pub selected_mod: Rect,
@@ -238,12 +245,35 @@ pub enum Phase {
 }
 
 /// What the session must do in response to a key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppCommand {
 	Quit,
 	Analyze,
 	Refresh,
+	/// Re-inspect the input and the plugin list without starting an analysis.
+	RefreshPlugins,
 	BuildBaseData,
+	PrepareOnly,
+	LaunchGame,
+	InstallPlugin,
+	InstallSpec(String),
+}
+
+/// The three pages of bare `foch`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TopTab {
+	LaunchPlugins,
+	#[default]
+	MergeReview,
+	NetworkSettings,
+}
+
+/// Inline editor for one plugin's `[config.*]` fields.
+#[derive(Clone, Debug)]
+pub(super) struct ConfigEditor {
+	pub plugin_id: String,
+	pub cursor: usize,
+	pub fields: Vec<foch::plugin::ConfigFieldSummary>,
 }
 
 /// Something outside the browser a key asked for, carried out by the run
@@ -327,6 +357,7 @@ pub const KEY_HELP: &[(&str, &str, &str)] = &[
 #[derive(Debug)]
 pub struct App {
 	pub phase: Phase,
+	pub top_tab: TopTab,
 	pub screen: Screen,
 	pub focus: Focus,
 	pub input: Option<CurrentEu4Input>,
@@ -381,12 +412,30 @@ pub struct App {
 	/// The finished selection is waiting to be copied from the next frame.
 	pub copy_selection: bool,
 	analyze_after_inspection: bool,
+	pub(super) ui_language: UiLanguage,
+	pub(super) preferences: UserPreferences,
+	pub(super) preferences_path: Option<std::path::PathBuf>,
+	pub(super) playset_name: String,
+	pub(super) store_root: Option<std::path::PathBuf>,
+	pub(super) selections_path: Option<std::path::PathBuf>,
+	pub(super) plugin_overview: Option<PluginOverview>,
+	pub(super) plugin_cursor: usize,
+	pub(super) plugin_warnings: Vec<String>,
+	pub(super) config_editor: Option<ConfigEditor>,
+	pub(super) settings_cursor: usize,
+	pub(super) confirming_launch: bool,
+	pub(super) install_input: Option<String>,
+	pub(super) banner: Option<String>,
+	pub(super) last_run_dir: Option<std::path::PathBuf>,
+	pub(super) runtime_states: std::collections::BTreeMap<String, String>,
+	pub(super) host_label: String,
 }
 
 impl Default for App {
 	fn default() -> Self {
 		Self {
 			phase: Phase::Inspecting,
+			top_tab: TopTab::MergeReview,
 			screen: Screen::Input,
 			focus: Focus::Units,
 			input: None,
@@ -418,6 +467,23 @@ impl Default for App {
 			selection_bounds: Rect::default(),
 			copy_selection: false,
 			analyze_after_inspection: false,
+			ui_language: UiLanguage::En,
+			preferences: UserPreferences::default(),
+			preferences_path: None,
+			playset_name: "default".to_string(),
+			store_root: None,
+			selections_path: None,
+			plugin_overview: None,
+			plugin_cursor: 0,
+			plugin_warnings: Vec::new(),
+			config_editor: None,
+			settings_cursor: 0,
+			confirming_launch: false,
+			install_input: None,
+			banner: None,
+			last_run_dir: None,
+			runtime_states: std::collections::BTreeMap::new(),
+			host_label: String::new(),
 		}
 	}
 }
@@ -648,6 +714,14 @@ impl App {
 		game_base_available: bool,
 	) {
 		self.input = Some(input);
+		if let Some(name) = self
+			.input
+			.as_ref()
+			.and_then(|input| input.playset.as_ref())
+			.map(|playset| playset.name.clone())
+		{
+			self.playset_name = name;
+		}
 		self.source_path = None;
 		self.game_base_available = game_base_available;
 		self.selectable = selectable;
@@ -708,6 +782,10 @@ impl App {
 		self.refusal = None;
 		self.notice = None;
 		self.selection = None;
+		if let Some(tab) = function_tab(key.code) {
+			self.switch_tab(tab);
+			return None;
+		}
 		if self.help {
 			self.help = false;
 			return (key.code == KeyCode::Char('q')).then_some(AppCommand::Quit);
@@ -715,6 +793,33 @@ impl App {
 		if self.focus == Focus::Search {
 			self.handle_search_key(key);
 			return None;
+		}
+		if self.config_editor.is_some() {
+			self.handle_config_key(key);
+			return None;
+		}
+		if self.install_input.is_some() {
+			return self.handle_install_input(key);
+		}
+		if self.confirming_launch {
+			self.confirming_launch = false;
+			return match key.code {
+				KeyCode::Char('q') => Some(AppCommand::Quit),
+				KeyCode::Char('y') => Some(AppCommand::LaunchGame),
+				_ => None,
+			};
+		}
+		if let Some(tab) = digit_tab(key.code)
+			&& !self.review_digits_filter()
+		{
+			self.switch_tab(tab);
+			return None;
+		}
+		if self.top_tab == TopTab::LaunchPlugins {
+			return self.handle_launch_key(key);
+		}
+		if self.top_tab == TopTab::NetworkSettings {
+			return self.handle_settings_key(key);
 		}
 		if let Some(cursor) = self.options {
 			return self.handle_options_key(key, cursor);
@@ -953,6 +1058,450 @@ impl App {
 		}
 	}
 
+	/// Bare `foch` opens on Launch & Plugins and loads saved UI settings.
+	pub(super) fn for_bare_foch() -> Self {
+		let preferences_path = plugin::preferences_path().ok();
+		let preferences = preferences_path
+			.as_deref()
+			.map(UserPreferences::load_or_default)
+			.unwrap_or_default();
+		let ui_language = preferences.resolved_language();
+		Self {
+			top_tab: TopTab::LaunchPlugins,
+			ui_language,
+			preferences,
+			preferences_path,
+			store_root: plugin::paths::checked_store_root(
+				&foch::game::eu4::base::snapshot::data_root(),
+			)
+			.ok(),
+			selections_path: plugin::paths::selections_path().ok(),
+			host_label: host_dll_label(),
+			..Self::default()
+		}
+	}
+
+	/// Launch-tab shell with explicit settings, for tests that must not read
+	/// the player's config directory.
+	#[cfg(test)]
+	pub(super) fn open_launch(
+		preferences: UserPreferences,
+		preferences_path: Option<PathBuf>,
+	) -> Self {
+		let ui_language = match preferences.language {
+			LanguagePreference::ZhCn => UiLanguage::ZhCn,
+			LanguagePreference::En => UiLanguage::En,
+			LanguagePreference::Auto => preferences.resolved_language(),
+		};
+		Self {
+			top_tab: TopTab::LaunchPlugins,
+			ui_language,
+			preferences,
+			preferences_path,
+			host_label: host_dll_label(),
+			..Self::default()
+		}
+	}
+
+	pub(super) fn review_attention_count(&self) -> usize {
+		if let Some(view) = self.analysis() {
+			view.summary.needs_user_choice
+				+ view.summary.unsupported_input
+				+ view.summary.engine_failure
+		} else {
+			self.problem_mods().len()
+		}
+	}
+
+	fn review_digits_filter(&self) -> bool {
+		self.top_tab == TopTab::MergeReview
+			&& self.screen == Screen::Review
+			&& self.analysis().is_some()
+			&& self.focus != Focus::Search
+	}
+
+	fn switch_tab(&mut self, tab: TopTab) {
+		self.top_tab = tab;
+		self.options = None;
+		self.confirming_exclusions = false;
+		self.confirming_build = false;
+		self.confirming_launch = false;
+		self.install_input = None;
+		self.config_editor = None;
+		self.help = false;
+		if self.focus == Focus::Search {
+			self.focus = Focus::Units;
+		}
+		if tab == TopTab::LaunchPlugins {
+			self.reload_plugins();
+		}
+	}
+
+	pub(super) fn reload_plugins(&mut self) {
+		let (Some(store), Some(selections)) =
+			(self.store_root.clone(), self.selections_path.clone())
+		else {
+			return;
+		};
+		let roots = self.declared_roots();
+		let (declared, warnings) = plugin::discover_declared_plugins(&roots);
+		self.plugin_warnings = warnings;
+		let game = self.game_identity();
+		match plugin::build_overview(
+			&self.playset_name,
+			&store,
+			&selections,
+			&declared,
+			game.as_ref(),
+		) {
+			Ok(overview) => {
+				let last = overview.plugins.len().saturating_sub(1);
+				if self.plugin_cursor > last {
+					self.plugin_cursor = last;
+				}
+				self.plugin_overview = Some(overview);
+			}
+			Err(error) => self.refusal = Some(error.to_string()),
+		}
+	}
+
+	fn declared_roots(&self) -> Vec<(String, PathBuf)> {
+		self.input
+			.as_ref()
+			.and_then(|input| input.playset.as_ref())
+			.map(|playset| {
+				playset
+					.mods
+					.iter()
+					.filter_map(|playset_mod| {
+						let root = playset_mod
+							.descriptor_path
+							.as_ref()?
+							.parent()?
+							.to_path_buf();
+						Some((playset_mod.name.clone(), root))
+					})
+					.collect()
+			})
+			.unwrap_or_default()
+	}
+
+	fn game_identity(&self) -> Option<GameIdentity> {
+		let version = self.input.as_ref()?.game.version.as_deref()?;
+		Some(GameIdentity {
+			game: "eu4".into(),
+			version: plugin::parse_game_version(version)?,
+			platform: plugin::WINDOWS_X64.into(),
+		})
+	}
+
+	fn selected_plugin(&self) -> Option<&foch::plugin::PluginEntrySummary> {
+		self.plugin_overview
+			.as_ref()?
+			.plugins
+			.get(self.plugin_cursor)
+	}
+
+	fn handle_launch_key(&mut self, key: KeyEvent) -> Option<AppCommand> {
+		match key.code {
+			KeyCode::Char('q') => return Some(AppCommand::Quit),
+			KeyCode::Char('?') => self.help = true,
+			KeyCode::Char('m') => {
+				self.mouse_capture = !self.mouse_capture;
+				self.effect = Some(Effect::MouseCapture(self.mouse_capture));
+			}
+			KeyCode::Char('r') if !self.is_working() => return Some(AppCommand::RefreshPlugins),
+			KeyCode::Up | KeyCode::Char('k') => {
+				self.plugin_cursor = self.plugin_cursor.saturating_sub(1);
+			}
+			KeyCode::Down | KeyCode::Char('j') => {
+				let last = self
+					.plugin_overview
+					.as_ref()
+					.map(|overview| overview.plugins.len().saturating_sub(1))
+					.unwrap_or(0);
+				self.plugin_cursor = self.plugin_cursor.saturating_add(1).min(last);
+			}
+			KeyCode::Char(' ') => self.toggle_selected_plugin(),
+			KeyCode::Char('c') => self.open_config_editor(),
+			KeyCode::Char('i') => return Some(AppCommand::InstallPlugin),
+			KeyCode::Char('I') => self.install_input = Some(String::new()),
+			KeyCode::Char('p') if !self.is_working() => return Some(AppCommand::PrepareOnly),
+			KeyCode::Char('L') => self.confirming_launch = true,
+			KeyCode::Char('s') => self.refresh_runtime_states(),
+			_ => {}
+		}
+		None
+	}
+
+	fn handle_settings_key(&mut self, key: KeyEvent) -> Option<AppCommand> {
+		let last = 2usize;
+		match key.code {
+			KeyCode::Char('q') => return Some(AppCommand::Quit),
+			KeyCode::Up | KeyCode::Char('k') => {
+				self.settings_cursor = self.settings_cursor.saturating_sub(1);
+			}
+			KeyCode::Down | KeyCode::Char('j') => {
+				self.settings_cursor = self.settings_cursor.saturating_add(1).min(last);
+			}
+			KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Right | KeyCode::Char('+') => {
+				self.cycle_setting(true);
+			}
+			KeyCode::Left | KeyCode::Char('-') => self.cycle_setting(false),
+			KeyCode::Char('?') => self.help = true,
+			_ => {}
+		}
+		None
+	}
+
+	fn cycle_setting(&mut self, forward: bool) {
+		match self.settings_cursor {
+			0 => {
+				self.preferences.transport = cycle_transport(self.preferences.transport, forward);
+			}
+			1 => {
+				self.preferences.mirror = cycle_mirror(self.preferences.mirror, forward);
+				if self.preferences.mirror == MirrorPreference::Custom
+					&& self.preferences.custom_mirrors.is_empty()
+				{
+					self.preferences.mirror = if forward {
+						MirrorPreference::Auto
+					} else {
+						MirrorPreference::Direct
+					};
+					self.refusal = Some(match self.ui_language {
+						UiLanguage::ZhCn => "自定义镜像需要先写入 https 前缀".to_string(),
+						UiLanguage::En => {
+							"Custom mirrors need an https prefix in ui-settings.toml".to_string()
+						}
+					});
+				}
+			}
+			_ => {
+				self.preferences.language = cycle_language(self.preferences.language, forward);
+				self.ui_language = match self.preferences.language {
+					LanguagePreference::ZhCn => UiLanguage::ZhCn,
+					LanguagePreference::En => UiLanguage::En,
+					LanguagePreference::Auto => self.preferences.resolved_language(),
+				};
+			}
+		}
+		self.persist_preferences();
+	}
+
+	fn persist_preferences(&mut self) {
+		let Some(path) = self.preferences_path.clone() else {
+			return;
+		};
+		if let Err(error) = self.preferences.save(&path) {
+			self.refusal = Some(error.to_string());
+		}
+	}
+
+	fn toggle_selected_plugin(&mut self) {
+		let Some(entry) = self.selected_plugin().cloned() else {
+			return;
+		};
+		if entry.installed_versions.is_empty() {
+			self.refusal = Some(super::text::not_installed(self.ui_language, &entry.id));
+			return;
+		}
+		let (Some(store), Some(selections)) =
+			(self.store_root.clone(), self.selections_path.clone())
+		else {
+			self.refusal = Some("plugin selections are not available".to_string());
+			return;
+		};
+		let version = entry
+			.selected_version
+			.as_deref()
+			.and_then(|version| semver::Version::parse(version).ok())
+			.or_else(|| {
+				entry
+					.installed_versions
+					.last()
+					.and_then(|version| semver::Version::parse(version).ok())
+			});
+		if let Err(error) = plugin::set_plugin_enabled(
+			&selections,
+			&store,
+			&self.playset_name,
+			&entry.id,
+			!entry.enabled,
+			version,
+		) {
+			self.refusal = Some(error.to_string());
+			return;
+		}
+		self.reload_plugins();
+	}
+
+	fn open_config_editor(&mut self) {
+		let Some(entry) = self.selected_plugin() else {
+			return;
+		};
+		if entry.config_fields.is_empty() {
+			self.refusal = Some(match self.ui_language {
+				UiLanguage::ZhCn => "这个插件没有可编辑的配置".to_string(),
+				UiLanguage::En => "This plugin has no configuration fields".to_string(),
+			});
+			return;
+		}
+		self.config_editor = Some(ConfigEditor {
+			plugin_id: entry.id.clone(),
+			cursor: 0,
+			fields: entry.config_fields.clone(),
+		});
+	}
+
+	fn handle_config_key(&mut self, key: KeyEvent) {
+		match key.code {
+			KeyCode::Esc | KeyCode::Char('q') => {
+				self.config_editor = None;
+				return;
+			}
+			KeyCode::Up | KeyCode::Char('k') => {
+				if let Some(editor) = self.config_editor.as_mut() {
+					editor.cursor = editor.cursor.saturating_sub(1);
+				}
+				return;
+			}
+			KeyCode::Down | KeyCode::Char('j') => {
+				if let Some(editor) = self.config_editor.as_mut() {
+					let last = editor.fields.len().saturating_sub(1);
+					editor.cursor = editor.cursor.saturating_add(1).min(last);
+				}
+				return;
+			}
+			_ => {}
+		}
+		let Some(editor) = self.config_editor.clone() else {
+			return;
+		};
+		let Some(field) = editor.fields.get(editor.cursor) else {
+			return;
+		};
+		let mut value = field.value.clone();
+		match (field.kind.as_str(), key.code) {
+			("bool", KeyCode::Char(' ') | KeyCode::Enter) => {
+				value = toml::Value::Boolean(!value.as_bool().unwrap_or(false));
+			}
+			("int", KeyCode::Right | KeyCode::Char('+')) => {
+				let next = value.as_integer().unwrap_or(0).saturating_add(1);
+				if field.max.is_some_and(|max| next > max) {
+					return;
+				}
+				value = toml::Value::Integer(next);
+			}
+			("int", KeyCode::Left | KeyCode::Char('-')) => {
+				let next = value.as_integer().unwrap_or(0).saturating_sub(1);
+				if field.min.is_some_and(|min| next < min) {
+					return;
+				}
+				value = toml::Value::Integer(next);
+			}
+			("string", KeyCode::Char(ch)) => {
+				let mut text = value.as_str().unwrap_or("").to_string();
+				text.push(ch);
+				value = toml::Value::String(text);
+			}
+			("string", KeyCode::Backspace) => {
+				let mut text = value.as_str().unwrap_or("").to_string();
+				text.pop();
+				value = toml::Value::String(text);
+			}
+			_ => return,
+		}
+		let key_name = field.key.clone();
+		let plugin_id = editor.plugin_id.clone();
+		if let Err(error) = self.persist_config(&plugin_id, &key_name, value.clone()) {
+			self.refusal = Some(error);
+			return;
+		}
+		if let Some(editor) = self.config_editor.as_mut()
+			&& let Some(field) = editor.fields.get_mut(editor.cursor)
+		{
+			field.value = value;
+		}
+	}
+
+	fn persist_config(&self, id: &str, key: &str, value: toml::Value) -> Result<(), String> {
+		let (Some(store), Some(selections)) =
+			(self.store_root.as_ref(), self.selections_path.as_ref())
+		else {
+			return Err("plugin selections are not available".to_string());
+		};
+		plugin::set_plugin_config_value(selections, store, &self.playset_name, id, key, value)
+			.map_err(|error| error.to_string())
+	}
+
+	fn handle_install_input(&mut self, key: KeyEvent) -> Option<AppCommand> {
+		match key.code {
+			KeyCode::Esc => self.install_input = None,
+			KeyCode::Enter => {
+				let spec = self.install_input.take().unwrap_or_default();
+				if spec.trim().is_empty() {
+					return None;
+				}
+				return Some(AppCommand::InstallSpec(spec));
+			}
+			KeyCode::Backspace => {
+				if let Some(spec) = self.install_input.as_mut() {
+					spec.pop();
+				}
+			}
+			KeyCode::Char(ch) => {
+				if let Some(spec) = self.install_input.as_mut() {
+					spec.push(ch);
+				}
+			}
+			_ => {}
+		}
+		None
+	}
+
+	fn refresh_runtime_states(&mut self) {
+		let Some(run_dir) = self.last_run_dir.clone() else {
+			self.refusal = Some(match self.ui_language {
+				UiLanguage::ZhCn => "还没有启动记录，先按 L 启动或按 p 预检".to_string(),
+				UiLanguage::En => {
+					"No launch yet. Press L to start EU4 or p to prepare.".to_string()
+				}
+			});
+			return;
+		};
+		match plugin::deployment::read_plan(&run_dir)
+			.and_then(|plan| plugin::deployment::states(&plan, &run_dir))
+		{
+			Ok(states) => {
+				self.runtime_states = states
+					.into_iter()
+					.map(|(id, value)| {
+						let state = value
+							.get("state")
+							.and_then(|state| state.as_str())
+							.unwrap_or("unknown")
+							.to_string();
+						(id, state)
+					})
+					.collect();
+				self.banner = Some(match self.ui_language {
+					UiLanguage::ZhCn => format!("已刷新 {} 的插件状态", run_dir.display()),
+					UiLanguage::En => format!("Refreshed plugin states from {}", run_dir.display()),
+				});
+			}
+			Err(error) => self.refusal = Some(error.to_string()),
+		}
+	}
+
+	pub(super) fn note_plugin_result(&mut self, banner: String, run_dir: Option<PathBuf>) {
+		self.banner = Some(banner);
+		if let Some(run_dir) = run_dir {
+			self.last_run_dir = Some(run_dir);
+		}
+		self.reload_plugins();
+	}
+
 	fn handle_options_key(&mut self, key: KeyEvent, cursor: usize) -> Option<AppCommand> {
 		match key.code {
 			KeyCode::Char('q') => return Some(AppCommand::Quit),
@@ -1042,6 +1591,26 @@ impl App {
 	/// the row; the wheel scrolls the panel under the pointer. Mouse input
 	/// is ignored while a dialog is open.
 	pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+		if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+			let at = Position::new(mouse.column, mouse.row);
+			let hit = self.hit.get();
+			let tab = if hit.tab_launch.contains(at) {
+				Some(TopTab::LaunchPlugins)
+			} else if hit.tab_merge.contains(at) {
+				Some(TopTab::MergeReview)
+			} else if hit.tab_settings.contains(at) {
+				Some(TopTab::NetworkSettings)
+			} else {
+				None
+			};
+			if let Some(tab) = tab {
+				self.switch_tab(tab);
+				return;
+			}
+		}
+		if self.top_tab != TopTab::MergeReview {
+			return;
+		}
 		if self.options.is_some()
 			|| self.confirming_exclusions
 			|| self.help
@@ -1212,6 +1781,93 @@ impl App {
 			.unwrap_or(0);
 		self.detail_scroll = 0;
 	}
+}
+
+fn function_tab(code: KeyCode) -> Option<TopTab> {
+	match code {
+		KeyCode::F(1) => Some(TopTab::LaunchPlugins),
+		KeyCode::F(2) => Some(TopTab::MergeReview),
+		KeyCode::F(3) => Some(TopTab::NetworkSettings),
+		_ => None,
+	}
+}
+
+fn digit_tab(code: KeyCode) -> Option<TopTab> {
+	match code {
+		KeyCode::Char('1') => Some(TopTab::LaunchPlugins),
+		KeyCode::Char('2') => Some(TopTab::MergeReview),
+		KeyCode::Char('3') => Some(TopTab::NetworkSettings),
+		_ => None,
+	}
+}
+
+fn cycle<T: Copy + PartialEq>(items: &[T], value: T, forward: bool) -> T {
+	let index = items.iter().position(|item| *item == value).unwrap_or(0);
+	let next = if forward {
+		(index + 1) % items.len()
+	} else {
+		(index + items.len() - 1) % items.len()
+	};
+	items[next]
+}
+
+fn cycle_transport(value: TransportPreference, forward: bool) -> TransportPreference {
+	cycle(
+		&[
+			TransportPreference::Auto,
+			TransportPreference::Http,
+			TransportPreference::Gh,
+		],
+		value,
+		forward,
+	)
+}
+
+fn cycle_mirror(value: MirrorPreference, forward: bool) -> MirrorPreference {
+	cycle(
+		&[
+			MirrorPreference::Auto,
+			MirrorPreference::Cn,
+			MirrorPreference::Direct,
+			MirrorPreference::Custom,
+		],
+		value,
+		forward,
+	)
+}
+
+fn cycle_language(value: LanguagePreference, forward: bool) -> LanguagePreference {
+	cycle(
+		&[
+			LanguagePreference::Auto,
+			LanguagePreference::ZhCn,
+			LanguagePreference::En,
+		],
+		value,
+		forward,
+	)
+}
+
+fn host_dll_label() -> String {
+	let Ok(executable) = std::env::current_exe() else {
+		return "unknown".to_string();
+	};
+	let Some(directory) = executable.parent() else {
+		return "unknown".to_string();
+	};
+	for name in [
+		foch_runtime::host::BUILT_DLL,
+		foch_runtime::host::DISTRIBUTED_DLL,
+	] {
+		if directory.join(name).is_file() {
+			return format!("ready ({name})");
+		}
+	}
+	format!(
+		"missing {} / {}",
+		foch_runtime::host::BUILT_DLL,
+		foch_runtime::host::DISTRIBUTED_DLL
+	)
 }
 
 fn step(current: usize, code: KeyCode, last: usize) -> usize {
@@ -1478,5 +2134,181 @@ mod tests {
 
 		assert!(!app.take_analyze_after_inspection());
 		assert!(app.confirming_exclusions);
+	}
+
+	fn rendered(app: &App) -> String {
+		use ratatui::Terminal;
+		use ratatui::backend::TestBackend;
+		let mut terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
+		terminal
+			.draw(|frame| super::super::render::draw(frame, app))
+			.expect("draw");
+		let buffer = terminal.backend().buffer().clone();
+		(0..buffer.area.height)
+			.map(|y| {
+				let mut row = String::new();
+				let mut skip = 0u16;
+				for x in 0..buffer.area.width {
+					if skip > 0 {
+						skip -= 1;
+						continue;
+					}
+					let symbol = buffer[(x, y)].symbol();
+					skip = ratatui::text::Span::raw(symbol).width().saturating_sub(1) as u16;
+					row.push_str(symbol);
+				}
+				row
+			})
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
+	#[test]
+	fn production_launch_tab_is_the_default_and_digits_switch_pages() {
+		let mut app = App::open_launch(UserPreferences::default(), None);
+		app.ui_language = UiLanguage::En;
+		assert_eq!(app.top_tab, TopTab::LaunchPlugins);
+		assert!(rendered(&app).contains("[1] Launch & Plugins"));
+		press(&mut app, KeyCode::Char('2'));
+		assert_eq!(app.top_tab, TopTab::MergeReview);
+		press(&mut app, KeyCode::Char('3'));
+		assert_eq!(app.top_tab, TopTab::NetworkSettings);
+		press(&mut app, KeyCode::F(1));
+		assert_eq!(app.top_tab, TopTab::LaunchPlugins);
+	}
+
+	#[test]
+	fn launch_tab_alerts_toggles_config_and_settings_persist() {
+		let temp = tempfile::tempdir().unwrap();
+		let store = temp.path().join("store");
+		std::fs::create_dir(&store).unwrap();
+		let version = store.join("demo.plugin").join("0.1.0+local");
+		std::fs::create_dir_all(&version).unwrap();
+		std::fs::write(
+			version.join("foch-plugin.toml"),
+			r#"
+schema = 1
+[plugin]
+id = "demo.plugin"
+name = "Demo Plugin"
+version = "0.1.0"
+description = "A store fixture."
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "*"
+[entry]
+kind = "legacy"
+path = "plugins/demo.dll"
+phase = "entry"
+[config.limit]
+type = "int"
+default = 1
+min = 0
+max = 2
+"#,
+		)
+		.unwrap();
+		let selections = temp.path().join("selections.toml");
+		let preferences = temp.path().join("ui-settings.toml");
+		let mut app = App::open_launch(
+			UserPreferences {
+				language: LanguagePreference::En,
+				..UserPreferences::default()
+			},
+			Some(preferences.clone()),
+		);
+		app.store_root = Some(store);
+		app.selections_path = Some(selections);
+		app.playset_name = "play".to_string();
+		app.plugin_overview = Some(
+			foch::plugin::build_overview(
+				"play",
+				app.store_root.as_ref().unwrap(),
+				app.selections_path.as_ref().unwrap(),
+				&[foch::plugin::DeclaredModPlugin {
+					plugin_id: "dev.foch.eu4-dynamic-trade-blackhole".into(),
+					repo: Some("Acture/eu4-dynamic-trade-blackhole".into()),
+					game: "eu4".into(),
+					game_versions: None,
+					required: true,
+					min_version: None,
+					sha256: None,
+					source_mods: vec!["Dynamic Trade".into()],
+				}],
+				None,
+			)
+			.unwrap(),
+		);
+		let shown = rendered(&app);
+		assert!(
+			shown.contains(
+				"Mod \"Dynamic Trade\" recommends plugin dev.foch.eu4-dynamic-trade-blackhole"
+			),
+			"{shown}"
+		);
+		assert!(shown.contains("[NOT INSTALLED]"), "{shown}");
+		app.plugin_cursor = app
+			.plugin_overview
+			.as_ref()
+			.unwrap()
+			.plugins
+			.iter()
+			.position(|plugin| plugin.id == "demo.plugin")
+			.expect("demo plugin");
+		press(&mut app, KeyCode::Char(' '));
+		let demo = app
+			.plugin_overview
+			.as_ref()
+			.unwrap()
+			.plugins
+			.iter()
+			.find(|plugin| plugin.id == "demo.plugin")
+			.unwrap();
+		assert!(demo.enabled, "{demo:?}");
+		assert!(rendered(&app).contains("[ENABLED]"));
+		app.plugin_cursor = app
+			.plugin_overview
+			.as_ref()
+			.unwrap()
+			.plugins
+			.iter()
+			.position(|plugin| plugin.id == "demo.plugin")
+			.expect("demo plugin after toggle");
+
+		press(&mut app, KeyCode::Char('c'));
+		assert!(app.config_editor.is_some());
+		press(&mut app, KeyCode::Right);
+		press(&mut app, KeyCode::Right);
+		press(&mut app, KeyCode::Char('+'));
+		let limit = app.config_editor.as_ref().unwrap().fields[0].value.clone();
+		assert_eq!(limit, toml::Value::Integer(2), "int stays inside max");
+		press(&mut app, KeyCode::Left);
+		press(&mut app, KeyCode::Left);
+		press(&mut app, KeyCode::Left);
+		press(&mut app, KeyCode::Char('-'));
+		let limit = app.config_editor.as_ref().unwrap().fields[0].value.clone();
+		assert_eq!(limit, toml::Value::Integer(0), "int stays inside min");
+		press(&mut app, KeyCode::Esc);
+		assert!(app.config_editor.is_none());
+
+		press(&mut app, KeyCode::Char('3'));
+		assert_eq!(app.top_tab, TopTab::NetworkSettings);
+		assert!(rendered(&app).contains("Download transport"));
+		assert!(rendered(&app).contains("Auto (HTTPS → gh)"));
+		press(&mut app, KeyCode::Char(' '));
+		let saved = std::fs::read_to_string(&preferences).unwrap();
+		assert!(saved.contains("http"), "{saved}");
+		press(&mut app, KeyCode::Down);
+		press(&mut app, KeyCode::Down);
+		press(&mut app, KeyCode::Left);
+		assert_eq!(app.ui_language, UiLanguage::ZhCn);
+		let shown = rendered(&app);
+		assert!(shown.contains("[1] 启动与插件"), "{shown}");
+		assert!(shown.contains("下载传输"), "{shown}");
+		assert!(shown.contains("简体中文"), "{shown}");
+		press(&mut app, KeyCode::Char('1'));
+		app.ui_language = UiLanguage::En;
+		assert!(rendered(&app).contains("[1] Launch & Plugins"));
 	}
 }

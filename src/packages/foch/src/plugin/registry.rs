@@ -3,7 +3,8 @@
 //! One row per plugin, in the shape of a Homebrew formula and a Unity Mod
 //! Manager `Info.json`: name, author, homepage, version, and the release URL.
 //! A row writes `depends_on` or `conflicts_with` only when it has one. `plan`
-//! reads those lists. Install parses the release URL for `gh release download`.
+//! reads those lists. Install downloads the release URL over HTTPS, or with
+//! `gh` when that transport is selected. An optional `sha256` pins the zip.
 
 use super::builtin;
 use super::store;
@@ -34,6 +35,8 @@ pub struct Plugin {
 	pub tag: String,
 	/// Release asset file name parsed from `url`.
 	pub asset: String,
+	/// Lowercase hex SHA-256 of the release zip, when the row pins one.
+	pub sha256: Option<String>,
 	pub depends_on: Vec<String>,
 	pub conflicts_with: Vec<Conflict>,
 	/// Package-relative paths dropped before the adapter is bound.
@@ -56,6 +59,8 @@ struct Row {
 	homepage: String,
 	version: String,
 	url: String,
+	#[serde(default)]
+	sha256: Option<String>,
 	#[serde(default)]
 	depends_on: Vec<String>,
 	#[serde(default)]
@@ -102,6 +107,7 @@ pub(crate) fn load(text: &str) -> Result<Vec<Plugin>, String> {
 			));
 		}
 		let release = release_from_url(&row.url)?;
+		let sha256 = canonical_sha256(&row.id, row.sha256)?;
 		let homepage_repo = repo_from_homepage(&row.homepage)?;
 		if homepage_repo != release.repo {
 			return Err(format!(
@@ -145,6 +151,7 @@ pub(crate) fn load(text: &str) -> Result<Vec<Plugin>, String> {
 			repo: release.repo,
 			tag: release.tag,
 			asset: release.asset,
+			sha256,
 			depends_on: row.depends_on,
 			conflicts_with: row.conflicts_with,
 			omit: row.omit,
@@ -266,6 +273,17 @@ fn repo_from_homepage(homepage: &str) -> Result<String, String> {
 	Ok(format!("{owner}/{name}"))
 }
 
+fn canonical_sha256(id: &str, value: Option<String>) -> Result<Option<String>, String> {
+	let Some(value) = value else {
+		return Ok(None);
+	};
+	let value = value.trim();
+	if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+		return Err(format!("{id} sha256 must be 64 hexadecimal digits"));
+	}
+	Ok(Some(value.to_ascii_lowercase()))
+}
+
 fn lists_itself(id: &str, others: &[String]) -> bool {
 	others.iter().any(|other| other == id)
 }
@@ -311,6 +329,7 @@ mod tests {
 		assert_eq!(unicode.repo, "YozoraTempest/EU4-Unicode-Patch");
 		assert_eq!(unicode.tag, "v0.1.15");
 		assert_eq!(unicode.asset, "EU4UnicodePatch-1.37.5-v0.1.15.zip");
+		assert!(unicode.sha256.is_none());
 		assert!(unicode.depends_on.is_empty());
 		assert!(unicode.omit.is_empty());
 		assert_eq!(
@@ -339,6 +358,26 @@ mod tests {
 		assert!(eu4dll.depends_on.is_empty());
 		assert!(eu4dll.conflicts_with.is_empty());
 		assert_eq!(eu4dll.omit.len(), 4);
+	}
+
+	#[test]
+	fn optional_sha256_is_64_hex_digits() {
+		let digest = "ab".repeat(32);
+		let needle = "url = \"https://github.com/YozoraTempest/EU4-Unicode-Patch/releases/download/v0.1.15/EU4UnicodePatch-1.37.5-v0.1.15.zip\"\n";
+		// include_str! keeps the checkout's line endings, and GitHub's
+		// windows-latest runners check out with core.autocrlf=true, so
+		// normalize \r\n before splicing or the needle never matches.
+		let registry = include_str!("registry.toml").replace("\r\n", "\n");
+		let text = registry.replace(needle, &format!("{needle}sha256 = \"{digest}\"\n"));
+		assert_ne!(registry, text, "the sha256 splice must change the registry");
+		let plugins = load(&text).unwrap();
+		let unicode = plugins
+			.iter()
+			.find(|plugin| plugin.id == "io.github.yozoratempest.eu4-unicode-patch")
+			.unwrap();
+		assert_eq!(unicode.sha256.as_deref(), Some(digest.as_str()));
+		let bad = text.replace(&digest, "ABCDEF");
+		assert!(load(&bad).unwrap_err().contains("sha256"));
 	}
 
 	#[test]

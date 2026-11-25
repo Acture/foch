@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use foch::input::{Config, CurrentEu4Input};
 use foch::merge::MergeDisposition;
 use foch_cli::tui::browser::{
-	AnalysisInput, BrowserSource, Focus, Inspection, Phase, Screen, Session, draw,
+	AnalysisInput, BrowserSource, Focus, Inspection, Phase, Screen, Session, TopTab, draw,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -208,6 +208,9 @@ fn browser_inspects_analyzes_filters_details_and_refreshes_without_writing() {
 	// their declared dependencies before anything is analyzed.
 	let mut session = Session::new(source.clone());
 	session.wait_idle();
+	assert_eq!(session.app().top_tab, TopTab::LaunchPlugins);
+	key(&mut session, KeyCode::Char('2'));
+	assert_eq!(session.app().top_tab, TopTab::MergeReview);
 	assert!(matches!(session.app().phase, Phase::Inspected));
 	assert_shows(&session, "Fixture playset");
 	assert_shows(&session, "1 Fixture A");

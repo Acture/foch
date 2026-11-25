@@ -2,10 +2,8 @@ use crate::cli::arg::{AnalysisModeArg, CheckArgs, CheckChannelArg, CheckOutputFo
 use crate::cli::handler::{HandlerResult, resolve_input_source};
 use foch::check::run_checks_with_options;
 use foch::game::eu4::analysis::report::render_text;
-use foch::input::{CheckOptions, Config, InputRequest, InputSource};
+use foch::input::{CheckOptions, Config, InputRequest};
 use foch::model::{AnalysisMode, ChannelMode, CheckResult};
-use foch::playset::descriptor::descriptor_path_text;
-use std::path::{Path, PathBuf};
 
 mod fix;
 
@@ -13,15 +11,10 @@ pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
 	if fix::requested(check_args) {
 		return fix::handle_check_fix(check_args, config);
 	}
-	// A mod directory is not a launcher playset. `fs::read` on that directory
-	// fails, so point the existing playset loader at a one-mod `dlc_load.json`
-	// whose descriptor path is the directory itself.
-	let held = hold_mod_directory(check_args.playset_path.as_deref())?;
-	let source = match &held {
-		Some(playset) => InputSource::DlcLoad(playset.dlc.clone()),
-		None => resolve_input_source(check_args.playset_path.as_deref(), &config)?,
-	};
-	let request = InputRequest::new(source, config);
+	let request = InputRequest::new(
+		resolve_input_source(check_args.playset_path.as_deref(), &config)?,
+		config,
+	);
 	let run_options = CheckOptions {
 		analysis_mode: to_analysis_mode(check_args.analysis_mode),
 		channel_mode: to_channel_mode(check_args.channel),
@@ -85,69 +78,4 @@ fn to_channel_mode(channel: CheckChannelArg) -> ChannelMode {
 		CheckChannelArg::Strict => ChannelMode::Strict,
 		CheckChannelArg::All => ChannelMode::All,
 	}
-}
-
-/// Keeps the synthetic playset alive for the duration of one directory check.
-struct ModDirectoryPlayset {
-	root: PathBuf,
-	dlc: PathBuf,
-}
-
-impl Drop for ModDirectoryPlayset {
-	fn drop(&mut self) {
-		let _ = std::fs::remove_dir_all(&self.root);
-	}
-}
-
-/// A directory with its own `descriptor.mod` is one mod, not `dlc_load.json`.
-fn hold_mod_directory(path: Option<&Path>) -> std::io::Result<Option<ModDirectoryPlayset>> {
-	let Some(path) = path else {
-		return Ok(None);
-	};
-	if !path.is_dir() || !path.join("descriptor.mod").is_file() {
-		return Ok(None);
-	}
-	let nanos = std::time::SystemTime::now()
-		.duration_since(std::time::UNIX_EPOCH)
-		.map(|duration| duration.as_nanos())
-		.unwrap_or(0);
-	let mut created = None;
-	for salt in 0..16 {
-		let root = std::env::temp_dir().join(format!(
-			"foch-mod-check-{}-{nanos}-{salt}",
-			std::process::id()
-		));
-		match std::fs::create_dir(&root) {
-			Ok(()) => {
-				created = Some(ModDirectoryPlayset {
-					dlc: root.join("dlc_load.json"),
-					root,
-				});
-				break;
-			}
-			Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-			Err(error) => return Err(error),
-		}
-	}
-	let Some(playset) = created else {
-		return Err(std::io::Error::other(
-			"could not create a directory for the mod check",
-		));
-	};
-	std::fs::create_dir(playset.root.join("mod"))?;
-	let path_text = descriptor_path_text(&path.canonicalize()?).map_err(|error| {
-		std::io::Error::other(format!(
-			"mod directory {} has no launcher path: {error}",
-			path.display()
-		))
-	})?;
-	std::fs::write(
-		playset.root.join("mod").join("ugc_1.mod"),
-		format!("name=\"mod directory\"\npath=\"{path_text}\"\nremote_file_id=\"1\"\n"),
-	)?;
-	std::fs::write(
-		&playset.dlc,
-		"{\"enabled_mods\":[\"mod/ugc_1.mod\"],\"disabled_dlcs\":[]}\n",
-	)?;
-	Ok(Some(playset))
 }

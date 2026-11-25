@@ -11,6 +11,14 @@ FILE_ALIGNMENT = 0x10
 SECTION_ALIGNMENT = 0x10
 IMAGE_BASE = 0x140000000
 
+
+def _pad(blob: bytes, minimum: int, fill: bytes) -> bytes:
+	"""Round a synthetic section up to file alignment without shrinking it."""
+	size = max(len(blob), minimum)
+	aligned = (size + FILE_ALIGNMENT - 1) & ~(FILE_ALIGNMENT - 1)
+	return blob.ljust(aligned, fill)
+
+
 TEXT_RVA = 0x1000
 RDATA_RVA = 0x2000
 PDATA_RVA = 0x3000
@@ -58,9 +66,9 @@ def build_pe(
 		pdata.extend(struct.pack("<III", begin, end, 0))
 	pdata.extend(struct.pack("<III", 0, 0, 0))
 
-	text_bytes: bytes = bytes(text_blob) + b"\x90" * (0x200 - len(text_blob))
-	rdata_bytes: bytes = bytes(rdata) + b"\x00" * (0x100 - len(rdata))
-	pdata_bytes: bytes = bytes(pdata) + b"\x00" * (0x100 - len(pdata))
+	text_bytes = _pad(bytes(text_blob), 0x200, b"\x90")
+	rdata_bytes = _pad(bytes(rdata), 0x100, b"\x00")
+	pdata_bytes = _pad(bytes(pdata), 0x100, b"\x00")
 
 	headers_size: int = 0x200
 	text_offset: int = headers_size
@@ -91,9 +99,18 @@ def build_pe(
 		return bytes(entry)
 
 	sections: bytearray = bytearray()
+	# A token table is larger than the gap between the fixed RVAs. Keep the
+	# small fixtures on those RVAs and slide only the later section down.
+	pdata_rva = PDATA_RVA
+	if TEXT_RVA + len(text_bytes) > RDATA_RVA:
+		raise ValueError("synthetic .text does not fit before .rdata")
+	if RDATA_RVA + len(rdata_bytes) > pdata_rva:
+		pdata_rva = (RDATA_RVA + len(rdata_bytes) + SECTION_ALIGNMENT - 1) & ~(
+			SECTION_ALIGNMENT - 1
+		)
 	sections.extend(section(b".text", TEXT_RVA, len(text_bytes), text_offset))
 	sections.extend(section(b".rdata", RDATA_RVA, len(rdata_bytes), rdata_offset))
-	sections.extend(section(b".pdata", PDATA_RVA, len(pdata_bytes), pdata_offset))
+	sections.extend(section(b".pdata", pdata_rva, len(pdata_bytes), pdata_offset))
 
 	image: bytearray = bytearray()
 	image.extend(dos)
@@ -184,6 +201,9 @@ class TableHandlers(unittest.TestCase):
 			table_handlers(image, "set_country_flag"),
 			(IMAGE_BASE + TEXT_RVA + 0x110,),
 		)
+		from eu4_analysis.pe import baseline_status
+
+		self.assertEqual(baseline_status(image, "set_country_flag"), "pinned")
 
 	def test_an_overlay_pointer_hit_cannot_break_the_batch(self) -> None:
 		"""A trailing overlay qword is skipped; the window stays in bounds.
@@ -267,6 +287,11 @@ class TableHandlers(unittest.TestCase):
 			path.write_bytes(blob)
 			image = read_binary(path)
 		self.assertEqual(table_handlers(image, "set_country_flag"), ())
+		from eu4_analysis.pe import baseline_status
+
+		self.assertEqual(
+			baseline_status(image, "set_country_flag"), "rejected_console_cmd"
+		)
 
 	def test_two_pointer_hits_naming_the_same_handler_still_pin(self) -> None:
 		"""Two table entries naming the same handler agree; that is one."""

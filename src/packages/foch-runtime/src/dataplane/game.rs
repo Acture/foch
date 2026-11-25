@@ -5,9 +5,9 @@
 //! a sink) belong to the plugins. All values keep the engine's units —
 //! thousandths — and every fallible read is an `Option`.
 
-use super::layout::{country, country_manager, db, def, node, province, route};
+use super::profile::{LayoutProfile, bind_game, bound_profile, default_profile, profile_for_build};
 use super::war::{CampaignStamp, CountryRef, WarRoster};
-use super::{Memory, StdVector, is_name_byte, read_sso};
+use super::{Memory, StdVector, is_key_byte, is_name_byte, read_sso};
 use crate::war::{JoinRefusal, World};
 
 /// The live game: an image base and the global game-context pointer it
@@ -24,12 +24,11 @@ impl Eu4Game {
 	/// variable; `None` when the image base is unknown or the candidate
 	/// is not the global.
 	pub fn context_of(memory: &Memory, exe_base: usize, candidate: usize) -> Option<usize> {
-		if exe_base <= 0x1_0000 {
-			return None;
-		}
-		let slot = exe_base.checked_add(super::layout::CONTEXT_GLOBAL_RVA)?;
-		let stored = memory.read_ptr(slot)?;
-		(stored == candidate).then_some(stored)
+		context_matches(memory, default_profile(), exe_base, candidate)
+	}
+
+	fn profile(&self) -> &'static LayoutProfile {
+		bound_profile(self.exe_base, self.context)
 	}
 
 	/// Read the pinned global context pointer and build a game view.
@@ -38,12 +37,22 @@ impl Eu4Game {
 	/// the context slot's image offset. `None` when the image base is
 	/// implausible or the stored pointer is not a plausible context address.
 	pub fn from_exe_base(exe_base: usize) -> Option<Self> {
+		Self::from_exe_base_for_build(default_profile().exe_sha256.as_str(), exe_base)
+	}
+
+	/// Read the global context pointer of one compiled-in profile.
+	///
+	/// `None` when `exe_sha256` is not an exact registry key, the image base
+	/// is implausible, or the stored pointer is not a plausible context.
+	pub fn from_exe_base_for_build(exe_sha256: &str, exe_base: usize) -> Option<Self> {
+		let profile = profile_for_build(exe_sha256)?;
 		if exe_base <= 0x1_0000 {
 			return None;
 		}
 		let memory = Memory;
-		let slot = exe_base.checked_add(super::layout::CONTEXT_GLOBAL_RVA)?;
+		let slot = exe_base.checked_add(profile.context_global.offset)?;
 		let context = memory.read_ptr(slot)?;
+		bind_game(exe_base, context, profile);
 		Some(Self {
 			memory,
 			exe_base,
@@ -53,8 +62,27 @@ impl Eu4Game {
 
 	/// A game view whose tick argument matches the pinned global context pointer.
 	pub fn from_tick(exe_base: usize, candidate_context: usize) -> Option<Self> {
+		Self::from_tick_for_build(
+			default_profile().exe_sha256.as_str(),
+			exe_base,
+			candidate_context,
+		)
+	}
+
+	/// A game view for one compiled-in profile, selected by exact executable digest.
+	///
+	/// `None` when the digest is unknown, the image base is implausible, or
+	/// `candidate_context` is not that profile's global context pointer.
+	/// Later reads on this view use that profile's offsets.
+	pub fn from_tick_for_build(
+		exe_sha256: &str,
+		exe_base: usize,
+		candidate_context: usize,
+	) -> Option<Self> {
+		let profile = profile_for_build(exe_sha256)?;
 		let memory = Memory;
-		let context = Self::context_of(&memory, exe_base, candidate_context)?;
+		let context = context_matches(&memory, profile, exe_base, candidate_context)?;
+		bind_game(exe_base, context, profile);
 		Some(Self {
 			memory,
 			exe_base,
@@ -71,7 +99,7 @@ impl Eu4Game {
 	/// probe.
 	pub unsafe fn campaign_stamp(&self) -> Result<CampaignStamp, String> {
 		// SAFETY: the caller upholds CampaignStamp::read for this context.
-		unsafe { CampaignStamp::read(&self.memory, self.context) }
+		unsafe { CampaignStamp::read_with(self.profile(), &self.memory, self.context) }
 	}
 
 	/// Active wars in this context. Ended-war history is not included.
@@ -83,7 +111,7 @@ impl Eu4Game {
 	/// passed a live Foch session probe.
 	pub unsafe fn active_wars(&self) -> Result<Vec<WarRoster>, String> {
 		// SAFETY: the caller upholds WarRoster::read_active for this context.
-		unsafe { WarRoster::read_active(&self.memory, self.context) }
+		unsafe { WarRoster::read_active_with(self.profile(), &self.memory, self.context) }
 	}
 
 	/// One coherent campaign snapshot from this view's registry, wars, and stamp.
@@ -99,7 +127,15 @@ impl Eu4Game {
 	/// registry, and every active `CWar` stable for the read.
 	pub unsafe fn read_world(&self, revision: u64) -> Result<World, String> {
 		// SAFETY: the caller upholds read_world for this image and context.
-		unsafe { super::war::read_world(&self.memory, self.exe_base, self.context, revision) }
+		unsafe {
+			super::war::read_world_with(
+				self.profile(),
+				&self.memory,
+				self.exe_base,
+				self.context,
+				revision,
+			)
+		}
 	}
 
 	/// Add `amount` thousandths to the treasury of a registry country.
@@ -132,52 +168,85 @@ impl Eu4Game {
 
 	/// The country registry: index-to-`CCountry*` array and count.
 	pub fn countries(&self) -> Option<Countries> {
-		let manager = self
-			.memory
-			.read_ptr(self.exe_base + super::layout::COUNTRY_MANAGER_GLOBAL_RVA)?;
+		self.countries_with(self.profile())
+	}
+
+	pub(crate) fn countries_with(&self, profile: &'static LayoutProfile) -> Option<Countries> {
+		let manager = self.memory.read_ptr(
+			self.exe_base
+				.checked_add(profile.country_manager_global.offset)?,
+		)?;
 		let pointers = self
 			.memory
-			.read_ptr(manager + country_manager::INDEX_ARRAY)?;
+			.read_ptr(manager.checked_add(profile.country_manager_index_array.offset)?)?;
 		let count = self
 			.memory
-			.read_i32(self.context + super::layout::COUNTRIES_COUNT)
+			.read_i32(self.context.checked_add(profile.countries_count.offset)?)
 			.and_then(valid_country_count)?;
 		Some(Countries {
 			memory: self.memory,
 			pointers,
 			count,
+			profile,
 		})
 	}
 
 	/// The trade node database embedded in the context.
 	pub fn trade_nodes(&self) -> Option<TradeNodes> {
-		let db = self.context + super::layout::DB_IN_CONTEXT;
-		let nodes = self.memory.read_ptr(db + db::NODES)?;
+		let profile = self.profile();
+		let db = self.context.checked_add(profile.context_db.offset)?;
+		let nodes = self
+			.memory
+			.read_ptr(db.checked_add(profile.db_nodes.offset)?)?;
 		let count = self
 			.memory
-			.read_i32(db + db::NODE_COUNT)
+			.read_i32(db.checked_add(profile.db_node_count.offset)?)
 			.and_then(valid_trade_node_count)?;
 		Some(TradeNodes {
 			memory: self.memory,
 			db,
 			nodes,
 			count,
+			profile,
 		})
 	}
 
 	/// The province array, indexed by province id.
 	pub fn province(&self, id: u32) -> Option<Province> {
-		let field = self.context.checked_add(province::CPROVINCES)?;
+		let profile = self.profile();
+		let field = self
+			.context
+			.checked_add(profile.province_cprovinces.offset)?;
 		let base = self.memory.read_ptr(field)?;
 		let address = usize::try_from(id)
 			.ok()?
-			.checked_mul(province::CPROVINCE_SIZE)
+			.checked_mul(profile.province_cprovince_size.offset)
 			.and_then(|offset| base.checked_add(offset))?;
 		Some(Province {
 			memory: self.memory,
 			address,
+			profile,
 		})
 	}
+}
+
+fn context_matches(
+	memory: &Memory,
+	profile: &LayoutProfile,
+	exe_base: usize,
+	candidate: usize,
+) -> Option<usize> {
+	if exe_base <= 0x1_0000 {
+		return None;
+	}
+	let slot = exe_base.checked_add(profile.context_global.offset)?;
+	let stored = memory.read_ptr(slot)?;
+	(stored == candidate).then_some(stored)
+}
+
+fn route_key(profile: &LayoutProfile, memory: &Memory, route_addr: usize) -> Option<String> {
+	let key_at = route_addr.checked_add(profile.route_target_key.offset)?;
+	read_sso(memory, key_at, is_key_byte)
 }
 
 /// The trade node database.
@@ -187,6 +256,7 @@ pub struct TradeNodes {
 	db: usize,
 	nodes: usize,
 	count: usize,
+	profile: &'static LayoutProfile,
 }
 
 impl TradeNodes {
@@ -196,27 +266,48 @@ impl TradeNodes {
 
 	/// The heap `CTradeNode*` at the given engine index.
 	pub fn node(&self, index: usize) -> Option<NodeView> {
-		let address = self.memory.read_ptr(self.nodes + index * 8)?;
-		let definition = self.memory.read_ptr(address + node::DEFINITION)?;
+		let address = self
+			.memory
+			.read_ptr(self.nodes + index * self.profile.pointer_size)?;
+		let definition = self
+			.memory
+			.read_ptr(address.checked_add(self.profile.node_definition.offset)?)?;
 		Some(NodeView {
 			memory: self.memory,
 			address,
 			definition,
+			profile: self.profile,
 		})
 	}
 
 	/// The route vector of a node definition: `(begin, end)`. An empty
-	/// vector (`begin == end`, both plausibly null) is legal — vanilla
-	/// end nodes have no outgoing routes at all.
+	/// vector (`begin == end`, both null or above the null page) is legal —
+	/// vanilla end nodes have a default-constructed MSVC vector (`nullptr`,
+	/// `nullptr`) with no outgoing routes at all.
 	pub fn routes(&self, definition: usize) -> Option<(usize, usize)> {
-		let begin = self.memory.read_ptr(definition.checked_add(def::ROUTES)?)?;
-		let end = self
-			.memory
-			.read_qword(definition.checked_add(def::ROUTES_END)?)? as usize;
-		if begin == end {
+		let stride = self.profile.route_size.offset;
+		if stride == 0 {
+			return None;
+		}
+		let begin =
+			self.memory
+				.read_qword(definition.checked_add(self.profile.def_routes.offset)?)? as usize;
+		let end =
+			self.memory
+				.read_qword(definition.checked_add(self.profile.def_routes_end.offset)?)? as usize;
+		if begin == end && (begin == 0 || begin > 0x1_0000) {
 			return Some((begin, end));
 		}
-		(end >= begin && (end - begin).is_multiple_of(route::SIZE)).then_some((begin, end))
+		(begin > 0x1_0000 && end >= begin && (end - begin).is_multiple_of(stride))
+			.then_some((begin, end))
+	}
+
+	/// Internal node key recorded on the route entry at `route_addr`.
+	///
+	/// This is the MSVC SSO string the offline `node_members.txt` table is
+	/// keyed by. Its verification status is `route.target_key` on the profile.
+	pub fn route_target_key(&self, route_addr: usize) -> Option<String> {
+		route_key(self.profile, &self.memory, route_addr)
 	}
 }
 
@@ -225,6 +316,7 @@ pub struct NodeView {
 	memory: Memory,
 	pub address: usize,
 	pub definition: usize,
+	profile: &'static LayoutProfile,
 }
 
 impl NodeView {
@@ -234,30 +326,36 @@ impl NodeView {
 
 	/// Current total trade value (thousandths).
 	pub fn value(&self) -> Option<i32> {
-		self.i32(node::VALUE)
+		self.i32(self.profile.node_value.offset)
 	}
 
 	/// Local trade value: the production-side injection (goods x
 	/// price), thousandths.
 	pub fn local_value(&self) -> Option<i32> {
-		self.i32(node::LOCAL_VALUE)
+		self.i32(self.profile.node_local_value.offset)
 	}
 
 	/// The amount transferred out this tick (thousandths); the engine's
 	/// own retention rate is `value / (value + transferred)`.
 	pub fn transferred(&self) -> Option<i32> {
-		self.i32(node::TRANSFERRED)
+		self.i32(self.profile.node_transferred.offset)
 	}
 
 	/// Total trade power (thousandths).
 	pub fn power(&self) -> Option<i32> {
-		self.i32(node::POWER)
+		self.i32(self.profile.node_power.offset)
 	}
 
 	/// The per-outgoing-edge steering weights, in the live slot order.
 	pub fn steering(&self) -> Vec<f64> {
-		match self.memory.read_ptr(self.address + node::WEIGHTS) {
-			Some(begin) => match self.memory.read_qword(self.address + node::WEIGHTS + 8) {
+		match self
+			.memory
+			.read_ptr(self.address + self.profile.node_weights.offset)
+		{
+			Some(begin) => match self
+				.memory
+				.read_qword(self.address + self.profile.node_weights.offset + 8)
+			{
 				Some(end) if end as usize >= begin => (0..(end as usize - begin) / 4)
 					.filter_map(|i| self.memory.read_i32(begin + i * 4))
 					.map(|v| v as f64)
@@ -270,18 +368,26 @@ impl NodeView {
 
 	/// The display name (`Great Lakes`, `Lübeck`).
 	pub fn name(&self) -> Option<String> {
-		read_sso(&self.memory, self.definition + def::NAME, is_name_byte)
+		read_sso(
+			&self.memory,
+			self.definition + self.profile.def_name.offset,
+			is_name_byte,
+		)
 	}
 
 	/// Member province IDs (`members = { ... }`) read from
-	/// `CTradeNodeDefinition + def::MEMBERS` (`std::vector<i32>`).
+	/// `CTradeNodeDefinition`'s member-province vector (`std::vector<i32>`).
 	///
 	/// Statically identified for EU4 1.37.5; pending live Foch session
 	/// verification. Returns `Some(Vec::new())` for an empty vector, and
 	/// `None` if the vector header, buffer range, or any province ID
 	/// (`<= 0`) fails validation.
 	pub fn member_provinces(&self) -> Option<Vec<u32>> {
-		let header = StdVector::read(&self.memory, self.definition.checked_add(def::MEMBERS)?)?;
+		let header = StdVector::read(
+			&self.memory,
+			self.definition
+				.checked_add(self.profile.def_members.offset)?,
+		)?;
 		let count = header.len(size_of::<i32>(), MAX_NODE_MEMBERS)?;
 		if count == 0 {
 			return Some(Vec::new());
@@ -300,14 +406,42 @@ impl NodeView {
 
 	/// The target definition pointer of the route entry at `slot`.
 	pub fn route_target(&self, slot: usize) -> Option<usize> {
-		self.memory.read_ptr(slot + route::TARGET)
+		self.memory
+			.read_ptr(slot.checked_add(self.profile.route_target.offset)?)
+	}
+
+	/// Internal node key of the route entry at `slot`.
+	///
+	/// Same string as [`TradeNodes::route_target_key`]. `node_members.txt`
+	/// rows are keyed by it.
+	pub fn route_target_key(&self, slot: usize) -> Option<String> {
+		route_key(self.profile, &self.memory, slot)
+	}
+
+	/// Internal keys of this node's live outgoing routes, in vector order.
+	pub fn outgoing_target_keys(&self, nodes: &TradeNodes) -> Option<Vec<String>> {
+		let (begin, end) = nodes.routes(self.definition)?;
+		let stride = self.profile.route_size.offset;
+		if stride == 0 {
+			return None;
+		}
+		let count = end.checked_sub(begin)? / stride;
+		let mut keys = Vec::with_capacity(count);
+		for slot in 0..count {
+			let route_addr = begin.checked_add(slot.checked_mul(stride)?)?;
+			keys.push(self.route_target_key(route_addr)?);
+		}
+		Some(keys)
 	}
 
 	/// The per-country entry table: `entry = *(node+ENTRY_TABLE) +
 	/// country_index * ENTRY_SIZE`.
 	pub fn country_entry(&self, country_index: usize) -> Option<usize> {
-		let table = self.memory.read_ptr(self.address + node::ENTRY_TABLE)?;
-		table.checked_add(country_index * node::ENTRY_SIZE)
+		let table = self.memory.read_ptr(
+			self.address
+				.checked_add(self.profile.node_entry_table.offset)?,
+		)?;
+		table.checked_add(country_index.checked_mul(self.profile.node_entry_size.offset)?)
 	}
 
 	/// A country's trade power contribution inside this node
@@ -315,7 +449,7 @@ impl NodeView {
 	pub fn entry_power(&self, country_index: usize) -> Option<i32> {
 		let entry = self.country_entry(country_index)?;
 		self.memory
-			.read_i32(entry.checked_add(super::layout::entry::POWER)?)
+			.read_i32(entry.checked_add(self.profile.entry_power.offset)?)
 	}
 
 	/// Object address of this live trade node.
@@ -331,7 +465,11 @@ impl NodeView {
 	/// An empty vector is `Some(0)`. A corrupt header is `None`.
 	pub fn live_route_count(&self, nodes: &TradeNodes) -> Option<usize> {
 		let (begin, end) = nodes.routes(self.definition)?;
-		Some(end.checked_sub(begin)? / route::SIZE)
+		let stride = self.profile.route_size.offset;
+		if stride == 0 {
+			return None;
+		}
+		Some(end.checked_sub(begin)? / stride)
 	}
 
 	/// Engine indexes of the nodes this node's live routes steer toward.
@@ -340,10 +478,14 @@ impl NodeView {
 	/// corrupt or a target definition is not one of `nodes`.
 	pub fn outgoing_targets(&self, nodes: &TradeNodes) -> Option<Vec<usize>> {
 		let (begin, end) = nodes.routes(self.definition)?;
-		let count = end.checked_sub(begin)? / route::SIZE;
+		let stride = self.profile.route_size.offset;
+		if stride == 0 {
+			return None;
+		}
+		let count = end.checked_sub(begin)? / stride;
 		let mut targets = Vec::with_capacity(count);
 		for slot in 0..count {
-			let route_addr = begin.checked_add(slot.checked_mul(route::SIZE)?)?;
+			let route_addr = begin.checked_add(slot.checked_mul(stride)?)?;
 			let target = self.route_target(route_addr)?;
 			let index = (0..nodes.count).find(|&index| {
 				nodes
@@ -369,7 +511,13 @@ impl NodeView {
 	/// route-vector offsets.
 	pub fn capture_routes(&self, nodes: &TradeNodes) -> Option<super::RouteMutation> {
 		let routes = nodes.routes(self.definition)?;
-		super::RouteMutation::capture(&self.memory, self.address, self.definition, routes)
+		super::RouteMutation::capture_with(
+			self.profile,
+			&self.memory,
+			self.address,
+			self.definition,
+			routes,
+		)
 	}
 }
 
@@ -409,19 +557,34 @@ pub fn decode_packed_tag(packed: u64, require_valid_flag: bool) -> Option<Packed
 pub struct CountryView {
 	memory: Memory,
 	address: usize,
+	profile: &'static LayoutProfile,
 }
 
 impl CountryView {
 	/// Constructs a country view from a raw `CCountry*` address after checking
 	/// basic pointer plausibility (above the null page and 8-byte aligned).
 	pub fn from_ptr(memory: Memory, address: usize) -> Option<CountryView> {
-		(address > 0x1_0000 && address.is_multiple_of(8)).then_some(CountryView { memory, address })
+		(address > 0x1_0000 && address.is_multiple_of(8)).then_some(CountryView {
+			memory,
+			address,
+			profile: default_profile(),
+		})
 	}
 
 	/// Read just the tag of the country at `address`, without the full
 	/// view (the registry holds the addresses already).
+	///
+	/// Uses the default compiled-in profile. A view built from
+	/// [`Eu4Game::from_tick_for_build`] reads its own profile via [`Self::tag`].
 	pub fn tag_at(memory: &Memory, address: usize) -> String {
-		let Some(packed) = memory.read_qword(address + country::TAG) else {
+		Self::tag_text(default_profile(), memory, address)
+	}
+
+	pub(crate) fn tag_text(profile: &LayoutProfile, memory: &Memory, address: usize) -> String {
+		let Some(slot) = address.checked_add(profile.country_tag.offset) else {
+			return "?".to_string();
+		};
+		let Some(packed) = memory.read_qword(slot) else {
 			return "?".to_string();
 		};
 		let bytes = packed.to_le_bytes();
@@ -436,14 +599,14 @@ impl CountryView {
 impl CountryView {
 	/// The tag from the packed identity qword's low bytes.
 	pub fn tag(&self) -> String {
-		Self::tag_at(&self.memory, self.address)
+		Self::tag_text(self.profile, &self.memory, self.address)
 	}
 
 	/// Checked tag read from the packed identity qword (`country::TAG`).
 	pub fn try_tag(&self) -> Option<String> {
 		let packed = self
 			.memory
-			.read_qword(self.address.checked_add(country::TAG)?)?;
+			.read_qword(self.address.checked_add(self.profile.country_tag.offset)?)?;
 		decode_packed_tag(packed, false).map(|decoded| decoded.tag)
 	}
 
@@ -453,7 +616,7 @@ impl CountryView {
 	pub fn is_sentinel_tag(&self) -> Option<bool> {
 		let packed = self
 			.memory
-			.read_qword(self.address.checked_add(country::TAG)?)?;
+			.read_qword(self.address.checked_add(self.profile.country_tag.offset)?)?;
 		Some(&packed.to_le_bytes()[..4] == b"---\0")
 	}
 
@@ -461,28 +624,33 @@ impl CountryView {
 	pub fn index(&self) -> Option<u16> {
 		let packed = self
 			.memory
-			.read_qword(self.address.checked_add(country::TAG)?)?;
+			.read_qword(self.address.checked_add(self.profile.country_tag.offset)?)?;
 		decode_packed_tag(packed, false).map(|decoded| decoded.index)
 	}
 
 	/// Monthly income bank (`i32`, thousandths) at `country::MONTHLY_INCOME_BANK`.
 	pub fn monthly_income_bank(&self) -> Option<i32> {
-		self.memory
-			.read_i32(self.address.checked_add(country::MONTHLY_INCOME_BANK)?)
+		self.memory.read_i32(
+			self.address
+				.checked_add(self.profile.country_monthly_income_bank.offset)?,
+		)
 	}
 
 	/// Tributary tribute-type discriminator (`u8`) at `country::TRIBUTE_TYPE`.
 	pub fn tribute_type(&self) -> Option<u8> {
-		self.memory
-			.read_u8(self.address.checked_add(country::TRIBUTE_TYPE)?)
+		self.memory.read_u8(
+			self.address
+				.checked_add(self.profile.country_tribute_type.offset)?,
+		)
 	}
 
 	/// Decoded overlord packed country identity at `country::OVERLORD`, or
 	/// `None` when independent (valid flag byte 7 is zero) or unreadable.
 	pub fn overlord_tag(&self) -> Option<PackedCountryTag> {
-		let packed = self
-			.memory
-			.read_qword(self.address.checked_add(country::OVERLORD)?)?;
+		let packed = self.memory.read_qword(
+			self.address
+				.checked_add(self.profile.country_overlord.offset)?,
+		)?;
 		decode_packed_tag(packed, true)
 	}
 
@@ -495,9 +663,10 @@ impl CountryView {
 	/// types alike. Separating those through `CSubjectType` or `copy_from`
 	/// is later work; callers keep the conservative refusal.
 	pub fn independence(&self) -> Option<bool> {
-		let packed = self
-			.memory
-			.read_qword(self.address.checked_add(country::OVERLORD)?)?;
+		let packed = self.memory.read_qword(
+			self.address
+				.checked_add(self.profile.country_overlord.offset)?,
+		)?;
 		Some(packed >> 56 == 0)
 	}
 
@@ -536,7 +705,13 @@ impl CountryView {
 	) -> Result<(), JoinRefusal> {
 		// SAFETY: the caller upholds the free function's contract for this object.
 		unsafe {
-			super::war::check_country_restrictions(&self.memory, self.address, expected, enemies)
+			super::war::check_country_restrictions_with(
+				self.profile,
+				&self.memory,
+				self.address,
+				expected,
+				enemies,
+			)
 		}
 	}
 
@@ -551,7 +726,33 @@ impl CountryView {
 	/// The treasury (int32, thousandths; the game's own clamp is
 	/// +/-1e9).
 	pub fn treasury(&self) -> Option<i32> {
-		self.memory.read_i32(self.address + country::TREASURY)
+		self.memory.read_i32(
+			self.address
+				.checked_add(self.profile.country_treasury.offset)?,
+		)
+	}
+
+	/// Treasury thousandths from an owned country record.
+	///
+	/// The field offset stays inside the data plane. `None` means
+	/// `record` is shorter than the field.
+	pub fn treasury_record(record: &[u8]) -> Option<i32> {
+		let start = default_profile().country_treasury.offset;
+		let end = start.checked_add(4)?;
+		let bytes: [u8; 4] = record.get(start..end)?.try_into().ok()?;
+		Some(i32::from_le_bytes(bytes))
+	}
+
+	/// Store treasury thousandths in an owned country record.
+	///
+	/// The field offset stays inside the data plane. `None` means
+	/// `record` is shorter than the field.
+	pub fn write_treasury_record(record: &mut [u8], value: i32) -> Option<()> {
+		let start = default_profile().country_treasury.offset;
+		let end = start.checked_add(4)?;
+		let slot = record.get_mut(start..end)?;
+		slot.copy_from_slice(&value.to_le_bytes());
+		Some(())
 	}
 
 	/// Add to the treasury, mirroring the game's own ChangeTreasury:
@@ -568,25 +769,27 @@ impl CountryView {
 	/// engine thread where the structures are stable, and that no Rust
 	/// reference or validity invariant aliases either target.
 	pub unsafe fn pay(&self, memory: &Memory, context: usize, amount: i64) -> Option<()> {
-		let treasury = self.treasury()? as i64;
-		let updated = treasury
-			.saturating_add(amount)
-			.clamp(-country::TREASURY_CLAMP, country::TREASURY_CLAMP);
+		let treasury_at = self
+			.address
+			.checked_add(self.profile.country_treasury.offset)?;
+		let treasury = self.memory.read_i32(treasury_at)? as i64;
+		let clamp = self.profile.country_treasury_clamp;
+		let updated = treasury.saturating_add(amount).clamp(-clamp, clamp);
 		// SAFETY: the target is the engine's own treasury field reached
 		// through the validated country registry — no Rust object
 		// aliases it — and the caller runs on the game thread.
-		unsafe { memory.write_i32(self.address + country::TREASURY, updated as i32) }?;
-		if let Some(controller) = memory.read_ptr(context + super::layout::ui::CONTROLLER)
-			&& let Some(flags) = memory.read_i32(controller + super::layout::ui::FLAGS)
+		unsafe { memory.write_i32(treasury_at, updated as i32) }?;
+		let Some(controller_at) = context.checked_add(self.profile.ui_controller.offset) else {
+			return Some(());
+		};
+		if let Some(controller) = memory.read_ptr(controller_at)
+			&& let Some(flags_at) = controller.checked_add(self.profile.ui_flags.offset)
+			&& let Some(flags) = memory.read_i32(flags_at)
+			&& let Ok(dirty) = i32::try_from(self.profile.ui_treasury_dirty.offset)
 		{
 			// SAFETY: the UI controller's flag word, same provenance and
 			// thread contract as the treasury write above.
-			unsafe {
-				memory.write_i32(
-					controller + super::layout::ui::FLAGS,
-					flags | super::layout::ui::TREASURY_DIRTY,
-				)
-			}?;
+			unsafe { memory.write_i32(flags_at, flags | dirty) }?;
 		}
 		Some(())
 	}
@@ -597,6 +800,7 @@ pub struct Countries {
 	memory: Memory,
 	pointers: usize,
 	count: usize,
+	profile: &'static LayoutProfile,
 }
 
 impl Countries {
@@ -609,10 +813,13 @@ impl Countries {
 		if index >= self.count {
 			return None;
 		}
-		let address = self.memory.read_ptr(self.pointers + index * 8)?;
+		let address = self
+			.memory
+			.read_ptr(self.pointers + index * self.profile.pointer_size)?;
 		Some(CountryView {
 			memory: self.memory,
 			address,
+			profile: self.profile,
 		})
 	}
 }
@@ -621,6 +828,7 @@ impl Countries {
 pub struct Province {
 	memory: Memory,
 	address: usize,
+	profile: &'static LayoutProfile,
 }
 
 impl Province {
@@ -629,7 +837,9 @@ impl Province {
 	/// Candidate offsets must stay inside this span. It is the record size,
 	/// not a field offset.
 	pub const fn record_span() -> usize {
-		province::CPROVINCE_SIZE
+		// Pinned 1.37.5 stride. Instance reads use the bound profile; the
+		// unit test locks this const to that profile's `cprovince_size`.
+		0x2e10
 	}
 
 	/// Address of this province record.
@@ -641,22 +851,26 @@ impl Province {
 
 	/// Verified base tax (thousandths) at an address from [`raw_address`](Self::raw_address).
 	pub fn tax_at(memory: &Memory, address: usize) -> Option<i32> {
-		memory.read_i32(address.checked_add(province::TAX)?)
+		memory.read_i32(address.checked_add(default_profile().province_tax.offset)?)
 	}
 
 	/// Verified base manpower (thousandths) at an address from [`raw_address`](Self::raw_address).
 	pub fn manpower_at(memory: &Memory, address: usize) -> Option<i32> {
-		memory.read_i32(address.checked_add(province::MANPOWER)?)
+		memory.read_i32(address.checked_add(default_profile().province_manpower.offset)?)
 	}
 
 	/// Base tax (thousandths).
 	pub fn tax(&self) -> Option<i32> {
-		Self::tax_at(&self.memory, self.address)
+		self.memory
+			.read_i32(self.address.checked_add(self.profile.province_tax.offset)?)
 	}
 
 	/// Base manpower (thousandths).
 	pub fn manpower(&self) -> Option<i32> {
-		Self::manpower_at(&self.memory, self.address)
+		self.memory.read_i32(
+			self.address
+				.checked_add(self.profile.province_manpower.offset)?,
+		)
 	}
 }
 
@@ -762,12 +976,13 @@ mod tests {
 		let base = raw.as_mut_ptr() as usize;
 		assert!(CountryView::from_ptr(memory, base + 1).is_none());
 
-		raw[country::TAG / 8] = pack_tag(*b"KOR", 17, 0);
-		raw[country::MONTHLY_INCOME_BANK / 8] = 123_456_i32 as u32 as u64;
-		raw[country::OVERLORD / 8] = pack_tag(*b"MNG", 5, 0); // independent (flag == 0)
+		let profile = crate::dataplane::profile::default_profile();
+		raw[profile.country_tag.offset / 8] = pack_tag(*b"KOR", 17, 0);
+		raw[profile.country_monthly_income_bank.offset / 8] = 123_456_i32 as u32 as u64;
+		raw[profile.country_overlord.offset / 8] = pack_tag(*b"MNG", 5, 0); // independent (flag == 0)
 		let bytes =
 			unsafe { core::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u8, raw.len() * 8) };
-		bytes[country::TRIBUTE_TYPE] = 2;
+		bytes[profile.country_tribute_type.offset] = 2;
 
 		let view = CountryView::from_ptr(memory, base).expect("valid aligned country pointer");
 		assert_eq!(view.raw_address(), base);
@@ -780,7 +995,7 @@ mod tests {
 		assert_eq!(view.independence(), Some(true));
 
 		// Mark overlord valid flag non-zero to simulate a subject.
-		raw[country::OVERLORD / 8] = pack_tag(*b"MNG", 5, 1);
+		raw[profile.country_overlord.offset / 8] = pack_tag(*b"MNG", 5, 1);
 		assert_eq!(
 			view.overlord_tag(),
 			Some(PackedCountryTag {
@@ -791,7 +1006,7 @@ mod tests {
 		assert_eq!(view.independence(), Some(false));
 
 		// Sentinel `---` tag (slot 0 in live EU4) is recognized explicitly.
-		raw[country::TAG / 8] = pack_tag(*b"---", 0, 0);
+		raw[profile.country_tag.offset / 8] = pack_tag(*b"---", 0, 0);
 		assert_eq!(view.try_tag(), None);
 		assert_eq!(view.is_sentinel_tag(), Some(true));
 	}
@@ -802,10 +1017,14 @@ mod tests {
 		let memory = Memory;
 		let mut def_buf = vec![0_u64; 0xc0 / 8];
 		let def_addr = def_buf.as_mut_ptr() as usize;
+		let members = crate::dataplane::profile::default_profile()
+			.def_members
+			.offset;
 		let node = NodeView {
 			memory,
 			address: def_addr,
 			definition: def_addr,
+			profile: crate::dataplane::profile::default_profile(),
 		};
 
 		// Empty null vector is legal (e.g. placeholder/custom trade node).
@@ -814,49 +1033,53 @@ mod tests {
 		// Populated vector with extra reserved capacity.
 		let provinces: [i32; 4] = [1, 45, 4941, 0];
 		let prov_base = provinces.as_ptr() as usize;
-		def_buf[def::MEMBERS / 8] = prov_base as u64;
-		def_buf[def::MEMBERS / 8 + 1] = (prov_base + 3 * 4) as u64;
-		def_buf[def::MEMBERS / 8 + 2] = (prov_base + 4 * 4) as u64;
+		def_buf[members / 8] = prov_base as u64;
+		def_buf[members / 8 + 1] = (prov_base + 3 * 4) as u64;
+		def_buf[members / 8 + 2] = (prov_base + 4 * 4) as u64;
 		assert_eq!(node.member_provinces(), Some(vec![1, 45, 4941]));
 
 		// Empty vector with reserved capacity.
-		def_buf[def::MEMBERS / 8 + 1] = prov_base as u64;
+		def_buf[members / 8 + 1] = prov_base as u64;
 		assert_eq!(node.member_provinces(), Some(Vec::new()));
 
 		// Non-positive province IDs (0 or negative) fail validation.
 		let with_zero: [i32; 2] = [1, 0];
 		let z_base = with_zero.as_ptr() as usize;
-		def_buf[def::MEMBERS / 8] = z_base as u64;
-		def_buf[def::MEMBERS / 8 + 1] = (z_base + 8) as u64;
-		def_buf[def::MEMBERS / 8 + 2] = (z_base + 8) as u64;
+		def_buf[members / 8] = z_base as u64;
+		def_buf[members / 8 + 1] = (z_base + 8) as u64;
+		def_buf[members / 8 + 2] = (z_base + 8) as u64;
 		assert_eq!(node.member_provinces(), None);
 
 		let with_neg: [i32; 2] = [1, -7];
 		let n_base = with_neg.as_ptr() as usize;
-		def_buf[def::MEMBERS / 8] = n_base as u64;
-		def_buf[def::MEMBERS / 8 + 1] = (n_base + 8) as u64;
-		def_buf[def::MEMBERS / 8 + 2] = (n_base + 8) as u64;
+		def_buf[members / 8] = n_base as u64;
+		def_buf[members / 8 + 1] = (n_base + 8) as u64;
+		def_buf[members / 8 + 2] = (n_base + 8) as u64;
 		assert_eq!(node.member_provinces(), None);
 
 		// Corrupt vector bounds (end < begin) or oversize count are rejected.
-		def_buf[def::MEMBERS / 8] = (prov_base + 8) as u64;
-		def_buf[def::MEMBERS / 8 + 1] = prov_base as u64;
-		def_buf[def::MEMBERS / 8 + 2] = (prov_base + 16) as u64;
+		def_buf[members / 8] = (prov_base + 8) as u64;
+		def_buf[members / 8 + 1] = prov_base as u64;
+		def_buf[members / 8 + 2] = (prov_base + 16) as u64;
 		assert_eq!(node.member_provinces(), None);
 
 		let oversize_bytes = (MAX_NODE_MEMBERS + 1) * size_of::<i32>();
-		def_buf[def::MEMBERS / 8] = prov_base as u64;
-		def_buf[def::MEMBERS / 8 + 1] = (prov_base + oversize_bytes) as u64;
-		def_buf[def::MEMBERS / 8 + 2] = (prov_base + oversize_bytes) as u64;
+		def_buf[members / 8] = prov_base as u64;
+		def_buf[members / 8 + 1] = (prov_base + oversize_bytes) as u64;
+		def_buf[members / 8 + 2] = (prov_base + oversize_bytes) as u64;
 		assert_eq!(node.member_provinces(), None);
 		assert_eq!(node.raw_address(), def_addr);
 	}
 
 	#[test]
 	fn province_record_span_is_the_pinned_stride() {
-		assert_eq!(Province::record_span(), province::CPROVINCE_SIZE);
-		assert!(Province::record_span() > province::TAX);
-		assert!(Province::record_span() > province::MANPOWER);
+		let profile = crate::dataplane::profile::default_profile();
+		assert_eq!(
+			Province::record_span(),
+			profile.province_cprovince_size.offset
+		);
+		assert!(Province::record_span() > profile.province_tax.offset);
+		assert!(Province::record_span() > profile.province_manpower.offset);
 	}
 
 	#[test]
@@ -870,7 +1093,7 @@ mod tests {
 	#[test]
 	#[cfg(windows)]
 	fn game_views_cover_treasury_routes_and_participants() {
-		use crate::dataplane::layout::{self, entry, ui};
+		let profile = crate::dataplane::profile::default_profile();
 
 		fn write_i32(buffer: &mut [u64], offset: usize, value: i32) {
 			let index = offset / 8;
@@ -879,7 +1102,7 @@ mod tests {
 			buffer[index] = (buffer[index] & mask) | (u64::from(value as u32) << shift);
 		}
 
-		let mut image = vec![0u64; layout::CONTEXT_GLOBAL_RVA / 8 + 1];
+		let mut image = vec![0u64; profile.context_global.offset / 8 + 1];
 		let mut context = vec![0u64; 0x2200 / 8];
 		let mut manager = [0u64; 0x120 / 8];
 		let mut pointers = [0u64; 3];
@@ -890,47 +1113,48 @@ mod tests {
 		let mut node1 = [0u64; 0xc0 / 8];
 		let mut def0 = [0u64; 0xc0 / 8];
 		let mut def1 = [0u64; 0xc0 / 8];
-		let mut route_bytes = [0u8; route::SIZE];
-		let mut entries = [0u8; node::ENTRY_SIZE * 3];
-		let mut provinces = vec![0u8; province::CPROVINCE_SIZE * 2];
+		let mut route_bytes = vec![0u8; profile.route_size.offset];
+		let mut entries = vec![0u8; profile.node_entry_size.offset * 3];
+		let mut provinces = vec![0u8; profile.province_cprovince_size.offset * 2];
 		let empty = [0u8; 8];
 
-		country_buf[country::TAG / 8] = u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
-		write_i32(&mut country_buf, country::TREASURY, 1_000);
-		write_i32(&mut context, layout::COUNTRIES_COUNT, 3);
+		country_buf[profile.country_tag.offset / 8] = u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
+		write_i32(&mut country_buf, profile.country_treasury.offset, 1_000);
+		write_i32(&mut context, profile.countries_count.offset, 3);
 		pointers[0] = country_buf.as_ptr() as u64;
-		manager[country_manager::INDEX_ARRAY / 8] = pointers.as_ptr() as u64;
-		image[layout::COUNTRY_MANAGER_GLOBAL_RVA / 8] = manager.as_ptr() as u64;
-		image[layout::CONTEXT_GLOBAL_RVA / 8] = context.as_ptr() as u64;
-		context[ui::CONTROLLER / 8] = controller.as_ptr() as u64;
+		manager[profile.country_manager_index_array.offset / 8] = pointers.as_ptr() as u64;
+		image[profile.country_manager_global.offset / 8] = manager.as_ptr() as u64;
+		image[profile.context_global.offset / 8] = context.as_ptr() as u64;
+		context[profile.ui_controller.offset / 8] = controller.as_ptr() as u64;
 
-		let db_at = layout::DB_IN_CONTEXT;
-		context[(db_at + db::NODES) / 8] = node_ptrs.as_ptr() as u64;
-		write_i32(&mut context, db_at + db::NODE_COUNT, 2);
+		let db_at = profile.context_db.offset;
+		context[(db_at + profile.db_nodes.offset) / 8] = node_ptrs.as_ptr() as u64;
+		write_i32(&mut context, db_at + profile.db_node_count.offset, 2);
 		node_ptrs[0] = node0.as_ptr() as u64;
 		node_ptrs[1] = node1.as_ptr() as u64;
-		node0[node::DEFINITION / 8] = def0.as_ptr() as u64;
-		node1[node::DEFINITION / 8] = def1.as_ptr() as u64;
-		node0[node::ENTRY_TABLE / 8] = entries.as_ptr() as u64;
+		node0[profile.node_definition.offset / 8] = def0.as_ptr() as u64;
+		node1[profile.node_definition.offset / 8] = def1.as_ptr() as u64;
+		node0[profile.node_entry_table.offset / 8] = entries.as_ptr() as u64;
 		for (index, power) in [1_000i32, 0, 250].into_iter().enumerate() {
-			let at = index * node::ENTRY_SIZE + entry::POWER;
+			let at = index * profile.node_entry_size.offset + profile.entry_power.offset;
 			entries[at..at + 4].copy_from_slice(&power.to_le_bytes());
 		}
 
 		let route_ptr = route_bytes.as_ptr() as u64;
-		def0[def::ROUTES / 8] = route_ptr;
-		def0[def::ROUTES_END / 8] = route_ptr + route::SIZE as u64;
+		def0[profile.def_routes.offset / 8] = route_ptr;
+		def0[profile.def_routes_end.offset / 8] = route_ptr + profile.route_size.offset as u64;
 		let target = def1.as_ptr() as u64;
-		route_bytes[route::TARGET..route::TARGET + 8].copy_from_slice(&target.to_le_bytes());
+		let target_at = profile.route_target.offset;
+		route_bytes[target_at..target_at + 8].copy_from_slice(&target.to_le_bytes());
 		let empty_ptr = empty.as_ptr() as u64;
-		def1[def::ROUTES / 8] = empty_ptr;
-		def1[def::ROUTES_END / 8] = empty_ptr;
+		def1[profile.def_routes.offset / 8] = empty_ptr;
+		def1[profile.def_routes_end.offset / 8] = empty_ptr;
 
 		let prov_base = provinces.as_ptr() as usize;
-		context[province::CPROVINCES / 8] = prov_base as u64;
-		let tax_at = province::CPROVINCE_SIZE + province::TAX;
+		context[profile.province_cprovinces.offset / 8] = prov_base as u64;
+		let tax_at = profile.province_cprovince_size.offset + profile.province_tax.offset;
 		provinces[tax_at..tax_at + 4].copy_from_slice(&12_000i32.to_le_bytes());
-		let manpower_at = province::CPROVINCE_SIZE + province::MANPOWER;
+		let manpower_at = profile.province_cprovince_size.offset + profile.province_manpower.offset;
 		provinces[manpower_at..manpower_at + 4].copy_from_slice(&6_000i32.to_le_bytes());
 		// The readers below go through kernel copies of these addresses, which
 		// the unused-assignment lint does not treat as a read.
@@ -965,11 +1189,15 @@ mod tests {
 		assert_eq!(paid.raw_address(), country_buf.as_ptr() as usize);
 		assert_eq!(paid.treasury(), Some(1_050));
 		assert_eq!(
-			Memory.read_i32(controller.as_ptr() as usize + ui::FLAGS),
-			Some(ui::TREASURY_DIRTY)
+			Memory.read_i32(controller.as_ptr() as usize + profile.ui_flags.offset),
+			Some(profile.ui_treasury_dirty.offset as i32)
 		);
 		assert!(unsafe { game.pay_country(3, 1) }.is_none());
-		write_i32(&mut country_buf, country::TREASURY, 1_000_000_000 - 10);
+		write_i32(
+			&mut country_buf,
+			profile.country_treasury.offset,
+			1_000_000_000 - 10,
+		);
 		std::hint::black_box(&country_buf);
 		unsafe { game.pay_country(0, 100) }.unwrap();
 		assert_eq!(
@@ -980,7 +1208,7 @@ mod tests {
 		let province_row = game.province(1).unwrap();
 		assert_eq!(
 			province_row.raw_address(),
-			prov_base + province::CPROVINCE_SIZE
+			prov_base + profile.province_cprovince_size.offset
 		);
 		assert_eq!(province_row.tax(), Some(12_000));
 		assert_eq!(province_row.manpower(), Some(6_000));
@@ -1011,8 +1239,36 @@ mod tests {
 		assert!(!mutation.is_closed(0));
 		assert!(!mutation.is_closed(3));
 
-		route_bytes[route::TARGET..route::TARGET + 8].copy_from_slice(&1u64.to_le_bytes());
+		route_bytes[target_at..target_at + 8].copy_from_slice(&1u64.to_le_bytes());
 		std::hint::black_box(&route_bytes);
 		assert_eq!(first.outgoing_targets(&nodes), None);
+
+		// A default-constructed MSVC route vector is null/null, which live
+		// end nodes use. It is an empty list, not a corrupt header.
+		def1[profile.def_routes.offset / 8] = 0;
+		def1[profile.def_routes_end.offset / 8] = 0;
+		std::hint::black_box(&def1);
+		assert_eq!(second.live_route_count(&nodes), Some(0));
+		assert_eq!(second.outgoing_targets(&nodes), Some(vec![]));
+
+		// Non-zero null-page pointers are rejected even when begin == end.
+		def1[profile.def_routes.offset / 8] = 0x1000;
+		def1[profile.def_routes_end.offset / 8] = 0x1000;
+		std::hint::black_box(&def1);
+		assert_eq!(second.live_route_count(&nodes), None);
+	}
+
+	#[test]
+	fn treasury_record_round_trips_at_the_pinned_field() {
+		let treasury = crate::dataplane::profile::default_profile()
+			.country_treasury
+			.offset;
+		let mut record = vec![0u8; treasury + 4];
+		CountryView::write_treasury_record(&mut record, 350).unwrap();
+		assert_eq!(CountryView::treasury_record(&record), Some(350));
+		let stored = i32::from_le_bytes(record[treasury..treasury + 4].try_into().unwrap());
+		assert_eq!(stored, 350);
+		assert!(CountryView::write_treasury_record(&mut record[..4], 1).is_none());
+		assert!(CountryView::treasury_record(&record[..4]).is_none());
 	}
 }

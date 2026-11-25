@@ -264,4 +264,23 @@ mod tests {
 		assert_eq!(table.subject_tag.kind, ReadKind::InlineTag);
 		assert_eq!(table.subject_tag.offsets, vec![INLINE_PACKED_TAG_OFFSET]);
 	}
+
+	#[test]
+	fn accepted_and_rejected_build_digests() {
+		let table = load_embedded().expect("embedded signature table parses");
+		assert!(
+			foch_runtime::dataplane::supports_build(&table.exe_sha256),
+			"shipped digest must match a compiled-in profile"
+		);
+		let rejected = "0".repeat(64);
+		assert_ne!(rejected, table.exe_sha256);
+		assert!(!foch_runtime::dataplane::supports_build(&rejected));
+		let mut refused = table;
+		refused.exe_sha256 = rejected;
+		let error = refused.usable().expect_err("unknown digest");
+		assert!(
+			error.contains("does not match foch_runtime::dataplane"),
+			"{error}"
+		);
+	}
 }
