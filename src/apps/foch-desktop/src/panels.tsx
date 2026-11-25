@@ -2,11 +2,13 @@ import { type FormEvent, type JSX, useState } from "react";
 
 import type {
 	DesktopClient,
+	DesktopConnectivityReport,
 	DesktopLaunchResult,
 	DesktopLaunchStatus,
 	DesktopPluginEntry,
 	DesktopPluginOverview,
 	DesktopPreferences,
+	DesktopSettingsInput,
 	EffectiveLanguage,
 } from "./api";
 import { parseDesktopCommandError } from "./api";
@@ -536,6 +538,10 @@ export function SettingsPanel({
 	const [error, setError] = useState<string | null>(null);
 	const [saved, setSaved] = useState(false);
 	const [mirrorDraft, setMirrorDraft] = useState<string | null>(null);
+	const [testingConnectivity, setTestingConnectivity] = useState(false);
+	const [connectivity, setConnectivity] = useState<DesktopConnectivityReport | null>(
+		null,
+	);
 	const mirrorText = mirrorDraft ?? preferences?.customMirrors.join(", ") ?? "";
 
 	async function commit(next: DesktopPreferences): Promise<void> {
@@ -557,6 +563,33 @@ export function SettingsPanel({
 			setSaved(true);
 		} catch (caught: unknown) {
 			setError(message(caught));
+		}
+	}
+
+	function draftSettings(current: DesktopPreferences): DesktopSettingsInput {
+		const customMirrors = mirrorText
+			.split(",")
+			.map((item): string => item.trim())
+			.filter((item): boolean => item !== "");
+		return {
+			transport: current.transport,
+			mirror: current.mirror,
+			customMirrors:
+				current.mirror === "custom" ? customMirrors : current.customMirrors,
+			language: current.language,
+		};
+	}
+
+	async function testConnectivity(current: DesktopPreferences): Promise<void> {
+		setTestingConnectivity(true);
+		setError(null);
+		try {
+			setConnectivity(await client.testDownloadConnectivity(draftSettings(current)));
+		} catch (caught: unknown) {
+			setConnectivity(null);
+			setError(message(caught));
+		} finally {
+			setTestingConnectivity(false);
 		}
 	}
 
@@ -646,6 +679,44 @@ export function SettingsPanel({
 					<option value="en">English</option>
 				</select>
 			</label>
+			<button
+				className="primary-action"
+				type="button"
+				disabled={testingConnectivity}
+				onClick={(): void => void testConnectivity(preferences)}
+			>
+				{testingConnectivity
+					? copy.settings.testingConnectivity
+					: copy.settings.testConnectivity}
+			</button>
+			{connectivity !== null && (
+				<div
+					className="connectivity-report"
+					aria-label={copy.settings.connectivityResults}
+				>
+					<h3>{copy.settings.connectivityResults}</h3>
+					<ul className="route-list">
+						{connectivity.routes.map((route): JSX.Element => (
+							<li key={`${route.kind}:${route.label}:${route.url}`}>
+								<span
+									className={route.reachable ? "route-reachable" : "route-unreachable"}
+								>
+									{route.reachable
+										? copy.settings.reachable
+										: copy.settings.unreachable}
+								</span>
+								<span>{route.label}</span>
+								{route.httpStatus !== null && <span>HTTP {route.httpStatus}</span>}
+								<span>
+									{copy.settings.latency} {route.latencyMs} ms
+								</span>
+								<span>{route.detail}</span>
+							</li>
+						))}
+					</ul>
+					<p>{copy.settings.sha256Reminder}</p>
+				</div>
+			)}
 			{saved && <p role="status">{copy.settings.saved}</p>}
 			{error !== null && (
 				<p className="error-copy" role="alert">

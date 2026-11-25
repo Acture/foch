@@ -7334,6 +7334,37 @@ country_event = {
 	);
 }
 
+/// A hidden event types its title as plain text. events/ConsortEvents.txt
+/// writes `title = none` on consort_events.206. A visible title is a key.
+#[test]
+fn hidden_event_titles_are_not_localisation_keys() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	let path = mod_root.join("events").join("consort.txt");
+	fs::create_dir_all(path.parent().expect("parent")).expect("create events");
+	fs::write(
+		&path,
+		"namespace = consort_events\ncountry_event = {\n\tid = consort_events.206\n\thidden = yes\n\ttitle = none\n\tdesc = none\n\tis_triggered_only = yes\n\toption = { name = none }\n}\ncountry_event = {\n\tid = consort_events.1\n\ttitle = consort_events.1.t\n\tdesc = consort_events.1.d\n\tis_triggered_only = yes\n\toption = { name = consort_events.1.a }\n}\n",
+	)
+	.expect("write events");
+	let index =
+		build_semantic_index(&[parse_script_file("1000", &mod_root, &path).expect("parsed")]);
+	let keys = index
+		.resource_references
+		.iter()
+		.filter(|reference| reference.key == "localisation_reference")
+		.map(|reference| reference.value.as_str())
+		.collect::<Vec<_>>();
+	assert!(
+		keys.contains(&"consort_events.1.t"),
+		"visible title: {keys:?}"
+	);
+	assert!(
+		!keys.contains(&"none"),
+		"hidden title is plain text: {keys:?}"
+	);
+}
+
 #[test]
 fn top_level_keys_named_like_scope_switches_are_definitions() {
 	let tmp = TempDir::new().expect("temp dir");

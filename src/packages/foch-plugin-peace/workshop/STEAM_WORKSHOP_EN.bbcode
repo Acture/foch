@@ -1,0 +1,104 @@
+[h1]Trade provinces for gold, swap borderlands, or yield a colony to seize a fortress—ALL IN ONE PEACE TREATY![/h1]
+
+[quote]
+[b]"Why can't I offer 500 ducats and a border province in exchange for that key mountain fortress?"[/b]
+Since 2013, Europa Universalis IV has locked every peace negotiation into a rigid one-way street: you can either [b]Demand[/b] terms OR [b]Offer[/b] concessions—never both. Switching tabs wipes your draft clean.
+
+[b]Foch Bilateral Peace[/b] breaks that decade-old limit. Draft real, historical two-way peace treaties where both sides give and take in a single negotiated settlement!
+[/quote]
+
+[hr][/hr]
+
+[h2]Visual Showcase[/h2]
+
+[list]
+[*][b][TODO: Replace with live screenshots] — Screenshot 1: Bilateral Peace Treaty Screen[/b]
+[i]Simultaneous Demand (+) and Offer (-) terms active in the same peace window, showing the live net warscore breakdown (+Demand% -Offer% = Net%) at the top of the summary and the updated net deal cost right next to the Send button.[/i]
+[*][b][TODO: Replace with live screenshots] — Screenshot 2: Before & After Map Border Swap[/b]
+[i]Cleanly swapping contested borderlands and balancing the deal with treasury ducats in a single war settlement—no console commands or two-war workarounds required.[/i]
+[*][b][TODO: Replace with live screenshots] — Screenshot 3: Standard One-Way Peace Deal (100% Vanilla)[/b]
+[i]When you only select Demands or only select Concessions, the peace window and warscore readout behave identically to unmodified vanilla EU4.[/i]
+[/list]
+
+[hr][/hr]
+
+[h2]Core Features[/h2]
+
+[list]
+[*][b]True Two-Direction Peace Deals:[/b]
+No more losing your selected terms when you click between [b]Demand[/b] and [b]Offer[/b]! Both tabs stay alive simultaneously, marked clearly as [b](+)[/b] and [b](-)[/b]. Combine territorial demands, gold, or treaties on one side with compensating concessions on the other, and submit the entire package as one unified peace offer.
+
+[*][b]Net Warscore Pricing & Native UI Display:[/b]
+Your concessions offset your demands! When both tabs carry terms, the treaty summary displays the signed net calculation right at the top (for example: [code]+35.0% -15.0% = +20.0%[/code]) and groups your clauses cleanly under [b](+)[/b] and [b](-)[/b]. The deal-cost readout beside the Send button updates directly to your net cost, while the top warscore progress bar stays untouched. If both sides include ducat payments between the same parties, they automatically net out into a single clean transfer.
+
+[*][b]100% Vanilla Behavior on Normal Deals:[/b]
+Making a classic one-sided peace deal? When only one tab has selected clauses, the plugin steps out of the way completely. Cost calculations, UI text, and treaty execution pass through with zero side effects.
+
+[*][b]Built for All Languages & UI Mods:[/b]
+Instead of injecting hardcoded English sentences into your treaty box, the summary preserves your game's exact localized clause text, color formatting, and fonts—only prepending the universal numeric net line and [b](+)[/b] / [b](-)[/b] markers.
+
+[*][b]Fail-Closed Safety & Execution Integrity:[/b]
+Built with strict validation guards so your peace deals never silently drop clauses or scramble war state. The settlement planner verifies that both tabs negotiate between the same war parties, blocks duplicate conflicting selections, restores your editor view cleanly after sending, and logs detailed settlement receipts. An internal ally-trust fairness model is also built in to evaluate whether both the overall deal and each individual allied participant maintain a non-negative net stake.
+[/list]
+
+[hr][/hr]
+
+[h2]Designed for Overhaul Mod Compatibility[/h2]
+
+Because [b]Foch Bilateral Peace[/b] works directly with EU4's peace-offer interface layer rather than overwriting vanilla map files, province histories, or diplomatic scripts, it conflicts with [b]zero[/b] content or UI overhaul mods!
+
+It supports all 40 engine treaty categories—including custom scripted peace treaties ([code]common/peace_treaties[/code]), custom subject types ([code]create_subject[/code] / [code]copy_from[/code]), and dynamic or modded 3-character country tags. Play it alongside:
+[list]
+[*][b]Anbennar[/b]
+[*][b]MEIOU & Taxes[/b]
+[*][b]Europa Expanded / Missions Expanded[/b]
+[*][b]Ante Bellum[/b]
+[*][b]Extended Timeline, Voltaire's Nightmare, and any localization or UI font mod![/b]
+[/list]
+
+[hr][/hr]
+
+[h2]Simple 3-Step Installation via Foch[/h2]
+
+[b]Why is Foch required?[/b]
+Standard EU4 Paradox script mods cannot unlock bilateral peace treaties because the one-way "Demand OR Offer" lock is built directly into the game binary. [b]Foch[/b] loads this native plugin ([code]io.github.acture.foch-peace[/code], version [code]0.0.19[/code]) in an isolated runtime layer—[b]without modifying or patching your Steam EU4 installation files[/b]. This Steam Workshop item serves as the companion mod entry.
+
+[b]Step 1 — Install Foch over HTTPS (no GitHub CLI):[/b]
+Subscribe to this Workshop item, then install the [b]Foch[/b] program from its HTTPS release. The same release files are also published through a China-friendly HTTPS mirror. Neither download uses the [code]gh[/code] CLI.
+
+[b]Step 2 — Package, import, and enable Bilateral Peace:[/b]
+From a Foch checkout, the one-command packager writes a fresh directory containing [code]foch-plugin.toml[/code], [code]foch_plugin_peace.dll[/code], and [code]LICENSE[/code], and binds the DLL SHA-256 into the manifest (plugin ID [code]io.github.acture.foch-peace[/code]):
+[code]
+python src/packages/foch-plugin-peace/tools/package.py <output-directory>
+[/code]
+Import that directory and enable it. This local package does not need [code]gh[/code]:
+[code]
+foch plugin import <output-directory>
+foch plugin enable io.github.acture.foch-peace --playset default
+[/code]
+[code]foch plugin install[/code] is the command for a published Foch plugin package. Until this plugin is published, use the packager and [code]foch plugin import[/code]. Foch itself is installed over HTTPS, including a China-friendly mirror of the same release, and that download does not need [code]gh[/code].
+
+[b]Step 3 — Launch EU4 1.37.5 Through Your Isolated Foch Profile:[/b]
+Launch the game via Foch, open any war's peace negotiation window, and pick terms on both the [b]Demand (+)[/b] and [b]Offer (-)[/b] tabs!
+
+[hr][/hr]
+
+[h2]Honest Compatibility & Status FAQ[/h2]
+
+[b]Q: Which version of EU4 is supported?[/b]
+[b]A:[/b] Exactly [b]Europa Universalis IV v1.37.5 (Steam, Windows x64)[/b]. Before activating, the plugin performs an automatic safety check on the game executable. If you are on a different EU4 patch or an unsupported build, it refuses cleanly and leaves the vanilla peace editor active rather than crashing your game.
+
+[b]Q: What is the current development status? (Please Read!)[/b]
+[b]A:[/b] This plugin ([code]v0.0.19[/code]) is currently [b]Experimental[/b].
+[list]
+[*][b]What is verified:[/b] The offline verification suite, two-tab draft retention, combined [b](+)[/b] / [b](-)[/b] net UI summary, ducat netting, and one-way vanilla passthrough are passing offline tests.
+[*][b]What is in progress:[/b] Full live in-game end-to-end playtesting across every treaty clause family (provinces, treasury ducats, war reparations, subject creation, and custom scripted treaties) and live AI acceptance path verification are actively in progress.
+[*][b]AI behavior note:[/b] The AI does [b]not[/b] actively initiate or propose complex two-way swaps on its own, and how the accepting AI evaluates net cost across all diplomatic paths in live campaigns is still being tuned and verified. Always test in a [b]disposable or backed-up campaign profile[/b]!
+[/list]
+
+[b]Q: Does this work in Ironman or Multiplayer?[/b]
+[b]A:[/b] Because the plugin is loaded through an isolated Foch runtime session for experimental testing, we strongly recommend using it in [b]single-player with a disposable campaign profile[/b] first. Do not use it on precious long-running Ironman saves while live settlement verification is still in progress.
+
+[hr][/hr]
+
+[i]Found an interesting bilateral deal interaction or edge case during testing? Leave a comment with your treaty clauses and Foch receipt log so we can keep refining live settlement and AI evaluation![/i]

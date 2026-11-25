@@ -1,0 +1,6 @@
+﻿l_simp_chinese:
+ foch_ta_companion_info_title:0 "调整属国上供"
+ foch_ta_companion_info_desc:0 "查看如何打开 Foch 上供滑块。此决议不会改变本局任何数值。"
+ foch_ta_info.1.t:0 "调整属国上供"
+ foch_ta_info.1.d:0 "按 Ctrl+Shift+T，或启动 tribute-panel，把属国上供在 0% 到 200% 之间缩放。Foch 在隔离的运行时层装载原生插件，不会修改 Steam 游戏本体。这条说明不会改变收入、属国或任何其他游戏数值。"
+ foch_ta_info.1.a:0 "知道了"

@@ -10,6 +10,7 @@ members = [
 	"src/packages/foch-eu4-gnn",
 	"src/packages/foch-eu4-state",
 	"src/packages/foch-eu4-decide",
+	"src/packages/foch-plugin-peace",
 	"plugins/eu4-dynamic-trade-blackhole",
 	"plugins/eu4-directed-pacts",
 	"plugins/eu4-read-decide",
@@ -17,6 +18,7 @@ members = [
 	"src/apps/foch-cli",
 	"src/apps/foch-desktop/src-tauri",
 	"src/packages/tree-sitter-paradox",
+	"mods/tribute-adjust",
 ]
 default-members = ["src/packages/foch", "src/packages/foch-annotation", "src/packages/foch-lsp", "src/packages/foch-test", "src/apps/foch-cli"]
 

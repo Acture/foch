@@ -235,8 +235,8 @@ impl CompiledRoot {
 						definition
 							.subtype_group_attributes
 							.iter()
-							.filter(|(name, _)| *name == subtype.name)
-							.map(|(_, attributes)| attributes),
+							.filter(|(name, _, _)| *name == subtype.name)
+							.map(|(_, attributes, origin)| (attributes, *origin)),
 					)
 				})
 				.collect(),
@@ -261,17 +261,30 @@ pub struct CompiledSubtype {
 impl CompiledSubtype {
 	/// A subtype, with the scopes its type's body declares above the group of
 	/// rules it selects where its own declaration names none.
+	///
+	/// The first group that names a scope supplies it. A later directory's
+	/// `replace_scope` replaces one the base rules already named: the vendored
+	/// on_actions rules type `on_culture_promoted` as a province, and the game
+	/// runs that callback as a country. A later base group does not.
 	fn from_subtype<'g>(
 		subtype: &CwtSubtype,
-		group_attributes: impl Iterator<Item = &'g CwtFieldAttributes>,
+		group_attributes: impl Iterator<Item = (&'g CwtFieldAttributes, CwtRuleOrigin)>,
 	) -> Self {
 		let mut attributes = subtype.attributes.clone();
-		for group in group_attributes {
+		let mut replace_scope_origin = None;
+		for (group, origin) in group_attributes {
 			if attributes.push_scope.is_none() {
 				attributes.push_scope.clone_from(&group.push_scope);
 			}
-			if attributes.replace_scope.is_empty() {
+			let replaces = !group.replace_scope.is_empty()
+				&& match replace_scope_origin {
+					None => true,
+					Some(CwtRuleOrigin::Base) => origin == CwtRuleOrigin::Extension,
+					Some(CwtRuleOrigin::Extension) => false,
+				};
+			if replaces {
 				attributes.replace_scope.clone_from(&group.replace_scope);
+				replace_scope_origin = Some(origin);
 			}
 			if attributes.scope.is_empty() {
 				attributes.scope.clone_from(&group.scope);
@@ -1319,10 +1332,27 @@ impl CwtQuery {
 		if is_dynamic_key_marker(key) {
 			return None;
 		}
-		let matches = rules
+		let fields = rules
 			.iter()
-			.filter(|field| admits(field) && self.dynamic_key_rule_matches(&field.key, key))
+			.filter(|field| admits(field))
 			.collect::<Vec<_>>();
+		let closed = fields
+			.iter()
+			.copied()
+			.filter(|field| {
+				!is_value_set_marker(&field.key) && self.dynamic_key_rule_matches(&field.key, key)
+			})
+			.collect::<Vec<_>>();
+		// A value_set key defines a name. It accepts one no closed marker
+		// (enum, value, scope, or `<type>`) already accepted.
+		let matches = if !closed.is_empty() {
+			closed
+		} else {
+			fields
+				.into_iter()
+				.filter(|field| is_value_set_marker(&field.key))
+				.collect()
+		};
 		match matches.as_slice() {
 			[] => None,
 			[field] => Some(RuleMatch::Field(field)),
@@ -1647,6 +1677,10 @@ fn is_dynamic_key_marker(key: &str) -> bool {
 			parse_marker(key),
 			Some(("enum" | "value" | "value_set" | "scope", _))
 		)
+}
+
+fn is_value_set_marker(key: &str) -> bool {
+	matches!(parse_marker(key), Some(("value_set", _)))
 }
 
 fn is_angle_dynamic_key_marker(key: &str) -> bool {

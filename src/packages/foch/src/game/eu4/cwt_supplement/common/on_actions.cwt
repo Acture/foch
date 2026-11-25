@@ -1,0 +1,17 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+
+# common/on_actions/00_on_actions.txt on_culture_promoted (line 5353) tests
+# has_country_flag and every_country. on_culture_demoted (line 5372) calls
+# on_culture_demoted_estate_privileges_effect, whose body
+# (common/scripted_effects/01_scripted_effects_for_estates.txt line 3018)
+# starts from a country, as the promoted twin at line 2982 does. The vendored
+# groups type both callbacks as provinces.
+on_action = {
+	## replace_scope = { root = country this = country }
+	subtype[on_culture_promoted] = {
+	}
+
+	## replace_scope = { root = country this = country }
+	subtype[on_culture_demoted] = {
+	}
+}
