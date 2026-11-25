@@ -1,0 +1,336 @@
+{
+	"schema": 1,
+	"game": "eu4",
+	"version": "1.37.5",
+	"platform": "windows-x64",
+	"abi": {
+		"stl": "msvc_x64",
+		"pointer_size": 8
+	},
+	"exe_sha256": "9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a",
+	"hooks": {
+		"monthly_tick": {
+			"rva": "0x75d690",
+			"pattern": "88 54 24 10 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 28 F1 FF FF 48 81 EC D8 0F 00 00 4C 8B F9 BA FF FF FF FF",
+			"status": "live_verified",
+			"evidence": "Economy update ending with CTradeNodeDataBase::UpdateAll(ctx + 0x2198); 14-byte prologue live-hooked in automated sessions"
+		}
+	},
+	"globals": {
+		"context": {
+			"offset": "0x233fe78",
+			"status": "live_verified",
+			"evidence": "Global game-context pointer variable; matches monthly_tick first argument"
+		},
+		"country_manager": {
+			"offset": "0x233d8d0",
+			"status": "live_verified",
+			"evidence": "Global country-manager pointer variable dereferenced by the trade distribution loop"
+		},
+		"flag_names": {
+			"offset": "0x2357d80",
+			"status": "static_only",
+			"evidence": "Global interned flag-name std::vector<std::string> RVA from static flag lookup paths"
+		}
+	},
+	"structs": {
+		"context": {
+			"db": {
+				"offset": "0x2198",
+				"status": "live_verified",
+				"evidence": "Embedded CTradeNodeDataBase inside the game context"
+			},
+			"countries_begin": {
+				"offset": "0x1d08",
+				"status": "live_verified",
+				"evidence": "std::vector<CCountry*> begin inside the game context"
+			},
+			"countries_count": {
+				"offset": "0x1d14",
+				"status": "live_verified",
+				"evidence": "Element count of the country vector in the game context"
+			}
+		},
+		"db": {
+			"nodes": {
+				"offset": "0x30",
+				"status": "live_verified",
+				"evidence": "Pointer to the heap CTradeNode* array in CTradeNodeDataBase"
+			},
+			"node_count": {
+				"offset": "0x3c",
+				"status": "live_verified",
+				"evidence": "Element count of the node pointer array in CTradeNodeDataBase"
+			}
+		},
+		"node": {
+			"entry_table": {
+				"offset": "0x18",
+				"status": "live_verified",
+				"evidence": "Per-country entry table pointer on CTradeNode"
+			},
+			"entry_size": {
+				"offset": "0xc0",
+				"status": "live_verified",
+				"evidence": "Byte stride of one country entry in the per-node entry table"
+			},
+			"weights": {
+				"offset": "0x88",
+				"status": "live_verified",
+				"evidence": "std::vector<int32> per-outgoing-edge steering weights on CTradeNode"
+			},
+			"definition": {
+				"offset": "0xa8",
+				"status": "live_verified",
+				"evidence": "CTradeNodeDefinition* pointer on CTradeNode"
+			},
+			"value": {
+				"offset": "0xb0",
+				"status": "live_verified",
+				"evidence": "Current total trade value of the node (int32, thousandths)"
+			},
+			"local_value": {
+				"offset": "0xb4",
+				"status": "live_verified",
+				"evidence": "Local production-side trade value (int32, thousandths)"
+			},
+			"transferred": {
+				"offset": "0xbc",
+				"status": "live_verified",
+				"evidence": "Trade value transferred out this tick (int32, thousandths)"
+			},
+			"power": {
+				"offset": "0xc8",
+				"status": "live_verified",
+				"evidence": "Total trade power of the node (int32, thousandths)"
+			}
+		},
+		"entry": {
+			"power": {
+				"offset": "0x28",
+				"status": "live_verified",
+				"evidence": "Country trade power contribution in node entry (int32, thousandths)"
+			},
+			"mode_collect": {
+				"offset": "0xac",
+				"status": "live_verified",
+				"evidence": "Collecting merchant-mode flag in node entry"
+			},
+			"mode_transfer": {
+				"offset": "0xad",
+				"status": "live_verified",
+				"evidence": "Transferring merchant-mode flag in node entry"
+			}
+		},
+		"def": {
+			"name": {
+				"offset": "0x30",
+				"status": "live_verified",
+				"evidence": "MSVC SSO std::string display name on CTradeNodeDefinition"
+			},
+			"members": {
+				"offset": "0x50",
+				"status": "static_only",
+				"evidence": "MSVC std::vector<int32> of 1-based member province IDs via CTradeNodeDefinition parser/writer; pending live verification"
+			},
+			"routes": {
+				"offset": "0x98",
+				"status": "live_verified",
+				"evidence": "std::vector<CTradeRoute> begin pointer on CTradeNodeDefinition"
+			},
+			"routes_end": {
+				"offset": "0xa0",
+				"status": "live_verified",
+				"evidence": "std::vector<CTradeRoute> end pointer on CTradeNodeDefinition"
+			}
+		},
+		"route": {
+			"size": {
+				"offset": "0x78",
+				"status": "live_verified",
+				"evidence": "Byte stride of CTradeRoute in definition route vector"
+			},
+			"target_key": {
+				"offset": "0x10",
+				"status": "static_only",
+				"evidence": "MSVC SSO std::string internal key on CTradeRoute, read by the trade-blackhole node_members.txt fallback; not recorded as a live Foch session probe"
+			},
+			"target": {
+				"offset": "0x30",
+				"status": "live_verified",
+				"evidence": "Target CTradeNodeDefinition* pointer of destination node on CTradeRoute"
+			}
+		},
+		"province": {
+			"cprovinces": {
+				"offset": "0x1ca8",
+				"status": "live_verified",
+				"evidence": "CProvince array base pointer inside the game context"
+			},
+			"cprovince_size": {
+				"offset": "0x2e10",
+				"status": "live_verified",
+				"evidence": "CProvince element byte stride"
+			},
+			"manpower": {
+				"offset": "0x3e0",
+				"status": "live_verified",
+				"evidence": "Base manpower in thousandths on CProvince per live dump correlation"
+			},
+			"tax": {
+				"offset": "0x3e4",
+				"status": "live_verified",
+				"evidence": "Base tax in thousandths from CProvince::SetBaseTax"
+			}
+		},
+		"country_manager": {
+			"index_array": {
+				"offset": "0x118",
+				"status": "live_verified",
+				"evidence": "CCountry** array indexed by country index on country manager"
+			}
+		},
+		"country": {
+			"tag": {
+				"offset": "0x20",
+				"status": "live_verified",
+				"evidence": "Packed country tag and index qword on CCountry"
+			},
+			"monthly_income_bank": {
+				"offset": "0x68",
+				"status": "static_only",
+				"evidence": "Monthly income bank (i32, thousandths); statically identified, pending live verification"
+			},
+			"treasury": {
+				"offset": "0xbb0",
+				"status": "live_verified",
+				"evidence": "Treasury (int32, thousandths) added to by ChangeTreasury"
+			},
+			"treasury_clamp": 1000000000,
+			"overlord": {
+				"offset": "0x18f0",
+				"status": "static_only",
+				"evidence": "Packed overlord country identity qword; statically identified, pending live verification"
+			},
+			"subjects_vec": {
+				"offset": "0x24b0",
+				"status": "static_only",
+				"evidence": "MSVC std::vector header of country subjects; statically identified, pending live verification"
+			},
+			"tribute_type": {
+				"offset": "0x28a6",
+				"status": "static_only",
+				"evidence": "Tributary tribute-type discriminator (u8); statically identified, pending live verification"
+			}
+		},
+		"ui": {
+			"controller": {
+				"offset": "0x1e00",
+				"status": "live_verified",
+				"evidence": "UI controller pointer inside game context from ChangeTreasury tail"
+			},
+			"flags": {
+				"offset": "0x388",
+				"status": "live_verified",
+				"evidence": "Flag word holding per-widget dirty bits on UI controller"
+			},
+			"treasury_dirty": {
+				"offset": "0x40",
+				"status": "live_verified",
+				"evidence": "Dirty bit ChangeTreasury sets when player treasury changes"
+			}
+		},
+		"campaign": {
+			"guid": {
+				"offset": "0x24d4",
+				"status": "static_only",
+				"evidence": "16-byte campaign GUID in game context via static save/load paths"
+			},
+			"current_hours": {
+				"offset": "0x1dd0",
+				"status": "static_only",
+				"evidence": "Current game clock in hours (i32) in game context via static save/load paths"
+			},
+			"calendar_epoch_hours": 43800000
+		},
+		"war": {
+			"active_wars": {
+				"offset": "0x1e30",
+				"status": "static_only",
+				"evidence": "Pointer to active CWar* array in game context; pending live verification"
+			},
+			"array_counts": {
+				"offset": "0x1e38",
+				"status": "static_only",
+				"evidence": "Packed (capacity: i32, count: i32) qword for active-war array; pending live verification"
+			},
+			"max_wars": 4096,
+			"started": {
+				"offset": "0x24",
+				"status": "static_only",
+				"evidence": "Declaration hour (i32) inside CWar; pending live verification"
+			},
+			"unset_hour": "0x029c77f8",
+			"unidentified_serial": 0,
+			"attackers": {
+				"offset": "0x48",
+				"status": "static_only",
+				"evidence": "MSVC std::vector of packed attacker identities inside CWar; pending live verification"
+			},
+			"defenders": {
+				"offset": "0x78",
+				"status": "static_only",
+				"evidence": "MSVC std::vector of packed defender identities inside CWar; pending live verification"
+			},
+			"original_attacker": {
+				"offset": "0x150",
+				"status": "static_only",
+				"evidence": "Packed country identity of original attacker inside CWar; pending live verification"
+			},
+			"original_defender": {
+				"offset": "0x158",
+				"status": "static_only",
+				"evidence": "Packed country identity of original defender inside CWar; pending live verification"
+			}
+		},
+		"diplomacy": {
+			"country_relations": {
+				"offset": "0x1510",
+				"status": "static_only",
+				"evidence": "Pointer to per-target-country relation array inside CCountry via truce_with trigger"
+			},
+			"relation_size": {
+				"offset": "0x48",
+				"status": "static_only",
+				"evidence": "Byte stride of one target country relation record"
+			},
+			"truce_flags": {
+				"offset": "0x45",
+				"status": "static_only",
+				"evidence": "Flag byte inside relation record whose bit 0 marks an active truce"
+			}
+		},
+		"flags": {
+			"country_flags": {
+				"offset": "0x270",
+				"status": "static_only",
+				"evidence": "Embedded country-flag table offset inside CCountry from static serialization paths"
+			},
+			"flag_ids": {
+				"offset": "0x10",
+				"status": "static_only",
+				"evidence": "std::vector<i16> interned flag IDs inside country-flag table"
+			},
+			"flag_dates": {
+				"offset": "0x28",
+				"status": "static_only",
+				"evidence": "std::vector<i32> flag set_at_hours parallel to flag_ids"
+			},
+			"string_size": {
+				"offset": "0x20",
+				"status": "static_only",
+				"evidence": "Byte stride of MSVC SSO std::string in global flag_names registry"
+			}
+		}
+	}
+}

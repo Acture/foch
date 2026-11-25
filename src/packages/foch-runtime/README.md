@@ -49,16 +49,25 @@ and helpers that keep all engine units in thousandths and surface fallible reads
 
 ### Compiled-In Version × Platform JSON Profiles
 
-Layout offsets are defined in reviewed JSON profiles under `profiles/eu4/` (currently
-`profiles/eu4/1.37.5-windows-x64.json`, packaged via `Cargo.toml`
-`include = ["/profiles/**", ...]`), embedded at compile time with `include_str!`,
-validated under `#[serde(deny_unknown_fields)]`, and published through a static
-`OnceLock` registry:
+Layout offsets are defined in reviewed JSON profiles under `profiles/eu4/` (packaged via
+`Cargo.toml` `include = ["/profiles/**", ...]`), embedded at compile time with
+`include_str!`, validated under `#[serde(deny_unknown_fields)]`, and published through a
+static `OnceLock` registry. Two 1.37.5 Windows x64 profiles are embedded:
+
+- `profiles/eu4/1.37.5-windows-x64.json` — the AMDAC baseline build
+  (`exe_sha256` `c9ec55a4…`), the registry's first entry and therefore the default
+  build behind `pinned_exe_sha256()` and the no-suffix `Eu4Game::from_*` wrappers.
+- `profiles/eu4/1.37.5-windows-x64-stock.json` — the unmodified Steam build
+  (`exe_sha256` `9ad3efe1…`). The two executables are identical in size and differ in
+  exactly six bytes (four PE header bytes and the two checksum-patch bytes), so the
+  stock profile carries the same hooks, globals, structs, strides, and caps; live
+  runtime verification against the stock Steam build is still pending.
 
 - **Strict digest matching**: Profiles are keyed strictly by 64-character lowercase
-  `exe_sha256` (exposed via `pinned_exe_sha256()` and queried via
-  `supports_build(exe_sha256)`). Human version strings (`"1.37.5"`) are never used as
-  lookup keys, and unsigned external JSON is never loaded from disk.
+  `exe_sha256` (the default build's digest is exposed via `pinned_exe_sha256()`, and
+  membership is queried via `supports_build(exe_sha256)`). Human version strings
+  (`"1.37.5"`) are never used as lookup keys, and unsigned external JSON is never
+  loaded from disk.
 - **ABI & structure schema**: Each profile records `abi` (`stl: "msvc_x64"`,
   `pointer_size: 8`), `hooks` (`monthly_tick` RVA and prologue byte pattern), `globals`
   (`context`, `country_manager`, `flag_names`), and `structs` (`context`, `db`, `node`,
