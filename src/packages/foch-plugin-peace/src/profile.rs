@@ -232,7 +232,9 @@ mod tests {
 
 	/// A stub host table whose callbacks are never called: the digest gate in
 	/// [`verify`] fires before any image access, so a null base is enough.
-	fn host(exe_sha256: &str) -> FochHostApi {
+	/// The digest must be `'static`: [`FochStr::from_str`] keeps a raw pointer,
+	/// and a temporary would be freed before [`verify`] reads it.
+	fn host(exe_sha256: &'static str) -> FochHostApi {
 		use foch_plugin_sdk::*;
 		unsafe extern "C" fn log(_: *const FochHostApi, _: i32, _: FochStr) {}
 		unsafe extern "C" fn report(_: *const FochHostApi, _: *const FochStatus) {}
@@ -302,7 +304,9 @@ mod tests {
 
 	#[test]
 	fn verify_rejects_unknown_build_digests_before_touching_the_image() {
-		let host = host(&"0".repeat(64));
+		let unknown = "0000000000000000000000000000000000000000000000000000000000000000";
+		assert_eq!(unknown.len(), 64);
+		let host = host(unknown);
 		assert_eq!(
 			// SAFETY: the stub host table and its literals outlive this call.
 			unsafe { verify(&host) }.unwrap_err(),
