@@ -24,7 +24,9 @@ const MAX_DNF_TERMS: usize = 256;
 /// The literals one chain's guard algebra may visit before the chain is kept
 /// opaque. The term bound alone does not limit the work: a long `else_if`
 /// chain stays under it while every case multiplies out the negated coverage
-/// of all the cases before it.
+/// of all the cases before it. Ordinary chains measured over the game and
+/// installed mods stay under a fifth of this cap, so it stays put; a test
+/// that must trip the cap lowers the limit for that chain only.
 const MAX_FORMULA_WORK: usize = 1 << 25;
 
 type Term = BTreeMap<String, bool>;
@@ -34,23 +36,114 @@ struct Formula {
 	terms: BTreeSet<Term>,
 }
 
-/// The work spent on the guards of one chain, checked against
-/// [`MAX_FORMULA_WORK`].
-#[derive(Default)]
+/// The work spent on the guards of one chain, checked against `limit`.
+/// Production chains use [`MAX_FORMULA_WORK`].
 struct FormulaWork {
 	spent: usize,
+	limit: usize,
+}
+
+impl Default for FormulaWork {
+	fn default() -> Self {
+		Self {
+			spent: 0,
+			limit: formula_work_limit(),
+		}
+	}
+}
+
+fn formula_work_limit() -> usize {
+	#[cfg(test)]
+	{
+		FORMULA_WORK_LIMIT.with(std::cell::Cell::get)
+	}
+	#[cfg(not(test))]
+	{
+		MAX_FORMULA_WORK
+	}
 }
 
 impl FormulaWork {
 	fn charge(&mut self, literals: usize) -> Result<(), AstAdapterError> {
-		self.spent = self.spent.saturating_add(literals.max(1));
-		if self.spent > MAX_FORMULA_WORK {
+		let visit = literals.max(1);
+		self.spent = self.spent.saturating_add(visit);
+		#[cfg(test)]
+		observe_formula_work(self.spent, self.limit, visit);
+		if self.spent > self.limit {
+			let limit = self.limit;
 			return Err(AstAdapterError::UnprovableControlFlow(format!(
-				"guard normalization exceeded {MAX_FORMULA_WORK} literal visits"
+				"guard normalization exceeded {limit} literal visits"
 			)));
 		}
 		Ok(())
 	}
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ObservedFormulaWork {
+	spent: usize,
+	limit: usize,
+	last_charge: usize,
+}
+
+#[cfg(test)]
+std::thread_local! {
+	static FORMULA_WORK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_FORMULA_WORK) };
+	static OBSERVED_FORMULA_WORK: std::cell::Cell<ObservedFormulaWork> = const {
+		std::cell::Cell::new(ObservedFormulaWork {
+			spent: 0,
+			limit: 0,
+			last_charge: 0,
+		})
+	};
+}
+
+#[cfg(test)]
+fn observe_formula_work(spent: usize, limit: usize, last_charge: usize) {
+	OBSERVED_FORMULA_WORK.with(|observed| {
+		observed.set(ObservedFormulaWork {
+			spent,
+			limit,
+			last_charge,
+		});
+	});
+}
+
+#[cfg(test)]
+fn reset_observed_formula_work() {
+	OBSERVED_FORMULA_WORK.with(|observed| {
+		observed.set(ObservedFormulaWork {
+			spent: 0,
+			limit: 0,
+			last_charge: 0,
+		});
+	});
+}
+
+#[cfg(test)]
+fn observed_formula_work() -> ObservedFormulaWork {
+	OBSERVED_FORMULA_WORK.with(std::cell::Cell::get)
+}
+
+/// Runs `body` with each new chain's guard algebra capped at `limit` literal
+/// visits. Production normalization leaves the cap at [`MAX_FORMULA_WORK`].
+#[cfg(test)]
+fn with_formula_work_limit<T>(limit: usize, body: impl FnOnce() -> T) -> T {
+	FORMULA_WORK_LIMIT.with(|cell| {
+		let previous = cell.replace(limit);
+		struct Restore<'a> {
+			cell: &'a std::cell::Cell<usize>,
+			previous: usize,
+		}
+		impl Drop for Restore<'_> {
+			fn drop(&mut self) {
+				self.cell.set(self.previous);
+			}
+		}
+		let _restore = Restore { cell, previous };
+		body()
+	})
 }
 
 impl Formula {
@@ -1934,6 +2027,22 @@ mod tests {
 		// A counter read through a thousand ranges, as a maintenance
 		// calculator effect does: each case holds `value = n` and not
 		// `value = n + 1`, so the uncovered guard gains a term per case.
+		// That growth passes the production cap, and any smaller cap on the
+		// same check: the chain is kept opaque once the visits exceed the
+		// limit, and the source round-trips. The visits are deterministic.
+		// A wall-clock bound is not, under a loaded debug runner.
+		const WORK_BUDGET: usize = 1 << 16;
+		assert_eq!(
+			super::MAX_FORMULA_WORK,
+			1 << 25,
+			"ordinary chains use under a fifth of 1<<25; shrinking the cap makes them opaque"
+		);
+		assert_eq!(
+			super::FormulaWork::default().limit,
+			super::MAX_FORMULA_WORK,
+			"production chains must keep the full guard-work cap"
+		);
+
 		let check =
 			|value: usize| format!("check_variable = {{ which = calculator value = {value} }}");
 		let cases = (1..=1000)
@@ -1948,23 +2057,46 @@ mod tests {
 			.collect::<Vec<_>>()
 			.join("\n");
 		let ast = parse(&format!("calculator_effect = {{\n{cases}\n}}\n"));
+		let run = || {
+			super::reset_observed_formula_work();
+			super::with_formula_work_limit(WORK_BUDGET, || {
+				let policies = MergePolicies::default();
+				let policy = ContentFamilyMergePolicy::new(&policies);
+				normalize_ast(&ast, &policy).expect("normalize a long threshold chain")
+			})
+		};
 
-		let policies = MergePolicies::default();
-		let policy = ContentFamilyMergePolicy::new(&policies);
-		let started = std::time::Instant::now();
-		let tree = normalize_ast(&ast, &policy).expect("normalize a long threshold chain");
-		let elapsed = started.elapsed();
+		let tree = run();
+		let work = super::observed_formula_work();
+		let repeated = run();
+		let repeated_work = super::observed_formula_work();
 
+		assert_eq!(
+			work, repeated_work,
+			"guard work changed across identical runs"
+		);
+		assert_eq!(work.limit, WORK_BUDGET);
 		assert!(
-			elapsed < std::time::Duration::from_secs(10),
-			"normalizing took {elapsed:?}"
+			work.spent > WORK_BUDGET,
+			"long threshold chain stopped after {} visits, under the {WORK_BUDGET} budget",
+			work.spent
 		);
 		assert!(
-			tree.nodes()
-				.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:opaque")
+			work.spent <= WORK_BUDGET + work.last_charge,
+			"normalization charged {} visits after a budget of {WORK_BUDGET} (last charge {})",
+			work.spent,
+			work.last_charge
 		);
-		let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild long chain");
-		assert_eq!(emit(&rebuilt), emit(&ast));
+		for normalized in [&tree, &repeated] {
+			assert!(
+				normalized
+					.nodes()
+					.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:opaque")
+			);
+			let rebuilt =
+				denormalize_ast(ast.path.clone(), normalized).expect("rebuild long chain");
+			assert_eq!(emit(&rebuilt), emit(&ast));
+		}
 	}
 
 	#[test]
