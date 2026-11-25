@@ -23,9 +23,9 @@ use crate::input::{
 use crate::model::{
 	AnalysisMode, ChannelMode, Finding, GamePathBuf, MERGE_EXECUTION_ATTESTATION_SCHEMA,
 	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
-	MergeExecutionAttestation, MergePlanResult, MergeProvenanceArtifact, MergeProvenanceFile,
-	MergeReport, MergeReportBaseSnapshot, MergeReportScope, MergeReportStatus,
-	MergeReportValidation,
+	MERGED_MOD_DESCRIPTOR_PATH, MergeExecutionAttestation, MergePlanResult,
+	MergeProvenanceArtifact, MergeProvenanceFile, MergeReport, MergeReportBaseSnapshot,
+	MergeReportScope, MergeReportStatus, MergeReportValidation,
 };
 use crate::playset::descriptor::{descriptor_path_text, escape_descriptor_value};
 use crate::project::{AppliedDepOverride, Project, ResolutionDecision, ResolutionMap};
@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -1060,6 +1060,170 @@ fn validation_config(request: &InputRequest) -> Result<Config, InputResolveError
 			.insert(summary.game.key().to_string(), game_root);
 	}
 	Ok(config)
+}
+
+/// An absolute path with no `.` or `..` components. Callers retarget a frozen
+/// analysis only with a path that already has that shape.
+pub(super) fn normalized_output_dir(out_dir: &Path) -> Result<PathBuf, MergeError> {
+	if out_dir.as_os_str().is_empty() {
+		return Err(MergeError::Validation {
+			subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+			message: "merge output directory is empty".to_string(),
+		});
+	}
+	if !out_dir.is_absolute()
+		|| out_dir
+			.components()
+			.any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+	{
+		return Err(MergeError::Validation {
+			subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+			message: "merge output directory must be an absolute normalized path".to_string(),
+		});
+	}
+	Ok(out_dir.to_path_buf())
+}
+
+/// Refuse an output that is, contains, or sits inside a mod root or the game
+/// installation. Those directories are read-only inputs.
+pub(super) fn ensure_output_outside_source_roots(
+	out_dir: &Path,
+	source_roots: &[PathBuf],
+) -> Result<(), MergeError> {
+	let destination =
+		canonicalize_existing_prefix(out_dir).map_err(|error| MergeError::Validation {
+			subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+			message: format!(
+				"failed to resolve merge output {}: {error}",
+				out_dir.display()
+			),
+		})?;
+	for root in source_roots {
+		let source =
+			canonicalize_existing_prefix(root).map_err(|error| MergeError::Validation {
+				subject: Some(MergeErrorSubject::Host(root.clone())),
+				message: format!(
+					"failed to resolve read-only input {}: {error}",
+					root.display()
+				),
+			})?;
+		if destination.starts_with(&source) || source.starts_with(&destination) {
+			return Err(MergeError::Validation {
+				subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+				message: format!(
+					"merge output {} overlaps the read-only input {}; source mods and the game directory cannot be merge targets",
+					destination.display(),
+					source.display()
+				),
+			});
+		}
+	}
+	Ok(())
+}
+
+enum MissingComponent {
+	Normal(std::ffi::OsString),
+	Parent,
+	Cur,
+}
+
+/// The longest existing ancestor of `path`, with links resolved, plus the
+/// components that do not exist yet. `.` and `..` are applied on that tail.
+fn canonicalize_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
+	let absolute = std::path::absolute(path)?;
+	let mut existing = absolute.as_path();
+	let mut missing = Vec::new();
+	loop {
+		match fs::canonicalize(existing) {
+			Ok(mut resolved) => {
+				for component in missing.into_iter().rev() {
+					match component {
+						MissingComponent::Parent => {
+							resolved.pop();
+						}
+						MissingComponent::Cur => {}
+						MissingComponent::Normal(name) => resolved.push(name),
+					}
+				}
+				return Ok(resolved);
+			}
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+				let component = match existing.components().next_back() {
+					Some(Component::Normal(name)) => MissingComponent::Normal(name.to_os_string()),
+					Some(Component::ParentDir) => MissingComponent::Parent,
+					Some(Component::CurDir) => MissingComponent::Cur,
+					_ => return Err(error),
+				};
+				missing.push(component);
+				existing = existing.parent().ok_or(error)?;
+			}
+			Err(error) => return Err(error),
+		}
+	}
+}
+
+/// Rewrite `descriptor.mod` inside the frozen artifact tree so `name` and
+/// `path` name `out_dir`. `replace_path` lines and the source-playset comment
+/// stay as analysis wrote them.
+pub(super) fn write_output_descriptor(
+	artifacts: &mut AnalyzedArtifactTree,
+	out_dir: &Path,
+) -> Result<(), MergeError> {
+	let bytes = artifacts.read_file(MERGED_MOD_DESCRIPTOR_PATH)?;
+	let existing = String::from_utf8(bytes).map_err(|_| MergeError::Validation {
+		subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+		message: "merged descriptor.mod is not valid UTF-8".to_string(),
+	})?;
+	let rewritten = retarget_descriptor_text(&existing, out_dir)?;
+	artifacts.rewrite_file(MERGED_MOD_DESCRIPTOR_PATH, rewritten.as_bytes())
+}
+
+fn retarget_descriptor_text(existing: &str, out_dir: &Path) -> Result<String, MergeError> {
+	let out_dir_text = descriptor_path_text(out_dir).map_err(|reason| MergeError::Validation {
+		subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+		message: format!(
+			"merged output {} cannot be named in a descriptor: {reason}",
+			out_dir.display()
+		),
+	})?;
+	let directory_name = out_dir
+		.file_name()
+		.and_then(|name| name.to_str())
+		.ok_or_else(|| MergeError::Validation {
+			subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+			message: format!(
+				"merged output {} has no UTF-8 directory name",
+				out_dir.display()
+			),
+		})?;
+	let escaped_name = escape_descriptor_value(&format!("{directory_name} (Merged)"));
+	let mut saw_name = false;
+	let mut saw_path = false;
+	let mut output = String::with_capacity(existing.len().saturating_add(out_dir_text.len()));
+	for line in existing.split_inclusive('\n') {
+		let body = line.trim_end_matches(['\r', '\n']);
+		let ending = &line[body.len()..];
+		if !saw_name && body.starts_with("name=") {
+			saw_name = true;
+			output.push_str(&format!("name=\"{escaped_name}\""));
+			output.push_str(ending);
+			continue;
+		}
+		if !saw_path && body.starts_with("path=") {
+			saw_path = true;
+			output.push_str(&format!("path=\"{out_dir_text}\""));
+			output.push_str(ending);
+			continue;
+		}
+		output.push_str(line);
+	}
+	if !saw_name || !saw_path {
+		return Err(MergeError::Validation {
+			subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+			message: "merged descriptor.mod is missing its name or path".to_string(),
+		});
+	}
+	Ok(output)
 }
 
 pub(super) fn write_merge_report_artifact(

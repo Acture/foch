@@ -339,6 +339,38 @@ impl AnalyzedMerge {
 		fingerprint_replacement_target(&self.out_dir)
 	}
 
+	/// Whether `out_dir` can receive this analysis as a new or empty folder.
+	///
+	/// An analysis that read a prior output directory cannot be retargeted.
+	/// The path must be absolute and normalized, must not overlap a source mod
+	/// or the game installation, and must not already hold files.
+	pub fn validate_empty_target(&self, out_dir: &Path) -> Result<PathBuf, MergeError> {
+		if self.prior_output_guard.is_some() {
+			return Err(MergeError::Validation {
+				subject: Some(MergeErrorSubject::Host(out_dir.to_path_buf())),
+				message: "an analysis bound to a prior output directory cannot be retargeted"
+					.to_string(),
+			});
+		}
+		let out_dir = super::analyze::normalized_output_dir(out_dir)?;
+		super::analyze::ensure_output_outside_source_roots(&out_dir, self.source_roots())?;
+		if fingerprint_replacement_target(&out_dir)?.is_some() {
+			return Err(MergeError::ReplacementAuthorizationRequired { path: out_dir });
+		}
+		Ok(out_dir)
+	}
+
+	/// Install the frozen artifacts into a different empty directory.
+	///
+	/// `descriptor.mod` is rewritten so `path` and the mod name refer to
+	/// `out_dir`. Every commit guard still runs.
+	pub fn commit_to_empty_dir(mut self, out_dir: PathBuf) -> Result<CommitResult, MergeError> {
+		let out_dir = self.validate_empty_target(&out_dir)?;
+		super::analyze::write_output_descriptor(&mut self.artifacts, &out_dir)?;
+		self.out_dir = out_dir;
+		self.commit(CommitAuthorization::EmptyTargetOnly)
+	}
+
 	/// Atomically install the frozen artifacts without invoking analysis again.
 	pub fn commit(self, authorization: CommitAuthorization) -> Result<CommitResult, MergeError> {
 		let transaction = OutputTransaction::begin(&self.out_dir)?;

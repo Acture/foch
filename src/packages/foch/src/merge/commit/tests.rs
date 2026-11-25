@@ -1,6 +1,5 @@
 use std::fs;
 use std::io;
-#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use std::path::PathBuf;
 
 use super::*;
@@ -11,16 +10,12 @@ use crate::game::eu4::base::snapshot::{
 	lock_and_validate_installed_base_snapshot_identity,
 };
 use crate::input::FileFilter;
-#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use crate::input::config::Config;
-#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use crate::input::request::InputRequest;
 use crate::merge::analyze::merge_execution_result;
-#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use crate::merge::analyze::{
 	CancellationToken, MergeAnalysisOptions, NoopProgressObserver, analyze_merge,
 };
-#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 use crate::model::MERGE_REPORT_ARTIFACT_PATH;
 use crate::model::MergeReport;
 
@@ -611,4 +606,127 @@ fn a_report_whose_kept_path_is_not_a_game_path_does_not_read_back() {
 			"{path}: {error}"
 		);
 	}
+}
+
+fn empty_target_options(out_dir: PathBuf) -> MergeAnalysisOptions {
+	MergeAnalysisOptions {
+		out_dir,
+		include_game_base: false,
+		include_base: false,
+		gui_scroll_merge: false,
+		force: false,
+		strict: true,
+		ignore_replace_path: false,
+		dep_overrides: Vec::new(),
+		resolution_config_path: None,
+		interactive_conflict_handler: None,
+		interactive_resolution_config_path: None,
+		playset_fingerprint: None,
+		provenance: false,
+		merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
+		retained_paths: None,
+	}
+}
+
+fn analyze_minimal_passthrough(out_dir: PathBuf) -> AnalyzedMerge {
+	analyze_merge(
+		InputRequest::from_playset_path(
+			PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+				.join("tests/fixtures/playsets/eu4_minimal_passthrough/dlc_load.json"),
+			Config::default(),
+		),
+		empty_target_options(out_dir),
+		&NoopProgressObserver,
+		&CancellationToken::new(),
+	)
+	.expect("analyze minimal passthrough")
+}
+
+#[test]
+fn commit_to_empty_dir_writes_a_descriptor_for_the_chosen_directory() {
+	let temp = tempfile::TempDir::new().expect("temp dir");
+	let analyzed = analyze_minimal_passthrough(temp.path().join("analysis-target"));
+	let out_dir = temp.path().join("exported mod");
+	assert!(!out_dir.exists());
+
+	let result = analyzed
+		.commit_to_empty_dir(out_dir.clone())
+		.expect("commit to an empty directory");
+
+	let descriptor = crate::playset::descriptor::load_descriptor(&out_dir.join("descriptor.mod"))
+		.expect("read descriptor");
+	assert_eq!(descriptor.path.as_deref(), Some(out_dir.as_path()));
+	let descriptor_text =
+		fs::read_to_string(out_dir.join("descriptor.mod")).expect("read descriptor text");
+	assert!(
+		descriptor_text.contains("exported mod (Merged)"),
+		"{descriptor_text}"
+	);
+	assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).is_file());
+	assert!(
+		out_dir.join("events/foo.txt").is_file()
+			|| out_dir.join("common/cultures/00_cultures.txt").is_file(),
+		"merged files must be installed"
+	);
+	assert!(matches!(
+		result.merge_status.status,
+		crate::model::MergeReportStatus::Ready | crate::model::MergeReportStatus::PartialSuccess
+	));
+	assert!(!temp.path().join("analysis-target").exists());
+}
+
+#[test]
+fn commit_to_empty_dir_refuses_a_non_empty_directory() {
+	let temp = tempfile::TempDir::new().expect("temp dir");
+	let analyzed = analyze_minimal_passthrough(temp.path().join("analysis-target"));
+	let out_dir = temp.path().join("occupied");
+	fs::create_dir_all(&out_dir).expect("create occupied output");
+	fs::write(out_dir.join("keep.txt"), b"leave me\n").expect("seed occupied output");
+
+	let error = analyzed
+		.commit_to_empty_dir(out_dir.clone())
+		.expect_err("a non-empty directory needs replacement authorization");
+
+	assert!(
+		matches!(error, MergeError::ReplacementAuthorizationRequired { ref path } if path == &out_dir)
+	);
+	assert_eq!(
+		fs::read(out_dir.join("keep.txt")).expect("read preserved file"),
+		b"leave me\n"
+	);
+	assert!(!out_dir.join("descriptor.mod").exists());
+}
+
+#[test]
+fn commit_to_empty_dir_refuses_a_path_inside_a_source_root() {
+	let temp = tempfile::TempDir::new().expect("temp dir");
+	let analyzed = analyze_minimal_passthrough(temp.path().join("analysis-target"));
+	let source = analyzed
+		.source_roots()
+		.iter()
+		.find_map(|root| {
+			let canonical = fs::canonicalize(root).ok()?;
+			canonical
+				.join("descriptor.mod")
+				.is_file()
+				.then_some(canonical)
+		})
+		.expect("a mod root contains descriptor.mod");
+	let marker = source.join("descriptor.mod");
+	let before = fs::read(&marker).expect("source descriptor stays readable");
+	let nested = source.join("foch-retarget-refused");
+
+	let error = analyzed
+		.commit_to_empty_dir(nested.clone())
+		.expect_err("a source root cannot be a merge target");
+
+	assert!(
+		error.to_string().contains("overlaps the read-only input"),
+		"{error}"
+	);
+	assert!(!nested.exists());
+	assert_eq!(
+		fs::read(&marker).expect("source descriptor unchanged"),
+		before
+	);
 }
