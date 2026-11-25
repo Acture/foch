@@ -120,7 +120,12 @@ FRONTEND_PROCESS_HELPERS: frozenset[str] = frozenset(
 RUST_SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 	(
 		"standard-library process API",
-		re.compile(r"\bstd\s*::(?:\s*\{[^{}]*\bprocess\b|\s*process\b)"),
+		# The runtime library starts EU4; desktop may own its returned child handle.
+		# Keep process modules, grouped imports and command construction forbidden.
+		re.compile(
+			r"\bstd\s*::(?:\s*\{[^{}]*\bprocess\b|"
+			r"\s*process\b(?!\s*::\s*Child\b))"
+		),
 	),
 	("Tokio process API", re.compile(r"\btokio\s*::\s*process\b")),
 	(
@@ -517,7 +522,7 @@ def verify_desktop_sources(desktop_root: Path) -> None:
 	violations = source_violations(desktop_root)
 	if violations:
 		raise ValueError(
-			"foch-desktop APP-001 source must not launch or bundle processes:\n"
+			"foch-desktop source must not directly construct or bundle processes:\n"
 			+ "\n".join(violations)
 		)
 

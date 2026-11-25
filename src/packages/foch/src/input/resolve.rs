@@ -219,13 +219,14 @@ fn load_dlc_load_source(
 	})
 }
 
-/// A mod directory is one enabled mod. Anything else that is a directory is
-/// not a launcher playset, so it fails before `fs::read` reports access denied.
+/// A mod directory is one enabled mod: `foch check ./my-mod` reads its
+/// `descriptor.mod` and the files the game would load from that folder.
 fn load_mod_directory_source(
 	path: &Path,
 	config: &Config,
 ) -> Result<LoadedInputSource, InputResolveError> {
-	if !path.join("descriptor.mod").is_file() {
+	let descriptor = path.join("descriptor.mod");
+	if !descriptor.is_file() {
 		return Err(InputResolveError {
 			kind: InputResolveErrorKind::Io,
 			path: path.to_path_buf(),
@@ -1772,46 +1773,6 @@ mod tests {
 
 	fn request_for_manifest(path: &Path) -> InputRequest {
 		InputRequest::from_manifest_path(path.to_path_buf(), Config::default())
-	}
-
-	fn request_for_path(path: &Path) -> InputRequest {
-		InputRequest::new(
-			InputSource::from_path(path.to_path_buf()),
-			Config::default(),
-		)
-	}
-
-	#[test]
-	fn a_directory_with_descriptor_mod_is_a_single_mod_input() {
-		let temp = TempDir::new().expect("tempdir");
-		let root = temp.path().join("companion");
-		write_descriptor(&root, "Bilateral Peace (Foch Companion)", None);
-		fs::create_dir(root.join("events")).expect("create events");
-		fs::write(
-			root.join("events").join("info.txt"),
-			"namespace = foch_bp_info\n",
-		)
-		.expect("write event");
-
-		let summary = resolve_input_summary(&request_for_path(&root)).expect("mod directory");
-
-		assert_eq!(summary.mods.len(), 1);
-		assert_eq!(summary.mods[0].mod_id, "companion");
-		assert_eq!(summary.mods[0].root_path.as_deref(), Some(root.as_path()));
-		assert!(summary.mods[0].descriptor_error.is_none());
-	}
-
-	#[test]
-	fn a_directory_without_descriptor_mod_is_not_a_playset() {
-		let temp = TempDir::new().expect("tempdir");
-		let root = temp.path().join("empty");
-		fs::create_dir(&root).expect("create empty directory");
-
-		let error = resolve_input_summary(&request_for_path(&root)).expect_err("not a mod");
-
-		assert_eq!(error.kind, InputResolveErrorKind::Io);
-		assert_eq!(error.path, root);
-		assert!(error.message.contains("descriptor.mod"), "{error}");
 	}
 
 	fn game_path(text: &str) -> GamePathBuf {

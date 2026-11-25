@@ -861,3 +861,107 @@ fn offline_resolves_a_mod_subject_type() {
 	);
 	assert_eq!(json(&output)["results"][0]["outcome"], "pass");
 }
+
+#[test]
+fn companion_plugins_do_not_interfere_with_offline_tests() {
+	// A mod may declare `[[plugins]]` in its own foch.toml next to descriptor.mod
+	// and annotated events. Collection, the offline interpreter, and bundle
+	// compilation read the script and the descriptor name; the plugin table is
+	// not a test input and must not change those results.
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	let root = dir.path().join("mod");
+	fs::create_dir_all(root.join("events")).unwrap();
+	fs::write(
+		root.join("descriptor.mod"),
+		"name=\"Companion Mod\"\nsupported_version=\"1.37.*\"\n",
+	)
+	.unwrap();
+	let manifest = "[[plugins]]\nid = \"dev.foch.eu4-dynamic-trade-blackhole\"\nrepo = \"Acture/eu4-dynamic-trade-blackhole\"\ngame_versions = \"=1.37.5\"\nrequired = true\nmin_version = \"0.1.0\"\n[[plugins]]\nid = \"dev.foch.sample\"\nrepo = \"Acture/sample\"\nrequired = false\n";
+	fs::write(root.join("foch.toml"), manifest).unwrap();
+	fs::write(
+		root.join("events/companion.txt"),
+		"namespace = companion\n#test(time=1444.11.11, tag=SWE, name=smoke)\ncountry_event = { id = companion.1 hidden = yes is_triggered_only = yes immediate = { set_country_flag = companion_ready } }\n#test(time=1444.11.11, tag=SWE, name=flag, expect={ has_country_flag = companion_ready })\ncountry_event = { id = companion.2 hidden = yes is_triggered_only = yes immediate = { set_country_flag = companion_ready } }\n",
+	)
+	.unwrap();
+
+	let collected = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	assert!(
+		collected.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&collected.stdout),
+		String::from_utf8_lossy(&collected.stderr)
+	);
+	let report = json(&collected);
+	assert!(
+		report["diagnostics"].as_array().unwrap().is_empty(),
+		"{report}"
+	);
+	let cases = report["cases"].as_array().unwrap();
+	assert_eq!(cases.len(), 2, "{report}");
+	assert_eq!(cases[0]["kind"], "smoke");
+	assert_eq!(cases[1]["kind"], "assertion");
+	assert!(
+		cases.iter().all(|case| case["node_id"]
+			.as_str()
+			.unwrap()
+			.starts_with("Companion Mod::events/companion.txt::")),
+		"{report}"
+	);
+
+	let offline = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		offline.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&offline.stdout),
+		String::from_utf8_lossy(&offline.stderr)
+	);
+	let offline_report = json(&offline);
+	let outcomes: Vec<_> = offline_report["results"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|result| result["outcome"].as_str().unwrap())
+		.collect();
+	assert_eq!(outcomes, ["smoke", "pass"]);
+
+	let out = dir.path().join("compiled");
+	let compiled = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--no-run",
+			"--format",
+			"json",
+			"--out",
+			out.to_str().unwrap(),
+		],
+	);
+	assert!(
+		compiled.status.success(),
+		"{}{}",
+		String::from_utf8_lossy(&compiled.stdout),
+		String::from_utf8_lossy(&compiled.stderr)
+	);
+	let compiled_report = json(&compiled);
+	let bundles = compiled_report["bundles"].as_array().unwrap();
+	assert!(!bundles.is_empty(), "{compiled_report}");
+	let mut compiled_cases = 0;
+	for path in bundles {
+		let bundle: Value =
+			serde_json::from_slice(&fs::read(path.as_str().unwrap()).unwrap()).unwrap();
+		assert_eq!(bundle["mod_name"], "Companion Mod");
+		compiled_cases += bundle["cases"].as_array().unwrap().len();
+	}
+	assert_eq!(compiled_cases, 2, "{compiled_report}");
+	assert_eq!(
+		fs::read_to_string(root.join("foch.toml")).unwrap(),
+		manifest
+	);
+}

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from typing import Self
 
 from eu4_analysis.models import Function, FunctionEvidence, Instruction, Reference
 from eu4_analysis.semantics import (
@@ -143,7 +144,7 @@ class CliEntry(unittest.TestCase):
 				def __init__(self, *args: object) -> None:
 					pass
 
-				def __enter__(self) -> "FakeSession":
+				def __enter__(self) -> Self:
 					return self
 
 				def __exit__(self, *args: object) -> None:

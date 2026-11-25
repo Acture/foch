@@ -4,7 +4,7 @@ use foch::merge::{
 	MergeUnitOutcome,
 };
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -14,8 +14,9 @@ use ratatui::widgets::{
 
 use super::app::{
 	App, BUILD_STAGES, DISPOSITIONS, Focus, HitAreas, InputPane, KEY_HELP, OPTION_COUNT, Phase,
-	Screen, disposition_label,
+	Screen, TopTab, disposition_label,
 };
+use super::text;
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
@@ -32,39 +33,17 @@ const STAGES: [(MergeAnalysisStage, &str); 5] = [
 ];
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
-	let [top, header, body, footer] = Layout::vertical([
+	let [top, main, footer] = Layout::vertical([
 		Constraint::Length(1),
-		Constraint::Length(5),
 		Constraint::Min(6),
 		Constraint::Length(1),
 	])
 	.areas(frame.area());
-	draw_top_bar(frame, app, top);
-	draw_header(frame, app, header);
-	match (&app.phase, app.screen) {
-		(
-			Phase::Building {
-				started,
-				stage,
-				finished,
-			},
-			_,
-		) => draw_building(
-			frame,
-			app,
-			body,
-			started.elapsed(),
-			stage.as_deref(),
-			*finished,
-		),
-		(Phase::Analyzing { started, progress }, _) => {
-			let elapsed = progress
-				.map(|progress| progress.elapsed)
-				.unwrap_or_else(|| started.elapsed());
-			draw_progress(frame, body, *progress, elapsed);
-		}
-		(Phase::Reviewed(_), Screen::Review) => draw_review(frame, app, body),
-		_ => draw_input(frame, app, body),
+	draw_tab_bar(frame, app, top);
+	match app.top_tab {
+		TopTab::LaunchPlugins => draw_launch(frame, app, main),
+		TopTab::NetworkSettings => draw_settings(frame, app, main),
+		TopTab::MergeReview => draw_merge(frame, app, main),
 	}
 	frame.render_widget(Paragraph::new(footer_keys(app)), footer);
 	if let Some(cursor) = app.options {
@@ -77,7 +56,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 		draw_build_prompt(frame, app);
 	}
 	if app.help {
-		draw_help(frame);
+		draw_help(frame, app);
+	}
+	if app.config_editor.is_some() {
+		draw_config_editor(frame, app);
+	}
+	if app.install_input.is_some() {
+		draw_install_input(frame, app);
+	}
+	if app.confirming_launch {
+		draw_launch_prompt(frame, app);
 	}
 	if let Some(selection) = app.selection {
 		let buffer = frame.buffer_mut();
@@ -263,7 +251,7 @@ fn draw_building(
 	);
 }
 
-fn draw_help(frame: &mut Frame<'_>) {
+fn draw_help(frame: &mut Frame<'_>, _app: &App) {
 	let mut lines = vec![
 		Line::from(Span::styled(
 			"Every browser action is also a foch command:",
@@ -290,34 +278,71 @@ fn draw_help(frame: &mut Frame<'_>) {
 	frame.render_widget(Paragraph::new(lines).block(panel(" Keys ", ACCENT)), popup);
 }
 
-fn draw_top_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
-	let tab = |name: &'static str, active: bool| {
-		if active {
-			Span::styled(
-				format!(" {name} "),
-				Style::new().fg(Color::Black).bg(ACCENT).bold(),
-			)
-		} else {
-			Span::styled(format!(" {name} "), Style::new().fg(DIM))
+fn draw_merge(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let [header, body] = Layout::vertical([Constraint::Length(5), Constraint::Min(1)]).areas(area);
+	draw_header(frame, app, header);
+	match (&app.phase, app.screen) {
+		(
+			Phase::Building {
+				started,
+				stage,
+				finished,
+			},
+			_,
+		) => draw_building(
+			frame,
+			app,
+			body,
+			started.elapsed(),
+			stage.as_deref(),
+			*finished,
+		),
+		(Phase::Analyzing { started, progress }, _) => {
+			let elapsed = progress
+				.map(|progress| progress.elapsed)
+				.unwrap_or_else(|| started.elapsed());
+			draw_progress(frame, body, *progress, elapsed);
 		}
-	};
-	let reviewing = matches!(app.phase, Phase::Reviewed(_)) && app.screen == Screen::Review;
-	let left = Line::from(vec![
-		Span::styled(" foch ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
-		Span::styled("  EU4 merge analysis   ", Style::new().bold()),
-		tab("Playset", !reviewing),
-		Span::raw(" "),
-		tab("Review", reviewing),
-	]);
-	frame.render_widget(Paragraph::new(left), area);
-	frame.render_widget(
-		Paragraph::new(Span::styled(
-			"analysis writes nothing ",
-			Style::new().fg(DIM),
-		))
-		.alignment(Alignment::Right),
-		area,
-	);
+		(Phase::Reviewed(_), Screen::Review) => draw_review(frame, app, body),
+		_ => draw_input(frame, app, body),
+	}
+}
+
+fn draw_tab_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let labels = [
+		text::tab_launch(app.ui_language),
+		text::tab_merge(app.ui_language, app.review_attention_count()),
+		text::tab_settings(app.ui_language),
+	];
+	let tabs = [
+		TopTab::LaunchPlugins,
+		TopTab::MergeReview,
+		TopTab::NetworkSettings,
+	];
+	let mut spans = vec![Span::styled(
+		" foch ",
+		Style::new().fg(Color::Black).bg(ACCENT).bold(),
+	)];
+	let mut x = area.x.saturating_add(Span::raw(" foch ").width() as u16);
+	let mut rects = [Rect::default(); 3];
+	for (index, label) in labels.iter().enumerate() {
+		let shown = format!(" {label} ");
+		let width = Span::raw(&shown).width() as u16;
+		rects[index] = Rect::new(x, area.y, width.max(1), 1);
+		x = x.saturating_add(width);
+		let style = if app.top_tab == tabs[index] {
+			Style::new().fg(Color::Black).bg(ACCENT).bold()
+		} else {
+			Style::new().fg(DIM)
+		};
+		spans.push(Span::styled(shown, style));
+	}
+	frame.render_widget(Paragraph::new(Line::from(spans)), area);
+	record(app, |hit| {
+		hit.tab_launch = rects[0];
+		hit.tab_merge = rects[1];
+		hit.tab_settings = rects[2];
+	});
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -1162,7 +1187,292 @@ fn draw_options(frame: &mut Frame<'_>, app: &App, cursor: usize) {
 	);
 }
 
+fn footer_pairs(pairs: &[(&str, &str)]) -> Line<'static> {
+	let mut spans = vec![Span::raw(" ")];
+	for (name, action) in pairs {
+		spans.push(key(name));
+		spans.push(Span::styled(format!(" {action}  "), Style::new().fg(DIM)));
+	}
+	Line::from(spans)
+}
+
+fn draw_launch(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let [strip, alert, body] = Layout::vertical([
+		Constraint::Length(4),
+		Constraint::Length(3),
+		Constraint::Min(4),
+	])
+	.areas(area);
+	let input = app.input.as_ref();
+	let game = input.map(|input| input.game.name.as_str()).unwrap_or("EU4");
+	let version = input
+		.and_then(|input| input.game.version.as_deref())
+		.unwrap_or("unknown");
+	let install = input
+		.and_then(|input| input.game.install_path.as_ref())
+		.map(|path| display(path))
+		.unwrap_or_else(|| "not found".to_string());
+	let playset = input
+		.and_then(|input| input.playset.as_ref())
+		.map(|playset| playset.name.as_str())
+		.unwrap_or(app.playset_name.as_str());
+	let strip_lines = vec![
+		Line::from(vec![
+			field("EU4"),
+			Span::raw(format!("{game} {version}")),
+			Span::styled(format!("  {install}"), Style::new().fg(DIM)),
+		]),
+		Line::from(vec![
+			field("Host DLL"),
+			Span::raw(if app.host_label.is_empty() {
+				"unknown".to_string()
+			} else {
+				app.host_label.clone()
+			}),
+		]),
+		Line::from(vec![field("Playset"), Span::raw(playset.to_string())]),
+	];
+	frame.render_widget(
+		Paragraph::new(strip_lines).block(panel(" Environment ", DIM)),
+		strip,
+	);
+	let mut alerts = Vec::new();
+	if let Some(overview) = &app.plugin_overview {
+		for plugin in &overview.plugins {
+			if plugin.declared_by_mods.is_empty() {
+				continue;
+			}
+			if plugin.enabled && !plugin.installed_versions.is_empty() {
+				continue;
+			}
+			for source in &plugin.declared_by_mods {
+				alerts.push(Line::from(Span::styled(
+					text::companion_alert(app.ui_language, source, &plugin.id),
+					Style::new().fg(WARN).bold(),
+				)));
+			}
+		}
+	}
+	if alerts.is_empty() {
+		alerts.push(Line::from(Span::styled(
+			app.banner.clone().unwrap_or_default(),
+			Style::new().fg(ACCENT),
+		)));
+	}
+	frame.render_widget(
+		Paragraph::new(alerts).block(panel(" Companions ", WARN)),
+		alert,
+	);
+	let [list_area, detail_area] =
+		Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(body);
+	let plugins = app
+		.plugin_overview
+		.as_ref()
+		.map(|overview| overview.plugins.as_slice())
+		.unwrap_or(&[]);
+	let items: Vec<ListItem> = plugins
+		.iter()
+		.enumerate()
+		.map(|(index, plugin)| {
+			let marker = if index == app.plugin_cursor { ">" } else { " " };
+			let badge = text::badge(app.ui_language, plugin.badge);
+			ListItem::new(format!("{marker} {badge} {}", plugin.name))
+		})
+		.collect();
+	let mut state = ListState::default();
+	state.select(plugins.is_empty().then_some(0).or(Some(app.plugin_cursor)));
+	frame.render_stateful_widget(
+		List::new(items)
+			.block(panel(" Plugins ", ACCENT))
+			.highlight_style(Style::new().fg(ACCENT).bold()),
+		list_area,
+		&mut state,
+	);
+	let detail = plugins
+		.get(app.plugin_cursor)
+		.map(|plugin| plugin_detail(app, plugin))
+		.unwrap_or_default();
+	frame.render_widget(
+		Paragraph::new(detail)
+			.wrap(Wrap { trim: false })
+			.block(panel(" Detail ", DIM)),
+		detail_area,
+	);
+}
+
+fn plugin_detail(app: &App, plugin: &foch::plugin::PluginEntrySummary) -> Text<'static> {
+	let mut lines = vec![
+		Line::from(plugin.name.clone()),
+		Line::from(Span::styled(plugin.id.clone(), Style::new().fg(DIM))),
+		Line::from(text::badge(app.ui_language, plugin.badge).to_string()),
+	];
+	if let Some(description) = &plugin.description {
+		lines.push(Line::from(description.clone()));
+	}
+	if !plugin.installed_versions.is_empty() {
+		lines.push(Line::from(format!(
+			"installed {}",
+			plugin.installed_versions.join(", ")
+		)));
+	}
+	if let Some(spec) = &plugin.install_spec {
+		lines.push(Line::from(Span::styled(spec.clone(), Style::new().fg(DIM))));
+	}
+	for (id, state) in &app.runtime_states {
+		if id == &plugin.id {
+			lines.push(Line::from(Span::styled(
+				format!("runtime {state}"),
+				Style::new().fg(OK),
+			)));
+		}
+	}
+	for field in &plugin.config_fields {
+		lines.push(Line::from(format!("{} = {}", field.key, field.value)));
+	}
+	if let Some(plan) = app
+		.plugin_overview
+		.as_ref()
+		.and_then(|overview| overview.plan.as_ref())
+	{
+		lines.push(Line::from(if plan.launchable {
+			"plan: launchable".to_string()
+		} else {
+			format!(
+				"plan: {}",
+				plan.errors
+					.first()
+					.cloned()
+					.unwrap_or_else(|| "blocked".into())
+			)
+		}));
+	}
+	Text::from(lines)
+}
+
+fn draw_settings(frame: &mut Frame<'_>, app: &App, area: Rect) {
+	let rows = [
+		(
+			text::transport_label(app.ui_language),
+			text::transport_value(app.ui_language, app.preferences.transport),
+		),
+		(
+			text::mirror_label(app.ui_language),
+			text::mirror_value(app.ui_language, app.preferences.mirror),
+		),
+		(
+			text::language_label(app.ui_language),
+			text::language_value(app.ui_language, app.preferences.language),
+		),
+	];
+	let lines: Vec<Line> = rows
+		.iter()
+		.enumerate()
+		.map(|(index, (label, value))| {
+			let style = if index == app.settings_cursor {
+				Style::new().fg(Color::Black).bg(ACCENT).bold()
+			} else {
+				Style::new()
+			};
+			Line::from(Span::styled(format!("  {label:<22} {value}"), style))
+		})
+		.collect();
+	frame.render_widget(
+		Paragraph::new(lines).block(panel(
+			match app.ui_language {
+				foch::plugin::UiLanguage::ZhCn => " 网络与设置 ",
+				foch::plugin::UiLanguage::En => " Network & Settings ",
+			},
+			ACCENT,
+		)),
+		area,
+	);
+}
+
+fn draw_config_editor(frame: &mut Frame<'_>, app: &App) {
+	let Some(editor) = &app.config_editor else {
+		return;
+	};
+	let lines: Vec<Line> = editor
+		.fields
+		.iter()
+		.enumerate()
+		.map(|(index, field)| {
+			let marker = if index == editor.cursor { ">" } else { " " };
+			let bounds = match (field.min, field.max) {
+				(Some(min), Some(max)) => format!("  {min}..={max}"),
+				_ => String::new(),
+			};
+			Line::from(format!(
+				"{marker} {} ({}) = {}{bounds}",
+				field.key, field.kind, field.value
+			))
+		})
+		.collect();
+	let height = lines.len() as u16 + 4;
+	let popup = centered(frame.area(), 72, height.max(6));
+	frame.render_widget(Clear, popup);
+	frame.render_widget(
+		Paragraph::new(lines).block(panel(" Config ", ACCENT)),
+		popup,
+	);
+}
+
+fn draw_install_input(frame: &mut Frame<'_>, app: &App) {
+	let spec = app.install_input.clone().unwrap_or_default();
+	let popup = centered(frame.area(), 72, 5);
+	frame.render_widget(Clear, popup);
+	frame.render_widget(
+		Paragraph::new(format!("owner/repo  {spec}_")).block(panel(" Install ", ACCENT)),
+		popup,
+	);
+}
+
+fn draw_launch_prompt(frame: &mut Frame<'_>, _app: &App) {
+	let popup = centered(frame.area(), 64, 6);
+	frame.render_widget(Clear, popup);
+	frame.render_widget(
+		Paragraph::new(vec![
+			Line::from("Launch EU4 with the isolated runtime layer?"),
+			Line::from(""),
+			Line::from("y launch    Esc cancel"),
+		])
+		.block(panel(" Launch ", WARN)),
+		popup,
+	);
+}
+
 fn footer_keys(app: &App) -> Line<'static> {
+	if app.top_tab == TopTab::LaunchPlugins {
+		return footer_pairs(if app.config_editor.is_some() {
+			&[
+				("↑↓", "field"),
+				("Space", "bool"),
+				("←→", "int"),
+				("Esc", "close"),
+			]
+		} else if app.confirming_launch {
+			&[("y", "launch EU4"), ("Esc", "cancel")]
+		} else {
+			&[
+				("↑↓", "plugin"),
+				("Space", "enable"),
+				("i", "install"),
+				("c", "config"),
+				("p", "prepare"),
+				("L", "launch"),
+				("r", "refresh"),
+				("q", "quit"),
+			]
+		});
+	}
+	if app.top_tab == TopTab::NetworkSettings {
+		return footer_pairs(&[
+			("↑↓", "setting"),
+			("←→", "change"),
+			("1-3", "tab"),
+			("q", "quit"),
+		]);
+	}
 	let pairs: &[(&str, &str)] = match (&app.phase, app.screen, app.focus) {
 		_ if app.help => &[("any key", "close")],
 		_ if app.confirming_exclusions => &[("y", "analyze without them"), ("Esc", "cancel")],

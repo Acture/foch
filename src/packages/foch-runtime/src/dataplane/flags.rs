@@ -4,17 +4,12 @@
 //! paths for the pinned executable. They have not passed a Foch game probe.
 //! Reading a snapshot grants no permission to set, remove or consume flags.
 
-use super::{CountryView, Memory, StdVector, is_name_byte, layout, read_sso, supports_build};
+use super::profile::{LayoutProfile, profile_for_build};
+use super::{CountryView, Memory, StdVector, is_name_byte, read_sso};
 use std::collections::BTreeSet;
 
-// Keep static candidates out of layout's live-verified field set.
-pub(crate) const COUNTRY_FLAGS: usize = 0x270;
-pub(crate) const FLAG_IDS: usize = 0x10;
-pub(crate) const FLAG_DATES: usize = 0x28;
-pub(crate) const FLAG_NAMES_RVA: usize = 0x2357d80;
 const MAX_FLAGS: usize = 4096;
 const MAX_NAMES: usize = 32768; // The engine's IDs are signed 16-bit values.
-pub(crate) const STRING_SIZE: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CountryFlag {
@@ -119,9 +114,14 @@ fn string_header(memory: &Memory, address: usize) -> Result<[u64; 4], FlagReadEr
 	])
 }
 
-fn sample(memory: &Memory, address: usize, names_address: usize) -> Result<Sample, FlagReadError> {
-	let identity = qword(memory, address, layout::country::TAG)?;
-	let country_tag = CountryView::tag_at(memory, address);
+fn sample(
+	profile: &LayoutProfile,
+	memory: &Memory,
+	address: usize,
+	names_address: usize,
+) -> Result<Sample, FlagReadError> {
+	let identity = qword(memory, address, profile.country_tag.offset)?;
+	let country_tag = CountryView::tag_text(profile, memory, address);
 	if country_tag.len() != 3
 		|| !country_tag
 			.bytes()
@@ -129,10 +129,25 @@ fn sample(memory: &Memory, address: usize, names_address: usize) -> Result<Sampl
 	{
 		return Err(FlagReadError::InvalidLayout("country tag"));
 	}
-	let flags_address = add(address, COUNTRY_FLAGS)?;
-	let ids = Vector::read(memory, add(flags_address, FLAG_IDS)?, 2, MAX_FLAGS)?;
-	let dates = Vector::read(memory, add(flags_address, FLAG_DATES)?, 4, MAX_FLAGS)?;
-	let names = Vector::read(memory, names_address, STRING_SIZE, MAX_NAMES)?;
+	let flags_address = add(address, profile.flags_country_flags.offset)?;
+	let ids = Vector::read(
+		memory,
+		add(flags_address, profile.flags_flag_ids.offset)?,
+		2,
+		MAX_FLAGS,
+	)?;
+	let dates = Vector::read(
+		memory,
+		add(flags_address, profile.flags_flag_dates.offset)?,
+		4,
+		MAX_FLAGS,
+	)?;
+	let names = Vector::read(
+		memory,
+		names_address,
+		profile.flags_string_size.offset,
+		MAX_NAMES,
+	)?;
 	if ids.count != dates.count {
 		return Err(FlagReadError::Inconsistent);
 	}
@@ -164,7 +179,7 @@ fn sample(memory: &Memory, address: usize, names_address: usize) -> Result<Sampl
 		let string_address = add(
 			names.header.begin,
 			(id as usize)
-				.checked_mul(STRING_SIZE)
+				.checked_mul(profile.flags_string_size.offset)
 				.ok_or(FlagReadError::InvalidLayout("name stride"))?,
 		)?;
 		let header = string_header(memory, string_address)?;
@@ -220,14 +235,14 @@ pub(super) fn read(
 	host_exe_sha256: &str,
 ) -> Result<CountryFlags, FlagReadError> {
 	// Callers pass FochHostApi.exe_sha256, never a substitute expected digest.
-	if !supports_build(host_exe_sha256) {
+	let Some(profile) = profile_for_build(host_exe_sha256) else {
 		return Err(FlagReadError::UnsupportedBuild);
-	}
+	};
 	if !cfg!(all(windows, target_arch = "x86_64")) {
 		return Err(FlagReadError::UnsupportedPlatform);
 	}
-	let names_address = add(exe_base, FLAG_NAMES_RVA)?;
-	consistent(|| sample(memory, address, names_address))
+	let names_address = add(exe_base, profile.flag_names.offset)?;
+	consistent(|| sample(profile, memory, address, names_address))
 }
 
 #[cfg(test)]
@@ -235,14 +250,15 @@ mod tests {
 	use super::*;
 	#[cfg(windows)]
 	use crate::dataplane::game::Eu4Game;
+	use crate::dataplane::profile::default_profile;
 
 	#[test]
 	fn a_bad_digest_precedes_even_address_calculation() {
 		for digest in [
 			"".into(),
 			"c9ec55a4".into(),
-			layout::EXPECTED_EXE_SHA256.to_uppercase(),
-			format!("{}0", layout::EXPECTED_EXE_SHA256),
+			default_profile().exe_sha256.to_uppercase(),
+			format!("{}0", default_profile().exe_sha256),
 		] {
 			assert_eq!(
 				read(&Memory, usize::MAX, usize::MAX, &digest),
@@ -255,7 +271,7 @@ mod tests {
 	#[cfg(windows)]
 	fn any_observed_change_between_samples_refuses_the_complete_snapshot() {
 		let mut country = vec![0u64; 0x2b0 / 8];
-		country[layout::country::TAG / 8] = u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
+		country[default_profile().country_tag.offset / 8] = u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
 		let mut ids = [0u16];
 		let mut dates = [123i32];
 		let mut names = [[u64::from_le_bytes(*b"flag\0\0\0\0"), 0, 4, 15]; 2];
@@ -274,6 +290,7 @@ mod tests {
 		}
 		let read_once = |country: &[u64]| {
 			sample(
+				default_profile(),
 				&Memory,
 				country.as_ptr() as usize,
 				registry.as_ptr() as usize,
@@ -295,7 +312,7 @@ mod tests {
 								name[0] = u64::from_le_bytes(*b"FLAG\0\0\0\0");
 							}
 						}
-						2 => country[layout::country::TAG / 8] ^= 1,
+						2 => country[default_profile().country_tag.offset / 8] ^= 1,
 						_ => ids[0] = 1, // Same printed name at another interned ID.
 					}
 				}
@@ -364,12 +381,15 @@ mod tests {
 				ids: ids.into(),
 				dates: dates.into(),
 			};
-			fixture.image[layout::COUNTRY_MANAGER_GLOBAL_RVA / 8] = fixture.manager.as_ptr() as u64;
-			fixture.manager[layout::country_manager::INDEX_ARRAY / 8] =
+			let profile = default_profile();
+			fixture.image[profile.country_manager_global.offset / 8] =
+				fixture.manager.as_ptr() as u64;
+			fixture.manager[profile.country_manager_index_array.offset / 8] =
 				fixture.addresses.as_ptr() as u64;
 			fixture.addresses[0] = fixture.country.as_ptr() as u64;
-			fixture.context[layout::COUNTRIES_COUNT / 8] = 1u64 << 32;
-			fixture.country[layout::country::TAG / 8] = u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
+			fixture.context[profile.countries_count.offset / 8] = 1u64 << 32;
+			fixture.country[profile.country_tag.offset / 8] =
+				u64::from_le_bytes(*b"FRA\0\0\0\0\x01");
 			fixture.headers();
 			fixture
 		}
@@ -418,7 +438,7 @@ mod tests {
 			};
 			// SAFETY: every simulated object and referenced buffer remains live and
 			// unchanged during this synchronous synthetic read.
-			unsafe { game.country_flags(&self.view(), layout::EXPECTED_EXE_SHA256) }
+			unsafe { game.country_flags(&self.view(), &default_profile().exe_sha256) }
 		}
 	}
 
@@ -470,7 +490,7 @@ mod tests {
 			unsafe {
 				fixture
 					.view()
-					.flags(usize::MAX - 7, layout::EXPECTED_EXE_SHA256)
+					.flags(usize::MAX - 7, &default_profile().exe_sha256)
 			},
 			Err(FlagReadError::InvalidLayout(_))
 		));

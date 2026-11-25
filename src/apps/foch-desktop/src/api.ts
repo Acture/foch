@@ -177,6 +177,99 @@ export interface MergeUnitDetail {
 	notes: string[];
 }
 
+export type TransportPreference = "auto" | "http" | "gh";
+export type MirrorPreference = "auto" | "cn" | "direct" | "custom";
+export type LanguagePreference = "auto" | "zh_cn" | "en";
+export type EffectiveLanguage = "zh-CN" | "en";
+export type DesktopPluginBadge = "enabled" | "installed" | "not_installed" | "conflict";
+
+export interface DesktopPreferences {
+	transport: TransportPreference;
+	mirror: MirrorPreference;
+	customMirrors: string[];
+	language: LanguagePreference;
+	effectiveLanguage: EffectiveLanguage;
+}
+
+export interface DesktopSettingsInput {
+	transport: TransportPreference;
+	mirror: MirrorPreference;
+	customMirrors: string[];
+	language: LanguagePreference;
+}
+
+export interface DesktopConfigField {
+	key: string;
+	kind: string;
+	description: string | null;
+	value: boolean | number | string | null;
+	min: number | null;
+	max: number | null;
+}
+
+export interface DesktopPluginEntry {
+	id: string;
+	name: string;
+	description: string | null;
+	installedVersions: string[];
+	selectedVersion: string | null;
+	enabled: boolean;
+	installSpec: string | null;
+	declaredByMods: string[];
+	requiredByMods: string[];
+	conflicts: string[];
+	configFields: DesktopConfigField[];
+	badge: DesktopPluginBadge;
+}
+
+export interface DesktopPluginPlan {
+	launchable: boolean;
+	order: string[];
+	errors: string[];
+	warnings: string[];
+}
+
+export interface DesktopPluginOverview {
+	playset: string;
+	gameRoot: string | null;
+	gameVersion: string | null;
+	hostDllAvailable: boolean;
+	hostDllDetail: string;
+	entries: DesktopPluginEntry[];
+	companionWarnings: string[];
+	plan: DesktopPluginPlan | null;
+	preferences: DesktopPreferences;
+	problems: string[];
+}
+
+export interface DesktopPluginInstall {
+	id: string;
+	version: string;
+	source: string;
+	conflicts: string[];
+	alreadyPresent: boolean;
+}
+
+export interface DesktopLaunchResult {
+	runDir: string;
+	planSha256: string;
+	preparedOnly: boolean;
+	pid: number | null;
+	pluginCount: number;
+	versionDll: boolean;
+}
+
+export interface DesktopPluginRuntimeState {
+	id: string;
+	state: string;
+	reason: string | null;
+}
+
+export interface DesktopLaunchStatus {
+	runId: string;
+	plugins: DesktopPluginRuntimeState[];
+}
+
 export interface DesktopClient {
 	inspectInput(): Promise<InputInspection>;
 	startMergeAnalysis(
@@ -187,6 +280,28 @@ export interface DesktopClient {
 	getMergeAnalysisSummary(analysisId: string): Promise<MergeAnalysisSummary>;
 	listMergeUnits(request: MergeUnitListRequest): Promise<MergeUnitPage>;
 	getMergeUnit(analysisId: string, unitId: string): Promise<MergeUnitDetail>;
+	getPluginOverview(playset: string | null): Promise<DesktopPluginOverview>;
+	installPlugin(spec: string, sha256: string | null): Promise<DesktopPluginInstall>;
+	importPluginDir(path: string): Promise<DesktopPluginInstall>;
+	setPluginEnabled(
+		playset: string | null,
+		id: string,
+		enabled: boolean,
+		version: string | null,
+	): Promise<void>;
+	updatePluginConfig(
+		playset: string | null,
+		id: string,
+		key: string,
+		value: boolean | number | string,
+	): Promise<void>;
+	launchEu4WithPlugins(
+		playset: string | null,
+		prepareOnly: boolean,
+	): Promise<DesktopLaunchResult>;
+	getLaunchStatus(runDir: string): Promise<DesktopLaunchStatus>;
+	getDesktopSettings(): Promise<DesktopPreferences>;
+	saveDesktopSettings(settings: DesktopSettingsInput): Promise<DesktopPreferences>;
 }
 
 export type InvokeCommand = <T>(
@@ -216,6 +331,42 @@ export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient
 			}),
 		getMergeUnit: (analysisId: string, unitId: string): Promise<MergeUnitDetail> =>
 			invokeCommand("get_merge_unit", { analysisId, unitId }),
+		getPluginOverview: (playset: string | null): Promise<DesktopPluginOverview> =>
+			invokeCommand("get_plugin_overview", { playset }),
+		installPlugin: (
+			spec: string,
+			sha256: string | null,
+		): Promise<DesktopPluginInstall> =>
+			invokeCommand("install_plugin", { spec, sha256 }),
+		importPluginDir: (path: string): Promise<DesktopPluginInstall> =>
+			invokeCommand("import_plugin_dir", { path }),
+		setPluginEnabled: (
+			playset: string | null,
+			id: string,
+			enabled: boolean,
+			version: string | null,
+		): Promise<void> =>
+			invokeCommand("set_plugin_enabled", { playset, id, enabled, version }),
+		updatePluginConfig: (
+			playset: string | null,
+			id: string,
+			key: string,
+			value: boolean | number | string,
+		): Promise<void> =>
+			invokeCommand("update_plugin_config", { playset, id, key, value }),
+		launchEu4WithPlugins: (
+			playset: string | null,
+			prepareOnly: boolean,
+		): Promise<DesktopLaunchResult> =>
+			invokeCommand("launch_eu4_with_plugins", { playset, prepareOnly }),
+		getLaunchStatus: (runDir: string): Promise<DesktopLaunchStatus> =>
+			invokeCommand("get_launch_status", { runDir }),
+		getDesktopSettings: (): Promise<DesktopPreferences> =>
+			invokeCommand("get_desktop_settings"),
+		saveDesktopSettings: (
+			settings: DesktopSettingsInput,
+		): Promise<DesktopPreferences> =>
+			invokeCommand("save_desktop_settings", { settings }),
 	};
 }
 

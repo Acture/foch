@@ -8,7 +8,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from .binary import BinaryImage, read_binary
 from .models import Function, FunctionEvidence, Instruction, Reference
@@ -51,7 +51,7 @@ class GhidraSession:
 			raise ValueError("timeout must be positive")
 		validate_output_directory(self.image.path, self.installation, self.workspace)
 
-	def __enter__(self) -> GhidraSession:
+	def __enter__(self) -> Self:
 		import pyghidra
 		from pyghidra import HeadlessPyGhidraLauncher
 

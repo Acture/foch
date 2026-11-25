@@ -245,6 +245,123 @@ pub(crate) struct MergeUnitDetail {
 	pub(crate) notes: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DesktopPluginBadge {
+	Enabled,
+	Installed,
+	NotInstalled,
+	Conflict,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopConfigField {
+	pub(crate) key: String,
+	pub(crate) kind: String,
+	pub(crate) description: Option<String>,
+	pub(crate) value: serde_json::Value,
+	pub(crate) min: Option<i64>,
+	pub(crate) max: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopPluginEntry {
+	pub(crate) id: String,
+	pub(crate) name: String,
+	pub(crate) description: Option<String>,
+	pub(crate) installed_versions: Vec<String>,
+	pub(crate) selected_version: Option<String>,
+	pub(crate) enabled: bool,
+	pub(crate) install_spec: Option<String>,
+	pub(crate) declared_by_mods: Vec<String>,
+	pub(crate) required_by_mods: Vec<String>,
+	pub(crate) conflicts: Vec<String>,
+	pub(crate) config_fields: Vec<DesktopConfigField>,
+	pub(crate) badge: DesktopPluginBadge,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopPluginPlan {
+	pub(crate) launchable: bool,
+	pub(crate) order: Vec<String>,
+	pub(crate) errors: Vec<String>,
+	pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopPreferencesView {
+	pub(crate) transport: String,
+	pub(crate) mirror: String,
+	pub(crate) custom_mirrors: Vec<String>,
+	pub(crate) language: String,
+	pub(crate) effective_language: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopSettingsInput {
+	pub(crate) transport: String,
+	pub(crate) mirror: String,
+	#[serde(default)]
+	pub(crate) custom_mirrors: Vec<String>,
+	pub(crate) language: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopPluginOverview {
+	pub(crate) playset: String,
+	pub(crate) game_root: Option<String>,
+	pub(crate) game_version: Option<String>,
+	pub(crate) host_dll_available: bool,
+	pub(crate) host_dll_detail: String,
+	pub(crate) entries: Vec<DesktopPluginEntry>,
+	pub(crate) companion_warnings: Vec<String>,
+	pub(crate) plan: Option<DesktopPluginPlan>,
+	pub(crate) preferences: DesktopPreferencesView,
+	pub(crate) problems: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopPluginInstall {
+	pub(crate) id: String,
+	pub(crate) version: String,
+	pub(crate) source: String,
+	pub(crate) conflicts: Vec<String>,
+	pub(crate) already_present: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopLaunchResult {
+	pub(crate) run_dir: String,
+	pub(crate) plan_sha256: String,
+	pub(crate) prepared_only: bool,
+	pub(crate) pid: Option<u32>,
+	pub(crate) plugin_count: usize,
+	pub(crate) version_dll: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopPluginRuntimeState {
+	pub(crate) id: String,
+	pub(crate) state: String,
+	pub(crate) reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopLaunchStatus {
+	pub(crate) run_id: String,
+	pub(crate) plugins: Vec<DesktopPluginRuntimeState>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DesktopError {
