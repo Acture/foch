@@ -350,7 +350,12 @@ fn leaf_conflicts(
 				reason,
 			} => {
 				let address_path = address.path.join("/");
-				let ast_path = address.path.iter().map(String::as_str).collect::<Vec<_>>();
+				// The conflict sits at its own key, so classification binds
+				// the full address; the parent path alone leaves a root-level
+				// key without a CWT field and its kind unset.
+				let mut field_path = address.path.clone();
+				field_path.push(address.key.clone());
+				let ast_path = field_path.iter().map(String::as_str).collect::<Vec<_>>();
 				Some(LeafConflictDetail {
 					address_path: address_path.clone(),
 					address_key: address.key.clone(),

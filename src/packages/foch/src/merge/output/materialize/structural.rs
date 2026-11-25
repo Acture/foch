@@ -57,7 +57,15 @@ fn leaf_conflicts_for_semantic(
 		.map(|conflict| {
 			let (address_path, address_key) = split_semantic_path(&conflict.conflict.semantic_path);
 			let joined_path = address_path.join("/");
-			let ast_path = address_path.iter().map(String::as_str).collect::<Vec<_>>();
+			// The conflict sits at its own key, so classification binds the
+			// full address; the parent path alone leaves a root-level key
+			// without a CWT field and its kind unset.
+			let ast_path = conflict
+				.conflict
+				.semantic_path
+				.iter()
+				.map(String::as_str)
+				.collect::<Vec<_>>();
 			let mut contributors = conflict
 				.candidates
 				.iter()

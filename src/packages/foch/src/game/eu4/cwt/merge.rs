@@ -274,6 +274,25 @@ mod tests {
 		}
 	"#;
 
+	const NESTED_CARDINALITY_SCHEMA: &str = r#"
+		types = {
+			type[mission] = { path = "game/missions" }
+		}
+
+		mission = {
+			## cardinality = 1..1
+			required = scalar
+			stage = {
+				## cardinality = 0..1
+				target = scalar
+				## cardinality = 0..inf
+				note = scalar
+				## cardinality = 0..10
+				hint = scalar
+			}
+		}
+	"#;
+
 	#[test]
 	fn suggests_field_value_identity_from_name_field() {
 		let schema = test_schema(EVENT_SCHEMA);
@@ -343,6 +362,66 @@ mod tests {
 				"sibling mods inserted divergent statements at the same key"
 			),
 			Some(ConflictKind::SchemaCardinalityViolation)
+		);
+	}
+
+	#[test]
+	fn classifies_root_level_required_fields_as_schema_cardinality_violations() {
+		let schema = test_schema(NESTED_CARDINALITY_SCHEMA);
+		assert_eq!(
+			classify_conflict_kind_with_query(
+				schema.facts(),
+				game_path("missions/example.txt"),
+				&["required"],
+				"sibling mods inserted divergent statements at the same key"
+			),
+			Some(ConflictKind::SchemaCardinalityViolation)
+		);
+	}
+
+	#[test]
+	fn classifies_nested_single_cardinality_fields_as_schema_cardinality_violations() {
+		let schema = test_schema(NESTED_CARDINALITY_SCHEMA);
+		assert_eq!(
+			classify_conflict_kind_with_query(
+				schema.facts(),
+				game_path("missions/example.txt"),
+				&["stage", "target"],
+				"sibling mods inserted divergent statements at the same key"
+			),
+			Some(ConflictKind::SchemaCardinalityViolation)
+		);
+	}
+
+	#[test]
+	fn multi_cardinality_fields_are_not_schema_cardinality_violations() {
+		let schema = test_schema(NESTED_CARDINALITY_SCHEMA);
+		for field in ["note", "hint"] {
+			assert_eq!(
+				classify_conflict_kind_with_query(
+					schema.facts(),
+					game_path("missions/example.txt"),
+					&["stage", field],
+					"sibling mods inserted divergent statements at the same key"
+				),
+				None,
+				"{field} allows more than one value, so the conflict is not a cardinality violation"
+			);
+		}
+	}
+
+	#[test]
+	fn unmatched_fields_are_not_schema_cardinality_violations() {
+		let schema = test_schema(NESTED_CARDINALITY_SCHEMA);
+		assert_eq!(
+			classify_conflict_kind_with_query(
+				schema.facts(),
+				game_path("missions/example.txt"),
+				&["stage", "missing"],
+				"sibling mods inserted divergent statements at the same key"
+			),
+			None,
+			"a key the schema does not name carries no cardinality rule"
 		);
 	}
 
