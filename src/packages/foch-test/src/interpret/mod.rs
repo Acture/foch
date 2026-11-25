@@ -27,8 +27,8 @@ pub mod pins;
 
 use crate::lint::ProjectFacts;
 use crate::model::{
-	AiMode, CaseIndex, Clause, ContentId, DecisionInfo, EventId, EventInfo, GameDate, NativeBlock,
-	NodeId, RunId, ScriptedDef, ScriptedKind, Start, Step, Tag,
+	AiMode, CaseIndex, Clause, ContentId, DecisionInfo, EventId, EventInfo, EventKind, GameDate,
+	NativeBlock, NodeId, RunId, ScriptedDef, ScriptedKind, Start, Step, Tag,
 };
 use crate::plan::{NotRun, NotRunReason, Plan, PlannedCase};
 use crate::source::SourceSpan;
@@ -37,11 +37,12 @@ use foch::game::eu4::script::parser::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 
 pub use overlay::{
-	ContentLayer, CountrySlice, HistoryTimeline, LayerFile, ProvinceSlice, SubjectTypeSet,
-	SubjectWarPolicy, fold_history, overlay_decisions, overlay_history, overlay_subject_types,
+	ContentLayer, CoreEdit, CountrySlice, HistoryTimeline, LayerFile, ProvinceSlice,
+	SubjectTypeSet, SubjectWarPolicy, fold_history, overlay_decisions, overlay_history,
+	overlay_subject_types,
 };
 pub use pins::{EvidenceStatus, HandlerPin, SemanticsCatalog};
 
@@ -64,34 +65,88 @@ const MAX_SCRIPTED_DEPTH: u32 = 256;
 /// (`EFFECT_CONTROL`/`CONDITION_CONTROL`) are not catalog primitives and
 /// are not listed here.
 const BUILTIN_EFFECTS: &[&str] = &[
+	"add_base_manpower",
+	"add_base_production",
+	"add_base_tax",
+	"add_core",
+	"cede_province",
 	"change_variable",
 	"clr_country_flag",
 	"clr_global_flag",
+	"clr_province_flag",
 	"country_event",
 	"create_march",
 	"create_subject",
 	"create_union",
 	"create_vassal",
+	"every_owned_province",
+	"every_subject_country",
 	"grant_independence",
 	"log",
+	"province_event",
 	"random",
 	"release",
+	"remove_core",
 	"set_country_flag",
 	"set_global_flag",
+	"set_province_flag",
 	"set_variable",
 	"vassalize",
 ];
 const BUILTIN_TRIGGERS: &[&str] = &[
 	"always",
+	"any_owned_province",
+	"any_subject_country",
+	"base_manpower",
+	"base_production",
+	"base_tax",
 	"check_variable",
+	"controlled_by",
+	"development",
 	"has_country_flag",
 	"has_global_flag",
+	"has_province_flag",
 	"has_variable",
+	"is_core",
 	"is_subject",
 	"is_subject_of",
 	"is_subject_of_type",
+	"owned_by",
+	"owns",
+	"owns_core_province",
 	"tag",
 ];
+
+/// Province-only effects. A country scope refuses these instead of guessing.
+const PROVINCE_EFFECTS: &[&str] = &[
+	"add_base_manpower",
+	"add_base_production",
+	"add_base_tax",
+	"add_core",
+	"cede_province",
+	"clr_province_flag",
+	"province_event",
+	"remove_core",
+	"set_province_flag",
+];
+
+/// Province-only triggers.
+const PROVINCE_TRIGGERS: &[&str] = &[
+	"base_manpower",
+	"base_production",
+	"base_tax",
+	"controlled_by",
+	"development",
+	"has_province_flag",
+	"is_core",
+	"owned_by",
+];
+
+/// Effects that do not read or write the current country or province.
+const NEUTRAL_EFFECTS: &[&str] = &["clr_global_flag", "log", "random", "set_global_flag"];
+
+/// Triggers that do not read the current country or province.
+const NEUTRAL_TRIGGERS: &[&str] = &["always", "has_global_flag"];
 
 /// Whether `key` names a builtin primitive in this context.
 fn builtin(key: &str, context: Context) -> bool {
@@ -252,6 +307,17 @@ pub struct ProvinceSeed {
 	pub controller: Option<Tag>,
 	pub religion: Option<String>,
 	pub culture: Option<String>,
+	/// Absent when the history that applies never assigned the slot.
+	#[serde(default)]
+	pub base_tax: Option<i64>,
+	#[serde(default)]
+	pub base_production: Option<i64>,
+	#[serde(default)]
+	pub base_manpower: Option<i64>,
+	/// `None` means no applied slice mentioned `add_core` or `remove_core`.
+	/// An empty set is a known absence of cores.
+	#[serde(default)]
+	pub cores: Option<BTreeSet<Tag>>,
 }
 
 /// A country's scripted starting slots; `None` stays unknown until written.
@@ -261,6 +327,9 @@ pub struct SeededCountry {
 	pub culture: Option<String>,
 	pub government: Option<String>,
 	pub government_rank: Option<i64>,
+	/// `capital = <province id>` from country history. Absent when unseeded.
+	#[serde(default)]
+	pub capital: Option<u32>,
 }
 
 /// One case's offline verdict. Deliberately not a [`crate::judge::Status`].
@@ -288,14 +357,32 @@ pub struct ClauseFailure {
 	pub message: String,
 }
 
+/// A country serializes as its tag string. A province serializes as an object
+/// so an existing country trace still reads as `"scope": "SWE"`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ObservedScope {
+	Country(Tag),
+	Province { province: u32 },
+}
+
+impl fmt::Display for ObservedScope {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Country(tag) => write!(formatter, "{tag}"),
+			Self::Province { province } => write!(formatter, "province {province}"),
+		}
+	}
+}
+
 /// One observed moment of a model run: what the model did, on which
-/// calendar day, in which country's scope. The model knows its own state,
-/// so an offline run can report the whole trace — the one thing the online
-/// layer structurally cannot.
+/// calendar day, in which scope. The model knows its own state, so an
+/// offline run can report the whole trace — the one thing the online layer
+/// structurally cannot.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Observation {
 	pub date: GameDate,
-	pub scope: Tag,
+	pub scope: ObservedScope,
 	pub event: Observed,
 }
 
@@ -587,6 +674,11 @@ struct World {
 	numbers: BTreeMap<Tag, BTreeMap<&'static str, f64>>,
 	/// Subject → overlord and subject type. One country has at most one overlord.
 	subjects: BTreeMap<Tag, SubjectLink>,
+	/// Provinces the history overlay seeded, plus any a case effect has written.
+	/// A missing entry, or a `None` slot, is unknown: reads refuse.
+	provinces: BTreeMap<u32, ProvinceState>,
+	/// Country capitals seeded from history. Absent means `capital_scope` refuses.
+	capitals: BTreeMap<Tag, u32>,
 	/// Observer mode: the run trace, recorded only when asked for.
 	trace: Vec<Observation>,
 	recording: bool,
@@ -599,14 +691,21 @@ struct SubjectLink {
 }
 
 impl World {
-	fn note(&mut self, scope: &Tag, event: Observed) {
+	fn note(&mut self, scope: &ScopeRef, event: Observed) {
 		if self.recording {
 			self.trace.push(Observation {
 				date: self.date,
-				scope: scope.clone(),
+				scope: match scope {
+					ScopeRef::Country(tag) => ObservedScope::Country(tag.clone()),
+					ScopeRef::Province(id) => ObservedScope::Province { province: *id },
+				},
 				event,
 			});
 		}
+	}
+
+	fn note_tag(&mut self, tag: &Tag, event: Observed) {
+		self.note(&ScopeRef::Country(tag.clone()), event);
 	}
 }
 
@@ -614,6 +713,19 @@ impl World {
 struct CountryState {
 	flags: BTreeSet<String>,
 	variables: BTreeMap<String, f64>,
+}
+
+/// One province in the model. `None` slots were not seeded and have not been
+/// written; reading them refuses. Flags start empty, the same as country flags.
+#[derive(Default)]
+struct ProvinceState {
+	owner: Option<Tag>,
+	controller: Option<Tag>,
+	base_tax: Option<i64>,
+	base_production: Option<i64>,
+	base_manpower: Option<i64>,
+	cores: Option<BTreeSet<Tag>>,
+	flags: BTreeSet<String>,
 }
 
 impl World {
@@ -625,6 +737,48 @@ impl World {
 
 	fn country_mut(&mut self, tag: &Tag) -> &mut CountryState {
 		self.countries.entry(tag.clone()).or_default()
+	}
+
+	/// A province the case is writing. Creating the entry does not invent
+	/// owner, controller, bases, or cores; those stay `None` until seeded or set.
+	fn province_mut(&mut self, id: u32) -> &mut ProvinceState {
+		self.provinces.entry(id).or_default()
+	}
+
+	/// Add to a seeded base. An absent province or an absent slot refuses.
+	fn add_base(&mut self, id: u32, slot: &str, amount: i64) -> Result<(), String> {
+		let Some(province) = self.provinces.get_mut(&id) else {
+			return Err(format!("{slot} is unknown for province {id}"));
+		};
+		let cell = match slot {
+			"base_tax" => &mut province.base_tax,
+			"base_production" => &mut province.base_production,
+			"base_manpower" => &mut province.base_manpower,
+			_ => unreachable!("base slot {slot}"),
+		};
+		let Some(current) = cell else {
+			return Err(format!("{slot} is unknown for province {id}"));
+		};
+		*current += amount;
+		Ok(())
+	}
+
+	/// Provinces whose seeded or written owner is `tag`, in ascending id order.
+	fn owned_provinces(&self, tag: &Tag) -> Vec<u32> {
+		self.provinces
+			.iter()
+			.filter(|(_, province)| province.owner.as_ref() == Some(tag))
+			.map(|(id, _)| *id)
+			.collect()
+	}
+
+	/// Subjects of `tag`, in tag order.
+	fn subjects_of(&self, tag: &Tag) -> Vec<Tag> {
+		self.subjects
+			.iter()
+			.filter(|(_, link)| &link.overlord == tag)
+			.map(|(subject, _)| subject.clone())
+			.collect()
 	}
 
 	fn overlord_of(&self, tag: &Tag) -> Option<Tag> {
@@ -665,49 +819,90 @@ static MISSING_COUNTRY: CountryState = CountryState {
 	variables: BTreeMap::new(),
 };
 
-/// The country scope chain while executing: the current country, the
-/// enclosing one (`PREV`), the chain's root (`ROOT`, the case's start tag)
-/// and the country a fired event came from (`FROM`).
+/// One scope on the THIS/ROOT/PREV/FROM chain. Country and province scopes
+/// share the chain; a primitive still refuses the scope it does not belong to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ScopeRef {
+	Country(Tag),
+	Province(u32),
+}
+
+impl fmt::Display for ScopeRef {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Country(tag) => write!(formatter, "{tag}"),
+			Self::Province(id) => write!(formatter, "province {id}"),
+		}
+	}
+}
+
+/// The scope chain while executing. `ROOT` is the case's start country until
+/// a province event replaces it with the target province. `FROM` is the scope
+/// that fired the current event. `PREV` is the scope a block was entered from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ScopeCtx {
-	current: Tag,
-	prev: Option<Tag>,
-	root: Tag,
-	from: Option<Tag>,
+	current: ScopeRef,
+	prev: Option<ScopeRef>,
+	root: ScopeRef,
+	from: Option<ScopeRef>,
 }
 
 impl ScopeCtx {
 	fn start(tag: &Tag) -> Self {
+		let country = ScopeRef::Country(tag.clone());
 		Self {
-			current: tag.clone(),
+			current: country.clone(),
 			prev: None,
-			root: tag.clone(),
+			root: country,
 			from: None,
 		}
 	}
 
-	/// Enter a scope block targeting `tag`: PREV becomes the country left.
-	fn enter(&self, tag: &Tag) -> Self {
+	/// Enter a scope block targeting `scope`: PREV becomes the scope left.
+	fn enter(&self, scope: ScopeRef) -> Self {
 		Self {
-			current: tag.clone(),
+			current: scope,
 			prev: Some(self.current.clone()),
 			root: self.root.clone(),
 			from: self.from.clone(),
 		}
 	}
 
-	/// The scope a fired event runs in: the same country, with `FROM` set to
-	/// the firing scope's country and no enclosing `PREV`.
-	fn fired(&self, firing: &Tag) -> Self {
-		Self {
+	/// The scope a fired country event runs in: same country, `FROM` set to
+	/// the firing scope, `ROOT` unchanged, and no enclosing `PREV`.
+	fn fired_country(&self) -> Result<Self, String> {
+		let ScopeRef::Country(_) = &self.current else {
+			return Err(format!(
+				"country_event needs a country scope; the current scope is {}",
+				self.current
+			));
+		};
+		Ok(Self {
 			current: self.current.clone(),
 			prev: None,
 			root: self.root.clone(),
-			from: Some(firing.clone()),
-		}
+			from: Some(self.current.clone()),
+		})
 	}
 
-	fn resolve(&self, alias: &str) -> Option<Tag> {
+	/// The scope a fired province event runs in. `ROOT` is the target
+	/// province and `FROM` is the scope that executed `province_event`.
+	fn fired_province(&self) -> Result<Self, String> {
+		let ScopeRef::Province(_) = &self.current else {
+			return Err(format!(
+				"province_event needs a province scope; the current scope is {}",
+				self.current
+			));
+		};
+		Ok(Self {
+			current: self.current.clone(),
+			prev: None,
+			root: self.current.clone(),
+			from: Some(self.current.clone()),
+		})
+	}
+
+	fn resolve(&self, alias: &str) -> Option<ScopeRef> {
 		match alias {
 			"THIS" => Some(self.current.clone()),
 			"ROOT" => Some(self.root.clone()),
@@ -716,9 +911,27 @@ impl ScopeCtx {
 			_ => None,
 		}
 	}
+
+	fn tag(&self) -> &Tag {
+		match &self.current {
+			ScopeRef::Country(tag) => tag,
+			ScopeRef::Province(id) => {
+				unreachable!("province {id} was checked before a country primitive")
+			}
+		}
+	}
+
+	fn province(&self) -> u32 {
+		match &self.current {
+			ScopeRef::Province(id) => *id,
+			ScopeRef::Country(tag) => {
+				unreachable!("{tag} was checked before a province primitive")
+			}
+		}
+	}
 }
 
-/// What a scope-shaped key names: an alias or a country tag.
+/// What a scope-shaped key names.
 #[derive(Clone, Copy, PartialEq)]
 enum ScopeKey {
 	Alias(&'static str),
@@ -726,18 +939,34 @@ enum ScopeKey {
 	/// The current country's overlord. Resolved at execution; the scan still
 	/// walks the block, because whether a subject link exists is runtime state.
 	Overlord,
+	Province(u32),
+	Capital,
+	Owner,
+	Controller,
 }
 
 /// Whether `key` opens a scope block in this context. `NOT`/`AND` are logic
 /// keywords no country uses; `NOR` is Norway in effect blocks and logic in
 /// condition blocks, exactly as the lint's footprint over-approximation
-/// decides.
+/// decides. A numeric key is a province id, not a country.
 fn scope_key(key: &str, context: Context) -> Option<ScopeKey> {
 	if key == "overlord" {
 		return Some(ScopeKey::Overlord);
 	}
+	if key == "capital_scope" {
+		return Some(ScopeKey::Capital);
+	}
+	if key == "owner" {
+		return Some(ScopeKey::Owner);
+	}
+	if key == "controller" {
+		return Some(ScopeKey::Controller);
+	}
 	if let Some(alias) = ALIASES.iter().find(|alias| **alias == key) {
 		return Some(ScopeKey::Alias(alias));
+	}
+	if let Some(id) = province_id_key(key) {
+		return Some(ScopeKey::Province(id));
 	}
 	if matches!(key, "NOT" | "AND") {
 		return None;
@@ -748,29 +977,85 @@ fn scope_key(key: &str, context: Context) -> Option<ScopeKey> {
 	Tag::parse(key).is_ok().then_some(ScopeKey::Tag)
 }
 
-/// Static scope knowledge the scan carries, so PREV/FROM resolvability is
-/// refused before execution rather than mid-run.
-#[derive(Clone, Copy)]
+fn province_id_key(key: &str) -> Option<u32> {
+	if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_digit()) {
+		return None;
+	}
+	let id = key.parse::<u32>().ok()?;
+	(id >= 1).then_some(id)
+}
+
+/// Concrete kind of a scope, for the precheck. `Dynamic` is an alias whose
+/// country-or-province kind is only known once an event is fired.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+	Country,
+	Province,
+	Dynamic,
+}
+
+/// Static scope knowledge the scan carries, so PREV/FROM resolvability and
+/// country/province mismatches are refused before execution.
+#[derive(Clone)]
 struct ScanScope {
-	/// Scope blocks entered since the case or event body started.
-	depth: usize,
+	stack: Vec<ScopeKind>,
 	/// Whether execution is inside a fired event (so FROM resolves).
 	in_event: bool,
+	from_kind: ScopeKind,
+	root_kind: ScopeKind,
 }
 
 impl ScanScope {
-	fn enter(&self) -> Self {
+	fn case() -> Self {
 		Self {
-			depth: self.depth + 1,
-			in_event: self.in_event,
+			stack: vec![ScopeKind::Country],
+			in_event: false,
+			from_kind: ScopeKind::Dynamic,
+			root_kind: ScopeKind::Country,
 		}
 	}
 
-	fn event(&self) -> Self {
+	fn current(&self) -> ScopeKind {
+		self.stack.last().copied().unwrap_or(ScopeKind::Country)
+	}
+
+	fn enter_kind(mut self, kind: ScopeKind) -> Self {
+		self.stack.push(kind);
+		self
+	}
+
+	fn enter_alias(self, alias: &str) -> Self {
+		let kind = match alias {
+			"THIS" => self.current(),
+			"ROOT" => self.root_kind,
+			"PREV" => self
+				.stack
+				.iter()
+				.rev()
+				.nth(1)
+				.copied()
+				.unwrap_or(ScopeKind::Dynamic),
+			"FROM" => self.from_kind,
+			_ => ScopeKind::Dynamic,
+		};
+		self.enter_kind(kind)
+	}
+
+	fn for_event(kind: EventKind) -> Self {
+		let scope_kind = match kind {
+			EventKind::Country => ScopeKind::Country,
+			EventKind::Province => ScopeKind::Province,
+		};
 		Self {
-			depth: 0,
+			stack: vec![scope_kind],
 			in_event: true,
+			from_kind: ScopeKind::Dynamic,
+			root_kind: scope_kind,
 		}
+	}
+
+	fn prev_known(&self) -> bool {
+		self.stack.len() > 1
 	}
 }
 
@@ -871,6 +1156,8 @@ impl<'a> Interpreter<'a> {
 			named: BTreeSet::from([case.start.tag.clone()]),
 			numbers: BTreeMap::new(),
 			subjects: BTreeMap::new(),
+			provinces: BTreeMap::new(),
+			capitals: BTreeMap::new(),
 			trace: Vec::new(),
 			recording: self.observe,
 		};
@@ -897,10 +1184,27 @@ impl<'a> Interpreter<'a> {
 				if let Some(rank) = country.government_rank {
 					world.government_ranks.insert(tag.clone(), rank);
 				}
+				if let Some(capital) = country.capital {
+					world.capitals.insert(tag.clone(), capital);
+				}
+			}
+			for (id, province) in &seed.provinces {
+				world.provinces.insert(
+					*id,
+					ProvinceState {
+						owner: province.owner.clone(),
+						controller: province.controller.clone(),
+						base_tax: province.base_tax,
+						base_production: province.base_production,
+						base_manpower: province.base_manpower,
+						cores: province.cores.clone(),
+						flags: BTreeSet::new(),
+					},
+				);
 			}
 			world.named.extend(seed.tags.iter().cloned());
 		}
-		world.note(&case.start.tag, Observed::CaseStart);
+		world.note_tag(&case.start.tag, Observed::CaseStart);
 		let root = ScopeCtx::start(&case.start.tag);
 		let mut failures = Vec::new();
 		let mut passed = Vec::new();
@@ -968,7 +1272,7 @@ impl<'a> Interpreter<'a> {
 				Step::Reload { .. } => "reload",
 				Step::ExpectReceipt { .. } => "expect_receipt",
 			};
-			world.note(
+			world.note_tag(
 				&case.start.tag,
 				Observed::Step {
 					index: step,
@@ -1042,7 +1346,7 @@ impl<'a> Interpreter<'a> {
 							*value += amount;
 							*value
 						};
-						world.note(
+						world.note_tag(
 							&case.start.tag,
 							Observed::SlotSet {
 								slot: slot.into(),
@@ -1054,7 +1358,7 @@ impl<'a> Interpreter<'a> {
 						// The model has no AI, fog or console to run it on;
 						// the note says so, the runner passes the line
 						// through and the game answers for itself.
-						world.note(
+						world.note_tag(
 							&case.start.tag,
 							Observed::SlotSet {
 								slot: "cheat".into(),
@@ -1269,7 +1573,10 @@ impl<'a> Interpreter<'a> {
 			if key == "immediate"
 				&& let AstValue::Block { items, .. } = value
 			{
-				let fired = ctx.fired(&ctx.current);
+				let fired = match info.kind {
+					EventKind::Country => ctx.fired_country()?,
+					EventKind::Province => ctx.fired_province()?,
+				};
 				self.exec_statements(world, &fired, &items, &info.origin, visited)?;
 			}
 		}
@@ -1279,37 +1586,34 @@ impl<'a> Interpreter<'a> {
 	/// Collect every reason the case cannot be interpreted, before running
 	/// anything, so a refusal lists all of its causes at once.
 	fn scan_case(&self, planned: &PlannedCase, reasons: &mut Vec<String>) {
-		let scope = ScanScope {
-			depth: 0,
-			in_event: false,
-		};
+		let scope = ScanScope::case();
 		// Event bodies already scanned: each is validated once per case, so
 		// chains (including delayed ones) cannot recurse forever. Immediate
 		// cycles are refused at execution, with the same message.
 		let mut seen = BTreeSet::new();
 		for fixture in &planned.fixtures {
 			if let Some(block) = &fixture.effect {
-				self.scan_block(block, Context::Effect, scope, &mut seen, reasons);
+				self.scan_block(block, Context::Effect, scope.clone(), &mut seen, reasons);
 			}
 			for clause in &fixture.check {
-				self.scan_clause(clause, scope, &mut seen, reasons);
+				self.scan_clause(clause, scope.clone(), &mut seen, reasons);
 			}
 		}
 		for step in &planned.case.steps {
 			match step {
 				Step::Effect { block } => {
-					self.scan_block(block, Context::Effect, scope, &mut seen, reasons)
+					self.scan_block(block, Context::Effect, scope.clone(), &mut seen, reasons)
 				}
 				Step::Expect { clauses } => {
 					for clause in clauses {
-						self.scan_clause(clause, scope, &mut seen, reasons);
+						self.scan_clause(clause, scope.clone(), &mut seen, reasons);
 					}
 				}
 				Step::Fire { event, span } => {
-					self.scan_event(event, span, scope, &mut seen, reasons);
+					self.scan_event(event, span, EventKind::Country, &mut seen, reasons);
 				}
 				Step::TakeDecision { name, span } => {
-					self.scan_decision(name, span, scope, &mut seen, reasons);
+					self.scan_decision(name, span, scope.clone(), &mut seen, reasons);
 				}
 				// Cheats pass the scan unmolested; mapped commands that
 				// are malformed surface at execution with the reason.
@@ -1371,7 +1675,7 @@ impl<'a> Interpreter<'a> {
 		&self,
 		event: &EventId,
 		span: &SourceSpan,
-		scope: ScanScope,
+		expected: EventKind,
 		seen: &mut BTreeSet<String>,
 		reasons: &mut Vec<String>,
 	) {
@@ -1384,6 +1688,16 @@ impl<'a> Interpreter<'a> {
 			));
 			return;
 		};
+		if info.kind != expected {
+			let (found, effect) = match info.kind {
+				EventKind::Province => ("province event", "province_event"),
+				EventKind::Country => ("country event", "country_event"),
+			};
+			reasons.push(format!(
+				"{span}: {event} is a {found}; fire it with {effect} from a matching scope"
+			));
+			return;
+		}
 		if !info.invocable {
 			reasons.push(format!(
 				"{span}: {event} must declare hidden = yes and is_triggered_only = yes to be fired"
@@ -1402,7 +1716,7 @@ impl<'a> Interpreter<'a> {
 					&items,
 					&info.origin,
 					Context::Effect,
-					scope.event(),
+					ScanScope::for_event(info.kind),
 					seen,
 					reasons,
 				);
@@ -1437,12 +1751,12 @@ impl<'a> Interpreter<'a> {
 							..
 						},
 					..
-				} => self.scan_scripted_name(name, context, scope, where_, seen, reasons),
+				} => self.scan_scripted_name(name, context, scope.clone(), where_, seen, reasons),
 				AstStatement::Item { .. } => reasons.push(format!(
 					"{where_}: a statement without a key cannot be interpreted offline"
 				)),
 				AstStatement::Assignment { key, value, .. } => {
-					self.scan_assignment(key, value, context, scope, where_, seen, reasons)
+					self.scan_assignment(key, value, context, scope.clone(), where_, seen, reasons)
 				}
 			}
 		}
@@ -1479,19 +1793,49 @@ impl<'a> Interpreter<'a> {
 				reasons.push(format!("{where_}: {key} must open a scope block"));
 				return;
 			};
-			if let ScopeKey::Alias(alias) = target {
-				let resolvable = match alias {
-					"PREV" => scope.depth > 0,
-					"FROM" => scope.in_event,
-					_ => true,
-				};
-				if !resolvable {
-					reasons.push(format!(
-						"{where_}: {alias} has no scope to name at this position"
-					));
+			let next = match target {
+				ScopeKey::Alias(alias) => {
+					let resolvable = match alias {
+						"PREV" => scope.prev_known(),
+						"FROM" => scope.in_event,
+						_ => true,
+					};
+					if !resolvable {
+						reasons.push(format!(
+							"{where_}: {alias} has no scope to name at this position"
+						));
+					}
+					scope.enter_alias(alias)
 				}
-			}
-			self.scan_statements(items, where_, context, scope.enter(), seen, reasons);
+				ScopeKey::Tag | ScopeKey::Overlord => {
+					if matches!(target, ScopeKey::Overlord)
+						&& scope.current() == ScopeKind::Province
+					{
+						reasons.push(format!(
+							"{where_}: overlord is a country scope change and the current scope is a province"
+						));
+					}
+					scope.enter_kind(ScopeKind::Country)
+				}
+				ScopeKey::Province(_) => scope.enter_kind(ScopeKind::Province),
+				ScopeKey::Capital => {
+					if scope.current() == ScopeKind::Province {
+						reasons.push(format!(
+							"{where_}: capital_scope is a country scope change and the current scope is a province"
+						));
+					}
+					scope.enter_kind(ScopeKind::Province)
+				}
+				ScopeKey::Owner | ScopeKey::Controller => {
+					if scope.current() == ScopeKind::Country {
+						reasons.push(format!(
+							"{where_}: {key} is a province scope change and the current scope is a country"
+						));
+					}
+					scope.enter_kind(ScopeKind::Country)
+				}
+			};
+			self.scan_statements(items, where_, context, next, seen, reasons);
 			return;
 		}
 		if context == Context::Effect && key == "random" {
@@ -1518,26 +1862,60 @@ impl<'a> Interpreter<'a> {
 			}
 			return;
 		}
-		if context == Context::Effect && key == "country_event" {
+		if let Some(message) = scope_mismatch(key, context, scope.current()) {
+			reasons.push(format!("{where_}: {message}"));
+		}
+		if context == Context::Effect && (key == "country_event" || key == "province_event") {
 			if let Err(reason) = self.catalog.permits(key) {
 				reasons.push(self.refusal(key, &reason, context, where_));
 			} else {
-				self.scan_country_event(value, where_, scope, seen, reasons);
+				let expected = if key == "province_event" {
+					EventKind::Province
+				} else {
+					EventKind::Country
+				};
+				self.scan_fired_event(key, value, where_, expected, seen, reasons);
 			}
 			return;
 		}
-		if context == Context::Effect && key == "every_country" {
+		if context == Context::Effect
+			&& matches!(
+				key,
+				"every_country" | "every_owned_province" | "every_subject_country"
+			) {
 			// The pin gate applies to the iterator itself and to every
-			// statement inside it. A missing handler on `every_country` does
-			// not skip the nested check: the precheck lists every reason.
+			// statement inside it. A missing handler does not skip the nested
+			// check: the precheck lists every reason.
 			if let Err(reason) = self.catalog.permits(key) {
 				reasons.push(self.refusal(key, &reason, context, where_));
 			}
 			let AstValue::Block { items, .. } = value else {
-				reasons.push(format!("{where_}: every_country must be a block"));
+				reasons.push(format!("{where_}: {key} must be a block"));
 				return;
 			};
-			self.scan_every_country(items, where_, scope, seen, reasons);
+			let inner = match key {
+				"every_owned_province" => scope.clone().enter_kind(ScopeKind::Province),
+				_ => scope.clone().enter_kind(ScopeKind::Country),
+			};
+			self.scan_limited(items, key, Context::Effect, inner, where_, seen, reasons);
+			return;
+		}
+		if context == Context::Condition
+			&& matches!(key, "any_owned_province" | "any_subject_country")
+		{
+			if let Err(reason) = self.catalog.permits(key) {
+				reasons.push(self.refusal(key, &reason, context, where_));
+			}
+			let AstValue::Block { items, .. } = value else {
+				reasons.push(format!("{where_}: {key} must be a block"));
+				return;
+			};
+			let inner = if key == "any_owned_province" {
+				scope.clone().enter_kind(ScopeKind::Province)
+			} else {
+				scope.clone().enter_kind(ScopeKind::Country)
+			};
+			self.scan_limited(items, key, Context::Condition, inner, where_, seen, reasons);
 			return;
 		}
 		if let Some(definition) = self.scripted_in(key, context) {
@@ -1633,7 +2011,7 @@ impl<'a> Interpreter<'a> {
 					items,
 					&decision.origin,
 					Context::Effect,
-					scope,
+					scope.clone(),
 					seen,
 					reasons,
 				);
@@ -1642,7 +2020,7 @@ impl<'a> Interpreter<'a> {
 					items,
 					&decision.origin,
 					Context::Condition,
-					scope,
+					scope.clone(),
 					seen,
 					reasons,
 				);
@@ -1734,30 +2112,33 @@ impl<'a> Interpreter<'a> {
 			.copied()
 	}
 
-	/// A `country_event = { id = ... days = ... }` effect: the target must be
-	/// a collected invocable event, whose immediate content is scanned too.
-	fn scan_country_event(
+	/// A `country_event` or `province_event` effect: the target must be a
+	/// collected invocable event of that kind, whose immediate content is scanned too.
+	fn scan_fired_event(
 		&self,
+		key: &str,
 		value: &AstValue,
 		where_: &SourceSpan,
-		scope: ScanScope,
+		expected: EventKind,
 		seen: &mut BTreeSet<String>,
 		reasons: &mut Vec<String>,
 	) {
-		match country_event_args(value) {
-			Ok(args) => self.scan_event(&args.event, where_, scope, seen, reasons),
+		match event_args(key, value) {
+			Ok(args) => self.scan_event(&args.event, where_, expected, seen, reasons),
 			Err(reason) => reasons.push(format!("{where_}: {reason}")),
 		}
 	}
 
-	/// `every_country`: `limit` is a condition (zero or one), the rest are
-	/// effects. Both are scanned even when the iterator itself failed the
-	/// pin gate.
-	fn scan_every_country(
+	/// An iterator block: `limit` is a condition (zero or one), and the rest
+	/// use `body`. Both are scanned in `inner`, the scope each iteration enters.
+	#[allow(clippy::too_many_arguments)]
+	fn scan_limited(
 		&self,
 		items: &[AstStatement],
+		key: &str,
+		body: Context,
+		inner: ScanScope,
 		where_: &SourceSpan,
-		scope: ScanScope,
 		seen: &mut BTreeSet<String>,
 		reasons: &mut Vec<String>,
 	) {
@@ -1771,22 +2152,27 @@ impl<'a> Interpreter<'a> {
 						reasons.push(format!("{where_}: limit must be a block"));
 						continue;
 					};
-					self.scan_statements(items, where_, Context::Condition, scope, seen, reasons);
+					self.scan_statements(
+						items,
+						where_,
+						Context::Condition,
+						inner.clone(),
+						seen,
+						reasons,
+					);
 				}
 				other => self.scan_statements(
 					std::slice::from_ref(other),
 					where_,
-					Context::Effect,
-					scope,
+					body,
+					inner.clone(),
 					seen,
 					reasons,
 				),
 			}
 		}
 		if limits > 1 {
-			reasons.push(format!(
-				"{where_}: every_country needs exactly one limit block"
-			));
+			reasons.push(format!("{where_}: {key} needs exactly one limit block"));
 		}
 	}
 
@@ -1810,13 +2196,20 @@ impl<'a> Interpreter<'a> {
 						reasons.push(format!("{where_}: limit must be a block"));
 						continue;
 					};
-					self.scan_statements(items, where_, Context::Condition, scope, seen, reasons);
+					self.scan_statements(
+						items,
+						where_,
+						Context::Condition,
+						scope.clone(),
+						seen,
+						reasons,
+					);
 				}
 				other => self.scan_statements(
 					std::slice::from_ref(other),
 					where_,
 					Context::Effect,
-					scope,
+					scope.clone(),
 					seen,
 					reasons,
 				),
@@ -2020,18 +2413,13 @@ impl<'a> Interpreter<'a> {
 			let AstValue::Block { items, .. } = value else {
 				return Err(format!("{where_}: {key} must open a scope block"));
 			};
-			let tag = match target {
-				ScopeKey::Alias(alias) => ctx.resolve(alias).ok_or_else(|| {
-					format!("{where_}: {alias} has no scope to name at this position")
-				})?,
-				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
-				ScopeKey::Overlord => match world.overlord_of(&ctx.current) {
-					Some(overlord) => overlord,
-					None => return Ok(()),
-				},
+			let Some(scope) = open_scope(world, ctx, key, target, where_)? else {
+				return Ok(());
 			};
-			world.named.insert(tag.clone());
-			return self.exec_statements(world, &ctx.enter(&tag), items, where_, visited);
+			if let ScopeRef::Country(tag) = &scope {
+				world.named.insert(tag.clone());
+			}
+			return self.exec_statements(world, &ctx.enter(scope), items, where_, visited);
 		}
 		// The primitive that actually runs honors the handler gate; the scan
 		// is not the only line of defense. The static table decides what is
@@ -2041,6 +2429,9 @@ impl<'a> Interpreter<'a> {
 			self.catalog
 				.permits(key)
 				.map_err(|reason| format!("{where_}: {reason}"))?;
+		}
+		if let Some(message) = scope_mismatch(key, Context::Effect, concrete_kind(&ctx.current)) {
+			return Err(format!("{where_}: {message}"));
 		}
 		match key {
 			"set_country_flag" | "clr_country_flag" => {
@@ -2053,10 +2444,7 @@ impl<'a> Interpreter<'a> {
 							flag: flag.to_string(),
 						},
 					);
-					world
-						.country_mut(&ctx.current)
-						.flags
-						.insert(flag.to_string());
+					world.country_mut(ctx.tag()).flags.insert(flag.to_string());
 				} else {
 					world.note(
 						&ctx.current,
@@ -2064,7 +2452,7 @@ impl<'a> Interpreter<'a> {
 							flag: flag.to_string(),
 						},
 					);
-					world.country_mut(&ctx.current).flags.remove(flag);
+					world.country_mut(ctx.tag()).flags.remove(flag);
 				}
 			}
 			"set_global_flag" | "clr_global_flag" => {
@@ -2092,7 +2480,7 @@ impl<'a> Interpreter<'a> {
 				let (which, amount) = variable_args(value)
 					.ok_or_else(|| format!("{where_}: {key} needs which = ... and value = ..."))?;
 				let value = {
-					let country = world.country_mut(&ctx.current);
+					let country = world.country_mut(ctx.tag());
 					if key == "set_variable" {
 						country.variables.insert(which.to_string(), amount);
 					} else {
@@ -2120,7 +2508,7 @@ impl<'a> Interpreter<'a> {
 				};
 				let slot = number_effect(other).expect("checked above");
 				let current = {
-					let slots = world.numbers.entry(ctx.current.clone()).or_default();
+					let slots = world.numbers.entry(ctx.tag().clone()).or_default();
 					let value = slots.entry(slot).or_insert(0.0);
 					*value += amount;
 					*value
@@ -2154,14 +2542,14 @@ impl<'a> Interpreter<'a> {
 				world.named.insert(who.clone());
 				world
 					.wars
-					.entry(ctx.current.clone())
+					.entry(ctx.tag().clone())
 					.or_default()
 					.insert(who.clone());
 				world
 					.wars_against
 					.entry(who.clone())
 					.or_default()
-					.insert(ctx.current.clone());
+					.insert(ctx.tag().clone());
 				world.note(
 					&ctx.current,
 					Observed::WarChanged {
@@ -2177,17 +2565,17 @@ impl<'a> Interpreter<'a> {
 				)
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 				world.named.insert(other.clone());
-				if let Some(set) = world.wars.get_mut(&ctx.current) {
+				if let Some(set) = world.wars.get_mut(ctx.tag()) {
 					set.remove(&other);
 				}
 				if let Some(set) = world.wars.get_mut(&other) {
-					set.remove(&ctx.current);
+					set.remove(ctx.tag());
 				}
-				if let Some(set) = world.wars_against.get_mut(&ctx.current) {
+				if let Some(set) = world.wars_against.get_mut(ctx.tag()) {
 					set.remove(&other);
 				}
 				if let Some(set) = world.wars_against.get_mut(&other) {
-					set.remove(&ctx.current);
+					set.remove(ctx.tag());
 				}
 				world.note(
 					&ctx.current,
@@ -2204,7 +2592,7 @@ impl<'a> Interpreter<'a> {
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 				world.named.insert(other.clone());
 				let allied = key == "create_alliance";
-				let set = world.alliances.entry(ctx.current.clone()).or_default();
+				let set = world.alliances.entry(ctx.tag().clone()).or_default();
 				if allied {
 					set.insert(other.clone());
 				} else {
@@ -2212,9 +2600,9 @@ impl<'a> Interpreter<'a> {
 				}
 				let set = world.alliances.entry(other.clone()).or_default();
 				if allied {
-					set.insert(ctx.current.clone());
+					set.insert(ctx.tag().clone());
 				} else {
-					set.remove(&ctx.current);
+					set.remove(ctx.tag());
 				}
 				world.note(
 					&ctx.current,
@@ -2234,9 +2622,9 @@ impl<'a> Interpreter<'a> {
 					.ok_or_else(|| format!("{where_}: {key} needs a name"))?
 					.to_string();
 				match slot.0 {
-					"religions" => world.religions.insert(ctx.current.clone(), value.clone()),
-					"cultures" => world.cultures.insert(ctx.current.clone(), value.clone()),
-					_ => world.governments.insert(ctx.current.clone(), value.clone()),
+					"religions" => world.religions.insert(ctx.tag().clone(), value.clone()),
+					"cultures" => world.cultures.insert(ctx.tag().clone(), value.clone()),
+					_ => world.governments.insert(ctx.tag().clone(), value.clone()),
 				};
 				world.note(
 					&ctx.current,
@@ -2256,7 +2644,7 @@ impl<'a> Interpreter<'a> {
 						.map_err(|_| format!("{where_}: set_government_rank needs a number"))?,
 					_ => return Err(format!("{where_}: set_government_rank needs a number")),
 				};
-				world.government_ranks.insert(ctx.current.clone(), rank);
+				world.government_ranks.insert(ctx.tag().clone(), rank);
 				world.note(
 					&ctx.current,
 					Observed::SlotSet {
@@ -2271,7 +2659,7 @@ impl<'a> Interpreter<'a> {
 				})?;
 				self.require_subject_type(&kind, where_)?;
 				world
-					.link_subject(subject, ctx.current.clone(), kind)
+					.link_subject(subject, ctx.tag().clone(), kind)
 					.map_err(|reason| format!("{where_}: {reason}"))?;
 			}
 			"create_vassal" | "vassalize" | "release" => {
@@ -2281,7 +2669,7 @@ impl<'a> Interpreter<'a> {
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 				self.require_subject_type("vassal", where_)?;
 				world
-					.link_subject(subject, ctx.current.clone(), "vassal".into())
+					.link_subject(subject, ctx.tag().clone(), "vassal".into())
 					.map_err(|reason| format!("{where_}: {reason}"))?;
 			}
 			"create_march" => {
@@ -2292,7 +2680,7 @@ impl<'a> Interpreter<'a> {
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 				self.require_subject_type("march", where_)?;
 				world
-					.link_subject(subject, ctx.current.clone(), "march".into())
+					.link_subject(subject, ctx.tag().clone(), "march".into())
 					.map_err(|reason| format!("{where_}: {reason}"))?;
 			}
 			"create_union" => {
@@ -2303,7 +2691,7 @@ impl<'a> Interpreter<'a> {
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 				self.require_subject_type("personal_union", where_)?;
 				world
-					.link_subject(subject, ctx.current.clone(), "personal_union".into())
+					.link_subject(subject, ctx.tag().clone(), "personal_union".into())
 					.map_err(|reason| format!("{where_}: {reason}"))?;
 			}
 			"grant_independence" => {
@@ -2313,7 +2701,7 @@ impl<'a> Interpreter<'a> {
 					)
 				})?;
 				if free {
-					world.subjects.remove(&ctx.current);
+					world.subjects.remove(ctx.tag());
 				}
 			}
 			"every_country" => {
@@ -2344,15 +2732,115 @@ impl<'a> Interpreter<'a> {
 				// The model world holds only the countries the case has
 				// named; that is what this iteration covers.
 				for tag in world.named.clone() {
-					let scope = ctx.enter(&tag);
+					let scope = ctx.enter(ScopeRef::Country(tag));
 					if limit.is_empty() || self.eval_statements(world, &scope, &limit, where_, 0)? {
 						self.exec_statements(world, &scope, &body, where_, visited)?;
 					}
 				}
 			}
-			"country_event" => {
+			"set_province_flag" | "clr_province_flag" => {
+				let id = ctx.province();
+				let flag =
+					name_of(value).ok_or_else(|| format!("{where_}: {key} needs a flag name"))?;
+				let province = world.province_mut(id);
+				if key == "set_province_flag" {
+					province.flags.insert(flag.to_string());
+				} else {
+					province.flags.remove(flag);
+				}
+			}
+			"add_base_tax" | "add_base_production" | "add_base_manpower" => {
+				let id = ctx.province();
+				let amount = integer_amount(value)
+					.ok_or_else(|| format!("{where_}: {key} needs an integer"))?;
+				let slot = match key {
+					"add_base_tax" => "base_tax",
+					"add_base_production" => "base_production",
+					_ => "base_manpower",
+				};
+				world
+					.add_base(id, slot, amount)
+					.map_err(|reason| format!("{where_}: {reason}"))?;
+			}
+			"cede_province" => {
+				let id = ctx.province();
+				let target = country_operand(ctx, value, key, where_)?;
+				world.named.insert(target.clone());
+				let province = world.province_mut(id);
+				province.owner = Some(target.clone());
+				province.controller = Some(target);
+			}
+			"add_core" => {
+				let id = ctx.province();
+				let target = country_operand(ctx, value, key, where_)?;
+				world.named.insert(target.clone());
+				world
+					.province_mut(id)
+					.cores
+					.get_or_insert_with(BTreeSet::new)
+					.insert(target);
+			}
+			"remove_core" => {
+				let id = ctx.province();
+				let target = country_operand(ctx, value, key, where_)?;
+				let cores = world
+					.provinces
+					.get_mut(&id)
+					.and_then(|province| province.cores.as_mut())
+					.ok_or_else(|| format!("{where_}: cores are unknown for province {id}"))?;
+				cores.remove(&target);
+			}
+			"every_owned_province" | "every_subject_country" => {
+				let (limit, body) = iterator_parts(value, key, where_)?;
+				let scopes = match key {
+					"every_owned_province" => world
+						.owned_provinces(ctx.tag())
+						.into_iter()
+						.map(ScopeRef::Province)
+						.collect::<Vec<_>>(),
+					_ => world
+						.subjects_of(ctx.tag())
+						.into_iter()
+						.map(ScopeRef::Country)
+						.collect(),
+				};
+				for scope in scopes {
+					let entered = ctx.enter(scope);
+					if limit.is_empty()
+						|| self.eval_statements(world, &entered, &limit, where_, 0)?
+					{
+						self.exec_statements(world, &entered, &body, where_, visited)?;
+					}
+				}
+			}
+			"country_event" | "province_event" => {
 				let args =
-					country_event_args(value).map_err(|reason| format!("{where_}: {reason}"))?;
+					event_args(key, value).map_err(|reason| format!("{where_}: {reason}"))?;
+				let kind = self
+					.events
+					.get(&args.event)
+					.map(|info| info.kind)
+					.ok_or_else(|| {
+						format!(
+							"{where_}: fires {}, whose body was not collected",
+							args.event
+						)
+					})?;
+				let expected = if key == "province_event" {
+					EventKind::Province
+				} else {
+					EventKind::Country
+				};
+				if kind != expected {
+					let (found, effect) = match kind {
+						EventKind::Province => ("province event", "province_event"),
+						EventKind::Country => ("country event", "country_event"),
+					};
+					return Err(format!(
+						"{where_}: {} is a {found}; fire it with {effect} from a matching scope",
+						args.event
+					));
+				}
 				if args.days == 0 {
 					self.fire_event(world, ctx, &args.event, visited)?;
 				} else {
@@ -2367,7 +2855,11 @@ impl<'a> Interpreter<'a> {
 							due,
 						},
 					);
-					let fired = ctx.fired(&ctx.current);
+					let fired = match kind {
+						EventKind::Country => ctx.fired_country(),
+						EventKind::Province => ctx.fired_province(),
+					}
+					.map_err(|reason| format!("{where_}: {reason}"))?;
 					world
 						.scheduled
 						.entry(due)
@@ -2502,17 +2994,10 @@ impl<'a> Interpreter<'a> {
 			let AstValue::Block { items, .. } = value else {
 				return Err(format!("{where_}: {key} must open a scope block"));
 			};
-			let tag = match target {
-				ScopeKey::Alias(alias) => ctx.resolve(alias).ok_or_else(|| {
-					format!("{where_}: {alias} has no scope to name at this position")
-				})?,
-				ScopeKey::Tag => Tag::parse(key).expect("scope keys parse as tags"),
-				ScopeKey::Overlord => match world.overlord_of(&ctx.current) {
-					Some(overlord) => overlord,
-					None => return Ok(false),
-				},
+			let Some(scope) = open_scope(world, ctx, key, target, where_)? else {
+				return Ok(false);
 			};
-			return self.eval_statements(world, &ctx.enter(&tag), items, where_, depth + 1);
+			return self.eval_statements(world, &ctx.enter(scope), items, where_, depth + 1);
 		}
 		// Same gate as execution: the trigger that actually decides honors
 		// the handler evidence, not only the scan that approved the plan —
@@ -2522,7 +3007,10 @@ impl<'a> Interpreter<'a> {
 				.permits(key)
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 		}
-		let country = world.country(&ctx.current);
+		if let Some(message) = scope_mismatch(key, Context::Condition, concrete_kind(&ctx.current))
+		{
+			return Err(format!("{where_}: {message}"));
+		}
 		Ok(match key {
 			"always" => {
 				boolean(value).ok_or_else(|| format!("{where_}: always needs yes or no"))?
@@ -2530,7 +3018,7 @@ impl<'a> Interpreter<'a> {
 			"has_country_flag" => {
 				let flag = name_of(value)
 					.ok_or_else(|| format!("{where_}: has_country_flag needs a flag name"))?;
-				country.flags.contains(flag)
+				world.country(ctx.tag()).flags.contains(flag)
 			}
 			"has_global_flag" => {
 				let flag = name_of(value)
@@ -2540,19 +3028,24 @@ impl<'a> Interpreter<'a> {
 			"has_variable" => {
 				let name = name_of(value)
 					.ok_or_else(|| format!("{where_}: has_variable needs a variable name"))?;
-				country.variables.contains_key(name)
+				world.country(ctx.tag()).variables.contains_key(name)
 			}
 			"check_variable" => {
 				let (which, wanted) = variable_args(value).ok_or_else(|| {
 					format!("{where_}: check_variable needs which = ... and value = ...")
 				})?;
-				let observed = country.variables.get(which).copied().unwrap_or(0.0);
+				let observed = world
+					.country(ctx.tag())
+					.variables
+					.get(which)
+					.copied()
+					.unwrap_or(0.0);
 				observed >= wanted
 			}
 			"tag" => {
 				let wanted =
 					name_of(value).ok_or_else(|| format!("{where_}: tag needs a country tag"))?;
-				ctx.current.as_str() == wanted
+				ctx.tag().as_str() == wanted
 			}
 			other if number_trigger(other).is_some() => {
 				let wanted = match value {
@@ -2567,7 +3060,7 @@ impl<'a> Interpreter<'a> {
 				let slot = number_trigger(other).expect("checked above");
 				let observed = world
 					.numbers
-					.get(&ctx.current)
+					.get(ctx.tag())
 					.and_then(|slots| slots.get(slot))
 					.copied()
 					.unwrap_or(0.0);
@@ -2584,12 +3077,12 @@ impl<'a> Interpreter<'a> {
 				if key == "offensive_war_with" {
 					world
 						.wars
-						.get(&ctx.current)
+						.get(ctx.tag())
 						.is_some_and(|set| set.contains(&other))
 				} else {
 					world
 						.wars_against
-						.get(&ctx.current)
+						.get(ctx.tag())
 						.is_some_and(|set| set.contains(&other))
 				}
 			}
@@ -2597,20 +3090,17 @@ impl<'a> Interpreter<'a> {
 				let wanted =
 					boolean(value).ok_or_else(|| format!("{where_}: is_at_war needs yes or no"))?;
 				// Either side of any war: a defender is at war too.
-				let at_war = world
-					.wars
-					.get(&ctx.current)
-					.is_some_and(|set| !set.is_empty())
+				let at_war = world.wars.get(ctx.tag()).is_some_and(|set| !set.is_empty())
 					|| world
 						.wars_against
-						.get(&ctx.current)
+						.get(ctx.tag())
 						.is_some_and(|set| !set.is_empty());
 				at_war == wanted
 			}
 			"is_subject" => {
 				let wanted = boolean(value)
 					.ok_or_else(|| format!("{where_}: is_subject needs yes or no"))?;
-				world.subjects.contains_key(&ctx.current) == wanted
+				world.subjects.contains_key(ctx.tag()) == wanted
 			}
 			"is_subject_of" => {
 				let overlord = Tag::parse(
@@ -2620,7 +3110,7 @@ impl<'a> Interpreter<'a> {
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 				world
 					.subjects
-					.get(&ctx.current)
+					.get(ctx.tag())
 					.is_some_and(|link| link.overlord == overlord)
 			}
 			"is_subject_of_type" => {
@@ -2630,7 +3120,7 @@ impl<'a> Interpreter<'a> {
 				self.require_subject_type(&kind, where_)?;
 				world
 					.subjects
-					.get(&ctx.current)
+					.get(ctx.tag())
 					.is_some_and(|link| link.kind == kind)
 			}
 			"alliance_with" => {
@@ -2641,7 +3131,7 @@ impl<'a> Interpreter<'a> {
 				.map_err(|reason| format!("{where_}: {reason}"))?;
 				world
 					.alliances
-					.get(&ctx.current)
+					.get(ctx.tag())
 					.is_some_and(|set| set.contains(&other))
 			}
 			"religion" | "primary_culture" | "government" => {
@@ -2649,9 +3139,9 @@ impl<'a> Interpreter<'a> {
 					.ok_or_else(|| format!("{where_}: {key} needs a name"))?
 					.to_string();
 				let known = match key {
-					"religion" => world.religions.get(&ctx.current),
-					"primary_culture" => world.cultures.get(&ctx.current),
-					_ => world.governments.get(&ctx.current),
+					"religion" => world.religions.get(ctx.tag()),
+					"primary_culture" => world.cultures.get(ctx.tag()),
+					_ => world.governments.get(ctx.tag()),
 				};
 				// Without a base-snapshot seed the starting value is
 				// unknown: reading it before the case writes one refuses
@@ -2673,12 +3163,146 @@ impl<'a> Interpreter<'a> {
 						.map_err(|_| format!("{where_}: government_rank needs a number"))?,
 					_ => return Err(format!("{where_}: government_rank needs a number")),
 				};
-				let Some(current) = world.government_ranks.get(&ctx.current) else {
+				let Some(current) = world.government_ranks.get(ctx.tag()) else {
 					return Err(format!(
 						"{where_}: government_rank is unknown until the case writes it or a 						 base-snapshot seed supplies it"
 					));
 				};
 				*current >= wanted
+			}
+			"has_province_flag" => {
+				let id = ctx.province();
+				let flag = name_of(value)
+					.ok_or_else(|| format!("{where_}: has_province_flag needs a flag name"))?;
+				world
+					.provinces
+					.get(&id)
+					.is_some_and(|province| province.flags.contains(flag))
+			}
+			"owned_by" | "controlled_by" | "is_core" => {
+				let id = ctx.province();
+				let wanted = country_operand(ctx, value, key, where_)?;
+				let province = world.provinces.get(&id);
+				match key {
+					"owned_by" => {
+						let owner =
+							province
+								.and_then(|item| item.owner.clone())
+								.ok_or_else(|| {
+									format!("{where_}: province {id} has no seeded owner")
+								})?;
+						owner == wanted
+					}
+					"controlled_by" => {
+						let controller = province
+							.and_then(|item| item.controller.clone())
+							.ok_or_else(|| {
+								format!("{where_}: province {id} has no seeded controller")
+							})?;
+						controller == wanted
+					}
+					_ => {
+						let cores =
+							province
+								.and_then(|item| item.cores.clone())
+								.ok_or_else(|| {
+									format!("{where_}: cores are unknown for province {id}")
+								})?;
+						cores.contains(&wanted)
+					}
+				}
+			}
+			"base_tax" | "base_production" | "base_manpower" => {
+				let id = ctx.province();
+				let wanted = integer_amount(value)
+					.ok_or_else(|| format!("{where_}: {key} needs an integer"))?;
+				let current = world.provinces.get(&id).and_then(|province| match key {
+					"base_tax" => province.base_tax,
+					"base_production" => province.base_production,
+					_ => province.base_manpower,
+				});
+				let Some(current) = current else {
+					return Err(format!("{where_}: {key} is unknown for province {id}"));
+				};
+				current >= wanted
+			}
+			"development" => {
+				let id = ctx.province();
+				let wanted = integer_amount(value)
+					.ok_or_else(|| format!("{where_}: development needs an integer"))?;
+				let province = world.provinces.get(&id);
+				let tax = province.and_then(|item| item.base_tax);
+				let production = province.and_then(|item| item.base_production);
+				let manpower = province.and_then(|item| item.base_manpower);
+				let mut missing = Vec::new();
+				if tax.is_none() {
+					missing.push("base_tax");
+				}
+				if production.is_none() {
+					missing.push("base_production");
+				}
+				if manpower.is_none() {
+					missing.push("base_manpower");
+				}
+				if !missing.is_empty() {
+					return Err(format!(
+						"{where_}: development is unknown for province {id}: {}",
+						missing.join(", ")
+					));
+				}
+				tax.expect("checked") + production.expect("checked") + manpower.expect("checked")
+					>= wanted
+			}
+			"owns" | "owns_core_province" => {
+				let id = province_id_of(value)
+					.ok_or_else(|| format!("{where_}: {key} needs a province id"))?;
+				let owner = world
+					.provinces
+					.get(&id)
+					.and_then(|province| province.owner.clone())
+					.ok_or_else(|| format!("{where_}: province {id} has no seeded owner"))?;
+				if key == "owns" {
+					owner == *ctx.tag()
+				} else if &owner != ctx.tag() {
+					false
+				} else {
+					let cores = world
+						.provinces
+						.get(&id)
+						.and_then(|province| province.cores.clone())
+						.ok_or_else(|| format!("{where_}: cores are unknown for province {id}"))?;
+					cores.contains(ctx.tag())
+				}
+			}
+			"any_owned_province" | "any_subject_country" => {
+				let (limit, body) = iterator_parts(value, key, where_)?;
+				let scopes = if key == "any_owned_province" {
+					world
+						.owned_provinces(ctx.tag())
+						.into_iter()
+						.map(ScopeRef::Province)
+						.collect::<Vec<_>>()
+				} else {
+					world
+						.subjects_of(ctx.tag())
+						.into_iter()
+						.map(ScopeRef::Country)
+						.collect()
+				};
+				let mut matched = false;
+				for scope in scopes {
+					let entered = ctx.enter(scope);
+					let limited = if limit.is_empty() {
+						true
+					} else {
+						self.eval_statements(world, &entered, &limit, where_, depth + 1)?
+					};
+					if limited && self.eval_statements(world, &entered, &body, where_, depth + 1)? {
+						matched = true;
+						break;
+					}
+				}
+				matched
 			}
 			"AND" | "OR" | "NOT" | "NOR" | "NAND" | "hidden_trigger" => {
 				let AstValue::Block { items, .. } = value else {
@@ -2798,7 +3422,7 @@ impl<'a> Interpreter<'a> {
 			{
 				let observed = world
 					.numbers
-					.get(&ctx.current)
+					.get(ctx.tag())
 					.and_then(|slots| slots.get(slot))
 					.copied()
 					.unwrap_or(0.0);
@@ -2812,7 +3436,7 @@ impl<'a> Interpreter<'a> {
 					&& let Some((which, wanted)) = variable_args(value)
 				{
 					let observed = world
-						.country(&ctx.current)
+						.country(ctx.tag())
 						.variables
 						.get(which)
 						.copied()
@@ -2971,21 +3595,248 @@ fn variable_args(value: &AstValue) -> Option<(&str, f64)> {
 	Some((which?, amount?))
 }
 
-/// The `id` and optional `days` of a `country_event = { ... }` effect.
-fn country_event_args(value: &AstValue) -> Result<FireArgs, String> {
+/// The scope a primitive requires. `None` means the primitive is neutral, or
+/// not a modeled primitive (a scripted name must not be labeled by guess).
+fn primitive_scope(key: &str, context: Context) -> Option<ScopeKind> {
+	let (province, neutral) = match context {
+		Context::Effect => (PROVINCE_EFFECTS, NEUTRAL_EFFECTS),
+		Context::Condition => (PROVINCE_TRIGGERS, NEUTRAL_TRIGGERS),
+	};
+	if province.contains(&key) {
+		return Some(ScopeKind::Province);
+	}
+	if neutral.contains(&key) {
+		return None;
+	}
+	if context == Context::Effect && (number_effect(key).is_some() || key == "every_country") {
+		return Some(ScopeKind::Country);
+	}
+	if context == Context::Condition && number_trigger(key).is_some() {
+		return Some(ScopeKind::Country);
+	}
+	if builtin(key, context) {
+		return Some(ScopeKind::Country);
+	}
+	const COUNTRY_EFFECTS: &[&str] = &[
+		"break_alliance",
+		"change_government",
+		"change_primary_culture",
+		"change_religion",
+		"create_alliance",
+		"declare_war_with_cb",
+		"set_government_rank",
+		"white_peace",
+	];
+	const COUNTRY_TRIGGERS: &[&str] = &[
+		"alliance_with",
+		"defensive_war_with",
+		"government",
+		"government_rank",
+		"is_at_war",
+		"offensive_war_with",
+		"primary_culture",
+		"religion",
+	];
+	match context {
+		Context::Effect if COUNTRY_EFFECTS.contains(&key) => Some(ScopeKind::Country),
+		Context::Condition if COUNTRY_TRIGGERS.contains(&key) => Some(ScopeKind::Country),
+		_ => None,
+	}
+}
+
+fn concrete_kind(scope: &ScopeRef) -> ScopeKind {
+	match scope {
+		ScopeRef::Country(_) => ScopeKind::Country,
+		ScopeRef::Province(_) => ScopeKind::Province,
+	}
+}
+
+/// A country primitive in a province scope, or the reverse. `Dynamic` waits
+/// until execution knows which kind an alias names.
+fn scope_mismatch(key: &str, context: Context, current: ScopeKind) -> Option<String> {
+	let needed = primitive_scope(key, context)?;
+	if current == ScopeKind::Dynamic || current == needed {
+		return None;
+	}
+	let noun = match context {
+		Context::Effect => "effect",
+		Context::Condition => "trigger",
+	};
+	match (needed, current) {
+		(ScopeKind::Country, ScopeKind::Province) => Some(format!(
+			"{key} is a country {noun} and the current scope is a province"
+		)),
+		(ScopeKind::Province, ScopeKind::Country) => Some(format!(
+			"{key} is a province {noun} and the current scope is a country"
+		)),
+		_ => None,
+	}
+}
+
+/// The scope a block enters. `Ok(None)` is an overlord block with no overlord:
+/// effects do nothing and triggers are false. Every other miss is a refusal.
+fn open_scope(
+	world: &World,
+	ctx: &ScopeCtx,
+	key: &str,
+	target: ScopeKey,
+	where_: &SourceSpan,
+) -> Result<Option<ScopeRef>, String> {
+	match target {
+		ScopeKey::Alias(alias) => {
+			let scope = ctx.resolve(alias).ok_or_else(|| {
+				format!("{where_}: {alias} has no scope to name at this position")
+			})?;
+			Ok(Some(scope))
+		}
+		ScopeKey::Tag => Ok(Some(ScopeRef::Country(
+			Tag::parse(key).expect("scope keys parse as tags"),
+		))),
+		ScopeKey::Overlord => {
+			let ScopeRef::Country(tag) = &ctx.current else {
+				return Err(format!(
+					"{where_}: overlord is a country scope change and the current scope is {}",
+					ctx.current
+				));
+			};
+			Ok(world.overlord_of(tag).map(ScopeRef::Country))
+		}
+		ScopeKey::Province(id) => Ok(Some(ScopeRef::Province(id))),
+		ScopeKey::Capital => {
+			let ScopeRef::Country(tag) = &ctx.current else {
+				return Err(format!(
+					"{where_}: capital_scope is a country scope change and the current scope is {}",
+					ctx.current
+				));
+			};
+			match world.capitals.get(tag) {
+				Some(id) => Ok(Some(ScopeRef::Province(*id))),
+				None => Err(format!("{where_}: {tag} has no seeded capital")),
+			}
+		}
+		ScopeKey::Owner => {
+			let ScopeRef::Province(id) = &ctx.current else {
+				return Err(format!(
+					"{where_}: owner is a province scope change and the current scope is {}",
+					ctx.current
+				));
+			};
+			match world
+				.provinces
+				.get(id)
+				.and_then(|province| province.owner.clone())
+			{
+				Some(tag) => Ok(Some(ScopeRef::Country(tag))),
+				None => Err(format!("{where_}: province {id} has no seeded owner")),
+			}
+		}
+		ScopeKey::Controller => {
+			let ScopeRef::Province(id) = &ctx.current else {
+				return Err(format!(
+					"{where_}: controller is a province scope change and the current scope is {}",
+					ctx.current
+				));
+			};
+			match world
+				.provinces
+				.get(id)
+				.and_then(|province| province.controller.clone())
+			{
+				Some(tag) => Ok(Some(ScopeRef::Country(tag))),
+				None => Err(format!("{where_}: province {id} has no seeded controller")),
+			}
+		}
+	}
+}
+
+/// A country named by a tag or by THIS/ROOT/PREV/FROM. A province alias refuses.
+fn country_operand(
+	ctx: &ScopeCtx,
+	value: &AstValue,
+	key: &str,
+	where_: &SourceSpan,
+) -> Result<Tag, String> {
+	let text = name_of(value).ok_or_else(|| format!("{where_}: {key} needs a country"))?;
+	if let Some(alias) = ALIASES.iter().find(|alias| **alias == text) {
+		let scope = ctx
+			.resolve(alias)
+			.ok_or_else(|| format!("{where_}: {alias} has no scope to name at this position"))?;
+		return match scope {
+			ScopeRef::Country(tag) => Ok(tag),
+			ScopeRef::Province(id) => Err(format!(
+				"{where_}: {key} needs a country; {alias} is province {id}"
+			)),
+		};
+	}
+	Tag::parse(text).map_err(|reason| format!("{where_}: {reason}"))
+}
+
+fn province_id_of(value: &AstValue) -> Option<u32> {
+	let text = match value {
+		AstValue::Scalar {
+			value: ScalarValue::Number(text),
+			..
+		} => text.as_str(),
+		AstValue::Scalar {
+			value: ScalarValue::Identifier(text) | ScalarValue::String(text),
+			..
+		} => text.as_str(),
+		_ => return None,
+	};
+	province_id_key(text)
+}
+
+/// An integer operand. A fractional number is refused rather than truncated.
+fn integer_amount(value: &AstValue) -> Option<i64> {
+	let AstValue::Scalar {
+		value: ScalarValue::Number(text),
+		..
+	} = value
+	else {
+		return None;
+	};
+	text.parse::<i64>().ok()
+}
+
+/// `limit` is optional. More than one, or a limit that is not a block, refuses.
+fn iterator_parts(
+	value: &AstValue,
+	key: &str,
+	where_: &SourceSpan,
+) -> Result<(Vec<AstStatement>, Vec<AstStatement>), String> {
 	let AstValue::Block { items, .. } = value else {
-		return Err("country_event needs an id block".into());
+		return Err(format!("{where_}: {key} must be a block"));
+	};
+	match split_limit(items) {
+		Some(split) => Ok(split),
+		None if !items.iter().any(
+			|statement| matches!(statement, AstStatement::Assignment { key, .. } if key == "limit"),
+		) =>
+		{
+			Ok((Vec::new(), items.to_vec()))
+		}
+		None => Err(format!("{where_}: {key} needs exactly one limit block")),
+	}
+}
+
+/// The `id` and optional `days` of a `country_event` or `province_event` effect.
+fn event_args(key: &str, value: &AstValue) -> Result<FireArgs, String> {
+	let AstValue::Block { items, .. } = value else {
+		return Err(format!("{key} needs an id block"));
 	};
 	let mut event = None;
 	let mut days = 0;
 	for statement in items {
-		let AstStatement::Assignment { key, value, .. } = statement else {
+		let AstStatement::Assignment {
+			key: field, value, ..
+		} = statement
+		else {
 			continue;
 		};
-		match key.as_str() {
+		match field.as_str() {
 			"id" => {
 				event = Some(EventId::parse(
-					name_of(value).ok_or("country_event id must be a name")?,
+					name_of(value).ok_or_else(|| format!("{key} id must be a name"))?,
 				)?);
 			}
 			"days" => {
@@ -2993,22 +3844,21 @@ fn country_event_args(value: &AstValue) -> Result<FireArgs, String> {
 					AstValue::Scalar {
 						value: ScalarValue::Number(text),
 						..
-					} => text.parse::<u32>().map_err(|_| {
-						"country_event days must be a non-negative number".to_string()
-					})?,
-					_ => return Err("country_event days must be a number".into()),
+					} => text
+						.parse::<u32>()
+						.map_err(|_| format!("{key} days must be a non-negative number"))?,
+					_ => return Err(format!("{key} days must be a number")),
 				};
 			}
 			other => {
 				return Err(format!(
-					"country_event does not take {other}; the offline model refuses unverified \
-					 forms"
+					"{key} does not take {other}; the offline model refuses unverified forms"
 				));
 			}
 		}
 	}
 	Ok(FireArgs {
-		event: event.ok_or("country_event needs an id")?,
+		event: event.ok_or_else(|| format!("{key} needs an id"))?,
 		days,
 	})
 }
@@ -4747,6 +5597,7 @@ test = {
 						culture: Some((*culture).into()),
 						government: None,
 						government_rank: None,
+						capital: None,
 					},
 				)
 			})
@@ -5339,5 +6190,412 @@ test = {
 #     expect={ check_variable = { which = progress value = 4 } })"#,
 		);
 		assert_eq!(case(&result, "at_least").outcome, Outcome::Pass);
+	}
+
+	fn history_of(files: &[(&str, &str)]) -> HistoryTimeline {
+		overlay_history(&[ContentLayer {
+			replace_paths: Vec::new(),
+			files: files
+				.iter()
+				.map(|(path, text)| LayerFile {
+					path: (*path).into(),
+					text: (*text).into(),
+				})
+				.collect(),
+		}])
+		.unwrap()
+	}
+
+	fn interpret_case(
+		events: &str,
+		tests: &str,
+		history: Option<HistoryTimeline>,
+		subject_types: Option<SubjectTypeSet>,
+		catalog: &SemanticsCatalog,
+	) -> Interpretation {
+		let mut sources = Vec::new();
+		if !events.is_empty() {
+			sources.push(file(
+				"events/cases.txt",
+				SourceKind::Inline,
+				&format!("namespace = cases\n{events}"),
+			));
+		}
+		sources.push(file("tests/scenario.txt", SourceKind::TestsDir, tests));
+		let collection = collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		let linted = lint(&expanded, &ProjectFacts::default());
+		let plan = group(
+			expanded,
+			&linted,
+			&GroupOptions {
+				runner_shared_sessions: false,
+				..GroupOptions::default()
+			},
+		);
+		interpret(
+			&plan,
+			&ProjectFacts::default(),
+			catalog,
+			&InterpretOptions {
+				run_id: RunId::parse("run-1").unwrap(),
+				mod_name: "Offline Mod".into(),
+				observe: false,
+				seed: None,
+				history,
+				subject_types,
+			},
+		)
+	}
+
+	const PROVINCE_HISTORY: &[(&str, &str)] = &[
+		("history/countries/SWE - Sweden.txt", "capital = 1\n"),
+		(
+			"history/provinces/1-Stockholm.txt",
+			"owner = SWE\ncontroller = SWE\nbase_tax = 5\nbase_production = 4\nbase_manpower = 3\nadd_core = SWE\n",
+		),
+		("history/provinces/2-Oland.txt", "owner = SWE\n"),
+		(
+			"history/provinces/3-Bergslagen.txt",
+			"owner = SWE\ncontroller = DAN\nbase_tax = 1\nbase_production = 1\nbase_manpower = 1\nadd_core = SWE\n",
+		),
+	];
+
+	#[test]
+	fn history_seeded_provinces_switch_scope_and_round_trip() {
+		const CASES: &str = r#"test = {
+	name = seeded
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		capital_scope = { set_province_flag = capital_seen }
+		1 = {
+			owner = {
+				set_country_flag = owner_is_swe
+				PREV = { set_province_flag = prev_province }
+			}
+			controller = { set_country_flag = controller_is_swe }
+			ROOT = { set_country_flag = root_is_swe }
+		}
+		DAN = { 1 = { PREV = { set_country_flag = prev_is_dan } } }
+		every_owned_province = {
+			if = {
+				limit = { NOT = { PREV = { has_country_flag = counted } } }
+				set_province_flag = first_owned
+				PREV = { set_country_flag = counted }
+			}
+			limit = { owned_by = SWE }
+			set_province_flag = visited
+		}
+	}
+	expect = {
+		owns = 1
+		owns_core_province = 1
+		capital_scope = { has_province_flag = capital_seen }
+		1 = {
+			has_province_flag = capital_seen
+			has_province_flag = prev_province
+			has_province_flag = first_owned
+			has_province_flag = visited
+			owned_by = SWE
+			controlled_by = SWE
+			is_core = SWE
+			base_tax = 5
+			base_production = 4
+			base_manpower = 3
+			development = 12
+			NOT = { development = 13 }
+		}
+		2 = { has_province_flag = visited NOT = { has_province_flag = first_owned } }
+		3 = {
+			has_province_flag = visited
+			NOT = { has_province_flag = first_owned }
+			controlled_by = DAN
+		}
+		has_country_flag = owner_is_swe
+		has_country_flag = controller_is_swe
+		has_country_flag = root_is_swe
+		DAN = { has_country_flag = prev_is_dan }
+	}
+}"#;
+		let result = interpret_case(
+			"",
+			CASES,
+			Some(history_of(PROVINCE_HISTORY)),
+			None,
+			&SemanticsCatalog::embedded(),
+		);
+		let seeded = case(&result, "seeded");
+		assert_eq!(seeded.outcome, Outcome::Pass, "{seeded:#?}");
+	}
+
+	#[test]
+	fn province_flags_cores_bases_and_cede_update_seeded_slots() {
+		const CASES: &str = r#"test = {
+	name = edited
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		1 = {
+			set_province_flag = marked
+			clr_province_flag = marked
+			set_province_flag = kept
+			add_base_tax = 1
+			add_base_production = -1
+			add_base_manpower = 2
+			add_core = NOR
+			remove_core = SWE
+			cede_province = DAN
+		}
+	}
+	expect = {
+		1 = {
+			NOT = { has_province_flag = marked }
+			has_province_flag = kept
+			base_tax = 6
+			base_production = 3
+			base_manpower = 5
+			development = 14
+			is_core = NOR
+			NOT = { is_core = SWE }
+			owned_by = DAN
+			controlled_by = DAN
+		}
+		NOT = { owns = 1 }
+		DAN = { owns = 1 NOT = { owns_core_province = 1 } }
+	}
+}"#;
+		let result = interpret_case(
+			"",
+			CASES,
+			Some(history_of(PROVINCE_HISTORY)),
+			None,
+			&SemanticsCatalog::embedded(),
+		);
+		let edited = case(&result, "edited");
+		assert_eq!(edited.outcome, Outcome::Pass, "{edited:#?}");
+	}
+
+	#[test]
+	fn province_events_fire_immediately_and_after_advance_days() {
+		const EVENTS: &str = r#"province_event = {
+	id = cases.2
+	hidden = yes
+	is_triggered_only = yes
+	immediate = {
+		set_province_flag = immediate_flag
+		FROM = { set_province_flag = from_flag }
+		ROOT = { set_province_flag = root_flag }
+		owner = { set_country_flag = owner_flag }
+	}
+}
+province_event = {
+	id = cases.3
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { set_province_flag = delayed_flag }
+}"#;
+		const CASES: &str = r#"test = {
+	name = events
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		1 = {
+			province_event = { id = cases.2 }
+			province_event = { id = cases.3 days = 4 }
+		}
+	}
+	expect = {
+		1 = {
+			has_province_flag = immediate_flag
+			has_province_flag = from_flag
+			has_province_flag = root_flag
+			NOT = { has_province_flag = delayed_flag }
+		}
+		has_country_flag = owner_flag
+	}
+	advance_days = 4
+	expect = { 1 = { has_province_flag = delayed_flag } }
+}"#;
+		let result = interpret_case(
+			EVENTS,
+			CASES,
+			Some(history_of(PROVINCE_HISTORY)),
+			None,
+			&SemanticsCatalog::embedded(),
+		);
+		let events = case(&result, "events");
+		assert_eq!(events.outcome, Outcome::Pass, "{events:#?}");
+	}
+
+	#[test]
+	fn subject_iterators_visit_subjects_in_tag_order() {
+		let types = overlay_subject_types(&[ContentLayer {
+			replace_paths: Vec::new(),
+			files: vec![LayerFile {
+				path: "common/subject_types/00_subject_types.txt".into(),
+				text: "default = {}\nvassal = { copy_from = default }\n".into(),
+			}],
+		}])
+		.unwrap();
+		const CASES: &str = r#"test = {
+	name = subjects
+	time = 1444.11.11
+	tag = SWE
+	effect = {
+		create_subject = { subject_type = vassal subject = HOL }
+		create_subject = { subject_type = vassal subject = DAN }
+		every_subject_country = {
+			if = {
+				limit = { NOT = { PREV = { has_country_flag = ordered } } }
+				set_country_flag = first
+				PREV = { set_country_flag = ordered }
+			}
+		}
+	}
+	expect = {
+		any_subject_country = { tag = HOL }
+		NOT = { any_subject_country = { tag = FRA } }
+		any_subject_country = { limit = { tag = DAN } has_country_flag = first }
+		DAN = { has_country_flag = first is_subject_of = SWE }
+		NOT = { HOL = { has_country_flag = first } }
+	}
+}"#;
+		let result = interpret_case("", CASES, None, Some(types), &SemanticsCatalog::embedded());
+		let subjects = case(&result, "subjects");
+		assert_eq!(subjects.outcome, Outcome::Pass, "{subjects:#?}");
+	}
+
+	#[test]
+	fn province_scopes_refuse_the_wrong_kind_and_unseeded_facts() {
+		const CASES: &str = r#"test = {
+	name = country_effect
+	time = 1444.11.11
+	tag = SWE
+	effect = { 1 = { set_country_flag = no } }
+}
+test = {
+	name = province_trigger
+	time = 1444.11.11
+	tag = SWE
+	expect = { has_province_flag = x }
+}
+test = {
+	name = unseeded_base
+	time = 1444.11.11
+	tag = SWE
+	expect = { 2 = { base_tax = 1 } }
+}
+test = {
+	name = unseeded_add
+	time = 1444.11.11
+	tag = SWE
+	effect = { 2 = { add_base_tax = 1 } }
+}
+test = {
+	name = unseeded_capital
+	time = 1444.11.11
+	tag = DAN
+	effect = { capital_scope = { set_province_flag = x } }
+}
+test = {
+	name = unknown_owner
+	time = 1444.11.11
+	tag = SWE
+	effect = { 9 = { owner = { set_country_flag = no } } }
+}
+test = {
+	name = unknown_cores
+	time = 1444.11.11
+	tag = SWE
+	expect = { owns_core_province = 2 }
+}
+test = {
+	name = unknown_controller
+	time = 1444.11.11
+	tag = SWE
+	effect = { 2 = { controller = { set_country_flag = no } } }
+}"#;
+		let result = interpret_case(
+			"",
+			CASES,
+			Some(history_of(PROVINCE_HISTORY)),
+			None,
+			&SemanticsCatalog::embedded(),
+		);
+		let reason = |name: &str| case(&result, name).unsupported.join("\n");
+		assert_eq!(
+			case(&result, "country_effect").outcome,
+			Outcome::Unsupported
+		);
+		assert!(
+			reason("country_effect").contains("set_country_flag is a country effect"),
+			"{}",
+			reason("country_effect")
+		);
+		assert!(
+			reason("province_trigger").contains("has_province_flag is a province trigger"),
+			"{}",
+			reason("province_trigger")
+		);
+		assert!(
+			reason("unseeded_base").contains("base_tax is unknown for province 2"),
+			"{}",
+			reason("unseeded_base")
+		);
+		assert!(
+			reason("unseeded_add").contains("base_tax is unknown for province 2"),
+			"{}",
+			reason("unseeded_add")
+		);
+		assert!(
+			reason("unseeded_capital").contains("DAN has no seeded capital"),
+			"{}",
+			reason("unseeded_capital")
+		);
+		assert!(
+			reason("unknown_owner").contains("province 9 has no seeded owner"),
+			"{}",
+			reason("unknown_owner")
+		);
+		assert!(
+			reason("unknown_cores").contains("cores are unknown for province 2"),
+			"{}",
+			reason("unknown_cores")
+		);
+		assert!(
+			reason("unknown_controller").contains("province 2 has no seeded controller"),
+			"{}",
+			reason("unknown_controller")
+		);
+	}
+
+	#[test]
+	fn a_pinned_catalog_refuses_an_unpinned_province_primitive() {
+		let catalog = pinned_catalog(
+			r#""set_province_flag": { "kind": "effect", "facts": {}, "handler": null }"#,
+		);
+		const CASES: &str = r#"test = {
+	name = unpinned
+	time = 1444.11.11
+	tag = SWE
+	effect = { 1 = { set_province_flag = x } }
+}"#;
+		let result = interpret_case("", CASES, None, None, &catalog);
+		let unpinned = case(&result, "unpinned");
+		assert_eq!(unpinned.outcome, Outcome::Unsupported);
+		assert!(
+			unpinned.unsupported.iter().any(|reason| {
+				reason.contains("set_province_flag")
+					&& reason.contains("no decompiled handler evidence")
+			}),
+			"{:#?}",
+			unpinned.unsupported
+		);
 	}
 }

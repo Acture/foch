@@ -51,6 +51,9 @@ pub struct CountrySlice {
 	pub culture: Option<String>,
 	pub government: Option<String>,
 	pub government_rank: Option<i64>,
+	/// `capital = <province id>`. Absent when this slice does not assign one.
+	#[serde(default)]
+	pub capital: Option<u32>,
 }
 
 /// Subject types after `copy_from` resolution. A name in `resolved` may be
@@ -81,6 +84,14 @@ pub struct SubjectWarPolicy {
 	pub overlord_protects_external: Option<bool>,
 }
 
+/// One `add_core` or `remove_core` in a province history slice, in source order.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreEdit {
+	Add(Tag),
+	Remove(Tag),
+}
+
 /// One province history assignment group.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProvinceSlice {
@@ -89,6 +100,17 @@ pub struct ProvinceSlice {
 	pub controller: Option<Tag>,
 	pub religion: Option<String>,
 	pub culture: Option<String>,
+	/// Present only when this slice assigns the key. An absent development
+	/// slot stays unknown; the fold does not invent 0.
+	#[serde(default)]
+	pub base_tax: Option<i64>,
+	#[serde(default)]
+	pub base_production: Option<i64>,
+	#[serde(default)]
+	pub base_manpower: Option<i64>,
+	/// `add_core` / `remove_core` in the order the file writes them.
+	#[serde(default)]
+	pub cores: Vec<CoreEdit>,
 }
 
 /// Decisions visible after vanilla and every mod, in playset order.
@@ -187,6 +209,9 @@ fn fold_country(slices: &[CountrySlice], date: GameDate) -> SeededCountry {
 		if let Some(value) = slice.government_rank {
 			state.government_rank = Some(value);
 		}
+		if let Some(value) = slice.capital {
+			state.capital = Some(value);
+		}
 	}
 	let mut dated: Vec<&CountrySlice> =
 		slices.iter().filter(|slice| slice.date.is_some()).collect();
@@ -204,6 +229,9 @@ fn fold_country(slices: &[CountrySlice], date: GameDate) -> SeededCountry {
 			}
 			if let Some(value) = slice.government_rank {
 				state.government_rank = Some(value);
+			}
+			if let Some(value) = slice.capital {
+				state.capital = Some(value);
 			}
 		}
 	}
@@ -225,6 +253,16 @@ fn fold_province(slices: &[ProvinceSlice], date: GameDate) -> ProvinceSeed {
 		if let Some(value) = &slice.culture {
 			state.culture = Some(value.clone());
 		}
+		if let Some(value) = slice.base_tax {
+			state.base_tax = Some(value);
+		}
+		if let Some(value) = slice.base_production {
+			state.base_production = Some(value);
+		}
+		if let Some(value) = slice.base_manpower {
+			state.base_manpower = Some(value);
+		}
+		apply_cores(&mut state.cores, &slice.cores);
 	};
 	for slice in slices.iter().filter(|slice| slice.date.is_none()) {
 		apply(&mut state, slice);
@@ -238,6 +276,25 @@ fn fold_province(slices: &[ProvinceSlice], date: GameDate) -> ProvinceSeed {
 		}
 	}
 	state
+}
+
+/// `add_core` / `remove_core` make the core set known. A slice that never
+/// mentions cores leaves an unknown set unknown, rather than guessing empty.
+fn apply_cores(state: &mut Option<BTreeSet<Tag>>, edits: &[CoreEdit]) {
+	if edits.is_empty() {
+		return;
+	}
+	let cores = state.get_or_insert_with(BTreeSet::new);
+	for edit in edits {
+		match edit {
+			CoreEdit::Add(tag) => {
+				cores.insert(tag.clone());
+			}
+			CoreEdit::Remove(tag) => {
+				cores.remove(tag);
+			}
+		}
+	}
 }
 
 /// Files that survive through the last layer, in application order.
@@ -319,6 +376,7 @@ fn country_slices(path: &str, text: &str) -> Result<Vec<CountrySlice>, String> {
 		|| preamble.culture.is_some()
 		|| preamble.government.is_some()
 		|| preamble.government_rank.is_some()
+		|| preamble.capital.is_some()
 	{
 		slices.push(preamble);
 	}
@@ -333,6 +391,7 @@ fn absorb_country(slice: &mut CountrySlice, key: &str, value: &AstValue) {
 		"primary_culture" => slice.culture = text,
 		"government" => slice.government = text,
 		"government_rank" => slice.government_rank = text.and_then(|text| text.parse().ok()),
+		"capital" => slice.capital = text.and_then(|text| province_id_value(&text)),
 		_ => {}
 	}
 }
@@ -368,6 +427,10 @@ fn province_slices(path: &str, text: &str) -> Result<Vec<ProvinceSlice>, String>
 		|| preamble.controller.is_some()
 		|| preamble.religion.is_some()
 		|| preamble.culture.is_some()
+		|| preamble.base_tax.is_some()
+		|| preamble.base_production.is_some()
+		|| preamble.base_manpower.is_some()
+		|| !preamble.cores.is_empty()
 	{
 		slices.push(preamble);
 	}
@@ -380,10 +443,30 @@ fn absorb_province(slice: &mut ProvinceSlice, key: &str, value: &AstValue) {
 	match key {
 		"owner" => slice.owner = text.and_then(|text| Tag::parse(&text).ok()),
 		"controller" => slice.controller = text.and_then(|text| Tag::parse(&text).ok()),
-		"religion" => slice.religion = text,
-		"culture" => slice.culture = text,
+		"religion" => slice.religion = text.clone(),
+		"culture" => slice.culture = text.clone(),
+		"base_tax" => slice.base_tax = text.clone().and_then(|text| text.parse().ok()),
+		"base_production" => {
+			slice.base_production = text.clone().and_then(|text| text.parse().ok())
+		}
+		"base_manpower" => slice.base_manpower = text.and_then(|text| text.parse().ok()),
+		"add_core" => {
+			if let Some(tag) = text.and_then(|text| Tag::parse(&text).ok()) {
+				slice.cores.push(CoreEdit::Add(tag));
+			}
+		}
+		"remove_core" => {
+			if let Some(tag) = text.and_then(|text| Tag::parse(&text).ok()) {
+				slice.cores.push(CoreEdit::Remove(tag));
+			}
+		}
 		_ => {}
 	}
+}
+
+fn province_id_value(text: &str) -> Option<u32> {
+	let id = text.parse::<u32>().ok()?;
+	(id >= 1).then_some(id)
 }
 
 /// The tag is the filename token, not a lookup in a vanilla country list.
@@ -804,6 +887,54 @@ mod tests {
 		assert_eq!(
 			later.provinces[&9000].owner.as_ref().map(Tag::as_str),
 			Some("Q01")
+		);
+	}
+
+	#[test]
+	fn province_history_seeds_development_cores_and_capital_without_filling_gaps() {
+		let vanilla = layer(
+			&[],
+			&[
+				(
+					"history/countries/SWE - Sweden.txt",
+					"capital = 1\n1500.1.1 = { capital = 2 }\n",
+				),
+				(
+					"history/provinces/1-Stockholm.txt",
+					"owner = SWE\ncontroller = SWE\nbase_tax = 5\nbase_production = 4\nbase_manpower = 3\nadd_core = SWE\nadd_core = DAN\n1500.1.1 = { remove_core = DAN base_tax = 6 }\n",
+				),
+				("history/provinces/2-Oland.txt", "owner = SWE\n"),
+			],
+		);
+		let timeline = overlay_history(&[vanilla]).unwrap();
+		let early = fold_history(&timeline, GameDate::parse("1444.11.11").unwrap());
+		let swe = &early.countries[&Tag::parse("SWE").unwrap()];
+		assert_eq!(swe.capital, Some(1));
+		let stockholm = &early.provinces[&1];
+		assert_eq!(stockholm.base_tax, Some(5));
+		assert_eq!(stockholm.base_production, Some(4));
+		assert_eq!(stockholm.base_manpower, Some(3));
+		assert_eq!(
+			stockholm
+				.cores
+				.as_ref()
+				.map(|cores| cores.iter().map(Tag::as_str).collect::<Vec<_>>()),
+			Some(vec!["DAN", "SWE"])
+		);
+		assert_eq!(early.provinces[&2].base_tax, None);
+		assert_eq!(early.provinces[&2].cores, None);
+		let later = fold_history(&timeline, GameDate::parse("1500.1.1").unwrap());
+		assert_eq!(
+			later.countries[&Tag::parse("SWE").unwrap()].capital,
+			Some(2)
+		);
+		assert_eq!(later.provinces[&1].base_tax, Some(6));
+		assert_eq!(
+			later.provinces[&1]
+				.cores
+				.as_ref()
+				.map(|cores| cores.iter().map(Tag::as_str).collect::<Vec<_>>()),
+			Some(vec!["SWE"])
 		);
 	}
 
