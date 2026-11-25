@@ -116,7 +116,18 @@ fn fixtures() -> &'static TempDir {
 					"__declspec(dllexport) int fixture_daily_replay_targets(void *shift, void *publish) {{ return daily_a_real_shift == shift && daily_a_real_publish == publish; }}\n",
 					"__declspec(dllexport) unsigned fixture_daily_slice(void *game, void **snapshot, unsigned char *shadow, unsigned char *copy, unsigned long long from, unsigned long long to, void *ops) {{\n",
 					"struct daily_a_part part = {{0}}; part.game = game; part.snapshot = snapshot; part.shadow = shadow; part.copy = copy; part.from = from; part.to = to; part.op_cap=(unsigned)(2*(to-from)); part.ops=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,part.op_cap*sizeof(*part.ops)); if(!part.ops) return 997; daily_a_run_part(&part);\n",
-					"unsigned count = part.op_count; if (count <= 64) memcpy(ops, part.ops, count * sizeof(*part.ops)); if (part.ops) HeapFree(GetProcessHeap(), 0, part.ops); return count; }}\n"
+					"unsigned count = part.op_count; if (count <= 64) memcpy(ops, part.ops, count * sizeof(*part.ops)); if (part.ops) HeapFree(GetProcessHeap(), 0, part.ops); return count; }}\n",
+					"__declspec(dllexport) int fixture_daily_log_guard(void) {{\n",
+					"unsigned char buf[2 * sizeof(struct daily_a_op) + 16]; struct daily_a_part part; unsigned i;\n",
+					"memset(buf, 0x5A, sizeof buf); memset(&part, 0, sizeof part); part.ops = (struct daily_a_op *)buf; part.op_cap = 2;\n",
+					"da_tls_part = &part; daily_a_note_removal((void *)1, 0); daily_a_note_removal((void *)2, 1); daily_a_note_removal((void *)3, 2); da_tls_part = NULL;\n",
+					"if (part.op_count != 2 || !part.overflow) return 1;\n",
+					"for (i = 2 * (unsigned)sizeof(struct daily_a_op); i < sizeof buf; ++i) if (buf[i] != 0x5A) return 2; return 0; }}\n",
+					"__declspec(dllexport) int fixture_daily_reserve(unsigned long long bytes) {{\n",
+					"struct daily_a_arena *a = daily_a_arena_new(); size_t primary;\n",
+					"if (!a || bytes > (unsigned long long)SIZE_MAX) return 9; primary = a->reserved;\n",
+					"if (!daily_a_arena_ensure(a, (size_t)bytes)) return 0;\n",
+					"return (a->reserved == primary && a->reserved + a->extra_reserved >= (size_t)bytes) ? 1 : 8; }}\n"
 				),
 				plugin.join("country_month.c").display().to_string().replace('\\', "/")
 			),
@@ -514,6 +525,10 @@ fn run_runtime(directory: &Path, mode: &str) -> Vec<Value> {
 	let mut child = Command::new(directory.join("eu4.exe"))
 		.arg(mode)
 		.env_remove("FOCH_DAILY_A")
+		.env(
+			"FOCH_DAILY_B",
+			if mode.starts_with("dailyb") { "1" } else { "0" },
+		)
 		.env(
 			"FOCH_COUNTRY_SERIAL",
 			if mode == "monthly-callback-serial" {
@@ -1224,6 +1239,39 @@ fn daily_arena_ownership_survives_multiple_real_dispatch_rounds() {
 }
 
 #[test]
+fn daily_arena_accounting_reports_bounded_reuse_and_zero_live_after_multi_round_runs() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailya-arena-rounds");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let rounds_text = fs::read_to_string(rt.path("foch-host/daily-rounds.txt")).unwrap();
+	let rounds = proof(&rounds_text);
+	assert_eq!(rounds["errors"], "0", "{rounds:?}");
+	assert_eq!(rounds["foreign-free"], "0", "{rounds:?}");
+	let owners_final: u64 = rounds["owners-final"].parse().unwrap();
+	let live_text = fs::read_to_string(rt.path("foch-host/daily-a-real.txt")).unwrap();
+	let live = proof(&live_text);
+	assert_eq!(live["calls"], "5", "{live:?}");
+	let workers: u64 = live["workers"].parse().unwrap();
+	assert!(workers >= 2, "{live:?}");
+	let arena_count: u64 = live["arena-count"].parse().unwrap();
+	let allocs: u64 = live["arena-allocs"].parse().unwrap();
+	let frees: u64 = live["arena-frees"].parse().unwrap();
+	let live_allocs: u64 = live["arena-live"].parse().unwrap();
+	let peak_live: u64 = live["arena-peak-live"].parse().unwrap();
+	let committed: u64 = live["arena-committed-bytes"].parse().unwrap();
+	let oversized: u64 = live["arena-oversized"].parse().unwrap();
+	assert_eq!(arena_count, owners_final, "{live:?} {rounds:?}");
+	assert_eq!(arena_count, workers, "{live:?}");
+	assert_eq!(allocs, 65, "{live:?}");
+	assert_eq!(frees, allocs, "{live:?}");
+	assert_eq!(live_allocs, 0, "{live:?}");
+	assert!(peak_live >= 1 && peak_live <= arena_count, "{live:?}");
+	assert_eq!(committed, arena_count * 0x400000, "{live:?}");
+	assert_eq!(oversized, 0, "{live:?}");
+}
+
+#[test]
 fn daily_arena_never_returns_an_unregistered_thirty_third_owner() {
 	let rt = Runtime::new();
 	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
@@ -1425,6 +1473,145 @@ fn daily_queue_takeover_matches_the_serial_baseline() {
 	assert!(workers >= 2, "{live:?}");
 	assert!(live["ops"].parse::<u32>().unwrap() > 0, "{live:?}");
 	eprintln!("daily differential: {da:?}; parallel: {live:?}");
+}
+
+#[test]
+fn daily_b_two_walks_match_serial_across_a_warm_day_and_a_parallel_day() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let entry_text = fs::read_to_string(rt.path("foch-host/countries-entry.txt")).unwrap();
+	let entry = proof(&entry_text);
+	assert_eq!(entry["daily-b-ready"], "1", "{entry:?}");
+	assert_eq!(entry["daily-b-enabled"], "1", "{entry:?}");
+	let text = fs::read_to_string(rt.path("foch-host/daily-b-fixture.txt")).unwrap();
+	let rows = proof(&text);
+	assert_eq!(rows["match"], "1", "{rows:?}");
+	assert_eq!(rows["warm-match"], "1", "{rows:?}");
+	assert_eq!(rows["warm-calls"], "1", "{rows:?}");
+	assert_eq!(rows["warm-workers"], "1", "{rows:?}");
+	assert_eq!(rows["calls"], "2", "{rows:?}");
+	assert!(rows["fired"].parse::<u32>().unwrap() > 0, "{rows:?}");
+	assert_eq!(
+		rows["messages"].parse::<u32>().unwrap(),
+		rows["fired"].parse::<u32>().unwrap() * 3,
+		"{rows:?}"
+	);
+	assert!(rows["spread"].parse::<u32>().unwrap() > 0, "{rows:?}");
+	assert_eq!(rows["live"], "0", "{rows:?}");
+	assert_eq!(rows["allocs"], rows["frees"], "{rows:?}");
+}
+
+#[test]
+fn daily_b_scale_preserves_order_and_releases_every_arena_block() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-scale");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let scale_text = fs::read_to_string(rt.path("foch-host/daily-b-scale.txt")).unwrap();
+	let rows = proof(&scale_text);
+	assert_eq!(rows["match"], "1", "{rows:?}");
+	assert_eq!(rows["warm-match"], "1", "{rows:?}");
+	assert_eq!(rows["centers"], "3000", "{rows:?}");
+	assert_eq!(rows["factor"], "3", "{rows:?}");
+	assert_eq!(
+		rows["messages"].parse::<u32>().unwrap(),
+		rows["fired"].parse::<u32>().unwrap() * 3,
+		"{rows:?}"
+	);
+	assert_eq!(rows["live"], "0", "{rows:?}");
+	assert_eq!(rows["allocs"], rows["frees"], "{rows:?}");
+	assert!(rows["calls"].parse::<u32>().unwrap() >= 2, "{rows:?}");
+}
+
+#[test]
+fn daily_b_wide_country_and_province_counts_match_serial_without_truncation() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-wide");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let text = fs::read_to_string(rt.path("foch-host/daily-b-wide.txt")).unwrap();
+	let rows = proof(&text);
+	assert_eq!(rows["match"], "1", "{rows:?}");
+	assert_eq!(rows["warm-match"], "1", "{rows:?}");
+	assert_eq!(rows["centers"], "4096", "{rows:?}");
+	assert_eq!(rows["countries"], "3000", "{rows:?}");
+	assert_eq!(rows["provinces"], "12001", "{rows:?}");
+	assert_eq!(
+		rows["messages"].parse::<u32>().unwrap(),
+		rows["fired"].parse::<u32>().unwrap() * 2,
+		"{rows:?}"
+	);
+	assert!(rows["fired"].parse::<u32>().unwrap() > 1024, "{rows:?}");
+	assert_eq!(rows["live"], "0", "{rows:?}");
+	assert_eq!(rows["allocs"], rows["frees"], "{rows:?}");
+}
+
+#[test]
+fn daily_b_op_log_exhaustion_falls_back_to_the_complete_native_result() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-exhaust");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let text = fs::read_to_string(rt.path("foch-host/daily-b-exhaust.txt")).unwrap();
+	let rows = proof(&text);
+	assert_eq!(rows["match"], "1", "{rows:?}");
+	assert_eq!(rows["fallback"], "1", "{rows:?}");
+	assert!(rows["fired"].parse::<u32>().unwrap() > 0, "{rows:?}");
+	assert_eq!(
+		rows["messages"].parse::<u32>().unwrap(),
+		rows["fired"].parse::<u32>().unwrap() * 3,
+		"{rows:?}"
+	);
+}
+
+#[test]
+fn daily_b_real_prologue_stays_unhooked() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-block");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let entry = fs::read_to_string(rt.path("foch-host/countries-entry.txt")).unwrap();
+	let entry = proof(&entry);
+	assert_eq!(entry["daily-b-ready"], "1", "{entry:?}");
+	assert_eq!(entry["daily-b-real"], "0000000000000000", "{entry:?}");
+	let text = fs::read_to_string(rt.path("foch-host/daily-b-block.txt")).unwrap();
+	let rows = proof(&text);
+	assert_eq!(rows["blocked"], "1", "{rows:?}");
+	assert_eq!(rows["changed"], "0", "{rows:?}");
+}
+
+#[test]
+fn daily_log_and_arena_refuse_past_their_reservation_without_writing_through_it() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailyb-guard");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let guard_text = fs::read_to_string(rt.path("foch-host/daily-b-guard.txt")).unwrap();
+	let rows = proof(&guard_text);
+	assert_eq!(rows["log"], "0", "{rows:?}");
+	assert_eq!(rows["small"], "1", "{rows:?}");
+	assert_eq!(rows["grown"], "1", "{rows:?}");
+	assert_eq!(rows["refused"], "0", "{rows:?}");
+}
+
+#[test]
+fn daily_queue_of_three_thousand_messages_keeps_every_entry_and_no_live_arena_block() {
+	let rt = Runtime::new();
+	rt.plan(vec![rt.plugin("eu4_country_month", "native", "entry")]);
+	let events = rt.run("dailya-scale");
+	assert_eq!(states(&events, "eu4_country_month").last(), Some(&"active"));
+	let scale_text = fs::read_to_string(rt.path("foch-host/daily-a-scale.txt")).unwrap();
+	let rows = proof(&scale_text);
+	assert_eq!(rows["errors"], "0", "{rows:?}");
+	assert_eq!(rows["entries"], "3000", "{rows:?}");
+	assert_eq!(rows["countries"], "1000", "{rows:?}");
+	assert_eq!(rows["factor"], "3", "{rows:?}");
+	assert_eq!(rows["warm-calls"], "1", "{rows:?}");
+	assert_eq!(rows["warm-workers"], "1", "{rows:?}");
+	assert_eq!(rows["live"], "0", "{rows:?}");
+	assert_eq!(rows["allocs"], rows["frees"], "{rows:?}");
 }
 
 #[test]
