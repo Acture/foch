@@ -1494,6 +1494,7 @@ name = "foch-plugin-trade-blackhole"
 version = "0.0.1"
 dependencies = [
  "foch-plugin-sdk",
+ "foch-runtime",
  "serde",
  "serde_json",
 ]

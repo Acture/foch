@@ -25,6 +25,7 @@ LAST = 0x2AA9
 NAMED = {
 	0x2710: "add_treasury",
 	0x2735: "set_country_flag",
+	0x2736: "clr_country_flag",
 	0x2800: "random",
 	0x28A0: "army",
 	0x28A2: "regiment",
@@ -163,6 +164,7 @@ class Review(unittest.TestCase):
 		self.assertEqual(report["comparison"]["baseline"]["pinned"], 0)
 		self.assertEqual(report["comparison"]["baseline"]["rejected_console_cmd"], 1)
 		self.assertEqual(report["comparison"]["treatment"]["pinned"], 1)
+		self.assertEqual(report["comparison"]["treatment"]["factory_pinned"], 0)
 		self.assertEqual(report["comparison"]["treatment"]["token_only"], 2)
 		self.assertEqual(report["comparison"]["treatment"]["unpinned"], 1)
 
@@ -244,6 +246,212 @@ class OfflineCommand(unittest.TestCase):
 		self.assertEqual(written["kind"], "semantics-pin-review")
 		self.assertTrue(written["calibration"]["passed"])
 		self.assertEqual(written["comparison"]["treatment"]["pinned"], 1)
+
+
+def load_bytes(blob: bytes):
+	with tempfile.TemporaryDirectory() as temporary:
+		path = Path(temporary) / "eu4.exe"
+		path.write_bytes(blob)
+		return read_binary(path)
+
+
+def jump_dispatcher(base: int, limit: int, table_rva: int, default_rva: int) -> bytes:
+	"""RIP-relative dword jump table placed at ``TEXT_RVA``."""
+	lea_at = TEXT_RVA + 19
+	ja_next = TEXT_RVA + 16
+	return b"".join(
+		(
+			b"\x2d" + struct.pack("<I", base),
+			b"\x3d" + struct.pack("<I", limit),
+			b"\x0f\x87" + struct.pack("<i", default_rva - ja_next),
+			b"\x48\x63\xc8",
+			b"\x48\x8d\x15" + struct.pack("<i", table_rva - (lea_at + 7)),
+			b"\x8b\x0c\x8a",
+			b"\x48\x03\xca",
+			b"\xff\xe1",
+		)
+	)
+
+
+def jump_image(slot_targets: tuple[int, ...], *, limit: int) -> bytes:
+	tokens = token_records()
+	table_rva = RDATA_RVA + len(tokens)
+	default = TEXT_RVA + 0x100
+	code = jump_dispatcher(0x2710, limit, table_rva, default)
+	table = b"".join(struct.pack("<i", target - table_rva) for target in slot_targets)
+	functions: list[tuple[int, bytes]] = [(TEXT_RVA, code), (default, b"\xc3")]
+	for target in dict.fromkeys(slot_targets):
+		# A misaligned slot is the unverified case: it must not become a start.
+		if target % 0x10 == 0:
+			functions.append((target, b"\xc3"))
+	return build_pe((), *functions, extra_rdata=tokens + table)
+
+
+def factory_image(*, shared: bool = False, console: bool = False) -> bytes:
+	functions = [TEXT_RVA + 0x40 + index * 0x20 for index in range(8)]
+	tokens = token_records()
+	body = bytearray()
+	for index, function in enumerate(functions):
+		target = functions[0] if shared else function
+		body.extend(struct.pack("<IIQ", 0x2710 + index, 0, IMAGE_BASE + target))
+	extra = bytearray(tokens)
+	extra.extend(body)
+	text = [(function, b"\xc3") for function in functions]
+	if console:
+		name_rva = RDATA_RVA + 4
+		hint = b"<Amount>\0"
+		hint_rva = RDATA_RVA + len(extra)
+		extra.extend(hint)
+		entry = bytearray(0x48)
+		struct.pack_into("<Q", entry, 0, IMAGE_BASE + name_rva)
+		struct.pack_into("<Q", entry, 0x30, IMAGE_BASE + functions[0])
+		struct.pack_into("<Q", entry, 0x40, IMAGE_BASE + hint_rva)
+		extra.extend(entry)
+	return build_pe((), *text, extra_rdata=bytes(extra))
+
+
+def thunk(token: int) -> bytes:
+	return b"\xb8" + struct.pack("<I", token) + b"\xc3"
+
+
+def vtable_image() -> bytes:
+	flag = b"CSetCountryFlagEffect::Execute %s\0"
+	clr = b"CClrCountryFlagEffect::Execute\0"
+	# A leading NUL keeps each debug string a real C string. The previous
+	# section's padding is 0x90, which would otherwise glue the first string on.
+	prefix = bytearray(b"\0")
+	flag_at = len(prefix)
+	prefix.extend(flag)
+	clr_at = len(prefix)
+	prefix.extend(clr)
+	prefix.extend(token_records())
+	prefix.extend(b"\x00" * ((8 - (len(prefix) % 8)) % 8))
+	thunks = (TEXT_RVA, TEXT_RVA + 0x20, TEXT_RVA + 0x40)
+	execs = (TEXT_RVA + 0x100, TEXT_RVA + 0x140, TEXT_RVA + 0x180)
+	shared = TEXT_RVA + 0x1C0
+	tokens = (0x2735, 0x2736, 0x2710)
+	table = bytearray()
+	for thunk_rva, exec_rva in zip(thunks, execs):
+		table.extend(
+			struct.pack(
+				"<QQQ",
+				IMAGE_BASE + thunk_rva,
+				IMAGE_BASE + shared,
+				IMAGE_BASE + exec_rva,
+			)
+		)
+	flag_rva = RDATA_RVA + flag_at
+	clr_rva = RDATA_RVA + clr_at
+	text = [
+		(thunks[0], thunk(tokens[0])),
+		(thunks[1], thunk(tokens[1])),
+		(thunks[2], thunk(tokens[2])),
+		(execs[0], lea_rdx(flag_rva, execs[0]) + b"\xc3"),
+		(execs[1], lea_rdx(clr_rva, execs[1]) + b"\xc3"),
+		(execs[2], b"\xc3"),
+		(shared, b"\xc3"),
+	]
+	return build_pe((), *text, extra_rdata=bytes(prefix) + bytes(table))
+
+
+class TokenDispatch(unittest.TestCase):
+	def test_a_rip_relative_jump_table_pins_the_slot(self) -> None:
+		handlers = (TEXT_RVA + 0x140, TEXT_RVA + 0x180)
+		image = load_bytes(jump_image(handlers, limit=1))
+		report = review_catalog(image, catalog(), game_version="1.37.5")
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(treasury["treatment"], "pinned")
+		self.assertEqual(treasury["failure"], None)
+		self.assertEqual(treasury["handler"]["evidence"], "token_jump_table")
+		self.assertEqual(treasury["handler"]["address"], IMAGE_BASE + handlers[0])
+		self.assertEqual(report["comparison"]["treatment"]["pinned"], 1)
+		self.assertEqual(
+			report["primitives"]["set_country_flag"]["treatment"], "token_only"
+		)
+
+	def test_a_shared_jump_slot_is_not_a_handler(self) -> None:
+		image = load_bytes(jump_image((TEXT_RVA + 0x140, TEXT_RVA + 0x140), limit=1))
+		report = review_catalog(image, catalog(), game_version="1.37.5")
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(treasury["treatment"], "token_only")
+		self.assertEqual(treasury["failure"], "dispatcher_ambiguous")
+		self.assertIsNone(treasury["handler"])
+
+	def test_a_jump_slot_that_is_not_a_function_refuses_the_table(self) -> None:
+		image = load_bytes(jump_image((TEXT_RVA + 0x141, TEXT_RVA + 0x180), limit=1))
+		report = review_catalog(image, catalog(), game_version="1.37.5")
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(treasury["treatment"], "token_only")
+		self.assertEqual(treasury["failure"], "dispatcher_unverified")
+		self.assertIsNone(treasury["handler"])
+
+	def test_an_unbased_register_table_is_not_read(self) -> None:
+		# `sub ecx, token; mov ecx, [r15+rax*4+disp]; add rcx, r15; jmp rcx`
+		# names no RIP-relative table, so the base register stays unknown.
+		tokens = token_records()
+		code = bytes.fromhex(
+			"81e91027000083f9010f87000000004863c1418b8c87880000004903cfffe1"
+		)
+		image = load_bytes(
+			build_pe(
+				(),
+				(TEXT_RVA, code),
+				(TEXT_RVA + 0x80, b"\xc3"),
+				extra_rdata=tokens,
+			)
+		)
+		report = review_catalog(image, catalog(), game_version="1.37.5")
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(treasury["treatment"], "token_only")
+		self.assertEqual(treasury["failure"], "handler_unproven")
+
+	def test_a_unique_factory_pair_pins_the_factory(self) -> None:
+		image = load_bytes(factory_image())
+		report = review_catalog(image, catalog(), game_version="1.37.5")
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(treasury["treatment"], "factory_pinned")
+		self.assertEqual(treasury["handler"]["evidence"], "token_factory_pair")
+		self.assertEqual(treasury["handler"]["address"], IMAGE_BASE + TEXT_RVA + 0x40)
+		self.assertEqual(report["comparison"]["treatment"]["factory_pinned"], 1)
+		self.assertEqual(
+			report["primitives"]["set_country_flag"]["treatment"], "token_only"
+		)
+
+	def test_a_shared_factory_function_is_ambiguous(self) -> None:
+		image = load_bytes(factory_image(shared=True))
+		report = review_catalog(image, catalog(), game_version="1.37.5")
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(treasury["treatment"], "token_only")
+		self.assertEqual(treasury["failure"], "dispatcher_ambiguous")
+		self.assertIsNone(treasury["handler"])
+
+	def test_a_factory_that_is_a_console_command_is_refused(self) -> None:
+		image = load_bytes(factory_image(console=True))
+		report = review_catalog(image, catalog(), game_version="1.37.5")
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(treasury["baseline"], "rejected_console_cmd")
+		self.assertEqual(treasury["treatment"], "token_only")
+		self.assertEqual(treasury["failure"], "dispatcher_console")
+		self.assertIsNone(treasury["handler"])
+		self.assertEqual(treasury["console_handlers"], [IMAGE_BASE + TEXT_RVA + 0x40])
+
+	def test_a_vtable_slot_learned_from_debug_strings_pins_the_third(self) -> None:
+		image = load_bytes(vtable_image())
+		source = catalog()
+		source["primitives"]["clr_country_flag"] = {"kind": "effect", "facts": {}}
+		report = review_catalog(image, source, game_version="1.37.5")
+		flag = report["primitives"]["set_country_flag"]
+		clr = report["primitives"]["clr_country_flag"]
+		treasury = report["primitives"]["add_treasury"]
+		self.assertEqual(flag["treatment"], "pinned")
+		self.assertEqual(flag["handler"]["evidence"], "debug_string")
+		self.assertEqual(clr["treatment"], "pinned")
+		self.assertEqual(clr["handler"]["evidence"], "debug_string")
+		self.assertEqual(treasury["treatment"], "pinned")
+		self.assertEqual(treasury["failure"], None)
+		self.assertEqual(treasury["handler"]["evidence"], "token_vtable")
+		self.assertEqual(treasury["handler"]["address"], IMAGE_BASE + TEXT_RVA + 0x180)
+		self.assertNotIn(treasury["handler"]["address"], treasury["console_handlers"])
 
 
 if __name__ == "__main__":

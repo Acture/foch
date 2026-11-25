@@ -107,10 +107,51 @@ static DWORD g_caller;
 
 extern void fixture_state_entry(void *state);
 
+/* ===== Bounded two-thread spread rendezvous =====
+   The takeover proofs must show judgment/state work on at least two pool
+   threads, but the Windows threadpool spawns extra threads lazily: one
+   thread can drain every queued part before a second thread exists (all
+   observed CI collapses finished in under 0.3 ms). The first distinct
+   worker entering the rendezvous therefore blocks on a manual-reset event
+   until a second distinct worker arrives, which forces the pool to run the
+   remaining queued parts elsewhere; a 100 ms safety timeout bounds the wait
+   if no second thread ever comes. Serial controls, native fallbacks and
+   unhooked baselines run these callbacks on the main thread and skip the
+   rendezvous entirely, so only hooked pool runs pay anything. */
+static DWORD g_main_tid;
+static HANDLE g_spread_event;
+static volatile LONG g_spread_first;
+static volatile LONG g_spread_second;
+static volatile LONG g_spread_gave_up;
+
+static void spread_reset(void) {
+	InterlockedExchange(&g_spread_first, 0);
+	InterlockedExchange(&g_spread_second, 0);
+	InterlockedExchange(&g_spread_gave_up, 0);
+	if (g_spread_event) ResetEvent(g_spread_event);
+}
+
+static void spread_enter(DWORD tid) {
+	LONG first;
+	if (g_spread_gave_up) return;
+	first = InterlockedCompareExchange(&g_spread_first, (LONG)tid, 0);
+	if (first == 0) {
+		if (!g_spread_event || WaitForSingleObject(g_spread_event, 100) != WAIT_OBJECT_0)
+			InterlockedExchange(&g_spread_gave_up, 1);
+		return;
+	}
+	if (first == (LONG)tid) return;
+	if (InterlockedCompareExchange(&g_spread_second, (LONG)tid, 0) == 0 || g_spread_second == (LONG)tid) {
+		if (g_spread_event) SetEvent(g_spread_event);
+	}
+}
+
 void fixture_state_body(void *state) {
 	struct fixture_state *row = state;
+	DWORD tid = GetCurrentThreadId();
+	if (tid != g_main_tid) spread_enter(tid);
 	InterlockedIncrement(&row->hits);
-	row->tid = GetCurrentThreadId();
+	row->tid = tid;
 }
 
 void fixture_country_monthly(void *country, unsigned dl, unsigned r8_arg) {
@@ -172,6 +213,7 @@ static int fixture_drive_countries(void) {
 		rc = 35;
 	} else {
 		g_caller = GetCurrentThreadId();
+		spread_reset();
 		fixture_run_countries(g_world, 0, FIXTURE_COUNTRIES, 0xA5, 0x3C);
 		for (i = 0; i < FIXTURE_COUNTRIES; ++i) {
 			int s;
@@ -298,9 +340,61 @@ static void fixture_fill_active_countries(struct fixture_active_country *countri
 	}
 }
 
+/* ===== Active-judge spread rendezvous =====
+   The active takeover's pool workers run only plugin code and reach the
+   fixture solely through the country rows, so the two-thread rendezvous
+   cannot live in a callback: it rides guard pages over the row allocation.
+   Each judging worker's first row access raises a guard-page violation the
+   handler below turns into spread_enter(), which blocks the first distinct
+   worker until a second distinct worker judges elsewhere. The pages disarm
+   (one at a time, never re-armed) as threads touch them, so the wait fires
+   once per run at most. Only the hooked run arms the guard: the unhooked
+   baseline judges nothing on a pool and must stay timeout-free. */
+static unsigned char *g_judge_lo, *g_judge_hi;
+static PVOID g_judge_veh;
+
+static LONG WINAPI judge_guard_veh(EXCEPTION_POINTERS *ep) {
+	EXCEPTION_RECORD *record = ep->ExceptionRecord;
+	if (record->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION || record->NumberParameters < 2)
+		return EXCEPTION_CONTINUE_SEARCH;
+	if ((unsigned char *)record->ExceptionInformation[1] < g_judge_lo ||
+		(unsigned char *)record->ExceptionInformation[1] >= g_judge_hi)
+		return EXCEPTION_CONTINUE_SEARCH;
+	spread_enter(GetCurrentThreadId());
+	return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static int judge_guard_arm(const void *rows, size_t bytes, const unsigned char *site) {
+	unsigned char *lo = (unsigned char *)rows;
+	unsigned char *hi = lo + bytes;
+	DWORD old = 0;
+	if (!site || site[0] != 0xFF || site[1] != 0x25) return 0; /* redirect missing: unhooked run */
+	g_judge_veh = AddVectoredExceptionHandler(1, judge_guard_veh);
+	if (!g_judge_veh) return 0;
+	g_judge_lo = lo;
+	g_judge_hi = hi;
+	if (!VirtualProtect(lo, hi - lo, PAGE_READWRITE | PAGE_GUARD, &old)) {
+		g_judge_lo = g_judge_hi = NULL;
+		RemoveVectoredExceptionHandler(g_judge_veh);
+		g_judge_veh = NULL;
+		return 0;
+	}
+	spread_reset();
+	return 1;
+}
+
+static void judge_guard_disarm(void) {
+	DWORD old = 0;
+	if (!g_judge_veh) return;
+	VirtualProtect(g_judge_lo, g_judge_hi - g_judge_lo, PAGE_READWRITE, &old);
+	g_judge_lo = g_judge_hi = NULL;
+	RemoveVectoredExceptionHandler(g_judge_veh);
+	g_judge_veh = NULL;
+}
+
 static int fixture_drive_active(void) {
 	struct fixture_active_world world;
-	struct fixture_active_country countries[ACTIVE_COUNTRIES];
+	struct fixture_active_country *countries;
 	void *ptrs[ACTIVE_COUNTRIES];
 	uint64_t tag_store[ACTIVE_COUNTRIES];
 	void *ptr_store[ACTIVE_COUNTRIES];
@@ -332,6 +426,10 @@ static int fixture_drive_active(void) {
 	memset(&world, 0, sizeof(world));
 	memset(tag_store, 0, sizeof(tag_store));
 	memset(ptr_store, 0, sizeof(ptr_store));
+	/* Page-private so the judge guard below never covers another object. */
+	countries = VirtualAlloc(NULL, ACTIVE_COUNTRIES * sizeof(*countries),
+		MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (!countries) return 44;
 	fixture_fill_active_countries(countries, ptrs);
 	for (i = 0; i < ACTIVE_COUNTRIES; ++i) {
 		if (active_list1(countries[i].tag, countries[i].field_1344, countries[i].field_d28))
@@ -354,7 +452,11 @@ static int fixture_drive_active(void) {
 	bytes_ok = active_bytes_ok(site);
 	caller = GetCurrentThreadId();
 	if (!bytes_ok) rc = 40;
-	else sum = fixture_run_active(&world, 1);
+	else {
+		judge_guard_arm(countries, ACTIVE_COUNTRIES * sizeof(*countries), site);
+		sum = fixture_run_active(&world, 1);
+		judge_guard_disarm();
+	}
 	tags[0] = 0;
 	cursor = tags;
 	actual_tag_n = (int)world.list1_size;
@@ -415,6 +517,7 @@ static int fixture_drive_active(void) {
 		CloseHandle(file);
 	}
 	printf("%s", proof);
+	VirtualFree(countries, 0, MEM_RELEASE);
 	return rc;
 }
 
@@ -556,6 +659,8 @@ static void stage(const wchar_t *name) {
 static void before_main(void) {
 	HMODULE native = GetModuleHandleW(L"native.dll");
 	stage(L"foch-host\\game-constructor-entered");
+	g_main_tid = GetCurrentThreadId();
+	g_spread_event = CreateEventA(NULL, TRUE, FALSE, NULL);
 	if (native) {
 		typedef int (*ReadyFn)(void);
 		ReadyFn ready = (ReadyFn)GetProcAddress(native, "FixtureInitialized");
