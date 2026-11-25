@@ -2,7 +2,11 @@
 
 `eu4-country-month` (`v0.1.0`) is an experimental native Windows x86_64 plugin for `foch-runtime-host`
 targeting **Europa Universalis IV 1.37.5** (`eu4.exe` SHA-256
-`c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e`). It parallelizes per-country
+`c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e`, the AMDAC
+checksum-patched baseline, or
+`9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a`, the stock
+Steam digest; live verification has only been run against the AMDAC baseline).
+It parallelizes per-country
 monthly state updates ahead of the game-thread monthly country loop, relocates the daily
 active-country loop body, and includes opt-in environment-gated parallel dispatchers for Daily Loop A
 (`0x759640`) and the Daily Loop B (`0xa89360`) fixture stand-in.
@@ -189,7 +193,7 @@ cargo test -p foch-runtime-host
 # 2. Build and stage eu4_country_month.dll + foch-plugin.toml into target\plugins\eu4-country-month
 pwsh -File src/plugins/eu4-country-month/build.ps1
 
-# 3. Verify staged manifest/DLL and check an installed eu4.exe against the pinned 1.37.5 SHA-256 hash
+# 3. Verify staged manifest/DLL and check an installed eu4.exe against the known 1.37.5 SHA-256 digests
 pwsh -File src/plugins/eu4-country-month/phase4-preflight.ps1 -Build -ExePath "C:\path\to\eu4.exe"
 ```
 
@@ -208,7 +212,7 @@ For manual Phase-4 A/B testing (never auto-launched by preflight scripts):
 | :--- | :--- | :--- |
 | Host & fixture differential tests (`cargo test -p foch-runtime-host`) | **Verified** | Covers monthly state split, active-country loop relocation/fixture, Daily Loop A & B fixture parity, large-mod counts, and allocation-failure fallbacks. |
 | Production x64 DLL build & manifest staging (`build.ps1`) | **Verified** | Builds with MSVC `cl.exe` (`/O2 /LD /W4`) and `ml64.exe` without fixture defines. |
-| Pinned `eu4.exe` 1.37.5 hash & package preflight (`phase4-preflight.ps1`) | **Verified** | Confirms SHA-256 `c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e` without starting the game. |
+| Pinned `eu4.exe` 1.37.5 hash & package preflight (`phase4-preflight.ps1`) | **Verified** | Confirms SHA-256 `c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e` (AMDAC baseline) or `9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a` (stock Steam) and prints which variant matched, without starting the game; stock live verification is pending. |
 | Live EU4 1.37.5 end-to-end soak & save determinism | **Not Yet Verified** | Manual operator ladder required; abort any `FOCH_DAILY_A=1` arm if `daily-a-real.txt` reports `arena-live != 0` or if two saves from the same start diverge. |
 | Live EU4 A/B performance timings (`FOCH_COUNTRY_SERIAL=1` vs pool, `FOCH_DAILY_A=1`) | **Not Yet Verified** | QPC `span-ns` proof logging (`countries-real.txt`, `daily-a-real.txt`) is implemented, awaiting live benchmark capture. |
 | Daily Loop B (`0xa89360`) live-game parallelization | **Intentionally Disabled** | `FOCH_DAILY_B=1` hooks only `fixture_daily_b_addr`; the installed `0xa89360` prologue is blocked from hooking due to `0x93d750` / `0xa1a9a0` / `0x14d6110` aliasing and RIP-relative writes. |
