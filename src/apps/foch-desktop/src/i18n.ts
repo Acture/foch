@@ -84,6 +84,13 @@ export interface Copy {
 		languageAuto: string;
 		saved: string;
 		customHint: string;
+		testConnectivity: string;
+		testingConnectivity: string;
+		reachable: string;
+		unreachable: string;
+		connectivityResults: string;
+		sha256Reminder: string;
+		latency: string;
 	};
 	merge: {
 		checkingKicker: string;
@@ -183,6 +190,17 @@ export interface Copy {
 		incompleteBlocked: string;
 		detectedInput: string;
 		readOnlyBadge: string;
+		exportTitle: string;
+		exportHelp: string;
+		exportAction: string;
+		confirmExport: string;
+		exporting: string;
+		exported: string;
+		outputFolder: string;
+		generatedFiles: string;
+		readyExport: string;
+		partialExport: string;
+		committed: string;
 		disposition: Record<MergeDisposition, string>;
 		stage: Record<MergeAnalysisStage, string>;
 		state: Record<MergeAnalysisState, string>;
@@ -269,6 +287,14 @@ const en: Copy = {
 		languageAuto: "Auto",
 		saved: "Saved",
 		customHint: "Separate HTTPS prefixes with commas.",
+		testConnectivity: "Test Connectivity",
+		testingConnectivity: "Testing connectivity…",
+		reachable: "Reachable",
+		unreachable: "Unreachable",
+		connectivityResults: "Connectivity",
+		sha256Reminder:
+			"Mirror downloads still enforce SHA-256 and PE export validation before anything is installed.",
+		latency: "Latency",
 	},
 	merge: {
 		checkingKicker: "First-launch inspection",
@@ -376,6 +402,20 @@ const en: Copy = {
 		incompleteBlocked: "Incomplete review blocked",
 		detectedInput: "Detected input",
 		readOnlyBadge: "Read-only analysis",
+		exportTitle: "Export Merged Mod",
+		exportHelp:
+			"Choose a new or empty folder. Export never edits Steam, the game directory, or source mods. A folder that already contains files is refused.",
+		exportAction: "Export Merged Mod",
+		confirmExport: "Confirm export to this folder",
+		exporting: "Exporting…",
+		exported: "Exported",
+		outputFolder: "Output folder",
+		generatedFiles: "Generated files",
+		readyExport:
+			"Safe files were written to an empty folder. Source mods and the game directory were not modified.",
+		partialExport:
+			"Safe files and definition modules were written. Unsafe units were deferred and were not overwritten.",
+		committed: "This analysis has already been exported.",
 		disposition: {
 			safe: "Safe merge",
 			copy: "Copy through",
@@ -484,6 +524,13 @@ const zh: Copy = {
 		languageAuto: "自动",
 		saved: "已保存",
 		customHint: "多个 HTTPS 前缀用逗号分隔。",
+		testConnectivity: "测试连通性",
+		testingConnectivity: "正在测试连通性…",
+		reachable: "可达",
+		unreachable: "不可达",
+		connectivityResults: "连通性",
+		sha256Reminder: "镜像下载在安装前仍会强制校验 SHA-256，并检查 PE 导出表。",
+		latency: "延迟",
 	},
 	merge: {
 		checkingKicker: "首次检查",
@@ -585,6 +632,18 @@ const zh: Copy = {
 		incompleteBlocked: "不完整审查受阻",
 		detectedInput: "检测到的输入",
 		readOnlyBadge: "只读分析",
+		exportTitle: "导出合并 Mod",
+		exportHelp:
+			"请选择一个新建或空的文件夹。导出不会修改 Steam、游戏目录或源 Mod。已有文件的文件夹会被拒绝。",
+		exportAction: "导出合并 Mod",
+		confirmExport: "确认导出到此文件夹",
+		exporting: "正在导出…",
+		exported: "已导出",
+		outputFolder: "输出文件夹",
+		generatedFiles: "生成的文件",
+		readyExport: "已把安全文件写入空文件夹。源 Mod 和游戏目录没有被修改。",
+		partialExport: "已写入安全的文件和定义模块。不安全的单元已延后，没有被覆盖。",
+		committed: "这次分析已经导出。",
 		disposition: {
 			safe: "安全合并",
 			copy: "原样复制",

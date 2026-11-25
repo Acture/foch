@@ -349,6 +349,7 @@ pub const KEY_HELP: &[(&str, &str, &str)] = &[
 	("m", "release the mouse for terminal text selection", ""),
 	("i", "switch between playset and review", ""),
 	("?", "this help", ""),
+	("t", "test download connectivity", ""),
 	("q", "quit", ""),
 ];
 
@@ -429,6 +430,20 @@ pub struct App {
 	pub(super) last_run_dir: Option<std::path::PathBuf>,
 	pub(super) runtime_states: std::collections::BTreeMap<String, String>,
 	pub(super) host_label: String,
+	/// Last Tab 3 connectivity probe. Kept apart from `notice`, which the next
+	/// key clears.
+	pub(super) connectivity: Option<foch::plugin::ConnectivityReport>,
+	pub(super) connectivity_probe: fn(
+		&foch::plugin::TransportConfig,
+		&foch::plugin::ConnectivityProbeOptions,
+	) -> foch::plugin::ConnectivityReport,
+}
+
+fn live_connectivity_probe(
+	config: &foch::plugin::TransportConfig,
+	options: &foch::plugin::ConnectivityProbeOptions,
+) -> foch::plugin::ConnectivityReport {
+	foch::plugin::probe_connectivity(config, options)
 }
 
 impl Default for App {
@@ -484,6 +499,8 @@ impl Default for App {
 			last_run_dir: None,
 			runtime_states: std::collections::BTreeMap::new(),
 			host_label: String::new(),
+			connectivity: None,
+			connectivity_probe: live_connectivity_probe,
 		}
 	}
 }
@@ -1248,6 +1265,11 @@ impl App {
 				self.cycle_setting(true);
 			}
 			KeyCode::Left | KeyCode::Char('-') => self.cycle_setting(false),
+			KeyCode::Char('t') => {
+				let config = self.preferences.to_transport_config();
+				let options = foch::plugin::ConnectivityProbeOptions::default();
+				self.connectivity = Some((self.connectivity_probe)(&config, &options));
+			}
 			KeyCode::Char('?') => self.help = true,
 			_ => {}
 		}
@@ -2310,5 +2332,98 @@ max = 2
 		press(&mut app, KeyCode::Char('1'));
 		app.ui_language = UiLanguage::En;
 		assert!(rendered(&app).contains("[1] Launch & Plugins"));
+	}
+
+	thread_local! {
+		static STUB_CONNECTIVITY: std::cell::RefCell<Option<foch::plugin::ConnectivityReport>> =
+			const { std::cell::RefCell::new(None) };
+	}
+
+	fn stub_connectivity_probe(
+		config: &foch::plugin::TransportConfig,
+		_options: &foch::plugin::ConnectivityProbeOptions,
+	) -> foch::plugin::ConnectivityReport {
+		STUB_CONNECTIVITY.with(|slot| {
+			let mut report = slot.borrow().clone().expect("connectivity stub");
+			report.transport = config.transport;
+			report.mirror_policy = config.mirror.clone();
+			report
+		})
+	}
+
+	fn stub_route(reachable: bool, status: u16, detail: &str) -> foch::plugin::ConnectivityReport {
+		foch::plugin::ConnectivityReport {
+			transport: foch::plugin::InstallTransport::Http,
+			mirror_policy: foch::plugin::MirrorPolicy::Direct,
+			routes: vec![foch::plugin::RouteProbeOutcome {
+				label: "direct".to_string(),
+				url: "http://127.0.0.1/offline".to_string(),
+				kind: foch::plugin::ProbeRouteKind::Direct,
+				reachable,
+				http_status: Some(status),
+				latency_ms: 7,
+				detail: detail.to_string(),
+			}],
+		}
+	}
+
+	#[test]
+	fn settings_tab_t_renders_a_reachable_probe_without_saving_preferences() {
+		let temp = tempfile::tempdir().unwrap();
+		let preferences = temp.path().join("ui-settings.toml");
+		let mut app = App::open_launch(
+			UserPreferences {
+				language: LanguagePreference::En,
+				transport: TransportPreference::Http,
+				..UserPreferences::default()
+			},
+			Some(preferences.clone()),
+		);
+		app.connectivity_probe = stub_connectivity_probe;
+		STUB_CONNECTIVITY.with(|slot| {
+			*slot.borrow_mut() = Some(stub_route(true, 200, "HEAD"));
+		});
+		press(&mut app, KeyCode::Char('3'));
+		assert_eq!(app.top_tab, TopTab::NetworkSettings);
+		press(&mut app, KeyCode::Char('t'));
+		assert!(!preferences.exists(), "t must not write ui-settings.toml");
+		assert_eq!(
+			app.connectivity.as_ref().map(|report| report.transport),
+			Some(foch::plugin::InstallTransport::Http)
+		);
+		let shown = rendered(&app);
+		assert!(
+			shown.contains("direct reachable HTTP 200 7 ms HEAD"),
+			"{shown}"
+		);
+		assert!(shown.contains("test connectivity"), "{shown}");
+		assert!(
+			shown.contains("SHA-256 and PE export validation"),
+			"{shown}"
+		);
+	}
+
+	#[test]
+	fn settings_tab_t_renders_an_unreachable_probe_in_chinese() {
+		let mut app = App::open_launch(
+			UserPreferences {
+				language: LanguagePreference::ZhCn,
+				..UserPreferences::default()
+			},
+			None,
+		);
+		app.connectivity_probe = stub_connectivity_probe;
+		STUB_CONNECTIVITY.with(|slot| {
+			*slot.borrow_mut() = Some(stub_route(false, 502, "HEAD 502"));
+		});
+		press(&mut app, KeyCode::Char('3'));
+		press(&mut app, KeyCode::Char('t'));
+		let shown = rendered(&app);
+		assert!(
+			shown.contains("direct 不可达 HTTP 502 7 ms HEAD 502"),
+			"{shown}"
+		);
+		assert!(shown.contains("测试连通性"), "{shown}");
+		assert!(shown.contains("PE 导出表"), "{shown}");
 	}
 }

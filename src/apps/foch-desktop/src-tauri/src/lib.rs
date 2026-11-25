@@ -15,6 +15,7 @@ pub fn run() {
 			commands::get_merge_analysis_summary,
 			commands::list_merge_units,
 			commands::get_merge_unit,
+			commands::commit_merge_analysis,
 			commands::get_plugin_overview,
 			commands::install_plugin,
 			commands::import_plugin_dir,
@@ -24,6 +25,7 @@ pub fn run() {
 			commands::get_launch_status,
 			commands::get_desktop_settings,
 			commands::save_desktop_settings,
+			commands::test_download_connectivity,
 		])
 		.run(tauri::generate_context!())
 		.expect("failed to run Foch desktop");

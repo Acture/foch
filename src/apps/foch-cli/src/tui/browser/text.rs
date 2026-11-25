@@ -115,6 +115,47 @@ pub fn language_value(
 	}
 }
 
+pub fn connectivity_action(language: UiLanguage) -> &'static str {
+	match language {
+		UiLanguage::ZhCn => "测试连通性",
+		UiLanguage::En => "test connectivity",
+	}
+}
+
+pub fn route_status(language: UiLanguage, reachable: bool) -> &'static str {
+	match (language, reachable) {
+		(UiLanguage::ZhCn, true) => "可达",
+		(UiLanguage::ZhCn, false) => "不可达",
+		(UiLanguage::En, true) => "reachable",
+		(UiLanguage::En, false) => "unreachable",
+	}
+}
+
+pub fn route_line(
+	language: UiLanguage,
+	label: &str,
+	reachable: bool,
+	http_status: Option<u16>,
+	latency_ms: u64,
+	detail: &str,
+) -> String {
+	let status = route_status(language, reachable);
+	let http = match http_status {
+		Some(status) => format!(" HTTP {status}"),
+		None => String::new(),
+	};
+	format!("{label} {status}{http} {latency_ms} ms {detail}")
+}
+
+pub fn sha256_reminder(language: UiLanguage) -> &'static str {
+	match language {
+		UiLanguage::ZhCn => "镜像下载在安装前仍会强制校验 SHA-256，并检查 PE 导出表。",
+		UiLanguage::En => {
+			"Mirror downloads still enforce SHA-256 and PE export validation before anything is installed."
+		}
+	}
+}
+
 pub fn not_installed(language: UiLanguage, id: &str) -> String {
 	match language {
 		UiLanguage::ZhCn => format!("插件 {id} 尚未安装，按 i 安装"),

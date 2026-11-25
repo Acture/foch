@@ -24,6 +24,7 @@ import {
 	type InputRecoveryOption,
 	type MergeAnalysisSummary,
 	type MergeAnalysisState,
+	type MergeCommitResult,
 	type MergeDisposition,
 	type MergeUnitDetail,
 	type MergeUnitListItem,
@@ -456,6 +457,99 @@ function DispositionRibbon({
 				))}
 			</div>
 		</div>
+	);
+}
+
+function canExportMerge(state: MergeAnalysisState): boolean {
+	return state === "ready" || state === "ready_with_deferrals";
+}
+
+function ExportMergedMod({
+	analysisId,
+	client,
+}: {
+	analysisId: string;
+	client: DesktopClient;
+}): JSX.Element {
+	const copy = useCopy();
+	const [outputDir, setOutputDir] = useState<string>("");
+	const [confirming, setConfirming] = useState<boolean>(false);
+	const [exporting, setExporting] = useState<boolean>(false);
+	const [result, setResult] = useState<MergeCommitResult | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const committed: boolean = result !== null;
+	const buttonLabel: string = exporting
+		? copy.merge.exporting
+		: committed
+			? copy.merge.committed
+			: confirming
+				? copy.merge.confirmExport
+				: copy.merge.exportAction;
+
+	const exportMod = async (): Promise<void> => {
+		if (outputDir.length === 0 || exporting || committed) return;
+		if (!confirming) {
+			setConfirming(true);
+			setError(null);
+			return;
+		}
+		setExporting(true);
+		setError(null);
+		try {
+			setResult(await client.commitMergeAnalysis(analysisId, outputDir));
+			setConfirming(false);
+		} catch (caught: unknown) {
+			setError(parseDesktopCommandError(caught).message);
+			setConfirming(false);
+		} finally {
+			setExporting(false);
+		}
+	};
+
+	return (
+		<section className="export-panel" aria-labelledby="export-merged-mod-title">
+			<p className="section-kicker">{copy.merge.exportTitle}</p>
+			<h2 id="export-merged-mod-title">{copy.merge.exportTitle}</h2>
+			<p>{copy.merge.exportHelp}</p>
+			<label className="settings-row">
+				<span>{copy.merge.outputFolder}</span>
+				<input
+					aria-label={copy.merge.outputFolder}
+					value={outputDir}
+					disabled={exporting || committed}
+					onChange={(event): void => {
+						setOutputDir(event.target.value);
+						setConfirming(false);
+					}}
+				/>
+			</label>
+			<button
+				className="primary-action"
+				type="button"
+				disabled={outputDir.length === 0 || exporting || committed}
+				onClick={(): void => void exportMod()}
+			>
+				{buttonLabel}
+			</button>
+			{result !== null && (
+				<div role="status">
+					<p className="path-value">{result.outputDir}</p>
+					<p>
+						{copy.merge.generatedFiles} {result.generatedFileCount}
+					</p>
+					<p>
+						{result.mergeStatus === "partial_success"
+							? copy.merge.partialExport
+							: copy.merge.readyExport}
+					</p>
+				</div>
+			)}
+			{error !== null && (
+				<p className="error-copy" role="alert">
+					{error}
+				</p>
+			)}
+		</section>
 	);
 }
 
@@ -1243,6 +1337,13 @@ export default function App({
 													</div>
 												)}
 												{reviewAvailable && <DispositionRibbon summary={summary} />}
+												{canExportMerge(summary.state) && (
+													<ExportMergedMod
+														key={summary.analysisId}
+														analysisId={summary.analysisId}
+														client={client}
+													/>
+												)}
 												{!reviewAvailable && (
 													<ReviewUnavailablePanel
 														state={summary.state}
