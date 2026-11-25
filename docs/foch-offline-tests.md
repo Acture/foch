@@ -59,7 +59,7 @@ uv run --locked --project src/tools/eu4-analysis python -m eu4_analysis semantic
 
 ## 建模原语
 
-全部在用例的国家 scope 中执行:
+国家原语只在国家 scope 中执行,省份原语只在省份 scope 中执行。scope 不对就拒绝,不换一个默认值凑合。
 
 | 类别 | 原语 | 建模语义 |
 | --- | --- | --- |
@@ -73,16 +73,28 @@ uv run --locked --project src/tools/eu4-analysis python -m eu4_analysis semantic
 | 触发 | `check_variable` | `which >= value` |
 | 触发 | `always`、`tag`、`AND/OR/NOT/NOR/NAND`、`hidden_trigger` | 常量、scope 标签、逻辑组合 |
 
-作用域链:`ROOT` 是用例的开局国家;`THIS` 是当前作用域;`PREV` 是紧邻的外层作用域(顶层不可用,预检拒绝);`FROM` 是触发当前事件的国家(仅在被触发事件内可解析)。`NOT`/`AND` 永远是逻辑关键字;`NOR` 在效果块里是国家(挪威)、在条件块里是逻辑,与 lint 足迹的取舍一致。
+作用域链:`ROOT` 在国家事件里是用例的开局国家,在省份事件里是目标省份;`THIS` 是当前作用域;`PREV` 是紧邻的外层作用域(顶层不可用,预检拒绝);`FROM` 是执行这次 `country_event`/`province_event` 的 scope(仅在被触发事件内可解析)。国家与省份可以互相进入,链本身不变。`NOT`/`AND` 永远是逻辑关键字;`NOR` 在效果块里是国家(挪威)、在条件块里是逻辑,与 lint 足迹的取舍一致。
 
-事件链:被触发事件的 `immediate` 在触发作用域上执行并带 `FROM`;`immediate` 内再触发形成链,immediate 环(自触发)拒绝。`country_event ... days = N` 的事件进入按日期排序的延迟队列,`advance_days` 推进时按投递日、同日按入队顺序执行——与在线层一致,同日内顺序不承诺;总投递次数上限 4096,自调度事件对会被拒绝而不是死循环。
+省份 scope:
+
+| 切换 | 从哪进入 | 拒绝 |
+| --- | --- | --- |
+| `1 = { ... }` | 任意 scope,进入该省份 | 不是大于等于 1 的整数 id 时不当作省份 |
+| `capital_scope = { ... }` | 国家 | 当前国家没有历史播种的 `capital`,或当前 scope 已是省份 |
+| `owner` / `controller = { ... }` | 省份 | 该槽未播种且用例没写过,或当前 scope 是国家 |
+| `every_owned_province` / `any_owned_province` | 国家 | 按省份 id 升序。`limit` 至多一个;拥有者未知的省份不算拥有 |
+| `every_subject_country` / `any_subject_country` | 国家 | 按附庸 tag 排序 |
+
+省份效果:`set/clr_province_flag`、`add_base_tax`/`add_base_production`/`add_base_manpower`(整数加减;槽位未播种则拒绝,不从 0 起算)、`cede_province`(同时改 owner 与 controller)、`add_core`/`remove_core`(core 集合从未被提及时,`remove_core` 拒绝,`add_core` 才开始记录)、`province_event = { id = ... days = N }`。省份触发:`has_province_flag`、`owned_by`、`controlled_by`、`is_core`、`base_tax`/`base_production`/`base_manpower`/`development`(均为 `>=`;`development` 是三项之和,任一项未知则拒绝并点名)。国家触发:`owns`、`owns_core_province`(拥有者未知则拒绝;拥有者不是本国则为假;本国拥有但 core 集合未知则拒绝)。
+
+事件链:被触发事件的 `immediate` 在目标 scope 上执行并带 `FROM`;`immediate` 内再触发形成链,immediate 环(自触发)拒绝。`country_event` 的 `ROOT` 仍是用例开局国家;`province_event` 的 `ROOT` 与 `FROM` 都是开火时的省份,`PREV` 清空。`days = N` 进入按日期排序的延迟队列,`advance_days` 推进时按投递日、同日按入队顺序执行——与在线层一致,同日内顺序不承诺;总投递次数上限 4096,自调度事件对会被拒绝而不是死循环。`#test` 的 `fire` 仍只接受 `country_event`。
 
 **拒绝而非近似**(预检一次给出全部原因,带源码位置):
 
-- 三类 key:不在清单 / 游戏已知但未建模(内置目录可辨时点名)/ 完全未知;
-- `every_country` 等"所有国家"迭代——没有 base snapshot 就不知道国家集合;
-- `random`/`random_list`——EU4 的 RNG 行为未验证,不自造随机;
-- 国家数值槽位的读写(`add_adm_power`、`adm_power = 50` 等);
+- 三类 key:不在清单 / 游戏已知但未建模(内置目录可辨时点名)/ 完全未知;`pinned` 清单里没有处理函数的原语同样拒绝,省份原语包括在内;
+- 国家原语用在省份 scope,或省份原语用在国家 scope;
+- 省份的 owner、controller、发展度分量、core 集合或国家首都没有播种也没有被用例写过;
+- `random` 只决定 chance 为 0 和 100;`random_list` 仍拒绝;
 - `ai = on`(模型没有 AI 决策);
 - fire 目标事件含非 `name` 的 option 内容、`after`、`trigger` 块——hidden 事件 option 执行语义未经本项目真实验证。
 
@@ -117,7 +129,7 @@ foch test ./my-mod --offline --out ./offline-results
 
 ## 播种:真实开局状态(可选)
 
-`foch test PATH --offline --game-path <安装目录>` 显式指定游戏安装时,离线层读取 `history/countries/*.txt`(容错非 UTF-8 注释)播种:**全部开局国家进入模型世界**(`every_country` 迭代真实 1444 国家集,本机实测 973 国),宗教/文化/政体/政体等级的初始值可直接断言(如 SWE 未写先读 `religion = catholic` 即真)。不给 `--game-path` 则零读取——模型世界退回用例点名的国家,未写槽位照旧拒绝。数值槽位历史文件不含开局值,保持建模 0。
+`foch test PATH --offline` 读取该模组(以及 `--game-path` 点名的安装与依赖)里的 `history/countries/*.txt` 与 `history/provinces/*.txt`。国家播种宗教、文化、政体、政体等级和 `capital`。省份播种 owner、controller、`base_tax`/`base_production`/`base_manpower` 和 `add_core`/`remove_core`。文件没写的槽位保持未知,读取拒绝,不用 0 或空集合填上。`--game-path` 还会把开局国家放进 `every_country`。不给历史文件时,模型世界退回用例点名的国家,未写槽位照旧拒绝。数值国家槽位历史文件不含开局值,保持建模 0。
 
 ## 校准与证据纪律
 

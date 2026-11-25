@@ -547,6 +547,202 @@
         "behavior": "clears the current country's subject link"
       },
       "handler": null
+    },
+    "set_province_flag": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "storage": "province flag set"
+      },
+      "handler": null
+    },
+    "clr_province_flag": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "storage": "province flag set"
+      },
+      "handler": null
+    },
+    "add_base_tax": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "operation": "+=",
+        "unknown": "refuses unless history or an earlier write seeded base_tax"
+      },
+      "handler": null
+    },
+    "add_base_production": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "operation": "+=",
+        "unknown": "refuses unless history or an earlier write seeded base_production"
+      },
+      "handler": null
+    },
+    "add_base_manpower": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "operation": "+=",
+        "unknown": "refuses unless history or an earlier write seeded base_manpower"
+      },
+      "handler": null
+    },
+    "cede_province": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "behavior": "sets owner and controller to the country named by a tag or THIS/ROOT/PREV/FROM"
+      },
+      "handler": null
+    },
+    "add_core": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "behavior": "adds a core for the country named by a tag or THIS/ROOT/PREV/FROM"
+      },
+      "handler": null
+    },
+    "remove_core": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "unknown": "refuses when the core set was never seeded or written",
+        "behavior": "removes a core for the country named by a tag or THIS/ROOT/PREV/FROM"
+      },
+      "handler": null
+    },
+    "province_event": {
+      "kind": "effect",
+      "facts": {
+        "scope": "province",
+        "behavior": "fires a collected hidden province event, immediately or after a delay in days",
+        "root": "the target province",
+        "from": "the scope that fired the event"
+      },
+      "handler": null
+    },
+    "every_owned_province": {
+      "kind": "effect",
+      "facts": {
+        "scope": "country",
+        "behavior": "iterates provinces whose seeded owner is the current country, in ascending province id order"
+      },
+      "handler": null
+    },
+    "every_subject_country": {
+      "kind": "effect",
+      "facts": {
+        "scope": "country",
+        "behavior": "iterates the current country's subjects in sorted tag order"
+      },
+      "handler": null
+    },
+    "has_province_flag": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "storage": "province flag set"
+      },
+      "handler": null
+    },
+    "owned_by": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "unknown": "refuses when the province owner was not seeded or set"
+      },
+      "handler": null
+    },
+    "controlled_by": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "unknown": "refuses when the province controller was not seeded or set"
+      },
+      "handler": null
+    },
+    "is_core": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "unknown": "refuses when no add_core or remove_core has seeded the core set"
+      },
+      "handler": null
+    },
+    "base_tax": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "comparison": ">=",
+        "unknown": "refuses when base_tax was not seeded or set"
+      },
+      "handler": null
+    },
+    "base_production": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "comparison": ">=",
+        "unknown": "refuses when base_production was not seeded or set"
+      },
+      "handler": null
+    },
+    "base_manpower": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "comparison": ">=",
+        "unknown": "refuses when base_manpower was not seeded or set"
+      },
+      "handler": null
+    },
+    "development": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "province",
+        "comparison": ">=",
+        "behavior": "base_tax + base_production + base_manpower",
+        "unknown": "refuses when any component was not seeded or set"
+      },
+      "handler": null
+    },
+    "any_owned_province": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "country",
+        "behavior": "true when any province owned by the current country matches, in ascending province id order"
+      },
+      "handler": null
+    },
+    "any_subject_country": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "country",
+        "behavior": "true when any subject of the current country matches, in sorted tag order"
+      },
+      "handler": null
+    },
+    "owns": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "country",
+        "unknown": "refuses when that province's owner was not seeded or set"
+      },
+      "handler": null
+    },
+    "owns_core_province": {
+      "kind": "trigger",
+      "facts": {
+        "scope": "country",
+        "behavior": "the current country owns the province and holds a core there",
+        "unknown": "refuses when ownership is unknown, or when the country owns it and the core set is unknown"
+      },
+      "handler": null
     }
   }
 }

@@ -1,7 +1,7 @@
 //! Collection of inline `#test` annotations, carried over from the first
 //! framework's regression suite.
 
-use foch_test::model::{CaseName, Step, TestCase};
+use foch_test::model::{CaseName, EventKind, Step, TestCase};
 use foch_test::{Collection, RelPath, SourceFile, SourceKind, collect};
 
 fn event(annotation: &str) -> String {
@@ -122,6 +122,18 @@ fn rejects_bad_arguments_and_reports_original_annotation_line() {
 			"{annotation}"
 		);
 	}
+}
+
+#[test]
+fn collects_a_hidden_province_event_beside_country_events() {
+	let source = "namespace = demo\ncountry_event = {\n id = demo.1\n hidden = yes\n is_triggered_only = yes\n option = { name = OK }\n}\nprovince_event = {\n id = demo.2\n hidden = yes\n is_triggered_only = yes\n immediate = { set_province_flag = seeded }\n option = { name = OK }\n}\n";
+	let result = collected(source);
+	assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+	assert_eq!(result.events.len(), 2);
+	assert_eq!(result.events[0].kind, EventKind::Country);
+	assert_eq!(result.events[1].kind, EventKind::Province);
+	assert!(result.events[1].invocable);
+	assert!(result.events[1].body.contains("set_province_flag"));
 }
 
 #[test]
