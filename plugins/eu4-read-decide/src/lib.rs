@@ -9,12 +9,14 @@
 //! feeds the pure-Rust forward of `foch-eu4-gnn`, and [`decide`] turns
 //! scores into a logged suggestion. Nothing in this crate writes game
 //! memory or takes any action. Regiment amounts are a candidate read;
-//! current morale is still unpinned.
+//! current morale is still unpinned. The opt-in monthly receipt path
+//! lives in [`probe`].
 
 pub mod decide;
 pub mod frame;
 pub mod graph;
 mod native;
+pub mod probe;
 pub mod terrain;
 
 pub use native::foch_plugin_get_api;

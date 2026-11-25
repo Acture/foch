@@ -33,35 +33,58 @@ struct Probe {
 	emitted: AtomicBool,
 }
 
+/// Why [`install`] refused. The variant decides the reported reason
+/// code, so the log detail and the status transition stay consistent.
+#[derive(Debug)]
+pub(super) enum InstallError {
+	/// A model asset (GNN weights, residual heads) was unreadable or
+	/// malformed.
+	BadAsset(String),
+	/// The host-computed digest is not a supported build.
+	BuildMismatch(String),
+	/// The monthly hook, its target, or a non-model asset failed.
+	HookFailed(String),
+}
+
+impl std::fmt::Display for InstallError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::BadAsset(text) | Self::BuildMismatch(text) | Self::HookFailed(text) => {
+				f.write_str(text)
+			}
+		}
+	}
+}
+
 static CONTEXT: OnceLock<Probe> = OnceLock::new();
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(serde::Deserialize)]
-pub(super) struct ProbeConfig {
+pub struct ProbeConfig {
 	#[serde(default)]
-	probe: bool,
+	pub probe: bool,
 	#[serde(default)]
-	graph: String,
+	pub graph: String,
 	#[serde(default)]
-	weights: String,
+	pub weights: String,
 	#[serde(default)]
-	our_tag: String,
+	pub our_tag: String,
 	#[serde(default)]
-	our_index: i32,
+	pub our_index: i32,
 	#[serde(default)]
-	enemy_index: Option<i32>,
+	pub enemy_index: Option<i32>,
 	/// Paths of staged terrain texts, used when `playset` is empty.
 	#[serde(default)]
-	terrain_sources: Vec<String>,
+	pub terrain_sources: Vec<String>,
 	/// Game root, then mods, in playset order. A string is comma-separated.
 	/// Each root's `descriptor.mod` `replace_path` is applied.
 	#[serde(default, deserialize_with = "deserialize_playset")]
-	playset: Vec<String>,
+	pub playset: Vec<String>,
 }
 
 /// Parse and validate the opt-in configuration; `None` when probing is
 /// not requested. Validation is total before any hook exists.
-pub(super) fn parse_config(config_json: &str) -> Result<Option<ProbeConfig>, String> {
+pub fn parse_config(config_json: &str) -> Result<Option<ProbeConfig>, String> {
 	let config: ProbeConfig =
 		serde_json::from_str(config_json).map_err(|e| format!("probe config: {e}"))?;
 	if !config.probe {
@@ -145,17 +168,32 @@ fn terrain_from_playset(files: &std::collections::BTreeMap<String, Vec<u8>>) -> 
 	texts
 }
 
-/// Install the monthly hook. Windows x64 only; every address check
-/// happens before the hook is created.
-pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), String> {
+/// Install the monthly hook. Windows x64 only; the build digest is
+/// checked eagerly and every address check happens before the hook is
+/// created, so an unsupported build fails closed with nothing installed.
+pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), InstallError> {
+	// The digest gate, first: the host-computed digest of the image we
+	// are loaded into must match a compiled-in layout profile before any
+	// asset is read or any hook exists. An unsupported build is refused,
+	// not installed-doomed.
+	let digest = unsafe { host.exe_sha256.as_str() }
+		.ok_or_else(|| InstallError::BuildMismatch("host digest is not valid UTF-8".into()))?;
+	if !foch_runtime::dataplane::supports_build(digest) {
+		return Err(InstallError::BuildMismatch(
+			"the host-computed digest is not a supported build".into(),
+		));
+	}
 	if !cfg!(all(windows, target_arch = "x86_64")) {
-		return Err("read decide requires Windows x64".into());
+		return Err(InstallError::HookFailed(
+			"read decide requires Windows x64".into(),
+		));
 	}
 	let (graph, terrain_sources) = if config.playset.is_empty() {
-		let graph_text = std::fs::read_to_string(&config.graph)
-			.map_err(|e| format!("static graph asset {}: {e}", config.graph))?;
-		let graph =
-			StaticGraph::from_json(&graph_text).ok_or("static graph asset failed to parse")?;
+		let graph_text = std::fs::read_to_string(&config.graph).map_err(|e| {
+			InstallError::HookFailed(format!("static graph asset {}: {e}", config.graph))
+		})?;
+		let graph = StaticGraph::from_json(&graph_text)
+			.ok_or_else(|| InstallError::HookFailed("static graph asset failed to parse".into()))?;
 		let terrain_sources = config
 			.terrain_sources
 			.iter()
@@ -165,22 +203,28 @@ pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), Str
 	} else {
 		let mut layers = Vec::new();
 		for root in &config.playset {
-			layers.push(graph::load_layer(std::path::Path::new(root))?);
+			layers.push(
+				graph::load_layer(std::path::Path::new(root))
+					.map_err(|e| InstallError::HookFailed(format!("playset root {root}: {e}")))?,
+			);
 		}
 		let files = graph::resolve_playset(&layers);
 		let terrain_sources = terrain_from_playset(&files);
-		let graph = StaticGraph::from_map_files(&files)
-			.ok_or("playset map did not yield a province graph")?;
+		let graph = StaticGraph::from_map_files(&files).ok_or_else(|| {
+			InstallError::HookFailed("playset map did not yield a province graph".into())
+		})?;
 		(graph, terrain_sources)
 	};
 	let weights = std::fs::read_to_string(&config.weights)
-		.map_err(|e| format!("weight asset {}: {e}", config.weights))?;
-	let gnn = foch_eu4_gnn::GeneralGnn::from_json(&weights)
-		.ok_or("weight asset rejected: malformed or mismatched shapes")?;
+		.map_err(|e| InstallError::BadAsset(format!("weight asset {}: {e}", config.weights)))?;
+	let gnn = foch_eu4_gnn::GeneralGnn::from_json(&weights).ok_or_else(|| {
+		InstallError::BadAsset("weight asset rejected: malformed or mismatched shapes".into())
+	})?;
 
 	// SAFETY: `host` is the live table for this plugin init. The resolved
 	// pointer is the pinned monthly tick inside that image.
-	let resolved = unsafe { foch_runtime::dataplane::resolve_monthly_tick(host) }?;
+	let resolved = unsafe { foch_runtime::dataplane::resolve_monthly_tick(host) }
+		.map_err(|reason| InstallError::HookFailed(reason.into()))?;
 	let mut next = std::ptr::null();
 	let mut hook = std::ptr::null_mut();
 	let code = unsafe {
@@ -194,7 +238,9 @@ pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), Str
 		)
 	};
 	if code != result::OK || next.is_null() || hook.is_null() {
-		return Err(format!("monthly hook was refused: {code}"));
+		return Err(InstallError::HookFailed(format!(
+			"monthly hook was refused: {code}"
+		)));
 	}
 	CONTEXT
 		.set(Probe {
@@ -207,11 +253,13 @@ pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), Str
 			enemy_index: config.enemy_index.filter(|index| *index >= 0),
 			emitted: AtomicBool::new(false),
 		})
-		.map_err(|_| "read decide was already initialized")?;
+		.map_err(|_| InstallError::HookFailed("read decide was already initialized".into()))?;
 	NEXT.store(next as usize, Ordering::Release);
 	let code = unsafe { (host.hook_set_enabled)(host, hook, 1) };
 	if code != result::OK {
-		return Err(format!("monthly hook enable was refused: {code}"));
+		return Err(InstallError::HookFailed(format!(
+			"monthly hook enable was refused: {code}"
+		)));
 	}
 	Ok(())
 }
