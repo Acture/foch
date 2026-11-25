@@ -1,0 +1,22 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+
+# These estate effects are province scripts. The vendored aliases force
+# country. The spelling privilges is the game's and the vendored rule's.
+#
+# common/scripted_effects/01_scripted_effects_for_estates.txt line 974 tests
+# has_province_modifier. common/on_actions/00_on_actions.txt calls it from
+# on_province_culture_converted (line 4396) and on_province_culture_changed
+# (line 4405); both comments say the scope is a province.
+## scope = province
+alias[effect:on_province_culture_converted_estate_privilges_effect] = yes
+
+# The same file, line 1116, tests has_terrain and adds a province modifier.
+# 00_on_actions.txt calls it from on_province_owner_change (line 4471).
+## scope = province
+alias[effect:on_province_owner_change_estate_privileges_effect] = yes
+
+# The same file, line 2476, tests has_province_modifier and trade_goods.
+# 00_on_actions.txt calls it from on_trade_good_changed (line 5658), whose
+# comment says ROOT is the province.
+## scope = province
+alias[effect:on_trade_good_changed_estate_privileges_effect] = yes

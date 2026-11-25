@@ -61,6 +61,11 @@ event = {
     value_set[dynamic_event_tokens] = scalar
   }
 
+  ###Country-tag keys with no open value set beside them.
+  tag_keys = {
+    enum[country_tags] = int
+  }
+
   ###Conditions that must be true for the event to fire.
   trigger = {
     alias_name[trigger] = alias_match_left[trigger]

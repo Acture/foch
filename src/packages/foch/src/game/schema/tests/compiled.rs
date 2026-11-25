@@ -526,6 +526,11 @@ fn compiled_engine_matches_static_dynamic_key_markers() {
 			value_set[dynamic_set_key] = float
 			scope[country] = yes
 		}
+		closed_fields = {
+			enum[dynamic_keys] = int
+			value[dynamic_value_key] = bool
+			scope[country] = yes
+		}
 	}
 
 	enums = {
@@ -587,8 +592,30 @@ fn compiled_engine_matches_static_dynamic_key_markers() {
 			.map(|field| field.key.as_str()),
 		Some("scope[country]")
 	);
-	assert!(engine.bind_field(context, "sea").is_none());
-	assert!(engine.bind_field(context, "missing_key").is_none());
+	assert_eq!(
+		engine
+			.bind_field(context, "sea")
+			.map(|field| field.key.as_str()),
+		Some("value_set[dynamic_set_key]")
+	);
+	assert_eq!(
+		engine
+			.bind_field(context, "missing_key")
+			.map(|field| field.key.as_str()),
+		Some("value_set[dynamic_set_key]")
+	);
+	let closed_fields = engine
+		.bind_field(RuleContext::RootType(event), "closed_fields")
+		.expect("bind closed_fields");
+	let closed = RuleContext::RuleField(closed_fields);
+	assert!(engine.bind_field(closed, "sea").is_none());
+	assert!(engine.bind_field(closed, "missing_key").is_none());
+	assert_eq!(
+		engine
+			.bind_field(closed, "saved_key")
+			.map(|field| field.key.as_str()),
+		Some("value[dynamic_value_key]")
+	);
 }
 
 #[test]
@@ -1245,6 +1272,70 @@ fn compiled_rules_record_which_rule_files_wrote_them() {
 			.unwrap_or_else(|| panic!("alias {name}"));
 		assert_eq!(alias.origin, origin, "{name}");
 	}
+}
+
+/// An extension's `replace_scope` replaces the base group's. A second base
+/// group does not replace the first.
+#[test]
+fn extension_replace_scope_overrides_the_base_subtype_group() {
+	let base = tempfile::tempdir().expect("create base schema dir");
+	fs::write(
+		base.path().join("base.cwt"),
+		r#"
+		types = {
+			type[on_action] = {
+				path = "game/common/on_actions"
+				subtype[on_culture_promoted] = {}
+				subtype[on_battle_won_unit] = {}
+				subtype[kept] = {}
+			}
+		}
+		on_action = {
+			## replace_scope = { root = province this = province }
+			subtype[on_culture_promoted] = {
+				alias_name[effect] = alias_match_left[effect]
+			}
+			## replace_scope = { root = unit this = unit }
+			subtype[on_battle_won_unit] = {
+				alias_name[effect] = alias_match_left[effect]
+			}
+			## replace_scope = { root = province this = province }
+			subtype[kept] = {}
+			## replace_scope = { root = country this = country }
+			subtype[kept] = {}
+		}
+		"#,
+	)
+	.expect("write base schema");
+	let extension = tempfile::tempdir().expect("create extension schema dir");
+	fs::write(
+		extension.path().join("extension.cwt"),
+		r#"
+		on_action = {
+			## replace_scope = { root = country this = country }
+			subtype[on_culture_promoted] = {}
+		}
+		"#,
+	)
+	.expect("write extension schema");
+
+	let graph =
+		CwtSchemaGraph::from_directories(&[base.path(), extension.path()]).expect("compile schema");
+	let engine = CwtQuery::from_graph(&graph);
+	let root = engine
+		.bind_root(game_path("common/on_actions/00_on_actions.txt"))
+		.expect("bind on_action root");
+	let scope = |name: &str, label: &str| {
+		root.subtypes
+			.iter()
+			.find(|subtype| subtype.name == name)
+			.and_then(|subtype| subtype.attributes.replace_scope.get(label))
+			.map(String::as_str)
+	};
+	assert_eq!(scope("on_culture_promoted", "this"), Some("country"));
+	assert_eq!(scope("on_culture_promoted", "root"), Some("country"));
+	assert_eq!(scope("on_battle_won_unit", "this"), Some("unit"));
+	assert_eq!(scope("kept", "this"), Some("province"));
 }
 
 fn load_binding_graph() -> CwtSchemaGraph {

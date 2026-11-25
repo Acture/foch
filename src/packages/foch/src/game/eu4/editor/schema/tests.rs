@@ -1324,6 +1324,7 @@ country_event = {
     reusable_token = ok
     gamma = 1
   }
+  not_a_field = 1
 }
 ";
 	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
@@ -1333,8 +1334,11 @@ country_event = {
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("reusable_token")
 	}));
-	assert!(diagnostics.iter().any(|diagnostic| {
+	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("gamma")
+	}));
+	assert!(diagnostics.iter().any(|diagnostic| {
+		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("not_a_field")
 	}));
 }
 
@@ -1345,6 +1349,10 @@ fn diagnostics_accept_workspace_dynamic_key_markers_from_schema() {
 	let text = "\
 country_event = {
   dynamic_fields = {
+    SWE = 1
+    XXX = 1
+  }
+  tag_keys = {
     SWE = 1
     XXX = 1
   }
@@ -1359,9 +1367,14 @@ country_event = {
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("SWE")
 	}));
-	assert!(diagnostics.iter().any(|diagnostic| {
-		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("XXX")
-	}));
+	let unknown_tags = diagnostics
+		.iter()
+		.filter(|diagnostic| {
+			diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("XXX")
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(unknown_tags.len(), 1, "{diagnostics:?}");
+	assert_eq!(unknown_tags[0].range.start.line, 7);
 }
 
 #[test]
@@ -2992,4 +3005,179 @@ fn diagnostics_accept_an_effect_another_subtype_names_outright() {
 	let text = "on_religion_change = {\n\tset_ruler_flag = sample_flag\n\tclr_ruler_flag = sample_flag\n}\non_queen_death = {\n\tclr_ruler_flag = marriage_length\n}\n";
 	let diagnostics = schema.diagnostics(path, text, None);
 	assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+fn diagnostic_mentions(diagnostics: &[SchemaDiagnostic], code: &str, key: &str) -> bool {
+	diagnostics.iter().any(|diagnostic| {
+		diagnostic.code.as_deref() == Some(code) && diagnostic.message.contains(&format!("`{key}`"))
+	})
+}
+
+/// A `value_set` key defines a name. Government reforms write attributes the
+/// vendored list never names (`enables_divine_idea_group` in
+/// common/government_reforms/06_government_reforms_common.txt). A key the
+/// reform itself does not define, a non-bool, and a second
+/// `custom_attributes` block stay reported.
+#[test]
+fn diagnostics_accept_government_attribute_keys_a_reform_defines() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/government_reforms/06_government_reforms_common.txt");
+	let text = "sample_reform = {\n\tcustom_attributes = {\n\t\tenables_divine_idea_group = yes\n\t\tgenerals_become_rulers = yes\n\t}\n\tnot_a_reform_key = yes\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V001", "enables_divine_idea_group"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V001", "generals_become_rulers"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V001", "not_a_reform_key"),
+		"{diagnostics:?}"
+	);
+
+	let text =
+		"sample_reform = {\n\tcustom_attributes = {\n\t\tenables_divine_idea_group = 2\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V005", "enables_divine_idea_group"),
+		"{diagnostics:?}"
+	);
+
+	let text = "sample_reform = {\n\tcustom_attributes = {\n\t\tenables_divine_idea_group = yes\n\t}\n\tcustom_attributes = {\n\t\tblocked_call_diet = yes\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V002", "custom_attributes"),
+		"{diagnostics:?}"
+	);
+}
+
+/// Unit battle callbacks use country triggers and switch to a country tag.
+/// common/on_actions/00_on_actions.txt lines 587, 771 and 842.
+#[test]
+fn diagnostics_accept_unit_battle_callbacks_the_game_writes() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/on_actions/00_on_actions.txt");
+	let workspace = schema.workspace(&[SchemaDocument::new(
+		game_path("common/country_tags/00_countries.txt"),
+		"OIR = \"countries/Oirat.txt\"\n",
+	)]);
+	let text = "on_battle_won_unit = {\n\tif = {\n\t\tlimit = {\n\t\t\tgeneral_with_name = \"Damarwulan\"\n\t\t\tmercenary_company = merc_black_army\n\t\t}\n\t}\n}\non_battle_lost_unit = {\n\tOIR = {\n\t\tcountry_event = { id = flavor_oir.2 }\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, Some(&workspace));
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "general_with_name"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "mercenary_company"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "OIR"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V001", "OIR"),
+		"{diagnostics:?}"
+	);
+
+	let text = "on_province_owner_change = {\n\tif = {\n\t\tlimit = {\n\t\t\tgeneral_with_name = \"Damarwulan\"\n\t\t\tmercenary_company = merc_black_army\n\t\t}\n\t}\n\tOIR = yes\n}\n";
+	let diagnostics = schema.diagnostics(path, text, Some(&workspace));
+	assert!(
+		diagnostic_mentions(&diagnostics, "V007", "general_with_name"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V007", "mercenary_company"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V006", "OIR"),
+		"{diagnostics:?}"
+	);
+}
+
+/// Three estate effects are province scripts the vendored aliases force onto
+/// a country. A unit callback still may not call them.
+#[test]
+fn diagnostics_accept_province_estate_effects_in_province_callbacks() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/on_actions/00_on_actions.txt");
+	let text = "on_province_culture_converted = {\n\ton_province_culture_converted_estate_privilges_effect = yes\n}\non_province_owner_change = {\n\ton_province_owner_change_estate_privileges_effect = yes\n}\non_trade_good_changed = {\n\ton_trade_good_changed_estate_privileges_effect = yes\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	for key in [
+		"on_province_culture_converted_estate_privilges_effect",
+		"on_province_owner_change_estate_privileges_effect",
+		"on_trade_good_changed_estate_privileges_effect",
+	] {
+		assert!(
+			!diagnostic_mentions(&diagnostics, "V007", key),
+			"{key}: {diagnostics:?}"
+		);
+	}
+
+	let text = "on_battle_won_unit = {\n\ton_province_culture_converted_estate_privilges_effect = yes\n\ton_trade_good_changed_estate_privileges_effect = { }\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		diagnostic_mentions(
+			&diagnostics,
+			"V007",
+			"on_province_culture_converted_estate_privilges_effect"
+		),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(
+			&diagnostics,
+			"V006",
+			"on_trade_good_changed_estate_privileges_effect"
+		),
+		"{diagnostics:?}"
+	);
+}
+
+/// Culture promotion and demotion run as the country. A province trigger in
+/// that callback is still out of scope.
+#[test]
+fn diagnostics_read_culture_callbacks_as_the_country() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/on_actions/00_on_actions.txt");
+	let text = "on_culture_promoted = {\n\tif = {\n\t\tlimit = {\n\t\t\thas_country_flag = reduce_ae_from_prom_cultures_flag\n\t\t\thas_province_modifier = boh_cultural_integration\n\t\t}\n\t}\n}\non_culture_demoted = {\n\tif = {\n\t\tlimit = { has_country_flag = sample_flag }\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "has_country_flag"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V007", "has_province_modifier"),
+		"{diagnostics:?}"
+	);
+}
+
+/// A hidden event's title is plain text. A visible event's title is a
+/// localisation key. events/ConsortEvents.txt writes `title = none` on
+/// consort_events.206.
+#[test]
+fn localisation_diagnostics_skip_a_hidden_events_plain_title() {
+	let schema = EditorSchema::active();
+	let path = game_path("events/ConsortEvents.txt");
+	let hidden = "namespace = consort_events\ncountry_event = {\n\tid = consort_events.206\n\thidden = yes\n\ttitle = none\n\tdesc = none\n\tis_triggered_only = yes\n\toption = { name = none }\n}\n";
+	let diagnostics = schema.localisation_diagnostics(path, hidden, &[]);
+	assert!(
+		diagnostics
+			.iter()
+			.all(|diagnostic| diagnostic.code.as_deref() != Some("missing-localisation")),
+		"{diagnostics:?}"
+	);
+
+	let visible = "namespace = consort_events\ncountry_event = {\n\tid = consort_events.1\n\ttitle = consort_events.1.t\n\tdesc = consort_events.1.d\n\tis_triggered_only = yes\n\toption = { name = consort_events.1.a }\n}\n";
+	let diagnostics = schema.localisation_diagnostics(path, visible, &[]);
+	assert!(
+		diagnostics.iter().any(|diagnostic| {
+			diagnostic.code.as_deref() == Some("missing-localisation")
+				&& diagnostic.message.contains("consort_events.1.t")
+		}),
+		"{diagnostics:?}"
+	);
 }
