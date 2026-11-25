@@ -1,0 +1,19 @@
+schema = 1
+
+[plugin]
+id = "io.github.acture.foch-peace"
+name = "Foch bilateral peace"
+version = "0.0.19"
+authors = ["Foch contributors"]
+description = "Experimental two-direction peace submission with net pricing, native net display and an execution observer."
+
+[target]
+platform = "windows-x86_64"
+game = "eu4"
+game_versions = "=1.37.5"
+abi_major = 0
+
+[entry]
+kind = "native"
+path = "foch_plugin_peace.dll"
+phase = "entry"
