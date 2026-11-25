@@ -3053,6 +3053,108 @@ fn diagnostics_accept_government_attribute_keys_a_reform_defines() {
 	);
 }
 
+/// Unit battle callbacks use country triggers and switch to a country tag.
+/// common/on_actions/00_on_actions.txt lines 587, 771 and 842.
+#[test]
+fn diagnostics_accept_unit_battle_callbacks_the_game_writes() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/on_actions/00_on_actions.txt");
+	let workspace = schema.workspace(&[SchemaDocument::new(
+		game_path("common/country_tags/00_countries.txt"),
+		"OIR = \"countries/Oirat.txt\"\n",
+	)]);
+	let text = "on_battle_won_unit = {\n\tif = {\n\t\tlimit = {\n\t\t\tgeneral_with_name = \"Damarwulan\"\n\t\t\tmercenary_company = merc_black_army\n\t\t}\n\t}\n}\non_battle_lost_unit = {\n\tOIR = {\n\t\tcountry_event = { id = flavor_oir.2 }\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, Some(&workspace));
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "general_with_name"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "mercenary_company"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "OIR"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V001", "OIR"),
+		"{diagnostics:?}"
+	);
+
+	let text = "on_province_owner_change = {\n\tif = {\n\t\tlimit = {\n\t\t\tgeneral_with_name = \"Damarwulan\"\n\t\t\tmercenary_company = merc_black_army\n\t\t}\n\t}\n\tOIR = yes\n}\n";
+	let diagnostics = schema.diagnostics(path, text, Some(&workspace));
+	assert!(
+		diagnostic_mentions(&diagnostics, "V007", "general_with_name"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V007", "mercenary_company"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V006", "OIR"),
+		"{diagnostics:?}"
+	);
+}
+
+/// Three estate effects are province scripts the vendored aliases force onto
+/// a country. A unit callback still may not call them.
+#[test]
+fn diagnostics_accept_province_estate_effects_in_province_callbacks() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/on_actions/00_on_actions.txt");
+	let text = "on_province_culture_converted = {\n\ton_province_culture_converted_estate_privilges_effect = yes\n}\non_province_owner_change = {\n\ton_province_owner_change_estate_privileges_effect = yes\n}\non_trade_good_changed = {\n\ton_trade_good_changed_estate_privileges_effect = yes\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	for key in [
+		"on_province_culture_converted_estate_privilges_effect",
+		"on_province_owner_change_estate_privileges_effect",
+		"on_trade_good_changed_estate_privileges_effect",
+	] {
+		assert!(
+			!diagnostic_mentions(&diagnostics, "V007", key),
+			"{key}: {diagnostics:?}"
+		);
+	}
+
+	let text = "on_battle_won_unit = {\n\ton_province_culture_converted_estate_privilges_effect = yes\n\ton_trade_good_changed_estate_privileges_effect = { }\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		diagnostic_mentions(
+			&diagnostics,
+			"V007",
+			"on_province_culture_converted_estate_privilges_effect"
+		),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(
+			&diagnostics,
+			"V006",
+			"on_trade_good_changed_estate_privileges_effect"
+		),
+		"{diagnostics:?}"
+	);
+}
+
+/// Culture promotion and demotion run as the country. A province trigger in
+/// that callback is still out of scope.
+#[test]
+fn diagnostics_read_culture_callbacks_as_the_country() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/on_actions/00_on_actions.txt");
+	let text = "on_culture_promoted = {\n\tif = {\n\t\tlimit = {\n\t\t\thas_country_flag = reduce_ae_from_prom_cultures_flag\n\t\t\thas_province_modifier = boh_cultural_integration\n\t\t}\n\t}\n}\non_culture_demoted = {\n\tif = {\n\t\tlimit = { has_country_flag = sample_flag }\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V007", "has_country_flag"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V007", "has_province_modifier"),
+		"{diagnostics:?}"
+	);
+}
+
 /// A hidden event's title is plain text. A visible event's title is a
 /// localisation key. events/ConsortEvents.txt writes `title = none` on
 /// consort_events.206.
