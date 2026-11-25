@@ -216,7 +216,7 @@ fn run_reference_structural_file_engine(
 	resolution_map: &ResolutionMap,
 ) -> Result<ReferenceDagMergeComputation, MergeError> {
 	let mut handler = super::automatic_conflict_handler(target_path, context, resolution_map);
-	let effective_policies = super::effective_merge_policies(context);
+	let effective_policies = super::effective_merge_policies(target_path, context);
 	compute_reference_dag_merge(
 		ReferenceDagMergeRequest {
 			input: DagMergeInputRequest {
@@ -246,7 +246,7 @@ fn run_reference_definition_module_engine(
 	resolution_map: &ResolutionMap,
 ) -> Result<ReferenceDagMergeComputation, MergeError> {
 	let mut handler = super::automatic_conflict_handler(target_path, context, resolution_map);
-	let effective_policies = super::effective_merge_policies(context);
+	let effective_policies = super::effective_merge_policies(target_path, context);
 	let base_statements = merge_ancestor_statements(views.vanilla.as_ref());
 	compute_reference_dag_merge_from_parsed(ReferenceParsedDagMergeRequest {
 		file_dag: &views.file_dag,

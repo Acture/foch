@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::game::eu4::content::{
-	ContentFamilyDescriptor, ContentLoadPolicy, MergePolicies, NamedContainerPolicy,
+	ContentFamilyDescriptor, ContentLoadPolicy, MergeKeySource, MergePolicies, NamedContainerPolicy,
 };
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, Span, SpanRange};
@@ -22,7 +22,7 @@ use super::stale_detect::{
 use super::{
 	StructuralConflictReport, StructuralMergeContext, StructuralMergeFailure, StructuralMergeOutput,
 };
-use crate::game::eu4::cwt::merge::classify_conflict_kind;
+use crate::game::eu4::cwt::merge::{SchemaMergeStrategy, classify_conflict_kind};
 use crate::game::eu4::script::emit::emit_clausewitz_statements_with_options;
 use crate::input::ResolvedInputContributor;
 use crate::merge::model::{
@@ -230,7 +230,7 @@ where
 		target_path,
 		&dag_merge.semantic.source_deltas,
 		vanilla.as_ref(),
-		&effective_merge_policies(&context),
+		&effective_merge_policies(target_path, &context),
 		context.mod_versions,
 		context.entity_transform,
 	)
@@ -294,7 +294,7 @@ where
 		));
 	}
 
-	let merge_policies = effective_merge_policies(&context);
+	let merge_policies = effective_merge_policies(target_path, &context);
 	let mut merged_statements = dag_merge.merged_statements;
 	crate::merge::gui::coalesce_scroll_stack_variants(&mut merged_statements, &merge_policies);
 	let adapted = if preserves_complete_tree_module(context.descriptor) {
@@ -545,7 +545,7 @@ fn run_semantic_structural_file_engine(
 	resolution_map: &crate::project::ResolutionMap,
 ) -> Result<SemanticDagMergeComputation, MergeError> {
 	let mut handler = automatic_conflict_handler(target_path, context, resolution_map);
-	let effective_policies = effective_merge_policies(context);
+	let effective_policies = effective_merge_policies(target_path, context);
 	compute_dag_merge_with_handler(
 		SemanticDagMergeRequest {
 			input: DagMergeInputRequest {
@@ -575,7 +575,7 @@ fn run_semantic_definition_module_engine(
 	resolution_map: &crate::project::ResolutionMap,
 ) -> Result<SemanticDagMergeComputation, MergeError> {
 	let mut handler = automatic_conflict_handler(target_path, context, resolution_map);
-	let mut effective_policies = effective_merge_policies(context);
+	let mut effective_policies = effective_merge_policies(target_path, context);
 	effective_policies.unordered_definitions = true;
 	compute_dag_merge_from_parsed(
 		context.entity_transform,
@@ -619,14 +619,47 @@ fn automatic_conflict_handler<'a>(
 	}
 }
 
-fn effective_merge_policies(context: &StructuralMergeContext<'_>) -> MergePolicies {
+fn effective_merge_policies(
+	target_path: &GamePath,
+	context: &StructuralMergeContext<'_>,
+) -> MergePolicies {
 	let mut policies = context.descriptor.merge_policies;
 	policies.contradicting_orders_by_load_order = context.load_order_default;
 	policies.ambiguous_renames_by_position = context.load_order_default;
 	if context.gui_scroll_merge && is_gui_container_family(context) {
 		policies.named_container = NamedContainerPolicy::ScrollStack;
 	}
+	if let Some(strategy) = cwt_suggested_merge_strategy(target_path, context.resolution_map) {
+		apply_schema_merge_strategy(strategy, &mut policies);
+	}
 	policies
+}
+
+/// The merge strategy the user explicitly opted into for `target_path` with
+/// `policy = "cwt_suggested"`. Nothing is derived without that configuration,
+/// so the content family's own strategy keeps ruling the merge.
+fn cwt_suggested_merge_strategy(
+	target_path: &GamePath,
+	resolution_map: &crate::project::ResolutionMap,
+) -> Option<SchemaMergeStrategy<'static>> {
+	if resolution_map.policy_for(target_path)
+		!= Some(crate::project::ResolutionPolicy::CwtSuggested)
+	{
+		return None;
+	}
+	crate::game::eu4::cwt::merge::suggest_merge_strategy(target_path)
+}
+
+/// Turns the schema's rule into merge policies. Only the identity the schema
+/// names is adopted: scalar, list and block policies stay the family's own,
+/// so conflicts the schema cannot arbitrate — a single-cardinality scalar
+/// above all — keep surfacing as manual conflicts.
+fn apply_schema_merge_strategy(
+	strategy: SchemaMergeStrategy<'static>,
+	policies: &mut MergePolicies,
+) {
+	policies.merge_key_source = MergeKeySource::FieldValue(strategy.key_field);
+	policies.nested_merge_key_source = MergeKeySource::AssignmentKey;
 }
 
 fn is_gui_container_family(context: &StructuralMergeContext<'_>) -> bool {
@@ -651,6 +684,105 @@ mod tests {
 	use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
 	use crate::merge::model::{SemanticConflictCandidate, SemanticMergeConflict};
 	use crate::merge::structured::merge_clausewitz_files;
+
+	fn resolution_map(toml: &str) -> ResolutionMap {
+		let entries = Project::from_toml_str(toml)
+			.expect("parse test config")
+			.resolutions;
+		ResolutionMap::from_entries(&entries).expect("build test resolution map")
+	}
+
+	/// The schema-suggested strategy only reaches the policies where the user
+	/// configured `policy = "cwt_suggested"` for the exact file, and only
+	/// where the schema names the file's definitions.
+	#[test]
+	fn cwt_suggested_policy_applies_only_where_configured_and_determinable() {
+		let estates = "common/estates_preload/test_modifiers.txt";
+		let configured = resolution_map(
+			r#"
+[[resolutions]]
+file = "common/estates_preload/test_modifiers.txt"
+policy = "cwt_suggested"
+"#,
+		);
+		let strategy = cwt_suggested_merge_strategy(game_path(estates), &configured)
+			.expect("the schema names estate_modifier definitions by `key`");
+		assert_eq!(strategy.key_field, "key");
+
+		let untouched = resolution_map("");
+		assert_eq!(
+			cwt_suggested_merge_strategy(game_path(estates), &untouched),
+			None,
+			"without foch.toml policy the content family strategy stays in charge"
+		);
+
+		let elsewhere = resolution_map(
+			r#"
+[[resolutions]]
+file = "common/other/test.txt"
+policy = "cwt_suggested"
+"#,
+		);
+		assert_eq!(
+			cwt_suggested_merge_strategy(game_path(estates), &elsewhere),
+			None,
+			"a policy for another file must not leak into this one"
+		);
+	}
+
+	/// A file whose schema rule gives no deterministic identity fails closed:
+	/// the policy is configured but no strategy is derived, so no winner is
+	/// invented and conflicts stay manual.
+	#[test]
+	fn cwt_suggested_policy_fails_closed_without_a_schema_rule() {
+		let configured = resolution_map(
+			r#"
+[[resolutions]]
+file = "history/countries/TES - Test.txt"
+policy = "cwt_suggested"
+"#,
+		);
+		assert_eq!(
+			cwt_suggested_merge_strategy(
+				game_path("history/countries/TES - Test.txt"),
+				&configured
+			),
+			None,
+			"country_history names no field, so a conflicting scalar such as \
+			 government_rank stays a manual conflict"
+		);
+
+		let unbound = resolution_map(
+			r#"
+[[resolutions]]
+file = "zzz_unbound/example.txt"
+policy = "cwt_suggested"
+"#,
+		);
+		assert_eq!(
+			cwt_suggested_merge_strategy(game_path("zzz_unbound/example.txt"), &unbound),
+			None,
+			"no schema rule means no merge strategy"
+		);
+	}
+
+	/// The strategy adopts only the identity the schema names. Scalar, list
+	/// and block policies stay the family's own, so a conflicting
+	/// single-cardinality scalar keeps surfacing as a manual conflict.
+	#[test]
+	fn the_schema_strategy_adopts_only_the_merge_identity() {
+		let family = MergePolicies::default();
+		let mut policies = family;
+		apply_schema_merge_strategy(SchemaMergeStrategy { key_field: "key" }, &mut policies);
+		let mut expected = family;
+		expected.merge_key_source = MergeKeySource::FieldValue("key");
+		expected.nested_merge_key_source = MergeKeySource::AssignmentKey;
+		assert_eq!(
+			policies, expected,
+			"only the merge identity changes; scalar and block policies stay \
+			 the family's own, so unresolved scalars keep failing closed"
+		);
+	}
 
 	struct SequentialCandidateHandler {
 		next_candidate: usize,

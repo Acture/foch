@@ -326,6 +326,10 @@ pub struct ResolutionMap {
 	/// order across runs — important for foch.toml dumps and diagnostic output.
 	pub mod_priority_boost: BTreeMap<String, i32>,
 	pub pattern_rules: Vec<PatternRule>,
+	/// Explicit `policy = "cwt_suggested"` rules. Policies are opt-in merge
+	/// guidance the engine reads separately from decisions, so they never
+	/// enter `by_file` or `pattern_rules`.
+	pub policies: PolicyRules,
 }
 
 impl PartialEq for ResolutionMap {
@@ -339,10 +343,42 @@ impl PartialEq for ResolutionMap {
 				.iter()
 				.zip(other.pattern_rules.iter())
 				.all(|(a, b)| a.dsl == b.dsl && a.decision == b.decision)
+			&& self.policies == other.policies
 	}
 }
 
 impl Eq for ResolutionMap {}
+
+/// The explicit `policy = "..."` rules a foch.toml configures, matched on the
+/// file path alone: a policy rule has no address side by validation.
+#[derive(Debug, Clone, Default)]
+pub struct PolicyRules {
+	/// Exact `file = "..."` rules, indexed by game path.
+	pub by_file: BTreeMap<GamePathBuf, ResolutionPolicy>,
+	/// `match = "..."` rules, applied in declaration order.
+	pub patterns: Vec<PolicyRule>,
+}
+
+impl PartialEq for PolicyRules {
+	fn eq(&self, other: &Self) -> bool {
+		self.by_file == other.by_file
+			&& self.patterns.len() == other.patterns.len()
+			&& self
+				.patterns
+				.iter()
+				.zip(other.patterns.iter())
+				.all(|(a, b)| a.dsl == b.dsl && a.policy == b.policy)
+	}
+}
+
+/// One `[[resolutions]]` entry with a `policy` action and a `match` selector,
+/// matched on the file path. `dsl` holds the original pattern for diagnostics.
+#[derive(Clone, Debug)]
+pub struct PolicyRule {
+	pub dsl: String,
+	pub file_matcher: Matcher,
+	pub policy: ResolutionPolicy,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ResolutionDecision {
@@ -504,11 +540,12 @@ impl ResolutionMap {
 				continue;
 			}
 
-			// A policy entry is validated and then takes no part in the merge:
-			// nothing applies a policy yet, so none is stored.
-			if entry.policy.is_some() {
+			// A policy entry is an explicit opt-in the merge engine reads
+			// through `policy_for`; it adds no decision to `by_file` or
+			// `pattern_rules`.
+			if let Some(policy) = entry.policy {
 				if let Some(dsl) = &entry.r#match {
-					let (_, leaf_matcher) = parse_match_dsl(dsl)
+					let (file_matcher, leaf_matcher) = parse_match_dsl(dsl)
 						.map_err(|err| ConfigError::resolution_entry(index, err.message()))?;
 					if leaf_matcher.is_some() {
 						return Err(ConfigError::resolution_entry(
@@ -516,6 +553,19 @@ impl ResolutionMap {
 							"policy action does not support address-constrained match selectors",
 						));
 					}
+					map.policies.patterns.push(PolicyRule {
+						dsl: dsl.clone(),
+						file_matcher,
+						policy,
+					});
+				} else {
+					map.policies.by_file.insert(
+						entry
+							.file
+							.clone()
+							.expect("validated policy entry has a file or match selector"),
+						policy,
+					);
 				}
 				continue;
 			}
@@ -569,6 +619,21 @@ impl ResolutionMap {
 			.iter()
 			.find(|rule| rule.matches(file, leaf_address))
 			.map(|rule| &rule.decision)
+	}
+
+	/// The merge policy explicitly configured for `file`, if any: an exact
+	/// `file` rule first, then `match` rules in declaration order. Without a
+	/// configured rule no policy applies, so the engine keeps its default
+	/// behavior.
+	pub fn policy_for(&self, file: &GamePath) -> Option<ResolutionPolicy> {
+		if let Some(policy) = self.policies.by_file.get(file) {
+			return Some(*policy);
+		}
+		self.policies
+			.patterns
+			.iter()
+			.find(|rule| rule.file_matcher.is_match(file.as_str()))
+			.map(|rule| rule.policy)
 	}
 }
 
@@ -1300,11 +1365,15 @@ policy = "cwt_suggested"
 			config.resolutions[6].policy,
 			Some(ResolutionPolicy::CwtSuggested)
 		);
-		// A policy entry is validated but not applied, so it adds no decision.
+		// A policy entry adds no decision; the engine reads it via policy_for.
 		assert_eq!(map.by_file.len(), 3);
 		assert!(
 			!map.by_file
 				.contains_key(game_path("common/estates_preload/test.txt"))
+		);
+		assert_eq!(
+			map.policy_for(game_path("common/estates_preload/test.txt")),
+			Some(ResolutionPolicy::CwtSuggested)
 		);
 	}
 
@@ -1831,11 +1900,21 @@ policy = "cwt_suggested"
 			Some(ResolutionPolicy::CwtSuggested)
 		);
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
-		// Validated but not applied: the policy adds no pattern decision.
+		// The policy adds no pattern decision; the engine reads it through
+		// `policy_for`.
 		assert!(map.pattern_rules.is_empty());
 		assert_eq!(
 			map.lookup(game_path("common/estates_preload/test.txt"), "no-id", ""),
 			None
+		);
+		assert_eq!(
+			map.policy_for(game_path("common/estates_preload/test.txt")),
+			Some(ResolutionPolicy::CwtSuggested)
+		);
+		assert_eq!(
+			map.policy_for(game_path("common/other/test.txt")),
+			None,
+			"the pattern must not reach outside common/estates_preload"
 		);
 	}
 
@@ -2001,7 +2080,22 @@ policy = "cwt_suggested"
 		)
 		.expect("parse");
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
-		assert_eq!(map, ResolutionMap::default());
+		// Policies guide the engine without becoming decisions: no entry may
+		// surface through `lookup`.
+		assert!(map.by_file.is_empty());
+		assert!(map.by_conflict_id.is_empty());
+		assert!(map.pattern_rules.is_empty());
+		assert_eq!(
+			map.policy_for(game_path("common/estates_preload/exact.txt")),
+			Some(ResolutionPolicy::CwtSuggested),
+			"the exact file rule wins"
+		);
+		assert_eq!(
+			map.policy_for(game_path("common/estates_preload/other.txt")),
+			Some(ResolutionPolicy::CwtSuggested),
+			"the pattern rule covers the rest of the directory"
+		);
+		assert_eq!(map.policy_for(game_path("common/elsewhere/test.txt")), None);
 	}
 
 	#[test]

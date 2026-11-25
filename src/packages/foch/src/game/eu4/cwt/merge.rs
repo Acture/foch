@@ -22,6 +22,36 @@ pub enum SchemaMergeIdentity {
 	FieldValue(String),
 }
 
+/// The merge strategy the compiled schema derives for a whole file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchemaMergeStrategy<'schema> {
+	/// The field the schema names the file's definitions by
+	/// (`name_field = "key"`): conflicting definitions merge by that inner
+	/// key instead of by their assignment key.
+	pub key_field: &'schema str,
+}
+
+/// Derives the merge strategy for a file the user opted into
+/// `policy = "cwt_suggested"` with.
+///
+/// Returns `None` — fail closed, keep the content family's own strategy and
+/// let unresolved conflicts surface as manual conflicts — unless the schema
+/// binds the file to a root type that names its definitions. A single-cardinality
+/// scalar, an unnamed root type or an unbound path never yields a strategy,
+/// so no winner is invented where the schema gives no deterministic rule.
+pub fn suggest_merge_strategy(file_path: &GamePath) -> Option<SchemaMergeStrategy<'static>> {
+	suggest_merge_strategy_with_query(super::rule_engine(), file_path)
+}
+
+fn suggest_merge_strategy_with_query<'schema>(
+	schema: &'schema CwtQuery,
+	file_path: &GamePath,
+) -> Option<SchemaMergeStrategy<'schema>> {
+	let root = schema.bind_root(file_path)?;
+	let key_field = root.name_field.as_deref()?;
+	Some(SchemaMergeStrategy { key_field })
+}
+
 /// Suggests schema-backed merge identity and block policy for an EU4 AST path.
 pub fn suggest_for_conflict(
 	file_path: &GamePath,
@@ -512,6 +542,55 @@ mod tests {
 				&["missing"]
 			)
 			.is_none()
+		);
+	}
+
+	#[test]
+	fn suggests_keyed_definitions_for_the_estates_preload_root_type() {
+		// `type[estate_modifier]` names each definition by its `key` field, so
+		// the schema gives a deterministic rule: merge by that inner key.
+		assert_eq!(
+			suggest_merge_strategy(game_path("common/estates_preload/test_modifiers.txt")),
+			Some(SchemaMergeStrategy { key_field: "key" })
+		);
+	}
+
+	#[test]
+	fn a_named_root_type_suggests_merging_definitions_by_its_name_field() {
+		let schema = test_schema(EVENT_SCHEMA);
+		assert_eq!(
+			suggest_merge_strategy_with_query(schema.facts(), game_path("events/example.txt")),
+			Some(SchemaMergeStrategy { key_field: "id" })
+		);
+	}
+
+	#[test]
+	fn an_unnamed_root_type_fails_closed() {
+		// `country_history` binds `history/countries/` but names no field, so
+		// there is no deterministic rule: conflicting scalars such as
+		// `government_rank` must stay manual conflicts.
+		assert_eq!(
+			suggest_merge_strategy(game_path("history/countries/TES - Test.txt")),
+			None
+		);
+		let schema = test_schema(BINDING_SCHEMA);
+		assert_eq!(
+			suggest_merge_strategy_with_query(schema.facts(), game_path("missions/example.txt")),
+			None,
+			"a root type without a name field gives no merge rule"
+		);
+	}
+
+	#[test]
+	fn an_unbound_file_fails_closed() {
+		assert_eq!(
+			suggest_merge_strategy(game_path("zzz_unbound/example.txt")),
+			None
+		);
+		let schema = test_schema(EVENT_SCHEMA);
+		assert_eq!(
+			suggest_merge_strategy_with_query(schema.facts(), game_path("common/nothing.txt")),
+			None
 		);
 	}
 

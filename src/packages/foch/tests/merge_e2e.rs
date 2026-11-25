@@ -790,7 +790,6 @@ fn eu4_estates_preload_merges_modifier_branches_by_inner_key() {
 }
 
 #[test]
-#[ignore = "cwt_suggested policy is not yet wired to the merge engine (see #42)"]
 fn eu4_cwt_suggested_policy_merges_estates_preload_by_key() {
 	let (result, out_dir) =
 		run_merge_for_fixture("eu4_cwt_suggested_estates_preload_resolved", false);

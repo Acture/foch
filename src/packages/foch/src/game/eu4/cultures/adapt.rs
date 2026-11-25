@@ -274,7 +274,14 @@ fn prepare_cultures(
 	if input.installed_base_snapshot.is_none() {
 		return Ok(CultureAdaptations::default());
 	}
-	let plan = stage("culture: plan", || build_merge_plan_from_input(input, true));
+	// `load_merge_policy` validated these same entries before transforms
+	// prepare, so building the map again cannot fail.
+	let resolution_map =
+		crate::project::ResolutionMap::from_entries(request.project.resolutions.as_slice())
+			.expect("validated resolutions build a resolution map");
+	let plan = stage("culture: plan", || {
+		build_merge_plan_from_input(input, true, &resolution_map)
+	});
 	let Some((entry, namespace)) = plan.paths.iter().find_map(|entry| {
 		entry
 			.target
