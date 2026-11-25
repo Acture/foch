@@ -267,6 +267,34 @@ fn experiment_d_stock_steam_digest_shares_the_amdac_layout() {
 }
 
 #[test]
+#[cfg(windows)]
+fn experiment_d_binds_each_embedded_build_to_its_own_layout() {
+	// Both 1.37.5 builds resolve to distinct registry entries, and a bound
+	// (exe_base, context) pair keeps reading through its own profile.
+	let stock_json: serde_json::Value = serde_json::from_str(EMBEDDED[1]).unwrap();
+	let stock_digest = stock_json["exe_sha256"].as_str().unwrap();
+	let amdac = default_profile();
+	let stock = profile_for_build(stock_digest).expect("stock Steam 1.37.5 profile");
+	assert_ne!(amdac.exe_sha256, stock.exe_sha256);
+
+	let base = 0x1400_0000_usize;
+	let amdac_context = 0x1_0000_0000_usize;
+	let stock_context = 0x2_0000_0000_usize;
+	let _guard = BindGuard {
+		keys: vec![(base, amdac_context), (base, stock_context)],
+	};
+	bind_game(base, amdac_context, amdac);
+	bind_game(base, stock_context, stock);
+	assert!(std::ptr::eq(bound_profile(base, amdac_context), amdac));
+	assert!(std::ptr::eq(bound_profile(base, stock_context), stock));
+	// An unbound pair falls back to the default (AMDAC) profile.
+	assert!(std::ptr::eq(
+		bound_profile(0x2400_0000, 0x3_0000_0000),
+		amdac
+	));
+}
+
+#[test]
 fn experiment_a_profiles_differ_before_any_memory_access() {
 	let left = default_profile();
 	let right = synthetic_profile();

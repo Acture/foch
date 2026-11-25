@@ -115,6 +115,25 @@ fn native_probe_checks_the_actual_host_digest_before_resolving_or_installing_any
 		usize::from(cfg!(all(windows, target_arch = "x86_64")))
 	);
 	assert_eq!(HOOKS.load(Ordering::Relaxed), 0);
+	// The stock Steam 1.37.5 digest passes the same build gate and reaches
+	// the identical config and resolver refusals as the AMDAC build.
+	const STOCK_STEAM: &str = "9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a";
+	let finds = FIND.load(Ordering::Relaxed);
+	host.exe_sha256 = FochStr::from_str(STOCK_STEAM);
+	CONFIG.store(2, Ordering::Relaxed);
+	assert_eq!(unsafe { (api.init)(&host) }, result::OK);
+	assert_eq!(read_status().reason_code, 211); // Config refusal precedes resolution.
+	assert_eq!(read_status().state, state::REFUSED);
+	assert_eq!(FIND.load(Ordering::Relaxed), finds);
+	CONFIG.store(1, Ordering::Relaxed);
+	assert_eq!(unsafe { (api.init)(&host) }, result::OK);
+	assert_eq!(read_status().reason_code, 212); // Resolver refusal is preserved.
+	assert_eq!(read_status().state, state::REFUSED);
+	assert_eq!(
+		FIND.load(Ordering::Relaxed),
+		finds + usize::from(cfg!(all(windows, target_arch = "x86_64")))
+	);
+	assert_eq!(HOOKS.load(Ordering::Relaxed), 0);
 	#[cfg(windows)]
 	unsafe {
 		distinct_dll_filenames_keep_the_actual_native_status_separate(&mut host)
