@@ -5,6 +5,7 @@ import App from "./App";
 import type {
 	AnalysisInputScope,
 	DesktopClient,
+	DesktopConnectivityReport,
 	DesktopLaunchResult,
 	DesktopLaunchStatus,
 	DesktopPluginOverview,
@@ -13,6 +14,7 @@ import type {
 	InputInspection,
 	MergeAnalysisState,
 	MergeAnalysisSummary,
+	MergeCommitResult,
 	MergeUnitDetail,
 	MergeUnitPage,
 	StartMergeAnalysisResult,
@@ -387,6 +389,33 @@ function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
 		),
 		listMergeUnits: vi.fn(async (): Promise<MergeUnitPage> => UNIT_PAGE),
 		getMergeUnit: vi.fn(async (): Promise<MergeUnitDetail> => UNIT_DETAIL),
+		commitMergeAnalysis: vi.fn(
+			async (analysisId: string, outputDir: string): Promise<MergeCommitResult> => ({
+				analysisId,
+				outputDir,
+				mergeStatus: "partial_success",
+				generatedFileCount: 4,
+				manualConflictCount: 1,
+				unsupportedInputCount: 0,
+				engineFailureCount: 0,
+				committedAtNote: "english note",
+			}),
+		),
+		testDownloadConnectivity: vi.fn(async (): Promise<DesktopConnectivityReport> => ({
+			transport: "auto",
+			mirrorPolicy: "auto",
+			routes: [
+				{
+					label: "direct",
+					url: "https://github.com/Acture/foch",
+					kind: "direct",
+					reachable: true,
+					httpStatus: 200,
+					latencyMs: 12,
+					detail: "HEAD",
+				},
+			],
+		})),
 		...overrides,
 	};
 }
@@ -902,6 +931,143 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		).toBeEnabled();
 		expect(client.inspectInput).toHaveBeenCalledTimes(2);
 	});
+
+	it("confirms an empty folder twice, then shows the English export result", async (): Promise<void> => {
+		const client = createClient({
+			getMergeAnalysisSummary: vi.fn(async (): Promise<MergeAnalysisSummary> =>
+				analysisSummary("ready"),
+			),
+			commitMergeAnalysis: vi.fn(
+				async (analysisId: string, outputDir: string): Promise<MergeCommitResult> => ({
+					analysisId,
+					outputDir,
+					mergeStatus: "ready",
+					generatedFileCount: 3,
+					manualConflictCount: 0,
+					unsupportedInputCount: 0,
+					engineFailureCount: 0,
+					committedAtNote: "english note",
+				}),
+			),
+		});
+		renderMerge(client, 10_000);
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+		expect(
+			await screen.findByRole("heading", { name: "Export Merged Mod" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/Export never edits Steam, the game directory, or source mods/),
+		).toBeInTheDocument();
+		const exportButton = screen.getByRole("button", { name: "Export Merged Mod" });
+		expect(exportButton).toBeDisabled();
+		fireEvent.change(screen.getByRole("textbox", { name: "Output folder" }), {
+			target: { value: "  D:\\merged-mod  " },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Export Merged Mod" }));
+		expect(client.commitMergeAnalysis).not.toHaveBeenCalled();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Confirm export to this folder" }),
+		);
+		await waitFor((): void => {
+			expect(client.commitMergeAnalysis).toHaveBeenCalledWith(
+				"analysis-1",
+				"  D:\\merged-mod  ",
+			);
+		});
+		expect(await screen.findByText(/D:\\merged-mod/)).toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: "Output folder" })).toHaveValue(
+			"  D:\\merged-mod  ",
+		);
+		expect(screen.getByText(/Generated files 3/)).toBeInTheDocument();
+		expect(
+			screen.getByText(/Safe files were written to an empty folder/),
+		).toBeInTheDocument();
+		expect(screen.queryByText("english note")).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", {
+				name: "This analysis has already been exported.",
+			}),
+		).toBeDisabled();
+	});
+
+	it("shows a non-empty target error and keeps the analysis exportable", async (): Promise<void> => {
+		const client = createClient({
+			commitMergeAnalysis: vi.fn(async (): Promise<MergeCommitResult> => {
+				throw {
+					code: "output_not_empty",
+					message: "choose a new or empty folder; C:\\occupied already contains files",
+				};
+			}),
+		});
+		renderMerge(client, 10_000);
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+		fireEvent.change(await screen.findByRole("textbox", { name: "Output folder" }), {
+			target: { value: "C:\\occupied" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Export Merged Mod" }));
+		fireEvent.click(
+			screen.getByRole("button", { name: "Confirm export to this folder" }),
+		);
+		expect(await screen.findByText(/already contains files/)).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Export Merged Mod" })).toBeEnabled();
+	});
+
+	it("hides export while the analysis is blocked", async (): Promise<void> => {
+		const client = createClient({
+			getMergeAnalysisSummary: vi.fn(async (): Promise<MergeAnalysisSummary> =>
+				analysisSummary("blocked"),
+			),
+		});
+		renderMerge(client, 10_000);
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+		expect(
+			await screen.findByRole("heading", { name: "Review blocked" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: "Export Merged Mod" }),
+		).not.toBeInTheDocument();
+		expect(client.commitMergeAnalysis).not.toHaveBeenCalled();
+	});
+
+	it("exports a deferred analysis in simplified Chinese without the English note", async (): Promise<void> => {
+		const client = createClient({
+			getDesktopSettings: vi.fn(async (): Promise<DesktopPreferences> => ({
+				...ENGLISH_SETTINGS,
+				language: "zh_cn",
+				effectiveLanguage: "zh-CN",
+			})),
+		});
+		render(<App client={client} pollIntervalMs={10_000} />);
+		fireEvent.click(await screen.findByRole("tab", { name: "合并与冲突" }));
+		fireEvent.click(await screen.findByRole("button", { name: /分析当前剧本组/ }));
+		expect(
+			await screen.findByRole("heading", { name: "导出合并 Mod" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/导出不会修改 Steam、游戏目录或源 Mod/),
+		).toBeInTheDocument();
+		fireEvent.change(screen.getByRole("textbox", { name: "输出文件夹" }), {
+			target: { value: "D:\\导出" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "导出合并 Mod" }));
+		fireEvent.click(screen.getByRole("button", { name: "确认导出到此文件夹" }));
+		await waitFor((): void => {
+			expect(client.commitMergeAnalysis).toHaveBeenCalledWith("analysis-1", "D:\\导出");
+		});
+		expect(screen.getByText("D:\\导出")).toBeInTheDocument();
+		expect(screen.getByText(/生成的文件 4/)).toBeInTheDocument();
+		expect(
+			screen.getByText(/已写入安全的文件和定义模块。不安全的单元已延后/),
+		).toBeInTheDocument();
+		expect(screen.queryByText("english note")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "这次分析已经导出。" })).toBeDisabled();
+	});
 });
 
 describe("Foch desktop play, plugins, and settings", (): void => {
@@ -1010,5 +1176,64 @@ describe("Foch desktop play, plugins, and settings", (): void => {
 				}),
 			);
 		});
+	});
+
+	it("tests the unsaved settings draft and shows each route in English", async (): Promise<void> => {
+		const client = createClient();
+		render(<App client={client} />);
+		fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+		fireEvent.change(await screen.findByRole("combobox", { name: "Mirror" }), {
+			target: { value: "custom" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: "Custom HTTPS prefixes" }), {
+			target: { value: "https://mirror.example/" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Test Connectivity" }));
+		await waitFor((): void => {
+			expect(client.testDownloadConnectivity).toHaveBeenCalledWith({
+				transport: "auto",
+				mirror: "custom",
+				customMirrors: ["https://mirror.example/"],
+				language: "auto",
+			});
+		});
+		expect(client.saveDesktopSettings).not.toHaveBeenCalled();
+		expect(await screen.findByText("Reachable")).toBeInTheDocument();
+		expect(screen.getByText("HTTP 200")).toBeInTheDocument();
+		expect(screen.getByText(/Latency 12 ms/)).toBeInTheDocument();
+		expect(screen.getByText(/SHA-256 and PE export validation/)).toBeInTheDocument();
+	});
+
+	it("shows an unreachable route in simplified Chinese", async (): Promise<void> => {
+		const client = createClient({
+			getDesktopSettings: vi.fn(async (): Promise<DesktopPreferences> => ({
+				...ENGLISH_SETTINGS,
+				language: "zh_cn",
+				effectiveLanguage: "zh-CN",
+			})),
+			testDownloadConnectivity: vi.fn(async (): Promise<DesktopConnectivityReport> => ({
+				transport: "http",
+				mirrorPolicy: "direct",
+				routes: [
+					{
+						label: "direct",
+						url: "https://github.com/Acture/foch",
+						kind: "direct",
+						reachable: false,
+						httpStatus: 502,
+						latencyMs: 40,
+						detail: "HEAD 502",
+					},
+				],
+			})),
+		});
+		render(<App client={client} />);
+		fireEvent.click(await screen.findByRole("tab", { name: "设置" }));
+		fireEvent.click(screen.getByRole("button", { name: "测试连通性" }));
+		expect(await screen.findByText("不可达")).toBeInTheDocument();
+		expect(screen.getByText("HTTP 502")).toBeInTheDocument();
+		expect(screen.getByText(/延迟 40 ms/)).toBeInTheDocument();
+		expect(screen.getByText(/SHA-256/)).toBeInTheDocument();
+		expect(client.saveDesktopSettings).not.toHaveBeenCalled();
 	});
 });

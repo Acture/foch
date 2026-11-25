@@ -1384,6 +1384,36 @@ select:focus-visible {
 	color: #38bdf8;
 }
 
+.export-panel,
+.connectivity-report {
+	display: grid;
+	gap: 0.65rem;
+	margin-top: 0.8rem;
+}
+
+.route-list {
+	display: grid;
+	gap: 0.45rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.route-list li {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem 0.8rem;
+	align-items: baseline;
+}
+
+.route-reachable {
+	color: var(--safe);
+}
+
+.route-unreachable {
+	color: var(--failure);
+}
+
 @media (max-width: 860px) {
 	.app-frame {
 		grid-template-columns: 1fr;

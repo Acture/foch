@@ -127,6 +127,33 @@ export interface MergeAnalysisSummary {
 	message: string | null;
 }
 
+export interface MergeCommitResult {
+	analysisId: string;
+	outputDir: string;
+	mergeStatus: string;
+	generatedFileCount: number;
+	manualConflictCount: number;
+	unsupportedInputCount: number;
+	engineFailureCount: number;
+	committedAtNote: string;
+}
+
+export interface DesktopRouteProbe {
+	label: string;
+	url: string;
+	kind: "mirror" | "direct" | "gh" | string;
+	reachable: boolean;
+	httpStatus: number | null;
+	latencyMs: number;
+	detail: string;
+}
+
+export interface DesktopConnectivityReport {
+	transport: string;
+	mirrorPolicy: string;
+	routes: DesktopRouteProbe[];
+}
+
 export interface DesktopCommandError {
 	code: string | null;
 	message: string;
@@ -302,6 +329,13 @@ export interface DesktopClient {
 	getLaunchStatus(runDir: string): Promise<DesktopLaunchStatus>;
 	getDesktopSettings(): Promise<DesktopPreferences>;
 	saveDesktopSettings(settings: DesktopSettingsInput): Promise<DesktopPreferences>;
+	commitMergeAnalysis(
+		analysisId: string,
+		outputDir: string,
+	): Promise<MergeCommitResult>;
+	testDownloadConnectivity(
+		settings: DesktopSettingsInput | null,
+	): Promise<DesktopConnectivityReport>;
 }
 
 export type InvokeCommand = <T>(
@@ -367,6 +401,15 @@ export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient
 			settings: DesktopSettingsInput,
 		): Promise<DesktopPreferences> =>
 			invokeCommand("save_desktop_settings", { settings }),
+		commitMergeAnalysis: (
+			analysisId: string,
+			outputDir: string,
+		): Promise<MergeCommitResult> =>
+			invokeCommand("commit_merge_analysis", { analysisId, outputDir }),
+		testDownloadConnectivity: (
+			settings: DesktopSettingsInput | null,
+		): Promise<DesktopConnectivityReport> =>
+			invokeCommand("test_download_connectivity", { settings }),
 	};
 }
 
