@@ -229,4 +229,96 @@ mod tests {
 		};
 		assert!(!site.matches(&[0; 8]));
 	}
+
+	/// A stub host table whose callbacks are never called: the digest gate in
+	/// [`verify`] fires before any image access, so a null base is enough.
+	fn host(exe_sha256: &str) -> FochHostApi {
+		use foch_plugin_sdk::*;
+		unsafe extern "C" fn log(_: *const FochHostApi, _: i32, _: FochStr) {}
+		unsafe extern "C" fn report(_: *const FochHostApi, _: *const FochStatus) {}
+		unsafe extern "C" fn dir(_: *const FochHostApi, _: i32) -> FochStr {
+			FochStr::EMPTY
+		}
+		unsafe extern "C" fn config(_: *const FochHostApi) -> FochStr {
+			FochStr::EMPTY
+		}
+		unsafe extern "C" fn plugin_state(_: *const FochHostApi, _: FochStr) -> i32 {
+			state::INACTIVE
+		}
+		unsafe extern "C" fn find(
+			_: *const FochHostApi,
+			_: FochStr,
+			_: *mut *mut core::ffi::c_void,
+		) -> i32 {
+			result::E_UNSUPPORTED
+		}
+		unsafe extern "C" fn create(
+			_: *const FochHostApi,
+			_: *mut core::ffi::c_void,
+			_: *mut core::ffi::c_void,
+			_: i32,
+			_: *mut *const *const core::ffi::c_void,
+			_: *mut *mut FochHook,
+		) -> i32 {
+			result::E_UNSUPPORTED
+		}
+		unsafe extern "C" fn enable(_: *const FochHostApi, _: *mut FochHook, _: i32) -> i32 {
+			result::E_UNSUPPORTED
+		}
+		unsafe extern "C" fn patch(
+			_: *const FochHostApi,
+			_: *mut core::ffi::c_void,
+			_: *const u8,
+			_: usize,
+			_: *mut *mut FochPatch,
+		) -> i32 {
+			result::E_UNSUPPORTED
+		}
+		unsafe extern "C" fn patch_enable(_: *const FochHostApi, _: *mut FochPatch, _: i32) -> i32 {
+			result::E_UNSUPPORTED
+		}
+		FochHostApi {
+			size: size_of::<FochHostApi>() as u32,
+			abi_major: ABI_MAJOR,
+			abi_minor: ABI_MINOR,
+			plugin_id: FochStr::from_str("dev.foch.peace"),
+			run_id: FochStr::EMPTY,
+			game_version: FochStr::EMPTY,
+			exe_sha256: FochStr::from_str(exe_sha256),
+			exe_base: core::ptr::null_mut(),
+			exe_size: 0,
+			log,
+			report,
+			dir,
+			config_json: config,
+			plugin_state,
+			find_pattern: find,
+			hook_create: create,
+			hook_set_enabled: enable,
+			patch_create: patch,
+			patch_set_enabled: patch_enable,
+		}
+	}
+
+	#[test]
+	fn verify_rejects_unknown_build_digests_before_touching_the_image() {
+		let host = host(&"0".repeat(64));
+		assert_eq!(
+			// SAFETY: the stub host table and its literals outlive this call.
+			unsafe { verify(&host) }.unwrap_err(),
+			"the peace editor supports only its verified EU4 executable"
+		);
+	}
+
+	#[test]
+	fn verify_passes_the_pinned_digest_gate_before_image_checks() {
+		// The gate accepted the pinned digest, so the null image is the next
+		// refusal — proving both sides of the build-digest boundary.
+		let host = host(foch_runtime::dataplane::pinned_exe_sha256());
+		assert_eq!(
+			// SAFETY: the stub host table and its literals outlive this call.
+			unsafe { verify(&host) }.unwrap_err(),
+			"the game image is absent"
+		);
+	}
 }

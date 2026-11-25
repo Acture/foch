@@ -532,4 +532,25 @@ mod tests {
 		assert!(submission.receipt().contains(r#""demands":"3:111""#));
 		assert!(submission.receipt().contains(r#""native_calls":"0""#));
 	}
+
+	#[test]
+	#[cfg(windows)]
+	fn unknown_build_digest_skips_every_flag_read() {
+		use foch_runtime::dataplane::testing::FakeGame;
+
+		let mut scene = FakeGame::new();
+		scene
+			.add_country("SWE", 0, 0, None, &[("foch_peace_probe_vs_FRA", 1_500)])
+			.expect("country");
+		let game = scene.game().expect("scene");
+		let base = scene.exe_base().expect("image");
+		let game = Eu4Game::from_tick(base, game.context).expect("tick context");
+		// A digest outside the compiled-in profiles must read no flags at all:
+		// the dataplane refuses it, and the probe skips instead of guessing.
+		let rejected = "0".repeat(64);
+		// SAFETY: `scene` owns the country, its flag vectors, and the name table
+		// for this synchronous read.
+		let snapshots = unsafe { snapshots(&game, &rejected) };
+		assert!(snapshots.is_empty());
+	}
 }
