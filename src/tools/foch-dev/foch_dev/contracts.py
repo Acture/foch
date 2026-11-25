@@ -59,6 +59,12 @@ EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 	(INSTALLED_CRATE, "parse_stats", ("dev-tools",)),
 	(INSTALLED_CRATE, "schema_survey", ("dev-tools",)),
 	(INSTALLED_CRATE, "symbol_dump", ("dev-tools",)),
+	("foch-eu4-decide", "env_server", ()),
+	("foch-eu4-decide", "offline_train", ()),
+	("foch-eu4-decide", "oracle_dataset", ()),
+	("foch-eu4-decide", "rebuild_check", ()),
+	("foch-eu4-decide", "territory_server", ()),
+	("foch-plugin-read-decide", "terrain_smoke", ()),
 )
 # Workspace members released from their own repository, resolved from the
 # registry by published crates like any third-party dependency.

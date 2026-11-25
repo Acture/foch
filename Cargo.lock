@@ -1443,6 +1443,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-eu4-decide"
+version = "0.0.2"
+dependencies = [
+ "foch-eu4-gnn",
+ "foch-eu4-state",
+ "foch-runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "foch-eu4-gnn"
 version = "0.0.2"
 dependencies = [
@@ -1454,6 +1466,7 @@ dependencies = [
 name = "foch-eu4-state"
 version = "0.0.2"
 dependencies = [
+ "foch-eu4-gnn",
  "foch-runtime",
 ]
 
@@ -1505,6 +1518,20 @@ version = "0.0.2"
 dependencies = [
  "foch-plugin-sdk",
  "foch-runtime",
+]
+
+[[package]]
+name = "foch-plugin-read-decide"
+version = "0.0.1"
+dependencies = [
+ "foch-eu4-decide",
+ "foch-eu4-gnn",
+ "foch-eu4-state",
+ "foch-plugin-sdk",
+ "foch-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

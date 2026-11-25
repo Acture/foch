@@ -17,7 +17,7 @@ pub const COLUMNS: [&str; NODE] = [
 	"y",                   // 1: map position ÷5000
 	"development", // 2: (tax+prod+manpower) ÷1000 ÷35 — tax/manpower verified, +0x3e8 candidate
 	"fort_level",  // 3: ÷3 — live: candidate prov+0x2de0
-	"controller_ours", // 4: live: controller (TODO offset)
+	"controller_ours", // 4: live: candidate prov+0x470 (candidates::province::CONTROLLER)
 	"controller_theirs", // 5
 	"controller_neutral", // 6
 	"original_owner_ours", // 7: peace-deal owner, not current occupier
@@ -86,7 +86,8 @@ mod tests {
 	#[test]
 	fn columns_and_widths_match_the_sim_contract() {
 		assert_eq!(COLUMNS.len(), NODE);
-		assert_eq!(RULES, 26);
+		assert_eq!(NODE, foch_eu4_gnn::NODE);
+		assert_eq!(RULES, foch_eu4_gnn::RULES);
 	}
 
 	#[test]
