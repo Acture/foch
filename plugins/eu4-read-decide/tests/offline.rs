@@ -3,10 +3,12 @@
 //! game process — the memory edge stays a thin VerifiedGame call in
 //! the live path.
 
+use foch_eu4_decide::DecisionForward;
 use foch_eu4_gnn::GeneralGnn;
-use foch_plugin_read_decide::decide::suggest;
+use foch_plugin_read_decide::decide::{residual_telemetry, suggest};
 use foch_plugin_read_decide::frame::{ArmySnapshot, DynamicProvince, FrameInput, assemble};
 use foch_plugin_read_decide::graph::{self, StaticGraph};
+use foch_plugin_read_decide::probe;
 use foch_plugin_read_decide::terrain::TerrainCodec;
 
 const GRAPH: &str = include_str!("data/sample-graph.json");
@@ -190,4 +192,153 @@ fn the_probe_manifest_declares_the_overhaul_settings() {
 	let config = include_str!("../fixtures/probe/config.json");
 	assert!(config.contains("\"our_index\": 1500"));
 	assert!(config.contains("fixtures/probe/overhaul"));
+}
+
+/// The committed ablation export from the Python trainer: both heads,
+/// vanilla and overhaul distributions. The plugin consumes the same
+/// document `export_document` writes.
+const RESIDUAL_ABLATION: &str =
+	include_str!("../../../src/packages/foch-eu4-decide/tests/fixtures/residual_ablation.json");
+
+fn five(value: &serde_json::Value) -> [f32; 5] {
+	let flat: Vec<f32> = value
+		.as_array()
+		.expect("modifiers")
+		.iter()
+		.map(|item| item.as_f64().expect("number") as f32)
+		.collect();
+	assert_eq!(flat.len(), 5, "five mechanics");
+	[flat[0], flat[1], flat[2], flat[3], flat[4]]
+}
+
+#[test]
+fn the_real_residual_export_loads_and_scores_vanilla_and_overhaul() {
+	let forward = DecisionForward::from_json(RESIDUAL_ABLATION).expect("both heads");
+	assert!(
+		forward.cb_loaded(),
+		"the ablation export carries the cb head"
+	);
+	let root: serde_json::Value = serde_json::from_str(RESIDUAL_ABLATION).expect("fixture json");
+	let cases = root["cases"].as_array().expect("cases");
+	assert!(!cases.is_empty());
+	let mut distributions = std::collections::BTreeSet::new();
+	for case in cases {
+		let distribution = case["distribution"].as_str().expect("distribution");
+		distributions.insert(distribution);
+		let head = case["head"].as_str().expect("head");
+		let name = case["name"].as_str().expect("name");
+		let modifiers = five(case.get("modifiers").expect("modifiers"));
+		let expected = case["score"].as_array().expect("score");
+		let model = match head {
+			"terrain" => forward.terrain().expect("terrain head"),
+			"cb" => forward.cb().expect("cb head"),
+			other => panic!("unknown head {other}"),
+		};
+		let got = model.score(name, modifiers);
+		assert_eq!(got.len(), expected.len(), "{distribution} {head} {name}");
+		for (index, (left, right)) in got.iter().zip(expected).enumerate() {
+			let right = right.as_f64().expect("number") as f32;
+			assert!(
+				(left - right).abs() < 1.0e-5,
+				"{distribution} {head} {name}[{index}]: {left} vs {right}"
+			);
+		}
+	}
+	for required in [
+		"vanilla_id",
+		"vanilla_stat_modified",
+		"overhaul_unseen_terrain",
+		"overhaul_unseen_cb",
+	] {
+		assert!(distributions.contains(required), "missing {required}");
+	}
+}
+
+#[test]
+fn residual_telemetry_stays_finite_across_vanilla_and_overhaul_names() {
+	let forward = DecisionForward::from_json(RESIDUAL_ABLATION).expect("both heads");
+	let root: serde_json::Value = serde_json::from_str(RESIDUAL_ABLATION).expect("fixture json");
+	let first = |distribution: &str, head: &str| {
+		root["cases"]
+			.as_array()
+			.expect("cases")
+			.iter()
+			.find(|case| {
+				case["distribution"].as_str() == Some(distribution)
+					&& case["head"].as_str() == Some(head)
+			})
+			.expect("fixture case")
+			.clone()
+	};
+	let vanilla_terrain = first("vanilla_id", "terrain");
+	let vanilla_cb = first("vanilla_id", "cb");
+	let telemetry = residual_telemetry(
+		&forward,
+		Some((
+			vanilla_terrain["name"].as_str().expect("name"),
+			five(&vanilla_terrain["modifiers"]),
+		)),
+		Some((
+			vanilla_cb["name"].as_str().expect("name"),
+			five(&vanilla_cb["modifiers"]),
+		)),
+	);
+	assert!(telemetry.residual_loaded);
+	assert!(telemetry.residual_cb_loaded);
+	let score = telemetry.top_terrain_residual.expect("vanilla scalar");
+	assert!(score.is_finite());
+	// The scalar decomposes into the head means, matching the trainer:
+	// mean(f_t + E_t) + mean(f_c + E_c).
+	let mean_of = |model: &foch_eu4_decide::ResidualCategory, case: &serde_json::Value| {
+		let vector = model.score(
+			case["name"].as_str().expect("name"),
+			five(case.get("modifiers").expect("modifiers")),
+		);
+		vector.iter().sum::<f32>() / vector.len() as f32
+	};
+	let terrain_mean = mean_of(forward.terrain().expect("terrain head"), &vanilla_terrain);
+	let cb_mean = mean_of(forward.cb().expect("cb head"), &vanilla_cb);
+	assert!((score - (terrain_mean + cb_mean)).abs() < 1.0e-5);
+
+	// An overhaul playset's unseen terrain and casus belli stay finite:
+	// E_id = 0, the mechanics row still scores.
+	let unseen_terrain = first("overhaul_unseen_terrain", "terrain");
+	let unseen_cb = first("overhaul_unseen_cb", "cb");
+	let overhaul = residual_telemetry(
+		&forward,
+		Some((
+			unseen_terrain["name"].as_str().expect("name"),
+			five(&unseen_terrain["modifiers"]),
+		)),
+		Some((
+			unseen_cb["name"].as_str().expect("name"),
+			five(&unseen_cb["modifiers"]),
+		)),
+	);
+	assert!(overhaul.residual_loaded);
+	assert!(overhaul.residual_cb_loaded);
+	assert!(overhaul.top_terrain_residual.is_some_and(f32::is_finite));
+}
+
+#[test]
+fn residual_weights_config_validates_and_refuses_traversal() {
+	let absent = probe::parse_config(
+		"{\"probe\":true,\"graph\":\"g.json\",\"weights\":\"w.json\",\"our_tag\":\"SWE\",\"our_index\":3}",
+	)
+	.expect("valid config")
+	.expect("probe requested");
+	assert_eq!(absent.residual_weights, "", "absent means disabled");
+	let valid = probe::parse_config(
+		"{\"probe\":true,\"graph\":\"g.json\",\"weights\":\"w.json\",\"residual_weights\":\"residual.json\",\"our_tag\":\"SWE\",\"our_index\":3}",
+	)
+	.expect("valid config")
+	.expect("probe requested");
+	assert_eq!(valid.residual_weights, "residual.json");
+	assert!(
+		probe::parse_config(
+			"{\"probe\":true,\"graph\":\"g.json\",\"weights\":\"w.json\",\"residual_weights\":\"../escape.json\",\"our_tag\":\"SWE\",\"our_index\":3}",
+		)
+		.is_err(),
+		"traversal in residual_weights must refuse"
+	);
 }

@@ -45,6 +45,11 @@ type = "string"
 default = ""
 description = "GeneralGnn weight JSON. Trained weights stay out of the package."
 
+[config.residual_weights]
+type = "string"
+default = ""
+description = "Optional residual terrain/casus-belli head JSON. Empty disables the residual telemetry."
+
 [config.our_tag]
 type = "string"
 default = ""

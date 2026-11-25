@@ -12,12 +12,13 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
+use foch_eu4_decide::DecisionForward;
 use foch_plugin_sdk::{FochHostApi, FochStr, log, result};
 use foch_runtime::dataplane::Memory;
 
 use serde::Deserialize;
 
-use crate::decide::suggest;
+use crate::decide::{self, suggest};
 use crate::frame::{ArmySnapshot, DynamicProvince, FrameInput, WarFacts, assemble};
 use crate::graph::{self, StaticGraph};
 use crate::terrain::TerrainCodec;
@@ -26,6 +27,7 @@ struct Probe {
 	host: usize,
 	graph: StaticGraph,
 	gnn: foch_eu4_gnn::GeneralGnn,
+	residual: Option<DecisionForward>,
 	terrain_sources: Vec<String>,
 	our_tag: String,
 	our_index: i32,
@@ -67,6 +69,10 @@ pub struct ProbeConfig {
 	pub graph: String,
 	#[serde(default)]
 	pub weights: String,
+	/// Optional residual terrain/casus-belli head document. Empty
+	/// disables the residual telemetry; absent means the same.
+	#[serde(default)]
+	pub residual_weights: String,
 	#[serde(default)]
 	pub our_tag: String,
 	#[serde(default)]
@@ -104,7 +110,7 @@ pub fn parse_config(config_json: &str) -> Result<Option<ProbeConfig>, String> {
 	if config.our_index < 0 || config.our_index > i16::MAX as i32 {
 		return Err("our_index is outside the country-index range".into());
 	}
-	for path in [&config.graph, &config.weights] {
+	for path in [&config.graph, &config.weights, &config.residual_weights] {
 		if !path.is_empty() && !acceptable_asset_path(path) {
 			return Err("asset paths must not contain traversal".into());
 		}
@@ -220,6 +226,23 @@ pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), Ins
 	let gnn = foch_eu4_gnn::GeneralGnn::from_json(&weights).ok_or_else(|| {
 		InstallError::BadAsset("weight asset rejected: malformed or mismatched shapes".into())
 	})?;
+	// Optional residual heads: terrain, plus the casus belli when the
+	// document carries that head. Unreadable or malformed fails the
+	// install before the hook exists.
+	let residual = if config.residual_weights.is_empty() {
+		None
+	} else {
+		let text = std::fs::read_to_string(&config.residual_weights).map_err(|e| {
+			InstallError::BadAsset(format!("residual asset {}: {e}", config.residual_weights))
+		})?;
+		let forward = DecisionForward::from_json(&text).ok_or_else(|| {
+			InstallError::BadAsset(format!(
+				"residual asset {}: malformed or empty residual document",
+				config.residual_weights
+			))
+		})?;
+		Some(forward)
+	};
 
 	// SAFETY: `host` is the live table for this plugin init. The resolved
 	// pointer is the pinned monthly tick inside that image.
@@ -247,6 +270,7 @@ pub(super) fn install(host: &FochHostApi, config: ProbeConfig) -> Result<(), Ins
 			host: host as *const _ as usize,
 			graph,
 			gnn,
+			residual,
 			terrain_sources,
 			our_tag: config.our_tag,
 			our_index: config.our_index,
@@ -340,7 +364,7 @@ fn observe(probe: &Probe, context: usize) -> Result<(), String> {
 
 	let top = suggestion.candidates[suggestion.sampled];
 	let target = probe.graph.id_at(top as usize).unwrap_or(u32::MAX);
-	let payload: std::collections::BTreeMap<&str, String> = [
+	let mut payload: std::collections::BTreeMap<&str, String> = [
 		("type", "read_decide".into()),
 		("status", "suggested".into()),
 		("pick_province", target.to_string()),
@@ -356,6 +380,27 @@ fn observe(probe: &Probe, context: usize) -> Result<(), String> {
 		("temperature", format!("{}", suggestion.temperature)),
 	]
 	.into();
+	// Residual telemetry rides the same receipt when the optional head
+	// document loaded; the CB flag reports the document's shape and the
+	// score is the picked province's terrain scalar.
+	if let Some(forward) = &probe.residual {
+		let terrain = game.terrain_of(target, count).unwrap_or_default();
+		let axes = codec.mechanics_of(&terrain).axes();
+		let telemetry = decide::residual_telemetry(forward, Some((terrain.as_str(), axes)), None);
+		payload.insert("residual_loaded", "true".into());
+		payload.insert(
+			"residual_cb_loaded",
+			if telemetry.residual_cb_loaded {
+				"true"
+			} else {
+				"false"
+			}
+			.into(),
+		);
+		if let Some(score) = telemetry.top_terrain_residual {
+			payload.insert("top_terrain_residual", format!("{score}"));
+		}
+	}
 	let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
 	unsafe {
 		(host.log)(
@@ -421,6 +466,26 @@ mod tests {
 		.is_ok());
 		assert!(parse_config(
 			"{\"probe\":true,\"graph\":\"g.json\",\"weights\":\"w.json\",\"our_tag\":\"SWE\",\"our_index\":32768}"
+		)
+		.is_err());
+	}
+
+	#[test]
+	fn residual_weights_config_defaults_to_empty_and_refuses_traversal() {
+		let absent = parse_config(
+			"{\"probe\":true,\"graph\":\"g.json\",\"weights\":\"w.json\",\"our_tag\":\"SWE\",\"our_index\":3}",
+		)
+		.unwrap()
+		.unwrap();
+		assert_eq!(absent.residual_weights, "");
+		let explicit = parse_config(
+			"{\"probe\":true,\"graph\":\"g.json\",\"weights\":\"w.json\",\"residual_weights\":\"residual.json\",\"our_tag\":\"SWE\",\"our_index\":3}",
+		)
+		.unwrap()
+		.unwrap();
+		assert_eq!(explicit.residual_weights, "residual.json");
+		assert!(parse_config(
+			"{\"probe\":true,\"graph\":\"g.json\",\"weights\":\"w.json\",\"residual_weights\":\"../escape.json\",\"our_tag\":\"SWE\",\"our_index\":3}",
 		)
 		.is_err());
 	}

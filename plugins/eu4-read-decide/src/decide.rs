@@ -6,6 +6,7 @@
 //! full ranking and one sampled pick under an explicit temperature,
 //! and nothing here writes game memory or takes any action.
 
+use foch_eu4_decide::DecisionForward;
 use foch_eu4_gnn::GeneralGnn;
 use foch_eu4_state::plane::State;
 
@@ -80,6 +81,51 @@ fn sample_pick(scores: &[f32], temperature: f32, unit: f32) -> usize {
 	weights.len() - 1
 }
 
+/// Residual-head telemetry for one suggestion receipt. Every number is
+/// finite or its slot is `None`: telemetry never logs a NaN.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResidualTelemetry {
+	/// The residual document loaded (terrain head at minimum).
+	pub residual_loaded: bool,
+	/// The document also carries the casus belli head.
+	pub residual_cb_loaded: bool,
+	/// The residual scalar of the picked candidate's terrain, when the
+	/// terrain was known and scored finite.
+	pub top_terrain_residual: Option<f32>,
+}
+
+/// Score one candidate's terrain — plus the war's casus belli when the
+/// forward carries that head and the caller can name it — through the
+/// residual decision forward. Pure and read-only: no game memory, no
+/// hidden state, and `None` instead of a non-finite score.
+pub fn score_residual_candidate(
+	forward: &DecisionForward,
+	terrain_name: &str,
+	terrain_axes: [f32; 5],
+	cb: Option<(&str, [f32; 5])>,
+) -> Option<f32> {
+	let (cb_name, cb_axes) = cb.unwrap_or(("", [0.0; 5]));
+	let score = forward.score(terrain_name, terrain_axes, cb_name, cb_axes);
+	score.is_finite().then_some(score)
+}
+
+/// The receipt telemetry for a loaded residual forward. `cb` is the
+/// war's known casus belli, if any; without one a loaded cb head
+/// scores its neutral-mechanics row, the same contract as
+/// [`crate::frame::WarFacts::default`].
+pub fn residual_telemetry(
+	forward: &DecisionForward,
+	top_terrain: Option<(&str, [f32; 5])>,
+	cb: Option<(&str, [f32; 5])>,
+) -> ResidualTelemetry {
+	ResidualTelemetry {
+		residual_loaded: true,
+		residual_cb_loaded: forward.cb_loaded(),
+		top_terrain_residual: top_terrain
+			.and_then(|(name, axes)| score_residual_candidate(forward, name, axes, cb)),
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -132,5 +178,57 @@ mod tests {
 		let gnn = fixture_gnn();
 		let empty = State::default();
 		assert!(suggest(&gnn, &empty, 8.0, 0.5).is_none());
+	}
+
+	/// Width-2 terrain-only forward; embedding row 1 is [1, 0].
+	fn residual_forward() -> DecisionForward {
+		let text = r#"{
+			"kind": "residual-category",
+			"names": ["plains"],
+			"modifiers": [[1.0, 0.0, 0.0, 4.0, 0.0]],
+			"f0_weight": [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]],
+			"f0_bias": [0, 0],
+			"f2_weight": [[1, 0], [0, 1]],
+			"f2_bias": [0, 0],
+			"embedding": [[9, 9], [1, 0]]
+		}"#;
+		DecisionForward::from_json(text).expect("terrain-only forward")
+	}
+
+	#[test]
+	fn residual_telemetry_reports_the_document_shape_and_finite_scores() {
+		let forward = residual_forward();
+		let telemetry =
+			residual_telemetry(&forward, Some(("plains", [1.0, 0.0, 0.0, 4.0, 0.0])), None);
+		assert!(telemetry.residual_loaded);
+		assert!(!telemetry.residual_cb_loaded);
+		assert_eq!(telemetry.top_terrain_residual, Some(1.0));
+
+		// An unseen category scores through f(mechanics) with E_id = 0
+		// and stays finite.
+		let unseen = residual_telemetry(
+			&forward,
+			Some(("haunted_bog", [3.0, 1.0, 0.0, 1.0, 2.0])),
+			None,
+		);
+		assert_eq!(unseen.top_terrain_residual, Some(2.0));
+
+		// No terrain known: the score slot stays empty, never NaN.
+		let unknown = residual_telemetry(&forward, None, None);
+		assert_eq!(unknown.top_terrain_residual, None);
+		assert!(unknown.residual_loaded);
+	}
+
+	#[test]
+	fn score_residual_candidate_never_emits_a_non_finite_number() {
+		let forward = residual_forward();
+		let score = score_residual_candidate(&forward, "plains", [1.0, 0.0, 0.0, 4.0, 0.0], None);
+		assert_eq!(score, Some(1.0));
+		// The forward's ReLU absorbs a NaN mechanic into 0.0; the
+		// finiteness guard keeps any non-finite result from reaching
+		// the receipt either way.
+		let nan_axes = [f32::NAN, 0.0, 0.0, 4.0, 0.0];
+		let score = score_residual_candidate(&forward, "plains", nan_axes, None);
+		assert!(score.is_none_or(f32::is_finite), "{score:?}");
 	}
 }
