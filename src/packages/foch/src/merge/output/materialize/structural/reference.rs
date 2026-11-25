@@ -216,7 +216,7 @@ fn run_reference_structural_file_engine(
 	resolution_map: &ResolutionMap,
 ) -> Result<ReferenceDagMergeComputation, MergeError> {
 	let mut handler = super::automatic_conflict_handler(target_path, context, resolution_map);
-	let effective_policies = super::effective_merge_policies(context);
+	let effective_policies = super::effective_merge_policies(target_path, context);
 	compute_reference_dag_merge(
 		ReferenceDagMergeRequest {
 			input: DagMergeInputRequest {
@@ -246,7 +246,7 @@ fn run_reference_definition_module_engine(
 	resolution_map: &ResolutionMap,
 ) -> Result<ReferenceDagMergeComputation, MergeError> {
 	let mut handler = super::automatic_conflict_handler(target_path, context, resolution_map);
-	let effective_policies = super::effective_merge_policies(context);
+	let effective_policies = super::effective_merge_policies(target_path, context);
 	let base_statements = merge_ancestor_statements(views.vanilla.as_ref());
 	compute_reference_dag_merge_from_parsed(ReferenceParsedDagMergeRequest {
 		file_dag: &views.file_dag,
@@ -350,7 +350,12 @@ fn leaf_conflicts(
 				reason,
 			} => {
 				let address_path = address.path.join("/");
-				let ast_path = address.path.iter().map(String::as_str).collect::<Vec<_>>();
+				// The conflict sits at its own key, so classification binds
+				// the full address; the parent path alone leaves a root-level
+				// key without a CWT field and its kind unset.
+				let mut field_path = address.path.clone();
+				field_path.push(address.key.clone());
+				let ast_path = field_path.iter().map(String::as_str).collect::<Vec<_>>();
 				Some(LeafConflictDetail {
 					address_path: address_path.clone(),
 					address_key: address.key.clone(),

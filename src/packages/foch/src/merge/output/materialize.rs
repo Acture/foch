@@ -185,7 +185,7 @@ pub(crate) fn freeze_path_plan(
 
 	stage_log_with("build_merge_plan", || {
 		let plan = match input_result {
-			Ok(input) => build_merge_plan_from_input(input, include_game_base),
+			Ok(input) => build_merge_plan_from_input(input, include_game_base, resolution_map),
 			Err(err) => fatal_plan_from_input_error(err, include_game_base),
 		};
 		let summary = format!(
