@@ -42,6 +42,26 @@ auto-detected from system locale or switched live via `ui-settings.toml`):
      load-order readiness rail, analysis progress and cancellation controls, disposition
      summary ribbon, searchable/filterable paginated unit browser, and unit contributor
      detail pane.
+   - Analyses run in strict review mode: a conflict nothing resolves defers the unit for
+     an explicit choice instead of being settled silently by load order.
+   - When a selected unit carries deferred **leaf conflicts / 叶子冲突**, its detail
+     pane renders each conflict's address, the reason it deferred, the optional
+     **Vanilla / 原版** snippet, and the competing mod candidates (display name,
+     precedence, change summary, rendered snippet). All conflict views are bounded
+     structured DTOs capped in Rust (conflicts per unit, candidates per conflict,
+     snippet characters); raw artifact bytes never cross IPC.
+   - Each candidate offers non-destructive explicit choices — **Prefer for this file
+     / 本文件优先此 Mod** (a `file` rule) and **Prefer for folder / 同目录优先此 Mod**
+     (a directory `match` rule) — derived strictly from the review's audited decision
+     points. Choices queue in a **Pending Resolutions / 待应用解决规则** bar where they
+     can be removed or cleared.
+   - **Re-analyze with Resolutions / 应用规则并重新分析** runs a fresh session analysis
+     with the queued rules. The rules are serialized into a session-scoped temporary
+     `foch.toml` beside the analysis target — deleted when the run ends — and never
+     written into a user's or a mod's `foch.toml`. Invalid rules fail closed before any
+     analysis starts. **Copy `foch.toml` snippet / 复制 `foch.toml` 配置** shows the
+     exact `[[resolutions]]` TOML Rust loads, so the same choices can be kept in a real
+     `foch.toml` for the CLI.
    - If individual Steam Workshop items are unavailable locally, inspection offers an
      explicit in-memory `without_unavailable_mods` recovery analysis without editing
      `dlc_load.json`, Launcher descriptors, or Steam data.
@@ -62,19 +82,21 @@ auto-detected from system locale or switched live via `ui-settings.toml`):
      save settings and does not download plugin bytes. Mirror downloads still enforce
      SHA-256 and PE export validation before install.
 
-## Tauri Backend Command Surface (17 Commands)
+## Tauri Backend Command Surface (18 Commands)
 
-The Tauri `invoke_handler` exposes 17 typed commands across two domain groups:
+The Tauri `invoke_handler` exposes 18 typed commands across two domain groups:
 
-### Merge Inspection, Analysis, Review & Empty-Target Export (7 commands)
+### Merge Inspection, Analysis, Review & Empty-Target Export (8 commands)
 
 - `inspect_input`
-- `start_merge_analysis`
+- `start_merge_analysis` (optional `resolutions`: explicit `DesktopResolutionRule`s
+  applied through a session-scoped config; omitted for full backwards compatibility)
 - `cancel_merge_analysis`
 - `get_merge_analysis_summary`
 - `list_merge_units`
-- `get_merge_unit`
+- `get_merge_unit` (unit detail now includes bounded leaf-conflict views)
 - `commit_merge_analysis`
+- `render_resolutions_toml` (pure: the exact `[[resolutions]]` TOML the merge loads)
 
 Only one merge analysis may be queued or running at a time. Terminal analyses are
 bounded, and unit lists are filtered and paginated in Rust before crossing IPC.
@@ -99,9 +121,17 @@ trees, and generated artifact bytes stay in Rust.
 ## Current Honest Boundaries
 
 - **Empty-target export only:** Desktop can export one finished analysis into a new or
-  empty folder. Interactive per-unit conflict resolution and replacement of a non-empty
-  output directory remain deferred, as does a durable interactive `MergeSession` API. An
-  analysis can be exported once; start a new analysis to export again.
+  empty folder. Replacement of a non-empty output directory remains deferred, as does a
+  durable interactive `MergeSession` API. An analysis can be exported once; start a new
+  analysis to export again.
+- **Per-conflict decisions are not persisted records:** resolution re-analysis applies
+  only explicit `foch.toml`-shaped rules (file or directory scope, `prefer_mod` or
+  handler). Per-conflict-id decisions — choosing a winner for one leaf only, or
+  `prefer_candidate` by index — are shown as decision context but remain a non-TOML
+  record concept and are not yet queued or applied from the desktop.
+- **Re-analysis replaces, not resumes:** queued resolutions always start a fresh session
+  analysis from a new input inspection; there is no in-place update of a finished
+  review.
 - **Unpublished Desktop Bundle & Windows x64 Host Requirement:** `foch-desktop` is run
   from source and is not yet distributed in the standard CLI release channels. Preparing
   a runtime plan works cross-platform in tests, while launching `eu4.exe`

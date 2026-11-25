@@ -191,6 +191,49 @@ export interface MergeUnitContributor {
 	isBaseGame: boolean;
 }
 
+// One explicit merge resolution the player queued, mapping onto a
+// `foch.toml` `[[resolutions]]` entry: one selector (`matchPattern` or
+// `file`) plus one action (`preferMod` or `handler`).
+export interface DesktopResolutionRule {
+	matchPattern: string | null;
+	file: string | null;
+	preferMod: string | null;
+	handler: string | null;
+}
+
+export type DesktopDecisionAction =
+	{ kind: "prefer_mod"; modId: string } | { kind: "handler"; name: string };
+
+export interface DesktopDecisionOption {
+	action: DesktopDecisionAction;
+	fileResolution: DesktopResolutionRule | null;
+	directoryResolution: DesktopResolutionRule | null;
+}
+
+export interface MergeConflictCandidate {
+	modId: string;
+	modDisplayName: string;
+	precedence: number;
+	changeSummary: string[];
+	rendered: string;
+}
+
+export interface MergeConflictLeaf {
+	conflictId: string;
+	address: string;
+	kind: string | null;
+	reason: string | null;
+	vanillaSnippet: string | null;
+	candidates: MergeConflictCandidate[];
+	options: DesktopDecisionOption[];
+}
+
+export interface MergeUnitConflicts {
+	filePath: string;
+	reason: string;
+	leaves: MergeConflictLeaf[];
+}
+
 export interface MergeUnitDetail {
 	id: string;
 	path: string;
@@ -200,8 +243,10 @@ export interface MergeUnitDetail {
 	strategy: string;
 	summary: string;
 	outputPath: string | null;
+	outputPaths: string[];
 	contributors: MergeUnitContributor[];
 	notes: string[];
+	conflicts: MergeUnitConflicts[];
 }
 
 export type TransportPreference = "auto" | "http" | "gh";
@@ -302,11 +347,13 @@ export interface DesktopClient {
 	startMergeAnalysis(
 		inspectionId: string,
 		inputMode: AnalysisInputMode,
+		resolutions?: DesktopResolutionRule[],
 	): Promise<StartMergeAnalysisResult>;
 	cancelMergeAnalysis(analysisId: string): Promise<void>;
 	getMergeAnalysisSummary(analysisId: string): Promise<MergeAnalysisSummary>;
 	listMergeUnits(request: MergeUnitListRequest): Promise<MergeUnitPage>;
 	getMergeUnit(analysisId: string, unitId: string): Promise<MergeUnitDetail>;
+	renderResolutionsToml(rules: DesktopResolutionRule[]): Promise<string>;
 	getPluginOverview(playset: string | null): Promise<DesktopPluginOverview>;
 	installPlugin(spec: string, sha256: string | null): Promise<DesktopPluginInstall>;
 	importPluginDir(path: string): Promise<DesktopPluginInstall>;
@@ -349,8 +396,13 @@ export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient
 		startMergeAnalysis: (
 			inspectionId: string,
 			inputMode: AnalysisInputMode,
+			resolutions?: DesktopResolutionRule[],
 		): Promise<StartMergeAnalysisResult> =>
-			invokeCommand("start_merge_analysis", { inspectionId, inputMode }),
+			invokeCommand("start_merge_analysis", {
+				inspectionId,
+				inputMode,
+				resolutions: resolutions ?? null,
+			}),
 		cancelMergeAnalysis: (analysisId: string): Promise<void> =>
 			invokeCommand("cancel_merge_analysis", { analysisId }),
 		getMergeAnalysisSummary: (analysisId: string): Promise<MergeAnalysisSummary> =>
@@ -365,6 +417,8 @@ export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient
 			}),
 		getMergeUnit: (analysisId: string, unitId: string): Promise<MergeUnitDetail> =>
 			invokeCommand("get_merge_unit", { analysisId, unitId }),
+		renderResolutionsToml: (rules: DesktopResolutionRule[]): Promise<string> =>
+			invokeCommand("render_resolutions_toml", { rules }),
 		getPluginOverview: (playset: string | null): Promise<DesktopPluginOverview> =>
 			invokeCommand("get_plugin_overview", { playset }),
 		installPlugin: (

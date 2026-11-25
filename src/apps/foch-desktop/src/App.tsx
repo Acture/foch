@@ -19,12 +19,14 @@ import {
 	type DesktopClient,
 	type DesktopPluginOverview,
 	type DesktopPreferences,
+	type DesktopResolutionRule,
 	type EffectiveLanguage,
 	type InputInspection,
 	type InputRecoveryOption,
 	type MergeAnalysisSummary,
 	type MergeAnalysisState,
 	type MergeCommitResult,
+	type MergeConflictLeaf,
 	type MergeDisposition,
 	type MergeUnitDetail,
 	type MergeUnitListItem,
@@ -714,10 +716,116 @@ function UnitRow({
 	);
 }
 
+function ruleKey(rule: DesktopResolutionRule): string {
+	return rule.file ?? rule.matchPattern ?? "";
+}
+
+function describeRule(
+	copy: Copy,
+	rule: DesktopResolutionRule,
+	modNames: Map<string, string>,
+): string {
+	const action = rule.preferMod ?? rule.handler ?? "";
+	const scope =
+		rule.file !== null ? copy.merge.ruleScopeFile : copy.merge.ruleScopeFolder;
+	const target = rule.file ?? rule.matchPattern ?? "";
+	const named =
+		rule.preferMod !== null ? (modNames.get(rule.preferMod) ?? rule.preferMod) : action;
+	return `${scope} · ${target} · ${copy.merge.rulePrefers} ${named}`;
+}
+
+function ConflictLeafCard({
+	leaf,
+	onPrefer,
+}: {
+	leaf: MergeConflictLeaf;
+	onPrefer: (rule: DesktopResolutionRule) => void;
+}): JSX.Element {
+	const copy = useCopy();
+	return (
+		<article className="conflict-card" aria-label={leaf.address}>
+			<header className="conflict-card-heading">
+				<code className="conflict-address">{leaf.address}</code>
+				{leaf.kind !== null && <span className="conflict-kind">{leaf.kind}</span>}
+			</header>
+			{leaf.reason !== null && (
+				<p className="conflict-reason">
+					<span>{copy.merge.conflictReason}:</span> {leaf.reason}
+				</p>
+			)}
+			{leaf.vanillaSnippet !== null && (
+				<div className="conflict-snippet conflict-vanilla">
+					<span>{copy.merge.vanillaSnippet}</span>
+					<pre>
+						<code>{leaf.vanillaSnippet}</code>
+					</pre>
+				</div>
+			)}
+			<div className="conflict-candidates" aria-label={copy.merge.competingMods}>
+				<p className="conflict-candidates-title">{copy.merge.competingMods}</p>
+				{leaf.candidates.map((candidate): JSX.Element => {
+					const option = leaf.options.find(
+						(option): boolean =>
+							option.action.kind === "prefer_mod" &&
+							option.action.modId === candidate.modId,
+					);
+					return (
+						<div
+							className="candidate-card"
+							key={`${candidate.modId}-${candidate.precedence}`}
+						>
+							<header>
+								<strong>{candidate.modDisplayName}</strong>
+								<span>#{candidate.precedence + 1}</span>
+							</header>
+							{candidate.changeSummary.length > 0 && (
+								<ul className="candidate-summary">
+									{candidate.changeSummary.map((line): JSX.Element => (
+										<li key={line}>{line}</li>
+									))}
+								</ul>
+							)}
+							<pre className="candidate-rendered">
+								<code>{candidate.rendered}</code>
+							</pre>
+							<div className="candidate-actions">
+								<button
+									type="button"
+									className="secondary-action"
+									disabled={option?.fileResolution === undefined}
+									onClick={(): void => {
+										const rule = option?.fileResolution;
+										if (rule !== undefined && rule !== null) onPrefer(rule);
+									}}
+								>
+									{copy.merge.preferForThisFile}
+								</button>
+								<button
+									type="button"
+									className="secondary-action"
+									disabled={option?.directoryResolution === undefined}
+									onClick={(): void => {
+										const rule = option?.directoryResolution;
+										if (rule !== undefined && rule !== null) onPrefer(rule);
+									}}
+								>
+									{copy.merge.preferForFolder}
+								</button>
+							</div>
+						</div>
+					);
+				})}
+			</div>
+		</article>
+	);
+}
+
 function UnitDetailPanel({
 	detail,
+	onPrefer,
 }: {
 	detail: AsyncValue<MergeUnitDetail>;
+	onPrefer: (rule: DesktopResolutionRule) => void;
 }): JSX.Element {
 	const copy = useCopy();
 	if (detail.loading) {
@@ -794,6 +902,23 @@ function UnitDetailPanel({
 					))}
 				</ol>
 			</section>
+			{unit.conflicts.length > 0 && (
+				<section className="detail-section conflict-section">
+					<h3>{copy.merge.leafConflictsTitle}</h3>
+					{unit.conflicts.map((group): JSX.Element => (
+						<div className="conflict-group" key={group.filePath}>
+							<p className="conflict-group-reason">{group.reason}</p>
+							{group.leaves.map((leaf): JSX.Element => (
+								<ConflictLeafCard
+									key={leaf.conflictId}
+									leaf={leaf}
+									onPrefer={onPrefer}
+								/>
+							))}
+						</div>
+					))}
+				</section>
+			)}
 			{unit.notes.length > 0 && (
 				<section className="detail-section">
 					<h3>{copy.merge.notes}</h3>
@@ -805,6 +930,81 @@ function UnitDetailPanel({
 				</section>
 			)}
 		</aside>
+	);
+}
+
+function PendingResolutionsBar({
+	rules,
+	modNames,
+	reanalyzing,
+	tomlPreview,
+	tomlOpen,
+	tomlError,
+	onRemove,
+	onClear,
+	onReanalyze,
+	onToggleToml,
+}: {
+	rules: DesktopResolutionRule[];
+	modNames: Map<string, string>;
+	reanalyzing: boolean;
+	tomlPreview: string | null;
+	tomlOpen: boolean;
+	tomlError: string | null;
+	onRemove: (rule: DesktopResolutionRule) => void;
+	onClear: () => void;
+	onReanalyze: () => void;
+	onToggleToml: () => void;
+}): JSX.Element | null {
+	const copy = useCopy();
+	if (rules.length === 0) return null;
+	return (
+		<section
+			className="pending-resolutions"
+			aria-label={copy.merge.pendingResolutionsTitle}
+		>
+			<header className="pending-resolutions-heading">
+				<h3>
+					{copy.merge.pendingResolutionsTitle} ({rules.length})
+				</h3>
+				<button type="button" className="secondary-action" onClick={onClear}>
+					{copy.merge.clearRules}
+				</button>
+			</header>
+			<p>{copy.merge.pendingResolutionsBody}</p>
+			<ul className="pending-rule-list">
+				{rules.map((rule): JSX.Element => (
+					<li key={ruleKey(rule)}>
+						<span>{describeRule(copy, rule, modNames)}</span>
+						<button type="button" onClick={(): void => onRemove(rule)}>
+							{copy.merge.removeRule}
+						</button>
+					</li>
+				))}
+			</ul>
+			<div className="pending-resolutions-actions">
+				<button
+					type="button"
+					className="primary-action"
+					onClick={onReanalyze}
+					disabled={reanalyzing}
+				>
+					{reanalyzing ? copy.merge.reanalyzing : copy.merge.reanalyzeWithResolutions}
+				</button>
+				<button type="button" className="secondary-action" onClick={onToggleToml}>
+					{tomlOpen ? copy.merge.hideFochToml : copy.merge.copyFochToml}
+				</button>
+			</div>
+			{tomlOpen && tomlError !== null && <p className="error-copy">{tomlError}</p>}
+			{tomlOpen && tomlError === null && tomlPreview !== null && (
+				<div className="toml-preview">
+					<p>{copy.merge.tomlPreviewNote}</p>
+					<pre>
+						<code>{tomlPreview}</code>
+					</pre>
+				</div>
+			)}
+		</section>
 	);
 }
 
@@ -832,6 +1032,13 @@ export default function App({
 	const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
 	const [unitDetail, setUnitDetail] =
 		useState<AsyncValue<MergeUnitDetail>>(EMPTY_UNIT_DETAIL);
+	const [pendingResolutions, setPendingResolutions] = useState<DesktopResolutionRule[]>(
+		[],
+	);
+	const [reanalyzing, setReanalyzing] = useState<boolean>(false);
+	const [tomlOpen, setTomlOpen] = useState<boolean>(false);
+	const [tomlPreview, setTomlPreview] = useState<string | null>(null);
+	const [tomlError, setTomlError] = useState<string | null>(null);
 	const [searchDraft, setSearchDraft] = useState<string>("");
 	const [searchQuery, setSearchQuery] = useState<string>("");
 	const [disposition, setDisposition] = useState<MergeDisposition | null>(null);
@@ -906,6 +1113,36 @@ export default function App({
 		}));
 		setInspection(await loadInputInspection(client));
 	}, [client]);
+
+	// Keep the foch.toml preview in step with the queued rules, so the toggle
+	// always shows the exact TOML Rust would load.
+	useEffect((): (() => void) | undefined => {
+		if (pendingResolutions.length === 0) {
+			queueMicrotask((): void => {
+				setTomlPreview(null);
+				setTomlError(null);
+			});
+			return undefined;
+		}
+		let disposed = false;
+		void client.renderResolutionsToml(pendingResolutions).then(
+			(value: string): void => {
+				if (!disposed) {
+					setTomlPreview(value);
+					setTomlError(null);
+				}
+			},
+			(error: unknown): void => {
+				if (!disposed) {
+					setTomlPreview(null);
+					setTomlError(errorMessage(error));
+				}
+			},
+		);
+		return (): void => {
+			disposed = true;
+		};
+	}, [client, pendingResolutions]);
 
 	useEffect((): (() => void) => {
 		let disposed = false;
@@ -1038,8 +1275,13 @@ export default function App({
 		};
 	}, [analysisId, client, reviewAvailable, selectedUnitId]);
 
-	const startAnalysis = async (inputMode: AnalysisInputMode): Promise<void> => {
-		if (inspection.value === null) return;
+	const startAnalysis = async (
+		inputMode: AnalysisInputMode,
+		resolutions: DesktopResolutionRule[] = [],
+		freshInspection?: InputInspection,
+	): Promise<boolean> => {
+		const source = freshInspection ?? inspection.value;
+		if (source === null) return false;
 		setStarting(true);
 		setAnalysisError(null);
 		setAnalysisInputScope(null);
@@ -1051,16 +1293,51 @@ export default function App({
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
 		try {
 			const started = await client.startMergeAnalysis(
-				inspection.value.inspectionId,
+				source.inspectionId,
 				inputMode,
+				resolutions,
 			);
 			setAnalysisInputScope(started.inputScope);
 			setAnalysisId(started.analysisId);
 			setSummary(queuedAnalysisSummary(started.analysisId));
+			return true;
 		} catch (error: unknown) {
 			setAnalysisError(errorMessage(error));
+			return false;
 		} finally {
 			setStarting(false);
+		}
+	};
+
+	const queueResolution = (rule: DesktopResolutionRule): void => {
+		setPendingResolutions((current): DesktopResolutionRule[] => {
+			const key = ruleKey(rule);
+			const next = current.filter((existing): boolean => ruleKey(existing) !== key);
+			next.push(rule);
+			return next;
+		});
+	};
+
+	const removeResolution = (rule: DesktopResolutionRule): void => {
+		setPendingResolutions((current): DesktopResolutionRule[] =>
+			current.filter((existing): boolean => ruleKey(existing) !== ruleKey(rule)),
+		);
+	};
+
+	const reanalyzeWithResolutions = async (): Promise<void> => {
+		if (pendingResolutions.length === 0 || reanalyzing) return;
+		setReanalyzing(true);
+		try {
+			// A fresh inspection token is required before another analysis.
+			const next = await loadInputInspection(client);
+			setInspection(next);
+			const fresh = next.value;
+			if (fresh === null) return;
+			const mode: AnalysisInputMode = analysisInputScope?.mode ?? "complete";
+			const started = await startAnalysis(mode, pendingResolutions, fresh);
+			if (started) setPendingResolutions([]);
+		} finally {
+			setReanalyzing(false);
 		}
 	};
 
@@ -1121,6 +1398,16 @@ export default function App({
 		!starting &&
 		analysisId === null;
 	const showBrowser = analysisId !== null && reviewAvailable;
+	const modNames = useMemo((): Map<string, string> => {
+		const unit = unitDetail.value;
+		if (unit === null) return new Map<string, string>();
+		return new Map<string, string>(
+			unit.contributors.map((contributor): [string, string] => [
+				contributor.modId,
+				contributor.name,
+			]),
+		);
+	}, [unitDetail]);
 	const dispositionOptions = useMemo(
 		(): Array<{ value: MergeDisposition; label: string }> =>
 			MERGE_DISPOSITIONS.map((value): { value: MergeDisposition; label: string } => ({
@@ -1337,6 +1624,22 @@ export default function App({
 													</div>
 												)}
 												{reviewAvailable && <DispositionRibbon summary={summary} />}
+												{reviewAvailable && (
+													<PendingResolutionsBar
+														rules={pendingResolutions}
+														modNames={modNames}
+														reanalyzing={reanalyzing}
+														tomlPreview={tomlPreview}
+														tomlOpen={tomlOpen}
+														tomlError={tomlError}
+														onRemove={removeResolution}
+														onClear={(): void => setPendingResolutions([])}
+														onReanalyze={(): void => void reanalyzeWithResolutions()}
+														onToggleToml={(): void =>
+															setTomlOpen((open): boolean => !open)
+														}
+													/>
+												)}
 												{canExportMerge(summary.state) && (
 													<ExportMergedMod
 														key={summary.analysisId}
@@ -1455,6 +1758,7 @@ export default function App({
 									{showBrowser ? (
 										<UnitDetailPanel
 											detail={selectedUnitId === null ? EMPTY_UNIT_DETAIL : unitDetail}
+											onPrefer={queueResolution}
 										/>
 									) : (
 										<aside

@@ -951,6 +951,20 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path:
 	}
 }
 
+/// `entries` as the `[[resolutions]]` tables of a `foch.toml`, so a caller
+/// that assembled rules in memory — a review frontend, say — can persist or
+/// show the exact configuration the merge would load.
+pub fn render_resolutions_toml(entries: &[ResolutionEntry]) -> String {
+	#[derive(Serialize)]
+	struct Resolutions<'a> {
+		resolutions: &'a [ResolutionEntry],
+	}
+	toml::to_string(&Resolutions {
+		resolutions: entries,
+	})
+	.expect("resolutions serialize as TOML")
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -988,6 +1002,44 @@ dep = "def"
 			Some("not a git parent")
 		);
 		assert_eq!(config.overrides[1], DepOverride::new("abc", "def"));
+	}
+
+	/// Rendering rules and loading them back must round-trip, because the
+	/// desktop shows this exact text as the `foch.toml` a player could keep.
+	#[test]
+	fn rendered_resolutions_round_trip_through_the_config() {
+		let entries = vec![
+			ResolutionEntry {
+				file: Some(game_path_buf("history/countries/TES - Test.txt")),
+				prefer_mod: Some("ugc_300002".to_string()),
+				..empty_resolution_entry()
+			},
+			ResolutionEntry {
+				r#match: Some("re:^history/countries/[^/]+$".to_string()),
+				handler: Some("last_writer".to_string()),
+				..empty_resolution_entry()
+			},
+		];
+		let rendered = render_resolutions_toml(&entries);
+		assert!(rendered.contains("[[resolutions]]"), "{rendered}");
+		let loaded = Project::from_toml_str(&rendered).expect("rendered config parses");
+		assert_eq!(loaded.resolutions, entries);
+	}
+
+	fn empty_resolution_entry() -> ResolutionEntry {
+		ResolutionEntry {
+			file: None,
+			conflict_id: None,
+			mod_id: None,
+			r#match: None,
+			prefer_mod: None,
+			prefer_candidate: None,
+			use_file: None,
+			keep_existing: None,
+			priority_boost: None,
+			handler: None,
+			policy: None,
+		}
 	}
 
 	#[test]

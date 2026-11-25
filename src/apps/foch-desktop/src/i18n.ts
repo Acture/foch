@@ -201,6 +201,24 @@ export interface Copy {
 		readyExport: string;
 		partialExport: string;
 		committed: string;
+		leafConflictsTitle: string;
+		conflictReason: string;
+		vanillaSnippet: string;
+		competingMods: string;
+		preferForThisFile: string;
+		preferForFolder: string;
+		pendingResolutionsTitle: string;
+		pendingResolutionsBody: string;
+		removeRule: string;
+		clearRules: string;
+		reanalyzeWithResolutions: string;
+		reanalyzing: string;
+		copyFochToml: string;
+		hideFochToml: string;
+		tomlPreviewNote: string;
+		ruleScopeFile: string;
+		ruleScopeFolder: string;
+		rulePrefers: string;
 		disposition: Record<MergeDisposition, string>;
 		stage: Record<MergeAnalysisStage, string>;
 		state: Record<MergeAnalysisState, string>;
@@ -416,6 +434,26 @@ const en: Copy = {
 		partialExport:
 			"Safe files and definition modules were written. Unsafe units were deferred and were not overwritten.",
 		committed: "This analysis has already been exported.",
+		leafConflictsTitle: "Leaf conflicts",
+		conflictReason: "Why it deferred",
+		vanillaSnippet: "Vanilla",
+		competingMods: "Competing mods",
+		preferForThisFile: "Prefer for this file",
+		preferForFolder: "Prefer for folder",
+		pendingResolutionsTitle: "Pending resolutions",
+		pendingResolutionsBody:
+			"These explicit foch.toml rules will be applied to a fresh session analysis. Nothing is written to your mods or playset.",
+		removeRule: "Remove",
+		clearRules: "Clear all",
+		reanalyzeWithResolutions: "Re-analyze with resolutions",
+		reanalyzing: "Re-analyzing…",
+		copyFochToml: "Copy foch.toml snippet",
+		hideFochToml: "Hide foch.toml snippet",
+		tomlPreviewNote:
+			"Add this [[resolutions]] block to your own foch.toml to keep the same choices in the CLI.",
+		ruleScopeFile: "file",
+		ruleScopeFolder: "folder",
+		rulePrefers: "prefers",
 		disposition: {
 			safe: "Safe merge",
 			copy: "Copy through",
@@ -644,6 +682,26 @@ const zh: Copy = {
 		readyExport: "已把安全文件写入空文件夹。源 Mod 和游戏目录没有被修改。",
 		partialExport: "已写入安全的文件和定义模块。不安全的单元已延后，没有被覆盖。",
 		committed: "这次分析已经导出。",
+		leafConflictsTitle: "叶子冲突",
+		conflictReason: "延后原因",
+		vanillaSnippet: "原版",
+		competingMods: "竞争 Mod",
+		preferForThisFile: "本文件优先此 Mod",
+		preferForFolder: "同目录优先此 Mod",
+		pendingResolutionsTitle: "待应用解决规则",
+		pendingResolutionsBody:
+			"这些明确的 foch.toml 规则将应用到一次新的会话分析。不会写入你的 Mod 或剧本组。",
+		removeRule: "移除",
+		clearRules: "全部清除",
+		reanalyzeWithResolutions: "应用规则并重新分析",
+		reanalyzing: "正在重新分析…",
+		copyFochToml: "复制 foch.toml 配置",
+		hideFochToml: "收起 foch.toml 配置",
+		tomlPreviewNote:
+			"把这段 [[resolutions]] 加入你自己的 foch.toml，即可在命令行复用相同选择。",
+		ruleScopeFile: "文件",
+		ruleScopeFolder: "目录",
+		rulePrefers: "优先",
 		disposition: {
 			safe: "安全合并",
 			copy: "原样复制",

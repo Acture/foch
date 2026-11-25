@@ -1,8 +1,8 @@
 use crate::dto::{
 	AnalysisInputMode, DesktopConnectivityReport, DesktopError, DesktopLaunchResult,
 	DesktopLaunchStatus, DesktopPluginInstall, DesktopPluginOverview, DesktopPreferencesView,
-	DesktopSettingsInput, InputInspection, MergeAnalysisSummary, MergeCommitResult,
-	MergeDisposition, MergeUnitDetail, MergeUnitPage, StartMergeAnalysisResult,
+	DesktopResolutionRule, DesktopSettingsInput, InputInspection, MergeAnalysisSummary,
+	MergeCommitResult, MergeDisposition, MergeUnitDetail, MergeUnitPage, StartMergeAnalysisResult,
 };
 use crate::plugin_backend::{self, PlaysetContext, PluginWorkspace};
 use crate::state::DesktopState;
@@ -40,13 +40,24 @@ pub(crate) async fn start_merge_analysis(
 	state: State<'_, DesktopState>,
 	inspection_id: String,
 	input_mode: AnalysisInputMode,
+	resolutions: Option<Vec<DesktopResolutionRule>>,
 ) -> Result<StartMergeAnalysisResult, DesktopError> {
 	let desktop = state.inner().clone();
-	let started = desktop.queue_analysis(&inspection_id, input_mode)?;
+	let started =
+		desktop.queue_analysis(&inspection_id, input_mode, resolutions.unwrap_or_default())?;
 	let worker_state = desktop.clone();
 	let worker_id = started.analysis_id.clone();
 	tauri::async_runtime::spawn_blocking(move || worker_state.run_analysis(&worker_id));
 	Ok(started)
+}
+
+/// The exact `[[resolutions]]` TOML the merge would load for these rules, so
+/// a player can copy the same choices into their own `foch.toml`.
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn render_resolutions_toml(
+	rules: Vec<DesktopResolutionRule>,
+) -> Result<String, DesktopError> {
+	crate::backend::render_resolution_rules_toml(&rules)
 }
 
 #[tauri::command(rename_all = "camelCase")]
