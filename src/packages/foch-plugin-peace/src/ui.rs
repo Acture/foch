@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use crate::native;
 use std::ffi::CString;
 

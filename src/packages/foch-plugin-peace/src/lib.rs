@@ -3,6 +3,8 @@
 pub mod composition;
 pub mod contract;
 pub mod native;
+// The probe rides Windows-only runtime hooks; tests keep it compiled everywhere.
+#[cfg(any(windows, test))]
 mod probe;
 pub mod profile;
 pub mod settlement;

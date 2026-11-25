@@ -12,7 +12,9 @@
 
 use crate::composition::{Clause, Draft, Side};
 use crate::settlement::{self, MixedSend, PlanError};
-use foch_runtime::dataplane::{CountryFlag, CountryFlags, Eu4Game};
+#[cfg(windows)]
+use foch_runtime::dataplane::Eu4Game;
+use foch_runtime::dataplane::{CountryFlag, CountryFlags};
 use std::fmt;
 
 /// Prefix of every flag this probe owns. A bare `foch_peace_probe` is not an
@@ -110,6 +112,9 @@ struct Parts {
 /// must equal [`foch_runtime::dataplane::pinned_exe_sha256`]. The monthly-tick
 /// resolver rejects any other host digest before the probe reads flags. Flag
 /// vectors and the global name table stay stable for this call.
+// The Windows runtime hook and the synthetic-memory tests are the only callers.
+// Linux tests build `CountryFlags` directly and never read a live `Eu4Game`.
+#[cfg(windows)]
 pub(crate) unsafe fn snapshots(game: &Eu4Game, digest: &str) -> Vec<CountryFlags> {
 	let Some(countries) = game.countries() else {
 		return Vec::new();
