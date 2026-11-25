@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -12,13 +12,15 @@ use crossterm::event::{
 };
 use foch::input::{CurrentEu4Input, DetectedPlaysetMod};
 use foch::merge::{
-	AnalyzedMerge, MergeAnalysisStatus, MergeDisposition, MergeProgress, MergeReviewSummary,
-	MergeUnitOutcome, default_merge_workers,
+	AnalyzedMerge, DecisionAction, DecisionOption, DecisionPoint, DecisionScope,
+	MergeAnalysisStatus, MergeDisposition, MergeProgress, MergeReviewSummary, MergeUnitOutcome,
+	UnitConflicts, default_merge_workers,
 };
 use foch::plugin::{
 	self, GameIdentity, LanguagePreference, MirrorPreference, PluginOverview, TransportPreference,
 	UiLanguage, UserPreferences,
 };
+use foch::project::ResolutionEntry;
 use ratatui::layout::{Position, Rect};
 
 const PAGE_STEP: usize = 10;
@@ -50,15 +52,30 @@ pub struct AnalysisView {
 	pub status: MergeAnalysisStatus,
 	pub summary: MergeReviewSummary,
 	pub units: Vec<MergeUnitOutcome>,
+	/// Leaf conflicts for units that have them, keyed by `unit_id`.
+	pub conflicts: BTreeMap<String, UnitConflicts>,
+	/// Every decision point, in review order.
+	pub decisions: Vec<DecisionPoint>,
 }
 
 impl AnalysisView {
 	pub fn from_analyzed(analyzed: &AnalyzedMerge) -> Self {
+		let review = analyzed.review();
 		Self {
 			status: analyzed.analysis().status(),
 			summary: *analyzed.review_summary(),
 			units: analyzed.list_units().to_vec(),
+			conflicts: review
+				.conflicts()
+				.iter()
+				.map(|conflicts| (conflicts.unit_id.clone(), conflicts.clone()))
+				.collect(),
+			decisions: review.decisions().to_vec(),
 		}
+	}
+
+	pub fn conflicts_for(&self, unit_id: &str) -> Option<&UnitConflicts> {
+		self.conflicts.get(unit_id)
 	}
 
 	pub fn count(&self, disposition: MergeDisposition) -> usize {
@@ -345,6 +362,11 @@ pub const KEY_HELP: &[(&str, &str, &str)] = &[
 	("0-6 /", "filter and search the review", ""),
 	("Tab", "next panel", ""),
 	("c", "copy the focused panel", ""),
+	(
+		"t",
+		"copy a foch.toml resolution template",
+		"paste [[resolutions]] into foch.toml",
+	),
 	("C", "copy the analysis command", ""),
 	("m", "release the mouse for terminal text selection", ""),
 	("i", "switch between playset and review", ""),
@@ -716,6 +738,27 @@ impl App {
 		self.analysis()?.units.get(index)
 	}
 
+	/// Copy a commented `[[resolutions]]` template for the selected unit, or
+	/// say why there is nothing to copy. Never writes a file.
+	fn copy_resolution_template(&mut self) {
+		let language = self.ui_language;
+		let unit_id = self.selected_unit().map(|unit| unit.id.clone());
+		let template = unit_id.as_deref().and_then(|unit_id| {
+			self.analysis()
+				.and_then(|view| resolution_template(view, unit_id, language))
+		});
+		match template {
+			Some(template) => {
+				self.notice = Some(super::text::copied_resolution_notice(language));
+				self.effect = Some(Effect::Copy(template));
+			}
+			None => {
+				self.effect = None;
+				self.notice = Some(super::text::no_resolution_notice(language));
+			}
+		}
+	}
+
 	pub(super) fn inspecting(&mut self, analyze_after: bool) {
 		self.phase = Phase::Inspecting;
 		self.confirming_exclusions = false;
@@ -990,7 +1033,7 @@ impl App {
 				return String::new();
 			};
 			return match self.focus {
-				Focus::Detail => super::render::unit_detail(unit)
+				Focus::Detail => super::render::detail_for(self, unit)
 					.lines
 					.iter()
 					.map(|line| {
@@ -1729,6 +1772,13 @@ impl App {
 	}
 
 	fn handle_review_key(&mut self, key: KeyEvent) {
+		// `r` refreshes and `R` opens Workshop repair. On Merge Review, `t`
+		// copies a read-only `[[resolutions]]` template. Network Settings
+		// uses the same key to probe download connectivity.
+		if key.code == KeyCode::Char('t') {
+			self.copy_resolution_template();
+			return;
+		}
 		if let KeyCode::Char(digit @ '0'..='6') = key.code {
 			let filter = match digit {
 				'0' => None,
@@ -1803,6 +1853,223 @@ impl App {
 			.unwrap_or(0);
 		self.detail_scroll = 0;
 	}
+}
+
+struct ModChoice {
+	mod_id: String,
+	path: String,
+	precedence: usize,
+	display_name: String,
+}
+
+fn blank_resolution() -> ResolutionEntry {
+	ResolutionEntry {
+		file: None,
+		conflict_id: None,
+		mod_id: None,
+		r#match: None,
+		prefer_mod: None,
+		prefer_candidate: None,
+		use_file: None,
+		keep_existing: None,
+		priority_boost: None,
+		handler: None,
+		policy: None,
+	}
+}
+
+/// File-scoped `prefer_mod` choices for one unit, highest precedence first.
+fn mod_choices(conflicts: &UnitConflicts, decisions: &[DecisionPoint]) -> Vec<ModChoice> {
+	let mut choices = Vec::<ModChoice>::new();
+	for point in decisions
+		.iter()
+		.filter(|point| point.unit_id == conflicts.unit_id)
+	{
+		for option in &point.options {
+			let Some((mod_id, file)) = file_prefer_mod(option) else {
+				continue;
+			};
+			if choices.iter().any(|choice| choice.mod_id == mod_id) {
+				continue;
+			}
+			let path = file.unwrap_or_else(|| conflicts.file_path.as_str().to_string());
+			choices.push(ModChoice {
+				display_name: candidate_name(conflicts, &mod_id),
+				precedence: mod_precedence(conflicts, &mod_id),
+				mod_id,
+				path,
+			});
+		}
+	}
+	choices.sort_by(|left, right| {
+		right
+			.precedence
+			.cmp(&left.precedence)
+			.then_with(|| left.mod_id.cmp(&right.mod_id))
+	});
+	choices
+}
+
+fn file_prefer_mod(option: &DecisionOption) -> Option<(String, Option<String>)> {
+	let DecisionAction::PreferMod { mod_id } = &option.action else {
+		return None;
+	};
+	let resolution = option.scopes.iter().find_map(|scope| match scope {
+		DecisionScope::File { resolution } => Some(resolution),
+		_ => None,
+	})?;
+	let chosen = resolution
+		.prefer_mod
+		.clone()
+		.unwrap_or_else(|| mod_id.clone());
+	let file = resolution
+		.file
+		.as_ref()
+		.map(|file| file.as_str().to_string());
+	Some((chosen, file))
+}
+
+pub(super) fn offers_resolution_template(decisions: &[DecisionPoint], unit_id: &str) -> bool {
+	decisions.iter().any(|point| {
+		point.unit_id == unit_id
+			&& point
+				.options
+				.iter()
+				.any(|option| file_prefer_mod(option).is_some())
+	})
+}
+
+fn file_handlers(decisions: &[DecisionPoint], unit_id: &str) -> Vec<String> {
+	let mut names = Vec::new();
+	for point in decisions.iter().filter(|point| point.unit_id == unit_id) {
+		for option in &point.options {
+			let DecisionAction::Handler { name } = &option.action else {
+				continue;
+			};
+			let file_scoped = option
+				.scopes
+				.iter()
+				.any(|scope| matches!(scope, DecisionScope::File { .. }));
+			if file_scoped && !names.iter().any(|seen| seen == name) {
+				names.push(name.clone());
+			}
+		}
+	}
+	names
+}
+
+fn candidate_name(conflicts: &UnitConflicts, mod_id: &str) -> String {
+	conflicts
+		.nodes
+		.iter()
+		.flat_map(|node| &node.conflicts)
+		.flat_map(|leaf| &leaf.candidates)
+		.find(|candidate| candidate.mod_id == mod_id)
+		.map(|candidate| candidate.mod_display_name.clone())
+		.filter(|name| !name.is_empty())
+		.unwrap_or_else(|| mod_id.to_string())
+}
+
+fn mod_precedence(conflicts: &UnitConflicts, mod_id: &str) -> usize {
+	conflicts
+		.nodes
+		.iter()
+		.flat_map(|node| &node.conflicts)
+		.flat_map(|leaf| {
+			leaf.candidates
+				.iter()
+				.filter(|candidate| candidate.mod_id == mod_id)
+				.map(|candidate| candidate.precedence)
+				.chain(
+					leaf.contributors
+						.iter()
+						.filter(|contributor| contributor.mod_id == mod_id)
+						.map(|contributor| contributor.precedence),
+				)
+		})
+		.max()
+		.unwrap_or(0)
+}
+
+fn resolution_template(
+	view: &AnalysisView,
+	unit_id: &str,
+	language: foch::plugin::UiLanguage,
+) -> Option<String> {
+	let conflicts = view.conflicts.get(unit_id)?;
+	let choices = mod_choices(conflicts, &view.decisions);
+	let (active_path, active_name, active_precedence, active_mod) = {
+		let active = choices.first()?;
+		(
+			active.path.clone(),
+			active.display_name.clone(),
+			active.precedence,
+			active.mod_id.clone(),
+		)
+	};
+	let active_block = serialize_resolution(prefer_entry(&active_path, &active_mod))?;
+	let mut parts = vec![
+		super::text::resolution_template_preamble(language, &active_path),
+		super::text::choice_comment(language, &active_name, active_precedence),
+		active_block,
+	];
+	for choice in choices.iter().skip(1) {
+		let block = serialize_resolution(prefer_entry(&choice.path, &choice.mod_id))?;
+		parts.push(super::text::choice_comment(
+			language,
+			&choice.display_name,
+			choice.precedence,
+		));
+		parts.push(comment_block(&block));
+	}
+	for handler in file_handlers(&view.decisions, unit_id) {
+		let block = serialize_resolution(handler_entry(&active_path, &handler))?;
+		parts.push(super::text::handler_comment(language, &handler));
+		parts.push(comment_block(&block));
+	}
+	Some(parts.join("\n"))
+}
+
+fn prefer_entry(path: &str, mod_id: &str) -> ResolutionEntry {
+	ResolutionEntry {
+		r#match: Some(path.to_string()),
+		prefer_mod: Some(mod_id.to_string()),
+		..blank_resolution()
+	}
+}
+
+fn handler_entry(path: &str, handler: &str) -> ResolutionEntry {
+	ResolutionEntry {
+		r#match: Some(path.to_string()),
+		handler: Some(handler.to_string()),
+		..blank_resolution()
+	}
+}
+
+fn serialize_resolution(entry: ResolutionEntry) -> Option<String> {
+	#[derive(serde::Serialize)]
+	struct Document {
+		resolutions: Vec<ResolutionEntry>,
+	}
+	toml::to_string(&Document {
+		resolutions: vec![entry],
+	})
+	.ok()
+	.map(|text| text.trim_end().to_string())
+}
+
+fn comment_block(block: &str) -> String {
+	block
+		.lines()
+		.map(|line| {
+			if line.is_empty() {
+				"#".to_string()
+			} else {
+				format!("# {line}")
+			}
+		})
+		.collect::<Vec<_>>()
+		.join("\n")
 }
 
 fn function_tab(code: KeyCode) -> Option<TopTab> {
@@ -1907,7 +2174,14 @@ fn step(current: usize, code: KeyCode, last: usize) -> usize {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use foch::merge::{
+		AddressNode, ConflictCandidate, ConflictContributor, ConflictLeaf, DecisionAction,
+		DecisionOption, DecisionPoint, DecisionScope, MergeReviewContributor, MergeReviewSummary,
+		MergeUnitKind,
+	};
+	use foch::project::ResolutionEntry;
 	use serde_json::json;
+	use std::collections::BTreeMap;
 
 	/// Mod 2 cannot be analyzed; mod 1 can.
 	fn input_with_a_broken_mod() -> CurrentEu4Input {
@@ -2425,5 +2699,544 @@ max = 2
 		);
 		assert!(shown.contains("测试连通性"), "{shown}");
 		assert!(shown.contains("PE 导出表"), "{shown}");
+	}
+
+	const IDEA_FILE: &str = "common/ideas/00_country_ideas.txt";
+
+	fn game_path(text: &str) -> foch::model::GamePathBuf {
+		foch::model::GamePathBuf::parse(text).expect("game path")
+	}
+
+	fn prefer_file(path: &foch::model::GamePathBuf, mod_id: &str) -> DecisionOption {
+		DecisionOption {
+			action: DecisionAction::PreferMod {
+				mod_id: mod_id.to_string(),
+			},
+			scopes: vec![DecisionScope::File {
+				resolution: ResolutionEntry {
+					file: Some(path.clone()),
+					prefer_mod: Some(mod_id.to_string()),
+					..super::blank_resolution()
+				},
+			}],
+		}
+	}
+
+	fn handler_file(name: &str) -> DecisionOption {
+		DecisionOption {
+			action: DecisionAction::Handler {
+				name: name.to_string(),
+			},
+			scopes: vec![DecisionScope::File {
+				resolution: ResolutionEntry {
+					handler: Some(name.to_string()),
+					..super::blank_resolution()
+				},
+			}],
+		}
+	}
+
+	fn decision(
+		unit_id: &str,
+		path: &foch::model::GamePathBuf,
+		conflict_id: &str,
+		address: &str,
+	) -> DecisionPoint {
+		DecisionPoint {
+			id: format!("conflict:{conflict_id}"),
+			unit_id: unit_id.to_string(),
+			node_id: format!("{unit_id}#{address}"),
+			conflict_id: conflict_id.to_string(),
+			file_path: path.clone(),
+			address: address.to_string(),
+			options: vec![
+				prefer_file(path, "111"),
+				prefer_file(path, "222"),
+				handler_file("last_writer"),
+			],
+		}
+	}
+
+	fn candidate(mod_id: &str, name: &str, precedence: usize, rendered: &str) -> ConflictCandidate {
+		ConflictCandidate {
+			mod_id: mod_id.to_string(),
+			mod_display_name: name.to_string(),
+			precedence,
+			change_summary: vec![format!("set idea_cost from {name}")],
+			rendered: rendered.to_string(),
+		}
+	}
+
+	fn leaf(
+		conflict_id: &str,
+		rendered_low: &str,
+		rendered_high: &str,
+		vanilla: &str,
+	) -> ConflictLeaf {
+		ConflictLeaf {
+			conflict_id: conflict_id.to_string(),
+			kind: Some(foch::model::ConflictKind::DeepMergeable),
+			contributors: vec![
+				ConflictContributor {
+					mod_id: "111".to_string(),
+					precedence: 1,
+				},
+				ConflictContributor {
+					mod_id: "222".to_string(),
+					precedence: 2,
+				},
+			],
+			reason: Some("both mods set idea_cost".to_string()),
+			vanilla_snippet: Some(vanilla.to_string()),
+			candidates: vec![
+				candidate("111", "Low Mod", 1, rendered_low),
+				candidate("222", "High Mod", 2, rendered_high),
+			],
+		}
+	}
+
+	fn address_node(unit_id: &str, address: &str, leaf: ConflictLeaf) -> AddressNode {
+		AddressNode {
+			id: format!("{unit_id}#{address}"),
+			parent: None,
+			segment: address.to_string(),
+			address: address.to_string(),
+			conflicts: vec![leaf],
+		}
+	}
+
+	fn outcome(
+		id: &str,
+		path: &foch::model::GamePathBuf,
+		disposition: MergeDisposition,
+	) -> MergeUnitOutcome {
+		MergeUnitOutcome {
+			id: id.to_string(),
+			path: path.clone(),
+			family: "ideas".to_string(),
+			kind: MergeUnitKind::File,
+			disposition,
+			strategy: "structural_merge".to_string(),
+			summary: "two mods define idea_cost".to_string(),
+			output_path: None,
+			output_paths: Vec::new(),
+			contributors: vec![
+				MergeReviewContributor {
+					mod_id: "base".to_string(),
+					name: "Europa Universalis IV".to_string(),
+					source_paths: vec![path.as_str().to_string()],
+					precedence: 0,
+					is_base_game: true,
+				},
+				MergeReviewContributor {
+					mod_id: "111".to_string(),
+					name: "Low Mod".to_string(),
+					source_paths: vec![path.as_str().to_string()],
+					precedence: 1,
+					is_base_game: false,
+				},
+				MergeReviewContributor {
+					mod_id: "222".to_string(),
+					name: "High Mod".to_string(),
+					source_paths: vec![path.as_str().to_string()],
+					precedence: 2,
+					is_base_game: false,
+				},
+			],
+			notes: Vec::new(),
+			conflict_ids: vec!["cost".to_string(), "name".to_string()],
+			handler_resolutions: Vec::new(),
+		}
+	}
+
+	fn conflict_analysis() -> AnalysisView {
+		let path = game_path(IDEA_FILE);
+		let unit_id = "file:common/ideas/00_country_ideas.txt";
+		let conflicts = UnitConflicts {
+			unit_id: unit_id.to_string(),
+			file_path: path.clone(),
+			reason: "needs a choice".to_string(),
+			deferred_reason: foch::model::DeferredUnitReason::NeedsUserChoice,
+			nodes: vec![
+				address_node(
+					unit_id,
+					"country_ideas/admin/idea_cost",
+					leaf("cost", "idea_cost = 2", "idea_cost = 3", "idea_cost = 1"),
+				),
+				address_node(
+					unit_id,
+					"country_ideas/admin/idea_name",
+					leaf(
+						"name",
+						"idea_name = low",
+						"idea_name = high",
+						"idea_name = vanilla",
+					),
+				),
+			],
+		};
+		let safe_path = game_path("common/ideas/00_basic_ideas.txt");
+		AnalysisView {
+			status: MergeAnalysisStatus::CommittableWithDeferrals,
+			summary: MergeReviewSummary {
+				total: 2,
+				safe: 1,
+				needs_user_choice: 1,
+				..MergeReviewSummary::default()
+			},
+			units: vec![
+				outcome(unit_id, &path, MergeDisposition::NeedsUserChoice),
+				outcome(
+					&format!("file:{}", safe_path.as_str()),
+					&safe_path,
+					MergeDisposition::Safe,
+				),
+			],
+			conflicts: BTreeMap::from([(unit_id.to_string(), conflicts)]),
+			decisions: vec![
+				decision(unit_id, &path, "cost", "country_ideas/admin/idea_cost"),
+				decision(unit_id, &path, "name", "country_ideas/admin/idea_name"),
+			],
+		}
+	}
+
+	fn detail_string(unit: &MergeUnitOutcome, view: &AnalysisView, language: UiLanguage) -> String {
+		super::super::render::unit_detail(
+			unit,
+			view.conflicts.get(&unit.id),
+			&view.decisions,
+			language,
+		)
+		.lines
+		.iter()
+		.map(|line| {
+			line.spans
+				.iter()
+				.map(|span| span.content.as_ref())
+				.collect::<String>()
+		})
+		.collect::<Vec<_>>()
+		.join("\n")
+	}
+
+	fn frame_of(app: &App, width: u16, height: u16) -> String {
+		use ratatui::Terminal;
+		use ratatui::backend::TestBackend;
+		let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+		terminal
+			.draw(|frame| super::super::render::draw(frame, app))
+			.expect("draw");
+		let buffer = terminal.backend().buffer().clone();
+		(0..buffer.area.height)
+			.map(|row| {
+				let mut text = String::new();
+				let mut skip = 0u16;
+				for column in 0..buffer.area.width {
+					if skip > 0 {
+						skip -= 1;
+						continue;
+					}
+					let symbol = buffer[(column, row)].symbol();
+					skip = ratatui::text::Span::raw(symbol).width().saturating_sub(1) as u16;
+					text.push_str(symbol);
+				}
+				text
+			})
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
+	#[test]
+	fn review_detail_shows_leaf_conflicts_in_english_and_chinese() {
+		let view = conflict_analysis();
+		let unit = &view.units[0];
+		let english = detail_string(unit, &view, UiLanguage::En);
+		assert!(english.contains("Leaf conflicts (2)"), "{english}");
+		assert!(english.contains("Vanilla / 原版"), "{english}");
+		assert!(
+			english.contains("deep_mergeable · both mods set idea_cost"),
+			"{english}"
+		);
+		assert!(
+			english.contains("country_ideas/admin/idea_cost"),
+			"{english}"
+		);
+		assert!(english.contains("idea_cost = 1"), "{english}");
+		assert!(english.contains("Low Mod"), "{english}");
+		assert!(english.contains("High Mod"), "{english}");
+		assert!(english.contains("111 · precedence 1"), "{english}");
+		assert!(english.contains("222 · precedence 2"), "{english}");
+		assert!(english.contains("idea_cost = 2"), "{english}");
+		assert!(english.contains("idea_cost = 3"), "{english}");
+		assert!(
+			english.contains("Press t to copy a foch.toml [[resolutions]] template"),
+			"{english}"
+		);
+
+		let chinese = detail_string(unit, &view, UiLanguage::ZhCn);
+		assert!(chinese.contains("叶子冲突 (2)"), "{chinese}");
+		assert!(chinese.contains("Vanilla / 原版"), "{chinese}");
+		assert!(
+			chinese.contains("类型 deep_mergeable · both mods set idea_cost"),
+			"{chinese}"
+		);
+		assert!(chinese.contains("222 · 优先级 2"), "{chinese}");
+		assert!(
+			chinese.contains("按 t 复制 foch.toml [[resolutions]] 解决规则模板"),
+			"{chinese}"
+		);
+
+		let mut app = App {
+			ui_language: UiLanguage::En,
+			..App::default()
+		};
+		app.analyzed(Ok(view));
+		let shown = frame_of(&app, 200, 80);
+		assert!(shown.contains("Leaf conflicts (2)"), "{shown}");
+		assert!(shown.contains("Vanilla / 原版"), "{shown}");
+		assert!(shown.contains("High Mod"), "{shown}");
+		assert!(shown.contains("Low Mod"), "{shown}");
+		assert!(shown.contains("idea_cost = 1"), "{shown}");
+		assert!(shown.contains(" t  resolution template"), "{shown}");
+
+		app.ui_language = UiLanguage::ZhCn;
+		let shown = frame_of(&app, 200, 80);
+		assert!(shown.contains("叶子冲突 (2)"), "{shown}");
+		assert!(shown.contains("Vanilla / 原版"), "{shown}");
+		assert!(shown.contains("优先级 2"), "{shown}");
+		assert!(
+			shown.contains("按 t 复制 foch.toml [[resolutions]] 解决规则模板"),
+			"{shown}"
+		);
+		assert!(shown.contains(" t  解决规则模板"), "{shown}");
+	}
+
+	#[test]
+	fn t_copies_a_valid_resolution_template_for_the_highest_precedence_mod() {
+		assert_eq!(
+			KEY_HELP
+				.iter()
+				.filter(|(key, action, _)| {
+					*key == "t" && *action == "copy a foch.toml resolution template"
+				})
+				.count(),
+			1
+		);
+		assert_eq!(
+			KEY_HELP
+				.iter()
+				.filter(|(key, action, _)| *key == "t" && *action == "test download connectivity")
+				.count(),
+			1
+		);
+		assert!(
+			KEY_HELP
+				.iter()
+				.any(|(key, action, _)| { *key == "r" && *action == "inspect the input again" })
+		);
+		assert!(KEY_HELP.iter().any(|(key, action, _)| {
+			*key == "R" && *action == "repair every broken mod in Steam"
+		}));
+
+		let mut app = App {
+			ui_language: UiLanguage::En,
+			..App::default()
+		};
+		app.analyzed(Ok(conflict_analysis()));
+		assert_eq!(
+			press(&mut app, KeyCode::Char('r')),
+			Some(AppCommand::Refresh)
+		);
+		assert!(app.effect.is_none());
+
+		app.analyzed(Ok(conflict_analysis()));
+		assert_eq!(press(&mut app, KeyCode::Char('t')), None);
+		let snippet = match app.effect.clone() {
+			Some(Effect::Copy(text)) => text,
+			other => panic!("expected a clipboard copy, got {other:?}"),
+		};
+		assert!(
+			app.notice
+				.as_deref()
+				.is_some_and(|notice| notice.starts_with("Copied foch.toml resolution template")),
+			"{:?}",
+			app.notice
+		);
+		assert_eq!(
+			snippet
+				.lines()
+				.filter(|line| *line == "[[resolutions]]")
+				.count(),
+			1,
+			"{snippet}"
+		);
+		let project = foch::project::Project::from_toml_str(&snippet).expect(&snippet);
+		assert_eq!(project.resolutions.len(), 1, "{snippet}");
+		assert_eq!(
+			project.resolutions[0].r#match.as_deref(),
+			Some(IDEA_FILE),
+			"{snippet}"
+		);
+		assert_eq!(
+			project.resolutions[0].prefer_mod.as_deref(),
+			Some("222"),
+			"{snippet}"
+		);
+		assert!(snippet.contains("# prefer_mod = \"111\""), "{snippet}");
+		assert!(snippet.contains("last_writer"), "{snippet}");
+		assert!(project.resolutions[0].handler.is_none());
+
+		app.ui_language = UiLanguage::ZhCn;
+		assert_eq!(press(&mut app, KeyCode::Char('t')), None);
+		assert!(
+			app.notice
+				.as_deref()
+				.is_some_and(|notice| notice.starts_with("已复制 foch.toml 解决规则模板")),
+			"{:?}",
+			app.notice
+		);
+	}
+
+	#[test]
+	fn t_on_a_safe_unit_copies_nothing() {
+		let mut app = App {
+			ui_language: UiLanguage::En,
+			..App::default()
+		};
+		app.analyzed(Ok(conflict_analysis()));
+		press(&mut app, KeyCode::Down);
+		assert_eq!(
+			app.selected_unit().map(|unit| unit.disposition),
+			Some(MergeDisposition::Safe)
+		);
+		assert_eq!(press(&mut app, KeyCode::Char('t')), None);
+		assert!(app.effect.is_none(), "{:?}", app.effect);
+		assert!(
+			app.notice
+				.as_deref()
+				.is_some_and(|notice| notice.starts_with("Nothing was copied")),
+			"{:?}",
+			app.notice
+		);
+		let safe = app.selected_unit().expect("safe unit");
+		let view = app.analysis().expect("analysis");
+		let detail = detail_string(safe, view, UiLanguage::En);
+		assert!(!detail.contains("Leaf conflicts"), "{detail}");
+
+		app.ui_language = UiLanguage::ZhCn;
+		assert_eq!(press(&mut app, KeyCode::Char('t')), None);
+		assert!(app.effect.is_none(), "{:?}", app.effect);
+		assert!(
+			app.notice
+				.as_deref()
+				.is_some_and(|notice| notice.starts_with("未复制任何内容")),
+			"{:?}",
+			app.notice
+		);
+	}
+
+	#[test]
+	fn huge_leaf_conflicts_stay_bounded_and_say_how_many_were_hidden() {
+		use super::super::render::{MAX_LEAF_CONFLICTS, MAX_SNIPPET_LINES};
+
+		let path = game_path("events/wide.txt");
+		let unit_id = "file:events/wide.txt";
+		let long_vanilla = format!("idea = {}", "Z".repeat(400));
+		let rendered = (0..20)
+			.map(|index| {
+				if index + 1 == 20 {
+					"UNIQUE_TAIL_LINE_SHOULD_BE_HIDDEN".to_string()
+				} else {
+					format!("shown-or-hidden-line-{index}")
+				}
+			})
+			.collect::<Vec<_>>()
+			.join("\n");
+		let mut nodes = Vec::new();
+		for index in 0..MAX_LEAF_CONFLICTS + 1 {
+			let address = if index == MAX_LEAF_CONFLICTS {
+				"hidden/leaf_nine_marker".to_string()
+			} else {
+				format!("visible/leaf_{index}")
+			};
+			let vanilla = if index == 0 {
+				long_vanilla.clone()
+			} else {
+				"short = 1".to_string()
+			};
+			let body = if index == 0 {
+				rendered.clone()
+			} else {
+				"short = 2".to_string()
+			};
+			nodes.push(address_node(
+				unit_id,
+				&address,
+				leaf(&format!("c{index}"), &body, "short = 3", &vanilla),
+			));
+		}
+		let conflicts = UnitConflicts {
+			unit_id: unit_id.to_string(),
+			file_path: path.clone(),
+			reason: "many".to_string(),
+			deferred_reason: foch::model::DeferredUnitReason::NeedsUserChoice,
+			nodes,
+		};
+		let unit = outcome(unit_id, &path, MergeDisposition::NeedsUserChoice);
+		let view = AnalysisView {
+			status: MergeAnalysisStatus::Blocked,
+			summary: MergeReviewSummary {
+				total: 1,
+				needs_user_choice: 1,
+				..MergeReviewSummary::default()
+			},
+			units: vec![unit.clone()],
+			conflicts: BTreeMap::from([(unit_id.to_string(), conflicts)]),
+			decisions: Vec::new(),
+		};
+		let english = detail_string(&unit, &view, UiLanguage::En);
+		let hidden_lines = 20 - MAX_SNIPPET_LINES;
+		let conflict_count = MAX_LEAF_CONFLICTS + 1;
+		assert!(
+			english.contains(&format!("+{hidden_lines} more lines")),
+			"{english}"
+		);
+		assert!(english.contains("+1 more conflicts"), "{english}");
+		assert!(
+			english.contains(&format!("Leaf conflicts ({conflict_count})")),
+			"{english}"
+		);
+		assert!(english.contains("shown-or-hidden-line-0"), "{english}");
+		assert!(
+			english.contains(&format!("shown-or-hidden-line-{}", MAX_SNIPPET_LINES - 1)),
+			"{english}"
+		);
+		assert!(
+			!english.contains(&format!("shown-or-hidden-line-{MAX_SNIPPET_LINES}")),
+			"{english}"
+		);
+		assert!(
+			!english.contains("UNIQUE_TAIL_LINE_SHOULD_BE_HIDDEN"),
+			"{english}"
+		);
+		assert!(!english.contains("hidden/leaf_nine_marker"), "{english}");
+		assert!(!english.contains(&"Z".repeat(100)), "{english}");
+		assert!(english.contains('…'), "{english}");
+
+		let chinese = detail_string(&unit, &view, UiLanguage::ZhCn);
+		assert!(
+			chinese.contains(&format!("叶子冲突 ({conflict_count})")),
+			"{chinese}"
+		);
+		assert!(
+			chinese.contains(&format!("还有 {hidden_lines} 行")),
+			"{chinese}"
+		);
+		assert!(chinese.contains("还有 1 个冲突"), "{chinese}");
+		assert!(
+			!chinese.contains("UNIQUE_TAIL_LINE_SHOULD_BE_HIDDEN"),
+			"{chinese}"
+		);
+		assert!(!chinese.contains("hidden/leaf_nine_marker"), "{chinese}");
 	}
 }
