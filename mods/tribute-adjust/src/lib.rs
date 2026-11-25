@@ -570,13 +570,15 @@ mod detour {
 	}
 
 	/// Test-only: point the tribute chain cell at a stub original.
-	#[cfg(test)]
+	/// The stub writes through `Memory`, which declines off Windows.
+	#[cfg(all(test, windows))]
 	pub(crate) fn set_next_for_test(cell: *mut c_void) {
 		NEXT.store(cell, Ordering::Relaxed);
 	}
 
 	/// Test-only: point the subject_income chain cell at a stub original.
-	#[cfg(test)]
+	/// The stub writes through `Memory`, which declines off Windows.
+	#[cfg(all(test, windows))]
 	pub(crate) fn set_next_subject_for_test(cell: *mut c_void) {
 		NEXT_SUBJECT.store(cell, Ordering::Relaxed);
 	}
@@ -999,6 +1001,7 @@ mod detour {
 mod tests {
 	use super::*;
 	use std::sync::Mutex;
+	#[cfg(windows)]
 	use std::sync::atomic::{AtomicI32, Ordering};
 
 	/// Serialize tests that mutate process-wide detour statics (`CONFIG`, `NEXT`, etc.).
@@ -1014,6 +1017,7 @@ mod tests {
 			Self
 		}
 
+		#[cfg(windows)]
 		fn install(graph: subject_types::SubjectTypeGraph) -> Self {
 			*subject_types::ACTIVE.write().unwrap() = graph;
 			Self
@@ -1033,11 +1037,17 @@ mod tests {
 	/// Decoy packed identity on the province-list argument. The income path
 	/// must ignore this slot and read the province owner instead. It is the
 	/// argument object's own field, not a published country offset.
+	#[cfg(windows)]
 	const SUBJECT_DECOY_SLOT: usize = 0x20;
 
 	/// Third-argument stand-in: province ids at +0x88/+0x90, owners written
 	/// at the `0x468` candidate field, and a decoy packed tag that must be
 	/// ignored. The scene keeps the synthetic image alive.
+	///
+	/// These fixtures read and write through `dataplane::Memory`, which
+	/// declines every access off Windows, and through `FakeGame`, which is
+	/// a Windows image. The tests that use them are Windows-only.
+	#[cfg(windows)]
 	#[allow(dead_code)]
 	struct ProvinceSubject {
 		ids: Vec<i32>,
@@ -1047,30 +1057,20 @@ mod tests {
 
 	#[cfg(windows)]
 	struct ProvinceScene(foch_runtime::dataplane::testing::FakeGame);
-	#[cfg(not(windows))]
-	struct ProvinceScene;
 
+	#[cfg(windows)]
 	impl ProvinceSubject {
 		fn bind(&mut self) {
-			#[cfg(windows)]
-			{
-				let base = self.scene.0.exe_base().expect("synthetic image base");
-				detour::set_exe_base(base);
-			}
+			let base = self.scene.0.exe_base().expect("synthetic image base");
+			detour::set_exe_base(base);
 		}
 
 		fn game(&mut self) -> Option<foch_runtime::dataplane::game::Eu4Game> {
-			#[cfg(windows)]
-			{
-				Some(self.scene.0.game().expect("synthetic game"))
-			}
-			#[cfg(not(windows))]
-			{
-				None
-			}
+			Some(self.scene.0.game().expect("synthetic game"))
 		}
 	}
 
+	#[cfg(windows)]
 	fn province_subject(owners: &[([u8; 3], i16)], decoy: u64) -> ProvinceSubject {
 		let scene = plant_province_scene(owners);
 		let mut ids = Vec::with_capacity(owners.len());
@@ -1106,11 +1106,6 @@ mod tests {
 		ProvinceScene(scene)
 	}
 
-	#[cfg(not(windows))]
-	fn plant_province_scene(_owners: &[([u8; 3], i16)]) -> ProvinceScene {
-		ProvinceScene
-	}
-
 	fn pack_country_tag(tag: &[u8; 3], index: i16, valid_flag: u8) -> u64 {
 		let idx = index.to_le_bytes();
 		u64::from_le_bytes([tag[0], tag[1], tag[2], 0, idx[0], idx[1], 0, valid_flag])
@@ -1119,6 +1114,7 @@ mod tests {
 	/// Synthetic `CCountry` whose packed identity `CountryView` can read.
 	/// `valid_flag` stays in the signature so callers still record the flag
 	/// the live path accepts; `FakeGame` seals a valid identity.
+	#[cfg(windows)]
 	struct SyntheticCountry {
 		address: usize,
 		_keep: CountryScene,
@@ -1127,9 +1123,8 @@ mod tests {
 	#[cfg(windows)]
 	#[allow(dead_code)] // keeps the synthetic country allocation alive
 	struct CountryScene(foch_runtime::dataplane::testing::FakeGame);
-	#[cfg(not(windows))]
-	struct CountryScene;
 
+	#[cfg(windows)]
 	fn fake_country(tag: &[u8; 3], index: i16, valid_flag: u8) -> SyntheticCountry {
 		let (address, _keep) = plant_country(tag, index, valid_flag);
 		SyntheticCountry { address, _keep }
@@ -1149,11 +1144,6 @@ mod tests {
 			.expect("country view")
 			.raw_address();
 		(address, CountryScene(scene))
-	}
-
-	#[cfg(not(windows))]
-	fn plant_country(_tag: &[u8; 3], _index: i16, _valid_flag: u8) -> (usize, CountryScene) {
-		(0, CountryScene)
 	}
 
 	#[test]
@@ -1199,6 +1189,10 @@ mod tests {
 	/// The full detour behavior: the command amount (milli, at +0x1c) is
 	/// scaled by the runtime coefficient before the original runs, and the
 	/// chain cell is honored exactly as the host ABI prescribes.
+	///
+	/// `Memory` reads and writes decline off Windows, so the amount never
+	/// changes there.
+	#[cfg(windows)]
 	#[test]
 	fn the_detour_scales_the_command_amount_before_the_original() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
@@ -1242,6 +1236,7 @@ mod tests {
 		assert_eq!(SEEN.load(Ordering::SeqCst), 1000);
 	}
 
+	#[cfg(windows)]
 	#[test]
 	fn tribute_executor_resolves_tag_overrides_and_avoids_double_scaling() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
@@ -1293,6 +1288,7 @@ mod tests {
 		detour::set_applied_scales(1.0, 1.0);
 	}
 
+	#[cfg(windows)]
 	#[test]
 	fn subject_income_scales_per_tag_and_guards_invalid_subject_pointers() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
@@ -1410,6 +1406,7 @@ mod tests {
 		assert_eq!(out, 1000);
 	}
 
+	#[cfg(windows)]
 	#[test]
 	fn subject_income_walks_copy_from_before_the_global_percent() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
@@ -1455,6 +1452,7 @@ mod tests {
 		assert_eq!(out, 250);
 	}
 
+	#[cfg(windows)]
 	#[test]
 	fn province_owner_matching_the_overlord_is_not_the_subject_tag() {
 		let _guard = DETOUR_TEST_LOCK.lock().unwrap();
@@ -1555,31 +1553,36 @@ mod tests {
 		poll_runtime_at(5_000 + config::RELOAD_DEBOUNCE_MS);
 		assert_eq!(CONFIG.read().unwrap().kind_percent.get("vassal"), Some(&10));
 
-		unsafe extern "C" fn original(
-			_country: *mut u8,
-			out: *mut i32,
-			_subject: *mut u8,
-			_tooltip: *mut u8,
-		) {
-			if !out.is_null() {
-				unsafe { *out = 1000 };
+		// The hot path writes `*out` through `Memory`, which declines off
+		// Windows. The reload above is what Linux can observe.
+		#[cfg(windows)]
+		{
+			unsafe extern "C" fn original(
+				_country: *mut u8,
+				out: *mut i32,
+				_subject: *mut u8,
+				_tooltip: *mut u8,
+			) {
+				if !out.is_null() {
+					unsafe { *out = 1000 };
+				}
 			}
+			static mut CELL: detour::SubjectOriginal = original as detour::SubjectOriginal;
+			detour::set_next_subject_for_test((&raw const CELL) as *mut std::ffi::c_void);
+			detour::set_applied_scales(1.0, 1.0);
+			let overlord = fake_country(b"ENG", 10, 1);
+			let mut subject = vec![0_u64; 0xA0 / 8];
+			let mut out = 0_i32;
+			unsafe {
+				detour::subject_income(
+					overlord.address as *mut u8,
+					&mut out,
+					subject.as_mut_ptr().cast(),
+					std::ptr::null_mut(),
+				);
+			}
+			assert_eq!(out, 100);
 		}
-		static mut CELL: detour::SubjectOriginal = original as detour::SubjectOriginal;
-		detour::set_next_subject_for_test((&raw const CELL) as *mut std::ffi::c_void);
-		detour::set_applied_scales(1.0, 1.0);
-		let overlord = fake_country(b"ENG", 10, 1);
-		let mut subject = vec![0_u64; 0xA0 / 8];
-		let mut out = 0_i32;
-		unsafe {
-			detour::subject_income(
-				overlord.address as *mut u8,
-				&mut out,
-				subject.as_mut_ptr().cast(),
-				std::ptr::null_mut(),
-			);
-		}
-		assert_eq!(out, 100);
 	}
 
 	#[test]
