@@ -1031,7 +1031,12 @@ impl<'a> SchemaBinder<'a> {
 			}
 		}
 		let static_matches = self.conditioned_field_matches(parent, key, subtypes);
-		if !static_matches.is_empty() {
+		// The query engine accepts an open `value_set` without seeing
+		// complex-enum members. A sibling `enum[country_tags]` is still a
+		// closed marker for a tag the workspace defines, so that match is
+		// deferred to the dynamic-key pass below, which prefers it.
+		let deferred_value_set = matches_are_only_open_value_sets(&static_matches);
+		if !static_matches.is_empty() && !deferred_value_set {
 			// A named key also fits a rule written as its type
 			// (`trigger_switch` lists `advisor_events_adm = { ... }` beside
 			// `scalar = { ... }`); the statement's contents choose, the named
@@ -1044,7 +1049,7 @@ impl<'a> SchemaBinder<'a> {
 		let lower_key = key.to_ascii_lowercase();
 		if lower_key != key {
 			let folded_matches = self.conditioned_field_matches(parent, &lower_key, subtypes);
-			if !folded_matches.is_empty() {
+			if !folded_matches.is_empty() && !matches_are_only_open_value_sets(&folded_matches) {
 				return folded_matches;
 			}
 		}
@@ -1058,6 +1063,9 @@ impl<'a> SchemaBinder<'a> {
 					.map(|field_match| vec![field_match])
 			})
 			.unwrap_or_else(|| {
+				if deferred_value_set {
+					return static_matches;
+				}
 				let matches = self.primitive_key_field_matches(parent, key, subtypes);
 				if matches.is_empty() {
 					self.numeric_key_field_matches(parent, key, subtypes)
@@ -1233,6 +1241,11 @@ impl<'a> SchemaBinder<'a> {
 	/// The rule fields whose key, written as a marker, accepts `key`. Several
 	/// forms of one marker key (`<province_id>` as a name or a block of names)
 	/// are alternatives; fields of different markers leave the key ambiguous.
+	///
+	/// A `value_set[...]` key is the place a name is defined. It accepts any
+	/// key the closed markers in the same block (an enum, a `value[...]`, a
+	/// scope, or a `<type>` template) do not. EU4's `custom_attributes`
+	/// blocks are written that way, and their set starts empty.
 	fn dynamic_key_field_matches(
 		&self,
 		parent: RuleContext<'a>,
@@ -1242,10 +1255,24 @@ impl<'a> SchemaBinder<'a> {
 		if is_dynamic_key_marker(key) {
 			return None;
 		}
-		let matches = rule_fields(parent)
+		let fields = rule_fields(parent)
 			.filter(|field| conditions_match(&field.conditions, subtypes))
-			.filter(|field| self.dynamic_key_field_accepts(field, key))
 			.collect::<Vec<_>>();
+		let closed = fields
+			.iter()
+			.copied()
+			.filter(|field| {
+				!is_value_set_marker(&field.key) && self.dynamic_key_field_accepts(field, key)
+			})
+			.collect::<Vec<_>>();
+		let matches = if !closed.is_empty() {
+			closed
+		} else {
+			fields
+				.into_iter()
+				.filter(|field| is_value_set_marker(&field.key))
+				.collect()
+		};
 		let first = matches.first()?;
 		matches.iter().all(|field| field.key == first.key).then(|| {
 			matches
@@ -1898,6 +1925,21 @@ pub(crate) fn is_dynamic_key_marker(key: &str) -> bool {
 			parse_schema_marker(key),
 			Some(("enum" | "value" | "value_set" | "scope", _))
 		)
+}
+
+/// A `value_set[...]` rule key records the names written there.
+fn is_value_set_marker(key: &str) -> bool {
+	matches!(parse_schema_marker(key), Some(("value_set", _)))
+}
+
+/// Whether every match is an open `value_set` key. The query engine reports
+/// those for any key a closed marker it can see did not take; a complex enum
+/// is such a marker only once workspace names are consulted.
+fn matches_are_only_open_value_sets(matches: &[CompiledBindFieldMatch<'_>]) -> bool {
+	!matches.is_empty()
+		&& matches
+			.iter()
+			.all(|field_match| is_value_set_marker(&field_match.field().key))
 }
 
 pub(crate) fn is_angle_dynamic_key_marker(key: &str) -> bool {

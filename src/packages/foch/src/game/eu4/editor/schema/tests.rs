@@ -1324,6 +1324,7 @@ country_event = {
     reusable_token = ok
     gamma = 1
   }
+  not_a_field = 1
 }
 ";
 	let diagnostics = schema_diagnostics_for_text(&engine, game_path("events/sample.txt"), text);
@@ -1333,8 +1334,11 @@ country_event = {
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("reusable_token")
 	}));
-	assert!(diagnostics.iter().any(|diagnostic| {
+	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("gamma")
+	}));
+	assert!(diagnostics.iter().any(|diagnostic| {
+		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("not_a_field")
 	}));
 }
 
@@ -1345,6 +1349,10 @@ fn diagnostics_accept_workspace_dynamic_key_markers_from_schema() {
 	let text = "\
 country_event = {
   dynamic_fields = {
+    SWE = 1
+    XXX = 1
+  }
+  tag_keys = {
     SWE = 1
     XXX = 1
   }
@@ -1359,9 +1367,14 @@ country_event = {
 	assert!(!diagnostics.iter().any(|diagnostic| {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("SWE")
 	}));
-	assert!(diagnostics.iter().any(|diagnostic| {
-		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("XXX")
-	}));
+	let unknown_tags = diagnostics
+		.iter()
+		.filter(|diagnostic| {
+			diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("XXX")
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(unknown_tags.len(), 1, "{diagnostics:?}");
+	assert_eq!(unknown_tags[0].range.start.line, 7);
 }
 
 #[test]
@@ -2992,4 +3005,77 @@ fn diagnostics_accept_an_effect_another_subtype_names_outright() {
 	let text = "on_religion_change = {\n\tset_ruler_flag = sample_flag\n\tclr_ruler_flag = sample_flag\n}\non_queen_death = {\n\tclr_ruler_flag = marriage_length\n}\n";
 	let diagnostics = schema.diagnostics(path, text, None);
 	assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+fn diagnostic_mentions(diagnostics: &[SchemaDiagnostic], code: &str, key: &str) -> bool {
+	diagnostics.iter().any(|diagnostic| {
+		diagnostic.code.as_deref() == Some(code) && diagnostic.message.contains(&format!("`{key}`"))
+	})
+}
+
+/// A `value_set` key defines a name. Government reforms write attributes the
+/// vendored list never names (`enables_divine_idea_group` in
+/// common/government_reforms/06_government_reforms_common.txt). A key the
+/// reform itself does not define, a non-bool, and a second
+/// `custom_attributes` block stay reported.
+#[test]
+fn diagnostics_accept_government_attribute_keys_a_reform_defines() {
+	let schema = EditorSchema::active();
+	let path = game_path("common/government_reforms/06_government_reforms_common.txt");
+	let text = "sample_reform = {\n\tcustom_attributes = {\n\t\tenables_divine_idea_group = yes\n\t\tgenerals_become_rulers = yes\n\t}\n\tnot_a_reform_key = yes\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V001", "enables_divine_idea_group"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		!diagnostic_mentions(&diagnostics, "V001", "generals_become_rulers"),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V001", "not_a_reform_key"),
+		"{diagnostics:?}"
+	);
+
+	let text =
+		"sample_reform = {\n\tcustom_attributes = {\n\t\tenables_divine_idea_group = 2\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V005", "enables_divine_idea_group"),
+		"{diagnostics:?}"
+	);
+
+	let text = "sample_reform = {\n\tcustom_attributes = {\n\t\tenables_divine_idea_group = yes\n\t}\n\tcustom_attributes = {\n\t\tblocked_call_diet = yes\n\t}\n}\n";
+	let diagnostics = schema.diagnostics(path, text, None);
+	assert!(
+		diagnostic_mentions(&diagnostics, "V002", "custom_attributes"),
+		"{diagnostics:?}"
+	);
+}
+
+/// A hidden event's title is plain text. A visible event's title is a
+/// localisation key. events/ConsortEvents.txt writes `title = none` on
+/// consort_events.206.
+#[test]
+fn localisation_diagnostics_skip_a_hidden_events_plain_title() {
+	let schema = EditorSchema::active();
+	let path = game_path("events/ConsortEvents.txt");
+	let hidden = "namespace = consort_events\ncountry_event = {\n\tid = consort_events.206\n\thidden = yes\n\ttitle = none\n\tdesc = none\n\tis_triggered_only = yes\n\toption = { name = none }\n}\n";
+	let diagnostics = schema.localisation_diagnostics(path, hidden, &[]);
+	assert!(
+		diagnostics
+			.iter()
+			.all(|diagnostic| diagnostic.code.as_deref() != Some("missing-localisation")),
+		"{diagnostics:?}"
+	);
+
+	let visible = "namespace = consort_events\ncountry_event = {\n\tid = consort_events.1\n\ttitle = consort_events.1.t\n\tdesc = consort_events.1.d\n\tis_triggered_only = yes\n\toption = { name = consort_events.1.a }\n}\n";
+	let diagnostics = schema.localisation_diagnostics(path, visible, &[]);
+	assert!(
+		diagnostics.iter().any(|diagnostic| {
+			diagnostic.code.as_deref() == Some("missing-localisation")
+				&& diagnostic.message.contains("consort_events.1.t")
+		}),
+		"{diagnostics:?}"
+	);
 }

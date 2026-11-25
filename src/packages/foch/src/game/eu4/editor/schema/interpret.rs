@@ -824,6 +824,12 @@ fn schema_localisation_references_for_ast(
 				continue;
 			}
 			if let Some((key, range)) = scalar_assignment_in_statements(instance.items, pattern) {
+				// A hidden event types `title` as plain text (`title = none`
+				// in events/ConsortEvents.txt). The type's localisation rule
+				// still names that field; the field's own type decides.
+				if !field_pattern_names_localisation(&binder, &path, pattern, &active_subtypes) {
+					continue;
+				}
 				references.push(SchemaLocalisationReference {
 					key,
 					range,
@@ -839,6 +845,35 @@ fn schema_localisation_references_for_ast(
 	});
 	references.dedup_by(|left, right| left.key == right.key && left.range == right.range);
 	references
+}
+
+/// Whether `pattern` names a field the active subtypes type as localisation.
+/// The same reading as the semantic index: a `scalar` title is not a key.
+/// An unbound field stays a reference, so a missing rule does not hide one.
+fn field_pattern_names_localisation(
+	binder: &SchemaBinder<'_>,
+	path: &[&str],
+	pattern: &str,
+	active_subtypes: &HashSet<String>,
+) -> bool {
+	let Some(context) = binder.bind_context(path) else {
+		return true;
+	};
+	let alternatives = binder.field_alternatives(context, pattern, active_subtypes);
+	if alternatives.is_empty() {
+		return true;
+	}
+	alternatives
+		.iter()
+		.any(|field_match| names_localisation(field_match.value()))
+}
+
+fn names_localisation(value: &CompiledRuleValue) -> bool {
+	matches!(
+		value,
+		CompiledRuleValue::Scalar(text) | CompiledRuleValue::Marker(text)
+			if matches!(text.as_str(), "localisation" | "localization")
+	)
 }
 
 fn schema_rule_scalar_pattern(value: &CompiledRuleValue) -> Option<&str> {
