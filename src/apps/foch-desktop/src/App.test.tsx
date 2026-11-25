@@ -10,6 +10,7 @@ import type {
 	DesktopLaunchStatus,
 	DesktopPluginOverview,
 	DesktopPreferences,
+	DesktopResolutionRule,
 	DesktopSettingsInput,
 	InputInspection,
 	MergeAnalysisState,
@@ -231,11 +232,105 @@ const UNIT_DETAIL: MergeUnitDetail = {
 	strategy: "gumtree-pcs-nway",
 	summary: "Both contributions can be preserved without a choice.",
 	outputPath: "common/countries/France.txt",
+	outputPaths: ["common/countries/France.txt"],
 	contributors: [
 		{ modId: "base", name: "Europa Universalis IV", position: 0, isBaseGame: true },
 		{ modId: "mod-1", name: "Europa Expanded", position: 1, isBaseGame: false },
 	],
 	notes: ["Base snapshot used as the semantic ancestor."],
+	conflicts: [],
+};
+
+const PREFER_B_FILE_RULE: DesktopResolutionRule = {
+	matchPattern: null,
+	file: "history/countries/TES - Test.txt",
+	preferMod: "ugc-300002",
+	handler: null,
+};
+
+const PREFER_B_FOLDER_RULE: DesktopResolutionRule = {
+	matchPattern: "re:^history/countries/[^/]+$",
+	file: null,
+	preferMod: "ugc-300002",
+	handler: null,
+};
+
+const CONFLICT_UNIT_DETAIL: MergeUnitDetail = {
+	id: "choice-unit",
+	path: "history/countries/TES - Test.txt",
+	family: "countries",
+	kind: "file",
+	disposition: "needs_user_choice",
+	strategy: "structural_merge",
+	summary: "Three mods set the same country value differently.",
+	outputPath: null,
+	outputPaths: [],
+	contributors: [
+		{ modId: "ugc-300000", name: "Baseline", position: 0, isBaseGame: false },
+		{ modId: "ugc-300001", name: "Conflict A", position: 1, isBaseGame: false },
+		{ modId: "ugc-300002", name: "Conflict B", position: 2, isBaseGame: false },
+	],
+	notes: [],
+	conflicts: [
+		{
+			filePath: "history/countries/TES - Test.txt",
+			reason: "manual conflict",
+			leaves: [
+				{
+					conflictId: "ab12cd34",
+					address: "religion",
+					kind: null,
+					reason: "three mods set religion differently",
+					vanillaSnippet: "religion = catholic",
+					candidates: [
+						{
+							modId: "ugc-300000",
+							modDisplayName: "Baseline",
+							precedence: 0,
+							changeSummary: ["set religion"],
+							rendered: "religion = catholic",
+						},
+						{
+							modId: "ugc-300001",
+							modDisplayName: "Conflict A",
+							precedence: 1,
+							changeSummary: ["set religion"],
+							rendered: "religion = orthodox",
+						},
+						{
+							modId: "ugc-300002",
+							modDisplayName: "Conflict B",
+							precedence: 2,
+							changeSummary: ["set religion"],
+							rendered: "religion = protestant",
+						},
+					],
+					options: [
+						{
+							action: { kind: "prefer_mod", modId: "ugc-300002" },
+							fileResolution: PREFER_B_FILE_RULE,
+							directoryResolution: PREFER_B_FOLDER_RULE,
+						},
+						{
+							action: { kind: "handler", name: "last_writer" },
+							fileResolution: {
+								matchPattern: "re:^history/countries/TES - Test\\.txt$",
+								file: null,
+								preferMod: null,
+								handler: "last_writer",
+							},
+							directoryResolution: {
+								matchPattern: "re:^history/countries/[^/]+$",
+								file: null,
+								preferMod: null,
+								handler: "last_writer",
+							},
+						},
+					],
+				},
+			],
+		},
+	],
 };
 
 function analysisSummary(state: MergeAnalysisState): MergeAnalysisSummary {
@@ -389,6 +484,10 @@ function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
 		),
 		listMergeUnits: vi.fn(async (): Promise<MergeUnitPage> => UNIT_PAGE),
 		getMergeUnit: vi.fn(async (): Promise<MergeUnitDetail> => UNIT_DETAIL),
+		renderResolutionsToml: vi.fn(
+			async (rules: DesktopResolutionRule[]): Promise<string> =>
+				`# ${rules.length} rule(s)\n[[resolutions]]\nfile = "history/countries/TES - Test.txt"\nprefer_mod = "ugc-300002"\n`,
+		),
 		commitMergeAnalysis: vi.fn(
 			async (analysisId: string, outputDir: string): Promise<MergeCommitResult> => ({
 				analysisId,
@@ -558,6 +657,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		expect(startMergeAnalysis).toHaveBeenCalledWith(
 			"inspection-recoverable",
 			"without_unavailable_mods",
+			[],
 		);
 		expect(
 			screen.getByText("Incomplete input", { selector: ".section-kicker" }),
@@ -613,6 +713,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		expect(client.startMergeAnalysis).toHaveBeenCalledWith(
 			"inspection-ready",
 			"complete",
+			[],
 		);
 		expect(
 			screen.getByRole("heading", { name: "Select a merge unit" }),
@@ -1067,6 +1168,161 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		).toBeInTheDocument();
 		expect(screen.queryByText("english note")).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "这次分析已经导出。" })).toBeDisabled();
+	});
+
+	it("renders leaf conflicts with vanilla and competing snippets in English", async (): Promise<void> => {
+		const getMergeUnit = vi.fn<DesktopClient["getMergeUnit"]>(
+			async (): Promise<MergeUnitDetail> => CONFLICT_UNIT_DETAIL,
+		);
+		const client = createClient({ getMergeUnit });
+		renderMerge(client, 10_000);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+		expect(
+			await screen.findByRole("heading", { name: "Review required" }),
+		).toBeInTheDocument();
+		await screen.findByText("6 results");
+		fireEvent.click(
+			screen.getByRole("button", { name: /missions\/french_missions\.txt/i }),
+		);
+		expect(await screen.findByText("Leaf conflicts")).toBeInTheDocument();
+		expect(screen.getByText("manual conflict")).toBeInTheDocument();
+		expect(screen.getByText("Vanilla")).toBeInTheDocument();
+		expect(screen.getByText("Competing mods")).toBeInTheDocument();
+		expect(screen.getByText("religion = orthodox")).toBeInTheDocument();
+		expect(screen.getByText("religion = protestant")).toBeInTheDocument();
+		// The vanilla snippet and the baseline candidate both render it.
+		expect(screen.getAllByText("religion = catholic").length).toBe(2);
+		// The contributor list and the candidate card both name Conflict B.
+		expect(screen.getAllByText("Conflict B").length).toBe(2);
+		// Baseline and Conflict A carry no explicit option, so their buttons
+		// render disabled; only Conflict B's choices are enabled.
+		const fileButtons = screen.getAllByRole("button", {
+			name: "Prefer for this file",
+		});
+		expect(fileButtons).toHaveLength(3);
+		expect(fileButtons[0]).toBeDisabled();
+		expect(fileButtons[1]).toBeDisabled();
+		expect(fileButtons[2]).toBeEnabled();
+		const folderButtons = screen.getAllByRole("button", {
+			name: "Prefer for folder",
+		});
+		expect(folderButtons).toHaveLength(3);
+		expect(folderButtons[0]).toBeDisabled();
+		expect(folderButtons[1]).toBeDisabled();
+		expect(folderButtons[2]).toBeEnabled();
+	});
+
+	it("queues a file-scope resolution, re-analyzes with it, and previews the foch.toml snippet", async (): Promise<void> => {
+		const getMergeUnit = vi.fn<DesktopClient["getMergeUnit"]>(
+			async (): Promise<MergeUnitDetail> => CONFLICT_UNIT_DETAIL,
+		);
+		const startMergeAnalysis = vi.fn<DesktopClient["startMergeAnalysis"]>(
+			async (): Promise<StartMergeAnalysisResult> => ({
+				analysisId: "analysis-1",
+				inputScope: COMPLETE_INPUT_SCOPE,
+			}),
+		);
+		const renderResolutionsToml = vi.fn<DesktopClient["renderResolutionsToml"]>(
+			async (): Promise<string> =>
+				'[[resolutions]]\nfile = "history/countries/TES - Test.txt"\nprefer_mod = "ugc-300002"\n',
+		);
+		const client = createClient({
+			getMergeUnit,
+			startMergeAnalysis,
+			renderResolutionsToml,
+		});
+		renderMerge(client, 10_000);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+		expect(
+			await screen.findByRole("heading", { name: "Review required" }),
+		).toBeInTheDocument();
+		await screen.findByText("6 results");
+		fireEvent.click(
+			screen.getByRole("button", { name: /missions\/french_missions\.txt/i }),
+		);
+		await screen.findByText("Leaf conflicts");
+		// Conflict B is the third candidate and the only one with options.
+		const enabledFileChoice = screen.getAllByRole("button", {
+			name: "Prefer for this file",
+		})[2];
+		if (enabledFileChoice === undefined)
+			throw new Error("no enabled file-scope prefer button");
+		fireEvent.click(enabledFileChoice);
+
+		expect(
+			await screen.findByRole("heading", { name: /Pending resolutions \(1\)/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/file · history\/countries\/TES - Test\.txt/),
+		).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Copy foch.toml snippet" }));
+		const tomlMatches = await screen.findAllByText(/\[\[resolutions\]\]/);
+		expect(tomlMatches.length).toBeGreaterThanOrEqual(1);
+		expect(screen.getByText(/prefer_mod = "ugc-300002"/)).toBeInTheDocument();
+		expect(renderResolutionsToml).toHaveBeenCalledWith([PREFER_B_FILE_RULE]);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Re-analyze with resolutions" }),
+		);
+		await waitFor((): void => {
+			expect(startMergeAnalysis).toHaveBeenLastCalledWith(
+				"inspection-ready",
+				"complete",
+				[PREFER_B_FILE_RULE],
+			);
+		});
+		await waitFor((): void => {
+			expect(
+				screen.queryByRole("heading", { name: /Pending resolutions/ }),
+			).not.toBeInTheDocument();
+		});
+	});
+
+	it("renders leaf conflicts in simplified Chinese and queues a folder rule", async (): Promise<void> => {
+		const client = createClient({
+			getDesktopSettings: vi.fn(async (): Promise<DesktopPreferences> => ({
+				...ENGLISH_SETTINGS,
+				language: "zh_cn",
+				effectiveLanguage: "zh-CN",
+			})),
+			getMergeUnit: vi.fn(async (): Promise<MergeUnitDetail> => CONFLICT_UNIT_DETAIL),
+		});
+		render(<App client={client} pollIntervalMs={10_000} />);
+		fireEvent.click(await screen.findByRole("tab", { name: "合并与冲突" }));
+		fireEvent.click(await screen.findByRole("button", { name: /分析当前剧本组/ }));
+		expect(
+			await screen.findByRole("heading", { name: "需要审查" }),
+		).toBeInTheDocument();
+		await screen.findByText("6 条结果");
+		fireEvent.click(
+			screen.getByRole("button", { name: /missions\/french_missions\.txt/i }),
+		);
+		expect(await screen.findByText("叶子冲突")).toBeInTheDocument();
+		expect(screen.getByText("原版")).toBeInTheDocument();
+		expect(screen.getByText("竞争 Mod")).toBeInTheDocument();
+		expect(screen.getByText("religion = protestant")).toBeInTheDocument();
+		const enabledFolderChoice = screen.getAllByRole("button", {
+			name: "同目录优先此 Mod",
+		})[2];
+		if (enabledFolderChoice === undefined)
+			throw new Error("no enabled folder-scope prefer button");
+		fireEvent.click(enabledFolderChoice);
+		expect(
+			await screen.findByRole("heading", { name: /待应用解决规则 \(1\)/ }),
+		).toBeInTheDocument();
+		expect(screen.getByText(/目录 · re:/)).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "复制 foch.toml 配置" }));
+		const tomlMatches = await screen.findAllByText(/\[\[resolutions\]\]/);
+		expect(tomlMatches.length).toBeGreaterThanOrEqual(1);
+		expect(
+			screen.getByText(/把这段 \[\[resolutions\]\] 加入你自己的 foch\.toml/),
+		).toBeInTheDocument();
 	});
 });
 

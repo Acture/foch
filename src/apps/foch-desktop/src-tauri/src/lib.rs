@@ -16,6 +16,7 @@ pub fn run() {
 			commands::list_merge_units,
 			commands::get_merge_unit,
 			commands::commit_merge_analysis,
+			commands::render_resolutions_toml,
 			commands::get_plugin_overview,
 			commands::install_plugin,
 			commands::import_plugin_dir,

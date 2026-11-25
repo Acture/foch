@@ -1,8 +1,10 @@
 use crate::dto::{
-	AnalysisInputMode, AnalysisInputScope, BaseDataState, BaseDataView, DesktopError,
-	DetectedPlaysetView, InputInspection, InputRecoveryOption, InstalledGameView,
-	MergeAnalysisState, MergeDisposition, MergeUnitContributor, MergeUnitCounts, MergeUnitDetail,
-	MergeUnitKind, OmittedPlaysetMod, PlaysetModView, ReadinessIssue, ReadinessState,
+	AnalysisInputMode, AnalysisInputScope, BaseDataState, BaseDataView, DesktopConflictCandidate,
+	DesktopConflictLeaf, DesktopDecisionAction, DesktopDecisionOption, DesktopError,
+	DesktopResolutionRule, DesktopUnitConflicts, DetectedPlaysetView, InputInspection,
+	InputRecoveryOption, InstalledGameView, MergeAnalysisState, MergeDisposition,
+	MergeUnitContributor, MergeUnitCounts, MergeUnitDetail, MergeUnitKind, OmittedPlaysetMod,
+	PlaysetModView, ReadinessIssue, ReadinessState,
 };
 use foch::input::{
 	CurrentEu4Input, InputPreparationMode, InputRequest, PreparedAnalysisInput,
@@ -12,7 +14,8 @@ use foch::merge::{
 	AnalyzedMerge, CancellationToken, MergeAnalysisOptions, MergeAnalysisStatus, MergeError,
 	ProgressObserver, analyze_merge,
 };
-use std::path::PathBuf;
+use foch::project::{ResolutionEntry, ResolutionMap, render_resolutions_toml};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 const MAX_INSPECTION_ISSUES: usize = 64;
@@ -22,6 +25,16 @@ const MAX_CONTRIBUTORS_PER_UNIT: usize = 256;
 const MAX_NOTES_PER_UNIT: usize = 64;
 const MAX_SHORT_TEXT_CHARS: usize = 1_024;
 const MAX_DETAIL_TEXT_CHARS: usize = 8_192;
+/// Hard caps that keep one unit's conflict view bounded on huge mods.
+const MAX_UNIT_CONFLICT_GROUPS: usize = 16;
+const MAX_CONFLICTS_PER_UNIT: usize = 16;
+const MAX_CANDIDATES_PER_CONFLICT: usize = 8;
+const MAX_OPTIONS_PER_CONFLICT: usize = 12;
+const MAX_CHANGE_SUMMARY_LINES: usize = 8;
+const MAX_SNIPPET_CHARS: usize = 2_048;
+/// Caps on the resolution rules a session re-analysis may carry.
+pub(crate) const MAX_RESOLUTION_RULES: usize = 64;
+const MAX_RESOLUTION_TEXT_CHARS: usize = 512;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AnalysisRunError {
@@ -68,6 +81,7 @@ pub(crate) trait AnalysisRunner: Send + Sync {
 		&self,
 		analysis_id: &str,
 		request: InputRequest,
+		resolutions: &[DesktopResolutionRule],
 		progress: &dyn ProgressObserver,
 		cancellation: &CancellationToken,
 	) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError>;
@@ -103,6 +117,7 @@ impl AnalysisRunner for FochAnalysisRunner {
 		&self,
 		analysis_id: &str,
 		request: InputRequest,
+		resolutions: &[DesktopResolutionRule],
 		progress: &dyn ProgressObserver,
 		cancellation: &CancellationToken,
 	) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
@@ -113,6 +128,13 @@ impl AnalysisRunner for FochAnalysisRunner {
 				out_dir.display()
 			)));
 		}
+		// Session-scoped `[[resolutions]]` config: written beside the
+		// analysis target, deleted when this run ends however it ends. The
+		// user's and any mod's `foch.toml` are never touched.
+		let resolution_config_path = write_session_resolution_config(analysis_id, resolutions)?;
+		let _resolution_guard = resolution_config_path
+			.as_ref()
+			.map(|path| ResolutionConfigGuard::new(path));
 		let analyzed = analyze_merge(
 			request,
 			MergeAnalysisOptions {
@@ -121,10 +143,12 @@ impl AnalysisRunner for FochAnalysisRunner {
 				include_base: false,
 				gui_scroll_merge: false,
 				force: false,
-				strict: false,
+				// Review mode: conflicts nothing resolves defer for an
+				// explicit choice instead of being settled by load order.
+				strict: true,
 				ignore_replace_path: false,
 				dep_overrides: Vec::new(),
-				resolution_config_path: None,
+				resolution_config_path,
 				interactive_conflict_handler: None,
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
@@ -142,6 +166,134 @@ impl AnalysisRunner for FochAnalysisRunner {
 
 fn unique_analysis_target(analysis_id: &str) -> PathBuf {
 	std::env::temp_dir().join(format!("foch-desktop-analysis-{analysis_id}"))
+}
+
+/// The session-scoped `foch.toml` sibling of an analysis target, holding only
+/// the frontend's explicit `[[resolutions]]` choices.
+fn unique_resolution_config_path(analysis_id: &str) -> PathBuf {
+	std::env::temp_dir().join(format!("foch-desktop-resolutions-{analysis_id}.toml"))
+}
+
+/// Deletes the session resolution config when the analysis run that borrowed
+/// it finishes — including a panic or an error unwind.
+struct ResolutionConfigGuard {
+	path: PathBuf,
+}
+
+impl ResolutionConfigGuard {
+	fn new(path: &Path) -> Self {
+		Self {
+			path: path.to_path_buf(),
+		}
+	}
+}
+
+impl Drop for ResolutionConfigGuard {
+	fn drop(&mut self) {
+		let _ = std::fs::remove_file(&self.path);
+	}
+}
+
+/// Map frontend resolution rules onto `foch::project::ResolutionEntry` and
+/// reject anything the merge's own config loader would reject, so an invalid
+/// rule fails closed before any analysis side effects exist.
+pub(crate) fn desktop_resolution_entries(
+	rules: &[DesktopResolutionRule],
+) -> Result<Vec<ResolutionEntry>, DesktopError> {
+	if rules.len() > MAX_RESOLUTION_RULES {
+		return Err(DesktopError::new(
+			"invalid_resolutions",
+			format!("at most {MAX_RESOLUTION_RULES} resolution rules may be applied at once"),
+		));
+	}
+	let bounded_field =
+		|name: &str, value: &Option<String>| -> Result<Option<String>, DesktopError> {
+			value
+				.as_deref()
+				.map(|text| {
+					if text.trim().is_empty() {
+						Err(invalid_resolution(name, "must not be blank"))
+					} else if text.chars().count() > MAX_RESOLUTION_TEXT_CHARS {
+						Err(invalid_resolution(
+							name,
+							format!("must contain at most {MAX_RESOLUTION_TEXT_CHARS} characters"),
+						))
+					} else {
+						Ok(text.to_string())
+					}
+				})
+				.transpose()
+		};
+	let mut entries = Vec::with_capacity(rules.len());
+	for (index, rule) in rules.iter().enumerate() {
+		let file = match &rule.file {
+			Some(text) => {
+				let bounded = bounded_field("file", &Some(text.clone()))?.expect("checked");
+				Some(foch::model::GamePathBuf::parse(&bounded).map_err(|error| {
+					DesktopError::new(
+						"invalid_resolutions",
+						format!("resolution rule {index}: file is not a game path: {error}"),
+					)
+				})?)
+			}
+			None => None,
+		};
+		entries.push(ResolutionEntry {
+			file,
+			conflict_id: None,
+			mod_id: None,
+			r#match: bounded_field("matchPattern", &rule.match_pattern)?,
+			prefer_mod: bounded_field("preferMod", &rule.prefer_mod)?,
+			prefer_candidate: None,
+			use_file: None,
+			keep_existing: None,
+			priority_boost: None,
+			handler: bounded_field("handler", &rule.handler)?,
+			policy: None,
+		});
+	}
+	ResolutionMap::from_entries(&entries).map_err(|error| {
+		DesktopError::new(
+			"invalid_resolutions",
+			format!("resolution rules were rejected: {error}"),
+		)
+	})?;
+	Ok(entries)
+}
+
+fn invalid_resolution(field: &str, problem: impl std::fmt::Display) -> DesktopError {
+	DesktopError::new(
+		"invalid_resolutions",
+		format!("resolution rule field {field} {problem}"),
+	)
+}
+
+/// The exact `[[resolutions]]` TOML the merge would load for these rules, so
+/// a player can copy the same choices into their own `foch.toml`.
+pub(crate) fn render_resolution_rules_toml(
+	rules: &[DesktopResolutionRule],
+) -> Result<String, DesktopError> {
+	let entries = desktop_resolution_entries(rules)?;
+	Ok(render_resolutions_toml(&entries))
+}
+
+fn write_session_resolution_config(
+	analysis_id: &str,
+	rules: &[DesktopResolutionRule],
+) -> Result<Option<PathBuf>, AnalysisRunError> {
+	if rules.is_empty() {
+		return Ok(None);
+	}
+	let entries = desktop_resolution_entries(rules)
+		.map_err(|error| AnalysisRunError::Failed(error.message))?;
+	let path = unique_resolution_config_path(analysis_id);
+	std::fs::write(&path, render_resolutions_toml(&entries)).map_err(|error| {
+		AnalysisRunError::Failed(format!(
+			"failed to write the session resolution config {}: {error}",
+			path.display()
+		))
+	})?;
+	Ok(Some(path))
 }
 
 fn map_merge_error(error: MergeError) -> AnalysisRunError {
@@ -175,7 +327,12 @@ impl FochAnalysisReview {
 			engine_failure: summary.engine_failure,
 			deferred: summary.deferred,
 		};
-		let units = analyzed.list_units().iter().map(unit_view).collect();
+		let review = analyzed.review();
+		let units = analyzed
+			.list_units()
+			.iter()
+			.map(|unit| unit_view(unit, review))
+			.collect();
 		Self {
 			analyzed: Mutex::new(Some(analyzed)),
 			state,
@@ -290,7 +447,10 @@ fn count_to_u64(value: usize) -> u64 {
 	u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-fn unit_view(unit: &foch::merge::MergeUnitOutcome) -> MergeUnitDetail {
+fn unit_view(
+	unit: &foch::merge::MergeUnitOutcome,
+	review: &foch::merge::MergeReview,
+) -> MergeUnitDetail {
 	let contributor_count = unit.contributors.len();
 	MergeUnitDetail {
 		id: unit.id.clone(),
@@ -338,6 +498,129 @@ fn unit_view(unit: &foch::merge::MergeUnitOutcome) -> MergeUnitDetail {
 			.take(MAX_NOTES_PER_UNIT)
 			.map(|note| bounded_text(note, MAX_DETAIL_TEXT_CHARS))
 			.collect(),
+		conflicts: unit_conflicts_view(unit, review),
+	}
+}
+
+/// A unit's deferred leaf conflicts as bounded structured views: the address
+/// tree flattened to leaves, each with its competing candidates and the
+/// explicit decision options the handler contract audits.
+fn unit_conflicts_view(
+	unit: &foch::merge::MergeUnitOutcome,
+	review: &foch::merge::MergeReview,
+) -> Vec<DesktopUnitConflicts> {
+	review
+		.conflicts()
+		.iter()
+		.filter(|conflicts| conflicts.unit_id == unit.id)
+		.take(MAX_UNIT_CONFLICT_GROUPS)
+		.map(|conflicts| DesktopUnitConflicts {
+			file_path: bounded_text(conflicts.file_path.as_str(), MAX_DETAIL_TEXT_CHARS),
+			reason: bounded_text(&conflicts.reason, MAX_DETAIL_TEXT_CHARS),
+			leaves: conflicts
+				.nodes
+				.iter()
+				.flat_map(|node| node.conflicts.iter().map(move |leaf| (node, leaf)))
+				.take(MAX_CONFLICTS_PER_UNIT)
+				.map(|(node, leaf)| conflict_leaf_view(node, leaf, review))
+				.collect(),
+		})
+		.collect()
+}
+
+fn conflict_leaf_view(
+	node: &foch::merge::AddressNode,
+	leaf: &foch::merge::ConflictLeaf,
+	review: &foch::merge::MergeReview,
+) -> DesktopConflictLeaf {
+	DesktopConflictLeaf {
+		conflict_id: bounded_text(&leaf.conflict_id, MAX_SHORT_TEXT_CHARS),
+		address: bounded_text(&node.address, MAX_SHORT_TEXT_CHARS),
+		kind: leaf.kind.map(|kind| kind.as_str().to_string()),
+		reason: leaf
+			.reason
+			.as_deref()
+			.map(|reason| bounded_text(reason, MAX_DETAIL_TEXT_CHARS)),
+		vanilla_snippet: leaf
+			.vanilla_snippet
+			.as_deref()
+			.map(|snippet| bounded_text(snippet, MAX_SNIPPET_CHARS)),
+		candidates: leaf
+			.candidates
+			.iter()
+			.take(MAX_CANDIDATES_PER_CONFLICT)
+			.map(|candidate| DesktopConflictCandidate {
+				mod_id: bounded_text(&candidate.mod_id, MAX_SHORT_TEXT_CHARS),
+				mod_display_name: bounded_text(&candidate.mod_display_name, MAX_SHORT_TEXT_CHARS),
+				precedence: candidate.precedence,
+				change_summary: candidate
+					.change_summary
+					.iter()
+					.take(MAX_CHANGE_SUMMARY_LINES)
+					.map(|line| bounded_text(line, MAX_SHORT_TEXT_CHARS))
+					.collect(),
+				rendered: bounded_text(&candidate.rendered, MAX_SNIPPET_CHARS),
+			})
+			.collect(),
+		options: review
+			.decisions()
+			.iter()
+			.find(|point| point.conflict_id == leaf.conflict_id)
+			.map(|point| {
+				point
+					.options
+					.iter()
+					.take(MAX_OPTIONS_PER_CONFLICT)
+					.map(decision_option_view)
+					.collect()
+			})
+			.unwrap_or_default(),
+	}
+}
+
+fn decision_option_view(option: &foch::merge::DecisionOption) -> DesktopDecisionOption {
+	DesktopDecisionOption {
+		action: match &option.action {
+			foch::merge::DecisionAction::PreferMod { mod_id } => DesktopDecisionAction::PreferMod {
+				mod_id: bounded_text(mod_id, MAX_SHORT_TEXT_CHARS),
+			},
+			foch::merge::DecisionAction::Handler { name } => DesktopDecisionAction::Handler {
+				name: bounded_text(name, MAX_SHORT_TEXT_CHARS),
+			},
+		},
+		file_resolution: option.scopes.iter().find_map(|scope| match scope {
+			foch::merge::DecisionScope::File { resolution } => {
+				Some(resolution_rule_view(resolution))
+			}
+			_ => None,
+		}),
+		directory_resolution: option.scopes.iter().find_map(|scope| match scope {
+			foch::merge::DecisionScope::Directory { resolution } => {
+				Some(resolution_rule_view(resolution))
+			}
+			_ => None,
+		}),
+	}
+}
+
+fn resolution_rule_view(entry: &ResolutionEntry) -> DesktopResolutionRule {
+	DesktopResolutionRule {
+		match_pattern: entry
+			.r#match
+			.as_deref()
+			.map(|pattern| bounded_text(pattern, MAX_RESOLUTION_TEXT_CHARS)),
+		file: entry
+			.file
+			.as_ref()
+			.map(|file| bounded_text(file.as_str(), MAX_RESOLUTION_TEXT_CHARS)),
+		prefer_mod: entry
+			.prefer_mod
+			.as_deref()
+			.map(|mod_id| bounded_text(mod_id, MAX_RESOLUTION_TEXT_CHARS)),
+		handler: entry
+			.handler
+			.as_deref()
+			.map(|handler| bounded_text(handler, MAX_RESOLUTION_TEXT_CHARS)),
 	}
 }
 
@@ -615,6 +898,7 @@ mod tests {
 			&self,
 			analysis_id: &str,
 			_request: foch::input::InputRequest,
+			resolutions: &[DesktopResolutionRule],
 			progress: &dyn foch::merge::ProgressObserver,
 			cancellation: &foch::merge::CancellationToken,
 		) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
@@ -625,6 +909,10 @@ mod tests {
 					out_dir.display()
 				)));
 			}
+			let resolution_config_path = write_session_resolution_config(analysis_id, resolutions)?;
+			let _resolution_guard = resolution_config_path
+				.as_ref()
+				.map(|path| ResolutionConfigGuard::new(path));
 			let analyzed = foch::merge::analyze_merge(
 				foch::input::InputRequest::from_playset_path(
 					passthrough_playset(),
@@ -639,7 +927,7 @@ mod tests {
 					strict: true,
 					ignore_replace_path: false,
 					dep_overrides: Vec::new(),
-					resolution_config_path: None,
+					resolution_config_path,
 					interactive_conflict_handler: None,
 					interactive_resolution_config_path: None,
 					playset_fingerprint: None,
@@ -666,7 +954,11 @@ mod tests {
 		let state = crate::state::DesktopState::new(Arc::new(PassthroughRunner));
 		let inspection = state.inspect_input().expect("inspect fixture");
 		let id = state
-			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.expect("queue")
 			.analysis_id;
 		state.run_analysis(&id);
@@ -709,5 +1001,322 @@ mod tests {
 			.commit_analysis(&id, &temp.path().join("other").display().to_string())
 			.expect_err("second export");
 		assert_eq!(again.code, "already_committed");
+	}
+
+	/// Runs the real `eu4_two_mod_conflict` fixture through the desktop
+	/// backend, offline and without a game base, exactly like the e2e suite.
+	struct ConflictFixtureRunner;
+
+	impl AnalysisRunner for ConflictFixtureRunner {
+		fn inspect_input(&self) -> InspectedAnalysisInput {
+			InspectedAnalysisInput {
+				inspection: InputInspection {
+					inspection_id: String::new(),
+					readiness: ReadinessState::Ready,
+					game: InstalledGameView {
+						name: "Europa Universalis IV".to_string(),
+						version: Some("1.37.5".to_string()),
+						install_path: None,
+					},
+					base_data: BaseDataView {
+						state: BaseDataState::Ready,
+						version: Some("1.37.5".to_string()),
+						detail: "fixture".to_string(),
+					},
+					playset: None,
+					issues: Vec::new(),
+					recovery: None,
+				},
+				prepared: Some(PreparedDesktopInput {
+					request: conflict_fixture_request(),
+					input_scope: AnalysisInputScope {
+						mode: AnalysisInputMode::Complete,
+						source_mod_count: 3,
+						omitted_mods: Vec::new(),
+						omitted_mod_count: 0,
+						included_mod_count: 3,
+					},
+				}),
+			}
+		}
+
+		fn run_analysis(
+			&self,
+			analysis_id: &str,
+			_request: foch::input::InputRequest,
+			resolutions: &[DesktopResolutionRule],
+			progress: &dyn foch::merge::ProgressObserver,
+			cancellation: &foch::merge::CancellationToken,
+		) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
+			let out_dir = unique_analysis_target(analysis_id);
+			if out_dir.exists() {
+				return Err(AnalysisRunError::Failed(format!(
+					"temporary analysis target already exists: {}",
+					out_dir.display()
+				)));
+			}
+			let resolution_config_path = write_session_resolution_config(analysis_id, resolutions)?;
+			let _resolution_guard = resolution_config_path
+				.as_ref()
+				.map(|path| ResolutionConfigGuard::new(path));
+			let analyzed = foch::merge::analyze_merge(
+				conflict_fixture_request(),
+				foch::merge::MergeAnalysisOptions {
+					out_dir,
+					include_game_base: false,
+					include_base: false,
+					gui_scroll_merge: false,
+					force: false,
+					strict: true,
+					ignore_replace_path: false,
+					dep_overrides: Vec::new(),
+					resolution_config_path,
+					interactive_conflict_handler: None,
+					interactive_resolution_config_path: None,
+					playset_fingerprint: None,
+					provenance: false,
+					merge_workers: foch::merge::default_merge_workers(),
+					retained_paths: None,
+				},
+				progress,
+				cancellation,
+			)
+			.map_err(map_merge_error)?;
+			Ok(Arc::new(FochAnalysisReview::new(analyzed)))
+		}
+	}
+
+	fn conflict_fixture_request() -> foch::input::InputRequest {
+		foch::input::InputRequest::from_playset_path(
+			PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+				"../../../packages/foch/tests/fixtures/playsets/eu4_two_mod_conflict/dlc_load.json",
+			),
+			foch::input::Config::default(),
+		)
+	}
+
+	fn conflict_fixture_root() -> PathBuf {
+		PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("../../../packages/foch/tests/fixtures/playsets/eu4_two_mod_conflict")
+	}
+
+	fn religion_leaf(detail: &MergeUnitDetail) -> DesktopConflictLeaf {
+		detail
+			.conflicts
+			.iter()
+			.flat_map(|conflicts| conflicts.leaves.iter())
+			.find(|leaf| leaf.address == "religion")
+			.cloned()
+			.expect("the religion leaf conflict")
+	}
+
+	fn queue_conflict_analysis(
+		state: &crate::state::DesktopState,
+		resolutions: Vec<DesktopResolutionRule>,
+	) -> String {
+		let inspection = state.inspect_input().expect("inspect conflict fixture");
+		state
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				resolutions,
+			)
+			.expect("queue conflict analysis")
+			.analysis_id
+	}
+
+	#[test]
+	fn conflict_detail_surfaces_bounded_leaf_conflicts_for_a_real_fixture_merge() {
+		let state = crate::state::DesktopState::new(Arc::new(ConflictFixtureRunner));
+		let id = queue_conflict_analysis(&state, Vec::new());
+		state.run_analysis(&id);
+		let summary = state.summary(&id).expect("summary");
+		assert_eq!(summary.state, MergeAnalysisState::ReadyWithDeferrals);
+		assert!(
+			summary.counts.needs_user_choice >= 1,
+			"the strict fixture defers its conflict: {summary:?}"
+		);
+		let detail = state
+			.unit(&id, "file:history/countries/TES - Test.txt")
+			.expect("the conflicting unit");
+		assert_eq!(detail.disposition, MergeDisposition::NeedsUserChoice);
+		assert!(!detail.conflicts.is_empty());
+		assert!(
+			!detail.conflicts[0].file_path.is_empty() && !detail.conflicts[0].reason.is_empty()
+		);
+		let leaf = religion_leaf(&detail);
+		assert!(leaf.reason.is_some(), "{leaf:?}");
+		let rendered: Vec<&str> = leaf
+			.candidates
+			.iter()
+			.map(|candidate| candidate.rendered.trim())
+			.collect();
+		for expected in [
+			"religion = catholic",
+			"religion = orthodox",
+			"religion = protestant",
+		] {
+			assert!(rendered.contains(&expected), "{leaf:?}");
+			assert!(
+				leaf.candidates
+					.iter()
+					.all(|candidate| !candidate.mod_id.is_empty()
+						&& !candidate.mod_display_name.is_empty())
+			);
+		}
+		let prefer_options: Vec<&DesktopDecisionOption> = leaf
+			.options
+			.iter()
+			.filter(|option| matches!(option.action, DesktopDecisionAction::PreferMod { .. }))
+			.collect();
+		assert!(
+			prefer_options.iter().any(|option| leaf
+				.candidates
+				.iter()
+				.any(|candidate| matches!(&option.action,
+						DesktopDecisionAction::PreferMod { mod_id } if *mod_id == candidate.mod_id))),
+			"every candidate is explicitly preferable: {leaf:?}"
+		);
+		for option in prefer_options {
+			let file_rule = option.file_resolution.as_ref().expect("file scope rule");
+			assert_eq!(
+				file_rule.file.as_deref(),
+				Some("history/countries/TES - Test.txt")
+			);
+			assert!(file_rule.prefer_mod.is_some());
+			let directory_rule = option
+				.directory_resolution
+				.as_ref()
+				.expect("directory rule");
+			assert!(
+				directory_rule
+					.match_pattern
+					.as_deref()
+					.is_some_and(|pattern| pattern.starts_with("re:^history")),
+				"{directory_rule:?}"
+			);
+			assert!(directory_rule.prefer_mod.is_some());
+		}
+	}
+
+	#[test]
+	fn prefer_mod_reanalysis_resolves_the_conflicting_unit_and_commits() {
+		let state = crate::state::DesktopState::new(Arc::new(ConflictFixtureRunner));
+		let first = queue_conflict_analysis(&state, Vec::new());
+		state.run_analysis(&first);
+		let detail = state
+			.unit(&first, "file:history/countries/TES - Test.txt")
+			.expect("the conflicting unit");
+		let leaf = religion_leaf(&detail);
+		let protestant = leaf
+			.candidates
+			.iter()
+			.find(|candidate| candidate.rendered.trim() == "religion = protestant")
+			.expect("the protestant candidate");
+		let rule = DesktopResolutionRule {
+			match_pattern: Some("history/**".to_string()),
+			file: None,
+			prefer_mod: Some(protestant.mod_id.clone()),
+			handler: None,
+		};
+		let rendered =
+			render_resolution_rules_toml(std::slice::from_ref(&rule)).expect("render rule");
+		assert!(rendered.contains("[[resolutions]]"), "{rendered}");
+		assert!(rendered.contains("prefer_mod"), "{rendered}");
+
+		let second = queue_conflict_analysis(&state, vec![rule]);
+		state.run_analysis(&second);
+		let summary = state.summary(&second).expect("summary of the resolved run");
+		assert_eq!(
+			summary.state,
+			MergeAnalysisState::Ready,
+			"the explicit prefer_mod rule clears the deferral: {summary:?}"
+		);
+		assert_eq!(summary.counts.needs_user_choice, 0);
+		// The session-scoped config is gone once the analysis finished.
+		assert!(!unique_resolution_config_path(&second).exists());
+
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("merged");
+		let result = state
+			.commit_analysis(&second, &out_dir.display().to_string())
+			.expect("commit the resolved merge");
+		assert_eq!(result.merge_status, "ready");
+		let merged = std::fs::read_to_string(out_dir.join("history/countries/TES - Test.txt"))
+			.expect("the merged country history");
+		assert!(merged.contains("religion = protestant"), "{merged}");
+	}
+
+	#[test]
+	fn invalid_resolution_rules_fail_closed_and_never_touch_sources() {
+		let state = crate::state::DesktopState::new(Arc::new(ConflictFixtureRunner));
+		let source_file =
+			conflict_fixture_root().join("mods/conflict_a/history/countries/TES - Test.txt");
+		let before = std::fs::read(&source_file).expect("read the fixture source");
+		let invalid = [
+			// Two actions on one rule.
+			DesktopResolutionRule {
+				match_pattern: Some("history/**".to_string()),
+				file: None,
+				prefer_mod: Some("ugc_300002".to_string()),
+				handler: Some("last_writer".to_string()),
+			},
+			// No selector at all.
+			DesktopResolutionRule {
+				match_pattern: None,
+				file: None,
+				prefer_mod: Some("ugc_300002".to_string()),
+				handler: None,
+			},
+			// Blank mod id.
+			DesktopResolutionRule {
+				match_pattern: Some("history/**".to_string()),
+				file: None,
+				prefer_mod: Some("   ".to_string()),
+				handler: None,
+			},
+			// A file selector that is not a game path.
+			DesktopResolutionRule {
+				match_pattern: None,
+				file: Some("../escape.txt".to_string()),
+				prefer_mod: Some("ugc_300002".to_string()),
+				handler: None,
+			},
+		];
+		for rule in invalid {
+			let inspection = state.inspect_input().expect("inspect conflict fixture");
+			let error = state
+				.queue_analysis(
+					&inspection.inspection_id,
+					AnalysisInputMode::Complete,
+					vec![rule],
+				)
+				.expect_err("invalid rule must fail closed");
+			assert_eq!(error.code, "invalid_resolutions", "{error:?}");
+		}
+		// Too many rules is also rejected before anything runs.
+		let too_many = vec![
+			DesktopResolutionRule {
+				match_pattern: Some("history/**".to_string()),
+				file: None,
+				prefer_mod: Some("ugc_300002".to_string()),
+				handler: None,
+			};
+			MAX_RESOLUTION_RULES + 1
+		];
+		let inspection = state.inspect_input().expect("inspect for the bulk case");
+		let error = state
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				too_many,
+			)
+			.expect_err("bulk rules must fail closed");
+		assert_eq!(error.code, "invalid_resolutions");
+		assert_eq!(
+			std::fs::read(&source_file).expect("read the fixture source again"),
+			before,
+			"a rejected rule must never touch source mods"
+		);
 	}
 }

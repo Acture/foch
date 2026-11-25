@@ -1,11 +1,11 @@
 use crate::backend::{
 	AnalysisReview, AnalysisRunError, AnalysisRunner, FochAnalysisRunner, InspectedAnalysisInput,
-	PreparedDesktopInput, ReviewCommit, bounded_text,
+	PreparedDesktopInput, ReviewCommit, bounded_text, desktop_resolution_entries,
 };
 use crate::dto::{
-	AnalysisInputMode, AnalysisInputScope, DesktopError, InputInspection, MergeAnalysisStage,
-	MergeAnalysisState, MergeCommitResult, MergeDisposition, MergeUnitCounts, MergeUnitDetail,
-	MergeUnitListItem, MergeUnitPage, StartMergeAnalysisResult,
+	AnalysisInputMode, AnalysisInputScope, DesktopError, DesktopResolutionRule, InputInspection,
+	MergeAnalysisStage, MergeAnalysisState, MergeCommitResult, MergeDisposition, MergeUnitCounts,
+	MergeUnitDetail, MergeUnitListItem, MergeUnitPage, StartMergeAnalysisResult,
 };
 use foch::input::InputRequest;
 use foch::merge::{
@@ -63,6 +63,9 @@ struct AnalysisRecord {
 	message: Option<String>,
 	cancellation: CancellationToken,
 	request: Option<InputRequest>,
+	/// Explicit user-chosen resolution rules this run applies through a
+	/// session-scoped config; empty keeps the previous behavior.
+	resolutions: Vec<DesktopResolutionRule>,
 	review: Option<Arc<dyn AnalysisReview>>,
 	committed: bool,
 }
@@ -121,6 +124,7 @@ impl DesktopState {
 		&self,
 		inspection_id: &str,
 		input_mode: AnalysisInputMode,
+		resolutions: Vec<DesktopResolutionRule>,
 	) -> Result<StartMergeAnalysisResult, DesktopError> {
 		let mut records = self.records()?;
 		if records.active.is_some() {
@@ -129,6 +133,8 @@ impl DesktopState {
 				"another merge analysis is queued or running",
 			));
 		}
+		// Fail closed on invalid rules before any analysis state exists.
+		desktop_resolution_entries(&resolutions)?;
 		let Some(latest_inspection_id) = records.latest_inspection_id.as_deref() else {
 			return Err(DesktopError::new(
 				"input_not_inspected",
@@ -185,6 +191,7 @@ impl DesktopState {
 				message: None,
 				cancellation: CancellationToken::new(),
 				request: Some(pending.request),
+				resolutions,
 				review: None,
 				committed: false,
 			},
@@ -196,7 +203,7 @@ impl DesktopState {
 	}
 
 	pub(crate) fn run_analysis(&self, analysis_id: &str) {
-		let (cancellation, request) = match self.begin_run(analysis_id) {
+		let (cancellation, request, resolutions) = match self.begin_run(analysis_id) {
 			Ok(Some(run)) => run,
 			Ok(None) => return,
 			Err(error) => {
@@ -209,9 +216,13 @@ impl DesktopState {
 			analysis_id: analysis_id.to_string(),
 		};
 		let result = catch_unwind(AssertUnwindSafe(|| {
-			self.core
-				.runner
-				.run_analysis(analysis_id, request, &observer, &cancellation)
+			self.core.runner.run_analysis(
+				analysis_id,
+				request,
+				&resolutions,
+				&observer,
+				&cancellation,
+			)
 		}));
 		match result {
 			Ok(Ok(review)) if cancellation.is_cancelled() => {
@@ -410,7 +421,8 @@ impl DesktopState {
 	fn begin_run(
 		&self,
 		analysis_id: &str,
-	) -> Result<Option<(CancellationToken, InputRequest)>, DesktopError> {
+	) -> Result<Option<(CancellationToken, InputRequest, Vec<DesktopResolutionRule>)>, DesktopError>
+	{
 		let mut records = self.records()?;
 		let Some(record) = records.by_id.get_mut(analysis_id) else {
 			return Ok(None);
@@ -424,8 +436,9 @@ impl DesktopState {
 		let request = record.request.take().ok_or_else(|| {
 			DesktopError::internal("queued merge analysis has no inspected input request")
 		})?;
+		let resolutions = std::mem::take(&mut record.resolutions);
 		record.state = MergeAnalysisState::Running;
-		Ok(Some((record.cancellation.clone(), request)))
+		Ok(Some((record.cancellation.clone(), request, resolutions)))
 	}
 
 	fn update_progress(&self, analysis_id: &str, progress: MergeProgress) {
@@ -814,6 +827,7 @@ mod tests {
 			&self,
 			_analysis_id: &str,
 			request: InputRequest,
+			_resolutions: &[DesktopResolutionRule],
 			progress: &dyn ProgressObserver,
 			cancellation: &CancellationToken,
 		) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
@@ -874,6 +888,7 @@ mod tests {
 			&self,
 			_analysis_id: &str,
 			_request: InputRequest,
+			_resolutions: &[DesktopResolutionRule],
 			_progress: &dyn ProgressObserver,
 			_cancellation: &CancellationToken,
 		) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
@@ -989,7 +1004,11 @@ mod tests {
 	fn queue_fake_analysis(state: &DesktopState) -> String {
 		let inspection = state.inspect_input().unwrap();
 		state
-			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap()
 			.analysis_id
 	}
@@ -1030,6 +1049,7 @@ mod tests {
 			}],
 			contributor_count: 1,
 			notes: vec!["note".to_string()],
+			conflicts: Vec::new(),
 		}
 	}
 
@@ -1038,7 +1058,7 @@ mod tests {
 		let state = fake_state(Vec::new());
 		assert_eq!(
 			state
-				.queue_analysis("not-inspected", AnalysisInputMode::Complete)
+				.queue_analysis("not-inspected", AnalysisInputMode::Complete, Vec::new())
 				.unwrap_err()
 				.code,
 			"input_not_inspected"
@@ -1048,7 +1068,7 @@ mod tests {
 		assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
 		assert_eq!(
 			state
-				.queue_analysis("busy", AnalysisInputMode::Complete)
+				.queue_analysis("busy", AnalysisInputMode::Complete, Vec::new())
 				.unwrap_err()
 				.code,
 			"analysis_busy"
@@ -1076,7 +1096,11 @@ mod tests {
 		*runner.inspection.lock().unwrap() = changed_environment;
 
 		let id = state
-			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap()
 			.analysis_id;
 		state.run_analysis(&id);
@@ -1096,7 +1120,11 @@ mod tests {
 
 		assert_eq!(
 			state
-				.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&inspection.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"input_mode_not_available"
@@ -1105,6 +1133,7 @@ mod tests {
 			.queue_analysis(
 				&inspection.inspection_id,
 				AnalysisInputMode::WithoutUnavailableMods,
+				Vec::new(),
 			)
 			.unwrap();
 		assert_eq!(
@@ -1130,13 +1159,21 @@ mod tests {
 
 		assert_eq!(
 			state
-				.queue_analysis(&stale.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&stale.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"stale_input_inspection"
 		);
 		let started = state
-			.queue_analysis(&current.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&current.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap();
 		assert!(!started.analysis_id.is_empty());
 	}
@@ -1159,7 +1196,11 @@ mod tests {
 
 		assert_eq!(
 			state
-				.queue_analysis(&initial.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&initial.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"stale_input_inspection"
@@ -1177,7 +1218,11 @@ mod tests {
 			"input_inspection_superseded"
 		);
 		let started = state
-			.queue_analysis(&current.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&current.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap();
 		assert_eq!(started.input_scope.mode, AnalysisInputMode::Complete);
 		state.cancel_analysis(&started.analysis_id).unwrap();
@@ -1203,14 +1248,22 @@ mod tests {
 		assert_eq!(runner.inspection_count.load(Ordering::Relaxed), 2);
 		assert_eq!(
 			state
-				.queue_analysis(&ready.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&ready.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"stale_input_inspection"
 		);
 		assert_eq!(
 			state
-				.queue_analysis(&blocked.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&blocked.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"input_not_ready"
@@ -1230,7 +1283,11 @@ mod tests {
 		let state = DesktopState::new(runner.clone());
 		let inspection = state.inspect_input().unwrap();
 		let id = state
-			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap()
 			.analysis_id;
 
@@ -1408,7 +1465,11 @@ mod tests {
 		let inspection = state.inspect_input().unwrap();
 		assert_eq!(
 			state
-				.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&inspection.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"input_not_ready"

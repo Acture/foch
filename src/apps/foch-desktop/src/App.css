@@ -1414,6 +1414,199 @@ select:focus-visible {
 	color: var(--failure);
 }
 
+/* Leaf-conflict review inside the selected unit's detail pane. */
+.conflict-group {
+	display: grid;
+	gap: 0.7rem;
+}
+.conflict-group-reason {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.7rem;
+}
+.conflict-card {
+	display: grid;
+	gap: 0.55rem;
+	padding: 0.7rem;
+	background: var(--panel-soft);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+.conflict-card-heading {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+.conflict-address {
+	font-family: "Cascadia Mono", Consolas, monospace;
+	font-size: 0.72rem;
+	color: var(--brass);
+	overflow-wrap: anywhere;
+}
+.conflict-kind {
+	color: var(--muted);
+	font-size: 0.62rem;
+	letter-spacing: 0.04em;
+}
+.conflict-reason {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.72rem;
+	line-height: 1.5;
+}
+.conflict-reason span {
+	color: #4f5a62;
+	text-transform: uppercase;
+	font-size: 0.62rem;
+	letter-spacing: 0.05em;
+}
+.conflict-snippet {
+	display: grid;
+	gap: 0.25rem;
+}
+.conflict-snippet span {
+	color: #4f5a62;
+	font-size: 0.62rem;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.conflict-snippet pre,
+.candidate-rendered,
+.toml-preview pre {
+	margin: 0;
+	padding: 0.5rem 0.6rem;
+	background: var(--canvas);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	overflow-x: auto;
+}
+.conflict-snippet pre code,
+.candidate-rendered code,
+.toml-preview pre code {
+	font-family: "Cascadia Mono", Consolas, monospace;
+	font-size: 0.68rem;
+	white-space: pre;
+}
+.conflict-vanilla pre {
+	border-color: var(--line-strong);
+}
+.conflict-candidates {
+	display: grid;
+	gap: 0.45rem;
+}
+.conflict-candidates-title {
+	margin: 0;
+	color: #4f5a62;
+	font-size: 0.62rem;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.candidate-card {
+	display: grid;
+	gap: 0.4rem;
+	padding: 0.55rem;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+.candidate-card header {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 0.5rem;
+}
+.candidate-card header strong {
+	font-size: 0.75rem;
+}
+.candidate-card header span {
+	color: var(--muted);
+	font-family: "Cascadia Mono", Consolas, monospace;
+	font-size: 0.64rem;
+}
+.candidate-summary {
+	margin: 0;
+	padding: 0 0 0 0.9rem;
+	color: var(--muted);
+	font-size: 0.68rem;
+}
+.candidate-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+}
+
+/* The queued explicit resolution rules awaiting a re-analysis. */
+.pending-resolutions {
+	display: grid;
+	gap: 0.55rem;
+	padding: 0.9rem 1rem;
+	background: var(--panel-soft);
+	border: 1px solid var(--line-strong);
+	border-radius: 10px;
+}
+.pending-resolutions-heading {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 0.6rem;
+}
+.pending-resolutions-heading h3 {
+	margin: 0;
+	font-size: 0.78rem;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+}
+.pending-resolutions p {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.72rem;
+	line-height: 1.5;
+}
+.pending-rule-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	display: grid;
+	gap: 0.35rem;
+}
+.pending-rule-list li {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 0.6rem;
+	padding: 0.35rem 0.5rem;
+	background: var(--canvas);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+.pending-rule-list li > span {
+	font-family: "Cascadia Mono", Consolas, monospace;
+	font-size: 0.68rem;
+	overflow-wrap: anywhere;
+}
+.pending-rule-list li > button {
+	border: 0;
+	background: none;
+	color: var(--muted);
+	font-size: 0.68rem;
+	cursor: pointer;
+	padding: 0.15rem 0.3rem;
+}
+.pending-rule-list li > button:hover {
+	color: var(--ink);
+}
+.pending-resolutions-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+.toml-preview {
+	display: grid;
+	gap: 0.4rem;
+}
+.toml-preview p {
+	color: #4f5a62;
+}
+
 @media (max-width: 860px) {
 	.app-frame {
 		grid-template-columns: 1fr;

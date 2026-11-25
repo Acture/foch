@@ -276,6 +276,76 @@ pub(crate) struct MergeUnitDetail {
 	#[serde(skip)]
 	pub(crate) contributor_count: usize,
 	pub(crate) notes: Vec<String>,
+	/// This unit's deferred leaf conflicts, bounded per review contract.
+	pub(crate) conflicts: Vec<DesktopUnitConflicts>,
+}
+
+/// One explicit merge resolution the frontend chose, mapping one-to-one onto
+/// a `foch::project::ResolutionEntry`: exactly one selector (`matchPattern`
+/// or `file`) and exactly one action (`preferMod` or `handler`).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopResolutionRule {
+	pub(crate) match_pattern: Option<String>,
+	pub(crate) file: Option<String>,
+	pub(crate) prefer_mod: Option<String>,
+	pub(crate) handler: Option<String>,
+}
+
+/// What a decision option does, mirroring `foch::merge::DecisionAction`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+	tag = "kind",
+	rename_all = "snake_case",
+	rename_all_fields = "camelCase"
+)]
+pub(crate) enum DesktopDecisionAction {
+	PreferMod { mod_id: String },
+	Handler { name: String },
+}
+
+/// One way to resolve a leaf conflict, with the exact `foch.toml` rules that
+/// would persist the choice for the file or its directory.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopDecisionOption {
+	pub(crate) action: DesktopDecisionAction,
+	pub(crate) file_resolution: Option<DesktopResolutionRule>,
+	pub(crate) directory_resolution: Option<DesktopResolutionRule>,
+}
+
+/// One competing version of a conflicted leaf, rendered for review.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopConflictCandidate {
+	pub(crate) mod_id: String,
+	pub(crate) mod_display_name: String,
+	pub(crate) precedence: usize,
+	pub(crate) change_summary: Vec<String>,
+	pub(crate) rendered: String,
+}
+
+/// One leaf conflict: where it sits, why it deferred, and every explicit
+/// resolution the handler contract audits.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopConflictLeaf {
+	pub(crate) conflict_id: String,
+	pub(crate) address: String,
+	pub(crate) kind: Option<String>,
+	pub(crate) reason: Option<String>,
+	pub(crate) vanilla_snippet: Option<String>,
+	pub(crate) candidates: Vec<DesktopConflictCandidate>,
+	pub(crate) options: Vec<DesktopDecisionOption>,
+}
+
+/// A deferred unit's leaf conflicts, flattened from the address tree.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopUnitConflicts {
+	pub(crate) file_path: String,
+	pub(crate) reason: String,
+	pub(crate) leaves: Vec<DesktopConflictLeaf>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -473,6 +543,80 @@ mod tests {
 			serde_json::to_value(DesktopError::new("analysis_busy", "busy")).unwrap(),
 			json!({ "code": "analysis_busy", "message": "busy" })
 		);
+	}
+
+	#[test]
+	fn serializes_bounded_conflict_contract_with_resolution_rules() {
+		let conflicts = vec![DesktopUnitConflicts {
+			file_path: "history/countries/TES - Test.txt".to_string(),
+			reason: "manual conflict".to_string(),
+			leaves: vec![DesktopConflictLeaf {
+				conflict_id: "ab12cd34".to_string(),
+				address: "religion".to_string(),
+				kind: Some("deep_mergeable".to_string()),
+				reason: Some("three mods set religion".to_string()),
+				vanilla_snippet: Some("religion = catholic".to_string()),
+				candidates: vec![DesktopConflictCandidate {
+					mod_id: "ugc_300002".to_string(),
+					mod_display_name: "Conflict B".to_string(),
+					precedence: 2,
+					change_summary: vec!["set religion".to_string()],
+					rendered: "religion = protestant".to_string(),
+				}],
+				options: vec![DesktopDecisionOption {
+					action: DesktopDecisionAction::PreferMod {
+						mod_id: "ugc_300002".to_string(),
+					},
+					file_resolution: Some(DesktopResolutionRule {
+						file: Some("history/countries/TES - Test.txt".to_string()),
+						prefer_mod: Some("ugc_300002".to_string()),
+						..DesktopResolutionRule::default()
+					}),
+					directory_resolution: Some(DesktopResolutionRule {
+						match_pattern: Some("re:^history/countries/[^/]+$".to_string()),
+						prefer_mod: Some("ugc_300002".to_string()),
+						..DesktopResolutionRule::default()
+					}),
+				}],
+			}],
+		}];
+		let detail = MergeUnitDetail {
+			id: "file:history/countries/TES - Test.txt".to_string(),
+			path: "history/countries/TES - Test.txt".to_string(),
+			family: "countries".to_string(),
+			kind: MergeUnitKind::File,
+			disposition: MergeDisposition::NeedsUserChoice,
+			strategy: "structural_merge".to_string(),
+			summary: "deferred".to_string(),
+			output_path: None,
+			output_paths: Vec::new(),
+			contributors: Vec::new(),
+			contributor_count: 0,
+			notes: Vec::new(),
+			conflicts,
+		};
+		let value = serde_json::to_value(detail).unwrap();
+		assert_eq!(
+			value["conflicts"][0]["leaves"][0]["options"][0]["action"],
+			json!({ "kind": "prefer_mod", "modId": "ugc_300002" })
+		);
+		assert_eq!(
+			value["conflicts"][0]["leaves"][0]["options"][0]["fileResolution"],
+			json!({
+				"matchPattern": null,
+				"file": "history/countries/TES - Test.txt",
+				"preferMod": "ugc_300002",
+				"handler": null
+			})
+		);
+		let rule: DesktopResolutionRule = serde_json::from_value(json!({
+			"matchPattern": "history/**",
+			"file": null,
+			"preferMod": "ugc_300002",
+			"handler": null
+		}))
+		.unwrap();
+		assert_eq!(rule.match_pattern.as_deref(), Some("history/**"));
 	}
 
 	#[test]
