@@ -277,6 +277,18 @@ fixture_daily_free_wrap proc
 fixture_daily_free_wrap endp
 public fixture_daily_free_wrap
 
+; Loop B stand-in entry. Sixteen single-byte nops give the host a stealable
+; window; the jump into the C body stays past that window.
+EXTERN fixture_daily_b_body:PROC
+align 16
+fixture_daily_b proc
+	rept 16
+	nop
+	endm
+	jmp fixture_daily_b_body
+fixture_daily_b endp
+public fixture_daily_b
+
 
 
 

@@ -1,0 +1,6 @@
+﻿l_english:
+ foch_bp_companion_info_title:0 "Bilateral Peace"
+ foch_bp_companion_info_desc:0 "Read how two-way peace works with Foch. This decision changes nothing in your campaign."
+ foch_bp_info.1.t:0 "Bilateral Peace"
+ foch_bp_info.1.d:0 "Foch Bilateral Peace keeps Demand (+) and Offer (-) in one treaty. Net warscore is demands minus concessions. A one-sided deal stays vanilla. This note does not change your country, treasury, or provinces. The plugin is io.github.acture.foch-peace for EU4 1.37.5, and it loads only through Foch."
+ foch_bp_info.1.a:0 "Understood"

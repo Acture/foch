@@ -1,0 +1,13 @@
+namespace = foch_bp_info
+
+country_event = {
+	id = foch_bp_info.1
+	title = foch_bp_info.1.t
+	desc = foch_bp_info.1.d
+	picture = DIPLOMACY_eventPicture
+	is_triggered_only = yes
+
+	option = {
+		name = foch_bp_info.1.a
+	}
+}

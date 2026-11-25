@@ -1,0 +1,6 @@
+﻿l_simp_chinese:
+ foch_bp_companion_info_title:0 "双向和约"
+ foch_bp_companion_info_desc:0 "了解双向和约与 Foch 的当前状态。此决议不会改变你的战役。"
+ foch_bp_info.1.t:0 "双向和约"
+ foch_bp_info.1.d:0 "Foch 双向和约会在同一份和约中保留索取（+）与割让（-）。净战争分数等于索取减去让步。只选一侧时仍是原版议和。本说明不会改变国家、国库或省份。插件为 io.github.acture.foch-peace，仅适用于 EU4 1.37.5，并且只通过 Foch 加载。"
+ foch_bp_info.1.a:0 "知道了"

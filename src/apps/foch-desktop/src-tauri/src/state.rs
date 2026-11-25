@@ -1,11 +1,11 @@
 use crate::backend::{
 	AnalysisReview, AnalysisRunError, AnalysisRunner, FochAnalysisRunner, InspectedAnalysisInput,
-	PreparedDesktopInput, bounded_text,
+	PreparedDesktopInput, ReviewCommit, bounded_text,
 };
 use crate::dto::{
 	AnalysisInputMode, AnalysisInputScope, DesktopError, InputInspection, MergeAnalysisStage,
-	MergeAnalysisState, MergeDisposition, MergeUnitCounts, MergeUnitDetail, MergeUnitListItem,
-	MergeUnitPage, StartMergeAnalysisResult,
+	MergeAnalysisState, MergeCommitResult, MergeDisposition, MergeUnitCounts, MergeUnitDetail,
+	MergeUnitListItem, MergeUnitPage, StartMergeAnalysisResult,
 };
 use foch::input::InputRequest;
 use foch::merge::{
@@ -15,6 +15,7 @@ use foch::merge::{
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -63,6 +64,7 @@ struct AnalysisRecord {
 	cancellation: CancellationToken,
 	request: Option<InputRequest>,
 	review: Option<Arc<dyn AnalysisReview>>,
+	committed: bool,
 }
 
 impl DesktopState {
@@ -184,6 +186,7 @@ impl DesktopState {
 				cancellation: CancellationToken::new(),
 				request: Some(pending.request),
 				review: None,
+				committed: false,
 			},
 		);
 		Ok(StartMergeAnalysisResult {
@@ -281,6 +284,60 @@ impl DesktopState {
 			counts: record.counts,
 			message: record.message.clone(),
 		})
+	}
+
+	pub(crate) fn commit_analysis(
+		&self,
+		analysis_id: &str,
+		output_dir: &str,
+	) -> Result<MergeCommitResult, DesktopError> {
+		validate_analysis_id(analysis_id)?;
+		let output_dir = validate_output_dir_text(output_dir)?;
+		let review = {
+			let records = self.records()?;
+			let Some(record) = records.by_id.get(analysis_id) else {
+				return Err(DesktopError::new(
+					"analysis_not_found",
+					"merge analysis was not found",
+				));
+			};
+			if record.committed {
+				return Err(already_exported());
+			}
+			if !matches!(
+				record.state,
+				MergeAnalysisState::Ready | MergeAnalysisState::ReadyWithDeferrals
+			) {
+				return Err(DesktopError::new(
+					"analysis_not_committable",
+					format!(
+						"only a ready analysis can be exported; this analysis is {}",
+						analysis_state_name(record.state)
+					),
+				));
+			}
+			record.review.clone().ok_or_else(|| {
+				DesktopError::internal("completed merge analysis has no review ledger")
+			})?
+		};
+		let committed = match review.commit_empty_target(output_dir.clone()) {
+			Ok(committed) => committed,
+			Err(error) if error.code == "already_committed" => {
+				self.mark_committed(analysis_id);
+				return Err(error);
+			}
+			Err(error) => return Err(error),
+		};
+		self.mark_committed(analysis_id);
+		Ok(commit_result(analysis_id, &output_dir, committed))
+	}
+
+	fn mark_committed(&self, analysis_id: &str) {
+		if let Ok(mut records) = self.records()
+			&& let Some(record) = records.by_id.get_mut(analysis_id)
+		{
+			record.committed = true;
+		}
 	}
 
 	pub(crate) fn list_units(
@@ -528,6 +585,59 @@ fn validate_analysis_id(analysis_id: &str) -> Result<(), DesktopError> {
 	Ok(())
 }
 
+fn validate_output_dir_text(raw: &str) -> Result<PathBuf, DesktopError> {
+	if raw.is_empty() || raw != raw.trim() {
+		return Err(DesktopError::new(
+			"invalid_output_dir",
+			"choose a non-empty trimmed absolute folder; export never edits Steam or source mods",
+		));
+	}
+	let path = PathBuf::from(raw);
+	if !path.is_absolute() {
+		return Err(DesktopError::new(
+			"invalid_output_dir",
+			"the output folder must be an absolute path",
+		));
+	}
+	Ok(path)
+}
+
+fn already_exported() -> DesktopError {
+	DesktopError::new(
+		"already_committed",
+		"this analysis was already exported; start a new analysis before exporting again",
+	)
+}
+
+fn analysis_state_name(state: MergeAnalysisState) -> &'static str {
+	match state {
+		MergeAnalysisState::Queued => "queued",
+		MergeAnalysisState::Running => "running",
+		MergeAnalysisState::Ready => "ready",
+		MergeAnalysisState::ReadyWithDeferrals => "ready_with_deferrals",
+		MergeAnalysisState::Blocked => "blocked",
+		MergeAnalysisState::Cancelled => "cancelled",
+		MergeAnalysisState::Failed => "failed",
+	}
+}
+
+fn commit_result(
+	analysis_id: &str,
+	output_dir: &Path,
+	committed: ReviewCommit,
+) -> MergeCommitResult {
+	MergeCommitResult {
+		analysis_id: analysis_id.to_string(),
+		output_dir: output_dir.display().to_string(),
+		merge_status: committed.merge_status,
+		generated_file_count: committed.generated_file_count,
+		manual_conflict_count: committed.manual_conflict_count,
+		unsupported_input_count: committed.unsupported_input_count,
+		engine_failure_count: committed.engine_failure_count,
+		committed_at_note: committed.note,
+	}
+}
+
 fn validate_page(page: usize, page_size: usize, query: &str) -> Result<(), DesktopError> {
 	if page == 0 {
 		return Err(DesktopError::new("invalid_page", "page must be at least 1"));
@@ -606,6 +716,8 @@ mod tests {
 	struct FakeReview {
 		state: MergeAnalysisState,
 		units: Vec<MergeUnitDetail>,
+		committed: AtomicBool,
+		commit_attempts: AtomicUsize,
 	}
 
 	impl AnalysisReview for FakeReview {
@@ -641,6 +753,39 @@ mod tests {
 
 		fn unit(&self, id: &str) -> Option<MergeUnitDetail> {
 			self.units.iter().find(|unit| unit.id == id).cloned()
+		}
+
+		fn commit_empty_target(&self, out_dir: PathBuf) -> Result<ReviewCommit, DesktopError> {
+			self.commit_attempts.fetch_add(1, Ordering::Relaxed);
+			if self.committed.load(Ordering::Relaxed) {
+				return Err(already_exported());
+			}
+			let occupied = std::fs::read_dir(&out_dir)
+				.ok()
+				.is_some_and(|mut entries| entries.next().is_some());
+			if occupied {
+				return Err(DesktopError::new(
+					"output_not_empty",
+					format!(
+						"choose a new or empty folder; {} already contains files and was left untouched",
+						out_dir.display()
+					),
+				));
+			}
+			self.committed.store(true, Ordering::Relaxed);
+			let partial = self.state == MergeAnalysisState::ReadyWithDeferrals;
+			Ok(ReviewCommit {
+				merge_status: if partial { "partial_success" } else { "ready" }.to_string(),
+				generated_file_count: 4,
+				manual_conflict_count: if partial { 1 } else { 0 },
+				unsupported_input_count: 0,
+				engine_failure_count: 0,
+				note: if partial {
+					"Safe files and definition modules were written. Unsafe units were deferred and were not overwritten.".to_string()
+				} else {
+					"Exported the merged mod into an empty folder. Source mods and the game directory were not modified.".to_string()
+				},
+			})
 		}
 	}
 
@@ -854,7 +999,16 @@ mod tests {
 	}
 
 	fn review(state: MergeAnalysisState, units: Vec<MergeUnitDetail>) -> Arc<dyn AnalysisReview> {
-		Arc::new(FakeReview { state, units })
+		fake_review(state, units)
+	}
+
+	fn fake_review(state: MergeAnalysisState, units: Vec<MergeUnitDetail>) -> Arc<FakeReview> {
+		Arc::new(FakeReview {
+			state,
+			units,
+			committed: AtomicBool::new(false),
+			commit_attempts: AtomicUsize::new(0),
+		})
 	}
 
 	fn unit(id: &str, path: &str, disposition: MergeDisposition) -> MergeUnitDetail {
@@ -1267,5 +1421,116 @@ mod tests {
 			state.summary(&Uuid::new_v4().to_string()).unwrap_err().code,
 			"analysis_not_found"
 		);
+	}
+
+	fn absolute_dir(name: &str) -> PathBuf {
+		std::env::temp_dir().join(name)
+	}
+
+	fn finish_review(state: MergeAnalysisState) -> (DesktopState, String, Arc<FakeReview>) {
+		let review = fake_review(
+			state,
+			vec![unit("safe-unit", "events/foo.txt", MergeDisposition::Safe)],
+		);
+		let desktop = fake_state(vec![FakeOutcome::Complete(review.clone())]);
+		let id = queue_fake_analysis(&desktop);
+		run_fake_analysis(&desktop, &id);
+		(desktop, id, review)
+	}
+
+	#[test]
+	fn exports_a_ready_with_deferrals_analysis_once() {
+		let (desktop, id, review) = finish_review(MergeAnalysisState::ReadyWithDeferrals);
+		let output = absolute_dir("foch-desktop-export-partial");
+		let _ = std::fs::remove_dir_all(&output);
+		let result = desktop
+			.commit_analysis(&id, &output.display().to_string())
+			.expect("partial export");
+		assert_eq!(result.merge_status, "partial_success");
+		assert_eq!(result.generated_file_count, 4);
+		assert_eq!(result.manual_conflict_count, 1);
+		assert!(result.committed_at_note.contains("deferred"));
+		assert!(desktop.list_units(&id, "", None, 1, 10).unwrap().total > 0);
+		let again = desktop
+			.commit_analysis(
+				&id,
+				&absolute_dir("foch-desktop-export-again")
+					.display()
+					.to_string(),
+			)
+			.expect_err("second export");
+		assert_eq!(again.code, "already_committed");
+		assert_eq!(review.commit_attempts.load(Ordering::Relaxed), 1);
+	}
+
+	#[test]
+	fn refuses_blocked_running_and_invalid_output_folders() {
+		let (desktop, id, review) = finish_review(MergeAnalysisState::Blocked);
+		let refused = desktop
+			.commit_analysis(&id, &absolute_dir("unused").display().to_string())
+			.expect_err("blocked");
+		assert_eq!(refused.code, "analysis_not_committable");
+		assert_eq!(review.commit_attempts.load(Ordering::Relaxed), 0);
+		assert!(desktop.unit(&id, "safe-unit").is_ok());
+
+		let queued = fake_state(Vec::new());
+		let queued_id = queue_fake_analysis(&queued);
+		assert_eq!(
+			queued
+				.commit_analysis(&queued_id, &absolute_dir("unused").display().to_string())
+				.expect_err("queued")
+				.code,
+			"analysis_not_committable"
+		);
+
+		let (ready, ready_id, _) = finish_review(MergeAnalysisState::Ready);
+		assert_eq!(
+			ready
+				.commit_analysis(&ready_id, "relative/out")
+				.expect_err("relative")
+				.code,
+			"invalid_output_dir"
+		);
+		assert_eq!(
+			ready
+				.commit_analysis(&ready_id, "  ")
+				.expect_err("blank")
+				.code,
+			"invalid_output_dir"
+		);
+		let padded = format!(" {} ", absolute_dir("padded").display());
+		assert_eq!(
+			ready
+				.commit_analysis(&ready_id, &padded)
+				.expect_err("untrimmed")
+				.code,
+			"invalid_output_dir"
+		);
+	}
+
+	#[test]
+	fn refuses_a_non_empty_output_folder_without_marking_the_analysis_exported() {
+		let (desktop, id, review) = finish_review(MergeAnalysisState::Ready);
+		let occupied = tempfile::tempdir().expect("temp").keep();
+		std::fs::write(occupied.join("keep.txt"), b"leave me\n").expect("seed");
+		let refused = desktop
+			.commit_analysis(&id, &occupied.display().to_string())
+			.expect_err("occupied");
+		assert_eq!(refused.code, "output_not_empty");
+		assert_eq!(
+			std::fs::read(occupied.join("keep.txt")).expect("preserved"),
+			b"leave me\n"
+		);
+		assert!(!review.committed.load(Ordering::Relaxed));
+		let exported = absolute_dir("foch-desktop-export-after-refusal");
+		let _ = std::fs::remove_dir_all(&exported);
+		assert_eq!(
+			desktop
+				.commit_analysis(&id, &exported.display().to_string())
+				.expect("retry")
+				.merge_status,
+			"ready"
+		);
+		let _ = std::fs::remove_dir_all(&occupied);
 	}
 }

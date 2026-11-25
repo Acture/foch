@@ -191,7 +191,7 @@ foch test ./my-mod --out ./test-results --timeout 300
 
 | 命令 | 用途 |
 | --- | --- |
-| `foch` | 打开三标签页中英双语终端交互界面：`[1] 启动与插件`（默认：`Space` 启用/禁用、`i`/`I` HTTPS/国内镜像安装、`c` Schema 配置编辑、`p` 空跑准备、`L` 隔离启动、`s` 刷新状态）、`[2] 合并审阅`（只读播放集与合并分析浏览器，快捷键 `?` 可查看对应 CLI 命令）与 `[3] 网络与设置`（持久化至 `ui-settings.toml`），支持 `1`/`2`/`3` 或 `F1`–`F3` 切换。 |
+| `foch` | 打开三标签页中英双语终端交互界面：`[1] 启动与插件`（默认：`Space` 启用/禁用、`i`/`I` HTTPS/国内镜像安装、`c` Schema 配置编辑、`p` 空跑准备、`L` 隔离启动、`s` 刷新状态）、`[2] 合并审阅`（只读播放集与合并分析浏览器，快捷键 `?` 可查看对应 CLI 命令）与 `[3] 网络与设置`（持久化至 `ui-settings.toml`，`t` 测试下载连通性且不保存设置），支持 `1`/`2`/`3` 或 `F1`–`F3` 切换。 |
 | `foch plugin <subcommand>` | 管理原生 DLL 插件：`list`、`import`、`install`（支持 `--transport auto\|http\|gh`、`--mirror auto\|direct\|cn\|URL`、`--sha256`、`--all`）、`enable`、`disable`、`plan`、`launch`、`status`。 |
 | `foch data <subcommand>` | 构建（`foch data build eu4 --from-game-path ... --game-version auto --install`）、安装与列出 EU4 基础数据快照。 |
 | `foch input inspect [INPUT_SOURCE]` | 显示 Foch 将使用的游戏路径与有序 Mod 输入（不传 `INPUT_SOURCE` 时支持 `--format json`）。 |
@@ -214,7 +214,7 @@ foch test ./my-mod --out ./test-results --timeout 300
 | 软件包 / 目录 | 版本 | 职责 |
 | --- | --- | --- |
 | [`src/apps/foch-cli`](./src/apps/foch-cli/README.md) | `0.0.2` | `foch` 命令行程序、三标签页中英双语终端界面（`启动与插件`、`合并审阅`、`网络与设置`）、交互式冲突审阅器，以及仅用于测试的合并质量验收套件。 |
-| [`src/apps/foch-desktop`](./src/apps/foch-desktop/README.md) | `0.0.2` | 直接链接 `foch` 与 `foch-runtime` 的 Tauri + React 四标签页中英双语桌面应用（`启动与运行`、`插件`、`合并与冲突`、`设置`），提供原生插件管理、Schema 驱动的 `[config.*]` 参数控件、隔离的 EU4 启动以及只读合并分析与分页单元审阅。 |
+| [`src/apps/foch-desktop`](./src/apps/foch-desktop/README.md) | `0.0.2` | 直接链接 `foch` 与 `foch-runtime` 的 Tauri + React 四标签页中英双语桌面应用（`启动与运行`、`插件`、`合并与冲突`、`设置`），提供原生插件管理、Schema 驱动的 `[config.*]` 参数控件、隔离的 EU4 启动、合并审阅与空文件夹导出。 |
 | [`src/packages/foch`](./src/packages/foch) | `0.0.2` | 核心 Rust 库：EU4 播放集与输入解析、内嵌 CWT 规则引擎、跨 Mod 语义索引、确定性合并内核，以及原生 DLL 插件管理（`foch::plugin`）。 |
 | [`src/packages/foch-runtime`](./src/packages/foch-runtime/README.md) | `0.0.2` | 类型化 EU4 `1.37.5` 数据平面、离线 PE 宿主/插件导出表校验器、钩子序言规划器，以及隔离的进程外游戏运行器（`RuntimeLayer`）。 |
 | [`src/packages/foch-runtime-host`](./src/packages/foch-runtime-host/README.md) | `0.0.2` | 独立的 Windows x64 `cdylib`（`foch_runtime_host.dll` / `foch_runtime.dll`），实现 `VERSION.dll` 代理转发与 Foch 原生插件宿主 ABI。 |
@@ -239,8 +239,8 @@ Foch 严格区分“已验证的能力”与“尚未建立的保证”，绝不
    - Foch 已通过全部工作区单元与集成测试（2,367 项测试）以及受限的真实创意工坊合并实测（例如 [`docs/project-status.md`](./docs/project-status.md) 记录的 2-Mod Ricefarmer 无冲突合并与 4-Mod 汉化 + Europa Expanded `partial_success` 合并）。
    - 但固定的 **14 组用例、26 个独立创意工坊项目的完整验收队列**（`cargo acceptance`）尚未在当前版本完成全量通过，静态检查通过也不等同于任意 Mod 列表在游戏内可直接游玩。
 3. **桌面端应用当前范围（`foch-desktop`）：**
-   - `foch-desktop` 现已实现直接链接 `foch` 与 `foch-runtime` 的四标签页中英双语（`简体中文` / `English`）图形界面（默认打开 **`启动与运行`**，以及 **`插件`**、**`合并与冲突`**、**`设置`**），由 15 个 Tauri 后端命令驱动：支持创意工坊配套 Mod `foch.toml`（`[[plugins]]`）自动发现、HTTPS/国内镜像插件安装与本地目录导入、基于清单 Schema 的 `[config.*]` 参数控件、空跑预检与带确认的隔离 EU4 启动、与 CLI/TUI 共用的 `ui-settings.toml` 偏好设置，以及完整的 APP-003 只读合并 **检查 / 分析 / 审阅** 工作流（含缺失个别工坊项时的纯内存 `without_unavailable_mods` 降级分析）。
-   - 桌面端合并提交/导出（commit/export）与持久化交互式 `MergeSession` API 仍属后续计划；此外 `foch-desktop` 尚未随常规 CLI 发行渠道分发二进制包（当前需从源码运行），且原生启动 EU4 需要 Windows x64（`win32-x64`）与 `foch-runtime-host`。
+   - `foch-desktop` 现已实现直接链接 `foch` 与 `foch-runtime` 的四标签页中英双语（`简体中文` / `English`）图形界面（默认打开 **`启动与运行`**，以及 **`插件`**、**`合并与冲突`**、**`设置`**），由 17 个 Tauri 后端命令驱动：支持创意工坊配套 Mod `foch.toml`（`[[plugins]]`）自动发现、HTTPS/国内镜像插件安装与本地目录导入、基于清单 Schema 的 `[config.*]` 参数控件、空跑预检与带确认的隔离 EU4 启动、与 CLI/TUI 共用的 `ui-settings.toml` 偏好设置、下载连通性探测，以及 APP-003 合并 **检查 / 分析 / 审阅** 工作流（含缺失个别工坊项时的纯内存 `without_unavailable_mods` 降级分析）和空文件夹导出。
+   - 导出只把一次已完成的分析写入新建或空文件夹；目标目录非空，或路径与源 Mod / 游戏目录重叠时会被拒绝且不改动原文件。逐单元交互式冲突解决、覆盖非空输出目录，以及持久化交互式 `MergeSession` API 仍属后续计划。此外 `foch-desktop` 尚未随常规 CLI 发行渠道分发二进制包（当前需从源码运行），且原生启动 EU4 需要 Windows x64（`win32-x64`）与 `foch-runtime-host`。
 4. **可选的 Windows 插件宿主（`foch-runtime-host`）与插件验证边界：**
    - 常规 CLI 安装渠道仅安装 `foch`，默认不附带 `foch_runtime.dll`。在 Windows x64 上运行 `foch plugin launch` 或 `foch test --with-plugins` 时，需从源码编译 `foch-runtime-host` 或将可选的 `foch-runtime-host-VERSION-win32-x64.zip` 解压至 `foch.exe` 同目录。
    - 宿主成功加载 DLL 或通过离线 PE 导出表检查，并不自动证明插件在游戏内的玩法逻辑无误；每个插件会独立汇报 `active`、`refused` 或 `failed` 状态。其中 `eu4-dynamic-trade-blackhole` 已通过真实游戏 800 天端到端会话验证，而 `eu4-directed-pacts` 目前默认拒绝常规玩法激活（`reason 201`），仅提供离线协定库与只读战争名册探测夹具。

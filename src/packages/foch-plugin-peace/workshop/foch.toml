@@ -1,0 +1,5 @@
+[[plugins]]
+id = "io.github.acture.foch-peace"
+game = "eu4"
+game_versions = "=1.37.5"
+required = true

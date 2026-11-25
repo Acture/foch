@@ -167,6 +167,39 @@ pub(crate) struct AnalysisInputScope {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct MergeCommitResult {
+	pub(crate) analysis_id: String,
+	pub(crate) output_dir: String,
+	pub(crate) merge_status: String,
+	pub(crate) generated_file_count: u64,
+	pub(crate) manual_conflict_count: u64,
+	pub(crate) unsupported_input_count: u64,
+	pub(crate) engine_failure_count: u64,
+	pub(crate) committed_at_note: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopRouteProbe {
+	pub(crate) label: String,
+	pub(crate) url: String,
+	pub(crate) kind: String,
+	pub(crate) reachable: bool,
+	pub(crate) http_status: Option<u16>,
+	pub(crate) latency_ms: u64,
+	pub(crate) detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopConnectivityReport {
+	pub(crate) transport: String,
+	pub(crate) mirror_policy: String,
+	pub(crate) routes: Vec<DesktopRouteProbe>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MergeAnalysisSummary {
 	pub(crate) analysis_id: String,
 	pub(crate) state: MergeAnalysisState,
@@ -439,6 +472,62 @@ mod tests {
 		assert_eq!(
 			serde_json::to_value(DesktopError::new("analysis_busy", "busy")).unwrap(),
 			json!({ "code": "analysis_busy", "message": "busy" })
+		);
+	}
+
+	#[test]
+	fn serializes_commit_and_connectivity_contracts() {
+		let commit = MergeCommitResult {
+			analysis_id: "6c5c879b-d757-4245-aa22-f40d57fd6738".to_string(),
+			output_dir: "D:/merged".to_string(),
+			merge_status: "partial_success".to_string(),
+			generated_file_count: 4,
+			manual_conflict_count: 1,
+			unsupported_input_count: 0,
+			engine_failure_count: 0,
+			committed_at_note: "deferred".to_string(),
+		};
+		assert_eq!(
+			serde_json::to_value(commit).unwrap(),
+			json!({
+				"analysisId": "6c5c879b-d757-4245-aa22-f40d57fd6738",
+				"outputDir": "D:/merged",
+				"mergeStatus": "partial_success",
+				"generatedFileCount": 4,
+				"manualConflictCount": 1,
+				"unsupportedInputCount": 0,
+				"engineFailureCount": 0,
+				"committedAtNote": "deferred"
+			})
+		);
+		let report = DesktopConnectivityReport {
+			transport: "http".to_string(),
+			mirror_policy: "direct".to_string(),
+			routes: vec![DesktopRouteProbe {
+				label: "direct".to_string(),
+				url: "http://127.0.0.1/direct".to_string(),
+				kind: "direct".to_string(),
+				reachable: true,
+				http_status: Some(200),
+				latency_ms: 12,
+				detail: "HEAD".to_string(),
+			}],
+		};
+		assert_eq!(
+			serde_json::to_value(report).unwrap(),
+			json!({
+				"transport": "http",
+				"mirrorPolicy": "direct",
+				"routes": [{
+					"label": "direct",
+					"url": "http://127.0.0.1/direct",
+					"kind": "direct",
+					"reachable": true,
+					"httpStatus": 200,
+					"latencyMs": 12,
+					"detail": "HEAD"
+				}]
+			})
 		);
 	}
 }

@@ -787,8 +787,9 @@ static void fixture_daily_shift(void *header, unsigned int index) {
 }
 
 /* The 0xdf120 shape: tail-append {record[0]} onto the list at +0x1e40. */
+static int fixture_daily_quiet;
 static void fixture_daily_publish(void *listheader, void *record) {
-	fprintf(stderr, "PUB hdr=%p world=%p cnt=%ld nodes=%ld\n", listheader,
+	if (!fixture_daily_quiet) fprintf(stderr, "PUB hdr=%p world=%p cnt=%ld nodes=%ld\n", listheader,
 		(void *)((char *)listheader - 0x1E40),
 		((struct fixture_da_world *)((char *)listheader - 0x1E40))->count,
 		((struct fixture_da_world *)((char *)listheader - 0x1E40))->node_count); fflush(stderr);
@@ -1852,6 +1853,350 @@ static int fixture_monthly_callback(const char *mode) {
     VirtualFree(native,0,MEM_RELEASE);VirtualFree(hooked,0,MEM_RELEASE);return 0;
 }
 
+/* Loop B shape stand-in. Field order matches struct db_world in country_month.c. */
+struct db_center { uint32_t zeal; uint8_t quiet; uint8_t pad[3]; uint32_t country; };
+struct db_country { uint32_t id; uint32_t tag; uint8_t flag; uint8_t pad[3]; int32_t modifier_acc; int32_t autonomy_acc; };
+struct db_province { uint32_t country; uint32_t id; uint8_t gate; uint8_t pad[3]; };
+struct db_world {
+	struct db_center *centers; int32_t center_count;
+	struct db_country *countries; int32_t country_count;
+	struct db_province *provinces; int32_t province_count;
+	int32_t *fired; int32_t fired_count; int32_t fired_cap;
+	int32_t *same_tag; int32_t same_count; int32_t same_cap;
+	int32_t *spread_id; int32_t *spread_n; int32_t spread_count; int32_t spread_cap;
+	int32_t *messages; int32_t message_count; int32_t message_cap;
+	int32_t message_factor; uint32_t player_tag; uint32_t zeal_step;
+	int32_t singleton; int32_t quiet_count;
+};
+extern void fixture_daily_b(void *world);
+void fixture_daily_b_body(void *world) {
+	HMODULE plugin = GetModuleHandleA("eu4_country_month.dll");
+	typedef void (*Fn)(void *);
+	Fn fn = plugin ? (Fn)GetProcAddress(plugin, "daily_b_serial") : NULL;
+	if (fn) fn(world);
+}
+__declspec(dllexport) void *fixture_daily_b_addr(void) { return (void *)fixture_daily_b; }
+
+static void db_free_world(struct db_world *w) {
+	HeapFree(GetProcessHeap(), 0, w->centers);
+	HeapFree(GetProcessHeap(), 0, w->countries);
+	HeapFree(GetProcessHeap(), 0, w->provinces);
+	HeapFree(GetProcessHeap(), 0, w->fired);
+	HeapFree(GetProcessHeap(), 0, w->same_tag);
+	HeapFree(GetProcessHeap(), 0, w->spread_id);
+	HeapFree(GetProcessHeap(), 0, w->spread_n);
+	HeapFree(GetProcessHeap(), 0, w->messages);
+	memset(w, 0, sizeof(*w));
+}
+
+static int db_make(struct db_world *w, int centers, int countries, int provinces, int factor) {
+	int i;
+	memset(w, 0, sizeof(*w));
+	w->centers = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (size_t)centers * sizeof(*w->centers));
+	w->countries = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (size_t)countries * sizeof(*w->countries));
+	w->provinces = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (size_t)provinces * sizeof(*w->provinces));
+	if (!w->centers || !w->countries || !w->provinces) return 0;
+	w->center_count = centers;
+	w->country_count = countries;
+	w->province_count = provinces;
+	w->message_factor = factor;
+	w->player_tag = 7;
+	w->zeal_step = 100;
+	for (i = 0; i < centers; ++i) {
+		w->centers[i].zeal = (i % 3 == 0) ? (0x186a0u - 50u) : 10u;
+		w->centers[i].country = (uint32_t)(i % countries);
+	}
+	for (i = 0; i < countries; ++i) {
+		w->countries[i].id = (uint32_t)(1000 + i);
+		w->countries[i].tag = (i % 5 == 0) ? 7u : (uint32_t)i;
+	}
+	for (i = 0; i < provinces; ++i) {
+		w->provinces[i].country = (uint32_t)(i % countries);
+		w->provinces[i].id = (i % 7 == 0) ? w->countries[i % countries].id : (uint32_t)(5000 + i);
+		w->provinces[i].gate = (i % 4 == 0) ? 0 : 0x10;
+	}
+	return 1;
+}
+
+static int db_same(const struct db_world *a, const struct db_world *b) {
+	int i;
+	if (a->center_count != b->center_count || a->country_count != b->country_count ||
+		a->province_count != b->province_count || a->fired_count != b->fired_count ||
+		a->same_count != b->same_count || a->spread_count != b->spread_count ||
+		a->message_count != b->message_count || a->quiet_count != b->quiet_count ||
+		a->singleton != b->singleton || a->singleton != 1) return 0;
+	if (a->message_factor > 0 && a->message_count != a->fired_count * a->message_factor) return 0;
+	for (i = 0; i < a->center_count; ++i)
+		if (a->centers[i].zeal != b->centers[i].zeal) return 0;
+	for (i = 0; i < a->country_count; ++i)
+		if (a->countries[i].flag != b->countries[i].flag ||
+			a->countries[i].modifier_acc != b->countries[i].modifier_acc ||
+			a->countries[i].autonomy_acc != b->countries[i].autonomy_acc) return 0;
+	for (i = 0; i < a->fired_count; ++i) if (a->fired[i] != b->fired[i]) return 0;
+	for (i = 0; i < a->same_count; ++i) if (a->same_tag[i] != b->same_tag[i]) return 0;
+	for (i = 0; i < a->spread_count; ++i)
+		if (a->spread_id[i] != b->spread_id[i] || a->spread_n[i] != b->spread_n[i]) return 0;
+	for (i = 0; i < a->message_count; ++i) if (a->messages[i] != b->messages[i]) return 0;
+	return 1;
+}
+
+static int fixture_drive_daily_b(int centers, int countries, int provinces, int factor, const char *proof_name) {
+	HMODULE plugin = GetModuleHandleA("eu4_country_month.dll");
+	typedef void (*SerialFn)(void *);
+	typedef unsigned (*LayoutFn)(void);
+	SerialFn serial = plugin ? (SerialFn)GetProcAddress(plugin, "daily_b_serial") : NULL;
+	LayoutFn layout = plugin ? (LayoutFn)GetProcAddress(plugin, "daily_b_layout") : NULL;
+	struct db_world base, warm, parallel;
+	int match = 0, warm_match = 0, warm_workers = 0;
+	long warm_calls = 0, calls = 0;
+	unsigned long long live = 1, allocs = 0, frees = 0;
+	char text[640], line[96];
+	FILE *metrics;
+	if (!serial || !layout || layout() != ((unsigned)sizeof(struct db_world) ^ 0x0B170000u)) return 120;
+	if (!db_make(&base, centers, countries, provinces, factor) ||
+		!db_make(&warm, centers, countries, provinces, factor) ||
+		!db_make(&parallel, centers, countries, provinces, factor)) return 121;
+	serial(&base);
+	fixture_daily_b(&warm);
+	metrics = fopen("foch-host/daily-b-real.txt", "r");
+	if (metrics) {
+		while (fgets(line, sizeof(line), metrics)) {
+			sscanf(line, "calls=%ld", &warm_calls);
+			sscanf(line, "workers=%d", &warm_workers);
+		}
+		fclose(metrics);
+	}
+	fixture_daily_b(&parallel);
+	match = db_same(&base, &parallel);
+	warm_match = db_same(&base, &warm) && warm_calls == 1 && warm_workers == 1;
+	metrics = fopen("foch-host/daily-b-real.txt", "r");
+	if (metrics) {
+		while (fgets(line, sizeof(line), metrics)) {
+			sscanf(line, "calls=%ld", &calls);
+			sscanf(line, "arena-allocs=%llu", &allocs);
+			sscanf(line, "arena-frees=%llu", &frees);
+			sscanf(line, "arena-live=%llu", &live);
+		}
+		fclose(metrics);
+	}
+	snprintf(text, sizeof(text),
+		"match=%d\nwarm-match=%d\nwarm-calls=%ld\nwarm-workers=%d\ncalls=%ld\n"
+		"fired=%d\nmessages=%d\nspread=%d\nquiet=%d\nlive=%llu\nallocs=%llu\nfrees=%llu\n"
+		"centers=%d\ncountries=%d\nprovinces=%d\nfactor=%d\n",
+		match, warm_match, warm_calls, warm_workers, calls,
+		parallel.fired_count, parallel.message_count, parallel.spread_count, parallel.quiet_count,
+		live, allocs, frees, centers, parallel.country_count, parallel.province_count, factor);
+	da_abi_proof(proof_name, text);
+	db_free_world(&base);
+	db_free_world(&warm);
+	db_free_world(&parallel);
+	return 0;
+}
+
+static int fixture_daily_b_exhaust(void) {
+	HMODULE plugin = GetModuleHandleA("eu4_country_month.dll");
+	typedef void (*SerialFn)(void *);
+	typedef void (*FaultFn)(const char *, unsigned);
+	SerialFn serial = plugin ? (SerialFn)GetProcAddress(plugin, "daily_b_serial") : NULL;
+	FaultFn fault = plugin ? (FaultFn)GetProcAddress(plugin, "fixture_daily_fault") : NULL;
+	struct db_world base, hooked;
+	int match = 0, fallback = 0;
+	char text[256], line[96];
+	FILE *proof;
+	if (!serial || !fault) return 132;
+	if (!db_make(&base, 64, 40, 80, 3) || !db_make(&hooked, 64, 40, 80, 3)) return 133;
+	serial(&base);
+	fault("db-ops", 1);
+	fixture_daily_b(&hooked);
+	fault(NULL, 0);
+	match = db_same(&base, &hooked) && hooked.fired_count == base.fired_count && base.fired_count > 0
+		&& hooked.message_count == base.message_count;
+	proof = fopen("foch-host/daily-b-dispatch.txt", "r");
+	if (proof) {
+		if (fgets(line, sizeof(line), proof) && strstr(line, "preflight-fallback")) fallback = 1;
+		fclose(proof);
+	}
+	snprintf(text, sizeof(text), "match=%d\nfallback=%d\nfired=%d\nmessages=%d\n",
+		match, fallback, hooked.fired_count, hooked.message_count);
+	da_abi_proof("daily-b-exhaust.txt", text);
+	db_free_world(&base);
+	db_free_world(&hooked);
+	return 0;
+}
+
+static int fixture_daily_b_block(void) {
+	HMODULE plugin = GetModuleHandleA("eu4_country_month.dll");
+	typedef int (*BlockFn)(const unsigned char *, size_t);
+	BlockFn block = plugin ? (BlockFn)GetProcAddress(plugin, "daily_b_real_prologue_blocked") : NULL;
+	static const unsigned char prologue[] = {
+		0x48,0x89,0x4C,0x24,0x08,0x55,0x53,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,
+		0x41,0x57,0x48,0x8D,0xAC,0x24,0x28,0xEC,0xFF,0xFF
+	};
+	unsigned char mutated[sizeof prologue];
+	char text[64];
+	int blocked, changed;
+	if (!block) return 134;
+	memcpy(mutated, prologue, sizeof prologue);
+	mutated[0] ^= 0xFF;
+	blocked = block(prologue, sizeof prologue);
+	changed = block(mutated, sizeof mutated);
+	snprintf(text, sizeof(text), "blocked=%d\nchanged=%d\n", blocked, changed);
+	da_abi_proof("daily-b-block.txt", text);
+	return 0;
+}
+
+static int fixture_daily_b_guard(void) {
+	HMODULE plugin = GetModuleHandleA("eu4_country_month.dll");
+	typedef int (*GuardFn)(void);
+	typedef int (*ReserveFn)(unsigned long long);
+	typedef void (*FaultFn)(const char *, unsigned);
+	GuardFn guard = plugin ? (GuardFn)GetProcAddress(plugin, "fixture_daily_log_guard") : NULL;
+	ReserveFn reserve = plugin ? (ReserveFn)GetProcAddress(plugin, "fixture_daily_reserve") : NULL;
+	FaultFn fault = plugin ? (FaultFn)GetProcAddress(plugin, "fixture_daily_fault") : NULL;
+	int fits, grown, refused;
+	char text[128];
+	if (!guard || !reserve || !fault) return 122;
+	fits = reserve(0x1000);
+	grown = reserve(0x800000);
+	fault("arena-grow", 1);
+	refused = reserve(0x800000);
+	fault(NULL, 0);
+	snprintf(text, sizeof(text), "log=%d\nsmall=%d\ngrown=%d\nrefused=%d\n", guard(), fits, grown, refused);
+	da_abi_proof("daily-b-guard.txt", text);
+	return 0;
+}
+
+static int fixture_daily_scale(void) {
+	enum { countries = 1000, factor = 3, count = countries * factor };
+	struct fixture_da_world serial, warm, parallel;
+	struct fixture_da_country *serial_c, *warm_c, *parallel_c;
+	void **serial_slots, **warm_slots, **parallel_slots;
+	unsigned char *baseline;
+	void *snode, *pnode;
+	int i, errors = 0, warm_workers = 0;
+	long warm_calls = 0;
+	unsigned long long live = 1, allocs = 0, frees = 1;
+	char text[512], line[96];
+	FILE *metrics;
+	serial_c = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*serial_c) * count);
+	warm_c = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*warm_c) * count);
+	parallel_c = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*parallel_c) * count);
+	serial_slots = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*serial_slots) * count);
+	warm_slots = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*warm_slots) * count);
+	parallel_slots = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*parallel_slots) * count);
+	if (!serial_c || !warm_c || !parallel_c || !serial_slots || !warm_slots || !parallel_slots) return 123;
+	fixture_daily_quiet = 1;
+	patch_da_calls(fixture_queue);
+	baseline = exec_near((void *)fixture_queue, DAILY_A_QUEUE_BYTES + 0x40);
+	if (!baseline) return 124;
+	memcpy(baseline, fixture_queue, DAILY_A_QUEUE_BYTES);
+	{
+		static const unsigned char head[21] = {
+			0x48,0x8B,0x50,0x08,0x4C,0x8B,0x3C,0xCA,0x4C,0x89,0xBD,0xA8,0x00,0x00,0x00,
+			0x4C,0x89,0xBD,0xF8,0x00,0x00};
+		static const unsigned char epilogue[] = {0x48,0x81,0xC4,0x08,0x02,0,0,0x41,0x5F,0x41,0x5E,0x41,0x5D,0x41,0x5C,0x5F,0x5E,0x5B,0x5D,0xC3};
+		memcpy(baseline + 0x60, head, sizeof(head));
+		memcpy(baseline + 0x14A2, epilogue, sizeof(epilogue));
+		FlushInstructionCache(GetCurrentProcess(), baseline, DAILY_A_QUEUE_BYTES);
+	}
+	patch_da_calls(baseline);
+	for (i = 0; i < count; ++i) {
+		/* The relocated copy's first iteration is the highest index. Keep
+		   that one heavy, matching the 37-country fixture, and leave the
+		   other 2999 entries light so a dropped or reordered message fails. */
+		int heavy = (i == count - 1);
+		serial_c[i].payload = warm_c[i].payload = parallel_c[i].payload = i / factor;
+		if (heavy) {
+			serial_c[i].war_begin = &serial_c[i].payload;
+			serial_c[i].war_end = (char *)&serial_c[i].payload + 16;
+			warm_c[i].war_begin = &warm_c[i].payload;
+			warm_c[i].war_end = (char *)&warm_c[i].payload + 16;
+			parallel_c[i].war_begin = &parallel_c[i].payload;
+			parallel_c[i].war_end = (char *)&parallel_c[i].payload + 16;
+		}
+		serial_slots[i] = &serial_c[i];
+		warm_slots[i] = &warm_c[i];
+		parallel_slots[i] = &parallel_c[i];
+	}
+	memset(&serial, 0, sizeof(serial));
+	memset(&warm, 0, sizeof(warm));
+	memset(&parallel, 0, sizeof(parallel));
+	serial.array = serial_slots; serial.count = count;
+	warm.array = warm_slots; warm.count = count;
+	parallel.array = parallel_slots; parallel.count = count;
+	da_shim(baseline, &serial);
+	da_shim(fixture_queue, &warm);
+	metrics = fopen("foch-host/daily-a-real.txt", "r");
+	if (metrics) {
+		while (fgets(line, sizeof(line), metrics)) {
+			sscanf(line, "calls=%ld", &warm_calls);
+			sscanf(line, "workers=%d", &warm_workers);
+		}
+		fclose(metrics);
+	}
+	da_shim(fixture_queue, &parallel);
+	snode = serial.head;
+	pnode = parallel.head;
+	{
+		int first = -1, kind = 0, serial_payload = -1, parallel_payload = -1;
+		for (i = count - 1; i >= 0; --i) {
+			int heavy = (i == count - 1);
+			if (!snode || !pnode || ((void **)snode)[0] != &serial_c[i] || ((void **)pnode)[0] != &parallel_c[i]) {
+				if (first < 0) { first = i; kind = 1; }
+				++errors;
+				break;
+			}
+			if (serial_c[i].payload != parallel_c[i].payload || parallel_c[i].payload != i / factor + heavy) {
+				if (first < 0) {
+					first = i; kind = 2;
+					serial_payload = serial_c[i].payload;
+					parallel_payload = parallel_c[i].payload;
+				}
+				++errors;
+			}
+			if (parallel_c[i].heavy_marks != heavy || serial_c[i].heavy_marks != heavy) {
+				if (first < 0) { first = i; kind = 3; }
+				++errors;
+			}
+			snode = ((void **)snode)[2];
+			pnode = ((void **)pnode)[2];
+		}
+		if (snode || pnode || serial.count || parallel.count || serial.node_count != count || parallel.node_count != count) {
+			if (first < 0) { first = -2; kind = 4; }
+			++errors;
+		}
+		if (warm_calls != 1 || warm_workers != 1 || warm.node_count != count) ++errors;
+		metrics = fopen("foch-host/daily-a-real.txt", "r");
+		if (metrics) {
+			while (fgets(line, sizeof(line), metrics)) {
+				sscanf(line, "arena-allocs=%llu", &allocs);
+				sscanf(line, "arena-frees=%llu", &frees);
+				sscanf(line, "arena-live=%llu", &live);
+			}
+			fclose(metrics);
+		}
+		snprintf(text, sizeof(text),
+			"errors=%d\nfirst=%d\nkind=%d\nserial-payload=%d\nparallel-payload=%d\n"
+			"serial-nodes=%ld\nparallel-nodes=%ld\nserial-count=%ld\nparallel-count=%ld\n"
+			"entries=%d\ncountries=%d\nfactor=%d\nwarm-calls=%ld\nwarm-workers=%d\n"
+			"live=%llu\nallocs=%llu\nfrees=%llu\nmarks=%d\nbegin=%p\nend=%p\n",
+			errors, first, kind, serial_payload, parallel_payload,
+			serial.node_count, parallel.node_count, serial.count, parallel.count,
+			count, countries, factor, warm_calls, warm_workers, live, allocs, frees,
+			parallel_c[count - 1].heavy_marks, parallel_c[count - 1].war_begin,
+			parallel_c[count - 1].war_end);
+	}
+	da_abi_proof("daily-a-scale.txt", text);
+	VirtualFree(baseline, 0, MEM_RELEASE);
+	HeapFree(GetProcessHeap(), 0, serial_c);
+	HeapFree(GetProcessHeap(), 0, warm_c);
+	HeapFree(GetProcessHeap(), 0, parallel_c);
+	HeapFree(GetProcessHeap(), 0, serial_slots);
+	HeapFree(GetProcessHeap(), 0, warm_slots);
+	HeapFree(GetProcessHeap(), 0, parallel_slots);
+	return 0;
+}
+
 int main(int argc, char **argv) {
 	wchar_t system[MAX_PATH];
 	wchar_t sample[MAX_PATH];
@@ -1949,6 +2294,13 @@ int main(int argc, char **argv) {
 		int header_rc = fixture_daily_header();
 		if (header_rc != 0) return header_rc;
 	}
+	if (argc > 1 && strcmp(argv[1], "dailya-scale") == 0 && fixture_daily_scale() != 0) return 125;
+	if (argc > 1 && strcmp(argv[1], "dailyb") == 0 && fixture_drive_daily_b(48, 40, 60, 3, "daily-b-fixture.txt") != 0) return 126;
+	if (argc > 1 && strcmp(argv[1], "dailyb-scale") == 0 && fixture_drive_daily_b(3000, 2500, 3500, 3, "daily-b-scale.txt") != 0) return 127;
+	if (argc > 1 && strcmp(argv[1], "dailyb-wide") == 0 && fixture_drive_daily_b(4096, 3000, 12001, 2, "daily-b-wide.txt") != 0) return 129;
+	if (argc > 1 && strcmp(argv[1], "dailyb-exhaust") == 0 && fixture_daily_b_exhaust() != 0) return 130;
+	if (argc > 1 && strcmp(argv[1], "dailyb-block") == 0 && fixture_daily_b_block() != 0) return 131;
+	if (argc > 1 && strcmp(argv[1], "dailyb-guard") == 0 && fixture_daily_b_guard() != 0) return 128;
 	if (argc > 1 && strcmp(argv[1], "dailya-compare") == 0) {
 		int compare_rc = fixture_daily_list_comparison();
 		if (compare_rc != 0) return compare_rc;

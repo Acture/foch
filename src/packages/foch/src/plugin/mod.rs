@@ -37,7 +37,9 @@ pub use service::{
 };
 pub use store::{ImportError, Installed, ValidatedPackage, catalog, install, validate};
 pub use transport::{
-	ApiQuery, DownloadRoute, FetchOptions, InstallTransport, MAX_DOWNLOAD_BYTES, MirrorPolicy,
-	ResolvedRelease, TransportConfig, TransportError, detect_china_region, fetch_release_asset,
-	resolve_dynamic_http, select_mirror, select_transport, system_locale_hints, verify_sha256,
+	ApiQuery, ConnectivityProbeOptions, ConnectivityReport, DownloadRoute, FetchOptions,
+	InstallTransport, MAX_DOWNLOAD_BYTES, MirrorPolicy, ProbeRouteKind, ResolvedRelease,
+	RouteProbeOutcome, TransportConfig, TransportError, detect_china_region, fetch_release_asset,
+	probe_connectivity, resolve_dynamic_http, select_mirror, select_transport, system_locale_hints,
+	verify_sha256,
 };

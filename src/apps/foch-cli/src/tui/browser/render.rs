@@ -1364,7 +1364,7 @@ fn draw_settings(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			text::language_value(app.ui_language, app.preferences.language),
 		),
 	];
-	let lines: Vec<Line> = rows
+	let mut lines: Vec<Line> = rows
 		.iter()
 		.enumerate()
 		.map(|(index, (label, value))| {
@@ -1376,6 +1376,28 @@ fn draw_settings(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			Line::from(Span::styled(format!("  {label:<22} {value}"), style))
 		})
 		.collect();
+	if let Some(report) = &app.connectivity {
+		lines.push(Line::from(""));
+		lines.push(Line::from(text::sha256_reminder(app.ui_language)));
+		for route in &report.routes {
+			let style = if route.reachable {
+				Style::new().fg(OK)
+			} else {
+				Style::new().fg(BAD)
+			};
+			lines.push(Line::from(Span::styled(
+				text::route_line(
+					app.ui_language,
+					&route.label,
+					route.reachable,
+					route.http_status,
+					route.latency_ms,
+					&route.detail,
+				),
+				style,
+			)));
+		}
+	}
 	frame.render_widget(
 		Paragraph::new(lines).block(panel(
 			match app.ui_language {
@@ -1466,12 +1488,23 @@ fn footer_keys(app: &App) -> Line<'static> {
 		});
 	}
 	if app.top_tab == TopTab::NetworkSettings {
-		return footer_pairs(&[
-			("↑↓", "setting"),
-			("←→", "change"),
-			("1-3", "tab"),
-			("q", "quit"),
-		]);
+		let test = text::connectivity_action(app.ui_language);
+		return match app.ui_language {
+			foch::plugin::UiLanguage::ZhCn => footer_pairs(&[
+				("↑↓", "设置"),
+				("←→", "更改"),
+				("t", test),
+				("1-3", "页"),
+				("q", "退出"),
+			]),
+			foch::plugin::UiLanguage::En => footer_pairs(&[
+				("↑↓", "setting"),
+				("←→", "change"),
+				("t", test),
+				("1-3", "tab"),
+				("q", "quit"),
+			]),
+		};
 	}
 	let pairs: &[(&str, &str)] = match (&app.phase, app.screen, app.focus) {
 		_ if app.help => &[("any key", "close")],

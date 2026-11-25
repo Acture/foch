@@ -2,15 +2,17 @@
 
 These are user-visible alpha limitations and practical workarounds. They are not release blockers unless a specific workflow depends on them.
 
-## Rustls advisory in 0.0.2
+## Rustls advisories in 0.0.2
 
 The `0.0.2` CLI includes rustls `0.23.40`, affected by the moderate
 [GHSA-2mjx-qc3c-rqvc](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)
 TLS 1.3 handshake-boundary issue. Upstream states that handshake authentication
 remains intact, but messages at the wrong encryption level can be accepted.
 Network operations use this dependency; offline merge processing does not use
-TLS. The fix is in rustls `0.23.45` and is not included in this release.
-The dependency upgrade is tracked separately for a subsequent release.
+TLS. After `0.0.2` was published, `master` bumped `Cargo.lock` to rustls
+`0.23.46`, which fixes this advisory and the rustls `0.23.46` advisories
+(GHSA-c8m5-c952-6cm4, GHSA-w44r-93j7-qv28, GHSA-h2v8-394m-p7vv); installed
+`0.0.2` binaries keep `0.23.40` until the next release.
 
 ## EU4 is the only supported game
 

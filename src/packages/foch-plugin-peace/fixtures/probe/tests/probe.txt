@@ -1,0 +1,70 @@
+# Offline-collectable mixed-peace probe. The monthly tick reads these flags
+# and emits FOCH_RECEIPT/1. Collecting or packaging this file does not launch
+# EU4; a receipt still does not prove native settlement.
+
+test = {
+	name = mixed_receive
+	time = 1444.11.11
+	tag = SWE
+	session = alone
+	effect = {
+		set_country_flag = foch_peace_probe_vs_FRA
+		set_country_flag = foch_peace_probe_demand_3_111
+		set_country_flag = foch_peace_probe_give_0_500
+		set_country_flag = foch_peace_probe_case_receive
+		set_country_flag = foch_peace_probe_request_1
+	}
+	advance_days = 35
+	expect = {
+		has_country_flag = foch_peace_probe_vs_FRA
+		has_country_flag = foch_peace_probe_case_receive
+	}
+	expect_receipt = {
+		plugin = io.github.acture.foch-peace
+		type = mixed_probe
+		status = submitted
+		case = receive
+		request = "1"
+		actor = SWE
+		opponent = FRA
+		active = receive
+		demands = "3:111"
+		concessions = "0:500"
+		merged_terms = "1"
+		native_calls = "0"
+	}
+}
+
+test = {
+	name = mixed_give
+	time = 1444.11.11
+	tag = SWE
+	session = alone
+	effect = {
+		set_country_flag = foch_peace_probe_vs_FRA
+		set_country_flag = foch_peace_probe_demand_3_111
+		set_country_flag = foch_peace_probe_give_0_500
+		set_country_flag = foch_peace_probe_active_give
+		set_country_flag = foch_peace_probe_case_give
+		set_country_flag = foch_peace_probe_request_2
+	}
+	advance_days = 35
+	expect = {
+		has_country_flag = foch_peace_probe_active_give
+		has_country_flag = foch_peace_probe_case_give
+	}
+	expect_receipt = {
+		plugin = io.github.acture.foch-peace
+		type = mixed_probe
+		status = submitted
+		case = give
+		request = "2"
+		actor = SWE
+		opponent = FRA
+		active = give
+		demands = "3:111"
+		concessions = "0:500"
+		merged_terms = "1"
+		native_calls = "0"
+	}
+}

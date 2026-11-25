@@ -176,7 +176,7 @@ surface proves it is needed.
 ## Desktop boundary
 
 The desktop backend exposes bounded DTOs rather than serializing `AnalyzedMerge`
-or raw artifact/report structures. The first analysis surface contains six
+or raw artifact/report structures. The analysis surface contains these
 commands:
 
 - `inspect_input`
@@ -185,10 +185,13 @@ commands:
 - `get_merge_analysis_summary`
 - `list_merge_units`
 - `get_merge_unit`
+- `commit_merge_analysis`
 
 Only one analysis may be queued or running. Terminal analyses are kept in a
 small FIFO, and unit listing is filtered and paginated before crossing IPC.
-There is intentionally no commit/export command in this checkpoint.
+`commit_merge_analysis` exports a `ready` or `ready_with_deferrals` analysis into
+a new or empty directory and returns counts, not artifact bytes. Interactive
+per-unit resolution and replacement of a non-empty directory remain deferred.
 
 ## Cache boundary
 
