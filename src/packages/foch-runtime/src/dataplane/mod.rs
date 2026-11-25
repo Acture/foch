@@ -63,7 +63,7 @@ pub unsafe fn resolve_monthly_tick(
 	// never scan an image this data plane does not describe.
 	let digest = unsafe { host.exe_sha256.as_str() }.unwrap_or("");
 	let Some(profile) = layout::profile_for_build(digest) else {
-		return Err("host executable digest does not match the pinned build");
+		return Err("host executable digest does not match a compiled-in profile");
 	};
 	if !cfg!(all(windows, target_arch = "x86_64")) {
 		return Err("monthly tick resolution requires Windows x64");
@@ -283,7 +283,7 @@ mod tests {
 			// SAFETY: `host` is a complete test table whose callbacks stay live.
 			let error = unsafe { resolve_monthly_tick(&host) }.unwrap_err();
 			assert_eq!(
-				error, "host executable digest does not match the pinned build",
+				error, "host executable digest does not match a compiled-in profile",
 				"{digest}"
 			);
 		}
@@ -340,8 +340,18 @@ mod tests {
 		);
 
 		FIND_MODE.store(2, Ordering::Relaxed);
-		let matched = host(pinned, 0x1400_0000, 0x300_0000);
-		let tick = unsafe { resolve_monthly_tick(&matched) }.unwrap();
-		assert_eq!(tick as usize, 0x1400_0000 + pinned_profile.monthly_tick.rva);
+		// Both embedded 1.37.5 builds resolve through their own registry
+		// entry; the stock Steam profile carries the identical tick RVA.
+		const STOCK: &str = "9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a";
+		let stock_profile = layout::profile_for_build(STOCK).expect("stock Steam profile");
+		for (digest, profile) in [(pinned, pinned_profile), (STOCK, stock_profile)] {
+			let matched = host(digest, 0x1400_0000, 0x300_0000);
+			let tick = unsafe { resolve_monthly_tick(&matched) }.unwrap();
+			assert_eq!(
+				tick as usize,
+				0x1400_0000 + profile.monthly_tick.rva,
+				"{digest}"
+			);
+		}
 	}
 }

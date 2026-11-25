@@ -1,8 +1,8 @@
 use crate::dto::{
-	AnalysisInputMode, DesktopError, DesktopLaunchResult, DesktopLaunchStatus,
-	DesktopPluginInstall, DesktopPluginOverview, DesktopPreferencesView, DesktopSettingsInput,
-	InputInspection, MergeAnalysisSummary, MergeDisposition, MergeUnitDetail, MergeUnitPage,
-	StartMergeAnalysisResult,
+	AnalysisInputMode, DesktopConnectivityReport, DesktopError, DesktopLaunchResult,
+	DesktopLaunchStatus, DesktopPluginInstall, DesktopPluginOverview, DesktopPreferencesView,
+	DesktopSettingsInput, InputInspection, MergeAnalysisSummary, MergeCommitResult,
+	MergeDisposition, MergeUnitDetail, MergeUnitPage, StartMergeAnalysisResult,
 };
 use crate::plugin_backend::{self, PlaysetContext, PluginWorkspace};
 use crate::state::DesktopState;
@@ -84,6 +84,18 @@ pub(crate) fn get_merge_unit(
 	unit_id: String,
 ) -> Result<MergeUnitDetail, DesktopError> {
 	state.unit(&analysis_id, &unit_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn commit_merge_analysis(
+	state: State<'_, DesktopState>,
+	analysis_id: String,
+	output_dir: String,
+) -> Result<MergeCommitResult, DesktopError> {
+	let desktop = state.inner().clone();
+	tauri::async_runtime::spawn_blocking(move || desktop.commit_analysis(&analysis_id, &output_dir))
+		.await
+		.map_err(|error| DesktopError::internal(format!("merge commit failed: {error}")))?
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -175,4 +187,11 @@ pub(crate) async fn save_desktop_settings(
 	settings: DesktopSettingsInput,
 ) -> Result<DesktopPreferencesView, DesktopError> {
 	blocking_plugin(move || plugin_backend::save_production_settings(settings)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn test_download_connectivity(
+	settings: Option<DesktopSettingsInput>,
+) -> Result<DesktopConnectivityReport, DesktopError> {
+	blocking_plugin(move || plugin_backend::test_download_connectivity(settings)).await
 }

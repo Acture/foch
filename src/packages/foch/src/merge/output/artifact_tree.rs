@@ -45,6 +45,44 @@ impl AnalyzedArtifactTree {
 		self.file_count
 	}
 
+	/// Read one frozen file. The tree must still match the digest analysis recorded.
+	pub(crate) fn read_file(&self, relative: &str) -> Result<Vec<u8>, MergeError> {
+		let path = self.file_path(relative)?;
+		self.ensure_digest()?;
+		fs::read(&path).map_err(MergeError::Io)
+	}
+
+	/// Replace one frozen file and record the new digest so commit can still move the tree.
+	pub(crate) fn rewrite_file(&mut self, relative: &str, bytes: &[u8]) -> Result<(), MergeError> {
+		let path = self.file_path(relative)?;
+		if !path.is_file() {
+			return Err(MergeError::Validation {
+				subject: Some(MergeErrorSubject::Host(PathBuf::from(relative))),
+				message: "analyzed artifact file is missing".to_string(),
+			});
+		}
+		self.ensure_digest()?;
+		fs::write(&path, bytes)?;
+		let (digest, file_count) = digest_tree(self.root.path())?;
+		self.digest = digest;
+		self.file_count = file_count;
+		Ok(())
+	}
+
+	fn file_path(&self, relative: &str) -> Result<PathBuf, MergeError> {
+		let path = self.root.path().join(relative);
+		safe_relative_path(self.root.path(), &path)?;
+		Ok(path)
+	}
+
+	fn ensure_digest(&self) -> Result<(), MergeError> {
+		let (observed, _) = digest_tree(self.root.path())?;
+		if observed != self.digest {
+			return Err(MergeError::AnalyzedArtifactChanged);
+		}
+		Ok(())
+	}
+
 	/// Move the frozen files into the empty `destination`, copying an entry
 	/// only when it cannot be renamed there, as across volumes. The tree must
 	/// still hold the analyzed bytes, and so must `destination` afterwards.

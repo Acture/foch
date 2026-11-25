@@ -1,0 +1,10 @@
+# foch's additions to the vendored CWTools EU4 rules, compiled after them.
+
+# common/on_actions/00_on_actions.txt on_battle_lost_unit (line 827) switches
+# from the unit to OIR and fires flavor_oir.2 (line 842). The vendored
+# country-tag effect allows country and province only.
+## scope = unit
+## push_scope = country
+alias[effect:enum[country_tags]] = {
+	alias_name[effect] = alias_match_left[effect]
+}

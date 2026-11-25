@@ -10,7 +10,13 @@ use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 
 use serde::Deserialize;
 
-const EMBEDDED: &[&str] = &[include_str!("../../profiles/eu4/1.37.5-windows-x64.json")];
+const EMBEDDED: &[&str] = &[
+	include_str!("../../profiles/eu4/1.37.5-windows-x64.json"),
+	// The unmodified Steam build of the same 1.37.5 binary differs from the
+	// first digest only in four PE header bytes and the two checksum-patch
+	// bytes, so every offset below is byte-for-byte identical.
+	include_str!("../../profiles/eu4/1.37.5-windows-x64-stock.json"),
+];
 
 const FIELD_PATHS: &[&str] = &[
 	"hooks.monthly_tick",

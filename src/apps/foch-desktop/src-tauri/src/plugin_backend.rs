@@ -5,9 +5,10 @@
 //! before any player process is created.
 
 use crate::dto::{
-	DesktopConfigField, DesktopError, DesktopLaunchResult, DesktopLaunchStatus, DesktopPluginBadge,
-	DesktopPluginEntry, DesktopPluginInstall, DesktopPluginOverview, DesktopPluginPlan,
-	DesktopPluginRuntimeState, DesktopPreferencesView, DesktopSettingsInput,
+	DesktopConfigField, DesktopConnectivityReport, DesktopError, DesktopLaunchResult,
+	DesktopLaunchStatus, DesktopPluginBadge, DesktopPluginEntry, DesktopPluginInstall,
+	DesktopPluginOverview, DesktopPluginPlan, DesktopPluginRuntimeState, DesktopPreferencesView,
+	DesktopRouteProbe, DesktopSettingsInput,
 };
 use foch::plugin::{
 	LanguagePreference, MirrorPreference, TransportPreference, UiLanguage, UserPreferences,
@@ -532,7 +533,37 @@ pub(crate) fn save_settings(
 	path: &Path,
 	input: DesktopSettingsInput,
 ) -> Result<DesktopPreferencesView, DesktopError> {
-	let preferences = UserPreferences {
+	let preferences = preferences_from_input(input)?;
+	preferences
+		.save(path)
+		.map_err(|error| DesktopError::new("settings", error.to_string()))?;
+	Ok(load_settings(path))
+}
+
+pub(crate) fn test_download_connectivity(
+	draft: Option<DesktopSettingsInput>,
+) -> Result<DesktopConnectivityReport, DesktopError> {
+	connectivity_for_settings(draft, foch::plugin::ConnectivityProbeOptions::default())
+}
+
+pub(crate) fn connectivity_for_settings(
+	draft: Option<DesktopSettingsInput>,
+	options: foch::plugin::ConnectivityProbeOptions,
+) -> Result<DesktopConnectivityReport, DesktopError> {
+	let config = match draft {
+		Some(input) => preferences_from_input(input)?.to_transport_config(),
+		None => {
+			let workspace = production_workspace()?;
+			UserPreferences::load_or_default(&workspace.preferences_path).to_transport_config()
+		}
+	};
+	Ok(connectivity_view(&foch::plugin::probe_connectivity(
+		&config, &options,
+	)))
+}
+
+fn preferences_from_input(input: DesktopSettingsInput) -> Result<UserPreferences, DesktopError> {
+	let mut preferences = UserPreferences {
 		transport: parse_transport(&input.transport)?,
 		mirror: parse_mirror(&input.mirror)?,
 		custom_mirrors: input.custom_mirrors,
@@ -540,9 +571,46 @@ pub(crate) fn save_settings(
 		..UserPreferences::default()
 	};
 	preferences
-		.save(path)
-		.map_err(|error| DesktopError::new("settings", error.to_string()))?;
-	Ok(load_settings(path))
+		.validate()
+		.map_err(|error| DesktopError::new("settings", error))?;
+	Ok(preferences)
+}
+
+fn connectivity_view(report: &foch::plugin::ConnectivityReport) -> DesktopConnectivityReport {
+	DesktopConnectivityReport {
+		transport: match report.transport {
+			foch::plugin::InstallTransport::Auto => "auto",
+			foch::plugin::InstallTransport::Http => "http",
+			foch::plugin::InstallTransport::Gh => "gh",
+		}
+		.to_string(),
+		mirror_policy: match &report.mirror_policy {
+			foch::plugin::MirrorPolicy::Auto => "auto".to_string(),
+			foch::plugin::MirrorPolicy::Direct => "direct".to_string(),
+			foch::plugin::MirrorPolicy::China => "cn".to_string(),
+			foch::plugin::MirrorPolicy::Custom(prefixes) => {
+				format!("custom ({})", prefixes.join(", "))
+			}
+		},
+		routes: report
+			.routes
+			.iter()
+			.map(|route| DesktopRouteProbe {
+				label: route.label.clone(),
+				url: route.url.clone(),
+				kind: match route.kind {
+					foch::plugin::ProbeRouteKind::Mirror => "mirror",
+					foch::plugin::ProbeRouteKind::Direct => "direct",
+					foch::plugin::ProbeRouteKind::GhCli => "gh",
+				}
+				.to_string(),
+				reachable: route.reachable,
+				http_status: route.http_status,
+				latency_ms: route.latency_ms,
+				detail: route.detail.clone(),
+			})
+			.collect(),
+	}
 }
 
 fn saved_fetch_options(
@@ -1239,5 +1307,58 @@ max = 4
 			text += name.len() + 1;
 		}
 		bytes
+	}
+
+	#[test]
+	fn draft_connectivity_stays_on_loopback_and_does_not_save_settings() {
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+		let address = listener.local_addr().expect("address");
+		let server = std::thread::spawn(move || {
+			for _ in 0..4 {
+				let Ok((mut stream, _)) = listener.accept() else {
+					break;
+				};
+				let mut buffer = [0_u8; 2048];
+				let _ = std::io::Read::read(&mut stream, &mut buffer);
+				let body = b"ok";
+				let header = format!(
+					"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+					body.len()
+				);
+				let _ = std::io::Write::write_all(&mut stream, header.as_bytes());
+				let _ = std::io::Write::write_all(&mut stream, body);
+			}
+		});
+		let target = format!("http://{address}/direct");
+		let report = connectivity_for_settings(
+			Some(DesktopSettingsInput {
+				transport: "http".to_string(),
+				mirror: "direct".to_string(),
+				custom_mirrors: Vec::new(),
+				language: "en".to_string(),
+			}),
+			foch::plugin::ConnectivityProbeOptions {
+				timeout: std::time::Duration::from_secs(2),
+				region: None,
+				probe_target_url: Some(target.clone()),
+			},
+		)
+		.expect("probe");
+		drop(server);
+		assert_eq!(report.transport, "http");
+		assert_eq!(report.mirror_policy, "direct");
+		assert!(
+			report.routes.iter().all(|route| route.kind != "gh"),
+			"{report:?}"
+		);
+		let direct = report
+			.routes
+			.iter()
+			.find(|route| route.kind == "direct")
+			.expect("direct route");
+		assert!(direct.reachable, "{direct:?}");
+		assert_eq!(direct.http_status, Some(200));
+		assert_eq!(direct.url, target);
+		assert!(direct.latency_ms < 5_000);
 	}
 }

@@ -156,6 +156,30 @@ mod tests {
 	}
 
 	#[test]
+	fn verified_game_accepts_both_embedded_1375_builds() {
+		// The shared gate admits the stock Steam 1.37.5 build next to the
+		// pinned AMDAC one; both come from the compiled-in profile registry.
+		const STOCK_STEAM: &str =
+			"9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a";
+		let memory = Memory;
+		let pinned = foch_runtime::dataplane::pinned_exe_sha256();
+		assert_ne!(pinned, STOCK_STEAM);
+		assert!(VerifiedGame::new(memory, usize::MAX, pinned).is_some());
+		assert!(VerifiedGame::new(memory, usize::MAX, STOCK_STEAM).is_some());
+		// Mutations of the accepted digests are unknown builds, not keys.
+		for digest in [
+			STOCK_STEAM.to_ascii_uppercase(),
+			format!("{STOCK_STEAM}0"),
+			"9".repeat(64),
+		] {
+			assert!(
+				VerifiedGame::new(memory, usize::MAX, &digest).is_none(),
+				"digest {digest:?} must be rejected"
+			);
+		}
+	}
+
+	#[test]
 	fn extreme_addresses_and_ids_never_panic() {
 		let memory = Memory;
 		assert!(VerifiedGame::new(memory, usize::MAX, WRONG_DIGEST).is_none());

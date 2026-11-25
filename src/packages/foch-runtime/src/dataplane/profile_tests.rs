@@ -218,6 +218,83 @@ fn experiment_c_status_matches_the_1375_evidence_split() {
 }
 
 #[test]
+fn experiment_d_stock_steam_digest_shares_the_amdac_layout() {
+	// EJLO9NT's clean Steam `eu4.exe` digest; AMDAC ships a build that
+	// differs only in four PE header bytes and the two checksum bytes.
+	const STOCK: &str = "9ad3efe1af169f40ee577f9dae5debbc87af6fb8b5450fb345ebf110dc4d771a";
+
+	// EMBEDDED[0] stays the pinned default build; EMBEDDED[1] is the stock.
+	assert_eq!(EMBEDDED.len(), 2);
+	assert_eq!(
+		default_profile().exe_sha256,
+		"c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e"
+	);
+	let stock_json: serde_json::Value = serde_json::from_str(EMBEDDED[1]).unwrap();
+	assert_eq!(stock_json["exe_sha256"], serde_json::json!(STOCK));
+
+	assert!(super::super::supports_build(STOCK));
+	let stock = profile_for_build(STOCK).expect("stock Steam 1.37.5 profile");
+	assert!(!std::ptr::eq(stock, default_profile()));
+	assert!(profile_for_build(&STOCK.to_ascii_uppercase()).is_none());
+
+	// The executables are byte-identical where it matters, so every hook,
+	// global, struct field, stride and cap must carry over unchanged.
+	let amdac = default_profile();
+	assert_eq!(stock.version, amdac.version);
+	assert_eq!(stock.platform, amdac.platform);
+	assert_eq!(stock.abi_stl, amdac.abi_stl);
+	assert_eq!(stock.pointer_size, amdac.pointer_size);
+	assert_eq!(stock.monthly_tick.rva, amdac.monthly_tick.rva);
+	assert_eq!(stock.monthly_tick.pattern, amdac.monthly_tick.pattern);
+	assert_eq!(stock.monthly_tick.status, amdac.monthly_tick.status);
+	assert_eq!(
+		stock.campaign_calendar_epoch_hours,
+		amdac.campaign_calendar_epoch_hours
+	);
+	assert_eq!(stock.country_treasury_clamp, amdac.country_treasury_clamp);
+	assert_eq!(stock.war_max_wars, amdac.war_max_wars);
+	assert_eq!(stock.war_unset_hour, amdac.war_unset_hour);
+	assert_eq!(stock.war_unidentified_serial, amdac.war_unidentified_serial);
+	for path in FIELD_PATHS {
+		if *path == "hooks.monthly_tick" {
+			continue; // the rva, pattern and status are compared above
+		}
+		let stock_field = profile_field(stock, path).unwrap();
+		let amdac_field = profile_field(amdac, path).unwrap();
+		assert_eq!(stock_field.offset, amdac_field.offset, "{path}");
+		assert_eq!(stock_field.status, amdac_field.status, "{path}");
+	}
+}
+
+#[test]
+#[cfg(windows)]
+fn experiment_d_binds_each_embedded_build_to_its_own_layout() {
+	// Both 1.37.5 builds resolve to distinct registry entries, and a bound
+	// (exe_base, context) pair keeps reading through its own profile.
+	let stock_json: serde_json::Value = serde_json::from_str(EMBEDDED[1]).unwrap();
+	let stock_digest = stock_json["exe_sha256"].as_str().unwrap();
+	let amdac = default_profile();
+	let stock = profile_for_build(stock_digest).expect("stock Steam 1.37.5 profile");
+	assert_ne!(amdac.exe_sha256, stock.exe_sha256);
+
+	let base = 0x1400_0000_usize;
+	let amdac_context = 0x1_0000_0000_usize;
+	let stock_context = 0x2_0000_0000_usize;
+	let _guard = BindGuard {
+		keys: vec![(base, amdac_context), (base, stock_context)],
+	};
+	bind_game(base, amdac_context, amdac);
+	bind_game(base, stock_context, stock);
+	assert!(std::ptr::eq(bound_profile(base, amdac_context), amdac));
+	assert!(std::ptr::eq(bound_profile(base, stock_context), stock));
+	// An unbound pair falls back to the default (AMDAC) profile.
+	assert!(std::ptr::eq(
+		bound_profile(0x2400_0000, 0x3_0000_0000),
+		amdac
+	));
+}
+
+#[test]
 fn experiment_a_profiles_differ_before_any_memory_access() {
 	let left = default_profile();
 	let right = synthetic_profile();

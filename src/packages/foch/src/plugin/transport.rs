@@ -13,7 +13,7 @@ use std::fmt;
 use std::io::{self, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Hard cap for one downloaded archive. Matches the zip reader’s expanded-byte cap.
 pub const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
@@ -148,6 +148,259 @@ impl Default for TransportConfig {
 			mirror: MirrorPolicy::Auto,
 		}
 	}
+}
+
+const DEFAULT_PROBE_URL: &str = "https://github.com/Acture/foch";
+const PROBE_BODY_LIMIT: u64 = 64 * 1024;
+
+/// Bounds for one connectivity probe. `probe_target_url` replaces the GitHub
+/// page so tests can use a loopback server.
+#[derive(Clone, Debug)]
+pub struct ConnectivityProbeOptions {
+	pub timeout: Duration,
+	pub region: Option<RegionHint>,
+	pub probe_target_url: Option<String>,
+}
+
+impl Default for ConnectivityProbeOptions {
+	fn default() -> Self {
+		Self {
+			timeout: Duration::from_secs(5),
+			region: None,
+			probe_target_url: None,
+		}
+	}
+}
+
+/// Which route a probe result describes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProbeRouteKind {
+	Mirror,
+	Direct,
+	GhCli,
+}
+
+/// One mirror, the direct GitHub URL, or the local `gh` CLI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteProbeOutcome {
+	pub label: String,
+	pub url: String,
+	pub kind: ProbeRouteKind,
+	pub reachable: bool,
+	pub http_status: Option<u16>,
+	pub latency_ms: u64,
+	pub detail: String,
+}
+
+/// What a short probe saw. No response body is retained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectivityReport {
+	pub transport: InstallTransport,
+	pub mirror_policy: MirrorPolicy,
+	pub routes: Vec<RouteProbeOutcome>,
+}
+
+/// Probe the mirror chain and, for `auto` or `gh`, whether `gh --version` runs.
+///
+/// HTTP uses `HEAD` and falls back to a bounded `GET` only when the server
+/// answers 405. Bodies are discarded after at most 64 KiB. Bearer tokens are
+/// never sent.
+pub fn probe_connectivity(
+	config: &TransportConfig,
+	options: &ConnectivityProbeOptions,
+) -> ConnectivityReport {
+	let mut routes = Vec::new();
+	let target = options
+		.probe_target_url
+		.clone()
+		.unwrap_or_else(|| DEFAULT_PROBE_URL.to_string());
+	if url_allowed(&target) {
+		match probe_client(options.timeout) {
+			Ok(client) => routes.extend(probe_http_routes(config, options, &client, &target)),
+			Err(detail) => routes.push(unreachable_route(
+				"http",
+				&target,
+				ProbeRouteKind::Direct,
+				detail,
+			)),
+		}
+	} else {
+		routes.push(unreachable_route(
+			"probe",
+			&target,
+			ProbeRouteKind::Direct,
+			"probe target URL is not allowed".to_string(),
+		));
+	}
+	if matches!(
+		config.transport,
+		InstallTransport::Auto | InstallTransport::Gh
+	) {
+		routes.push(probe_gh());
+	}
+	ConnectivityReport {
+		transport: config.transport,
+		mirror_policy: config.mirror.clone(),
+		routes,
+	}
+}
+
+fn probe_http_routes(
+	config: &TransportConfig,
+	options: &ConnectivityProbeOptions,
+	client: &reqwest::blocking::Client,
+	target: &str,
+) -> Vec<RouteProbeOutcome> {
+	let (locales, tz) = match &options.region {
+		Some(region) => (region.locale_hints.clone(), region.tz_offset_secs),
+		None => (system_locale_hints(), host_tz_offset_secs()),
+	};
+	let chain = match resolve_mirror_chain(&config.mirror, &locales, tz) {
+		Ok(chain) => chain,
+		Err(error) => {
+			return vec![unreachable_route(
+				"mirror",
+				target,
+				ProbeRouteKind::Mirror,
+				error.to_string(),
+			)];
+		}
+	};
+	let mut routes = Vec::new();
+	for prefix in &chain.prefixes {
+		let url = apply_mirror(prefix, target);
+		routes.push(probe_one_url(
+			client,
+			prefix.clone(),
+			url,
+			ProbeRouteKind::Mirror,
+		));
+	}
+	if chain.direct_fallback || chain.prefixes.is_empty() {
+		routes.push(probe_one_url(
+			client,
+			"direct".to_string(),
+			target.to_string(),
+			ProbeRouteKind::Direct,
+		));
+	}
+	routes
+}
+
+fn probe_one_url(
+	client: &reqwest::blocking::Client,
+	label: String,
+	url: String,
+	kind: ProbeRouteKind,
+) -> RouteProbeOutcome {
+	let started = Instant::now();
+	match send_probe(client, &url) {
+		Ok((status, detail)) => RouteProbeOutcome {
+			label,
+			url,
+			kind,
+			reachable: (200..300).contains(&status),
+			http_status: Some(status),
+			latency_ms: elapsed_millis(started),
+			detail: redact_probe_detail(&detail),
+		},
+		Err(detail) => RouteProbeOutcome {
+			label,
+			url,
+			kind,
+			reachable: false,
+			http_status: None,
+			latency_ms: elapsed_millis(started),
+			detail: redact_probe_detail(&detail),
+		},
+	}
+}
+
+fn send_probe(client: &reqwest::blocking::Client, url: &str) -> Result<(u16, String), String> {
+	let response = client.head(url).send().map_err(|error| error.to_string())?;
+	let status = response.status().as_u16();
+	if status == 405 {
+		drop(response);
+		let response = client.get(url).send().map_err(|error| error.to_string())?;
+		return finish_probe(response, "HEAD was not allowed; used a bounded GET");
+	}
+	drop(response);
+	Ok((status, "HEAD".to_string()))
+}
+
+fn finish_probe(
+	response: reqwest::blocking::Response,
+	detail: &str,
+) -> Result<(u16, String), String> {
+	let status = response.status().as_u16();
+	match read_capped(response, PROBE_BODY_LIMIT) {
+		Ok(_) => Ok((status, detail.to_string())),
+		Err(BodyError::TooLarge) => Ok((
+			status,
+			format!("{detail}; response body truncated at {PROBE_BODY_LIMIT} bytes"),
+		)),
+		Err(BodyError::Io(error)) => Err(error.to_string()),
+	}
+}
+
+fn probe_gh() -> RouteProbeOutcome {
+	let started = Instant::now();
+	let reachable = gh_available();
+	RouteProbeOutcome {
+		label: "gh".to_string(),
+		url: "gh --version".to_string(),
+		kind: ProbeRouteKind::GhCli,
+		reachable,
+		http_status: None,
+		latency_ms: elapsed_millis(started),
+		detail: if reachable {
+			"gh --version succeeded".to_string()
+		} else {
+			"gh is not on PATH".to_string()
+		},
+	}
+}
+
+fn probe_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
+	reqwest::blocking::Client::builder()
+		.user_agent(format!("foch/{}", env!("CARGO_PKG_VERSION")))
+		.connect_timeout(timeout)
+		.timeout(timeout)
+		.redirect(redirect_policy())
+		.no_proxy()
+		.build()
+		.map_err(|error| format!("could not build the HTTP client: {error}"))
+}
+
+fn unreachable_route(
+	label: &str,
+	url: &str,
+	kind: ProbeRouteKind,
+	detail: String,
+) -> RouteProbeOutcome {
+	RouteProbeOutcome {
+		label: label.to_string(),
+		url: url.to_string(),
+		kind,
+		reachable: false,
+		http_status: None,
+		latency_ms: 0,
+		detail: redact_probe_detail(&detail),
+	}
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+	u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn redact_probe_detail(detail: &str) -> String {
+	let lower = detail.to_ascii_lowercase();
+	let Some(index) = lower.find("bearer ") else {
+		return detail.to_string();
+	};
+	let mut redacted = detail[..index].to_string();
+	redacted.push_str("Bearer ***");
+	redacted
 }
 
 /// Locale tags the host exposes for language and China-mirror detection.
@@ -1793,6 +2046,208 @@ mod tests {
 	fn host_region_probe_does_not_panic() {
 		let _ = host_locale_hints();
 		let _ = host_tz_offset_secs();
+	}
+
+	fn probe_options(url: String) -> ConnectivityProbeOptions {
+		ConnectivityProbeOptions {
+			timeout: Duration::from_secs(2),
+			region: Some(RegionHint {
+				locale_hints: vec!["en_US".to_string()],
+				tz_offset_secs: Some(0),
+			}),
+			probe_target_url: Some(url),
+		}
+	}
+
+	fn assert_local(report: &ConnectivityReport) {
+		for route in &report.routes {
+			if route.kind == ProbeRouteKind::GhCli {
+				continue;
+			}
+			assert!(
+				route.url.contains("127.0.0.1"),
+				"probe left the loopback: {route:?}"
+			);
+			assert!(
+				!route.detail.to_ascii_lowercase().contains("bearer "),
+				"probe detail leaked a bearer token: {}",
+				route.detail
+			);
+		}
+	}
+
+	#[test]
+	fn probe_reports_a_reachable_mirror_and_direct_route() {
+		let seen = Arc::new(Mutex::new(Vec::new()));
+		let record = Arc::clone(&seen);
+		let server = serve(move |request| {
+			let headers: Vec<(String, String)> = request
+				.headers()
+				.iter()
+				.map(|header| {
+					(
+						header.field.as_str().as_str().to_string(),
+						header.value.as_str().to_string(),
+					)
+				})
+				.collect();
+			record.lock().expect("header lock").push((
+				format!("{:?}", request.method()),
+				request.url().to_string(),
+				headers,
+			));
+			respond(request, 200, b"ok".to_vec());
+		});
+		let report = probe_connectivity(
+			&TransportConfig {
+				transport: InstallTransport::Http,
+				mirror: MirrorPolicy::Custom(vec![format!("{}/mirror/", server.base)]),
+			},
+			&probe_options(format!("{}/direct", server.base)),
+		);
+		drop(server);
+		assert_local(&report);
+		assert!(
+			report
+				.routes
+				.iter()
+				.all(|route| route.kind != ProbeRouteKind::GhCli),
+			"http transport must not probe gh: {report:?}"
+		);
+		let mirror = report
+			.routes
+			.iter()
+			.find(|route| route.kind == ProbeRouteKind::Mirror)
+			.expect("mirror route");
+		let direct = report
+			.routes
+			.iter()
+			.find(|route| route.kind == ProbeRouteKind::Direct)
+			.expect("direct route");
+		assert!(mirror.reachable, "{mirror:?}");
+		assert_eq!(mirror.http_status, Some(200));
+		assert!(mirror.latency_ms < 5_000, "{mirror:?}");
+		assert!(mirror.url.contains("/mirror/"), "{mirror:?}");
+		assert!(direct.reachable, "{direct:?}");
+		assert_eq!(direct.http_status, Some(200));
+		assert!(direct.latency_ms < 5_000, "{direct:?}");
+		assert!(direct.url.ends_with("/direct"), "{direct:?}");
+		let recorded = seen.lock().expect("header lock");
+		assert!(
+			recorded
+				.iter()
+				.all(|(method, _, _)| method.contains("Head")),
+			"{recorded:?}"
+		);
+		assert!(recorded.iter().all(|(_, _, headers)| {
+			headers
+				.iter()
+				.all(|(name, _)| !name.eq_ignore_ascii_case("authorization"))
+		}));
+	}
+
+	#[test]
+	fn probe_reports_a_failing_mirror_and_a_reachable_direct_route() {
+		let server = serve(|request| {
+			let status = if request.url().contains("/mirror/") {
+				502
+			} else {
+				200
+			};
+			respond(request, status, b"ok".to_vec());
+		});
+		let report = probe_connectivity(
+			&TransportConfig {
+				transport: InstallTransport::Http,
+				mirror: MirrorPolicy::Custom(vec![format!("{}/mirror/", server.base)]),
+			},
+			&probe_options(format!("{}/direct", server.base)),
+		);
+		drop(server);
+		assert_local(&report);
+		let mirror = report
+			.routes
+			.iter()
+			.find(|route| route.kind == ProbeRouteKind::Mirror)
+			.expect("mirror route");
+		let direct = report
+			.routes
+			.iter()
+			.find(|route| route.kind == ProbeRouteKind::Direct)
+			.expect("direct route");
+		assert!(!mirror.reachable, "{mirror:?}");
+		assert_eq!(mirror.http_status, Some(502));
+		assert!(direct.reachable, "{direct:?}");
+		assert_eq!(direct.http_status, Some(200));
+	}
+
+	#[test]
+	fn probe_falls_back_to_a_bounded_get_when_head_is_rejected() {
+		let server = serve(|request| {
+			let method = format!("{:?}", request.method());
+			if method.contains("Head") {
+				respond(request, 405, Vec::new());
+			} else {
+				respond(request, 200, b"ok".to_vec());
+			}
+		});
+		let report = probe_connectivity(
+			&TransportConfig {
+				transport: InstallTransport::Http,
+				mirror: MirrorPolicy::Direct,
+			},
+			&probe_options(format!("{}/direct", server.base)),
+		);
+		drop(server);
+		assert_local(&report);
+		let direct = report
+			.routes
+			.iter()
+			.find(|route| route.kind == ProbeRouteKind::Direct)
+			.expect("direct route");
+		assert!(direct.reachable, "{direct:?}");
+		assert_eq!(direct.http_status, Some(200));
+		assert!(direct.detail.contains("bounded GET"), "{direct:?}");
+	}
+
+	#[test]
+	fn http_transport_skips_gh_and_gh_transport_reports_local_availability() {
+		let server = serve(|request| respond(request, 204, Vec::new()));
+		let http = probe_connectivity(
+			&TransportConfig {
+				transport: InstallTransport::Http,
+				mirror: MirrorPolicy::Direct,
+			},
+			&probe_options(format!("{}/direct", server.base)),
+		);
+		assert!(
+			http.routes
+				.iter()
+				.all(|route| route.kind != ProbeRouteKind::GhCli)
+		);
+		let gh = probe_connectivity(
+			&TransportConfig {
+				transport: InstallTransport::Gh,
+				mirror: MirrorPolicy::Direct,
+			},
+			&probe_options(format!("{}/direct", server.base)),
+		);
+		drop(server);
+		assert_local(&http);
+		assert_local(&gh);
+		let route = gh
+			.routes
+			.iter()
+			.find(|route| route.kind == ProbeRouteKind::GhCli)
+			.expect("gh route");
+		assert_eq!(route.url, "gh --version");
+		assert_eq!(route.label, "gh");
+		assert_eq!(route.http_status, None);
+		assert_eq!(route.reachable, route.detail == "gh --version succeeded");
+		assert!(
+			route.detail == "gh --version succeeded" || route.detail == "gh is not on PATH",
+			"{route:?}"
+		);
 	}
 
 	struct TestServer {
