@@ -1,0 +1,112 @@
+[h1]Tribute Adjust — Live 0%–200% Subject & Tributary Income Control[/h1]
+
+[quote]
+[b]"Want your colonial nations, vassals, or tributaries to pay 150%—or give a loyal march a 50% tax break—without editing game files or restarting?"[/b]
+[/quote]
+
+Whether you are reigning over a continent-spanning [b]HRE vassal swarm[/b], managing the [b]Celestial Empire of Ming's tributary sphere[/b], or building a [b]tall trade & subject empire[/b], EU4's vanilla tribute math can feel rigid. Stack too many late-game modifiers and your subjects spiral into bankruptcy; leave them at default and rich subjects barely contribute to the imperial treasury.
+
+[b]Tribute Adjust[/b] ([code]dev.foch.eu4-tribute-adjust[/code]) puts a live, precision fiscal dial directly in your hands. Scale the [b]final monthly vassal income share[/b] and [b]annual tributary payouts[/b] anywhere from [b]0% (complete tax holiday)[/b] to [b]200% (double extraction)[/b] in real time—without editing [code]vassal_income[/code] or [code]tribute_income_modifier[/code] script files and without restarting your campaign!
+
+[hr][/hr]
+
+[h2]Why You'll Love It (Core Features)[/h2]
+
+[list]
+[*][b]Live Control Panel ([code]Ctrl+Shift+T[/code] / [code]tribute-panel[/code]):[/b]
+Adjust tribute scaling from [b]0% to 200%[/b] on the fly with clean graphical sliders. Changes save atomically to [code]tribute-config.json[/code] and hot-reload inside EU4 within [b]250 ms[/b]—zero game restarts required.
+
+[*][b]3-Tier Precision Control (Replaces, Never Stacks Unpredictably!):[/b]
+Fine-tune your empire's tax code across three clear priority tiers. Higher-priority rules [b]cleanly replace[/b] lower ones instead of multiplying together into runaway numbers:
+  [list]
+  [*][b]Tier 1 — Individual Country Tag Overrides ([code]tag_overrides[/code] / [code]tag_percent[/code]):[/b] Target specific subjects by 3-letter tag (e.g., [code]{"FRA": 150, "MUG": 50}[/code] to squeeze an unruly France at 150% while granting loyal Mughals or Korea a 50% subsidy rate).
+  [*][b]Tier 2 — Per-Subject-Kind ([code]vassal_percent[/code] / [code]kind_percent[/code]):[/b] Set distinct rates by subject type ([code]vassal[/code], [code]tributary[/code], [code]tributary_state[/code], [code]eyalet[/code], [code]core_eyalet[/code], [code]daimyo_vassal[/code], or custom overhaul types), automatically following [code]copy_from[/code] parent inheritance down to [code]default[/code].
+  [*][b]Tier 3 — Global Baseline ([code]global_percent[/code]):[/b] Your empire-wide default percentage ([code]0[/code]–[code]200%[/code], default [code]100%[/code]) when no tag or kind rule matches.
+  [/list]
+
+[*][b]Instant Master Switch ([code]enabled[/code]):[/b]
+Want to compare your custom tax rates against vanilla numbers? Flip [code]enabled = false[/code] in the panel to drop every subject back to [b]100% vanilla passthrough[/b] immediately, then toggle it back on whenever you are ready.
+
+[*][b]Final-Payout Scaling (No Modifier Bloat):[/b]
+Scales the final tribute payout and monthly vassal transfer directly rather than mutating script modifiers. Keep your subjects solvent in 1750 or fund your mega-projects when you need ducats, monarch points, and manpower most.
+[/list]
+
+[hr][/hr]
+
+[h2]Built for Major Overhaul Mods[/h2]
+
+Unlike static script tweaks that hardcode vanilla's default subject list, Tribute Adjust dynamically inspects your active playset's [code]common/subject_types/*.txt[/code] files:
+[list]
+[*][b]Dynamic Subject Discovery:[/b] Automatically follows [code]copy_from[/code] inheritance chains and respects mod [code]descriptor.mod[/code] [code]replace_path[/code] rules in your exact playset load order.
+[*][b]Ready for Total Conversions:[/b] Built with [b]Anbennar[/b], [b]Ante Bellum[/b], [b]Europa Expanded[/b], and custom subject overhauls in mind—supporting up to [b]32,767 country tag slots[/b] and displaying the full indented [code]copy_from[/code] subject-type tree right inside [code]tribute-panel[/code].
+[/list]
+
+[hr][/hr]
+
+[h2]Visual Showcase[/h2]
+
+[list]
+[*][b][TODO: Replace with live screenshots][/b] — [i]Live [code]Ctrl+Shift+T[/code] Slider Panel Overlay ([code]tribute-panel[/code]) showing the Global 0–200% slider, Master Switch checkbox, and real-time effective percentages.[/i]
+[*][b][TODO: Replace with live screenshots][/b] — [i]Subject Economy Ledger & Income Screen Before/After Comparison (Vanilla 100% vs. 150% High Extraction vs. 50% Loyal March Tax Break).[/i]
+[*][b][TODO: Replace with live screenshots][/b] — [i]Anbennar Custom Subject Types dynamically discovered and indented by [code]copy_from[/code] inheritance inside the slider panel.[/i]
+[/list]
+
+[hr][/hr]
+
+[h2]Simple 3-Step Installation via Foch[/h2]
+
+[b]Why is Foch required?[/b]
+Standard EU4 Clausewitz script files cannot scale individual subject payouts dynamically at runtime or open a live 0-200% slider panel without reloading the game. [b]Foch[/b] runs Tribute Adjust ([code]dev.foch.eu4-tribute-adjust[/code]) in an [b]isolated runtime layer[/b]. It [b]never alters or dirties your Steam EU4 installation files[/b] and can be toggled on or off in one command. This Steam Workshop item is the companion mod: its decision only opens a note. The native plugin does the scaling.
+
+[b]Step 1 — Install Foch over HTTPS (China-mirror friendly, no gh CLI)[/b]
+Install the [code]foch[/code] program over HTTPS. Cargo and uv honor a China mirror (Tsinghua TUNA, Aliyun, rsproxy, or a ByteDance PyPI/crates mirror) and do not need the GitHub [code]gh[/code] CLI:
+[code]
+# Option A: Cargo. Point crates.io at a mirror first if you need one.
+cargo install foch-cli --locked
+
+# Option B: uv. A PyPI mirror in your environment is used automatically.
+uv tool install foch
+[/code]
+You can also download the Windows x64 release zip over HTTPS from GitHub Releases, or from a mirror of that zip, and put [code]foch.exe[/code] on PATH.
+
+[b]Step 2 — Package the plugin, then import it[/b]
+Subscribe to this Workshop companion. From a checkout, one command writes a fresh package directory and refuses an existing directory or symlink. The package contains [code]foch-plugin.toml[/code], [code]foch_eu4_tribute.dll[/code], [code]signatures/signatures-1.37.5.toml[/code], [code]LICENSE[/code], SHA-256 checksums, and [code]tribute-panel.exe[/code] when that tool has been built. [code]foch plugin import[/code] reads that directory locally and does not call [code]gh[/code]:
+[code]
+python mods/tribute-adjust/tools/package.py target/tribute-adjust-pkg
+foch plugin import target/tribute-adjust-pkg
+foch plugin enable dev.foch.eu4-tribute-adjust --playset default
+[/code]
+[i][code]foch plugin install[/code] is Foch's command for a published plugin release. In this Foch build that download still runs [code]gh release download[/code], so it needs the GitHub CLI and is not the mirror-friendly path. Tribute Adjust does not use that command: install Foch over HTTPS, package this plugin, then [code]foch plugin import[/code].[/i]
+
+[b]Step 3 — Launch EU4 via Foch and press Ctrl+Shift+T[/b]
+Start the game through Foch's isolated runtime launcher and open the slider panel anytime:
+[code]
+foch plugin launch --playset default
+[/code]
+You can also configure baseline values in [code]foch-plugin.toml[/code] ([code]enabled[/code], [code]global_percent[/code], [code]vassal_percent[/code], [code]tag_overrides[/code]) or edit [code]tribute-config.json[/code] with the [code]tribute-panel[/code] window while playing.
+
+[hr][/hr]
+
+[h2]Compatibility, Current Status & Honest FAQ[/h2]
+
+[b]Q: Which EU4 version is supported? Will a game update break my save?[/b]
+[b]A:[/b] Tribute Adjust strictly targets [b]EU4 [code]1.37.5[/code] (Windows x64 Steam build)[/b]. On startup, the plugin verifies the exact executable signature of [code]eu4.exe[/code]. If Paradox releases a new patch or you launch an unsupported binary, the plugin cleanly [b]refuses to load ([code]REFUSED[/code])[/b] and leaves the game untouched—it will [b]never[/b] blindly hook, crash to desktop, or corrupt your save files.
+
+[b]Q: What is already verified vs. still pending live end-to-end verification before the 1.0 release?[/b]
+[b]A:[/b] We believe in 100% transparency with players:
+[list]
+[*][b]Verified Today:[/b] Exact [code]1.37.5[/code] executable signature matching and safe host activation/refusal; baseline tributary scaling (verified in live Ming 1444 sessions across 100%, 50%, and 0% rates); baseline vassal income share scaling (verified in live England/Wales sessions); offline playset [code]common/subject_types[/code] & [code]copy_from[/code] tree discovery; and [code]tribute-panel[/code] slider GUI atomic hot-reloading (250 ms debounce).
+[*][b]Pending Full Live Verification Before 1.0:[/b]
+  [list]
+  [*]Live in-game regression of province-based subject Tag resolution on the monthly vassal income path is passed in synthetic memory tests and queued for final pre-1.0 live regression (if a subject tag is not resolved on that path, it safely falls back to the [code]"vassal"[/code] / global percentage without crashing).
+  [*]In-game runtime hooks currently query the [code]"tributary"[/code] and [code]"vassal"[/code] channels directly while playset-root handoff to the in-process hook is finalized; to tune specific custom sub-kinds ([code]eyalet[/code], [code]core_eyalet[/code], [code]appanage[/code], etc.) during live play right now, use [b]Per-Tag Overrides ([code]tag_overrides[/code] / [code]tag_percent[/code])[/b].
+  [*]If you launch the game with the vassal baseline set to [code]0%[/code] and no tag overrides configured, raising the rate above [code]0%[/code] mid-session requires a game restart.
+  [/list]
+[/list]
+
+[b]Q: Does this work in Ironman or Multiplayer?[/b]
+[b]A:[/b]
+[list]
+[*][b]Ironman & Achievements:[/b] Because EU4 is launched with a native runtime plugin via Foch, [b]Steam Ironman achievements are disabled[/b] while the plugin is active.
+[*][b]Multiplayer:[/b] Supported when [b]all players in the lobby[/b] launch EU4 via Foch with the [b]exact same [code]tribute-config.json[/code] / percentage settings[/b]. Mismatched tribute multipliers between host and clients will cause an economy OOS (Out of Sync).
+[/list]

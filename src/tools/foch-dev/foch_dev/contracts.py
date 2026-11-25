@@ -52,6 +52,8 @@ INSTALLED_CRATE: str = "foch-cli"
 EXPECTED_BINARIES: tuple[tuple[str, str], ...] = (
 	(INSTALLED_CRATE, "foch"),
 	("foch-desktop", "foch-desktop"),
+	# Unpublished plugin panel. `cargo install foch-cli` does not build it.
+	("foch-eu4-tribute", "tribute-panel"),
 )
 EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 	(INSTALLED_CRATE, "parse_stats", ("dev-tools",)),

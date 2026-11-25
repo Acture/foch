@@ -1,0 +1,112 @@
+[h1]Tribute Adjust（调整属国上供）— 0%–200% 属国与朝贡收入实时滑块调节[/h1]
+
+[quote]
+[b]"想让附庸/朝贡国多交点岁币，或者给忠诚的边区减免一半上供？按 Ctrl+Shift+T 随时拉滑块调整，零重启、不改本体！"[/b]
+[/quote]
+
+无论你是在统御横跨欧洲的[b]神罗附庸海[/b]、经营[b]大明万国来朝的朝贡体系[/b]，还是打造[b]高开发度宗主+精锐属国[/b]的种田帝国，EU4 原版僵硬的上供比例往往难以兼顾所有阶段：中后期修正叠高后属国容易财政破产、丧失造兵能力；而维持默认比例时，富得流油的殖民领与大附庸又难以替宗主国分担帝国开支。
+
+[b]Tribute Adjust[/b]（插件 ID：[code]dev.foch.eu4-tribute-adjust[/code]）将一把精准的帝国财政调节滑块直接交到你手中！在 [b]0%（完全免税扶持）[/b] 到 [b]200%（双倍强力汲取）[/b] 之间实时缩放每个属国的[b]最终附庸月度上供分成[/b]与[b]年度朝贡收益[/b]——无需手动修改 [code]vassal_income[/code] 或 [code]tribute_income_modifier[/code] 脚本文件，更无需退出重启游戏！
+
+[hr][/hr]
+
+[h2]核心亮点（专为欧陆玩家打造）[/h2]
+
+[list]
+[*][b]实时滑块控制面板（[code]Ctrl+Shift+T[/code] / [code]tribute-panel[/code]）：[/b]
+随时通过简洁的原生图形滑块在 [b]0% 至 200%[/b] 之间自由拉动上供比例。点击保存后原子写入 [code]tribute-config.json[/code]，游戏内最快在 [b]250 毫秒[/b]内自动完成热重载，立即生效，零重启等待！
+
+[*][b]三层精准优先级（高优先级直接替换，绝不乱叠乘算！）：[/b]
+支持从全局到单一国家的精细化税率定制。高优先级规则命中后[b]直接替换[/b]低优先级数值，绝不会像脚本修正那样层层相乘导致数值崩坏：
+  [list]
+  [*][b]第一级 — 指定国家 Tag 独立覆盖（[code]tag_overrides[/code] / [code]tag_percent[/code]）：[/b] 按三位国家 Tag 单独定价（例如设置 [code]{"FRA": 150, "MUG": 50}[/code]，让刺头法兰西按 150% 上缴岁币，同时给忠心耿耿的莫卧儿或朝鲜 50% 减税优待）。
+  [*][b]第二级 — 按属国类型配置（[code]vassal_percent[/code] / [code]kind_percent[/code]）：[/b] 按 [code]common/subject_types[/code] 中的属国类型（如 [code]vassal[/code]、[code]tributary[/code]、[code]tributary_state[/code]、[code]eyalet[/code]、[code]core_eyalet[/code]、[code]daimyo_vassal[/code] 或大修自定义类型）设置系数，未显式配置的子类型会自动沿 [code]copy_from[/code] 继承链向上查找直至 [code]default[/code]。
+  [*][b]第三级 — 全局基准比例（[code]global_percent[/code]）：[/b] 未命中特定 Tag 与属国类型时的帝国全局默认上供比例（范围 [code]0[/code]–[code]200%[/code]，默认 [code]100%[/code]）。
+  [/list]
+
+[*][b]一键总开关（[code]enabled[/code]）：[/b]
+随时在面板中勾选或取消 [code]Enabled[/code] 总开关。当设为 [code]false[/code] 时，所有属国立刻恢复为 [b]100% 原版直通逻辑[/b]，方便随时对比原版与自定义税率下的国库收益。
+
+[*][b]直接缩放最终结算金额（告别后期修正膨胀）：[/b]
+插件不篡改脚本修正词条本身，而是对朝贡结算（金币、行政/外交/军事点数、人力）与附庸月度收入分成进行精准缩放，从根源上解决中后期属国破产死循环或上供失衡问题。
+[/list]
+
+[hr][/hr]
+
+[h2]原生支持大型大修 Mod（Anbennar / Ante Bellum / 欧陆扩展）[/h2]
+
+告别只认原版固定属国列表的传统脚本补丁！Tribute Adjust 会动态扫描并解析你当前启用播放集（Playset）中的 [code]common/subject_types/*.txt[/code]：
+[list]
+[*][b]动态识别自定义属国与继承树：[/b] 完全遵循 EU4 加载顺序，自动解析 [code]copy_from[/code] 父子继承链与 Mod [code]descriptor.mod[/code] 中的 [code]replace_path[/code] 覆盖规则。
+[*][b]大型大修无缝兼容：[/b] 专为 [b]Anbennar（安本纳尔）[/b]、[b]Ante Bellum（战前风云）[/b]、[b]Europa Expanded（欧陆扩展）[/b] 等大型大修 Mod 设计，支持高达 [b]32,767 个国家 Tag 槽位[/b]，并在 [code]tribute-panel[/code] 面板中按继承深度清晰缩进展示所有自定义属国类型！
+[/list]
+
+[hr][/hr]
+
+[h2]视觉预览与实机展示[/h2]
+
+[list]
+[*][b][TODO: Replace with live screenshots][/b] — [i][code]Ctrl+Shift+T[/code] 实时滑块控制面板（[code]tribute-panel[/code]）界面展示：包含 Global 0–200% 滑块、Enabled 总开关与继承链实时生效比例。[/i]
+[*][b][TODO: Replace with live screenshots][/b] — [i]属国经济账本与月度收入界面前后对比（原版 100% vs. 150% 强力汲取 vs. 50% 边区减税扶持）。[/i]
+[*][b][TODO: Replace with live screenshots][/b] — [i]Anbennar（安本纳尔）等大修 Mod 自定义属国类型在面板中按 [code]copy_from[/code] 树状层级动态展示。[/i]
+[/list]
+
+[hr][/hr]
+
+[h2]通过 Foch 三步极速安装[/h2]
+
+[b]为什么需要配合 Foch 使用？[/b]
+纯 EU4 文本脚本无法在不重启游戏的情况下提供 0-200% 实时滑块热更新，也无法直接按每个属国缩放最终结算金额。[b]Foch[/b] 在[b]完全隔离的独立运行时层[/b]中加载 Tribute Adjust（[code]dev.foch.eu4-tribute-adjust[/code]），[b]绝不修改或污染 Steam 游戏本体目录文件[/b]，一行命令即可随时开启或关闭。本创意工坊物品是配套组件：其中的决议只弹出说明，数值调整由原生插件完成。
+
+[b]第一步 — 通过 HTTPS 安装 Foch（国内镜像友好，不需要 gh）[/b]
+安装 [code]foch[/code] 程序本身走 HTTPS。Cargo 与 uv 都会使用你配置的国内镜像（清华 TUNA、阿里云、rsproxy、字节跳动 PyPI / crates 镜像），不需要 GitHub 的 [code]gh[/code] 命令行：
+[code]
+# 方式 A：Cargo（如需国内源，先把 crates.io 指到镜像）
+cargo install foch-cli --locked
+
+# 方式 B：uv（自动使用环境里的 PyPI 镜像，推荐）
+uv tool install foch
+[/code]
+也可以用 HTTPS 从 GitHub Releases 下载 Windows x64 压缩包，或下载该压缩包的镜像，再把 [code]foch.exe[/code] 加入 PATH。
+
+[b]第二步 — 一条命令打包，再导入插件[/b]
+先订阅本工坊配套物品。在插件源码目录执行打包器：它会写入一个全新目录，并拒绝已存在的目录或符号链接。包内包含 [code]foch-plugin.toml[/code]、[code]foch_eu4_tribute.dll[/code]、[code]signatures/signatures-1.37.5.toml[/code]、[code]LICENSE[/code]、SHA-256 校验和，以及已编译时的 [code]tribute-panel.exe[/code]。[code]foch plugin import[/code] 只读取本地目录，不会调用 [code]gh[/code]：
+[code]
+python mods/tribute-adjust/tools/package.py target/tribute-adjust-pkg
+foch plugin import target/tribute-adjust-pkg
+foch plugin enable dev.foch.eu4-tribute-adjust --playset default
+[/code]
+[i][code]foch plugin install[/code] 用来安装已发布的插件 release。当前这个 Foch 版本下载 release 时仍会执行 [code]gh release download[/code]，因此需要 GitHub CLI，也不是国内镜像路径。本工坊物品不走这条命令：先用 HTTPS 装好 Foch，再用打包器加 [code]foch plugin import[/code]。[/i]
+
+[b]第三步 — 通过 Foch 启动游戏并按 Ctrl+Shift+T 调出面板[/b]
+使用 Foch 隔离启动器进入 EU4，在游戏过程中随时打开滑块面板：
+[code]
+foch plugin launch --playset default
+[/code]
+你也可以在 [code]foch-plugin.toml[/code] 中预设基线参数（[code]enabled[/code]、[code]global_percent[/code]、[code]vassal_percent[/code]、[code]tag_overrides[/code]），或在游戏运行时通过 [code]tribute-panel[/code] 拖动滑块热更新 [code]tribute-config.json[/code]。
+
+[hr][/hr]
+
+[h2]版本兼容、当前验证状态与常见问题（FAQ）[/h2]
+
+[b]问：支持哪个 EU4 游戏版本？游戏更新后会导致闪退或坏档吗？[/b]
+[b]答：[/b] 当前版本严格锁定 [b]Steam 版 EU4 [code]1.37.5[/code]（Windows x64）[/b]。插件在启动时会校验 [code]eu4.exe[/code] 的精确版本特征签名；如果遇到非 [code]1.37.5[/code] 版本或未受支持的可执行文件，插件会在初始化阶段安全拒载（[code]REFUSED[/code]）并让游戏以原版状态正常运行——[b]绝不会盲目挂钩、绝不引起闪退，也绝不会损坏存档[/b]。
+
+[b]问：哪些功能已完成真机验证，哪些尚在 1.0 正式版发布前的实机回归队列中？[/b]
+[b]答：[/b] 我们坚持向玩家如实汇报验证边界，绝不夸大未完成的实机回归项：
+[list]
+[*][b]已完成验证：[/b] EU4 [code]1.37.5[/code] 签名校验与宿主安全激活/拒载端到端测试；朝贡基准缩放（大明 1444 开局跨年朝贡在 100%、50%、0% 三档下的国库增量已真机验证）；附庸收入分成基准缩放（英格兰释放威尔士 [code]vassal_share[/code] 缩放已真机验证）；离线播放集 [code]common/subject_types[/code] 与 [code]copy_from[/code] 继承树解析；以及 [code]tribute-panel[/code] 滑块面板原子写入与 250 毫秒热重载。
+[*][b]1.0 正式版前待完成实机端到端回归与当前限制：[/b]
+  [list]
+  [*]附庸月度收入路径通过省份归属反查属国 Tag 的逻辑已通过 Windows 合成内存单元测试，尚待完成最新一轮实机游戏会话回归验证（若实机下某笔月度收入未能解析出具体 Tag，会自动安全降级回退至 [code]"vassal"[/code] / 全局系数，不会报错或崩溃）。
+  [*]当前游戏内热路径固定按 [code]"tributary"[/code]（朝贡）与 [code]"vassal"[/code]（附庸）两条主通道查询类型系数；在宿主向进程内插件传递完整 Playset 目录列表之前，若需在实机游戏中对特定属国（如某个埃亚莱特 [code]eyalet[/code] 或采邑 [code]appanage[/code]）单独设定差异化比例，请优先使用[b]按国家 Tag 覆盖（[code]tag_overrides[/code] / [code]tag_percent[/code]）[/b]。
+  [*]若启动游戏时将附庸基准设为 [code]0%[/code] 且当时未配置任何 [code]tag_percent[/code] 覆盖，运行中途热更新为非零比例需重启一次游戏方可恢复基础分成。
+  [/list]
+[/list]
+
+[b]问：支持铁人模式成就或联机（Multiplayer）吗？[/b]
+[b]答：[/b]
+[list]
+[*][b]铁人模式与成就：[/b] 通过 Foch 加载原生 DLL 插件运行期间，[b]无法获取 Steam 铁人模式成就[/b]。
+[*][b]多人联机：[/b] 支持联机游玩，但[b]房间内所有玩家[/b]均须通过 Foch 启动游戏，并保持 [code]tribute-config.json[/code] 中的上供百分比配置完全一致，以免因各国国库结算金额不同而产生联机不同步（OOS）。
+[/list]

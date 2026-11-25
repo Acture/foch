@@ -1458,6 +1458,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-eu4-tribute"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "foch-plugin-sdk",
+ "foch-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "foch-lsp"
 version = "0.0.2"
 dependencies = [

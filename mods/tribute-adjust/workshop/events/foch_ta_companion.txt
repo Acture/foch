@@ -1,0 +1,11 @@
+namespace = foch_ta_info
+
+country_event = {
+	id = foch_ta_info.1
+	title = foch_ta_info.1.t
+	desc = foch_ta_info.1.d
+	is_triggered_only = yes
+	option = {
+		name = foch_ta_info.1.a
+	}
+}
