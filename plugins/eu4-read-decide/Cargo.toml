@@ -21,3 +21,7 @@ serde_json = "1.0.145"
 
 [dev-dependencies]
 tempfile = "3.15.0"
+
+[[example]]
+name = "terrain_smoke"
+required-features = []

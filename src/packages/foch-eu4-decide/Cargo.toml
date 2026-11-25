@@ -16,3 +16,23 @@ foch-runtime = { path = "../foch-runtime", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+
+[[example]]
+name = "env_server"
+required-features = []
+
+[[example]]
+name = "offline_train"
+required-features = []
+
+[[example]]
+name = "oracle_dataset"
+required-features = []
+
+[[example]]
+name = "rebuild_check"
+required-features = []
+
+[[example]]
+name = "territory_server"
+required-features = []
