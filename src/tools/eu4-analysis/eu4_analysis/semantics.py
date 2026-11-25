@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import pe
+from .dispatch import DispatchHit, discover_dispatch
 from .models import Function, FunctionEvidence
 from .pe import PEImage
 from .tokens import (
@@ -30,6 +31,7 @@ from .tokens import (
 	calibrate,
 	debug_handlers,
 	discover_token_table,
+	summarize_prologue,
 )
 from .x86 import Pointer, StringValue, trace
 
@@ -250,6 +252,22 @@ def _token_field(table: TokenTable | None, name: str, trusted: bool) -> int | No
 	return table.id_of(name)
 
 
+def _dispatch_record(
+	hit: DispatchHit, image_base: int, image: PEImage
+) -> dict[str, object]:
+	size = min(32, hit.end - hit.address)
+	blob = image.bytes_of_rva(hit.address - image_base, size) or b""
+	return {
+		"address": hit.address,
+		"end": hit.end,
+		"evidence": hit.evidence,
+		"prologue": summarize_prologue(blob),
+		"prologue_hex": blob.hex(),
+		"rva": hit.address - image_base,
+		"symbol": f"sub_{hit.address:x}",
+	}
+
+
 def _treatment(
 	name: str,
 	kind: str,
@@ -257,12 +275,17 @@ def _treatment(
 	trusted: bool,
 	handlers: dict[str, DebugHandler],
 	ambiguous: frozenset[str],
-	image_base: int,
+	image: PEImage,
+	dispatch_hits: dict[int, DispatchHit],
+	dispatch_refusals: dict[int, str],
+	consoles: tuple[int, ...],
 ) -> tuple[str, str | None, int | None, dict[str, object] | None]:
 	"""Status, failure, token id, and handler record.
 
-	A debug-string function is a handler pin. A calibrated token id without
-	that function stays ``token_only`` and is never reported as pinned.
+	A debug-string function is an Execute/Evaluate pin. A calibrated token
+	promotes past ``token_only`` only when token-id dispatch names one
+	function that is not a console-command handler. A refusal from that
+	search stays ``token_only`` and keeps the refusal reason.
 	"""
 	handler = handlers.get(name)
 	if handler is not None and handler.kind == kind:
@@ -270,7 +293,7 @@ def _treatment(
 			"pinned",
 			None,
 			_token_field(table, name, trusted),
-			_handler_record(handler, image_base),
+			_handler_record(handler, image.image_base),
 		)
 	if not trusted:
 		failure = "token_table_absent" if table is None else "token_table_uncalibrated"
@@ -285,6 +308,19 @@ def _treatment(
 		return "token_only", "handler_ambiguous", ids[0], None
 	if handler is not None and handler.kind != kind:
 		return "token_only", "kind_mismatch", ids[0], None
+	hit = dispatch_hits.get(ids[0])
+	if hit is not None:
+		if hit.address in consoles:
+			return "token_only", "dispatcher_console", ids[0], None
+		return (
+			hit.status,
+			None,
+			ids[0],
+			_dispatch_record(hit, image.image_base, image),
+		)
+	refusal = dispatch_refusals.get(ids[0])
+	if refusal is not None:
+		return "token_only", refusal, ids[0], None
 	return "token_only", "handler_unproven", ids[0], None
 
 
@@ -325,10 +361,12 @@ def review_catalog(
 	game_version: str,
 	gold: Mapping[str, int] | None = None,
 ) -> dict:
-	"""Baseline string scan versus token-table plus debug-string handlers.
+	"""Baseline string scan versus token dispatch and debug-string handlers.
 
 	The catalog's embedded handler pins are not copied. This report is the
-	read-only evidence for one executable.
+	read-only evidence for one executable. Dispatch runs only after the token
+	table calibrates; an uncalibrated table publishes no token id and no
+	dispatcher target.
 	"""
 	if catalog.get("format") != 1:
 		raise ValueError(f"unsupported semantics format {catalog.get('format')}")
@@ -336,6 +374,10 @@ def review_catalog(
 	table = discover_token_table(image)
 	checked = calibrate(table, expected)
 	handlers, ambiguous = debug_handlers(image)
+	dispatch_hits: dict[int, DispatchHit] = {}
+	dispatch_refusals: dict[int, str] = {}
+	if checked.passed and table is not None:
+		dispatch_hits, dispatch_refusals = discover_dispatch(image, table)
 	primitives: dict[str, dict[str, object]] = {}
 	baseline_counts: Counter[str] = Counter()
 	treatment_counts: Counter[str] = Counter()
@@ -352,7 +394,10 @@ def review_catalog(
 			checked.passed,
 			handlers,
 			ambiguous,
-			image.image_base,
+			image,
+			dispatch_hits,
+			dispatch_refusals,
+			consoles,
 		)
 		baseline_counts[baseline] += 1
 		treatment_counts[status] += 1
@@ -388,6 +433,7 @@ def review_catalog(
 			"failures": dict(sorted(failure_counts.items())),
 			"total": total,
 			"treatment": {
+				"factory_pinned": treatment_counts["factory_pinned"],
 				"pinned": treatment_counts["pinned"],
 				"token_only": treatment_counts["token_only"],
 				"unpinned": treatment_counts["unpinned"],

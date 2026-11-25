@@ -624,12 +624,12 @@ fn walk_package(
 		let item = item?;
 		let path = item.path();
 		let metadata = std::fs::symlink_metadata(&path)?;
-		let mut linked = metadata.file_type().is_symlink();
+		let linked = metadata.file_type().is_symlink();
 		#[cfg(windows)]
-		{
+		let linked = {
 			use std::os::windows::fs::MetadataExt;
-			linked = linked || metadata.file_attributes() & 0x400 != 0;
-		}
+			linked || metadata.file_attributes() & 0x400 != 0
+		};
 		if linked {
 			return Err(io::Error::new(
 				io::ErrorKind::InvalidInput,
