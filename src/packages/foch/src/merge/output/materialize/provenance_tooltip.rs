@@ -21,7 +21,7 @@ const BASE_GAME_DISPLAY_NAME: &str = "Europa Universalis IV";
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct ProvenanceTooltipOutput {
+pub(crate) struct ProvenanceTooltipOutput {
 	pub statements: Vec<AstStatement>,
 	pub localisation: BTreeMap<String, String>,
 }
@@ -42,12 +42,15 @@ struct FinalConditionProjection {
 
 /// Scoped identity boundary for the final diplomatic-actions AST.
 ///
-/// The semantic lineage describes the DAG output, while materialization can
-/// transform statements before emitting them. Diplomatic actions currently
-/// have no GUI or per-entry transform, but that profile fact is not sufficient
-/// evidence on its own: every final partition is normalized again through the
-/// same adapter and must exactly equal its lineage tree before the structural
-/// zipper below is allowed to address AST conditions by occurrence.
+/// The semantic lineage describes the kernel tree. Output simplification then
+/// lifts a parameterized call out beside `OR` and the final normalization
+/// puts those disjuncts back in a different order. That rendering is the same
+/// content: every final node matches a lineage node of the same kind and
+/// value, which is what [`SemanticPartitionLineage::rebased_onto`] accepts,
+/// including a number written in another spelling. The zipper addresses
+/// conditions on that rebased tree. A kind or value the lineage does not have
+/// still fails closed, so provenance cannot be attached to a condition the
+/// semantic result did not produce.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FinalSemanticProjection {
 	conditions: BTreeMap<FinalConditionCoordinate, FinalConditionProjection>,
@@ -87,18 +90,26 @@ impl FinalSemanticProjection {
 
 		let mut conditions = BTreeMap::new();
 		for partition in final_partitions {
-			let lineage = semantic
+			let stored = semantic
 				.partition_lineage
 				.get(&partition)
 				.ok_or_else(|| format!("missing final lineage partition {partition:?}"))?;
 			let final_tree = prepared.normalize(&partition, policies).map_err(|error| {
 				format!("failed to normalize final diplomatic-actions partition: {error}")
 			})?;
-			if final_tree != lineage.tree {
-				return Err(format!(
-					"final diplomatic-actions AST diverged from semantic lineage for partition {partition:?}",
-				));
-			}
+			// Hold the rebased lineage for this partition only. The stored
+			// kernel tree stays unchanged for audit; the zipper reads the tree
+			// that the final statements normalize to.
+			let rebased = if final_tree == stored.tree {
+				None
+			} else {
+				Some(stored.rebased_onto(&final_tree).ok_or_else(|| {
+					format!(
+						"final diplomatic-actions AST diverged from semantic lineage for partition {partition:?}"
+					)
+				})?)
+			};
+			let lineage = rebased.as_ref().unwrap_or(stored);
 			for (coordinate, projection) in condition_projections(&partition, lineage)? {
 				if conditions.insert(coordinate.clone(), projection).is_some() {
 					return Err(format!(
@@ -111,7 +122,7 @@ impl FinalSemanticProjection {
 	}
 }
 
-pub(super) fn materialize_condition_provenance_tooltips(
+pub(crate) fn materialize_condition_provenance_tooltips(
 	enabled: bool,
 	target_path: &GamePath,
 	mut statements: Vec<AstStatement>,

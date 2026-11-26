@@ -8,6 +8,9 @@ mod io;
 mod output_transaction;
 mod per_entry_noop;
 mod provenance_tooltip;
+
+#[cfg(test)]
+pub(crate) use provenance_tooltip::materialize_condition_provenance_tooltips;
 mod stale_detect;
 pub(crate) mod structural;
 
