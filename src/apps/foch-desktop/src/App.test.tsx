@@ -13,12 +13,15 @@ import type {
 	DesktopResolutionRule,
 	DesktopSettingsInput,
 	InputInspection,
+	InstallRecoveryNote,
 	MergeAnalysisState,
 	MergeAnalysisSummary,
 	MergeCommitResult,
 	MergeUnitDetail,
 	MergeUnitPage,
+	SetupStatus,
 	StartMergeAnalysisResult,
+	VerifiedGamePath,
 } from "./api";
 
 const COMPLETE_INPUT_SCOPE: AnalysisInputScope = {
@@ -431,8 +434,58 @@ const PLUGIN_OVERVIEW: DesktopPluginOverview = {
 	},
 };
 
-function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
+function emptySetup(inspection: InputInspection | null = null): SetupStatus {
 	return {
+		phase: "idle",
+		stage: null,
+		completed: null,
+		total: null,
+		stages: [],
+		inspection,
+		message: null,
+		buildId: null,
+		buildStage: null,
+		buildCompleted: null,
+		buildTotal: null,
+		documentCompleted: null,
+		documentTotal: null,
+		installNote: null,
+	};
+}
+
+function installNoteFor(inspection: InputInspection): InstallRecoveryNote | null {
+	if (inspection.baseData.state === "ready") return null;
+	const version: string =
+		inspection.baseData.version ?? inspection.game.version ?? "unknown";
+	const path: string = inspection.game.installPath ?? "<EU4 installation directory>";
+	return {
+		version,
+		rulesVersion: "rules-test",
+		reason:
+			"Remote foch data install is not available for this EU4 version and rules. Releases do not ship a required base-data asset, so a remote EU4 data asset is not a prerequisite.",
+		localCommand: `foch data build eu4 --from-game-path "${path}" --game-version ${version} --install`,
+	};
+}
+
+function setupFromInspection(inspection: InputInspection): SetupStatus {
+	const modCount: number = inspection.playset?.mods.length ?? 0;
+	return {
+		...emptySetup(inspection),
+		phase: "checked",
+		stage: "base_data",
+		stages: [
+			{ stage: "game_install", completed: null, total: null },
+			{ stage: "launcher_input", completed: null, total: null },
+			{ stage: "workshop_acf", completed: null, total: null },
+			{ stage: "descriptors", completed: modCount, total: modCount },
+			{ stage: "base_data", completed: null, total: null },
+		],
+		installNote: installNoteFor(inspection),
+	};
+}
+
+function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
+	const client: DesktopClient = {
 		inspectInput: vi.fn(async (): Promise<InputInspection> => READY_INSPECTION),
 		getPluginOverview: vi.fn(
 			async (): Promise<DesktopPluginOverview> => EMPTY_OVERVIEW,
@@ -515,8 +568,55 @@ function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
 				},
 			],
 		})),
+		startSetupCheck: vi.fn(async (): Promise<SetupStatus> => emptySetup()),
+		getSetupStatus: vi.fn(async (): Promise<SetupStatus> => emptySetup()),
+		verifyGamePath: vi.fn(async (path: string): Promise<VerifiedGamePath> => ({
+			version: "1.37.5",
+			installPath: path,
+		})),
+		saveGamePath: vi.fn(async (path: string): Promise<VerifiedGamePath> => ({
+			version: "1.37.5",
+			installPath: path,
+		})),
+		startBaseDataBuild: vi.fn(async (): Promise<SetupStatus> => ({
+			...emptySetup(),
+			phase: "building",
+			stage: "detect_version",
+			buildId: "build-1",
+			buildStage: "detect_version",
+		})),
+		cancelBaseDataBuild: vi.fn(async (): Promise<SetupStatus> => ({
+			...emptySetup(),
+			phase: "build_cancelled",
+			message: "The base data build was cancelled. A partial snapshot was not installed.",
+		})),
 		...overrides,
 	};
+	if (overrides.startSetupCheck === undefined) {
+		let latest: SetupStatus = {
+			...emptySetup(),
+			phase: "checking",
+			stage: "game_install",
+			stages: [{ stage: "game_install", completed: null, total: null }],
+		};
+		const inspect = client.inspectInput;
+		client.startSetupCheck = vi.fn(async (): Promise<SetupStatus> => {
+			latest = {
+				...latest,
+				phase: "checking",
+				stage: "game_install",
+				completed: null,
+				total: null,
+			};
+			const inspection = await inspect();
+			latest = setupFromInspection(inspection);
+			return latest;
+		});
+		if (overrides.getSetupStatus === undefined) {
+			client.getSetupStatus = vi.fn(async (): Promise<SetupStatus> => latest);
+		}
+	}
+	return client;
 }
 
 function renderMerge(client: DesktopClient, pollIntervalMs = 900) {
@@ -624,6 +724,10 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		expect(
 			screen.getByText(/The Launcher playset and every mod file stay untouched/),
 		).toBeInTheDocument();
+		expect(
+			screen.getByText("Ignore missing items for this session only."),
+		).toBeInTheDocument();
+		expect(screen.getByText("Results will be marked incomplete")).toBeInTheDocument();
 
 		fireEvent.click(screen.getByRole("button", { name: "Check again" }));
 
@@ -632,6 +736,163 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		).toBeEnabled();
 		expect(inspectInput).toHaveBeenCalledTimes(2);
 		expect(startMergeAnalysis).not.toHaveBeenCalled();
+	});
+
+	it("shows stage status without a percentage until a real count exists", async (): Promise<void> => {
+		let status: SetupStatus = {
+			...emptySetup(),
+			phase: "checking",
+			stage: "game_install",
+			stages: [{ stage: "game_install", completed: null, total: null }],
+		};
+		const client = createClient({
+			startSetupCheck: vi.fn(async (): Promise<SetupStatus> => status),
+			getSetupStatus: vi.fn(async (): Promise<SetupStatus> => status),
+		});
+		renderMerge(client, 20);
+
+		expect(await screen.findByText("Reading the EU4 installation")).toBeInTheDocument();
+		expect(screen.getByText("This stage has no item count yet.")).toBeInTheDocument();
+		expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+		expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+
+		status = {
+			...status,
+			stage: "descriptors",
+			completed: 1,
+			total: 2,
+			stages: [{ stage: "descriptors", completed: 1, total: 2 }],
+		};
+		expect(await screen.findByRole("progressbar")).toBeInTheDocument();
+		expect(screen.getByText("1 / 2")).toBeInTheDocument();
+		expect(screen.getByText("Reading mod descriptors")).toBeInTheDocument();
+	});
+
+	it("verifies a chosen EU4 path before saving it", async (): Promise<void> => {
+		const missingPath: InputInspection = {
+			...BLOCKED_INSPECTION,
+			game: { ...BLOCKED_INSPECTION.game, version: null, installPath: null },
+			issues: [
+				{
+					id: "eu4_install_unavailable",
+					title: "Europa Universalis IV is not ready",
+					detail: "EU4 was not found.",
+					action: "Select the EU4 installation directory.",
+				},
+			],
+		};
+		const verifyGamePath = vi.fn(async (path: string): Promise<VerifiedGamePath> => {
+			if (path.includes("missing")) {
+				throw {
+					code: "game_path_invalid",
+					message: "EU4 version was not found. Nothing was written.",
+				};
+			}
+			return { version: "1.37.5", installPath: path };
+		});
+		const saveGamePath = vi.fn(
+			async (path: string): Promise<VerifiedGamePath> => ({
+				version: "1.37.5",
+				installPath: path,
+			}),
+		);
+		const client = createClient({
+			inspectInput: vi.fn(async (): Promise<InputInspection> => missingPath),
+			verifyGamePath,
+			saveGamePath,
+		});
+		renderMerge(client);
+
+		const field = await screen.findByLabelText("EU4 installation directory");
+		fireEvent.change(field, { target: { value: "D:\\missing" } });
+		fireEvent.click(screen.getByRole("button", { name: "Verify path" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Nothing was written.");
+		expect(saveGamePath).not.toHaveBeenCalled();
+
+		fireEvent.change(field, { target: { value: "D:\\EU4" } });
+		fireEvent.click(screen.getByRole("button", { name: "Verify path" }));
+		expect(await screen.findByText("Verified version 1.37.5")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Use this EU4 install" }));
+		await waitFor((): void => {
+			expect(saveGamePath).toHaveBeenCalledWith("D:\\EU4");
+		});
+	});
+
+	it("explains why remote data install is not required and builds with real counts", async (): Promise<void> => {
+		let status: SetupStatus = setupFromInspection(BLOCKED_INSPECTION);
+		const startBaseDataBuild = vi.fn(async (): Promise<SetupStatus> => {
+			status = {
+				...status,
+				phase: "building",
+				stage: "parse_documents",
+				completed: 1,
+				total: 2,
+				buildId: "build-7",
+				buildStage: "parse_documents",
+				buildCompleted: 1,
+				buildTotal: 2,
+				documentCompleted: 1,
+				documentTotal: 2,
+			};
+			return status;
+		});
+		const cancelBaseDataBuild = vi.fn(async (): Promise<SetupStatus> => {
+			status = {
+				...status,
+				phase: "build_cancelled",
+				message: "The base data build was cancelled. A partial snapshot was not installed.",
+				buildId: null,
+			};
+			return status;
+		});
+		const client = createClient({
+			inspectInput: vi.fn(async (): Promise<InputInspection> => BLOCKED_INSPECTION),
+			startBaseDataBuild,
+			cancelBaseDataBuild,
+			getSetupStatus: vi.fn(async (): Promise<SetupStatus> => status),
+		});
+		renderMerge(client, 20);
+
+		expect(await screen.findByText(/not a prerequisite/)).toBeInTheDocument();
+		expect(screen.getByText(/--from-game-path/)).toBeInTheDocument();
+		expect(screen.getByText(/rules-test/)).toBeInTheDocument();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Build base data from this install" }),
+		);
+		expect(await screen.findByRole("progressbar")).toBeInTheDocument();
+		expect(screen.getByText("1 / 2")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Cancel base data build" }));
+		expect(
+			await screen.findByText(/partial snapshot was not installed/),
+		).toBeInTheDocument();
+		expect(startBaseDataBuild).toHaveBeenCalledTimes(1);
+		expect(cancelBaseDataBuild).toHaveBeenCalledWith("build-7");
+	});
+
+	it("ignores a second click while a base data build is starting", async (): Promise<void> => {
+		const pending = deferred<SetupStatus>();
+		const startBaseDataBuild = vi.fn(
+			(): Promise<SetupStatus> => pending.promise,
+		);
+		const client = createClient({
+			inspectInput: vi.fn(async (): Promise<InputInspection> => BLOCKED_INSPECTION),
+			startBaseDataBuild,
+		});
+		renderMerge(client);
+		const button = await screen.findByRole("button", {
+			name: "Build base data from this install",
+		});
+		fireEvent.click(button);
+		fireEvent.click(button);
+		expect(startBaseDataBuild).toHaveBeenCalledTimes(1);
+		await act(async (): Promise<void> => {
+			pending.resolve({
+				...setupFromInspection(BLOCKED_INSPECTION),
+				phase: "building",
+				buildId: "build-2",
+				buildStage: "detect_version",
+			});
+		});
 	});
 
 	it("starts the frozen available-mod scope and labels every analysis state incomplete", async (): Promise<void> => {

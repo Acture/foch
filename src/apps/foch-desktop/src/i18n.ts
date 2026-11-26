@@ -96,6 +96,32 @@ export interface Copy {
 		checkingKicker: string;
 		checkingTitle: string;
 		checkingBody: string;
+		startingCheck: string;
+		stageNoCount: string;
+		installPath: string;
+		gamePathLabel: string;
+		verifyPath: string;
+		useInstall: string;
+		verifiedVersion: string;
+		buildBase: string;
+		cancelBuild: string;
+		sessionIgnore: string;
+		parsingDocuments: string;
+		stages: {
+			game_install: string;
+			launcher_input: string;
+			workshop_acf: string;
+			descriptors: string;
+			base_data: string;
+			detect_version: string;
+			collect_inventory: string;
+			discover_documents: string;
+			parse_documents: string;
+			build_semantic_index: string;
+			materialize_snapshot: string;
+			encode_snapshot: string;
+			install: string;
+		};
 		inspectFailedKicker: string;
 		inspectFailedTitle: string;
 		checkAgain: string;
@@ -318,6 +344,32 @@ const en: Copy = {
 		checkingKicker: "First-launch inspection",
 		checkingTitle: "Checking EU4 setup",
 		checkingBody: "Detecting the game, base data, and current launcher playset.",
+		startingCheck: "Starting the read-only check.",
+		stageNoCount: "This stage has no item count yet.",
+		installPath: "Install path",
+		gamePathLabel: "EU4 installation directory",
+		verifyPath: "Verify path",
+		useInstall: "Use this EU4 install",
+		verifiedVersion: "Verified version",
+		buildBase: "Build base data from this install",
+		cancelBuild: "Cancel base data build",
+		sessionIgnore: "Ignore missing items for this session only.",
+		parsingDocuments: "Parsing game documents",
+		stages: {
+			game_install: "Reading the EU4 installation",
+			launcher_input: "Reading the Launcher playset",
+			workshop_acf: "Reading the Workshop installation record",
+			descriptors: "Reading mod descriptors",
+			base_data: "Checking installed base data",
+			detect_version: "Detecting the EU4 version",
+			collect_inventory: "Listing game files",
+			discover_documents: "Finding documents to parse",
+			parse_documents: "Parsing game documents",
+			build_semantic_index: "Building the semantic index",
+			materialize_snapshot: "Building the base snapshot",
+			encode_snapshot: "Encoding the base snapshot",
+			install: "Installing base data",
+		},
 		inspectFailedKicker: "Input inspection failed",
 		inspectFailedTitle: "EU4 setup could not be inspected",
 		checkAgain: "Check again",
@@ -574,6 +626,32 @@ const zh: Copy = {
 		checkingKicker: "首次检查",
 		checkingTitle: "正在检查 EU4 环境",
 		checkingBody: "正在检测游戏、基础数据和当前启动器剧本组。",
+		startingCheck: "正在开始只读检查。",
+		stageNoCount: "这个阶段还没有条目计数。",
+		installPath: "安装路径",
+		gamePathLabel: "EU4 安装目录",
+		verifyPath: "验证路径",
+		useInstall: "使用这个 EU4 安装",
+		verifiedVersion: "已验证版本",
+		buildBase: "从这次安装构建基础数据",
+		cancelBuild: "取消基础数据构建",
+		sessionIgnore: "仅本次忽略缺失项。",
+		parsingDocuments: "正在解析游戏文档",
+		stages: {
+			game_install: "正在读取 EU4 安装",
+			launcher_input: "正在读取启动器剧本组",
+			workshop_acf: "正在读取创意工坊安装记录",
+			descriptors: "正在读取模组描述文件",
+			base_data: "正在检查已安装的基础数据",
+			detect_version: "正在检测 EU4 版本",
+			collect_inventory: "正在列出游戏文件",
+			discover_documents: "正在查找要解析的文档",
+			parse_documents: "正在解析游戏文档",
+			build_semantic_index: "正在建立语义索引",
+			materialize_snapshot: "正在建立基础快照",
+			encode_snapshot: "正在编码基础快照",
+			install: "正在安装基础数据",
+		},
 		inspectFailedKicker: "输入检查失败",
 		inspectFailedTitle: "无法检查 EU4 环境",
 		checkAgain: "重新检查",

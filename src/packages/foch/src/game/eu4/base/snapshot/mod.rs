@@ -11,7 +11,7 @@ use crate::game::eu4::base::analysis_rules_version;
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::documents::{
 	DiscoveredTextDocument, ParsedTextDocument, build_semantic_index_from_documents,
-	discover_text_documents_from_paths, parse_discovered_text_documents,
+	discover_text_documents_from_paths, parse_discovered_text_documents_with_progress,
 };
 use crate::input::config::Config;
 use crate::input::{InventoryOwner, collect_relative_files, dedup_candidates};
@@ -39,7 +39,8 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Condvar;
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -381,12 +382,17 @@ pub struct BaseEncodedSectionProfile {
 /// A stage of a base data build starting (`false`) or finishing (`true`).
 pub type BaseBuildStageListener = Box<dyn FnMut(&str, bool) + Send>;
 
+/// Throttled document parse progress: stage name, completed, total.
+pub type BaseBuildDocumentListener = Arc<dyn Fn(&str, u64, u64) + Send + Sync>;
+
 pub struct BaseBuildObserver {
 	emit_progress: bool,
 	started_at: u64,
 	started_instant: Instant,
 	profile: BaseBuildProfile,
 	stage_listener: Option<BaseBuildStageListener>,
+	document_listener: Option<BaseBuildDocumentListener>,
+	cancel: Option<Arc<AtomicBool>>,
 }
 
 impl std::fmt::Debug for BaseBuildObserver {
@@ -395,6 +401,8 @@ impl std::fmt::Debug for BaseBuildObserver {
 			.field("emit_progress", &self.emit_progress)
 			.field("profile", &self.profile)
 			.field("stage_listener", &self.stage_listener.is_some())
+			.field("document_listener", &self.document_listener.is_some())
+			.field("cancel", &self.cancel.is_some())
 			.finish()
 	}
 }
@@ -421,6 +429,8 @@ impl BaseBuildObserver {
 				..BaseBuildProfile::default()
 			},
 			stage_listener: None,
+			document_listener: None,
+			cancel: None,
 		}
 	}
 
@@ -429,6 +439,28 @@ impl BaseBuildObserver {
 	pub fn with_stage_listener(mut self, listener: BaseBuildStageListener) -> Self {
 		self.stage_listener = Some(listener);
 		self
+	}
+
+	/// Report throttled document `completed/total` for the parse stage.
+	/// Playset reads stay on the input-check observer and are not mixed in.
+	pub fn with_document_listener(
+		mut self,
+		listener: impl Fn(&str, u64, u64) + Send + Sync + 'static,
+	) -> Self {
+		self.document_listener = Some(Arc::new(listener));
+		self
+	}
+
+	/// When set, a build stops before the next stage and before install.
+	pub fn with_cancel_flag(mut self, cancel: Arc<AtomicBool>) -> Self {
+		self.cancel = Some(cancel);
+		self
+	}
+
+	fn is_cancelled(&self) -> bool {
+		self.cancel
+			.as_ref()
+			.is_some_and(|cancel| cancel.load(Ordering::Relaxed))
 	}
 
 	pub fn set_game_version(&mut self, game_version: &str) {
@@ -468,6 +500,9 @@ impl BaseBuildObserver {
 	where
 		F: FnOnce(&mut BTreeMap<String, u64>) -> Result<T, String>,
 	{
+		if self.is_cancelled() {
+			return Err("base data build cancelled".to_string());
+		}
 		if self.emit_progress {
 			eprintln!("[data build] {name}: start");
 		}
@@ -2170,12 +2205,28 @@ pub fn build_base_snapshot_with_observer(
 		})?;
 	observer.set_document_count(discovered_documents.len());
 
+	let document_listener = observer.document_listener.clone();
+	let cancel = observer.cancel.clone();
+	let document_total = discovered_documents.len() as u64;
 	let parsed_batch = observer.run_stage("parse_documents", |counts| {
-		let batch = parse_discovered_text_documents(
+		if let Some(listener) = document_listener.as_ref() {
+			listener("parse_documents", 0, document_total);
+		}
+		let batch = parse_discovered_text_documents_with_progress(
 			&base_game_mod_id(game.key()),
 			game_root,
 			&discovered_documents,
-		);
+			&|completed, total| {
+				if let Some(listener) = document_listener.as_ref() {
+					listener("parse_documents", completed, total);
+				}
+			},
+			&|| {
+				cancel
+					.as_ref()
+					.is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+			},
+		)?;
 		counts.insert("parsed_documents".to_string(), batch.documents.len() as u64);
 		for (key, value) in parse_stats_counts(&batch.parse_stats) {
 			counts.insert(key, value);

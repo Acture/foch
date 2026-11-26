@@ -381,6 +381,23 @@ select:focus-visible {
 	letter-spacing: -0.025em;
 	line-height: 1.05;
 }
+.setup-meter {
+	display: grid;
+	gap: 0.35rem;
+	width: min(100%, 28rem);
+	margin-top: 1rem;
+}
+.setup-meter progress {
+	width: 100%;
+	height: 0.45rem;
+}
+.setup-meter p,
+.setup-command {
+	margin: 0;
+	color: var(--muted);
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
 .launch-state > p:not(.section-kicker),
 .ready-state p:not(.section-kicker),
 .state-intro {

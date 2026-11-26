@@ -2,7 +2,8 @@ use crate::dto::{
 	AnalysisInputMode, DesktopConnectivityReport, DesktopError, DesktopLaunchResult,
 	DesktopLaunchStatus, DesktopPluginInstall, DesktopPluginOverview, DesktopPreferencesView,
 	DesktopResolutionRule, DesktopSettingsInput, InputInspection, MergeAnalysisSummary,
-	MergeCommitResult, MergeDisposition, MergeUnitDetail, MergeUnitPage, StartMergeAnalysisResult,
+	MergeCommitResult, MergeDisposition, MergeUnitDetail, MergeUnitPage, SetupStatus,
+	StartMergeAnalysisResult, VerifiedGamePath,
 };
 use crate::plugin_backend::{self, PlaysetContext, PluginWorkspace};
 use crate::state::DesktopState;
@@ -23,6 +24,43 @@ fn open_plugin(playset: Option<String>) -> Result<(PluginWorkspace, PlaysetConte
 		plugin_backend::production_workspace()?,
 		plugin_backend::production_context(playset)?,
 	))
+}
+
+#[tauri::command]
+pub(crate) fn start_setup_check(
+	state: State<'_, DesktopState>,
+) -> Result<SetupStatus, DesktopError> {
+	state.start_setup_check()
+}
+
+#[tauri::command]
+pub(crate) fn get_setup_status(state: State<'_, DesktopState>) -> SetupStatus {
+	state.setup_status()
+}
+
+#[tauri::command]
+pub(crate) fn verify_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
+	crate::setup::verify_game_path(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub(crate) fn save_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
+	crate::setup::save_game_path(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+pub(crate) fn start_base_data_build(
+	state: State<'_, DesktopState>,
+) -> Result<SetupStatus, DesktopError> {
+	state.start_base_data_build()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn cancel_base_data_build(
+	state: State<'_, DesktopState>,
+	build_id: String,
+) -> Result<SetupStatus, DesktopError> {
+	state.cancel_base_data_build(&build_id)
 }
 
 #[tauri::command]

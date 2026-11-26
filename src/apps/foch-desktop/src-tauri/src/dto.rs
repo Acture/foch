@@ -103,6 +103,63 @@ pub(crate) struct InputInspection {
 	pub(crate) recovery: Option<InputRecoveryOption>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SetupPhase {
+	Idle,
+	Checking,
+	Checked,
+	Building,
+	Failed,
+	BuildFailed,
+	BuildCancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetupStageView {
+	pub(crate) stage: String,
+	pub(crate) completed: Option<u64>,
+	pub(crate) total: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstallRecoveryNote {
+	pub(crate) version: String,
+	pub(crate) rules_version: String,
+	pub(crate) reason: String,
+	pub(crate) local_command: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetupStatus {
+	pub(crate) phase: SetupPhase,
+	pub(crate) stage: Option<String>,
+	pub(crate) completed: Option<u64>,
+	pub(crate) total: Option<u64>,
+	pub(crate) stages: Vec<SetupStageView>,
+	pub(crate) inspection: Option<InputInspection>,
+	pub(crate) message: Option<String>,
+	pub(crate) build_id: Option<String>,
+	pub(crate) build_stage: Option<String>,
+	pub(crate) build_completed: Option<u64>,
+	pub(crate) build_total: Option<u64>,
+	/// Throttled document counts from the base-data parse stage.
+	/// Playset descriptor counts stay on `stages` and are not mixed in.
+	pub(crate) document_completed: Option<u64>,
+	pub(crate) document_total: Option<u64>,
+	pub(crate) install_note: Option<InstallRecoveryNote>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VerifiedGamePath {
+	pub(crate) version: String,
+	pub(crate) install_path: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MergeAnalysisState {

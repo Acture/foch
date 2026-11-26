@@ -2,6 +2,7 @@ mod backend;
 mod commands;
 mod dto;
 mod plugin_backend;
+mod setup;
 mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,6 +11,12 @@ pub fn run() {
 		.manage(state::DesktopState::production())
 		.invoke_handler(tauri::generate_handler![
 			commands::inspect_input,
+			commands::start_setup_check,
+			commands::get_setup_status,
+			commands::verify_game_path,
+			commands::save_game_path,
+			commands::start_base_data_build,
+			commands::cancel_base_data_build,
 			commands::start_merge_analysis,
 			commands::cancel_merge_analysis,
 			commands::get_merge_analysis_summary,
@@ -47,6 +54,7 @@ mod tests {
 			include_str!("commands.rs"),
 			include_str!("state.rs"),
 			include_str!("plugin_backend.rs"),
+			include_str!("setup.rs"),
 		] {
 			assert!(!source.contains("std::process::Command"));
 			assert!(!source.contains("Command::new"));

@@ -7,8 +7,8 @@ use crate::dto::{
 	PlaysetModView, ReadinessIssue, ReadinessState,
 };
 use foch::input::{
-	CurrentEu4Input, InputPreparationMode, InputRequest, PreparedAnalysisInput,
-	inspect_current_eu4_input,
+	CurrentEu4Input, InputCheckObserver, InputPreparationMode, InputRequest,
+	NoopInputCheckObserver, PreparedAnalysisInput, inspect_current_eu4_input_with_observer,
 };
 use foch::merge::{
 	AnalyzedMerge, CancellationToken, MergeAnalysisOptions, MergeAnalysisStatus, MergeError,
@@ -77,6 +77,14 @@ pub(crate) trait AnalysisReview: Send + Sync {
 pub(crate) trait AnalysisRunner: Send + Sync {
 	fn inspect_input(&self) -> InspectedAnalysisInput;
 
+	fn inspect_input_observing(
+		&self,
+		observer: &mut dyn InputCheckObserver,
+	) -> InspectedAnalysisInput {
+		let _ = observer;
+		self.inspect_input()
+	}
+
 	fn run_analysis(
 		&self,
 		analysis_id: &str,
@@ -92,7 +100,14 @@ pub(crate) struct FochAnalysisRunner;
 
 impl AnalysisRunner for FochAnalysisRunner {
 	fn inspect_input(&self) -> InspectedAnalysisInput {
-		let input = inspect_current_eu4_input();
+		self.inspect_input_observing(&mut NoopInputCheckObserver)
+	}
+
+	fn inspect_input_observing(
+		&self,
+		observer: &mut dyn InputCheckObserver,
+	) -> InspectedAnalysisInput {
+		let input = inspect_current_eu4_input_with_observer(observer);
 		let inspection = input_inspection_view(&input);
 		let preparation_mode = match input.readiness {
 			foch::input::InputReadiness::Ready => Some(InputPreparationMode::Complete),
