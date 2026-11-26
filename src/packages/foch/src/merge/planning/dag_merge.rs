@@ -1357,6 +1357,163 @@ mod tests {
 		);
 	}
 
+	/// `is_or_was_tag` is a parameterized call. Simplification lifts it beside
+	/// the `OR`, and normalizing the emitted statements orders the disjuncts
+	/// differently from the kernel lineage. The content is unchanged, so
+	/// provenance must still label the condition instead of deferring the module.
+	#[test]
+	fn abandon_union_boolean_reorder_keeps_provenance_without_dropping_the_module() {
+		let (result, policies, path) = merged_abandon_union_with_parameterized_disjunct();
+		let partition = SemanticPartitionId::Definition("abandon_union".to_string());
+		let lineage = result
+			.semantic
+			.partition_lineage
+			.get(&partition)
+			.expect("abandon_union lineage");
+		let final_tree = DefinitionModuleAdapter
+			.prepare(&crate::game::eu4::script::parser::AstFile {
+				path: path.clone(),
+				statements: result.merged_statements.clone(),
+			})
+			.normalize(&partition, &policies)
+			.expect("normalize final abandon_union");
+		assert_ne!(
+			final_tree, lineage.tree,
+			"the fixture must still reorder the kernel disjuncts"
+		);
+		assert!(
+			lineage.rebased_onto(&final_tree).is_some(),
+			"reorder must stay the same content"
+		);
+
+		let display_names = HashMap::from([
+			("left".to_string(), "Beyond Typus".to_string()),
+			("right".to_string(), "Anbennar".to_string()),
+		]);
+		let enabled = crate::merge::output::materialize::materialize_condition_provenance_tooltips(
+			true,
+			&path,
+			result.merged_statements.clone(),
+			&result.semantic,
+			&policies,
+			&display_names,
+		)
+		.expect("provenance on must not defer abandon_union");
+		let disabled =
+			crate::merge::output::materialize::materialize_condition_provenance_tooltips(
+				false,
+				&path,
+				result.merged_statements.clone(),
+				&result.semantic,
+				&policies,
+				&display_names,
+			)
+			.expect("provenance off");
+
+		assert_eq!(disabled.statements, result.merged_statements);
+		assert!(disabled.localisation.is_empty());
+		let enabled_text =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&enabled.statements)
+				.expect("emit provenance");
+		let disabled_text =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&disabled.statements)
+				.expect("emit plain");
+		assert_ne!(enabled_text, disabled_text);
+		assert_eq!(
+			enabled_text.matches("tooltip = FOCH_PROVENANCE_").count(),
+			1
+		);
+		assert!(disabled_text.contains("tooltip = PUABANDONINGIMPOSSIBLE"));
+		assert!(!enabled_text.contains("tooltip = PUABANDONINGIMPOSSIBLE"));
+		assert!(enabled.localisation.values().any(|value| {
+			value.contains("$PUABANDONINGIMPOSSIBLE$") && value.contains("Base:")
+		}));
+	}
+
+	/// A disjunct the lineage does not contain is a real source mismatch.
+	/// Reordering the same disjuncts must not make that pass.
+	#[test]
+	fn changed_abandon_union_disjunct_is_still_rejected() {
+		let (result, policies, path) = merged_abandon_union_with_parameterized_disjunct();
+		let drifted = crate::game::eu4::script::parser::parse_clausewitz_content(
+			&path,
+			&crate::game::eu4::script::emit::emit_clausewitz_statements(&result.merged_statements)
+				.expect("emit merged")
+				.replace("tag = S45", "tag = S46"),
+		);
+		assert!(drifted.diagnostics.is_empty(), "{:?}", drifted.diagnostics);
+
+		let error = crate::merge::output::materialize::materialize_condition_provenance_tooltips(
+			true,
+			&path,
+			drifted.ast.statements,
+			&result.semantic,
+			&policies,
+			&HashMap::new(),
+		)
+		.expect_err("a changed disjunct must fail closed");
+
+		assert!(
+			error.contains(
+				"final diplomatic-actions AST diverged from semantic lineage for partition Definition(\"abandon_union\")"
+			),
+			"{error}"
+		);
+	}
+
+	fn merged_abandon_union_with_parameterized_disjunct() -> (
+		SemanticDagMergeComputation,
+		MergePolicies,
+		crate::model::GamePathBuf,
+	) {
+		let vanilla = "\
+abandon_union = {\n\
+\tcondition = {\n\
+\t\ttooltip = PUABANDONINGIMPOSSIBLE\n\
+\t\tallow = { always = yes }\n\
+\t}\n\
+}\n";
+		let added = "\
+abandon_union = {\n\
+\tcondition = {\n\
+\t\ttooltip = PUABANDONINGIMPOSSIBLE\n\
+\t\tallow = { always = yes }\n\
+\t}\n\
+\teffect = {\n\
+\t\tif = {\n\
+\t\t\tlimit = {\n\
+\t\t\t\tOR = {\n\
+\t\t\t\t\ttag = H89\n\
+\t\t\t\t\tis_or_was_tag = { tag = S45 }\n\
+\t\t\t\t}\n\
+\t\t\t}\n\
+\t\t\tROOT = { change_variable = { insult_counter = 1 } }\n\
+\t\t}\n\
+\t}\n\
+}\n";
+		let result = compute_tree_diplomatic_actions_join(
+			Some(vanilla),
+			vanilla,
+			added,
+			VanillaBaseMode::Required,
+		)
+		.expect("merge abandon_union");
+		assert!(
+			result.semantic.unresolved_conflicts.is_empty(),
+			"{:?}",
+			result.semantic.unresolved_conflicts
+		);
+		let path = crate::model::GamePathBuf::parse(
+			"common/diplomatic_actions/zzz_foch_diplomatic_actions.txt",
+		)
+		.expect("path");
+		let policies = crate::game::eu4::content::eu4()
+			.classify_content_family(&path)
+			.expect("family")
+			.merge_policies;
+		(result, policies, path)
+	}
+
 	#[test]
 	fn deleted_definition_retains_only_an_empty_lineage_partition() {
 		let vanilla = "removed_action = { condition = { tooltip = REMOVED_TT } }\n\
