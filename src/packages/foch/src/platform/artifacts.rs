@@ -17,42 +17,64 @@ pub const MANUAL_MERGES_DIR: &str = "manual-merges";
 pub const PROBE_DATA_DIR: &str = "probe";
 
 pub fn shared_artifact_root() -> PathBuf {
+	let cwd = std::env::current_dir().ok();
 	resolve_shared_artifact_root(
 		std::env::var_os(ARTIFACT_DIR_ENV).as_deref(),
 		std::env::var_os("CARGO_TARGET_DIR").as_deref(),
 		&repository_root(),
 		dirs::data_local_dir(),
 		std::env::temp_dir(),
+		cwd.as_deref(),
 	)
 }
 
 /// Resolve the shared artifact root without reading process environment.
 ///
 /// An explicit artifact directory wins, including a path inside a checkout.
-/// `CARGO_TARGET_DIR` is reused only when it is outside `repo_root`, so Cargo's
-/// automatic per-worktree target directory does not become another copy of
-/// probe data or merge output. Otherwise the platform data directory (or the
-/// system temp directory) is used.
+/// `CARGO_TARGET_DIR` is reused only when its absolute path is outside
+/// `repo_root`, so Cargo's automatic per-worktree target directory does not
+/// become another copy of probe data or merge output. A relative target
+/// directory is resolved against `cwd` and lexically normalized before that
+/// check; without a usable `cwd` it is not reused. The reused path is always
+/// absolute. Otherwise the platform data directory (or the system temp
+/// directory) is used.
 pub fn resolve_shared_artifact_root(
 	artifact_dir: Option<&OsStr>,
 	cargo_target_dir: Option<&OsStr>,
 	repo_root: &Path,
 	data_local_dir: Option<PathBuf>,
 	temp_dir: PathBuf,
+	cwd: Option<&Path>,
 ) -> PathBuf {
 	if let Some(dir) = artifact_dir.filter(|dir| !dir.is_empty()) {
 		return PathBuf::from(dir);
 	}
-	if let Some(dir) = cargo_target_dir.filter(|dir| !dir.is_empty()) {
-		let path = PathBuf::from(dir);
-		if !is_within(repo_root, &path) {
-			return path.join("foch-artifacts");
-		}
+	let cargo_target = cargo_target_dir
+		.filter(|dir| !dir.is_empty())
+		.and_then(|dir| absolute_cargo_target(Path::new(dir), cwd))
+		.filter(|path| !is_within(repo_root, path));
+	if let Some(path) = cargo_target {
+		return path.join("foch-artifacts");
 	}
 	data_local_dir
 		.unwrap_or(temp_dir)
 		.join("foch")
 		.join("artifacts")
+}
+
+/// Absolutize a Cargo target directory before the in-checkout check.
+///
+/// Relative values resolve against `cwd` and are lexically normalized. A
+/// relative value is rejected when `cwd` is missing or the join is not absolute,
+/// so a relative path cannot later resolve inside a package directory.
+fn absolute_cargo_target(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
+	let joined = if path.is_absolute() {
+		path.to_path_buf()
+	} else {
+		cwd?.join(path)
+	};
+	let normalized = normalize_lexically(&joined);
+	normalized.is_absolute().then_some(normalized)
 }
 
 pub fn manual_merges_root() -> PathBuf {
@@ -110,35 +132,100 @@ mod tests {
 
 	#[test]
 	fn an_in_checkout_cargo_target_is_not_reused() {
-		let repo = Path::new("checkout");
+		let repo = abs(&["checkout"]);
 		let resolved = resolve_shared_artifact_root(
 			None,
-			Some(OsStr::new("checkout/target")),
-			repo,
-			Some(PathBuf::from("data")),
-			PathBuf::from("tmp"),
+			Some(repo.join("target").as_os_str()),
+			&repo,
+			Some(abs(&["data"])),
+			abs(&["tmp"]),
+			None,
 		);
-		assert_eq!(
-			resolved,
-			PathBuf::from("data").join("foch").join("artifacts")
-		);
-		assert!(!is_within(repo, &resolved));
-		assert!(!is_within(Path::new("checkout/target"), &resolved));
+		assert_eq!(resolved, abs(&["data"]).join("foch").join("artifacts"));
+		assert!(!is_within(&repo, &resolved));
+		assert!(!is_within(&repo.join("target"), &resolved));
 	}
 
 	#[test]
 	fn cargo_target_outside_the_checkout_is_reused() {
+		let external = abs(&["shared-target"]);
+		let repo = abs(&["checkout"]);
 		let resolved = resolve_shared_artifact_root(
 			None,
-			Some(OsStr::new("shared-target")),
-			Path::new("checkout"),
-			Some(PathBuf::from("data")),
-			PathBuf::from("tmp"),
+			Some(external.as_os_str()),
+			&repo,
+			Some(abs(&["data"])),
+			abs(&["tmp"]),
+			None,
 		);
-		assert_eq!(
-			resolved,
-			PathBuf::from("shared-target").join("foch-artifacts")
+		assert_eq!(resolved, external.join("foch-artifacts"));
+		assert!(resolved.is_absolute());
+		assert!(!is_within(&repo, &resolved));
+	}
+
+	#[test]
+	fn relative_cargo_target_inside_the_checkout_falls_back() {
+		let repo = abs(&["work", "checkout"]);
+		let cwd = abs(&["work", "checkout", "src", "packages"]);
+		let fallback = abs(&["data"]).join("foch").join("artifacts");
+		for cargo_target in ["target", "./target", "../../target"] {
+			let resolved = resolve_shared_artifact_root(
+				None,
+				Some(OsStr::new(cargo_target)),
+				&repo,
+				Some(abs(&["data"])),
+				abs(&["tmp"]),
+				Some(&cwd),
+			);
+			assert_eq!(resolved, fallback, "{cargo_target}");
+			assert!(resolved.is_absolute(), "{cargo_target}");
+			assert!(!is_within(&repo, &resolved), "{cargo_target}");
+		}
+	}
+
+	#[test]
+	fn cargo_target_resolving_outside_the_checkout_is_absolute() {
+		let repo = abs(&["work", "checkout"]);
+		let cwd = repo.clone();
+		let external = abs(&["shared", "target"]);
+		let from_absolute = resolve_shared_artifact_root(
+			None,
+			Some(external.as_os_str()),
+			&repo,
+			Some(abs(&["data"])),
+			abs(&["tmp"]),
+			Some(&cwd),
 		);
+		assert_eq!(from_absolute, external.join("foch-artifacts"));
+		assert!(from_absolute.is_absolute());
+		assert!(!is_within(&repo, &from_absolute));
+
+		let from_relative = resolve_shared_artifact_root(
+			None,
+			Some(OsStr::new("../external-shared-target")),
+			&repo,
+			Some(abs(&["data"])),
+			abs(&["tmp"]),
+			Some(&cwd),
+		);
+		let expected = abs(&["work", "external-shared-target"]).join("foch-artifacts");
+		assert_eq!(from_relative, expected);
+		assert!(from_relative.is_absolute());
+		assert!(!is_within(&repo, &from_relative));
+	}
+
+	#[test]
+	fn relative_cargo_target_without_a_cwd_is_not_reused() {
+		let resolved = resolve_shared_artifact_root(
+			None,
+			Some(OsStr::new("target")),
+			&abs(&["work", "checkout"]),
+			Some(abs(&["data"])),
+			abs(&["tmp"]),
+			None,
+		);
+		assert_eq!(resolved, abs(&["data"]).join("foch").join("artifacts"));
+		assert!(resolved.is_absolute());
 	}
 
 	#[test]
@@ -149,6 +236,7 @@ mod tests {
 			Path::new("checkout"),
 			None,
 			PathBuf::from("tmp"),
+			None,
 		);
 		assert_eq!(resolved, PathBuf::from("checkout/custom"));
 	}
@@ -161,6 +249,7 @@ mod tests {
 			Path::new("checkout"),
 			Some(PathBuf::from("data")),
 			PathBuf::from("tmp"),
+			None,
 		);
 		assert_eq!(
 			from_data,
@@ -172,6 +261,7 @@ mod tests {
 			Path::new("checkout"),
 			None,
 			PathBuf::from("tmp"),
+			None,
 		);
 		assert_eq!(
 			from_temp,
@@ -196,5 +286,17 @@ mod tests {
 		assert!(!keep_artifacts_requested_from(Some("")));
 		assert!(!keep_artifacts_requested_from(Some("0")));
 		assert!(!keep_artifacts_requested_from(Some("false")));
+	}
+
+	fn abs(parts: &[&str]) -> PathBuf {
+		let mut path = if cfg!(windows) {
+			PathBuf::from("C:\\")
+		} else {
+			PathBuf::from("/")
+		};
+		for part in parts {
+			path.push(part);
+		}
+		path
 	}
 }
