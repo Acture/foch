@@ -423,6 +423,14 @@ impl<'a> TreeMergeKernel<'a> {
 			.iter()
 			.map(|revision| &revision.ast)
 			.collect::<Vec<_>>();
+		let _translation = crate::merge::translation::set_revisions(
+			input
+				.revisions
+				.iter()
+				.map(|revision| revision.source_id.clone())
+				.collect(),
+			input.base.path.as_str().to_string(),
+		);
 		let step = self.join.merge_n_way(
 			&input.base,
 			&revision_asts,

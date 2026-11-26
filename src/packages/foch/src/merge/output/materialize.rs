@@ -408,6 +408,7 @@ pub(crate) fn materialize_with_adaptations(
 	);
 	let mut materialize_progress = MaterializeProgress::new(total_paths, progress);
 	let mut outputs = UnitOutputs::default();
+	let translation = crate::merge::translation::TranslationPlan::from_mods(&input.mods);
 	// Units read the findings as detected; the evidence count a unit adds is
 	// applied to the report with the rest of that unit.
 	let dep_misuse_findings: Vec<DepMisuseFinding> = report.dep_misuse.clone();
@@ -430,6 +431,7 @@ pub(crate) fn materialize_with_adaptations(
 		load_order_default: options.load_order_default,
 		provenance: options.provenance,
 		transforms: adaptations,
+		translation: &translation,
 	};
 	let apply_env = ApplyEnv {
 		input: &input,
@@ -659,6 +661,7 @@ pub(crate) fn materialize_with_adaptations(
 	}
 	*/
 
+	report.translation_adoptions = translation.report_adoptions();
 	report.status = if report.deferred_unit_count() > 0 {
 		MergeReportStatus::PartialSuccess
 	} else {

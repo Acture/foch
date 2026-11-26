@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
@@ -24,6 +25,7 @@ use crate::merge::model::VanillaBaseMode;
 use crate::merge::planning::module_view::{
 	CrossFileModuleViewError, build_cross_file_module_views,
 };
+use crate::merge::translation::TranslationPlan;
 use crate::model::{
 	DeferredUnitReason, DepMisuseFinding, GamePath, MergeModuleOutput, MergePlanEntry,
 	MergePlanStrategy, MergePlanTarget,
@@ -53,6 +55,9 @@ pub(super) struct UnitAnalysisContext<'a> {
 	pub(super) gui_scroll_merge: bool,
 	pub(super) load_order_default: bool,
 	pub(super) provenance: bool,
+	/// Display-text replacements for translation mods. Analysis installs it on
+	/// the worker that merges the unit; decisions accumulate on the plan.
+	pub(super) translation: &'a Arc<TranslationPlan>,
 }
 
 /// The interactive conflict prompt. Only the thread that applies results may
@@ -200,6 +205,7 @@ fn analyze_structural_unit(
 	entry: &MergePlanEntry,
 	prompt: InteractivePrompt<'_>,
 ) -> UnitAnalysis {
+	let _translation = context.translation.enter();
 	let game_path: &GamePath = entry.output_path();
 	let contributors: Option<&[ResolvedInputContributor]> = context
 		.input

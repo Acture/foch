@@ -65,7 +65,7 @@ pub trait MergePolicy {
 	fn combine_slot_values(
 		&self,
 		_parent: &NormalizedNode,
-		_values: &[&NormalizedNode],
+		_values: &[(RevisionId, &NormalizedNode)],
 	) -> Option<String> {
 		None
 	}

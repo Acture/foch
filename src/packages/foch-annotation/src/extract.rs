@@ -69,6 +69,9 @@ pub struct Attachment {
 pub struct Extraction {
 	pub attachments: Vec<Attachment>,
 	pub diagnostics: Vec<Diagnostic>,
+	/// Mod ids or names named by `# foch: translation-of`, in file order.
+	/// A declaration does not attach to the next definition.
+	pub translation_of: Vec<String>,
 }
 
 pub fn extract(path: &RelPath, text: &str, registry: &Registry) -> Extraction {
@@ -87,6 +90,7 @@ pub fn extract(path: &RelPath, text: &str, registry: &Registry) -> Extraction {
 					)
 				})
 				.collect(),
+			translation_of: Vec::new(),
 		};
 	}
 	extract_parsed(path, text, &parsed.ast.statements, registry)
@@ -112,6 +116,10 @@ pub fn extract_parsed(
 				text: comment,
 				span,
 			} => {
+				if note_translation(&mut out, path, comment, span) {
+					index += 1;
+					continue;
+				}
 				let Some(schema) = annotation_schema(comment, registry) else {
 					if let Some(name) = unknown_annotation(comment) {
 						out.diagnostics.push(Diagnostic {
@@ -179,7 +187,7 @@ pub fn extract_parsed(
 						});
 					}
 				}
-				nested(path, statement, registry, &mut out.diagnostics);
+				nested(path, statement, registry, &mut out);
 				index += 1;
 			}
 		}
@@ -247,12 +255,27 @@ fn unknown_annotation(comment: &str) -> Option<&str> {
 	.then_some(name)
 }
 
-fn nested(
-	path: &RelPath,
-	statement: &AstStatement,
-	registry: &Registry,
-	out: &mut Vec<Diagnostic>,
-) {
+/// Record a translation declaration. `true` when the comment is that
+/// declaration, including one that names no mod.
+fn note_translation(out: &mut Extraction, path: &RelPath, comment: &str, span: &SpanRange) -> bool {
+	if let Some(target) = foch::merge::translation::translation_of_target(comment) {
+		if !out.translation_of.contains(&target) {
+			out.translation_of.push(target);
+		}
+		return true;
+	}
+	if let Some(message) = foch::merge::translation::translation_of_error(comment) {
+		out.diagnostics.push(Diagnostic::error(
+			Code::Malformed,
+			SourceSpan::from_parser(path, span),
+			message.to_string(),
+		));
+		return true;
+	}
+	false
+}
+
+fn nested(path: &RelPath, statement: &AstStatement, registry: &Registry, out: &mut Extraction) {
 	let value = match statement {
 		AstStatement::Assignment { value, .. } | AstStatement::Item { value, .. } => value,
 		AstStatement::Comment { .. } => return,
@@ -261,8 +284,11 @@ fn nested(
 		for item in items {
 			match item {
 				AstStatement::Comment { text, span } => {
+					if note_translation(out, path, text, span) {
+						continue;
+					}
 					if let Some(schema) = annotation_schema(text, registry) {
-						out.push(Diagnostic::error(
+						out.diagnostics.push(Diagnostic::error(
 							Code::Nested,
 							SourceSpan::from_parser(path, span),
 							format!("#{} must precede a top-level definition", schema.name),

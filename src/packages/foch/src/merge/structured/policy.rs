@@ -236,12 +236,21 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 					format!("option:{name}"),
 				)
 			}),
-			"desc" | "triggered_desc" => scalar_field(value, "desc").map(|desc| {
-				SemanticKey::parent_scoped(
-					"clausewitz.assignment.identity",
-					format!("{key}:{desc}"),
-				)
-			}),
+			// A desc block is one alternative among several, named by the text
+			// inside it. A scalar desc is the single display string, so two
+			// mods writing it are the same field.
+			"desc" | "triggered_desc" => {
+				if let Some(desc) = scalar_field(value, "desc") {
+					Some(SemanticKey::parent_scoped(
+						"clausewitz.assignment.identity",
+						format!("{key}:{desc}"),
+					))
+				} else if matches!(value, AstValue::Scalar { .. }) {
+					Some(assignment_key_anchor(key))
+				} else {
+					None
+				}
+			}
 			_ => Some(SemanticKey::parent_scoped("clausewitz.assignment.key", key)),
 		}
 	}
@@ -442,16 +451,37 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		{
 			return PolicyDecision::Unresolved;
 		}
-		// Text the game shows reads every version where mods differ.
-		if first
-			.policy_path
-			.last()
-			.is_some_and(|field| crate::merge::combined_text::is_text_field(field))
+		// Text the game shows reads every version where mods differ, unless one
+		// version is a translation of another: that translation replaces it.
+		if let Some(field_path) = text_field_path(&first.policy_path)
 			&& changed.len() >= 2
-			&& let Some(output) = crate::merge::combined_text::combine(
+		{
+			let ordered = changed
+				.iter()
+				.filter_map(|view| {
+					view.node
+						.value
+						.as_deref()
+						.map(|text| (view.source.revision, text))
+				})
+				.collect::<Vec<_>>();
+			if ordered.len() == changed.len()
+				&& let Some(choice) = crate::merge::translation::choose_text(field_path, &ordered)
+			{
+				return match choice {
+					crate::merge::translation::TextChoice::Keep(revision) => {
+						PolicyDecision::Select(revision)
+					}
+					crate::merge::translation::TextChoice::Combine(text) => {
+						PolicyDecision::SynthesizeScalar(text)
+					}
+				};
+			}
+			if let Some(output) = crate::merge::combined_text::combine(
 				changed.iter().filter_map(|view| view.node.value.as_deref()),
 			) {
-			return PolicyDecision::SynthesizeScalar(output);
+				return PolicyDecision::SynthesizeScalar(output);
+			}
 		}
 		// A bound such as `Max` weighs an unchanged copy, since keeping the
 		// stronger value is the rule. A sum must not: the copy of a revision
@@ -490,17 +520,29 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 	fn combine_slot_values(
 		&self,
 		parent: &crate::merge::kernel::NormalizedNode,
-		values: &[&crate::merge::kernel::NormalizedNode],
+		values: &[(RevisionId, &crate::merge::kernel::NormalizedNode)],
 	) -> Option<String> {
-		let field = parent.policy_path.last()?;
-		if !crate::merge::combined_text::is_text_field(field)
-			|| !values.iter().all(|value| is_scalar_node(value))
-		{
+		let field_path = text_field_path(&parent.policy_path)?;
+		if !values.iter().all(|(_, value)| is_scalar_node(value)) {
 			return None;
 		}
-		crate::merge::combined_text::combine(
-			values.iter().filter_map(|value| value.value.as_deref()),
-		)
+		let ordered = values
+			.iter()
+			.filter_map(|(revision, value)| value.value.as_deref().map(|text| (*revision, text)))
+			.collect::<Vec<_>>();
+		if ordered.len() != values.len() {
+			return None;
+		}
+		if let Some(choice) = crate::merge::translation::choose_text(field_path, &ordered) {
+			return match choice {
+				crate::merge::translation::TextChoice::Keep(revision) => ordered
+					.iter()
+					.find(|(id, _)| *id == revision)
+					.map(|(_, text)| (*text).to_string()),
+				crate::merge::translation::TextChoice::Combine(text) => Some(text),
+			};
+		}
+		crate::merge::combined_text::combine(ordered.iter().map(|(_, text)| *text))
 	}
 
 	fn permits_ancestor_closure(&self, node: &crate::merge::kernel::NormalizedNode) -> bool {
@@ -510,6 +552,12 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 				Some("immediate" | "hidden_effect" | "after")
 			)
 	}
+}
+
+fn text_field_path(path: &[String]) -> Option<&[String]> {
+	path.last()
+		.is_some_and(|field| crate::merge::combined_text::is_text_field(field))
+		.then_some(path)
 }
 
 fn block_assignment_key(kind: &str) -> Option<&str> {
