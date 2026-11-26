@@ -28,6 +28,8 @@ pub use merge::{
 #[cfg(test)]
 pub(crate) use merge::{merge_event_files, normalize_clausewitz_file};
 pub(crate) use observer::observe_merge_trace;
+#[cfg(test)]
+pub(crate) use tree_kernel::TreeMergeKernel;
 pub(crate) use tree_kernel::{
 	ClausewitzFileAdapter, ClausewitzFileJoin, DefinitionModuleAdapter, DefinitionModuleJoin,
 	EventFileAdapter, EventFileJoin, TransformModuleAdapter, TreeDagProtocol, TreeDagState,

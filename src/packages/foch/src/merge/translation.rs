@@ -247,6 +247,10 @@ pub(crate) fn choose_text(
 	}
 	let mut dropped = false;
 	let mut kept = Vec::new();
+	// Recorded only when this call returns a choice. A full mutual replacement
+	// declines and the caller concatenates every text, so those rows must not
+	// stay on the plan.
+	let mut pending = Vec::new();
 	for entry in &entries {
 		let translators = plan
 			.relations
@@ -275,7 +279,7 @@ pub(crate) fn choose_text(
 			else {
 				continue;
 			};
-			plan.record(Adoption {
+			pending.push(Adoption {
 				path: frame.path.clone(),
 				field: field_path.join("/"),
 				translator_mod_id: translator.mod_id.clone(),
@@ -294,7 +298,7 @@ pub(crate) fn choose_text(
 			distinct.push(entry.text.clone());
 		}
 	}
-	if distinct.len() == 1 {
+	let choice = if distinct.len() == 1 {
 		let chosen = kept
 			.iter()
 			.filter(|entry| {
@@ -304,10 +308,15 @@ pub(crate) fn choose_text(
 			})
 			.max_by_key(|entry| entry.revision)
 			.unwrap_or(kept.last().expect("kept is non-empty"));
-		return Some(TextChoice::Keep(chosen.revision));
+		TextChoice::Keep(chosen.revision)
+	} else {
+		let combined = super::combined_text::combine(distinct.iter().map(String::as_str))?;
+		TextChoice::Combine(combined)
+	};
+	for adoption in pending {
+		plan.record(adoption);
 	}
-	let combined = super::combined_text::combine(distinct.iter().map(String::as_str))?;
-	Some(TextChoice::Combine(combined))
+	Some(choice)
 }
 
 #[derive(Clone)]
@@ -754,5 +763,125 @@ mod tests {
 		assert!(!output.contains("FOCH_TEXT_"), "{output}");
 		assert!(output.contains("译文"), "{output}");
 		assert!(!adoptions.is_empty());
+	}
+
+	/// The production joins install revision ids themselves. This does not
+	/// build a `Frame` by hand: `enter` supplies the plan, and the kernel
+	/// supplies the mod ids and path before `choose_text` runs.
+	fn merge_through_production_join(
+		join: &dyn crate::merge::structured::TreeJoinProtocol,
+		field: &str,
+		left: &str,
+		right: &str,
+		relations: Vec<TranslationRelation>,
+	) -> (String, Vec<MergeReportTranslationAdoption>) {
+		let base = parse_button(&format!("{field} = BASE_TT"), "cost = 1\n");
+		let gameplay = parse_button(&format!("{field} = {left}"), "cost = 1\n");
+		let translation = parse_button(&format!("{field} = {right}"), "cost = 1\n");
+		let plan = TranslationPlan::from_relations(relations);
+		let _entered = plan.enter();
+		let policies = crate::game::eu4::content::MergePolicies::default();
+		let kernel = crate::merge::structured::TreeMergeKernel::new(join, &policies);
+		let input = crate::merge::kernel_adapter::KernelMergeInput::new(
+			base,
+			vec![
+				crate::merge::kernel_adapter::KernelRevision {
+					source_id: "2164202838".to_string(),
+					precedence: 10,
+					ast: gameplay,
+				},
+				crate::merge::kernel_adapter::KernelRevision {
+					source_id: "2411504869".to_string(),
+					precedence: 20,
+					ast: translation,
+				},
+			],
+		);
+		let outcome = kernel.merge_tentative(&input).expect("production merge");
+		assert!(
+			outcome.conflicts.is_empty(),
+			"{field} {:?}",
+			outcome.conflicts
+		);
+		let output = emit_clausewitz_statements(&outcome.statements).expect("emit");
+		(output, plan.report_adoptions())
+	}
+
+	#[test]
+	fn file_join_replaces_display_text_without_a_hand_built_frame() {
+		let (output, adoptions) = merge_through_production_join(
+			&crate::merge::structured::ClausewitzFileJoin,
+			"tooltip",
+			"LEFT_TT",
+			"\"译文\"",
+			vec![relation(
+				"2411504869",
+				"2164202838",
+				TranslationBasis::Explicit,
+			)],
+		);
+		assert!(!output.contains("FOCH_TEXT_"), "{output}");
+		assert!(output.contains("译文"), "{output}");
+		assert!(!output.contains("LEFT_TT"), "{output}");
+		assert_eq!(adoptions.len(), 1, "{adoptions:?}");
+		assert_eq!(adoptions[0].translator_mod_id, "2411504869");
+		assert_eq!(adoptions[0].source_mod_id, "2164202838");
+		assert_eq!(adoptions[0].adopted, "译文");
+		assert!(
+			adoptions[0].field.ends_with("tooltip"),
+			"{}",
+			adoptions[0].field
+		);
+		assert_eq!(adoptions[0].path.as_str(), "common/custom_gui/buttons.txt");
+	}
+
+	#[test]
+	fn definition_module_join_replaces_display_text_without_a_hand_built_frame() {
+		let (output, adoptions) = merge_through_production_join(
+			&crate::merge::structured::DefinitionModuleJoin,
+			"desc",
+			"LEFT_TT",
+			"\"译文\"",
+			vec![relation(
+				"2411504869",
+				"2164202838",
+				TranslationBasis::Explicit,
+			)],
+		);
+		assert!(!output.contains("FOCH_TEXT_"), "{output}");
+		assert!(output.contains("译文"), "{output}");
+		assert!(!output.contains("LEFT_TT"), "{output}");
+		assert_eq!(adoptions.len(), 1, "{adoptions:?}");
+		assert_eq!(adoptions[0].basis, TranslationBasis::Explicit);
+		assert_eq!(adoptions[0].adopted, "译文");
+	}
+
+	#[test]
+	fn mutual_translation_markers_concatenate_and_record_no_adoption() {
+		let (output, adoptions) = merge_through_production_join(
+			&crate::merge::structured::ClausewitzFileJoin,
+			"tooltip",
+			"LEFT_TT",
+			"RIGHT_TT",
+			vec![
+				relation("2411504869", "2164202838", TranslationBasis::Explicit),
+				relation("2164202838", "2411504869", TranslationBasis::Explicit),
+			],
+		);
+		let combined = crate::merge::combined_text::keys_in(&output);
+		assert_eq!(combined.len(), 1, "{output}");
+		let versions = crate::merge::combined_text::versions(&combined[0]).expect("versions");
+		assert!(
+			versions.iter().any(|version| version.contains("LEFT_TT")),
+			"{versions:?}"
+		);
+		assert!(
+			versions.iter().any(|version| version.contains("RIGHT_TT")),
+			"{versions:?}"
+		);
+		assert!(
+			adoptions.is_empty(),
+			"declined replacement must not report an adoption: {adoptions:?}"
+		);
 	}
 }
