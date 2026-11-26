@@ -959,6 +959,9 @@ remote_file_id="43"
 	}
 
 	fn install_matching_base_data(game_root: &Path) {
+		let parse_cache = TempDir::new().expect("parse cache");
+		let _parse_cache =
+			crate::game::eu4::script::parse_cache::ParseCacheRootGuard::new(parse_cache.path());
 		let built = build_base_snapshot(
 			&Eu4,
 			game_root,

@@ -131,6 +131,9 @@ pub struct ProductMeasurementRunner {
 	executable: PathBuf,
 	identity: MeasurementRunnerIdentity,
 	base_data_root: PathBuf,
+	/// Owns the directory behind `base_data_root` when the runner must not
+	/// read an installed snapshot. Dropped with the runner.
+	isolated_base_data: Option<tempfile::TempDir>,
 	cache: ProductCacheEnvironment,
 	no_game_base: bool,
 	terminal_failure_mode: TerminalFailureMode,
@@ -191,14 +194,25 @@ impl ProductMeasurementRunner {
 		}
 		let executable = PathBuf::from(env!("CARGO_BIN_EXE_foch"));
 		let hash = executable_hash(&executable)?;
-		let base_data_root = std::env::var_os(foch::game::eu4::base::snapshot::BASE_DATA_DIR_ENV)
-			.map(PathBuf::from)
-			.unwrap_or_else(|| {
-				dirs::data_local_dir()
-					.unwrap_or_else(std::env::temp_dir)
-					.join("foch")
-					.join("data")
-			});
+		// A fixture that disables the game base must not inherit the user's
+		// installed snapshot, including an ambient FOCH_DATA_DIR.
+		let isolated_base_data = if no_game_base {
+			Some(tempfile::tempdir()?)
+		} else {
+			None
+		};
+		let base_data_root = if let Some(isolated) = &isolated_base_data {
+			isolated.path().to_path_buf()
+		} else {
+			std::env::var_os(foch::game::eu4::base::snapshot::BASE_DATA_DIR_ENV)
+				.map(PathBuf::from)
+				.unwrap_or_else(|| {
+					dirs::data_local_dir()
+						.unwrap_or_else(std::env::temp_dir)
+						.join("foch")
+						.join("data")
+				})
+		};
 		Ok(Self {
 			executable,
 			identity: MeasurementRunnerIdentity {
@@ -208,6 +222,7 @@ impl ProductMeasurementRunner {
 				scope: MeasurementScope::FullProductMerge,
 			},
 			base_data_root,
+			isolated_base_data,
 			cache,
 			no_game_base,
 			terminal_failure_mode,

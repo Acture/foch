@@ -468,6 +468,9 @@ mod tests {
 	#[test]
 	fn acf_snapshot_is_warm_before_walk_and_retained_subset_does_not_poison_full_cache() {
 		let temp = TempDir::new().expect("temp dir");
+		let _parse_cache = crate::game::eu4::script::parse_cache::ParseCacheRootGuard::new(
+			&temp.path().join("parse-cache"),
+		);
 		let cache_dir = temp.path().join("cache");
 		let cache = ModSnapshotCache::open(&cache_dir);
 		let mod_root = temp.path().join("9001");
@@ -721,6 +724,9 @@ mod tests {
 		// to decode in the store and is a miss there.
 		let document_paths = [relative, relative];
 		let temp = TempDir::new().expect("temp dir");
+		let _parse_cache = crate::game::eu4::script::parse_cache::ParseCacheRootGuard::new(
+			&temp.path().join("parse-cache"),
+		);
 		let cache = ModSnapshotCache::open(&temp.path().join("cache"));
 		let mod_root = temp.path().join("9002");
 		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))

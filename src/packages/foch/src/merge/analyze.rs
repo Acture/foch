@@ -1928,6 +1928,9 @@ mod tests {
 	fn full_merge_revalidation_reuses_initial_base_snapshot_lease() {
 		let _guard = BASE_DATA_ENV_LOCK.lock().expect("base data env lock");
 		let temp = tempfile::TempDir::new().expect("temp dir");
+		let _parse_cache = crate::game::eu4::script::parse_cache::ParseCacheRootGuard::new(
+			&temp.path().join("parse-cache"),
+		);
 		unsafe {
 			std::env::set_var(BASE_DATA_DIR_ENV, temp.path().join("base-data"));
 		}

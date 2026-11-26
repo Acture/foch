@@ -1651,6 +1651,9 @@ fn base_snapshot_build_fails_on_a_game_file_without_a_portable_game_path() {
 #[test]
 fn base_snapshot_build_persists_the_inventory_in_component_order() {
 	let temp = TempDir::new().expect("temp dir");
+	let _parse_cache = crate::game::eu4::script::parse_cache::ParseCacheRootGuard::new(
+		&temp.path().join("parse-cache"),
+	);
 	let game_root = temp.path().join("game");
 	std::fs::create_dir_all(game_root.join("common").join("a")).expect("create game tree");
 	std::fs::create_dir_all(game_root.join("irrelevant")).expect("create non-loadable root");
@@ -2552,11 +2555,24 @@ fn encoded_snapshot_outputs_share_one_verified_decode() {
 	}
 }
 
+fn assert_snapshot_lock_is_blocked() {
+	let path = super::installed_base_snapshot_lock_path("eu4", "schema-test");
+	let file = std::fs::OpenOptions::new()
+		.read(true)
+		.write(true)
+		.open(&path)
+		.expect("open snapshot lock");
+	match file.try_lock() {
+		Err(std::fs::TryLockError::WouldBlock) => {}
+		Ok(()) => panic!("snapshot lock was not held"),
+		Err(std::fs::TryLockError::Error(error)) => panic!("snapshot try_lock failed: {error}"),
+	}
+}
+
 #[test]
 fn installed_snapshot_writer_blocks_while_commit_guard_is_held() {
-	use std::sync::mpsc::{self, RecvTimeoutError};
+	use std::sync::mpsc;
 	use std::thread;
-	use std::time::Duration;
 
 	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
@@ -2582,9 +2598,13 @@ fn installed_snapshot_writer_blocks_while_commit_guard_is_held() {
 	let replacement_metadata = metadata_for_test_snapshot(&replacement, &replacement_encoded.bytes);
 	let started = Arc::new(Barrier::new(2));
 	let worker_started = Arc::clone(&started);
+	let (blocked_tx, blocked_rx) = mpsc::channel();
 	let (completed_tx, completed_rx) = mpsc::channel();
 	let writer = thread::spawn(move || {
 		worker_started.wait();
+		// Exclusive try_lock: a shared try_lock can succeed beside this guard.
+		assert_snapshot_lock_is_blocked();
+		blocked_tx.send(()).expect("report held lock");
 		let result =
 			write_test_installed_snapshot(&replacement_metadata, &replacement_encoded.bytes)
 				.map(|_| ());
@@ -2592,16 +2612,16 @@ fn installed_snapshot_writer_blocks_while_commit_guard_is_held() {
 	});
 
 	started.wait();
+	blocked_rx
+		.recv()
+		.expect("writer should observe the shared lock");
 	assert!(
-		matches!(
-			completed_rx.recv_timeout(Duration::from_millis(100)),
-			Err(RecvTimeoutError::Timeout)
-		),
+		completed_rx.try_recv().is_err(),
 		"installer completed while the commit guard held a shared lock"
 	);
 	drop(commit_guard);
 	completed_rx
-		.recv_timeout(Duration::from_secs(2))
+		.recv()
 		.expect("installer should resume after commit guard release")
 		.expect("install replacement snapshot");
 	writer.join().expect("join snapshot writer");
@@ -2618,9 +2638,8 @@ fn installed_snapshot_writer_blocks_while_commit_guard_is_held() {
 
 #[test]
 fn installed_snapshot_writes_are_serialized() {
-	use std::sync::mpsc::{self, RecvTimeoutError};
+	use std::sync::mpsc;
 	use std::thread;
-	use std::time::Duration;
 
 	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
@@ -2635,24 +2654,27 @@ fn installed_snapshot_writes_are_serialized() {
 	let metadata = metadata_for_test_snapshot(&snapshot, &encoded.bytes);
 	let started = Arc::new(Barrier::new(2));
 	let worker_started = Arc::clone(&started);
+	let (blocked_tx, blocked_rx) = mpsc::channel();
 	let (completed_tx, completed_rx) = mpsc::channel();
 	let writer = thread::spawn(move || {
 		worker_started.wait();
+		assert_snapshot_lock_is_blocked();
+		blocked_tx.send(()).expect("report held lock");
 		let result = write_test_installed_snapshot(&metadata, &encoded.bytes).map(|_| ());
 		completed_tx.send(result).expect("report writer result");
 	});
 
 	started.wait();
+	blocked_rx
+		.recv()
+		.expect("writer should observe the exclusive lock");
 	assert!(
-		matches!(
-			completed_rx.recv_timeout(Duration::from_millis(100)),
-			Err(RecvTimeoutError::Timeout)
-		),
+		completed_rx.try_recv().is_err(),
 		"second installer completed while the first held the exclusive lock"
 	);
 	drop(first_writer_guard);
 	completed_rx
-		.recv_timeout(Duration::from_secs(2))
+		.recv()
 		.expect("second installer should resume after exclusive lock release")
 		.expect("install snapshot");
 	writer.join().expect("join snapshot writer");

@@ -6,7 +6,9 @@ use crate::model::{
 	ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceRepair, SourceSpan,
 	SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
-use crate::platform::cache_store::{CacheError, default_foch_cache_dir};
+use crate::platform::cache_store::{
+	CacheError, ReplacePolicy, default_foch_cache_dir, rename_replacing,
+};
 use flate2::Compression;
 use flate2::bufread::GzDecoder;
 use flate2::write::GzEncoder;
@@ -1095,7 +1097,9 @@ fn store_payload_streaming(
 			return Err(error);
 		}
 	};
-	if let Err(error) = fs::rename(&tmp, path) {
+	// A rebuild replaces a distinct payload. Giving way and leaving the old
+	// file would report success with a corrupt snapshot still in place.
+	if let Err(error) = rename_replacing(&tmp, path, ReplacePolicy::Distinct) {
 		let _ = fs::remove_file(&tmp);
 		return Err(CacheError::Io(error));
 	}
@@ -1332,6 +1336,68 @@ mod tests {
 			&raw[..MOD_SNAPSHOT_CACHE_MAGIC.len()],
 			MOD_SNAPSHOT_CACHE_MAGIC
 		);
+	}
+
+	fn one_document_payload(mark: &str) -> CachedModData {
+		let mut index = SemanticIndex::default();
+		index.documents.push(DocumentRecord {
+			mod_id: mark.to_string(),
+			path: game_path("common/countries/A.txt"),
+			family: DocumentFamily::Clausewitz,
+			parse_ok: true,
+		});
+		CachedModData {
+			semantic_index: index,
+			inventory_paths: vec![game_path("common/countries/A.txt")],
+			document_input_identities: vec![Some(CachedDocumentInputIdentity {
+				size_bytes: mark.len() as u64,
+				content_digest: mark.to_string(),
+			})],
+		}
+	}
+
+	/// Concurrent stores of one key each publish one complete payload.
+	/// macOS rename is atomic, so this checks the complete-file property here.
+	/// It does not reproduce Windows access-denied while a handle is held.
+	#[test]
+	fn concurrent_stores_of_one_key_each_publish_a_complete_snapshot() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModSnapshotCache::open(tmp.path());
+		std::thread::scope(|scope| {
+			for writer in 0..4 {
+				let cache = &cache;
+				scope.spawn(move || {
+					for round in 0..25 {
+						let mark = format!("writer-{writer}-round-{round}");
+						let data = one_document_payload(&mark);
+						cache
+							.store("same-key", "0.1.0", "eu4 1.37.4", &data)
+							.expect("store snapshot");
+					}
+				});
+			}
+		});
+		let hit = cache
+			.lookup("same-key", "0.1.0", "eu4 1.37.4")
+			.expect("one complete snapshot");
+		assert_eq!(hit.semantic_index.documents.len(), 1);
+		let mod_id = hit.semantic_index.documents[0].mod_id.clone();
+		let identity = hit.document_input_identities[0]
+			.as_ref()
+			.expect("document identity");
+		assert_eq!(identity.content_digest, mod_id);
+		assert_eq!(identity.size_bytes, mod_id.len() as u64);
+		assert_eq!(
+			hit.inventory_paths,
+			vec![game_path("common/countries/A.txt")]
+		);
+		let leftovers: Vec<String> = fs::read_dir(tmp.path())
+			.expect("list snapshot cache")
+			.map(|item| item.expect("cache entry").file_name())
+			.filter_map(|name| name.into_string().ok())
+			.filter(|name| is_mod_snapshot_cache_tmp(name))
+			.collect();
+		assert!(leftovers.is_empty(), "{leftovers:?}");
 	}
 
 	#[test]

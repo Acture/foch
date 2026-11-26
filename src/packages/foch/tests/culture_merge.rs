@@ -18,14 +18,23 @@ fn write(root: &Path, relative: &str, text: &str) {
 	fs::write(path, text).unwrap();
 }
 
-struct BaseEnvironment(Option<std::ffi::OsString>);
+struct BaseEnvironment {
+	data: Option<std::ffi::OsString>,
+	cache: Option<std::ffi::OsString>,
+}
 
 impl Drop for BaseEnvironment {
 	fn drop(&mut self) {
 		unsafe {
-			match &self.0 {
+			match &self.data {
 				Some(value) => std::env::set_var(BASE_DATA_DIR_ENV, value),
 				None => std::env::remove_var(BASE_DATA_DIR_ENV),
+			}
+			match &self.cache {
+				Some(value) => {
+					std::env::set_var(foch::platform::cache_store::CACHE_ROOT_ENV, value)
+				}
+				None => std::env::remove_var(foch::platform::cache_store::CACHE_ROOT_ENV),
 			}
 		}
 	}
@@ -269,8 +278,17 @@ fn assert_culture_adaptation(case: CultureCase) {
 	let _lock = BASE_DATA_ENV_LOCK.lock().unwrap();
 	let temp = tempfile::tempdir().unwrap();
 	let root = temp.path();
-	let _environment = BaseEnvironment(std::env::var_os(BASE_DATA_DIR_ENV));
-	unsafe { std::env::set_var(BASE_DATA_DIR_ENV, root.join("base-data")) };
+	let _environment = BaseEnvironment {
+		data: std::env::var_os(BASE_DATA_DIR_ENV),
+		cache: std::env::var_os(foch::platform::cache_store::CACHE_ROOT_ENV),
+	};
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, root.join("base-data"));
+		std::env::set_var(
+			foch::platform::cache_store::CACHE_ROOT_ENV,
+			root.join("cache"),
+		);
+	}
 	let game = root.join("game");
 	let base = "group = { graphical_culture = westerngfx old = { primary = AAA } destination = { primary = BBB } }\nother_group = { graphical_culture = westerngfx }\n";
 	let with_destinations = format!(

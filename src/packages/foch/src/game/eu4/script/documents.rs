@@ -117,10 +117,12 @@ pub fn parse_discovered_text_documents(
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
 ) -> ParsedDocumentBatch {
+	let cache_root = super::parse_cache::parser_cache_root();
 	parse_discovered_text_documents_with(
 		mod_id,
 		root,
 		documents,
+		&cache_root,
 		parse_script_file_with_input_identity,
 	)
 }
@@ -130,10 +132,12 @@ pub fn parse_discovered_text_documents_without_cache(
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
 ) -> ParsedDocumentBatch {
+	let cache_root = super::parse_cache::parser_cache_root();
 	parse_discovered_text_documents_with(
 		mod_id,
 		root,
 		documents,
+		&cache_root,
 		parse_script_file_without_cache_with_input_identity,
 	)
 }
@@ -142,11 +146,12 @@ fn parse_discovered_text_documents_with(
 	mod_id: &str,
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
-	parse_script: fn(&str, &Path, &GamePath) -> ParsedScriptWithInputIdentity,
+	cache_root: &Path,
+	parse_script: fn(&str, &Path, &GamePath, &Path) -> ParsedScriptWithInputIdentity,
 ) -> ParsedDocumentBatch {
 	let parsed: Vec<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)> = documents
 		.par_iter()
-		.map(|doc| parse_text_document_with(mod_id, root, doc, parse_script))
+		.map(|doc| parse_text_document_with(mod_id, root, doc, cache_root, parse_script))
 		.collect();
 
 	let mut batch = ParsedDocumentBatch::default();
@@ -381,11 +386,12 @@ fn parse_text_document_with(
 	mod_id: &str,
 	root: &Path,
 	doc: &DiscoveredTextDocument,
-	parse_script: fn(&str, &Path, &GamePath) -> ParsedScriptWithInputIdentity,
+	cache_root: &Path,
+	parse_script: fn(&str, &Path, &GamePath, &Path) -> ParsedScriptWithInputIdentity,
 ) -> (ParsedTextDocument, Option<ParsedDocumentInputIdentity>) {
 	match doc.family {
 		DocumentFamily::Clausewitz => {
-			let parsed = parse_script(mod_id, root, &doc.relative_path);
+			let parsed = parse_script(mod_id, root, &doc.relative_path, cache_root);
 			let input_identity =
 				parsed
 					.input_identity
@@ -1125,6 +1131,8 @@ mod tests {
 	#[test]
 	fn borrowed_and_owned_semantic_index_builders_are_equivalent() {
 		let tmp = TempDir::new().expect("temp dir");
+		let _parse_cache =
+			super::super::parse_cache::ParseCacheRootGuard::new(&tmp.path().join("parse-cache"));
 		fs::create_dir_all(tmp.path().join("events")).expect("create events dir");
 		fs::create_dir_all(tmp.path().join("localisation")).expect("create localisation dir");
 		fs::create_dir_all(tmp.path().join("common")).expect("create common dir");
@@ -1184,6 +1192,8 @@ mod tests {
 	#[test]
 	fn index_documents_are_in_component_order() {
 		let tmp = TempDir::new().expect("temp dir");
+		let _parse_cache =
+			super::super::parse_cache::ParseCacheRootGuard::new(&tmp.path().join("parse-cache"));
 		let inventory = write_inventory(
 			tmp.path(),
 			&[

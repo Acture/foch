@@ -320,9 +320,9 @@ fn output_transaction_drop_does_not_delete_a_replaced_staging_directory() {
 
 #[test]
 fn output_transactions_for_the_same_target_are_serialized() {
+	use std::ffi::OsString;
 	use std::sync::{Arc, Barrier, mpsc};
 	use std::thread;
-	use std::time::Duration;
 
 	let temp = tempfile::TempDir::new().expect("temp dir");
 	let out_dir = temp.path().join("merged-mod");
@@ -330,24 +330,44 @@ fn output_transactions_for_the_same_target_are_serialized() {
 	let started = Arc::new(Barrier::new(2));
 	let worker_barrier = Arc::clone(&started);
 	let worker_out_dir = out_dir.clone();
+	let (blocked_tx, blocked_rx) = mpsc::channel();
 	let (acquired_tx, acquired_rx) = mpsc::channel();
 	let worker = thread::spawn(move || {
 		worker_barrier.wait();
+		let mut sibling = OsString::from(".");
+		sibling.push(worker_out_dir.file_name().expect("output name"));
+		sibling.push(".foch-lock");
+		let lock_path = worker_out_dir
+			.parent()
+			.unwrap_or(std::path::Path::new("."))
+			.join(sibling);
+		let held = std::fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.open(&lock_path)
+			.expect("open output lock");
+		match held.try_lock() {
+			Err(std::fs::TryLockError::WouldBlock) => {}
+			Ok(()) => panic!("output lock was not held"),
+			Err(std::fs::TryLockError::Error(error)) => panic!("output try_lock failed: {error}"),
+		}
+		blocked_tx.send(()).expect("report held lock");
 		let second = OutputTransaction::begin(&worker_out_dir).expect("begin second transaction");
 		acquired_tx.send(()).expect("report acquired lock");
 		drop(second);
 	});
 
 	started.wait();
+	blocked_rx
+		.recv()
+		.expect("worker should observe the output lock");
 	assert!(
-		acquired_rx
-			.recv_timeout(Duration::from_millis(100))
-			.is_err(),
+		acquired_rx.try_recv().is_err(),
 		"second transaction acquired the target lock before the first was dropped"
 	);
 	drop(first);
 	acquired_rx
-		.recv_timeout(Duration::from_secs(2))
+		.recv()
 		.expect("second transaction should acquire the released lock");
 	worker.join().expect("join transaction worker");
 }
@@ -464,6 +484,9 @@ fn finalization_holds_the_commit_guard_through_commit() {
 
 	let _env_guard = BASE_DATA_ENV_LOCK.lock().expect("base data env lock");
 	let temp = tempfile::TempDir::new().expect("temp dir");
+	let _parse_cache = crate::game::eu4::script::parse_cache::ParseCacheRootGuard::new(
+		&temp.path().join("parse-cache"),
+	);
 	unsafe {
 		std::env::set_var(BASE_DATA_DIR_ENV, temp.path().join("base-data"));
 	}

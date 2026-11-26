@@ -77,8 +77,20 @@ struct CacheFile {
 /// second parser identity for identical input. It holds the parse as written:
 /// a file with errors is repaired afterwards, under the schema for `path`.
 pub fn parse_clausewitz_bytes_cached(path: &GamePath, bytes: &[u8]) -> (ParseResult, bool) {
+	parse_clausewitz_bytes_cached_at(&parser_cache_root(), path, bytes)
+}
+
+/// Same as [`parse_clausewitz_bytes_cached`], but reads and writes `cache_root`.
+///
+/// Rayon workers do not inherit a thread-local cache directory. The caller
+/// captures [`parser_cache_root`] on its own thread and passes that path here.
+pub(crate) fn parse_clausewitz_bytes_cached_at(
+	cache_root: &Path,
+	path: &GamePath,
+	bytes: &[u8],
+) -> (ParseResult, bool) {
 	let syntax = ScriptSyntax::for_game_path(path);
-	let (statements, hit) = parse_statements_cached(syntax, bytes);
+	let (statements, hit) = parse_statements_cached_at(cache_root, syntax, bytes);
 	let statements = if statements.diagnostics.is_empty() {
 		statements
 	} else {
@@ -105,9 +117,13 @@ fn recover_for_path(path: &GamePath, content: &str, parsed: ParsedStatements) ->
 	)
 }
 
-fn parse_statements_cached(syntax: ScriptSyntax, bytes: &[u8]) -> (ParsedStatements, bool) {
+fn parse_statements_cached_at(
+	cache_root: &Path,
+	syntax: ScriptSyntax,
+	bytes: &[u8],
+) -> (ParsedStatements, bool) {
 	let content_key = parse_content_key(syntax, bytes);
-	let cache_path = cache_file_for_key(&parser_cache_root(), &content_key);
+	let cache_path = cache_file_for_key(cache_root, &content_key);
 
 	if let Some(result) = load_cache_hit(&cache_path, &content_key) {
 		touch_cache_file(&cache_path);
@@ -165,20 +181,36 @@ fn parse_cache_base_root() -> PathBuf {
 	if let Some(root) = test_cache_root() {
 		return root;
 	}
-
+	#[cfg(test)]
+	{
+		return process_test_parse_cache_root();
+	}
+	#[allow(unreachable_code)]
 	default_foch_cache_dir().join(PARSE_CACHE_DIR_NAME)
+}
+
+/// Unit tests share one process. A thread that never installs a cache root
+/// still must not write the user's parse cache. `parser_cache_root` appends
+/// the version namespace, so this directory is a base, not `parse/`.
+#[cfg(test)]
+fn process_test_parse_cache_root() -> PathBuf {
+	static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+	ROOT.get_or_init(|| tempfile::tempdir().expect("process test parse cache"))
+		.path()
+		.to_path_buf()
 }
 
 fn obsolete_parse_cache_base_root() -> Option<PathBuf> {
 	#[cfg(test)]
-	if let Some(root) = test_obsolete_cache_root() {
-		return Some(root);
-	}
-	#[cfg(test)]
-	if test_cache_root().is_some() {
+	{
+		if let Some(root) = test_obsolete_cache_root() {
+			return Some(root);
+		}
+		// Neither an explicit obsolete root nor the process fallback may scan
+		// the user's obsolete cache.
 		return None;
 	}
-
+	#[allow(unreachable_code)]
 	Some(default_foch_cache_dir().join(OBSOLETE_PARSE_CACHE_DIR_NAME))
 }
 
@@ -190,6 +222,30 @@ fn test_cache_root() -> Option<PathBuf> {
 #[cfg(test)]
 fn set_test_cache_root(root: Option<PathBuf>) -> Option<PathBuf> {
 	TEST_CACHE_ROOT.with(|current| current.replace(root))
+}
+
+/// Holds a parse-cache directory on the installing thread and restores the
+/// previous one on drop. A rayon worker does not see this thread-local;
+/// capture [`parser_cache_root`] on this thread and pass that path into the pool.
+#[cfg(test)]
+pub(crate) struct ParseCacheRootGuard {
+	previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl ParseCacheRootGuard {
+	pub(crate) fn new(root: &Path) -> Self {
+		Self {
+			previous: set_test_cache_root(Some(root.to_path_buf())),
+		}
+	}
+}
+
+#[cfg(test)]
+impl Drop for ParseCacheRootGuard {
+	fn drop(&mut self) {
+		set_test_cache_root(self.previous.take());
+	}
 }
 
 #[cfg(test)]

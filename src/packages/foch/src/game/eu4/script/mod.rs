@@ -70,7 +70,9 @@ pub(super) struct ParsedScriptWithInputIdentity {
 	pub input_identity: Option<ParsedScriptInputIdentity>,
 }
 
-use parse_cache::{parse_clausewitz_bytes_cached, parse_clausewitz_for_path};
+use parse_cache::{
+	parse_clausewitz_bytes_cached, parse_clausewitz_bytes_cached_at, parse_clausewitz_for_path,
+};
 
 pub fn classify_script_file(relative: &GamePath) -> ScriptFileKind {
 	eu4()
@@ -96,23 +98,25 @@ fn qualify_symbol_name(module: &str, local: &str) -> String {
 /// Reads and parses the script at `relative` under `root`. A read failure is
 /// reported as a parse issue of that script.
 pub fn parse_script_file(mod_id: &str, root: &Path, relative: &GamePath) -> ParsedScriptFile {
-	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, true).file
+	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, true, None).file
 }
 
 pub(super) fn parse_script_file_with_input_identity(
 	mod_id: &str,
 	root: &Path,
 	relative: &GamePath,
+	cache_root: &Path,
 ) -> ParsedScriptWithInputIdentity {
-	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, true)
+	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, true, Some(cache_root))
 }
 
 pub(super) fn parse_script_file_without_cache_with_input_identity(
 	mod_id: &str,
 	root: &Path,
 	relative: &GamePath,
+	_cache_root: &Path,
 ) -> ParsedScriptWithInputIdentity {
-	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, false)
+	parse_script_file_with_cache_and_input_identity(mod_id, root, relative, false, None)
 }
 
 /// Builds an AST-only parsed script from caller-supplied bytes of the script
@@ -139,6 +143,7 @@ fn parse_script_file_with_cache_and_input_identity(
 	root: &Path,
 	relative: &GamePath,
 	use_cache: bool,
+	cache_root: Option<&Path>,
 ) -> ParsedScriptWithInputIdentity {
 	let file = relative.to_path(root);
 	let (parsed, parse_cache_hit, source, input_identity) = match std::fs::read(&file) {
@@ -146,7 +151,12 @@ fn parse_script_file_with_cache_and_input_identity(
 			let content_digest = blake3::hash(&bytes).to_hex().to_string();
 			let source = crate::game::eu4::text::decode_paradox_bytes(&bytes).into_owned();
 			let (parsed, parse_cache_hit) = if use_cache {
-				parse_clausewitz_bytes_cached(relative, &bytes)
+				match cache_root {
+					Some(cache_root) => {
+						parse_clausewitz_bytes_cached_at(cache_root, relative, &bytes)
+					}
+					None => parse_clausewitz_bytes_cached(relative, &bytes),
+				}
 			} else {
 				(parse_clausewitz_for_path(relative, &source), false)
 			};

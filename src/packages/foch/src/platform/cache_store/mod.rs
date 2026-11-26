@@ -73,7 +73,7 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 	};
 	let written: io::Result<()> = file.write_all(bytes).and_then(|()| {
 		drop(file);
-		rename_replacing(&temporary, path)
+		rename_replacing(&temporary, path, ReplacePolicy::Equivalent)
 	});
 	if written.is_err() {
 		let _ = fs::remove_file(&temporary);
@@ -81,13 +81,24 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 	written
 }
 
+/// What a publisher may do after Windows keeps denying the replace.
+#[derive(Clone, Copy)]
+pub(crate) enum ReplacePolicy {
+	/// Writers of one entry publish equivalent bytes. After the denial window,
+	/// a complete file already at `to` is enough, and this copy is discarded.
+	Equivalent,
+	/// The new bytes must replace whatever is there. After the denial window
+	/// the error is returned and the caller removes the temporary file.
+	Distinct,
+}
+
 /// Rename `from` over `to`. Windows refuses (access denied) to replace a
 /// file while another writer is replacing it or a handle holds it without
 /// delete sharing. Those last moments, so the rename is retried with backoff
-/// for a bounded time. A writer that keeps losing the race to other writers
-/// of the same entry gives way: an equivalent complete file is already
-/// published, so its own copy is discarded instead of failing the write.
-fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
+/// for a bounded time. The deadline is not a correctness bound: an
+/// [`ReplacePolicy::Equivalent`] writer that keeps losing gives way only when
+/// a complete file is already published.
+pub(crate) fn rename_replacing(from: &Path, to: &Path, policy: ReplacePolicy) -> io::Result<()> {
 	const RETRY_FOR: Duration = Duration::from_secs(2);
 	const MAX_BACKOFF: Duration = Duration::from_millis(50);
 	let deadline = Instant::now() + RETRY_FOR;
@@ -99,12 +110,17 @@ fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
 					&& error.kind() == io::ErrorKind::PermissionDenied
 					&& Instant::now() < deadline =>
 			{
+				#[cfg(all(test, windows))]
+				if let Some(callback) = take_rename_denied_hook() {
+					callback();
+				}
 				std::thread::sleep(backoff);
 				backoff = (backoff * 2).min(MAX_BACKOFF);
 			}
 			Err(error)
 				if cfg!(windows)
 					&& error.kind() == io::ErrorKind::PermissionDenied
+					&& matches!(policy, ReplacePolicy::Equivalent)
 					&& to.is_file() =>
 			{
 				let _ = fs::remove_file(from);
@@ -113,6 +129,26 @@ fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
 			result => return result,
 		}
 	}
+}
+
+/// Runs once, on the writer thread, the first time a Windows replace is denied.
+/// The callback must not lock this hook. Tests use it to drop an exclusive
+/// handle instead of sleeping until a wall clock expires.
+#[cfg(all(test, windows))]
+static RENAME_DENIED_HOOK: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> =
+	std::sync::Mutex::new(None);
+
+#[cfg(all(test, windows))]
+fn take_rename_denied_hook() -> Option<Box<dyn Fn() + Send>> {
+	RENAME_DENIED_HOOK
+		.lock()
+		.expect("rename denial hook")
+		.take()
+}
+
+#[cfg(all(test, windows))]
+fn set_rename_denied_hook(hook: Option<Box<dyn Fn() + Send>>) {
+	*RENAME_DENIED_HOOK.lock().expect("rename denial hook") = hook;
 }
 
 /// `path` with `.<pid>.<sequence>.tmp` appended to its extension. The
@@ -279,18 +315,27 @@ mod tests {
 		let root: tempfile::TempDir = tempfile::tempdir().expect("cache root");
 		let entry: std::path::PathBuf = root.path().join("entry.bin");
 		std::fs::write(&entry, b"old").expect("seed entry");
-		let held = std::fs::OpenOptions::new()
-			.read(true)
-			.share_mode(0)
-			.open(&entry)
-			.expect("hold entry exclusively");
-		let release = std::thread::spawn(move || {
-			std::thread::sleep(std::time::Duration::from_millis(150));
-			drop(held);
-		});
+		let held = std::sync::Arc::new(std::sync::Mutex::new(Some(
+			std::fs::OpenOptions::new()
+				.read(true)
+				.share_mode(0)
+				.open(&entry)
+				.expect("hold entry exclusively"),
+		)));
+		let release = std::sync::Arc::clone(&held);
+		super::set_rename_denied_hook(Some(Box::new(move || {
+			release.lock().expect("held file").take();
+		})));
+		struct ClearHook;
+		impl Drop for ClearHook {
+			fn drop(&mut self) {
+				super::set_rename_denied_hook(None);
+			}
+		}
+		let _clear_hook = ClearHook;
 
 		super::write_atomically(&entry, b"new").expect("write after the hold ends");
-		release.join().expect("release thread");
+		drop(held);
 		assert_eq!(std::fs::read(&entry).expect("read entry"), b"new");
 	}
 
