@@ -40,6 +40,30 @@ pub(crate) fn rule_engine() -> &'static CwtQuery {
 	active_schema_slot().facts()
 }
 
+/// The schema's type names and the directory each one's definitions live
+/// in.
+///
+/// The schema writes a type's directory as `game/<path>`; the path is the
+/// game path of the content family the type's definitions are declared in.
+pub(crate) fn schema_type_families() -> &'static std::collections::HashMap<String, String> {
+	static FAMILIES: std::sync::LazyLock<std::collections::HashMap<String, String>> =
+		std::sync::LazyLock::new(|| {
+			let mut families = std::collections::HashMap::new();
+			for root in rule_engine().pack().roots.iter() {
+				let Some(path) = root
+					.path
+					.as_ref()
+					.and_then(|directory| directory.as_game_path())
+				else {
+					continue;
+				};
+				families.insert(root.name.clone(), path.as_str().to_string());
+			}
+			families
+		});
+	&FAMILIES
+}
+
 pub(crate) fn active_schema() -> Arc<CwtSchema> {
 	Arc::clone(active_schema_slot())
 }

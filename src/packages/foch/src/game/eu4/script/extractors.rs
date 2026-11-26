@@ -1,7 +1,7 @@
 use super::super::content::ContentFamilyDescriptor;
 use super::parser::{AstStatement, AstValue, SpanRange};
 use super::{
-	BuildContext, extract_assignment_scalar, extract_block_scalar_items,
+	BuildContext, EVENT_NAMESPACE_KEY, extract_assignment_scalar, extract_block_scalar_items,
 	extract_named_block_member_keys, extract_named_block_scalar_items,
 	extract_nested_assignment_scalar, extract_yes_assignment_keys, is_country_file_reference,
 	is_country_tag_text, is_named_block_in_top_level_block, is_province_id_text,
@@ -1717,7 +1717,7 @@ impl ResourceExtractor for EventsExtractor {
 	) {
 		if key == "namespace" {
 			if let Some(text) = scalar_text(value) {
-				push_resource_reference(index, ctx, key_span, "event_namespace", text.as_str());
+				push_resource_reference(index, ctx, key_span, EVENT_NAMESPACE_KEY, text.as_str());
 			}
 			return;
 		}

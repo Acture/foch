@@ -7819,3 +7819,111 @@ fn the_symbol_table_answers_as_reading_every_definition_does() {
 		);
 	}
 }
+
+#[test]
+fn a_building_reference_is_recorded_against_the_building_type() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("buildings")).expect("create buildings");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("buildings")
+			.join("00_buildings.txt"),
+		r#"
+my_building = {
+	make_obsolete = obsolete_building
+}
+"#,
+	)
+	.expect("write buildings");
+
+	let parsed = parse_script_file(
+		"1017",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("buildings")
+			.join("00_buildings.txt"),
+	)
+	.expect("parsed buildings");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.key == "type_reference:building"
+				&& reference.value == "obsolete_building"
+				&& reference.path.as_str() == "common/buildings/00_buildings.txt"
+		}),
+		"should record the building the definition makes obsolete"
+	);
+}
+
+#[test]
+fn a_sprite_declaration_records_the_texture_it_names() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("interface")).expect("create interface");
+	fs::write(
+		mod_root.join("interface").join("main.gfx"),
+		r#"
+spriteTypes = {
+	spriteType = {
+		name = "GFX_foo"
+		texturefile = "gfx/interface/foo.dds"
+	}
+}
+"#,
+	)
+	.expect("write sprites");
+
+	let parsed = parse_script_file(
+		"1018",
+		&mod_root,
+		&mod_root.join("interface").join("main.gfx"),
+	)
+	.expect("parsed sprites");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.key == "sprite_definition:GFX_foo"
+				&& reference.value == "gfx/interface/foo.dds"
+				&& reference.path.as_str() == "interface/main.gfx"
+		}),
+		"should record the sprite and the texture it loads"
+	);
+}
+
+#[test]
+fn a_gui_records_the_sprite_it_uses() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("interface")).expect("create interface");
+	fs::write(
+		mod_root.join("interface").join("main.gui"),
+		r#"
+guiTypes = {
+	containerWindow = {
+		name = "my_window"
+		sprite = "GFX_foo"
+	}
+}
+"#,
+	)
+	.expect("write gui");
+
+	let parsed = parse_script_file(
+		"1019",
+		&mod_root,
+		&mod_root.join("interface").join("main.gui"),
+	)
+	.expect("parsed gui");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.key == "sprite"
+				&& reference.value == "GFX_foo"
+				&& reference.path.as_str() == "interface/main.gui"
+		}),
+		"should record the sprite the window uses"
+	);
+}
