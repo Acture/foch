@@ -904,6 +904,19 @@ impl<R: CombinationRunner> Probe<'_, R> {
 	}
 }
 
+/// `flock(2)` drops a lock only once every duplicate of that open file
+/// description is closed, and that release is not ordered before `close`
+/// returns. A parallel test can `fork` while `probe.lock` is open, so the
+/// next invocation in this process observes `WouldBlock`. `unlock` publishes
+/// the release before the descriptor is closed.
+struct ProbeDirectoryLock(fs::File);
+
+impl Drop for ProbeDirectoryLock {
+	fn drop(&mut self) {
+		let _ = self.0.unlock();
+	}
+}
+
 pub(super) fn execute(
 	config: &CombinationConfig,
 	runner: &mut impl CombinationRunner,
@@ -918,6 +931,7 @@ pub(super) fn execute(
 	lock.try_lock().map_err(|error| {
 		format!("probe directory is already in use or cannot be locked: {error}")
 	})?;
+	let _lock = ProbeDirectoryLock(lock);
 	let run: PathBuf = tempfile::Builder::new()
 		.prefix("run-")
 		.tempdir_in(config.root.join("runs"))?

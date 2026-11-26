@@ -1638,7 +1638,11 @@ fn active_timing_reports_the_hook_and_plain_spans() {
 	let gross_loop: i64 = hooked["median-loop-ns"].parse().unwrap();
 	assert!(judge > 0, "{hooked:?}");
 	assert!(writeback > 0, "{hooked:?}");
-	assert!(total >= judge + writeback, "{hooked:?}");
+	// Each sample's total covers that sample's judge and write-back, so
+	// the total median dominates each component. The medians themselves
+	// do not add: median(judge) + median(writeback) can exceed median(total).
+	assert!(total >= judge, "{hooked:?}");
+	assert!(total >= writeback, "{hooked:?}");
 	assert!(gross_loop > 0, "{hooked:?}");
 	// A report, not a gate: whether the pool pays for 32 fixture judgments
 	// is the machine's call, so the ratio is printed, not asserted.
