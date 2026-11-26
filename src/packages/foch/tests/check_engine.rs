@@ -1104,6 +1104,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		definition_provenance: std::collections::BTreeMap::new(),
 		provenance_mod_names: std::collections::BTreeMap::new(),
 		merge_trace: std::collections::BTreeMap::new(),
+		translation_adoptions: Vec::new(),
 	};
 
 	let value = serde_json::to_value(&report).expect("serialize merge report");
@@ -1113,6 +1114,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	assert!(value.get("fatal_reason").is_none());
 	assert!(value.get("definition_provenance").is_none());
 	assert!(value.get("provenance_mod_names").is_none());
+	assert!(value.get("translation_adoptions").is_none());
 	assert_eq!(value["manual_conflict_count"], 2);
 	assert_eq!(value["unsupported_input_count"], 1);
 	assert_eq!(value["engine_failure_count"], 3);

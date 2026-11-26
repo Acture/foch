@@ -174,10 +174,12 @@ fn merge_clausewitz_definition_module_n_way_inner(
 	let unit = progress::current();
 	// Definitions are independent, and one module can hold tens of thousands;
 	// merging them in sequence left one unit running long after the others.
+	let translation = crate::merge::translation::snapshot();
 	let outcomes = keys
 		.par_iter()
 		.enumerate()
 		.map(|(index, &key)| {
+			let _translation = translation.install();
 			let _unit = progress::attach(unit.clone());
 			let base_group = base_index.select(key);
 			let revision_groups = revision_indexes

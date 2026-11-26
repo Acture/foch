@@ -27,6 +27,7 @@ pub(crate) mod semantic_fingerprint;
 pub(crate) mod structured;
 pub mod timing;
 pub(crate) mod transform;
+pub mod translation;
 
 #[cfg(test)]
 pub(crate) use address_patch::patch_apply;

@@ -341,10 +341,36 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.validation.missing_localisation
 	));
 	append_conflict_resolutions_section(&mut lines, report);
+	append_translation_adoptions_section(&mut lines, report);
 	append_dep_misuse_section(&mut lines, report);
 	append_version_mismatch_section(&mut lines, report);
 	append_cross_tagged_mods_section(&mut lines, &cross_tagged_mods);
 	lines.join("\n")
+}
+
+fn append_translation_adoptions_section(lines: &mut Vec<String>, report: &MergeReport) {
+	if report.translation_adoptions.is_empty() {
+		return;
+	}
+	lines.push(String::new());
+	lines.push(format!(
+		"translation_adoptions: {}",
+		report.translation_adoptions.len()
+	));
+	for adoption in &report.translation_adoptions {
+		let basis = match adoption.basis {
+			crate::model::TranslationAdoptionBasis::Explicit => "explicit",
+			crate::model::TranslationAdoptionBasis::TagAndDependency => "tag_and_dependency",
+		};
+		lines.push(format!(
+			"  - path: {} field: {} translator: {} source: {} basis: {basis} adopted: {}",
+			adoption.path,
+			adoption.field,
+			adoption.translator_mod_id,
+			adoption.source_mod_id,
+			adoption.adopted,
+		));
+	}
 }
 
 fn append_conflict_resolutions_section(lines: &mut Vec<String>, report: &MergeReport) {
@@ -910,6 +936,31 @@ mod tests {
 	fn render_merge_report_text_omits_fatal_reason_line_when_absent() {
 		let output = render_merge_report_text(&MergeReport::default());
 		assert!(!output.contains("[FATAL]"));
+	}
+
+	#[test]
+	fn render_merge_report_text_lists_translation_adoptions() {
+		let report = MergeReport {
+			translation_adoptions: vec![crate::model::MergeReportTranslationAdoption {
+				path: crate::model::GamePathBuf::parse("common/custom_gui/buttons.txt")
+					.expect("path"),
+				field: "custom_button/tooltip".to_string(),
+				translator_mod_id: "2411504869".to_string(),
+				source_mod_id: "2164202838".to_string(),
+				basis: crate::model::TranslationAdoptionBasis::TagAndDependency,
+				adopted: "译文".to_string(),
+			}],
+			..MergeReport::default()
+		};
+		let output = render_merge_report_text(&report);
+		assert!(output.contains("translation_adoptions: 1"));
+		assert!(output.contains("translator: 2411504869"));
+		assert!(output.contains("source: 2164202838"));
+		assert!(output.contains("basis: tag_and_dependency"));
+		assert!(output.contains("adopted: 译文"));
+		assert!(
+			!render_merge_report_text(&MergeReport::default()).contains("translation_adoptions")
+		);
 	}
 
 	fn dep_misuse_finding(

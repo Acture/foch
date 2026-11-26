@@ -1163,6 +1163,30 @@ pub struct MergeReport {
 	/// Populated with `definition_provenance` when `--provenance` is enabled.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
 	pub merge_trace: BTreeMap<GamePathBuf, BTreeMap<String, MergeTraceEntry>>,
+	/// Display-text fields taken from a translation mod instead of concatenated.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub translation_adoptions: Vec<MergeReportTranslationAdoption>,
+}
+
+/// Why a translation mod's display text replaced the mod it translates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationAdoptionBasis {
+	/// `# foch: translation-of = …` named the source mod.
+	Explicit,
+	/// The mod has a `Translation` tag and depends on the source mod.
+	TagAndDependency,
+}
+
+/// One display-text field kept from a translation mod.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeReportTranslationAdoption {
+	pub path: GamePathBuf,
+	pub field: String,
+	pub translator_mod_id: String,
+	pub source_mod_id: String,
+	pub basis: TranslationAdoptionBasis,
+	pub adopted: String,
 }
 
 impl MergeReport {
