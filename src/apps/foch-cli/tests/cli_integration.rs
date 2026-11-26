@@ -2288,15 +2288,9 @@ struct CacheLayerFixture {
 }
 
 fn target_temp_dir() -> TempDir {
-	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-		.parent()
-		.and_then(Path::parent)
-		.and_then(Path::parent)
-		.expect("repo root")
-		.join("target")
-		.join("cli-integration-temp");
-	fs::create_dir_all(&root).expect("create target temp root");
-	TempDir::new_in(root).expect("temp dir in target")
+	let root = foch::platform::artifacts::shared_artifact_root().join("cli-integration-temp");
+	fs::create_dir_all(&root).expect("create integration temp root");
+	TempDir::new_in(root).expect("temp dir")
 }
 
 fn seed_cache_layers(root: &Path) -> CacheLayerFixture {

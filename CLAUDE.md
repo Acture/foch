@@ -181,7 +181,7 @@ Public known issues and release guidance belong in `docs/`. Keep
 `docs/project-status.md` concise and current; Git history and linked Linear
 issues preserve past decisions and checkpoints. Raw measurements remain with
 their producing code or test harness.
-Local manual merge outputs belong under `target/manual-merges/`, not the root.
+Local manual merge outputs and isolated probe data do not belong in a worktree `target/`. They go under the shared artifact root: `FOCH_ARTIFACT_DIR` if set, otherwise `CARGO_TARGET_DIR/foch-artifacts` when that directory is outside this checkout, otherwise the platform data directory's `foch/artifacts` (or the system temp directory). `manual-merges/` holds merge outputs; `probe/` is the isolated `FOCH_DATA_DIR`, `FOCH_CACHE_ROOT`, and `FOCH_CONFIG_DIR` for a real probe. `FOCH_KEEP_ARTIFACTS=1` retains one-shot diagnostic probe directories. `FOCH_WORKSHOP_PROBE_DIR` and `FOCH_COMBO_PROBE_DIR` still override those jobs.
 Keep the README, canonical agent instructions and license/notice files at the
 repository root.
 

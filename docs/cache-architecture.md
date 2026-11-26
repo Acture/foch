@@ -2,8 +2,9 @@
 
 Foch keeps user-visible persistent caches below one root. `FOCH_CACHE_ROOT` is
 the only root override. Without it, Foch uses `dirs::cache_dir()/foch`; if that
-path cannot be made writable, it falls back to `target/foch-cache` below the
-repository root.
+path cannot be made writable, it falls back to `foch-cache` under the shared
+artifact root (`FOCH_ARTIFACT_DIR`, or the platform data directory), not a
+worktree `target/`.
 
 ## Layers
 
