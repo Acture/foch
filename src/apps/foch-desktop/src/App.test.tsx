@@ -588,7 +588,8 @@ function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
 		cancelBaseDataBuild: vi.fn(async (): Promise<SetupStatus> => ({
 			...emptySetup(),
 			phase: "build_cancelled",
-			message: "The base data build was cancelled. A partial snapshot was not installed.",
+			message:
+				"The base data build was cancelled. A partial snapshot was not installed.",
 		})),
 		...overrides,
 	};
@@ -790,12 +791,10 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			}
 			return { version: "1.37.5", installPath: path };
 		});
-		const saveGamePath = vi.fn(
-			async (path: string): Promise<VerifiedGamePath> => ({
-				version: "1.37.5",
-				installPath: path,
-			}),
-		);
+		const saveGamePath = vi.fn(async (path: string): Promise<VerifiedGamePath> => ({
+			version: "1.37.5",
+			installPath: path,
+		}));
 		const client = createClient({
 			inspectInput: vi.fn(async (): Promise<InputInspection> => missingPath),
 			verifyGamePath,
@@ -816,6 +815,42 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		await waitFor((): void => {
 			expect(saveGamePath).toHaveBeenCalledWith("D:\\EU4");
 		});
+	});
+
+	it("shows a path error when saving the verified EU4 install fails", async (): Promise<void> => {
+		const missingPath: InputInspection = {
+			...BLOCKED_INSPECTION,
+			game: { ...BLOCKED_INSPECTION.game, version: null, installPath: null },
+			issues: [
+				{
+					id: "eu4_install_unavailable",
+					title: "Europa Universalis IV is not ready",
+					detail: "EU4 was not found.",
+					action: "Select the EU4 installation directory.",
+				},
+			],
+		};
+		const saveGamePath = vi.fn(async (): Promise<VerifiedGamePath> => {
+			throw {
+				code: "config_unavailable",
+				message: "Foch could not open its configuration directory",
+			};
+		});
+		const client = createClient({
+			inspectInput: vi.fn(async (): Promise<InputInspection> => missingPath),
+			saveGamePath,
+		});
+		renderMerge(client);
+
+		const field = await screen.findByLabelText("EU4 installation directory");
+		fireEvent.change(field, { target: { value: "D:\\EU4" } });
+		fireEvent.click(screen.getByRole("button", { name: "Verify path" }));
+		expect(await screen.findByText("Verified version 1.37.5")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Use this EU4 install" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"could not open its configuration directory",
+		);
+		expect(saveGamePath).toHaveBeenCalledWith("D:\\EU4");
 	});
 
 	it("explains why remote data install is not required and builds with real counts", async (): Promise<void> => {
@@ -840,7 +875,8 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			status = {
 				...status,
 				phase: "build_cancelled",
-				message: "The base data build was cancelled. A partial snapshot was not installed.",
+				message:
+					"The base data build was cancelled. A partial snapshot was not installed.",
 				buildId: null,
 			};
 			return status;
@@ -871,9 +907,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 
 	it("ignores a second click while a base data build is starting", async (): Promise<void> => {
 		const pending = deferred<SetupStatus>();
-		const startBaseDataBuild = vi.fn(
-			(): Promise<SetupStatus> => pending.promise,
-		);
+		const startBaseDataBuild = vi.fn((): Promise<SetupStatus> => pending.promise);
 		const client = createClient({
 			inspectInput: vi.fn(async (): Promise<InputInspection> => BLOCKED_INSPECTION),
 			startBaseDataBuild,
@@ -1490,12 +1524,42 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			async (): Promise<string> =>
 				'[[resolutions]]\nfile = "history/countries/TES - Test.txt"\nprefer_mod = "ugc-300002"\n',
 		);
+		const checked = setupFromInspection(READY_INSPECTION);
+		const rechecked = setupFromInspection({
+			...READY_INSPECTION,
+			inspectionId: "inspection-recheck",
+		});
+		let setupStatus: SetupStatus = checked;
+		let recheckPolls = 0;
+		const startSetupCheck = vi.fn(async (): Promise<SetupStatus> => checked);
+		startSetupCheck.mockImplementation(async (): Promise<SetupStatus> => {
+			if (startSetupCheck.mock.calls.length === 1) {
+				setupStatus = checked;
+				return checked;
+			}
+			// The real command returns before the inspection finishes.
+			setupStatus = {
+				...checked,
+				phase: "checking",
+				stage: "game_install",
+			};
+			return setupStatus;
+		});
+		const getSetupStatus = vi.fn(async (): Promise<SetupStatus> => {
+			if (setupStatus.phase !== "checking") return setupStatus;
+			recheckPolls += 1;
+			if (recheckPolls < 2) return setupStatus;
+			setupStatus = rechecked;
+			return rechecked;
+		});
 		const client = createClient({
 			getMergeUnit,
 			startMergeAnalysis,
 			renderResolutionsToml,
+			startSetupCheck,
+			getSetupStatus,
 		});
-		renderMerge(client, 10_000);
+		renderMerge(client, 20);
 
 		fireEvent.click(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
@@ -1533,11 +1597,13 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		);
 		await waitFor((): void => {
 			expect(startMergeAnalysis).toHaveBeenLastCalledWith(
-				"inspection-ready",
+				"inspection-recheck",
 				"complete",
 				[PREFER_B_FILE_RULE],
 			);
 		});
+		expect(recheckPolls).toBeGreaterThanOrEqual(2);
+		expect(getSetupStatus).toHaveBeenCalled();
 		await waitFor((): void => {
 			expect(
 				screen.queryByRole("heading", { name: /Pending resolutions/ }),

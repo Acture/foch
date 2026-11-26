@@ -39,13 +39,21 @@ pub(crate) fn get_setup_status(state: State<'_, DesktopState>) -> SetupStatus {
 }
 
 #[tauri::command]
-pub(crate) fn verify_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
-	crate::setup::verify_game_path(std::path::Path::new(&path))
+pub(crate) async fn verify_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
+	tauri::async_runtime::spawn_blocking(move || {
+		crate::setup::verify_game_path(std::path::Path::new(&path))
+	})
+	.await
+	.map_err(|error| DesktopError::internal(format!("game path verification failed: {error}")))?
 }
 
 #[tauri::command]
-pub(crate) fn save_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
-	crate::setup::save_game_path(std::path::Path::new(&path))
+pub(crate) async fn save_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
+	tauri::async_runtime::spawn_blocking(move || {
+		crate::setup::save_game_path(std::path::Path::new(&path))
+	})
+	.await
+	.map_err(|error| DesktopError::internal(format!("game path save failed: {error}")))?
 }
 
 #[tauri::command]

@@ -174,6 +174,7 @@ impl SetupController {
 			book.build_completed = None;
 			book.build_total = None;
 			book.cancel = None;
+			book.stages.clear();
 			record_stage(&mut book, "game_install", None, None);
 		}
 		let controller = self.clone();
@@ -301,7 +302,9 @@ impl SetupController {
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			self.inner.work.build(&spec, on_progress, &cancel)
 		}));
-		if cancel.load(Ordering::Relaxed) {
+		// Cancel during install can land after the snapshot is already in place.
+		// A finished install still rechecks; only an unfinished build is cancelled.
+		if cancel.load(Ordering::Relaxed) && !matches!(result, Ok(Ok(()))) {
 			self.finish_cancelled();
 			return;
 		}
@@ -855,6 +858,147 @@ mod tests {
 		});
 		assert_eq!(work.installs.load(Ordering::Relaxed), 0);
 		assert!(desktop.setup_status().inspection.is_some());
+	}
+
+	struct InstallThenSucceed {
+		entered: Mutex<Option<Sender<()>>>,
+		release: Mutex<Receiver<()>>,
+		installs: AtomicUsize,
+	}
+
+	impl SetupWork for InstallThenSucceed {
+		fn build(
+			&self,
+			_spec: &BuildSpec,
+			_on_progress: BuildProgressListener,
+			_cancel: &Arc<AtomicBool>,
+		) -> Result<(), String> {
+			if let Some(entered) = self.entered.lock().unwrap().take() {
+				entered.send(()).expect("announce install");
+			}
+			self.release
+				.lock()
+				.unwrap()
+				.recv()
+				.expect("release install");
+			self.installs.fetch_add(1, Ordering::Relaxed);
+			Ok(())
+		}
+	}
+
+	#[test]
+	fn cancel_after_install_ok_still_rechecks() {
+		let (release_inspect_tx, release_inspect_rx) = mpsc::channel();
+		release_inspect_tx.send(()).expect("first inspect");
+		let runner = Arc::new(ScriptedRunner {
+			entered: Mutex::new(None),
+			release: Mutex::new(release_inspect_rx),
+			calls: AtomicUsize::new(0),
+			inspection: blocked_inspection("C:\\EU4"),
+		});
+		let (entered_tx, entered_rx) = mpsc::channel();
+		let (release_tx, release_rx) = mpsc::channel();
+		let work = Arc::new(InstallThenSucceed {
+			entered: Mutex::new(Some(entered_tx)),
+			release: Mutex::new(release_rx),
+			installs: AtomicUsize::new(0),
+		});
+		let desktop = DesktopState::with_setup(runner, work.clone());
+		desktop.start_setup_check().expect("check");
+		wait_until(Duration::from_secs(5), || {
+			desktop.setup_status().phase == SetupPhase::Checked
+		});
+		let started = desktop.start_base_data_build().expect("build");
+		let build_id = started.build_id.clone().expect("build id");
+		entered_rx
+			.recv_timeout(Duration::from_secs(5))
+			.expect("install entered");
+		desktop.cancel_base_data_build(&build_id).expect("cancel");
+		release_inspect_tx.send(()).expect("recheck");
+		release_tx.send(()).expect("install finished");
+		wait_until(Duration::from_secs(5), || {
+			matches!(
+				desktop.setup_status().phase,
+				SetupPhase::Checked | SetupPhase::Failed | SetupPhase::BuildCancelled
+			)
+		});
+		let done = desktop.setup_status();
+		assert_eq!(
+			done.phase,
+			SetupPhase::Checked,
+			"a finished install must recheck, not report nothing installed: {:?}",
+			done.message
+		);
+		assert_eq!(work.installs.load(Ordering::Relaxed), 1);
+		assert!(done.message.is_none());
+	}
+
+	struct StageThenFail;
+
+	impl SetupWork for StageThenFail {
+		fn build(
+			&self,
+			_spec: &BuildSpec,
+			on_progress: BuildProgressListener,
+			_cancel: &Arc<AtomicBool>,
+		) -> Result<(), String> {
+			on_progress(BuildProgress {
+				stage: "parse_documents".to_string(),
+				completed: Some(1),
+				total: Some(2),
+			});
+			Err("build failed before install".to_string())
+		}
+	}
+
+	#[test]
+	fn start_check_drops_stale_build_stages() {
+		let (release_inspect_tx, release_inspect_rx) = mpsc::channel();
+		release_inspect_tx.send(()).expect("first inspect");
+		let runner = Arc::new(ScriptedRunner {
+			entered: Mutex::new(None),
+			release: Mutex::new(release_inspect_rx),
+			calls: AtomicUsize::new(0),
+			inspection: blocked_inspection("C:\\EU4"),
+		});
+		let desktop = DesktopState::with_setup(runner, Arc::new(StageThenFail));
+		desktop.start_setup_check().expect("check");
+		wait_until(Duration::from_secs(5), || {
+			desktop.setup_status().phase == SetupPhase::Checked
+		});
+		desktop.start_base_data_build().expect("build");
+		wait_until(Duration::from_secs(5), || {
+			desktop.setup_status().phase == SetupPhase::BuildFailed
+		});
+		let failed = desktop.setup_status();
+		assert!(
+			failed
+				.stages
+				.iter()
+				.any(|stage| stage.stage == "parse_documents"),
+			"the failed build records parse_documents"
+		);
+		let restarted = desktop.start_setup_check().expect("recheck");
+		assert_eq!(restarted.phase, SetupPhase::Checking);
+		assert_eq!(
+			restarted
+				.stages
+				.iter()
+				.map(|stage| stage.stage.as_str())
+				.collect::<Vec<_>>(),
+			vec!["game_install"]
+		);
+		release_inspect_tx.send(()).expect("release recheck");
+		wait_until(Duration::from_secs(5), || {
+			desktop.setup_status().phase == SetupPhase::Checked
+		});
+		assert!(
+			desktop
+				.setup_status()
+				.stages
+				.iter()
+				.all(|stage| stage.stage != "parse_documents")
+		);
 	}
 
 	struct EnvVarGuard {

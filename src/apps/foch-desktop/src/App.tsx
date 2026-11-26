@@ -110,9 +110,15 @@ function errorMessage(error: unknown): string {
 	return parseDesktopCommandError(error).message;
 }
 
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve): void => {
+		setTimeout(resolve, ms);
+	});
+}
+
 function stageLabel(copy: Copy, stage: string | null): string {
 	if (stage === null) return copy.merge.startingCheck;
-	if (stage !== null && Object.hasOwn(copy.merge.stages, stage)) {
+	if (Object.prototype.hasOwnProperty.call(copy.merge.stages, stage)) {
 		return copy.merge.stages[stage as keyof typeof copy.merge.stages];
 	}
 	return stage;
@@ -1081,7 +1087,9 @@ function SetupPreparation({
 					onSubmit={(event: FormEvent<HTMLFormElement>): void => {
 						event.preventDefault();
 						if (verified === null || verified.installPath !== draft) return;
-						void onSave(verified.installPath);
+						void onSave(verified.installPath).catch((error: unknown): void => {
+							setPathError(errorMessage(error));
+						});
 					}}
 				>
 					<label>
@@ -1209,6 +1217,7 @@ export default function App({
 		useState<AsyncValue<InputInspection>>(initialAsyncValue<InputInspection>());
 	const [setup, setSetup] = useState<SetupStatus | null>(null);
 	const buildLock = useRef<boolean>(false);
+	const mounted = useRef(true);
 	const [buildLocked, setBuildLocked] = useState<boolean>(false);
 	const [starting, setStarting] = useState<boolean>(false);
 	const [cancelling, setCancelling] = useState<boolean>(false);
@@ -1249,6 +1258,13 @@ export default function App({
 	const copy = copyFor(language);
 	const playsetNameForPlugins =
 		inspection.value?.playset?.name ?? overview.value?.playset ?? null;
+
+	useEffect((): (() => void) => {
+		mounted.current = true;
+		return (): void => {
+			mounted.current = false;
+		};
+	}, []);
 
 	const reloadOverview = useCallback(async (): Promise<void> => {
 		setOverview((current): AsyncValue<DesktopPluginOverview> => ({
@@ -1637,16 +1653,26 @@ export default function App({
 		if (pendingResolutions.length === 0 || reanalyzing) return;
 		setReanalyzing(true);
 		try {
-			// A fresh inspection token is required before another analysis.
-			const status = await client.startSetupCheck();
+			// start_check returns while the inspection is still running.
+			let status = await client.startSetupCheck();
+			if (!mounted.current) return;
 			applySetup(status);
+			while (status.phase === "checking") {
+				await delay(pollIntervalMs);
+				if (!mounted.current) return;
+				status = await client.getSetupStatus();
+				if (!mounted.current) return;
+				applySetup(status);
+			}
 			const fresh = status.inspection;
 			if (fresh === null || status.phase !== "checked") return;
 			const mode: AnalysisInputMode = analysisInputScope?.mode ?? "complete";
 			const started = await startAnalysis(mode, pendingResolutions, fresh);
-			if (started) setPendingResolutions([]);
+			if (started && mounted.current) setPendingResolutions([]);
+		} catch (error: unknown) {
+			if (mounted.current) setAnalysisError(errorMessage(error));
 		} finally {
-			setReanalyzing(false);
+			if (mounted.current) setReanalyzing(false);
 		}
 	};
 
