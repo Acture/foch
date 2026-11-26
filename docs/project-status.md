@@ -145,9 +145,27 @@ are `linux-x64`, `darwin-arm64` and `win32-x64`. Every channel must report the
 release version and its embedded CWT identity. Releases include no EU4 base
 data; build it from an installed game.
 
-The release includes the moderate rustls dependency advisory documented in
-[known issues](known-issues.md); the dependency update is tracked for a later
-release. Offline merge checks do not establish network-library security.
+Published `0.0.2` still ships rustls `0.23.40`, which has the moderate
+[GHSA-2mjx-qc3c-rqvc](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)
+defect documented in [known issues](known-issues.md): a TLS 1.3 handshake
+message can be accepted at the wrong encryption level. Upstream states that
+handshake authentication stays intact. The patched line is rustls `>=0.23.45`.
+The `v0.0.2` tag is not rewritten. This workspace lock resolves rustls
+`0.23.46`, the newest `0.23` release, into `foch-cli` via `foch`, reqwest
+`0.12.28`, hyper-rustls `0.27.9` and tokio-rustls `0.26.4`. That source fix
+waits for the next release. Offline merge checks do not use TLS and do not
+establish network-library security.
+
+`glib` `0.18.5` carries
+[RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
+(GHSA-wrw7-89jp-8q8g): unsound `VariantStrIter` iterator implementations,
+patched in glib `>=0.20.0`. The `foch-cli` closure on the host and on
+`x86_64-unknown-linux-gnu` has no `glib` package. The Linux `foch-desktop`
+closure reaches `glib` `0.18.5` through tauri `2.11.5`, webkit2gtk `2.0.2`
+and gtk `0.18.2`. Those crates require glib `^0.18` and `0.18`. crates.io
+ends the `0.18` line at `0.18.5`, so a lockfile bump cannot clear the
+advisory without leaving the GTK 0.18 stack. The macOS desktop closure does
+not link `glib`. The lock stays on `0.18.5`.
 
 Follow the [release runbook](RELEASE_CHECKLIST.md). The VS Code preview remains
 independently versioned at `0.1.0`; its bundled server follows the CLI release.
