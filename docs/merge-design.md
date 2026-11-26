@@ -58,7 +58,11 @@ inspect input
 ```
 
 `foch merge <input> --out <dir>` performs analysis and review without touching
-the target. A TTY confirmation or `--confirm` authorizes commit. In
+the target. The analysis always runs to completion before the review; a
+terminal does not start an in-analysis per-conflict prompt. `--cli-prompt` is
+the explicit opt-in that asks for a decision on each unresolved conflict while
+the analysis runs (the migration path for the removed TTY-detected conflict
+TUI). A TTY confirmation or `--confirm` authorizes commit. In
 non-interactive use, analysis remains read-only unless `--confirm` is also
 present.
 
@@ -151,7 +155,7 @@ paths, double resolution, and pending units are invariant failures. If
 cross-file pruning removes generated output, the unit remains in review with
 `output_path = null`; its semantic disposition is not rewritten.
 
-An implicit interactive/TUI defer remains `needs_user_choice`. `deferred` is
+An interactive-prompt defer remains `needs_user_choice`. `deferred` is
 reserved for an explicit configured defer decision. `--force` must not emit an
 explicitly deferred unit.
 
@@ -361,6 +365,11 @@ unrelated safe units may still commit.
 - `blocked` — an explicit non-conflict gate prevents activation/commit.
 - `fatal` — input, validation, emission, I/O, cancellation, or invariant failure
   prevents a trustworthy analyzed result.
+
+Omitting output that is equivalent to what the game or another kept file
+already provides (`noop_skipped_vs_vanilla`, `cross_file_noop_skipped`) is not
+a fallback: those records stay in the report and review, but they do not
+downgrade `ready` to `partial_success`.
 
 A partial result is not permission to activate the generated mod blindly. The
 report must identify withheld units and activation safety.

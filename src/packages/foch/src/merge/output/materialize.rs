@@ -5577,6 +5577,13 @@ mod tests {
 		assert_eq!(pruned[0].output_path, None);
 		assert!(
 			pruned[0]
+				.handler_resolutions
+				.iter()
+				.any(|record| { record.action == crate::model::CROSS_FILE_NOOP_SKIPPED_ACTION }),
+			"cross-file omission stays on the review unit: {pruned:?}"
+		);
+		assert!(
+			pruned[0]
 				.notes
 				.iter()
 				.any(|note| note.contains("pruned from output"))

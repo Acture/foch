@@ -77,11 +77,13 @@ or APFS) leaves one file for the pair. `foch check` reports each group as
 **Workaround:** treat the warning as a review item. Check which spelling the
 game loads and fix the source mods or the merged output by hand.
 
-## TUI conflict resolver has limited Windows coverage
+## Interactive conflict prompt has limited Windows coverage
 
-The terminal conflict resolver works on Linux and macOS in regular TTYs. Windows terminal behavior has had less alpha testing.
+`foch merge` completes the full analysis before review by default. The
+explicit `--cli-prompt` terminal prompt works on Linux and macOS in regular
+TTYs; Windows terminal behavior has had less alpha testing.
 
-**Workaround:** on Windows, prefer prewritten `foch.toml` resolutions or `--non-interactive` batch runs until your terminal path is validated. Please report terminal, shell, and reproduction details for TUI bugs.
+**Workaround:** on Windows, prefer prewritten `foch.toml` resolutions or `--non-interactive` batch runs until your terminal path is validated. Please report terminal, shell, and reproduction details for prompt bugs.
 
 ## VS Code extension is preview quality
 

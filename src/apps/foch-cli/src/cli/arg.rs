@@ -450,7 +450,8 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub review_all: bool,
 
-	/// Use the simple stdin/stderr prompt instead of the ratatui interactive UI.
+	/// Prompt on stdin/stderr for a decision on each unresolved conflict
+	/// during analysis. By default the full analysis completes before review.
 	#[arg(long)]
 	pub cli_prompt: bool,
 

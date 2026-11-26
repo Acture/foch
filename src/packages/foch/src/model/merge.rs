@@ -975,6 +975,26 @@ pub struct HandlerResolutionRecord {
 	pub rationale: Option<String>,
 }
 
+/// The merged file was AST-equal to vanilla, so shipping it would only shadow
+/// the game file.
+pub const NOOP_SKIPPED_VS_VANILLA_ACTION: &str = "noop_skipped_vs_vanilla";
+/// Every merge key of the generated file is already defined identically in
+/// another kept file of the same family namespace.
+pub const CROSS_FILE_NOOP_SKIPPED_ACTION: &str = "cross_file_noop_skipped";
+
+impl HandlerResolutionRecord {
+	/// Whether the record only omits output equivalent to what the game or
+	/// another kept file already provides. Such an omission is not a fallback
+	/// and must not downgrade the merge status, but the record itself stays in
+	/// the report and review.
+	pub fn is_equivalent_omission(&self) -> bool {
+		matches!(
+			self.action.as_str(),
+			NOOP_SKIPPED_VS_VANILLA_ACTION | CROSS_FILE_NOOP_SKIPPED_ACTION
+		)
+	}
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergeTraceContributor {
 	pub mod_id: String,
