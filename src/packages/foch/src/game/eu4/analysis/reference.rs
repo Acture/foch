@@ -1713,6 +1713,23 @@ mod tests {
 	}
 
 	#[test]
+	fn a_texture_is_not_called_missing_when_the_base_game_is_not_loaded() {
+		let mut fixture = Fixture::new().mod_with("mod-a", &[], &[]);
+		fixture.base_loaded = false;
+		fixture.declare_sprite(
+			"GFX_foo",
+			"gfx/interface/foo.dds",
+			"mod-a",
+			"interface/main.gfx",
+		);
+		fixture.reference_sprite("GFX_foo", "mod-a", "interface/main.gui", 9);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "unresolved-reference-unknown");
+		assert_eq!(findings[0].severity, Severity::Info);
+	}
+
+	#[test]
 	fn a_sprite_the_playset_holds_loads() {
 		let mut fixture = Fixture::new().mod_with("mod-a", &[], &[]);
 		fixture.declare_sprite(
