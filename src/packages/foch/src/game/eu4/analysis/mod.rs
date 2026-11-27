@@ -1,3 +1,4 @@
+pub mod reference;
 pub mod report;
 pub mod rules;
 

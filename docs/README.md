@@ -7,6 +7,7 @@ contracts live here. Linear owns active work and dependencies.
 
 - [Project manifest](foch-project-manifest.md) — compose ordered inputs in `foch.toml`.
 - [Resolution reference](foch-toml-resolutions.md) — review and resolve conflicts.
+- [Reference diagnostics](reference-diagnostics.md) — why a resource reference does not resolve.
 - [VS Code/LSP preview](lsp-0.1-preview.md) — editor setup and supported behavior.
 - [Inline EU4 runtime tests](foch-runtime-tests.md) — annotations, commands and the runner contract.
 - [Offline test layer](foch-offline-tests.md) — the no-game interpreted layer, its decompilation-pinned semantics catalog and its refusal discipline.

@@ -1237,45 +1237,67 @@ fn classify_reference_target(current_family_id: &str, key: &str) -> ReferenceTar
 	ReferenceTargetClass::Unknown
 }
 
-fn definition_reference_family(key: &str) -> Option<&'static str> {
-	match key {
-		"fervor_definition" => Some("common/fervor"),
-		"decree_definition" => Some("common/decrees"),
-		"federation_advancement_definition" => Some("common/federation_advancements"),
-		"golden_bull_definition" => Some("common/golden_bulls"),
-		"flagship_modification_definition" => Some("common/flagship_modifications"),
-		"holy_order_definition" => Some("common/holy_orders"),
-		"naval_doctrine_definition" => Some("common/naval_doctrines"),
-		"defender_of_faith_definition" => Some("common/defender_of_faith"),
-		"isolationism_definition" => Some("common/isolationism"),
-		"professionalism_definition" => Some("common/professionalism"),
-		"powerprojection_definition" => Some("common/powerprojection"),
-		"subject_type_upgrade_definition" => Some("common/subject_type_upgrades"),
-		"government_rank_definition" => Some("common/government_ranks"),
-		"achievement_definition" => Some("common/achievements"),
-		"age_definition" => Some("common/ages"),
-		"institution_definition" => Some("common/institutions"),
-		"great_project_definition" => Some("common/great_projects"),
-		"culture_definition" => Some("common/cultures"),
-		"advisor_type_definition" => Some("common/advisortypes"),
-		"government_name_definition" => Some("common/government_names"),
-		"custom_gui_definition" => Some("common/custom_gui"),
-		"event_modifier_definition" => Some("common/event_modifiers"),
-		"province_triggered_modifier_definition" => Some("common/province_triggered_modifiers"),
-		"cb_type_definition" => Some("common/cb_types"),
-		"idea_group_definition" => Some("common/ideas"),
-		"diplomatic_action_definition" => Some("common/diplomatic_actions"),
-		"scripted_trigger_definition" => Some("common/scripted_triggers"),
-		"new_diplomatic_action_definition" => Some("common/new_diplomatic_actions"),
-		"building_definition" => Some("common/buildings"),
-		"province_name_table" => Some("common/province_names"),
-		"tile_definition" => Some("map/random/tiles"),
-		"random_name_table" => Some("map/random_names"),
-		"random_map_scenario" => Some("map/random/scenarios"),
-		"advisor_definition" => Some("history/advisors"),
-		"technology_definition" => Some("common/technologies"),
-		_ => None,
-	}
+/// The content families whose definitions the index records under a
+/// definition key, and the family each key's declarations live in.
+pub(crate) const DEFINITION_REFERENCE_FAMILIES: &[(&str, &str)] = &[
+	("fervor_definition", "common/fervor"),
+	("decree_definition", "common/decrees"),
+	(
+		"federation_advancement_definition",
+		"common/federation_advancements",
+	),
+	("golden_bull_definition", "common/golden_bulls"),
+	(
+		"flagship_modification_definition",
+		"common/flagship_modifications",
+	),
+	("holy_order_definition", "common/holy_orders"),
+	("naval_doctrine_definition", "common/naval_doctrines"),
+	("defender_of_faith_definition", "common/defender_of_faith"),
+	("isolationism_definition", "common/isolationism"),
+	("professionalism_definition", "common/professionalism"),
+	("powerprojection_definition", "common/powerprojection"),
+	(
+		"subject_type_upgrade_definition",
+		"common/subject_type_upgrades",
+	),
+	("government_rank_definition", "common/government_ranks"),
+	("achievement_definition", "common/achievements"),
+	("age_definition", "common/ages"),
+	("institution_definition", "common/institutions"),
+	("great_project_definition", "common/great_projects"),
+	("culture_definition", "common/cultures"),
+	("advisor_type_definition", "common/advisortypes"),
+	("government_name_definition", "common/government_names"),
+	("custom_gui_definition", "common/custom_gui"),
+	("event_modifier_definition", "common/event_modifiers"),
+	(
+		"province_triggered_modifier_definition",
+		"common/province_triggered_modifiers",
+	),
+	("cb_type_definition", "common/cb_types"),
+	("idea_group_definition", "common/ideas"),
+	("diplomatic_action_definition", "common/diplomatic_actions"),
+	("scripted_trigger_definition", "common/scripted_triggers"),
+	(
+		"new_diplomatic_action_definition",
+		"common/new_diplomatic_actions",
+	),
+	("building_definition", "common/buildings"),
+	("province_name_table", "common/province_names"),
+	("tile_definition", "map/random/tiles"),
+	("random_name_table", "map/random_names"),
+	("random_map_scenario", "map/random/scenarios"),
+	("advisor_definition", "history/advisors"),
+	("technology_definition", "common/technologies"),
+];
+
+/// The content family a definition key's declarations live in.
+pub(crate) fn definition_reference_family(key: &str) -> Option<&'static str> {
+	DEFINITION_REFERENCE_FAMILIES
+		.iter()
+		.find(|(name, _)| *name == key)
+		.map(|(_, family)| *family)
 }
 
 fn gameplay_target_family(key: &str) -> Option<&'static str> {

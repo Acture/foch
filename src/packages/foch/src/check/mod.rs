@@ -1,6 +1,9 @@
 pub(crate) mod runtime;
 
 use crate::check::runtime::{build_overlap_findings, build_runtime_state_from_input};
+use crate::game::eu4::analysis::reference::{
+	DeclarationIndex, PlaysetFacts, ReferenceContext, unresolved_references,
+};
 use crate::game::eu4::analysis::rules::{
 	check_dependency_misuse, check_duplicate_mod_identity, check_duplicate_scripted_effect,
 	check_file_conflict, check_missing_dependency, check_missing_descriptor, check_required_fields,
@@ -312,6 +315,49 @@ pub fn run_checks_with_options(request: InputRequest, options: CheckOptions) -> 
 				.filter(|finding| finding.rule_id != "mergeable-overlap"),
 		);
 		result.findings.extend(runtime_overlap_findings);
+		let reference_findings = run_progress_stage(
+			"reference resolution",
+			|| {
+				let declarations = DeclarationIndex::from_index(&ctx.semantic_index);
+				let facts = PlaysetFacts::from_mods(&ctx.mods);
+				let files = resolved
+					.file_inventory
+					.keys()
+					.cloned()
+					.collect::<HashSet<GamePathBuf>>();
+				let context = ReferenceContext {
+					declarations: &declarations,
+					facts: &facts,
+					files: &files,
+					base_loaded: resolved.installed_base_snapshot.is_some(),
+					inventory_complete: resolved.effective_retained_paths.is_none(),
+					base_identity: resolved.installed_base_snapshot.as_ref().map(|snapshot| {
+						format!(
+							"{}@{}",
+							snapshot.metadata.game, snapshot.metadata.game_version
+						)
+					}),
+					input_identity: ctx
+						.playlist_path
+						.file_name()
+						.map(|name| name.to_string_lossy().into_owned())
+						.unwrap_or_else(|| ctx.playlist_path.display().to_string()),
+				};
+				unresolved_references(&ctx.semantic_index, &context)
+			},
+			|findings| format!("findings={}", findings.len()),
+		);
+		// The reference analysis says why a reference does not resolve, so it
+		// replaces the generic report of the same site.
+		let explained_sites = reference_findings
+			.iter()
+			.map(finding_site)
+			.collect::<HashSet<_>>();
+		result.findings.retain(|finding| {
+			finding.rule_id != "unresolved-call-target"
+				|| !explained_sites.contains(&finding_site(finding))
+		});
+		result.findings.extend(reference_findings);
 		result.findings.extend(run_progress_stage(
 			"dependency misuse",
 			|| check_dependency_misuse(&ctx),
@@ -610,6 +656,24 @@ fn transitive_mod_ancestors(mod_dag: &ModDag, mod_id: &ModId) -> HashSet<ModId> 
 	}
 
 	ancestors
+}
+
+/// The site a finding names, so two analyses agree on which finding is
+/// about which place.
+fn finding_site(
+	finding: &Finding,
+) -> (
+	Option<String>,
+	Option<GamePathBuf>,
+	Option<usize>,
+	Option<usize>,
+) {
+	(
+		finding.mod_id.clone(),
+		finding.path.clone(),
+		finding.line,
+		finding.column,
+	)
 }
 
 /// Pull the symbol name out of an overlap finding message such as

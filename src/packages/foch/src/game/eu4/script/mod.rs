@@ -684,6 +684,19 @@ fn walk_statements<'a>(
 				}) {
 					push_resource_reference(index, ctx, key_span, LOCALISATION_REFERENCE, &text);
 				}
+				if let Some(type_name) = binding
+					.matched
+					.and_then(|field_match| typed_definition_name(field_match.value()))
+					&& let Some(text) = scalar_text(value)
+				{
+					push_resource_reference(
+						index,
+						ctx,
+						key_span,
+						&format!("{TYPED_REFERENCE_KEY}{type_name}"),
+						&text,
+					);
+				}
 				if let Some(event_id) = scalar_text(value).filter(|_| {
 					binding
 						.matched
@@ -962,6 +975,47 @@ fn definition_symbol_kind(root: &CompiledRoot) -> Option<SymbolKind> {
 /// Key name for a localisation key the script needs: a value the rules type
 /// as one, or a key a definition's type requires (`$_title`).
 pub(crate) const LOCALISATION_REFERENCE: &str = "localisation_reference";
+
+/// Key name a reference to a definition of a schema type is recorded under,
+/// with the type's name after the colon (`type_reference:building`).
+pub(crate) const TYPED_REFERENCE_KEY: &str = "type_reference:";
+
+/// Key name a sprite declaration is recorded under, with the sprite's name
+/// after the colon (`sprite_definition:GFX_foo`).
+pub(crate) const SPRITE_DEFINITION_KEY: &str = "sprite_definition:";
+
+/// The GUI block types whose child blocks declare a sprite by their
+/// `name` and load its texture from their `texturefile`.
+const SPRITE_DECLARING_GUI_TYPES: &[&str] = &[
+	"spriteType",
+	"textSpriteType",
+	"corneredTileSpriteType",
+	"frameAnimatedSpriteType",
+	"maskedShieldType",
+	"objectType",
+];
+
+/// Key name a GUI's reference to a sprite is recorded under.
+pub(crate) const SPRITE_REFERENCE_KEY: &str = "sprite";
+
+/// Key name an event namespace declaration is recorded under.
+pub(crate) const EVENT_NAMESPACE_KEY: &str = "event_namespace";
+
+/// The name of the definition a rule value names, when the rules type it as
+/// one: the schema's `<type>` marker for a type the schema declares.
+///
+/// The marker names a kind of definition, not a definition: the value the
+/// script writes is the name of one.
+fn typed_definition_name(value: &CompiledRuleValue) -> Option<&str> {
+	let text = match value {
+		CompiledRuleValue::Scalar(text) | CompiledRuleValue::Marker(text) => text.as_str(),
+		_ => return None,
+	};
+	let name = text.strip_prefix('<')?.strip_suffix('>')?;
+	crate::game::eu4::cwt::schema_type_families()
+		.contains_key(name)
+		.then_some(name)
+}
 
 /// Whether a rule value is a localisation key. Synced localisation (a
 /// ruler's or leader's name) may be the text itself, as inline localisation
@@ -1423,12 +1477,25 @@ fn record_ui_block_semantics(
 		return;
 	}
 	index.ui_definitions.push(UiDefinition {
-		name,
+		name: name.clone(),
 		mod_id: ctx.mod_id.to_string(),
 		path: ctx.path.to_owned(),
 		line: key_span.start.line,
 		column: key_span.start.column,
 	});
+	if SPRITE_DECLARING_GUI_TYPES.contains(&key) {
+		// A sprite is declared by the block that names it and the texture it
+		// loads. The engine reads the two together, so the declaration is
+		// recorded under the sprite's name with the texture as its value.
+		index.resource_references.push(ResourceReference {
+			key: format!("{SPRITE_DEFINITION_KEY}{name}"),
+			value: extract_assignment_scalar(items, "texturefile").unwrap_or_default(),
+			mod_id: ctx.mod_id.to_string(),
+			path: ctx.path.to_owned(),
+			line: key_span.start.line,
+			column: key_span.start.column,
+		});
+	}
 }
 
 fn record_alias_usage(
@@ -1929,7 +1996,7 @@ fn is_ui_resource_key(key: &str) -> bool {
 			| "texturefile"
 			| "icon" | "iconType"
 			| "pdxmesh"
-			| "mesh"
+			| "mesh" | SPRITE_REFERENCE_KEY
 	)
 }
 
