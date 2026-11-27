@@ -9,6 +9,7 @@ import {
 	useContext,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 
@@ -31,6 +32,8 @@ import {
 	type MergeUnitDetail,
 	type MergeUnitListItem,
 	type MergeUnitPage,
+	type SetupStatus,
+	type VerifiedGamePath,
 	hasMergeReview,
 	isAnalysisActive,
 	parseDesktopCommandError,
@@ -107,18 +110,46 @@ function errorMessage(error: unknown): string {
 	return parseDesktopCommandError(error).message;
 }
 
-async function loadInputInspection(
-	client: DesktopClient,
-): Promise<AsyncValue<InputInspection>> {
-	try {
-		return {
-			value: await client.inspectInput(),
-			loading: false,
-			error: null,
-		};
-	} catch (error: unknown) {
-		return { value: null, loading: false, error: errorMessage(error) };
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve): void => {
+		setTimeout(resolve, ms);
+	});
+}
+
+function stageLabel(copy: Copy, stage: string | null): string {
+	if (stage === null) return copy.merge.startingCheck;
+	if (Object.prototype.hasOwnProperty.call(copy.merge.stages, stage)) {
+		return copy.merge.stages[stage as keyof typeof copy.merge.stages];
 	}
+	return stage;
+}
+
+function SetupMeter({
+	label,
+	completed,
+	total,
+}: {
+	label: string;
+	completed: number | null;
+	total: number | null;
+}): JSX.Element {
+	const copy = useCopy();
+	const counted: boolean = completed !== null && total !== null;
+	return (
+		<div className="setup-meter">
+			<p>{label}</p>
+			{counted ? (
+				<>
+					<progress value={completed ?? undefined} max={total ?? undefined} />
+					<span>
+						{completed} / {total}
+					</span>
+				</>
+			) : (
+				<p>{copy.merge.stageNoCount}</p>
+			)}
+		</div>
+	);
 }
 
 function formatElapsed(elapsedMs: number): string {
@@ -209,6 +240,12 @@ function ReadinessRail({
 				<div>
 					<span>Version</span>
 					<strong>{inspection.game.version ?? copy.merge.versionMissing}</strong>
+				</div>
+				<div>
+					<span>{copy.merge.installPath}</span>
+					<strong title={inspection.game.installPath ?? undefined}>
+						{inspection.game.installPath ?? copy.merge.versionMissing}
+					</strong>
 				</div>
 				<div>
 					<span>{copy.merge.base}</span>
@@ -353,6 +390,7 @@ function RecoveryState({
 					</li>
 				)}
 			</ul>
+			<p className="recovery-warning">{copy.merge.sessionIgnore}</p>
 			<p className="recovery-warning">{copy.merge.incompleteWarning}</p>
 			<div className="recovery-actions">
 				<button
@@ -1008,12 +1046,179 @@ function PendingResolutionsBar({
 	);
 }
 
+function SetupPreparation({
+	inspection,
+	setup,
+	buildLocked,
+	onVerify,
+	onSave,
+	onBuild,
+	onCancel,
+}: {
+	inspection: InputInspection;
+	setup: SetupStatus | null;
+	buildLocked: boolean;
+	onVerify: (path: string) => Promise<VerifiedGamePath>;
+	onSave: (path: string) => Promise<void>;
+	onBuild: () => void;
+	onCancel: () => void;
+}): JSX.Element | null {
+	const copy = useCopy();
+	const [draft, setDraft] = useState<string>("");
+	const [verified, setVerified] = useState<VerifiedGamePath | null>(null);
+	const [pathError, setPathError] = useState<string | null>(null);
+	const [verifying, setVerifying] = useState<boolean>(false);
+	const needsPath: boolean =
+		inspection.game.installPath === null ||
+		inspection.issues.some((issue) => issue.id === "eu4_install_unavailable");
+	const canBuild: boolean =
+		!needsPath &&
+		inspection.game.installPath !== null &&
+		inspection.game.version !== null &&
+		inspection.baseData.state !== "ready";
+	const building: boolean = setup?.phase === "building" || buildLocked;
+	const countedStage: string | null = setup?.buildStage ?? setup?.stage ?? null;
+
+	return (
+		<div className="setup-preparation">
+			{needsPath && (
+				<form
+					className="path-form"
+					onSubmit={(event: FormEvent<HTMLFormElement>): void => {
+						event.preventDefault();
+						if (verified === null || verified.installPath !== draft) return;
+						void onSave(verified.installPath).catch((error: unknown): void => {
+							setPathError(errorMessage(error));
+						});
+					}}
+				>
+					<label>
+						{copy.merge.gamePathLabel}
+						<input
+							value={draft}
+							onChange={(event): void => {
+								setDraft(event.target.value);
+								setVerified(null);
+								setPathError(null);
+							}}
+						/>
+					</label>
+					<button
+						type="button"
+						className="secondary-action"
+						disabled={verifying || draft.trim() === ""}
+						onClick={(): void => {
+							setVerifying(true);
+							setPathError(null);
+							void onVerify(draft)
+								.then((result: VerifiedGamePath): void => {
+									setVerified(result);
+								})
+								.catch((error: unknown): void => {
+									setVerified(null);
+									setPathError(errorMessage(error));
+								})
+								.finally((): void => {
+									setVerifying(false);
+								});
+						}}
+					>
+						{copy.merge.verifyPath}
+					</button>
+					<button
+						type="submit"
+						className="primary-action"
+						disabled={verified === null || verified.installPath !== draft}
+					>
+						{copy.merge.useInstall}
+					</button>
+					{pathError !== null && (
+						<p className="error-copy" role="alert">
+							{pathError}
+						</p>
+					)}
+					{verified !== null && verified.installPath === draft && (
+						<p>
+							{copy.merge.verifiedVersion} {verified.version}
+						</p>
+					)}
+				</form>
+			)}
+			{canBuild && setup?.installNote !== null && setup?.installNote !== undefined && (
+				<div>
+					<p>{setup.installNote.reason}</p>
+					<p>
+						{setup.installNote.version} · {setup.installNote.rulesVersion}
+					</p>
+					<p className="setup-command">
+						<code>{setup.installNote.localCommand}</code>
+					</p>
+				</div>
+			)}
+			{building && setup !== null && (
+				<>
+					<SetupMeter
+						label={stageLabel(copy, countedStage)}
+						completed={
+							countedStage === "parse_documents"
+								? setup.documentCompleted
+								: setup.completed
+						}
+						total={
+							countedStage === "parse_documents" ? setup.documentTotal : setup.total
+						}
+					/>
+					{setup.documentTotal !== null &&
+						countedStage !== "parse_documents" &&
+						setup.documentCompleted !== null && (
+							<p>
+								{copy.merge.parsingDocuments} {setup.documentCompleted} /{" "}
+								{setup.documentTotal}
+							</p>
+						)}
+					<button
+						type="button"
+						className="secondary-action"
+						onClick={onCancel}
+						disabled={setup.buildId === null}
+					>
+						{copy.merge.cancelBuild}
+					</button>
+				</>
+			)}
+			{canBuild && !building && (
+				<button
+					type="button"
+					className="primary-action"
+					onClick={onBuild}
+					disabled={building}
+				>
+					{copy.merge.buildBase}
+				</button>
+			)}
+			{setup?.phase === "build_failed" && setup.message !== null && (
+				<p className="error-copy" role="alert">
+					{setup.message}
+				</p>
+			)}
+			{setup?.phase === "build_cancelled" && setup.message !== null && (
+				<p>{setup.message}</p>
+			)}
+			{setup?.phase === "building" && setup.message !== null && <p>{setup.message}</p>}
+		</div>
+	);
+}
+
 export default function App({
 	client = tauriDesktopClient,
 	pollIntervalMs = 900,
 }: AppProps): JSX.Element {
 	const [inspection, setInspection] =
 		useState<AsyncValue<InputInspection>>(initialAsyncValue<InputInspection>());
+	const [setup, setSetup] = useState<SetupStatus | null>(null);
+	const buildLock = useRef<boolean>(false);
+	const mounted = useRef(true);
+	const [buildLocked, setBuildLocked] = useState<boolean>(false);
 	const [starting, setStarting] = useState<boolean>(false);
 	const [cancelling, setCancelling] = useState<boolean>(false);
 	const [analysisId, setAnalysisId] = useState<string | null>(null);
@@ -1053,6 +1258,13 @@ export default function App({
 	const copy = copyFor(language);
 	const playsetNameForPlugins =
 		inspection.value?.playset?.name ?? overview.value?.playset ?? null;
+
+	useEffect((): (() => void) => {
+		mounted.current = true;
+		return (): void => {
+			mounted.current = false;
+		};
+	}, []);
 
 	const reloadOverview = useCallback(async (): Promise<void> => {
 		setOverview((current): AsyncValue<DesktopPluginOverview> => ({
@@ -1104,6 +1316,36 @@ export default function App({
 		};
 	}, [client, playsetNameForPlugins]);
 
+	const applySetup = useCallback((status: SetupStatus): void => {
+		setSetup(status);
+		if (status.phase === "failed" && status.inspection === null) {
+			setInspection({
+				value: null,
+				loading: false,
+				error: status.message ?? "EU4 setup could not be inspected",
+			});
+			return;
+		}
+		if (
+			status.inspection !== null &&
+			(status.phase === "checked" || status.phase === "failed")
+		) {
+			setInspection({
+				value: status.inspection,
+				loading: false,
+				error: status.phase === "failed" ? status.message : null,
+			});
+			return;
+		}
+		if (status.inspection !== null) {
+			setInspection({
+				value: status.inspection,
+				loading: status.phase === "checking",
+				error: null,
+			});
+		}
+	}, []);
+
 	const inspectInput = useCallback(async (): Promise<void> => {
 		setAnalysisError(null);
 		setInspection((current): AsyncValue<InputInspection> => ({
@@ -1111,8 +1353,16 @@ export default function App({
 			loading: true,
 			error: null,
 		}));
-		setInspection(await loadInputInspection(client));
-	}, [client]);
+		try {
+			applySetup(await client.startSetupCheck());
+		} catch (error: unknown) {
+			setInspection((current): AsyncValue<InputInspection> => ({
+				value: current.value,
+				loading: false,
+				error: errorMessage(error),
+			}));
+		}
+	}, [applySetup, client]);
 
 	// Keep the foch.toml preview in step with the queued rules, so the toggle
 	// always shows the exact TOML Rust would load.
@@ -1146,15 +1396,90 @@ export default function App({
 
 	useEffect((): (() => void) => {
 		let disposed = false;
-		void loadInputInspection(client).then(
-			(value: AsyncValue<InputInspection>): void => {
-				if (!disposed) setInspection(value);
+		void client.startSetupCheck().then(
+			(status: SetupStatus): void => {
+				if (!disposed) applySetup(status);
+			},
+			(error: unknown): void => {
+				if (!disposed) {
+					setInspection({
+						value: null,
+						loading: false,
+						error: errorMessage(error),
+					});
+				}
 			},
 		);
 		return (): void => {
 			disposed = true;
 		};
-	}, [client]);
+	}, [applySetup, client]);
+
+	useEffect((): (() => void) | undefined => {
+		if (setup?.phase !== "checking" && setup?.phase !== "building") return undefined;
+		let disposed = false;
+		const timer = setInterval((): void => {
+			void client.getSetupStatus().then(
+				(status: SetupStatus): void => {
+					if (!disposed) applySetup(status);
+				},
+				(): void => undefined,
+			);
+		}, pollIntervalMs);
+		return (): void => {
+			disposed = true;
+			clearInterval(timer);
+		};
+	}, [applySetup, client, pollIntervalMs, setup?.phase]);
+
+	useEffect((): void => {
+		if (setup?.phase !== "building") {
+			buildLock.current = false;
+			setBuildLocked(false);
+		}
+	}, [setup?.phase]);
+
+	const startBuild = useCallback((): void => {
+		if (buildLock.current || setup?.phase === "building") return;
+		buildLock.current = true;
+		setBuildLocked(true);
+		void client.startBaseDataBuild().then(
+			(status: SetupStatus): void => {
+				applySetup(status);
+			},
+			(error: unknown): void => {
+				buildLock.current = false;
+				setBuildLocked(false);
+				setAnalysisError(errorMessage(error));
+			},
+		);
+	}, [applySetup, client, setup?.phase]);
+
+	const cancelBuild = useCallback((): void => {
+		const buildId: string | null = setup?.buildId ?? null;
+		if (buildId === null) return;
+		void client.cancelBaseDataBuild(buildId).then(
+			(status: SetupStatus): void => {
+				applySetup(status);
+			},
+			(error: unknown): void => {
+				setAnalysisError(errorMessage(error));
+			},
+		);
+	}, [applySetup, client, setup?.buildId]);
+
+	const verifyPath = useCallback(
+		(path: string): Promise<VerifiedGamePath> => client.verifyGamePath(path),
+		[client],
+	);
+
+	const savePath = useCallback(
+		async (path: string): Promise<void> => {
+			await client.saveGamePath(path);
+			await inspectInput();
+		},
+		[client, inspectInput],
+	);
 
 	useEffect((): (() => void) | undefined => {
 		if (analysisId === null) return undefined;
@@ -1328,16 +1653,26 @@ export default function App({
 		if (pendingResolutions.length === 0 || reanalyzing) return;
 		setReanalyzing(true);
 		try {
-			// A fresh inspection token is required before another analysis.
-			const next = await loadInputInspection(client);
-			setInspection(next);
-			const fresh = next.value;
-			if (fresh === null) return;
+			// start_check returns while the inspection is still running.
+			let status = await client.startSetupCheck();
+			if (!mounted.current) return;
+			applySetup(status);
+			while (status.phase === "checking") {
+				await delay(pollIntervalMs);
+				if (!mounted.current) return;
+				status = await client.getSetupStatus();
+				if (!mounted.current) return;
+				applySetup(status);
+			}
+			const fresh = status.inspection;
+			if (fresh === null || status.phase !== "checked") return;
 			const mode: AnalysisInputMode = analysisInputScope?.mode ?? "complete";
 			const started = await startAnalysis(mode, pendingResolutions, fresh);
-			if (started) setPendingResolutions([]);
+			if (started && mounted.current) setPendingResolutions([]);
+		} catch (error: unknown) {
+			if (mounted.current) setAnalysisError(errorMessage(error));
 		} finally {
-			setReanalyzing(false);
+			if (mounted.current) setReanalyzing(false);
 		}
 	};
 
@@ -1505,6 +1840,15 @@ export default function App({
 									<p className="section-kicker">{copy.merge.checkingKicker}</p>
 									<h2>{copy.merge.checkingTitle}</h2>
 									<p>{copy.merge.checkingBody}</p>
+									{setup === null ? (
+										<p>{copy.merge.startingCheck}</p>
+									) : (
+										<SetupMeter
+											label={stageLabel(copy, setup.stage)}
+											completed={setup.completed}
+											total={setup.total}
+										/>
+									)}
 								</section>
 							) : inspection.error !== null ? (
 								<section className="launch-state launch-error" role="alert">
@@ -1555,10 +1899,19 @@ export default function App({
 														</li>
 													))}
 												</ul>
+												<SetupPreparation
+													inspection={inspection.value}
+													setup={setup}
+													buildLocked={buildLocked}
+													onVerify={verifyPath}
+													onSave={savePath}
+													onBuild={startBuild}
+													onCancel={cancelBuild}
+												/>
 												<button
 													className="primary-action"
 													onClick={(): void => void inspectInput()}
-													disabled={inspection.loading}
+													disabled={inspection.loading || setup?.phase === "building"}
 												>
 													{inspection.loading
 														? copy.merge.checking

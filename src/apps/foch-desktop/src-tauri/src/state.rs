@@ -7,7 +7,8 @@ use crate::dto::{
 	MergeAnalysisStage, MergeAnalysisState, MergeCommitResult, MergeDisposition, MergeUnitCounts,
 	MergeUnitDetail, MergeUnitListItem, MergeUnitPage, StartMergeAnalysisResult,
 };
-use foch::input::InputRequest;
+use crate::setup::SetupController;
+use foch::input::{InputCheckObserver, InputRequest, NoopInputCheckObserver};
 use foch::merge::{
 	CancellationToken, MergeAnalysisStage as FochMergeAnalysisStage, MergeProgress,
 	ProgressObserver,
@@ -28,6 +29,7 @@ const MAX_MESSAGE_CHARS: usize = 8_192;
 #[derive(Clone)]
 pub(crate) struct DesktopState {
 	core: Arc<DesktopStateCore>,
+	setup: SetupController,
 }
 
 struct DesktopStateCore {
@@ -76,15 +78,30 @@ impl DesktopState {
 	}
 
 	pub(crate) fn new(runner: Arc<dyn AnalysisRunner>) -> Self {
+		Self::with_setup(runner, crate::setup::foch_setup_work())
+	}
+
+	pub(crate) fn with_setup(
+		runner: Arc<dyn AnalysisRunner>,
+		work: Arc<dyn crate::setup::SetupWork>,
+	) -> Self {
 		Self {
 			core: Arc::new(DesktopStateCore {
 				runner,
 				records: Mutex::new(RecordBook::default()),
 			}),
+			setup: SetupController::new(work),
 		}
 	}
 
 	pub(crate) fn inspect_input(&self) -> Result<InputInspection, DesktopError> {
+		self.inspect_input_observing(&mut NoopInputCheckObserver)
+	}
+
+	pub(crate) fn inspect_input_observing(
+		&self,
+		observer: &mut dyn InputCheckObserver,
+	) -> Result<InputInspection, DesktopError> {
 		let inspection_id = Uuid::new_v4().to_string();
 		{
 			let mut records = self.records()?;
@@ -95,7 +112,7 @@ impl DesktopState {
 		let InspectedAnalysisInput {
 			mut inspection,
 			prepared,
-		} = self.core.runner.inspect_input();
+		} = self.core.runner.inspect_input_observing(observer);
 		inspection.inspection_id = inspection_id.clone();
 		let mut records = self.records()?;
 		if records.latest_inspection_id.as_deref() != Some(&inspection_id) {
@@ -118,6 +135,25 @@ impl DesktopState {
 			},
 		);
 		Ok(inspection)
+	}
+
+	pub(crate) fn start_setup_check(&self) -> Result<crate::dto::SetupStatus, DesktopError> {
+		self.setup.start_check(self)
+	}
+
+	pub(crate) fn setup_status(&self) -> crate::dto::SetupStatus {
+		self.setup.status()
+	}
+
+	pub(crate) fn start_base_data_build(&self) -> Result<crate::dto::SetupStatus, DesktopError> {
+		self.setup.start_build(self)
+	}
+
+	pub(crate) fn cancel_base_data_build(
+		&self,
+		build_id: &str,
+	) -> Result<crate::dto::SetupStatus, DesktopError> {
+		self.setup.cancel_build(build_id)
 	}
 
 	pub(crate) fn queue_analysis(

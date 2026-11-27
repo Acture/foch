@@ -76,6 +76,50 @@ export interface InputInspection {
 	recovery: InputRecoveryOption | null;
 }
 
+export type SetupPhase =
+	| "idle"
+	| "checking"
+	| "checked"
+	| "building"
+	| "failed"
+	| "build_failed"
+	| "build_cancelled";
+
+export interface SetupStageView {
+	stage: string;
+	completed: number | null;
+	total: number | null;
+}
+
+export interface InstallRecoveryNote {
+	version: string;
+	rulesVersion: string;
+	reason: string;
+	localCommand: string;
+}
+
+export interface SetupStatus {
+	phase: SetupPhase;
+	stage: string | null;
+	completed: number | null;
+	total: number | null;
+	stages: SetupStageView[];
+	inspection: InputInspection | null;
+	message: string | null;
+	buildId: string | null;
+	buildStage: string | null;
+	buildCompleted: number | null;
+	buildTotal: number | null;
+	documentCompleted: number | null;
+	documentTotal: number | null;
+	installNote: InstallRecoveryNote | null;
+}
+
+export interface VerifiedGamePath {
+	version: string;
+	installPath: string;
+}
+
 export type MergeAnalysisState =
 	| "queued"
 	| "running"
@@ -344,6 +388,12 @@ export interface DesktopLaunchStatus {
 
 export interface DesktopClient {
 	inspectInput(): Promise<InputInspection>;
+	startSetupCheck(): Promise<SetupStatus>;
+	getSetupStatus(): Promise<SetupStatus>;
+	verifyGamePath(path: string): Promise<VerifiedGamePath>;
+	saveGamePath(path: string): Promise<VerifiedGamePath>;
+	startBaseDataBuild(): Promise<SetupStatus>;
+	cancelBaseDataBuild(buildId: string): Promise<SetupStatus>;
 	startMergeAnalysis(
 		inspectionId: string,
 		inputMode: AnalysisInputMode,
@@ -393,6 +443,16 @@ export type InvokeCommand = <T>(
 export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient {
 	return {
 		inspectInput: (): Promise<InputInspection> => invokeCommand("inspect_input"),
+		startSetupCheck: (): Promise<SetupStatus> => invokeCommand("start_setup_check"),
+		getSetupStatus: (): Promise<SetupStatus> => invokeCommand("get_setup_status"),
+		verifyGamePath: (path: string): Promise<VerifiedGamePath> =>
+			invokeCommand("verify_game_path", { path }),
+		saveGamePath: (path: string): Promise<VerifiedGamePath> =>
+			invokeCommand("save_game_path", { path }),
+		startBaseDataBuild: (): Promise<SetupStatus> =>
+			invokeCommand("start_base_data_build"),
+		cancelBaseDataBuild: (buildId: string): Promise<SetupStatus> =>
+			invokeCommand("cancel_base_data_build", { buildId }),
 		startMergeAnalysis: (
 			inspectionId: string,
 			inputMode: AnalysisInputMode,
