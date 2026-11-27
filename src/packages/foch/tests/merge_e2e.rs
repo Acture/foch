@@ -46,14 +46,11 @@ fn fixture_dir(name: &str) -> PathBuf {
 }
 
 fn merge_e2e_scratch_root() -> PathBuf {
-	// The merge pipeline commits output directories with renameat2 flags
-	// (RENAME_NOREPLACE / RENAME_EXCHANGE) that network filesystems such as
-	// WSL's /mnt/c 9p mount reject with EINVAL, so honor CARGO_TARGET_DIR
-	// when cargo names one and keep the manifest-local default otherwise.
-	env::var_os("CARGO_TARGET_DIR")
-		.map(PathBuf::from)
-		.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
-		.join("merge-e2e")
+	// Commit uses renameat2 flags that some network mounts reject. The shared
+	// artifact root is outside this checkout, unless `FOCH_ARTIFACT_DIR` or an
+	// out-of-checkout `CARGO_TARGET_DIR` says otherwise, so a worktree does not
+	// keep a private copy under `target/`.
+	foch::platform::artifacts::shared_artifact_root().join("merge-e2e")
 }
 
 /// A fixture's game path, spelled in `/` syntax.

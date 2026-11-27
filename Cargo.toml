@@ -90,3 +90,15 @@ windows-sys = { version = "0.61.2", features = [
 	"Win32_System_Threading",
 ] }
 winreg = "0.55.0"
+
+# `cargo test` uses the `test` profile, which inherits `dev` including
+# `[profile.dev.package."*"]`. Cargo 1.95 applies that override to `cargo test`:
+# non-workspace dependencies are compiled with `-C strip=debuginfo`, while this
+# workspace's crates and their test harnesses get `-C debuginfo=line-tables-only`.
+# Line tables keep panic file and line numbers. Do not copy these keys under
+# `[profile.test]`; that profile already inherits them, and a second copy can drift.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = 0

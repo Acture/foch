@@ -46,7 +46,9 @@ data if necessary, and invokes Cargo's exact `foch merge` executable. Merge
 analyzes before committing safe units. Source trees are read in place; the
 generated mod and Launcher stub stay in the probe's output directory.
 
-The default working directory is `target/workshop-probe`. It retains
+The default working directory is `<shared-artifact-root>/workshop-probe`
+(see `FOCH_ARTIFACT_DIR` in the repository instructions), not a worktree
+`target/`. It retains
 `selection.json`, download locations, and a fresh `runs/run-*` directory per
 attempt. Repeating the same command reuses that selection, installed inputs, and
 matching base data, and attempts the merge again with the current executable.
@@ -108,8 +110,8 @@ a mod, a pair, or a group, with the content family of the failing unit. A
 signature already explained by a culprit set inside a later combination is
 counted, not minimized again.
 
-The default working directory is `target/combination-probe`
-(`FOCH_COMBO_PROBE_DIR`). `outcomes.jsonl` and `minimized.jsonl` are
+The default working directory is `<shared-artifact-root>/combination-probe`
+(`FOCH_COMBO_PROBE_DIR` overrides it; the shared root is `FOCH_ARTIFACT_DIR`). `outcomes.jsonl` and `minimized.jsonl` are
 append-only and keyed by the executable hash, game version and ordered Workshop
 `id@manifest` identities, so rerunning the same command resumes: recorded
 combinations are not merged again, and a new executable starts a fresh history

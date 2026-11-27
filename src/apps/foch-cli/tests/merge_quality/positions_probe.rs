@@ -46,14 +46,19 @@ fn workshop_positions_cache_probe() {
 		installed_base_snapshot_identity("eu4", &discovery.game_version)
 			.expect("base identity")
 			.expect("installed base");
-	let scratch_root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("../../../target/validation/p736-timeout-fix");
-	fs::create_dir_all(&scratch_root).expect("probe root");
-	let scratch: PathBuf = tempfile::Builder::new()
-		.prefix("positions-")
-		.tempdir_in(scratch_root)
-		.expect("probe directory")
-		.keep();
+	let scratch_dir = tempfile::TempDir::new().expect("probe directory");
+	let scratch: PathBuf = scratch_dir.path().to_path_buf();
+	let _ephemeral = if foch::platform::artifacts::keep_artifacts_requested() {
+		let kept = scratch_dir.keep();
+		eprintln!("positions probe artifacts retained: {}", kept.display());
+		None
+	} else {
+		eprintln!(
+			"positions probe artifacts removed on exit: {}",
+			scratch.display()
+		);
+		Some(scratch_dir)
+	};
 	let project: PathBuf = scratch.join("foch.toml");
 	let config: Project = Project {
 		project: Some(ProjectConfig {

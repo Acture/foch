@@ -153,7 +153,7 @@ pub fn default_foch_cache_dir() -> PathBuf {
 		}
 	}
 
-	repo_fallback_cache_root_dir()
+	fallback_cache_root_dir()
 }
 
 fn ensure_writable_dir(path: &Path) -> bool {
@@ -162,15 +162,15 @@ fn ensure_writable_dir(path: &Path) -> bool {
 	fs::create_dir_all(path).is_ok() && tempfile::NamedTempFile::new_in(path).is_ok()
 }
 
-fn repo_fallback_cache_root_dir() -> PathBuf {
-	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("../../../target")
-		.join("foch-cache")
+fn fallback_cache_root_dir() -> PathBuf {
+	// An unwritable user cache must not fall back into this checkout's
+	// `target/`. That path duplicated multi-gigabyte caches per worktree.
+	crate::platform::artifacts::shared_artifact_root().join("foch-cache")
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{cache_version_namespace, ensure_writable_dir, repo_fallback_cache_root_dir};
+	use super::{cache_version_namespace, ensure_writable_dir, fallback_cache_root_dir};
 
 	#[test]
 	fn a_probe_name_collision_does_not_hide_a_writable_directory() {
@@ -227,12 +227,17 @@ mod tests {
 	}
 
 	#[test]
-	fn repository_fallback_lives_under_the_workspace_target() {
-		assert_eq!(
-			repo_fallback_cache_root_dir(),
-			std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-				.join("../../../target")
-				.join("foch-cache")
+	fn cache_fallback_is_outside_this_checkout() {
+		if std::env::var_os(crate::platform::artifacts::ARTIFACT_DIR_ENV).is_some() {
+			return;
+		}
+		let fallback = fallback_cache_root_dir();
+		let repo = crate::platform::artifacts::repository_root();
+		assert!(
+			!crate::platform::artifacts::is_within(&repo, &fallback),
+			"{fallback} must not live under {repo}",
+			fallback = fallback.display(),
+			repo = repo.display()
 		);
 	}
 

@@ -48,15 +48,19 @@ fn workshop_static_modifiers_product_probe() {
 		installed_base_snapshot_identity("eu4", &discovery.game_version)
 			.expect("verify base identity")
 			.expect("installed ancestor required");
-	let scratch_root: PathBuf =
-		PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/p553-workshop");
-	fs::create_dir_all(&scratch_root).expect("create probe root");
-	let scratch: PathBuf = tempfile::Builder::new()
-		.prefix("static-modifiers-")
-		.tempdir_in(scratch_root)
-		.expect("probe directory")
-		.keep();
-	eprintln!("P-553 bounded probe artifacts: {}", scratch.display());
+	let scratch_dir = tempfile::TempDir::new().expect("probe directory");
+	let scratch: PathBuf = scratch_dir.path().to_path_buf();
+	let _ephemeral = if foch::platform::artifacts::keep_artifacts_requested() {
+		let kept = scratch_dir.keep();
+		eprintln!("P-553 bounded probe artifacts retained: {}", kept.display());
+		None
+	} else {
+		eprintln!(
+			"P-553 bounded probe artifacts removed on exit: {}",
+			scratch.display()
+		);
+		Some(scratch_dir)
+	};
 	eprintln!(
 		"P-553: retained merge scope is one family; cold source snapshot loading can take minutes"
 	);

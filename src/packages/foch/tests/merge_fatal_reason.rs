@@ -21,14 +21,8 @@ fn playsets_root() -> PathBuf {
 }
 
 fn scratch_root() -> PathBuf {
-	// The merge pipeline commits output directories with renameat2 flags
-	// that WSL's /mnt/c 9p mount rejects with EINVAL, so honor
-	// CARGO_TARGET_DIR when cargo names one and keep the manifest-local
-	// default otherwise.
-	let root = std::env::var_os("CARGO_TARGET_DIR")
-		.map(PathBuf::from)
-		.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
-		.join("merge-fatal-reason");
+	// Same local-filesystem requirement as the merge e2e scratch root.
+	let root = foch::platform::artifacts::shared_artifact_root().join("merge-fatal-reason");
 	fs::create_dir_all(&root).expect("create scratch root");
 	root
 }
