@@ -11,9 +11,9 @@ mod tests_dir;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode};
 use crate::model::{
-	AiMode, DecisionInfo, EventInfo, Fixture, FixtureName, GameDate, HelperFile, MAX_ADVANCE_DAYS,
-	ScriptedDef, ScriptedKind, SessionRequest, Start, Step, Tag, TestCase, valid_case_name,
-	valid_mod_name,
+	AiMode, DecisionInfo, EventInfo, EventKind, Fixture, FixtureName, GameDate, HelperFile,
+	MAX_ADVANCE_DAYS, ScriptedDef, ScriptedKind, SessionRequest, Start, Step, Tag, TestCase,
+	valid_case_name, valid_mod_name,
 };
 use crate::source::{SourceFile, SourceKind, SourceSpan};
 use foch::game::eu4::script::parser::{
@@ -243,7 +243,7 @@ fn identifier_like(key: &str) -> bool {
 		&& !key.bytes().next().is_some_and(|byte| byte.is_ascii_digit())
 }
 
-/// Record a top-level `country_event` definition.
+/// Record a top-level `country_event` or `province_event` definition.
 fn event_info(file: &SourceFile, statement: &AstStatement, helper: bool) -> Option<EventInfo> {
 	let AstStatement::Assignment {
 		key,
@@ -253,9 +253,11 @@ fn event_info(file: &SourceFile, statement: &AstStatement, helper: bool) -> Opti
 	else {
 		return None;
 	};
-	if key != "country_event" {
-		return None;
-	}
+	let kind = match key.as_str() {
+		"country_event" => EventKind::Country,
+		"province_event" => EventKind::Province,
+		_ => return None,
+	};
 	let id = single_field(items, "id")
 		.and_then(|value| scalar(value).ok())
 		.and_then(|id| EventId::parse(&id).ok())?;
@@ -271,6 +273,7 @@ fn event_info(file: &SourceFile, statement: &AstStatement, helper: bool) -> Opti
 	Some(EventInfo {
 		id,
 		origin: SourceSpan::from_parser(&file.path, span),
+		kind,
 		invocable: yes("hidden") && yes("is_triggered_only"),
 		body: file.text[span.start.offset + 1..span.end.offset - 1].into(),
 		helper,

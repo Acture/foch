@@ -9,7 +9,9 @@
 //! Each annotation is described by an [`AnnotationSchema`](schema::AnnotationSchema),
 //! plain data that drives validation, completion, hover and help alike.
 //! Consumers such as the test runner give annotations their meaning; editors
-//! need only this crate.
+//! need only this crate. A mod may declare
+//! `# foch: translation-of = <mod id or name>` so a merge keeps that mod's
+//! display text in place of the mod it translates.
 
 pub mod builtin;
 pub mod diagnostic;

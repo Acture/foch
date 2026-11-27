@@ -1,0 +1,36 @@
+namespace = vassal_scale
+
+#test(time=1444.11.11, tag=ENG, name="eng off lo", ai=off, advance_days=60,
+#     effect={ release = WAL },
+#     expect={ treasury = 79.5 },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = ENG
+#         request = 1
+#         type = subject_income
+#         kind = vassal
+#         tag = WAL
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 1 } after = { min = 0 max = 200000000 } }
+#     })
+#test(time=1444.11.11, tag=ENG, name="eng off hi", ai=off, advance_days=60,
+#     effect={ release = WAL },
+#     expect={ treasury = 79.8 },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = ENG
+#         request = 1
+#         type = subject_income
+#         kind = vassal
+#         tag = WAL
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 1 } after = { min = 0 max = 200000000 } }
+#     })
+country_event = {
+	id = vassal_scale.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

@@ -1,0 +1,19 @@
+country_decisions = {
+	foch_bp_companion_info = {
+		major = yes
+		potential = {
+			ai = no
+		}
+		allow = {
+			always = yes
+		}
+		effect = {
+			country_event = {
+				id = foch_bp_info.1
+			}
+		}
+		ai_will_do = {
+			factor = 0
+		}
+	}
+}

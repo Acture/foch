@@ -76,6 +76,50 @@ export interface InputInspection {
 	recovery: InputRecoveryOption | null;
 }
 
+export type SetupPhase =
+	| "idle"
+	| "checking"
+	| "checked"
+	| "building"
+	| "failed"
+	| "build_failed"
+	| "build_cancelled";
+
+export interface SetupStageView {
+	stage: string;
+	completed: number | null;
+	total: number | null;
+}
+
+export interface InstallRecoveryNote {
+	version: string;
+	rulesVersion: string;
+	reason: string;
+	localCommand: string;
+}
+
+export interface SetupStatus {
+	phase: SetupPhase;
+	stage: string | null;
+	completed: number | null;
+	total: number | null;
+	stages: SetupStageView[];
+	inspection: InputInspection | null;
+	message: string | null;
+	buildId: string | null;
+	buildStage: string | null;
+	buildCompleted: number | null;
+	buildTotal: number | null;
+	documentCompleted: number | null;
+	documentTotal: number | null;
+	installNote: InstallRecoveryNote | null;
+}
+
+export interface VerifiedGamePath {
+	version: string;
+	installPath: string;
+}
+
 export type MergeAnalysisState =
 	| "queued"
 	| "running"
@@ -127,6 +171,33 @@ export interface MergeAnalysisSummary {
 	message: string | null;
 }
 
+export interface MergeCommitResult {
+	analysisId: string;
+	outputDir: string;
+	mergeStatus: string;
+	generatedFileCount: number;
+	manualConflictCount: number;
+	unsupportedInputCount: number;
+	engineFailureCount: number;
+	committedAtNote: string;
+}
+
+export interface DesktopRouteProbe {
+	label: string;
+	url: string;
+	kind: "mirror" | "direct" | "gh" | string;
+	reachable: boolean;
+	httpStatus: number | null;
+	latencyMs: number;
+	detail: string;
+}
+
+export interface DesktopConnectivityReport {
+	transport: string;
+	mirrorPolicy: string;
+	routes: DesktopRouteProbe[];
+}
+
 export interface DesktopCommandError {
 	code: string | null;
 	message: string;
@@ -164,6 +235,49 @@ export interface MergeUnitContributor {
 	isBaseGame: boolean;
 }
 
+// One explicit merge resolution the player queued, mapping onto a
+// `foch.toml` `[[resolutions]]` entry: one selector (`matchPattern` or
+// `file`) plus one action (`preferMod` or `handler`).
+export interface DesktopResolutionRule {
+	matchPattern: string | null;
+	file: string | null;
+	preferMod: string | null;
+	handler: string | null;
+}
+
+export type DesktopDecisionAction =
+	{ kind: "prefer_mod"; modId: string } | { kind: "handler"; name: string };
+
+export interface DesktopDecisionOption {
+	action: DesktopDecisionAction;
+	fileResolution: DesktopResolutionRule | null;
+	directoryResolution: DesktopResolutionRule | null;
+}
+
+export interface MergeConflictCandidate {
+	modId: string;
+	modDisplayName: string;
+	precedence: number;
+	changeSummary: string[];
+	rendered: string;
+}
+
+export interface MergeConflictLeaf {
+	conflictId: string;
+	address: string;
+	kind: string | null;
+	reason: string | null;
+	vanillaSnippet: string | null;
+	candidates: MergeConflictCandidate[];
+	options: DesktopDecisionOption[];
+}
+
+export interface MergeUnitConflicts {
+	filePath: string;
+	reason: string;
+	leaves: MergeConflictLeaf[];
+}
+
 export interface MergeUnitDetail {
 	id: string;
 	path: string;
@@ -173,8 +287,10 @@ export interface MergeUnitDetail {
 	strategy: string;
 	summary: string;
 	outputPath: string | null;
+	outputPaths: string[];
 	contributors: MergeUnitContributor[];
 	notes: string[];
+	conflicts: MergeUnitConflicts[];
 }
 
 export type TransportPreference = "auto" | "http" | "gh";
@@ -272,14 +388,22 @@ export interface DesktopLaunchStatus {
 
 export interface DesktopClient {
 	inspectInput(): Promise<InputInspection>;
+	startSetupCheck(): Promise<SetupStatus>;
+	getSetupStatus(): Promise<SetupStatus>;
+	verifyGamePath(path: string): Promise<VerifiedGamePath>;
+	saveGamePath(path: string): Promise<VerifiedGamePath>;
+	startBaseDataBuild(): Promise<SetupStatus>;
+	cancelBaseDataBuild(buildId: string): Promise<SetupStatus>;
 	startMergeAnalysis(
 		inspectionId: string,
 		inputMode: AnalysisInputMode,
+		resolutions?: DesktopResolutionRule[],
 	): Promise<StartMergeAnalysisResult>;
 	cancelMergeAnalysis(analysisId: string): Promise<void>;
 	getMergeAnalysisSummary(analysisId: string): Promise<MergeAnalysisSummary>;
 	listMergeUnits(request: MergeUnitListRequest): Promise<MergeUnitPage>;
 	getMergeUnit(analysisId: string, unitId: string): Promise<MergeUnitDetail>;
+	renderResolutionsToml(rules: DesktopResolutionRule[]): Promise<string>;
 	getPluginOverview(playset: string | null): Promise<DesktopPluginOverview>;
 	installPlugin(spec: string, sha256: string | null): Promise<DesktopPluginInstall>;
 	importPluginDir(path: string): Promise<DesktopPluginInstall>;
@@ -302,6 +426,13 @@ export interface DesktopClient {
 	getLaunchStatus(runDir: string): Promise<DesktopLaunchStatus>;
 	getDesktopSettings(): Promise<DesktopPreferences>;
 	saveDesktopSettings(settings: DesktopSettingsInput): Promise<DesktopPreferences>;
+	commitMergeAnalysis(
+		analysisId: string,
+		outputDir: string,
+	): Promise<MergeCommitResult>;
+	testDownloadConnectivity(
+		settings: DesktopSettingsInput | null,
+	): Promise<DesktopConnectivityReport>;
 }
 
 export type InvokeCommand = <T>(
@@ -312,11 +443,26 @@ export type InvokeCommand = <T>(
 export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient {
 	return {
 		inspectInput: (): Promise<InputInspection> => invokeCommand("inspect_input"),
+		startSetupCheck: (): Promise<SetupStatus> => invokeCommand("start_setup_check"),
+		getSetupStatus: (): Promise<SetupStatus> => invokeCommand("get_setup_status"),
+		verifyGamePath: (path: string): Promise<VerifiedGamePath> =>
+			invokeCommand("verify_game_path", { path }),
+		saveGamePath: (path: string): Promise<VerifiedGamePath> =>
+			invokeCommand("save_game_path", { path }),
+		startBaseDataBuild: (): Promise<SetupStatus> =>
+			invokeCommand("start_base_data_build"),
+		cancelBaseDataBuild: (buildId: string): Promise<SetupStatus> =>
+			invokeCommand("cancel_base_data_build", { buildId }),
 		startMergeAnalysis: (
 			inspectionId: string,
 			inputMode: AnalysisInputMode,
+			resolutions?: DesktopResolutionRule[],
 		): Promise<StartMergeAnalysisResult> =>
-			invokeCommand("start_merge_analysis", { inspectionId, inputMode }),
+			invokeCommand("start_merge_analysis", {
+				inspectionId,
+				inputMode,
+				resolutions: resolutions ?? null,
+			}),
 		cancelMergeAnalysis: (analysisId: string): Promise<void> =>
 			invokeCommand("cancel_merge_analysis", { analysisId }),
 		getMergeAnalysisSummary: (analysisId: string): Promise<MergeAnalysisSummary> =>
@@ -331,6 +477,8 @@ export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient
 			}),
 		getMergeUnit: (analysisId: string, unitId: string): Promise<MergeUnitDetail> =>
 			invokeCommand("get_merge_unit", { analysisId, unitId }),
+		renderResolutionsToml: (rules: DesktopResolutionRule[]): Promise<string> =>
+			invokeCommand("render_resolutions_toml", { rules }),
 		getPluginOverview: (playset: string | null): Promise<DesktopPluginOverview> =>
 			invokeCommand("get_plugin_overview", { playset }),
 		installPlugin: (
@@ -367,6 +515,15 @@ export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient
 			settings: DesktopSettingsInput,
 		): Promise<DesktopPreferences> =>
 			invokeCommand("save_desktop_settings", { settings }),
+		commitMergeAnalysis: (
+			analysisId: string,
+			outputDir: string,
+		): Promise<MergeCommitResult> =>
+			invokeCommand("commit_merge_analysis", { analysisId, outputDir }),
+		testDownloadConnectivity: (
+			settings: DesktopSettingsInput | null,
+		): Promise<DesktopConnectivityReport> =>
+			invokeCommand("test_download_connectivity", { settings }),
 	};
 }
 

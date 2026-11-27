@@ -9,6 +9,7 @@ import {
 	useContext,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 
@@ -19,15 +20,20 @@ import {
 	type DesktopClient,
 	type DesktopPluginOverview,
 	type DesktopPreferences,
+	type DesktopResolutionRule,
 	type EffectiveLanguage,
 	type InputInspection,
 	type InputRecoveryOption,
 	type MergeAnalysisSummary,
 	type MergeAnalysisState,
+	type MergeCommitResult,
+	type MergeConflictLeaf,
 	type MergeDisposition,
 	type MergeUnitDetail,
 	type MergeUnitListItem,
 	type MergeUnitPage,
+	type SetupStatus,
+	type VerifiedGamePath,
 	hasMergeReview,
 	isAnalysisActive,
 	parseDesktopCommandError,
@@ -104,18 +110,46 @@ function errorMessage(error: unknown): string {
 	return parseDesktopCommandError(error).message;
 }
 
-async function loadInputInspection(
-	client: DesktopClient,
-): Promise<AsyncValue<InputInspection>> {
-	try {
-		return {
-			value: await client.inspectInput(),
-			loading: false,
-			error: null,
-		};
-	} catch (error: unknown) {
-		return { value: null, loading: false, error: errorMessage(error) };
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve): void => {
+		setTimeout(resolve, ms);
+	});
+}
+
+function stageLabel(copy: Copy, stage: string | null): string {
+	if (stage === null) return copy.merge.startingCheck;
+	if (Object.prototype.hasOwnProperty.call(copy.merge.stages, stage)) {
+		return copy.merge.stages[stage as keyof typeof copy.merge.stages];
 	}
+	return stage;
+}
+
+function SetupMeter({
+	label,
+	completed,
+	total,
+}: {
+	label: string;
+	completed: number | null;
+	total: number | null;
+}): JSX.Element {
+	const copy = useCopy();
+	const counted: boolean = completed !== null && total !== null;
+	return (
+		<div className="setup-meter">
+			<p>{label}</p>
+			{counted ? (
+				<>
+					<progress value={completed ?? undefined} max={total ?? undefined} />
+					<span>
+						{completed} / {total}
+					</span>
+				</>
+			) : (
+				<p>{copy.merge.stageNoCount}</p>
+			)}
+		</div>
+	);
 }
 
 function formatElapsed(elapsedMs: number): string {
@@ -206,6 +240,12 @@ function ReadinessRail({
 				<div>
 					<span>Version</span>
 					<strong>{inspection.game.version ?? copy.merge.versionMissing}</strong>
+				</div>
+				<div>
+					<span>{copy.merge.installPath}</span>
+					<strong title={inspection.game.installPath ?? undefined}>
+						{inspection.game.installPath ?? copy.merge.versionMissing}
+					</strong>
 				</div>
 				<div>
 					<span>{copy.merge.base}</span>
@@ -350,6 +390,7 @@ function RecoveryState({
 					</li>
 				)}
 			</ul>
+			<p className="recovery-warning">{copy.merge.sessionIgnore}</p>
 			<p className="recovery-warning">{copy.merge.incompleteWarning}</p>
 			<div className="recovery-actions">
 				<button
@@ -456,6 +497,99 @@ function DispositionRibbon({
 				))}
 			</div>
 		</div>
+	);
+}
+
+function canExportMerge(state: MergeAnalysisState): boolean {
+	return state === "ready" || state === "ready_with_deferrals";
+}
+
+function ExportMergedMod({
+	analysisId,
+	client,
+}: {
+	analysisId: string;
+	client: DesktopClient;
+}): JSX.Element {
+	const copy = useCopy();
+	const [outputDir, setOutputDir] = useState<string>("");
+	const [confirming, setConfirming] = useState<boolean>(false);
+	const [exporting, setExporting] = useState<boolean>(false);
+	const [result, setResult] = useState<MergeCommitResult | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const committed: boolean = result !== null;
+	const buttonLabel: string = exporting
+		? copy.merge.exporting
+		: committed
+			? copy.merge.committed
+			: confirming
+				? copy.merge.confirmExport
+				: copy.merge.exportAction;
+
+	const exportMod = async (): Promise<void> => {
+		if (outputDir.length === 0 || exporting || committed) return;
+		if (!confirming) {
+			setConfirming(true);
+			setError(null);
+			return;
+		}
+		setExporting(true);
+		setError(null);
+		try {
+			setResult(await client.commitMergeAnalysis(analysisId, outputDir));
+			setConfirming(false);
+		} catch (caught: unknown) {
+			setError(parseDesktopCommandError(caught).message);
+			setConfirming(false);
+		} finally {
+			setExporting(false);
+		}
+	};
+
+	return (
+		<section className="export-panel" aria-labelledby="export-merged-mod-title">
+			<p className="section-kicker">{copy.merge.exportTitle}</p>
+			<h2 id="export-merged-mod-title">{copy.merge.exportTitle}</h2>
+			<p>{copy.merge.exportHelp}</p>
+			<label className="settings-row">
+				<span>{copy.merge.outputFolder}</span>
+				<input
+					aria-label={copy.merge.outputFolder}
+					value={outputDir}
+					disabled={exporting || committed}
+					onChange={(event): void => {
+						setOutputDir(event.target.value);
+						setConfirming(false);
+					}}
+				/>
+			</label>
+			<button
+				className="primary-action"
+				type="button"
+				disabled={outputDir.length === 0 || exporting || committed}
+				onClick={(): void => void exportMod()}
+			>
+				{buttonLabel}
+			</button>
+			{result !== null && (
+				<div role="status">
+					<p className="path-value">{result.outputDir}</p>
+					<p>
+						{copy.merge.generatedFiles} {result.generatedFileCount}
+					</p>
+					<p>
+						{result.mergeStatus === "partial_success"
+							? copy.merge.partialExport
+							: copy.merge.readyExport}
+					</p>
+				</div>
+			)}
+			{error !== null && (
+				<p className="error-copy" role="alert">
+					{error}
+				</p>
+			)}
+		</section>
 	);
 }
 
@@ -620,10 +754,116 @@ function UnitRow({
 	);
 }
 
+function ruleKey(rule: DesktopResolutionRule): string {
+	return rule.file ?? rule.matchPattern ?? "";
+}
+
+function describeRule(
+	copy: Copy,
+	rule: DesktopResolutionRule,
+	modNames: Map<string, string>,
+): string {
+	const action = rule.preferMod ?? rule.handler ?? "";
+	const scope =
+		rule.file !== null ? copy.merge.ruleScopeFile : copy.merge.ruleScopeFolder;
+	const target = rule.file ?? rule.matchPattern ?? "";
+	const named =
+		rule.preferMod !== null ? (modNames.get(rule.preferMod) ?? rule.preferMod) : action;
+	return `${scope} · ${target} · ${copy.merge.rulePrefers} ${named}`;
+}
+
+function ConflictLeafCard({
+	leaf,
+	onPrefer,
+}: {
+	leaf: MergeConflictLeaf;
+	onPrefer: (rule: DesktopResolutionRule) => void;
+}): JSX.Element {
+	const copy = useCopy();
+	return (
+		<article className="conflict-card" aria-label={leaf.address}>
+			<header className="conflict-card-heading">
+				<code className="conflict-address">{leaf.address}</code>
+				{leaf.kind !== null && <span className="conflict-kind">{leaf.kind}</span>}
+			</header>
+			{leaf.reason !== null && (
+				<p className="conflict-reason">
+					<span>{copy.merge.conflictReason}:</span> {leaf.reason}
+				</p>
+			)}
+			{leaf.vanillaSnippet !== null && (
+				<div className="conflict-snippet conflict-vanilla">
+					<span>{copy.merge.vanillaSnippet}</span>
+					<pre>
+						<code>{leaf.vanillaSnippet}</code>
+					</pre>
+				</div>
+			)}
+			<div className="conflict-candidates" aria-label={copy.merge.competingMods}>
+				<p className="conflict-candidates-title">{copy.merge.competingMods}</p>
+				{leaf.candidates.map((candidate): JSX.Element => {
+					const option = leaf.options.find(
+						(option): boolean =>
+							option.action.kind === "prefer_mod" &&
+							option.action.modId === candidate.modId,
+					);
+					return (
+						<div
+							className="candidate-card"
+							key={`${candidate.modId}-${candidate.precedence}`}
+						>
+							<header>
+								<strong>{candidate.modDisplayName}</strong>
+								<span>#{candidate.precedence + 1}</span>
+							</header>
+							{candidate.changeSummary.length > 0 && (
+								<ul className="candidate-summary">
+									{candidate.changeSummary.map((line): JSX.Element => (
+										<li key={line}>{line}</li>
+									))}
+								</ul>
+							)}
+							<pre className="candidate-rendered">
+								<code>{candidate.rendered}</code>
+							</pre>
+							<div className="candidate-actions">
+								<button
+									type="button"
+									className="secondary-action"
+									disabled={option?.fileResolution === undefined}
+									onClick={(): void => {
+										const rule = option?.fileResolution;
+										if (rule !== undefined && rule !== null) onPrefer(rule);
+									}}
+								>
+									{copy.merge.preferForThisFile}
+								</button>
+								<button
+									type="button"
+									className="secondary-action"
+									disabled={option?.directoryResolution === undefined}
+									onClick={(): void => {
+										const rule = option?.directoryResolution;
+										if (rule !== undefined && rule !== null) onPrefer(rule);
+									}}
+								>
+									{copy.merge.preferForFolder}
+								</button>
+							</div>
+						</div>
+					);
+				})}
+			</div>
+		</article>
+	);
+}
+
 function UnitDetailPanel({
 	detail,
+	onPrefer,
 }: {
 	detail: AsyncValue<MergeUnitDetail>;
+	onPrefer: (rule: DesktopResolutionRule) => void;
 }): JSX.Element {
 	const copy = useCopy();
 	if (detail.loading) {
@@ -700,6 +940,23 @@ function UnitDetailPanel({
 					))}
 				</ol>
 			</section>
+			{unit.conflicts.length > 0 && (
+				<section className="detail-section conflict-section">
+					<h3>{copy.merge.leafConflictsTitle}</h3>
+					{unit.conflicts.map((group): JSX.Element => (
+						<div className="conflict-group" key={group.filePath}>
+							<p className="conflict-group-reason">{group.reason}</p>
+							{group.leaves.map((leaf): JSX.Element => (
+								<ConflictLeafCard
+									key={leaf.conflictId}
+									leaf={leaf}
+									onPrefer={onPrefer}
+								/>
+							))}
+						</div>
+					))}
+				</section>
+			)}
 			{unit.notes.length > 0 && (
 				<section className="detail-section">
 					<h3>{copy.merge.notes}</h3>
@@ -714,12 +971,254 @@ function UnitDetailPanel({
 	);
 }
 
+function PendingResolutionsBar({
+	rules,
+	modNames,
+	reanalyzing,
+	tomlPreview,
+	tomlOpen,
+	tomlError,
+	onRemove,
+	onClear,
+	onReanalyze,
+	onToggleToml,
+}: {
+	rules: DesktopResolutionRule[];
+	modNames: Map<string, string>;
+	reanalyzing: boolean;
+	tomlPreview: string | null;
+	tomlOpen: boolean;
+	tomlError: string | null;
+	onRemove: (rule: DesktopResolutionRule) => void;
+	onClear: () => void;
+	onReanalyze: () => void;
+	onToggleToml: () => void;
+}): JSX.Element | null {
+	const copy = useCopy();
+	if (rules.length === 0) return null;
+	return (
+		<section
+			className="pending-resolutions"
+			aria-label={copy.merge.pendingResolutionsTitle}
+		>
+			<header className="pending-resolutions-heading">
+				<h3>
+					{copy.merge.pendingResolutionsTitle} ({rules.length})
+				</h3>
+				<button type="button" className="secondary-action" onClick={onClear}>
+					{copy.merge.clearRules}
+				</button>
+			</header>
+			<p>{copy.merge.pendingResolutionsBody}</p>
+			<ul className="pending-rule-list">
+				{rules.map((rule): JSX.Element => (
+					<li key={ruleKey(rule)}>
+						<span>{describeRule(copy, rule, modNames)}</span>
+						<button type="button" onClick={(): void => onRemove(rule)}>
+							{copy.merge.removeRule}
+						</button>
+					</li>
+				))}
+			</ul>
+			<div className="pending-resolutions-actions">
+				<button
+					type="button"
+					className="primary-action"
+					onClick={onReanalyze}
+					disabled={reanalyzing}
+				>
+					{reanalyzing ? copy.merge.reanalyzing : copy.merge.reanalyzeWithResolutions}
+				</button>
+				<button type="button" className="secondary-action" onClick={onToggleToml}>
+					{tomlOpen ? copy.merge.hideFochToml : copy.merge.copyFochToml}
+				</button>
+			</div>
+			{tomlOpen && tomlError !== null && <p className="error-copy">{tomlError}</p>}
+			{tomlOpen && tomlError === null && tomlPreview !== null && (
+				<div className="toml-preview">
+					<p>{copy.merge.tomlPreviewNote}</p>
+					<pre>
+						<code>{tomlPreview}</code>
+					</pre>
+				</div>
+			)}
+		</section>
+	);
+}
+
+function SetupPreparation({
+	inspection,
+	setup,
+	buildLocked,
+	onVerify,
+	onSave,
+	onBuild,
+	onCancel,
+}: {
+	inspection: InputInspection;
+	setup: SetupStatus | null;
+	buildLocked: boolean;
+	onVerify: (path: string) => Promise<VerifiedGamePath>;
+	onSave: (path: string) => Promise<void>;
+	onBuild: () => void;
+	onCancel: () => void;
+}): JSX.Element | null {
+	const copy = useCopy();
+	const [draft, setDraft] = useState<string>("");
+	const [verified, setVerified] = useState<VerifiedGamePath | null>(null);
+	const [pathError, setPathError] = useState<string | null>(null);
+	const [verifying, setVerifying] = useState<boolean>(false);
+	const needsPath: boolean =
+		inspection.game.installPath === null ||
+		inspection.issues.some((issue) => issue.id === "eu4_install_unavailable");
+	const canBuild: boolean =
+		!needsPath &&
+		inspection.game.installPath !== null &&
+		inspection.game.version !== null &&
+		inspection.baseData.state !== "ready";
+	const building: boolean = setup?.phase === "building" || buildLocked;
+	const countedStage: string | null = setup?.buildStage ?? setup?.stage ?? null;
+
+	return (
+		<div className="setup-preparation">
+			{needsPath && (
+				<form
+					className="path-form"
+					onSubmit={(event: FormEvent<HTMLFormElement>): void => {
+						event.preventDefault();
+						if (verified === null || verified.installPath !== draft) return;
+						void onSave(verified.installPath).catch((error: unknown): void => {
+							setPathError(errorMessage(error));
+						});
+					}}
+				>
+					<label>
+						{copy.merge.gamePathLabel}
+						<input
+							value={draft}
+							onChange={(event): void => {
+								setDraft(event.target.value);
+								setVerified(null);
+								setPathError(null);
+							}}
+						/>
+					</label>
+					<button
+						type="button"
+						className="secondary-action"
+						disabled={verifying || draft.trim() === ""}
+						onClick={(): void => {
+							setVerifying(true);
+							setPathError(null);
+							void onVerify(draft)
+								.then((result: VerifiedGamePath): void => {
+									setVerified(result);
+								})
+								.catch((error: unknown): void => {
+									setVerified(null);
+									setPathError(errorMessage(error));
+								})
+								.finally((): void => {
+									setVerifying(false);
+								});
+						}}
+					>
+						{copy.merge.verifyPath}
+					</button>
+					<button
+						type="submit"
+						className="primary-action"
+						disabled={verified === null || verified.installPath !== draft}
+					>
+						{copy.merge.useInstall}
+					</button>
+					{pathError !== null && (
+						<p className="error-copy" role="alert">
+							{pathError}
+						</p>
+					)}
+					{verified !== null && verified.installPath === draft && (
+						<p>
+							{copy.merge.verifiedVersion} {verified.version}
+						</p>
+					)}
+				</form>
+			)}
+			{canBuild && setup?.installNote !== null && setup?.installNote !== undefined && (
+				<div>
+					<p>{setup.installNote.reason}</p>
+					<p>
+						{setup.installNote.version} · {setup.installNote.rulesVersion}
+					</p>
+					<p className="setup-command">
+						<code>{setup.installNote.localCommand}</code>
+					</p>
+				</div>
+			)}
+			{building && setup !== null && (
+				<>
+					<SetupMeter
+						label={stageLabel(copy, countedStage)}
+						completed={
+							countedStage === "parse_documents"
+								? setup.documentCompleted
+								: setup.completed
+						}
+						total={
+							countedStage === "parse_documents" ? setup.documentTotal : setup.total
+						}
+					/>
+					{setup.documentTotal !== null &&
+						countedStage !== "parse_documents" &&
+						setup.documentCompleted !== null && (
+							<p>
+								{copy.merge.parsingDocuments} {setup.documentCompleted} /{" "}
+								{setup.documentTotal}
+							</p>
+						)}
+					<button
+						type="button"
+						className="secondary-action"
+						onClick={onCancel}
+						disabled={setup.buildId === null}
+					>
+						{copy.merge.cancelBuild}
+					</button>
+				</>
+			)}
+			{canBuild && !building && (
+				<button
+					type="button"
+					className="primary-action"
+					onClick={onBuild}
+					disabled={building}
+				>
+					{copy.merge.buildBase}
+				</button>
+			)}
+			{setup?.phase === "build_failed" && setup.message !== null && (
+				<p className="error-copy" role="alert">
+					{setup.message}
+				</p>
+			)}
+			{setup?.phase === "build_cancelled" && setup.message !== null && (
+				<p>{setup.message}</p>
+			)}
+			{setup?.phase === "building" && setup.message !== null && <p>{setup.message}</p>}
+		</div>
+	);
+}
+
 export default function App({
 	client = tauriDesktopClient,
 	pollIntervalMs = 900,
 }: AppProps): JSX.Element {
 	const [inspection, setInspection] =
 		useState<AsyncValue<InputInspection>>(initialAsyncValue<InputInspection>());
+	const [setup, setSetup] = useState<SetupStatus | null>(null);
+	const buildLock = useRef<boolean>(false);
+	const mounted = useRef(true);
+	const [buildLocked, setBuildLocked] = useState<boolean>(false);
 	const [starting, setStarting] = useState<boolean>(false);
 	const [cancelling, setCancelling] = useState<boolean>(false);
 	const [analysisId, setAnalysisId] = useState<string | null>(null);
@@ -738,6 +1237,13 @@ export default function App({
 	const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
 	const [unitDetail, setUnitDetail] =
 		useState<AsyncValue<MergeUnitDetail>>(EMPTY_UNIT_DETAIL);
+	const [pendingResolutions, setPendingResolutions] = useState<DesktopResolutionRule[]>(
+		[],
+	);
+	const [reanalyzing, setReanalyzing] = useState<boolean>(false);
+	const [tomlOpen, setTomlOpen] = useState<boolean>(false);
+	const [tomlPreview, setTomlPreview] = useState<string | null>(null);
+	const [tomlError, setTomlError] = useState<string | null>(null);
 	const [searchDraft, setSearchDraft] = useState<string>("");
 	const [searchQuery, setSearchQuery] = useState<string>("");
 	const [disposition, setDisposition] = useState<MergeDisposition | null>(null);
@@ -752,6 +1258,13 @@ export default function App({
 	const copy = copyFor(language);
 	const playsetNameForPlugins =
 		inspection.value?.playset?.name ?? overview.value?.playset ?? null;
+
+	useEffect((): (() => void) => {
+		mounted.current = true;
+		return (): void => {
+			mounted.current = false;
+		};
+	}, []);
 
 	const reloadOverview = useCallback(async (): Promise<void> => {
 		setOverview((current): AsyncValue<DesktopPluginOverview> => ({
@@ -803,6 +1316,36 @@ export default function App({
 		};
 	}, [client, playsetNameForPlugins]);
 
+	const applySetup = useCallback((status: SetupStatus): void => {
+		setSetup(status);
+		if (status.phase === "failed" && status.inspection === null) {
+			setInspection({
+				value: null,
+				loading: false,
+				error: status.message ?? "EU4 setup could not be inspected",
+			});
+			return;
+		}
+		if (
+			status.inspection !== null &&
+			(status.phase === "checked" || status.phase === "failed")
+		) {
+			setInspection({
+				value: status.inspection,
+				loading: false,
+				error: status.phase === "failed" ? status.message : null,
+			});
+			return;
+		}
+		if (status.inspection !== null) {
+			setInspection({
+				value: status.inspection,
+				loading: status.phase === "checking",
+				error: null,
+			});
+		}
+	}, []);
+
 	const inspectInput = useCallback(async (): Promise<void> => {
 		setAnalysisError(null);
 		setInspection((current): AsyncValue<InputInspection> => ({
@@ -810,20 +1353,133 @@ export default function App({
 			loading: true,
 			error: null,
 		}));
-		setInspection(await loadInputInspection(client));
-	}, [client]);
+		try {
+			applySetup(await client.startSetupCheck());
+		} catch (error: unknown) {
+			setInspection((current): AsyncValue<InputInspection> => ({
+				value: current.value,
+				loading: false,
+				error: errorMessage(error),
+			}));
+		}
+	}, [applySetup, client]);
 
-	useEffect((): (() => void) => {
+	// Keep the foch.toml preview in step with the queued rules, so the toggle
+	// always shows the exact TOML Rust would load.
+	useEffect((): (() => void) | undefined => {
+		if (pendingResolutions.length === 0) {
+			queueMicrotask((): void => {
+				setTomlPreview(null);
+				setTomlError(null);
+			});
+			return undefined;
+		}
 		let disposed = false;
-		void loadInputInspection(client).then(
-			(value: AsyncValue<InputInspection>): void => {
-				if (!disposed) setInspection(value);
+		void client.renderResolutionsToml(pendingResolutions).then(
+			(value: string): void => {
+				if (!disposed) {
+					setTomlPreview(value);
+					setTomlError(null);
+				}
+			},
+			(error: unknown): void => {
+				if (!disposed) {
+					setTomlPreview(null);
+					setTomlError(errorMessage(error));
+				}
 			},
 		);
 		return (): void => {
 			disposed = true;
 		};
-	}, [client]);
+	}, [client, pendingResolutions]);
+
+	useEffect((): (() => void) => {
+		let disposed = false;
+		void client.startSetupCheck().then(
+			(status: SetupStatus): void => {
+				if (!disposed) applySetup(status);
+			},
+			(error: unknown): void => {
+				if (!disposed) {
+					setInspection({
+						value: null,
+						loading: false,
+						error: errorMessage(error),
+					});
+				}
+			},
+		);
+		return (): void => {
+			disposed = true;
+		};
+	}, [applySetup, client]);
+
+	useEffect((): (() => void) | undefined => {
+		if (setup?.phase !== "checking" && setup?.phase !== "building") return undefined;
+		let disposed = false;
+		const timer = setInterval((): void => {
+			void client.getSetupStatus().then(
+				(status: SetupStatus): void => {
+					if (!disposed) applySetup(status);
+				},
+				(): void => undefined,
+			);
+		}, pollIntervalMs);
+		return (): void => {
+			disposed = true;
+			clearInterval(timer);
+		};
+	}, [applySetup, client, pollIntervalMs, setup?.phase]);
+
+	useEffect((): void => {
+		if (setup?.phase !== "building") {
+			buildLock.current = false;
+			setBuildLocked(false);
+		}
+	}, [setup?.phase]);
+
+	const startBuild = useCallback((): void => {
+		if (buildLock.current || setup?.phase === "building") return;
+		buildLock.current = true;
+		setBuildLocked(true);
+		void client.startBaseDataBuild().then(
+			(status: SetupStatus): void => {
+				applySetup(status);
+			},
+			(error: unknown): void => {
+				buildLock.current = false;
+				setBuildLocked(false);
+				setAnalysisError(errorMessage(error));
+			},
+		);
+	}, [applySetup, client, setup?.phase]);
+
+	const cancelBuild = useCallback((): void => {
+		const buildId: string | null = setup?.buildId ?? null;
+		if (buildId === null) return;
+		void client.cancelBaseDataBuild(buildId).then(
+			(status: SetupStatus): void => {
+				applySetup(status);
+			},
+			(error: unknown): void => {
+				setAnalysisError(errorMessage(error));
+			},
+		);
+	}, [applySetup, client, setup?.buildId]);
+
+	const verifyPath = useCallback(
+		(path: string): Promise<VerifiedGamePath> => client.verifyGamePath(path),
+		[client],
+	);
+
+	const savePath = useCallback(
+		async (path: string): Promise<void> => {
+			await client.saveGamePath(path);
+			await inspectInput();
+		},
+		[client, inspectInput],
+	);
 
 	useEffect((): (() => void) | undefined => {
 		if (analysisId === null) return undefined;
@@ -944,8 +1600,13 @@ export default function App({
 		};
 	}, [analysisId, client, reviewAvailable, selectedUnitId]);
 
-	const startAnalysis = async (inputMode: AnalysisInputMode): Promise<void> => {
-		if (inspection.value === null) return;
+	const startAnalysis = async (
+		inputMode: AnalysisInputMode,
+		resolutions: DesktopResolutionRule[] = [],
+		freshInspection?: InputInspection,
+	): Promise<boolean> => {
+		const source = freshInspection ?? inspection.value;
+		if (source === null) return false;
 		setStarting(true);
 		setAnalysisError(null);
 		setAnalysisInputScope(null);
@@ -957,16 +1618,61 @@ export default function App({
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
 		try {
 			const started = await client.startMergeAnalysis(
-				inspection.value.inspectionId,
+				source.inspectionId,
 				inputMode,
+				resolutions,
 			);
 			setAnalysisInputScope(started.inputScope);
 			setAnalysisId(started.analysisId);
 			setSummary(queuedAnalysisSummary(started.analysisId));
+			return true;
 		} catch (error: unknown) {
 			setAnalysisError(errorMessage(error));
+			return false;
 		} finally {
 			setStarting(false);
+		}
+	};
+
+	const queueResolution = (rule: DesktopResolutionRule): void => {
+		setPendingResolutions((current): DesktopResolutionRule[] => {
+			const key = ruleKey(rule);
+			const next = current.filter((existing): boolean => ruleKey(existing) !== key);
+			next.push(rule);
+			return next;
+		});
+	};
+
+	const removeResolution = (rule: DesktopResolutionRule): void => {
+		setPendingResolutions((current): DesktopResolutionRule[] =>
+			current.filter((existing): boolean => ruleKey(existing) !== ruleKey(rule)),
+		);
+	};
+
+	const reanalyzeWithResolutions = async (): Promise<void> => {
+		if (pendingResolutions.length === 0 || reanalyzing) return;
+		setReanalyzing(true);
+		try {
+			// start_check returns while the inspection is still running.
+			let status = await client.startSetupCheck();
+			if (!mounted.current) return;
+			applySetup(status);
+			while (status.phase === "checking") {
+				await delay(pollIntervalMs);
+				if (!mounted.current) return;
+				status = await client.getSetupStatus();
+				if (!mounted.current) return;
+				applySetup(status);
+			}
+			const fresh = status.inspection;
+			if (fresh === null || status.phase !== "checked") return;
+			const mode: AnalysisInputMode = analysisInputScope?.mode ?? "complete";
+			const started = await startAnalysis(mode, pendingResolutions, fresh);
+			if (started && mounted.current) setPendingResolutions([]);
+		} catch (error: unknown) {
+			if (mounted.current) setAnalysisError(errorMessage(error));
+		} finally {
+			if (mounted.current) setReanalyzing(false);
 		}
 	};
 
@@ -1027,6 +1733,16 @@ export default function App({
 		!starting &&
 		analysisId === null;
 	const showBrowser = analysisId !== null && reviewAvailable;
+	const modNames = useMemo((): Map<string, string> => {
+		const unit = unitDetail.value;
+		if (unit === null) return new Map<string, string>();
+		return new Map<string, string>(
+			unit.contributors.map((contributor): [string, string] => [
+				contributor.modId,
+				contributor.name,
+			]),
+		);
+	}, [unitDetail]);
 	const dispositionOptions = useMemo(
 		(): Array<{ value: MergeDisposition; label: string }> =>
 			MERGE_DISPOSITIONS.map((value): { value: MergeDisposition; label: string } => ({
@@ -1124,6 +1840,15 @@ export default function App({
 									<p className="section-kicker">{copy.merge.checkingKicker}</p>
 									<h2>{copy.merge.checkingTitle}</h2>
 									<p>{copy.merge.checkingBody}</p>
+									{setup === null ? (
+										<p>{copy.merge.startingCheck}</p>
+									) : (
+										<SetupMeter
+											label={stageLabel(copy, setup.stage)}
+											completed={setup.completed}
+											total={setup.total}
+										/>
+									)}
 								</section>
 							) : inspection.error !== null ? (
 								<section className="launch-state launch-error" role="alert">
@@ -1174,10 +1899,19 @@ export default function App({
 														</li>
 													))}
 												</ul>
+												<SetupPreparation
+													inspection={inspection.value}
+													setup={setup}
+													buildLocked={buildLocked}
+													onVerify={verifyPath}
+													onSave={savePath}
+													onBuild={startBuild}
+													onCancel={cancelBuild}
+												/>
 												<button
 													className="primary-action"
 													onClick={(): void => void inspectInput()}
-													disabled={inspection.loading}
+													disabled={inspection.loading || setup?.phase === "building"}
 												>
 													{inspection.loading
 														? copy.merge.checking
@@ -1243,6 +1977,29 @@ export default function App({
 													</div>
 												)}
 												{reviewAvailable && <DispositionRibbon summary={summary} />}
+												{reviewAvailable && (
+													<PendingResolutionsBar
+														rules={pendingResolutions}
+														modNames={modNames}
+														reanalyzing={reanalyzing}
+														tomlPreview={tomlPreview}
+														tomlOpen={tomlOpen}
+														tomlError={tomlError}
+														onRemove={removeResolution}
+														onClear={(): void => setPendingResolutions([])}
+														onReanalyze={(): void => void reanalyzeWithResolutions()}
+														onToggleToml={(): void =>
+															setTomlOpen((open): boolean => !open)
+														}
+													/>
+												)}
+												{canExportMerge(summary.state) && (
+													<ExportMergedMod
+														key={summary.analysisId}
+														analysisId={summary.analysisId}
+														client={client}
+													/>
+												)}
 												{!reviewAvailable && (
 													<ReviewUnavailablePanel
 														state={summary.state}
@@ -1354,6 +2111,7 @@ export default function App({
 									{showBrowser ? (
 										<UnitDetailPanel
 											detail={selectedUnitId === null ? EMPTY_UNIT_DETAIL : unitDetail}
+											onPrefer={queueResolution}
 										/>
 									) : (
 										<aside

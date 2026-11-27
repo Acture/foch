@@ -52,11 +52,19 @@ INSTALLED_CRATE: str = "foch-cli"
 EXPECTED_BINARIES: tuple[tuple[str, str], ...] = (
 	(INSTALLED_CRATE, "foch"),
 	("foch-desktop", "foch-desktop"),
+	# Unpublished plugin panel. `cargo install foch-cli` does not build it.
+	("foch-eu4-tribute", "tribute-panel"),
 )
 EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 	(INSTALLED_CRATE, "parse_stats", ("dev-tools",)),
 	(INSTALLED_CRATE, "schema_survey", ("dev-tools",)),
 	(INSTALLED_CRATE, "symbol_dump", ("dev-tools",)),
+	("foch-eu4-decide", "env_server", ()),
+	("foch-eu4-decide", "offline_train", ()),
+	("foch-eu4-decide", "oracle_dataset", ()),
+	("foch-eu4-decide", "rebuild_check", ()),
+	("foch-eu4-decide", "territory_server", ()),
+	("foch-plugin-read-decide", "terrain_smoke", ()),
 )
 # Workspace members released from their own repository, resolved from the
 # registry by published crates like any third-party dependency.
@@ -120,7 +128,12 @@ FRONTEND_PROCESS_HELPERS: frozenset[str] = frozenset(
 RUST_SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 	(
 		"standard-library process API",
-		re.compile(r"\bstd\s*::(?:\s*\{[^{}]*\bprocess\b|\s*process\b)"),
+		# The runtime library starts EU4; desktop may own its returned child handle.
+		# Keep process modules, grouped imports and command construction forbidden.
+		re.compile(
+			r"\bstd\s*::(?:\s*\{[^{}]*\bprocess\b|"
+			r"\s*process\b(?!\s*::\s*Child\b))"
+		),
 	),
 	("Tokio process API", re.compile(r"\btokio\s*::\s*process\b")),
 	(
@@ -517,7 +530,7 @@ def verify_desktop_sources(desktop_root: Path) -> None:
 	violations = source_violations(desktop_root)
 	if violations:
 		raise ValueError(
-			"foch-desktop APP-001 source must not launch or bundle processes:\n"
+			"foch-desktop source must not directly construct or bundle processes:\n"
 			+ "\n".join(violations)
 		)
 

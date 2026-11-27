@@ -1,0 +1,27 @@
+namespace = tribute_smoke
+
+#mark(tribute)
+#test(time=1444.11.11, tag=MNG, name="tributaries pay through the scaled settlement",
+#     advance_days=35,
+#     expect={
+#         KOR = { is_subject_of_type = tributary_state }
+#     },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
+#     })
+country_event = {
+	id = tribute_smoke.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

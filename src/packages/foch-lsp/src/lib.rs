@@ -45,8 +45,9 @@ use tower_lsp::lsp_types::{
 	DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
 	GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams, InitializeResult,
 	InitializedParams, Location, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf,
-	Position, Range, ReferenceParams, ServerCapabilities, SymbolInformation,
-	SymbolKind as LspSymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
+	Position, PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
+	ServerCapabilities, SymbolInformation, SymbolKind as LspSymbolKind,
+	TextDocumentContentChangeEvent, TextDocumentPositionParams, TextDocumentSyncCapability,
 	TextDocumentSyncKind, TextEdit as LspTextEdit, Url, WorkspaceEdit,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -582,6 +583,10 @@ impl LanguageServer for Backend {
 						work_done_progress_options: Default::default(),
 					},
 				)),
+				rename_provider: Some(OneOf::Right(RenameOptions {
+					prepare_provider: Some(true),
+					work_done_progress_options: Default::default(),
+				})),
 				..ServerCapabilities::default()
 			},
 		})
@@ -847,6 +852,58 @@ impl LanguageServer for Backend {
 		} else {
 			Ok(Some(actions))
 		}
+	}
+
+	async fn prepare_rename(
+		&self,
+		params: TextDocumentPositionParams,
+	) -> Result<Option<PrepareRenameResponse>> {
+		let state = self.state.read().await;
+		let Some(snapshot) = state.workspace.clone() else {
+			return Ok(None);
+		};
+		let Ok(path) = params.text_document.uri.to_file_path() else {
+			return Ok(None);
+		};
+		let opens = rename::open_buffers(&state.docs);
+		let targets = state.targets.clone();
+		drop(state);
+		match rename::plan_symbol_rename(&snapshot, &targets, &opens, &path, params.position, None)
+		{
+			Ok(plan) => Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+				range: plan.cursor,
+				placeholder: plan.old_name,
+			})),
+			Err(rename::RenameBlock::Stale) => {
+				Err(rename::rename_error(rename::RenameBlock::Stale, ""))
+			}
+			Err(_) => Ok(None),
+		}
+	}
+
+	async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+		let state = self.state.read().await;
+		let Some(snapshot) = state.workspace.clone() else {
+			return Err(rename::rename_error(rename::RenameBlock::NoWorkspace, ""));
+		};
+		let uri = params.text_document_position.text_document.uri;
+		let position = params.text_document_position.position;
+		let Ok(path) = uri.to_file_path() else {
+			return Err(rename::rename_error(rename::RenameBlock::NotRenameable, ""));
+		};
+		let opens = rename::open_buffers(&state.docs);
+		let targets = state.targets.clone();
+		drop(state);
+		rename::plan_symbol_rename(
+			&snapshot,
+			&targets,
+			&opens,
+			&path,
+			position,
+			Some(params.new_name.as_str()),
+		)
+		.map(|plan| Some(plan.edit))
+		.map_err(|block| rename::rename_error(block, &params.new_name))
 	}
 
 	async fn shutdown(&self) -> Result<()> {
@@ -2893,6 +2950,8 @@ fn is_identifier_char(ch: char) -> bool {
 	ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '$' | '@' | '-')
 }
 
+mod rename;
+
 #[cfg(test)]
 mod hover_tests;
 
@@ -2921,6 +2980,7 @@ mod tests {
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
+	use tower_lsp::LanguageServer;
 	use tower_lsp::lsp_types::{
 		CodeActionContext, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
 		CompletionItemKind, Diagnostic, DiagnosticSeverity, HoverContents, MarkupKind,
@@ -4730,5 +4790,660 @@ path = "local-mod"
 			..target
 		};
 		assert_eq!(super::scan_target_mod_id(3, &game), "__lsp_game__#3");
+	}
+
+	fn cursor_of(text: &str, line: usize, token: &str) -> Position {
+		let source_line = text.lines().nth(line).expect("line");
+		let character = source_line.find(token).expect("token") as u32;
+		Position {
+			line: line as u32,
+			character,
+		}
+	}
+
+	fn range_text(text: &str, range: &Range) -> String {
+		let start = super::byte_offset(text, super::editor_position(range.start)).expect("start");
+		let end = super::byte_offset(text, super::editor_position(range.end)).expect("end");
+		text[start..end].to_string()
+	}
+
+	fn plan_at(
+		snapshot: &super::WorkspaceSnapshot,
+		targets: &[ScanTarget],
+		opens: &std::collections::HashMap<PathBuf, Option<String>>,
+		path: &Path,
+		position: Position,
+		new_name: Option<&str>,
+	) -> Result<super::rename::PlannedRename, super::rename::RenameBlock> {
+		super::rename::plan_symbol_rename(snapshot, targets, opens, path, position, new_name)
+	}
+
+	fn apply_edit(edit: &tower_lsp::lsp_types::WorkspaceEdit) {
+		let Some(changes) = edit.changes.as_ref() else {
+			return;
+		};
+		for (uri, edits) in changes {
+			let path = uri.to_file_path().expect("edit path");
+			let mut text = fs::read_to_string(&path).expect("read edit target");
+			let mut edits = edits.clone();
+			edits.sort_by(|left, right| {
+				(right.range.start.line, right.range.start.character)
+					.cmp(&(left.range.start.line, left.range.start.character))
+			});
+			for edit in edits {
+				let start = super::byte_offset(&text, super::editor_position(edit.range.start))
+					.expect("start");
+				let end =
+					super::byte_offset(&text, super::editor_position(edit.range.end)).expect("end");
+				assert_ne!(start, end, "rename must not emit an empty span");
+				text.replace_range(start..end, &edit.new_text);
+			}
+			fs::write(path, text).expect("write renamed text");
+		}
+	}
+
+	fn unresolved_messages(snapshot: &super::WorkspaceSnapshot) -> Vec<String> {
+		let mut messages = Vec::new();
+		for diagnostics in snapshot.semantic_diagnostics_by_path.values() {
+			for diagnostic in diagnostics {
+				if let Some(NumberOrString::String(code)) = &diagnostic.code
+					&& code.contains("unresolved")
+				{
+					messages.push(format!("{code}: {}", diagnostic.message));
+				}
+			}
+		}
+		messages
+	}
+
+	fn mod_root(root: &Path) -> ScanTarget {
+		ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}
+	}
+
+	#[test]
+	fn prepare_rename_returns_exact_spans_for_mod_symbols() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects")).expect("effects");
+		fs::create_dir_all(root.join("decisions")).expect("decisions");
+		fs::create_dir_all(root.join("events")).expect("events");
+		let effect = root.join("common").join("scripted_effects").join("a.txt");
+		fs::write(&effect, "my_effect = { set_country_flag = MY_FLAG }\n").expect("effect");
+		let decision = root.join("decisions").join("d.txt");
+		fs::write(
+			&decision,
+			"country_decisions = { my_decision = { effect = { my_effect = { } } } }\n",
+		)
+		.expect("decision");
+		let event = root.join("events").join("e.txt");
+		fs::write(
+			&event,
+			"namespace = test\ncountry_event = { id = test.1 trigger = { has_country_flag = MY_FLAG } }\n",
+		)
+		.expect("event");
+		let targets = [mod_root(root)];
+		let snapshot = build_workspace_snapshot(&targets);
+		let opens = std::collections::HashMap::new();
+
+		let effect_text = fs::read_to_string(&effect).expect("read effect");
+		let prepared = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&effect,
+			cursor_of(&effect_text, 0, "my_effect"),
+			None,
+		)
+		.expect("effect prepare");
+		assert_eq!(prepared.old_name, "my_effect");
+		assert_eq!(range_text(&effect_text, &prepared.cursor), "my_effect");
+
+		let decision_text = fs::read_to_string(&decision).expect("read decision");
+		let prepared = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&decision,
+			cursor_of(&decision_text, 0, "my_decision"),
+			None,
+		)
+		.expect("decision prepare");
+		assert_eq!(prepared.old_name, "my_decision");
+		assert_eq!(range_text(&decision_text, &prepared.cursor), "my_decision");
+
+		let event_text = fs::read_to_string(&event).expect("read event");
+		let prepared = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&event,
+			cursor_of(&event_text, 1, "test.1"),
+			None,
+		)
+		.expect("event prepare");
+		assert_eq!(prepared.old_name, "test.1");
+		assert_eq!(range_text(&event_text, &prepared.cursor), "test.1");
+
+		let prepared = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&event,
+			cursor_of(&event_text, 1, "MY_FLAG"),
+			None,
+		)
+		.expect("flag prepare");
+		assert_eq!(prepared.old_name, "MY_FLAG");
+		assert_eq!(range_text(&event_text, &prepared.cursor), "MY_FLAG");
+	}
+
+	#[test]
+	fn rename_updates_definitions_and_cross_file_references() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects")).expect("effects");
+		fs::create_dir_all(root.join("decisions")).expect("decisions");
+		fs::create_dir_all(root.join("events")).expect("events");
+		let effect = root.join("common").join("scripted_effects").join("a.txt");
+		fs::write(&effect, "my_effect = { set_country_flag = MY_FLAG }\n").expect("effect");
+		let decision = root.join("decisions").join("d.txt");
+		fs::write(
+			&decision,
+			"country_decisions = { my_decision = { effect = { my_effect = { } } } }\n",
+		)
+		.expect("decision");
+		let event = root.join("events").join("e.txt");
+		fs::write(
+			&event,
+			"namespace = test\ncountry_event = { id = test.1 option = { name = OPT country_event = { id = test.1 } } trigger = { has_country_flag = MY_FLAG } }\n",
+		)
+		.expect("event");
+		let caller = root
+			.join("common")
+			.join("scripted_effects")
+			.join("call.txt");
+		fs::write(
+			&caller,
+			"fire_it = { country_event = { id = test.1 } set_country_flag = MY_FLAG }\n",
+		)
+		.expect("caller");
+		let targets = [mod_root(root)];
+		let snapshot = build_workspace_snapshot(&targets);
+		let opens = std::collections::HashMap::new();
+
+		let effect_text = fs::read_to_string(&effect).expect("read effect");
+		let renamed = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&decision,
+			cursor_of(
+				&fs::read_to_string(&decision).expect("decision"),
+				0,
+				"my_effect",
+			),
+			Some("renamed_effect"),
+		)
+		.expect("rename effect");
+		let changes = renamed.edit.changes.as_ref().expect("changes");
+		assert!(changes.len() >= 2, "definition and calls: {changes:?}");
+		apply_edit(&renamed.edit);
+		let effect_after = fs::read_to_string(&effect).expect("effect after");
+		let decision_after = fs::read_to_string(&decision).expect("decision after");
+		assert!(effect_after.contains("renamed_effect"));
+		assert!(!effect_after.contains("my_effect"));
+		assert!(decision_after.contains("renamed_effect"));
+		assert!(!decision_after.contains("my_effect"));
+		let _ = effect_text;
+
+		let flagged = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&effect,
+			cursor_of(&effect_after, 0, "MY_FLAG"),
+			Some("OTHER_FLAG"),
+		);
+		// The effect file changed, so the original snapshot is stale for it.
+		assert_eq!(flagged.unwrap_err(), super::rename::RenameBlock::Stale);
+
+		let fresh = build_workspace_snapshot(&targets);
+		let effect_now = fs::read_to_string(&effect).expect("effect now");
+		let flagged = plan_at(
+			&fresh,
+			&targets,
+			&opens,
+			&effect,
+			cursor_of(&effect_now, 0, "MY_FLAG"),
+			Some("OTHER_FLAG"),
+		)
+		.expect("rename flag");
+		apply_edit(&flagged.edit);
+		assert!(!fs::read_to_string(&effect).unwrap().contains("MY_FLAG"));
+		assert!(fs::read_to_string(&event).unwrap().contains("OTHER_FLAG"));
+		assert!(fs::read_to_string(&caller).unwrap().contains("OTHER_FLAG"));
+
+		let fresh = build_workspace_snapshot(&targets);
+		let event_now = fs::read_to_string(&event).expect("event now");
+		let event_rename = plan_at(
+			&fresh,
+			&targets,
+			&opens,
+			&event,
+			cursor_of(&event_now, 1, "test.1"),
+			Some("test.9"),
+		)
+		.expect("rename event");
+		apply_edit(&event_rename.edit);
+		let event_after = fs::read_to_string(&event).unwrap();
+		let caller_after = fs::read_to_string(&caller).unwrap();
+		assert!(!event_after.contains("test.1"));
+		assert!(event_after.contains("test.9"));
+		assert!(!caller_after.contains("test.1"));
+		assert!(caller_after.contains("test.9"));
+
+		let fresh = build_workspace_snapshot(&targets);
+		assert_eq!(
+			unresolved_messages(&fresh),
+			Vec::<String>::new(),
+			"renamed symbols must not leave unresolved references"
+		);
+	}
+
+	#[test]
+	fn rename_refuses_base_game_symbols_without_edits() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let game = tmp.path().join("game");
+		let module = tmp.path().join("mod");
+		fs::create_dir_all(game.join("common").join("scripted_effects")).expect("game effects");
+		fs::create_dir_all(module.join("decisions")).expect("mod decisions");
+		let vanilla = game.join("common").join("scripted_effects").join("v.txt");
+		let original = "vanilla_effect = { set_country_flag = VANILLA_FLAG }\n";
+		fs::write(&vanilla, original).expect("vanilla");
+		let decision = module.join("decisions").join("d.txt");
+		fs::write(
+			&decision,
+			"country_decisions = { d = { effect = { vanilla_effect = { } has_country_flag = VANILLA_FLAG } } }\n",
+		)
+		.expect("decision");
+		let targets = [
+			ScanTarget {
+				path: game.clone(),
+				role: TargetRole::Game,
+			},
+			mod_root(&module),
+		];
+		let snapshot = build_workspace_snapshot(&targets);
+		let opens = std::collections::HashMap::new();
+		let decision_text = fs::read_to_string(&decision).expect("read");
+		let refused = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&decision,
+			cursor_of(&decision_text, 0, "vanilla_effect"),
+			Some("mod_effect"),
+		);
+		assert_eq!(refused.unwrap_err(), super::rename::RenameBlock::BaseGame);
+		assert_eq!(
+			plan_at(
+				&snapshot,
+				&targets,
+				&opens,
+				&decision,
+				cursor_of(&decision_text, 0, "vanilla_effect"),
+				None,
+			)
+			.unwrap_err(),
+			super::rename::RenameBlock::BaseGame
+		);
+		assert_eq!(
+			plan_at(
+				&snapshot,
+				&targets,
+				&opens,
+				&decision,
+				cursor_of(&decision_text, 0, "VANILLA_FLAG"),
+				Some("MOD_FLAG"),
+			)
+			.unwrap_err(),
+			super::rename::RenameBlock::BaseGame
+		);
+		assert_eq!(fs::read_to_string(&vanilla).unwrap(), original);
+		assert_eq!(fs::read_to_string(&decision).unwrap(), decision_text);
+	}
+
+	#[test]
+	fn rename_refuses_stale_open_buffers_invalid_names_and_collisions() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects")).expect("effects");
+		fs::create_dir_all(root.join("decisions")).expect("decisions");
+		let effect = root.join("common").join("scripted_effects").join("a.txt");
+		fs::write(&effect, "my_effect = { }\ntaken_effect = { }\n").expect("effects");
+		let decision = root.join("decisions").join("d.txt");
+		fs::write(
+			&decision,
+			"country_decisions = { d = { effect = { my_effect = { } } } }\n",
+		)
+		.expect("decision");
+		let targets = [mod_root(root)];
+		let snapshot = build_workspace_snapshot(&targets);
+		let effect_text = fs::read_to_string(&effect).expect("effect");
+		let position = cursor_of(&effect_text, 0, "my_effect");
+		let mut opens = std::collections::HashMap::new();
+		opens.insert(
+			decision.clone(),
+			Some(
+				"country_decisions = { d = { effect = { my_effect = { x = 1 } } } }\n".to_string(),
+			),
+		);
+		assert_eq!(
+			plan_at(
+				&snapshot,
+				&targets,
+				&opens,
+				&effect,
+				position,
+				Some("fresh_effect")
+			)
+			.unwrap_err(),
+			super::rename::RenameBlock::Stale
+		);
+		opens.insert(effect.clone(), None);
+		assert_eq!(
+			plan_at(
+				&snapshot,
+				&targets,
+				&opens,
+				&effect,
+				position,
+				Some("fresh_effect"),
+			)
+			.unwrap_err(),
+			super::rename::RenameBlock::Stale
+		);
+
+		let opens = std::collections::HashMap::new();
+		for bad in ["", " ", "a b", "a=b", "a{b", "a\"b", "9no", "test\n1"] {
+			assert_eq!(
+				plan_at(&snapshot, &targets, &opens, &effect, position, Some(bad)).unwrap_err(),
+				super::rename::RenameBlock::InvalidName,
+				"{bad}"
+			);
+		}
+		assert_eq!(
+			plan_at(
+				&snapshot,
+				&targets,
+				&opens,
+				&effect,
+				position,
+				Some("my_effect"),
+			)
+			.unwrap_err(),
+			super::rename::RenameBlock::Unchanged
+		);
+		assert_eq!(
+			plan_at(
+				&snapshot,
+				&targets,
+				&opens,
+				&effect,
+				position,
+				Some("taken_effect"),
+			)
+			.unwrap_err(),
+			super::rename::RenameBlock::Collision
+		);
+		assert_eq!(fs::read_to_string(&effect).unwrap(), effect_text);
+		assert!(
+			super::rename::rename_error(super::rename::RenameBlock::Stale, "")
+				.message
+				.contains(super::rename::SAVE_BEFORE_RENAME)
+		);
+		assert!(
+			super::rename::rename_error(super::rename::RenameBlock::BaseGame, "")
+				.message
+				.contains("base-game symbols cannot be renamed")
+		);
+	}
+
+	#[test]
+	fn rename_covers_triggers_actions_modifiers_and_localisation() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_triggers")).expect("triggers");
+		fs::create_dir_all(root.join("common").join("diplomatic_actions")).expect("actions");
+		fs::create_dir_all(root.join("common").join("triggered_modifiers")).expect("modifiers");
+		fs::create_dir_all(root.join("events")).expect("events");
+		fs::create_dir_all(root.join("localisation").join("english")).expect("loc");
+		let trigger = root.join("common").join("scripted_triggers").join("a.txt");
+		fs::write(&trigger, "my_trigger = { always = yes }\n").expect("trigger");
+		let event = root.join("events").join("e.txt");
+		fs::write(
+			&event,
+			"namespace = test\ncountry_event = { id = test.3 trigger = { my_trigger = yes } title = MY_TITLE }\n",
+		)
+		.expect("event");
+		let action = root.join("common").join("diplomatic_actions").join("a.txt");
+		fs::write(
+			&action,
+			"sell_indulgence = { is_visible = { always = yes } is_allowed = { always = yes } on_accept = { } }\n",
+		)
+		.expect("action");
+		let modifier = root
+			.join("common")
+			.join("triggered_modifiers")
+			.join("a.txt");
+		fs::write(
+			&modifier,
+			"march_modifier = { potential = { always = yes } trigger = { always = yes } }\n",
+		)
+		.expect("modifier");
+		let localisation = root
+			.join("localisation")
+			.join("english")
+			.join("a_l_english.yml");
+		fs::write(&localisation, "l_english:\n MY_TITLE:0 \"Hello\"\n").expect("loc");
+		let targets = [mod_root(root)];
+		let snapshot = build_workspace_snapshot(&targets);
+		let opens = std::collections::HashMap::new();
+
+		let trigger_text = fs::read_to_string(&trigger).unwrap();
+		let renamed = plan_at(
+			&snapshot,
+			&targets,
+			&opens,
+			&trigger,
+			cursor_of(&trigger_text, 0, "my_trigger"),
+			Some("renamed_trigger"),
+		)
+		.expect("rename trigger");
+		apply_edit(&renamed.edit);
+		assert!(
+			fs::read_to_string(&trigger)
+				.unwrap()
+				.contains("renamed_trigger")
+		);
+		assert!(
+			fs::read_to_string(&event)
+				.unwrap()
+				.contains("renamed_trigger")
+		);
+		assert!(!fs::read_to_string(&event).unwrap().contains("my_trigger"));
+
+		let fresh = build_workspace_snapshot(&targets);
+		let action_text = fs::read_to_string(&action).unwrap();
+		let prepared = plan_at(
+			&fresh,
+			&targets,
+			&opens,
+			&action,
+			cursor_of(&action_text, 0, "sell_indulgence"),
+			None,
+		)
+		.expect("diplomatic action");
+		assert_eq!(
+			range_text(&action_text, &prepared.cursor),
+			"sell_indulgence"
+		);
+
+		let modifier_text = fs::read_to_string(&modifier).unwrap();
+		let prepared = plan_at(
+			&fresh,
+			&targets,
+			&opens,
+			&modifier,
+			cursor_of(&modifier_text, 0, "march_modifier"),
+			None,
+		)
+		.expect("triggered modifier");
+		assert_eq!(
+			range_text(&modifier_text, &prepared.cursor),
+			"march_modifier"
+		);
+
+		let loc_text = fs::read_to_string(&localisation).unwrap();
+		let renamed = plan_at(
+			&fresh,
+			&targets,
+			&opens,
+			&localisation,
+			cursor_of(&loc_text, 1, "MY_TITLE"),
+			Some("OTHER_TITLE"),
+		)
+		.expect("rename localisation");
+		apply_edit(&renamed.edit);
+		assert!(
+			fs::read_to_string(&localisation)
+				.unwrap()
+				.contains("OTHER_TITLE")
+		);
+		assert!(
+			!fs::read_to_string(&localisation)
+				.unwrap()
+				.contains("MY_TITLE")
+		);
+		assert!(fs::read_to_string(&event).unwrap().contains("OTHER_TITLE"));
+		assert!(!fs::read_to_string(&event).unwrap().contains("MY_TITLE"));
+	}
+
+	#[test]
+	fn prepare_rename_refuses_unsupported_positions() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("events")).expect("events");
+		let event = root.join("events").join("e.txt");
+		let text = "namespace = test\ncountry_event = { id = test.1 trigger = { always = yes } }\n";
+		fs::write(&event, text).expect("event");
+		let targets = [mod_root(root)];
+		let snapshot = build_workspace_snapshot(&targets);
+		let opens = std::collections::HashMap::new();
+		for (line, token) in [
+			(0, "namespace"),
+			(1, "country_event"),
+			(1, "trigger"),
+			(1, "always"),
+		] {
+			assert_eq!(
+				plan_at(
+					&snapshot,
+					&targets,
+					&opens,
+					&event,
+					cursor_of(text, line, token),
+					None,
+				)
+				.unwrap_err(),
+				super::rename::RenameBlock::NotRenameable,
+				"{token}"
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn language_server_prepare_and_rename_use_the_workspace_snapshot() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects")).expect("effects");
+		fs::create_dir_all(root.join("decisions")).expect("decisions");
+		let effect = root.join("common").join("scripted_effects").join("a.txt");
+		let effect_text = "my_effect = { }\n";
+		fs::write(&effect, effect_text).expect("effect");
+		let decision = root.join("decisions").join("d.txt");
+		let decision_text = "country_decisions = { d = { effect = { my_effect = { } } } }\n";
+		fs::write(&decision, decision_text).expect("decision");
+		let targets = [mod_root(root)];
+		let snapshot = build_workspace_snapshot(&targets);
+		let effect_uri = Url::from_file_path(&effect).expect("uri");
+		let (service, _socket) = tower_lsp::LspService::new(super::Backend::new);
+		let backend = service.inner();
+		{
+			let mut state = backend.state.write().await;
+			state.targets = targets.to_vec();
+			state.workspace = Some(std::sync::Arc::new(snapshot));
+			state.docs.insert(
+				effect_uri.clone(),
+				super::OpenDocument {
+					text: Some(effect_text.to_string()),
+					version: 1,
+				},
+			);
+		}
+		let prepared = backend
+			.prepare_rename(tower_lsp::lsp_types::TextDocumentPositionParams {
+				text_document: tower_lsp::lsp_types::TextDocumentIdentifier {
+					uri: effect_uri.clone(),
+				},
+				position: cursor_of(effect_text, 0, "my_effect"),
+			})
+			.await
+			.expect("prepare")
+			.expect("range");
+		let tower_lsp::lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
+			range,
+			placeholder,
+		} = prepared
+		else {
+			panic!("expected a range and placeholder");
+		};
+		assert_eq!(placeholder, "my_effect");
+		assert_eq!(range_text(effect_text, &range), "my_effect");
+		let edit = backend
+			.rename(tower_lsp::lsp_types::RenameParams {
+				text_document_position: tower_lsp::lsp_types::TextDocumentPositionParams {
+					text_document: tower_lsp::lsp_types::TextDocumentIdentifier { uri: effect_uri },
+					position: cursor_of(effect_text, 0, "my_effect"),
+				},
+				new_name: "renamed_effect".to_string(),
+				work_done_progress_params: Default::default(),
+			})
+			.await
+			.expect("rename")
+			.expect("edit");
+		apply_edit(&edit);
+		assert!(
+			fs::read_to_string(&effect)
+				.unwrap()
+				.contains("renamed_effect")
+		);
+		assert!(
+			fs::read_to_string(&decision)
+				.unwrap()
+				.contains("renamed_effect")
+		);
+		let fresh = build_workspace_snapshot(&targets);
+		assert_eq!(unresolved_messages(&fresh), Vec::<String>::new());
 	}
 }

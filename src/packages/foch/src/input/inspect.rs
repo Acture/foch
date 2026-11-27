@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::game::eu4::Eu4;
 use crate::game::eu4::base::snapshot::{
@@ -16,6 +17,96 @@ use crate::playset::{Playset, PlaysetEntry, default_dlc_load_path};
 
 const CURRENT_PLAYSET_NAME: &str = "Current EU4 playset";
 const GAME_NAME: &str = "Europa Universalis IV";
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// A measured step of the read-only EU4 input check.
+///
+/// Stages whose denominator is not known yet leave both counts empty. Callers
+/// must show the stage itself and must not invent a percentage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputCheckStage {
+	GameInstall,
+	LauncherInput,
+	WorkshopAcf,
+	Descriptors,
+	BaseData,
+}
+
+impl InputCheckStage {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::GameInstall => "game_install",
+			Self::LauncherInput => "launcher_input",
+			Self::WorkshopAcf => "workshop_acf",
+			Self::Descriptors => "descriptors",
+			Self::BaseData => "base_data",
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputCheckProgress {
+	pub stage: InputCheckStage,
+	pub completed: Option<u64>,
+	pub total: Option<u64>,
+}
+
+pub trait InputCheckObserver: Send {
+	fn on_progress(&mut self, progress: InputCheckProgress);
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopInputCheckObserver;
+
+impl InputCheckObserver for NoopInputCheckObserver {
+	fn on_progress(&mut self, _progress: InputCheckProgress) {}
+}
+
+struct ProgressGate {
+	last: Instant,
+}
+
+impl ProgressGate {
+	fn open() -> Self {
+		Self {
+			last: Instant::now() - PROGRESS_INTERVAL,
+		}
+	}
+
+	fn allow(&mut self, force: bool) -> bool {
+		if !force && self.last.elapsed() < PROGRESS_INTERVAL {
+			return false;
+		}
+		self.last = Instant::now();
+		true
+	}
+}
+
+fn report_stage(observer: &mut dyn InputCheckObserver, stage: InputCheckStage) {
+	observer.on_progress(InputCheckProgress {
+		stage,
+		completed: None,
+		total: None,
+	});
+}
+
+fn report_count(
+	observer: &mut dyn InputCheckObserver,
+	stage: InputCheckStage,
+	completed: u64,
+	total: u64,
+	gate: &mut ProgressGate,
+	force: bool,
+) {
+	if !gate.allow(force) {
+		return;
+	}
+	observer.on_progress(InputCheckProgress {
+		stage,
+		completed: Some(completed),
+		total: Some(total),
+	});
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -355,8 +446,21 @@ pub fn inspect_current_eu4_input() -> CurrentEu4Input {
 	inspect_current_eu4_input_with_environment(CurrentEu4InputEnvironment::discover())
 }
 
+pub fn inspect_current_eu4_input_with_observer(
+	observer: &mut dyn InputCheckObserver,
+) -> CurrentEu4Input {
+	inspect_environment(CurrentEu4InputEnvironment::discover(), observer)
+}
+
 pub(crate) fn inspect_current_eu4_input_with_environment(
 	environment: CurrentEu4InputEnvironment,
+) -> CurrentEu4Input {
+	inspect_environment(environment, &mut NoopInputCheckObserver)
+}
+
+fn inspect_environment(
+	environment: CurrentEu4InputEnvironment,
+	observer: &mut dyn InputCheckObserver,
 ) -> CurrentEu4Input {
 	let mut issues = Vec::new();
 	let mut config = load_existing_config(&environment.config_dir, &mut issues);
@@ -367,16 +471,17 @@ pub(crate) fn inspect_current_eu4_input_with_environment(
 		config.paradox_data_path = environment.default_paradox_data_path;
 	}
 
-	let (game_root, game_version) = inspect_game(&config, &mut issues);
+	let (game_root, game_version) = inspect_game(&config, &mut issues, observer);
 	if let Some(game_root) = game_root.as_ref() {
 		config
 			.game_path
 			.insert(Eu4::KEY.to_string(), game_root.clone());
 	}
-	let (playset_view, preparation) = inspect_playset(&config, &mut issues);
+	let (playset_view, preparation) = inspect_playset(&config, &mut issues, observer);
 	let source_mod_count = playset_view
 		.as_ref()
 		.map_or(0, |playset| playset.mods.len());
+	report_stage(observer, InputCheckStage::BaseData);
 	let (base_data, base_snapshot_identity) =
 		inspect_base_data(game_version.as_deref(), &mut issues);
 
@@ -459,7 +564,9 @@ fn load_existing_config(
 fn inspect_game(
 	config: &Config,
 	issues: &mut Vec<InputReadinessIssue>,
+	observer: &mut dyn InputCheckObserver,
 ) -> (Option<PathBuf>, Option<String>) {
+	report_stage(observer, InputCheckStage::GameInstall);
 	match resolve_game_root_and_version(config, &Eu4) {
 		Ok((root, version)) => (Some(root), Some(version)),
 		Err(detail) => {
@@ -477,7 +584,9 @@ fn inspect_game(
 fn inspect_playset(
 	config: &Config,
 	issues: &mut Vec<InputReadinessIssue>,
+	observer: &mut dyn InputCheckObserver,
 ) -> (Option<DetectedPlayset>, Option<PlaysetPreparation>) {
+	report_stage(observer, InputCheckStage::LauncherInput);
 	let candidates = paradox_data_candidates(config.paradox_data_path.as_deref());
 	let playset_path = candidates
 		.iter()
@@ -508,6 +617,7 @@ fn inspect_playset(
 		};
 	playset.name = CURRENT_PLAYSET_NAME.to_string();
 
+	report_stage(observer, InputCheckStage::WorkshopAcf);
 	let catalog = config
 		.steam_root_path
 		.as_deref()
@@ -529,6 +639,16 @@ fn inspect_playset(
 	let source_mods = std::mem::take(&mut playset.mods);
 	let mut classified_mods = Vec::with_capacity(source_mods.len());
 	let mut selectable_mods = Vec::with_capacity(source_mods.len());
+	let descriptor_total = source_mods.len() as u64;
+	let mut descriptor_gate = ProgressGate::open();
+	report_count(
+		observer,
+		InputCheckStage::Descriptors,
+		0,
+		descriptor_total,
+		&mut descriptor_gate,
+		true,
+	);
 	for (index, mut entry) in source_mods.into_iter().enumerate() {
 		let workshop_id = entry.steam_id.clone();
 		let mut detected = DetectedPlaysetMod {
@@ -661,6 +781,15 @@ fn inspect_playset(
 			detected,
 			classification,
 		});
+		let completed = (index as u64) + 1;
+		report_count(
+			observer,
+			InputCheckStage::Descriptors,
+			completed,
+			descriptor_total,
+			&mut descriptor_gate,
+			completed == descriptor_total,
+		);
 	}
 	let views = derive_playset_mod_views(classified_mods);
 

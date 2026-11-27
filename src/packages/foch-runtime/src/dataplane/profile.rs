@@ -10,7 +10,13 @@ use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 
 use serde::Deserialize;
 
-const EMBEDDED: &[&str] = &[include_str!("../../profiles/eu4/1.37.5-windows-x64.json")];
+const EMBEDDED: &[&str] = &[
+	include_str!("../../profiles/eu4/1.37.5-windows-x64.json"),
+	// The unmodified Steam build of the same 1.37.5 binary differs from the
+	// first digest only in four PE header bytes and the two checksum-patch
+	// bytes, so every offset below is byte-for-byte identical.
+	include_str!("../../profiles/eu4/1.37.5-windows-x64-stock.json"),
+];
 
 const FIELD_PATHS: &[&str] = &[
 	"hooks.monthly_tick",
@@ -440,7 +446,9 @@ pub(crate) fn bind_game(exe_base: usize, context: usize, profile: &'static Layou
 	lock(&*BINDINGS).insert((exe_base, context), profile);
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only counterpart of [`bind_game`]: the Windows profile tests unwind
+/// their synthetic bindings through the `BindGuard` drop guard.
+#[cfg(all(test, windows))]
 pub(crate) fn unbind_game(exe_base: usize, context: usize) {
 	lock(&*BINDINGS).remove(&(exe_base, context));
 }

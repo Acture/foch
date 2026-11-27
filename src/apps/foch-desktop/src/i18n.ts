@@ -84,11 +84,44 @@ export interface Copy {
 		languageAuto: string;
 		saved: string;
 		customHint: string;
+		testConnectivity: string;
+		testingConnectivity: string;
+		reachable: string;
+		unreachable: string;
+		connectivityResults: string;
+		sha256Reminder: string;
+		latency: string;
 	};
 	merge: {
 		checkingKicker: string;
 		checkingTitle: string;
 		checkingBody: string;
+		startingCheck: string;
+		stageNoCount: string;
+		installPath: string;
+		gamePathLabel: string;
+		verifyPath: string;
+		useInstall: string;
+		verifiedVersion: string;
+		buildBase: string;
+		cancelBuild: string;
+		sessionIgnore: string;
+		parsingDocuments: string;
+		stages: {
+			game_install: string;
+			launcher_input: string;
+			workshop_acf: string;
+			descriptors: string;
+			base_data: string;
+			detect_version: string;
+			collect_inventory: string;
+			discover_documents: string;
+			parse_documents: string;
+			build_semantic_index: string;
+			materialize_snapshot: string;
+			encode_snapshot: string;
+			install: string;
+		};
 		inspectFailedKicker: string;
 		inspectFailedTitle: string;
 		checkAgain: string;
@@ -183,6 +216,35 @@ export interface Copy {
 		incompleteBlocked: string;
 		detectedInput: string;
 		readOnlyBadge: string;
+		exportTitle: string;
+		exportHelp: string;
+		exportAction: string;
+		confirmExport: string;
+		exporting: string;
+		exported: string;
+		outputFolder: string;
+		generatedFiles: string;
+		readyExport: string;
+		partialExport: string;
+		committed: string;
+		leafConflictsTitle: string;
+		conflictReason: string;
+		vanillaSnippet: string;
+		competingMods: string;
+		preferForThisFile: string;
+		preferForFolder: string;
+		pendingResolutionsTitle: string;
+		pendingResolutionsBody: string;
+		removeRule: string;
+		clearRules: string;
+		reanalyzeWithResolutions: string;
+		reanalyzing: string;
+		copyFochToml: string;
+		hideFochToml: string;
+		tomlPreviewNote: string;
+		ruleScopeFile: string;
+		ruleScopeFolder: string;
+		rulePrefers: string;
 		disposition: Record<MergeDisposition, string>;
 		stage: Record<MergeAnalysisStage, string>;
 		state: Record<MergeAnalysisState, string>;
@@ -269,11 +331,45 @@ const en: Copy = {
 		languageAuto: "Auto",
 		saved: "Saved",
 		customHint: "Separate HTTPS prefixes with commas.",
+		testConnectivity: "Test Connectivity",
+		testingConnectivity: "Testing connectivity…",
+		reachable: "Reachable",
+		unreachable: "Unreachable",
+		connectivityResults: "Connectivity",
+		sha256Reminder:
+			"Mirror downloads still enforce SHA-256 and PE export validation before anything is installed.",
+		latency: "Latency",
 	},
 	merge: {
 		checkingKicker: "First-launch inspection",
 		checkingTitle: "Checking EU4 setup",
 		checkingBody: "Detecting the game, base data, and current launcher playset.",
+		startingCheck: "Starting the read-only check.",
+		stageNoCount: "This stage has no item count yet.",
+		installPath: "Install path",
+		gamePathLabel: "EU4 installation directory",
+		verifyPath: "Verify path",
+		useInstall: "Use this EU4 install",
+		verifiedVersion: "Verified version",
+		buildBase: "Build base data from this install",
+		cancelBuild: "Cancel base data build",
+		sessionIgnore: "Ignore missing items for this session only.",
+		parsingDocuments: "Parsing game documents",
+		stages: {
+			game_install: "Reading the EU4 installation",
+			launcher_input: "Reading the Launcher playset",
+			workshop_acf: "Reading the Workshop installation record",
+			descriptors: "Reading mod descriptors",
+			base_data: "Checking installed base data",
+			detect_version: "Detecting the EU4 version",
+			collect_inventory: "Listing game files",
+			discover_documents: "Finding documents to parse",
+			parse_documents: "Parsing game documents",
+			build_semantic_index: "Building the semantic index",
+			materialize_snapshot: "Building the base snapshot",
+			encode_snapshot: "Encoding the base snapshot",
+			install: "Installing base data",
+		},
 		inspectFailedKicker: "Input inspection failed",
 		inspectFailedTitle: "EU4 setup could not be inspected",
 		checkAgain: "Check again",
@@ -376,6 +472,40 @@ const en: Copy = {
 		incompleteBlocked: "Incomplete review blocked",
 		detectedInput: "Detected input",
 		readOnlyBadge: "Read-only analysis",
+		exportTitle: "Export Merged Mod",
+		exportHelp:
+			"Choose a new or empty folder. Export never edits Steam, the game directory, or source mods. A folder that already contains files is refused.",
+		exportAction: "Export Merged Mod",
+		confirmExport: "Confirm export to this folder",
+		exporting: "Exporting…",
+		exported: "Exported",
+		outputFolder: "Output folder",
+		generatedFiles: "Generated files",
+		readyExport:
+			"Safe files were written to an empty folder. Source mods and the game directory were not modified.",
+		partialExport:
+			"Safe files and definition modules were written. Unsafe units were deferred and were not overwritten.",
+		committed: "This analysis has already been exported.",
+		leafConflictsTitle: "Leaf conflicts",
+		conflictReason: "Why it deferred",
+		vanillaSnippet: "Vanilla",
+		competingMods: "Competing mods",
+		preferForThisFile: "Prefer for this file",
+		preferForFolder: "Prefer for folder",
+		pendingResolutionsTitle: "Pending resolutions",
+		pendingResolutionsBody:
+			"These explicit foch.toml rules will be applied to a fresh session analysis. Nothing is written to your mods or playset.",
+		removeRule: "Remove",
+		clearRules: "Clear all",
+		reanalyzeWithResolutions: "Re-analyze with resolutions",
+		reanalyzing: "Re-analyzing…",
+		copyFochToml: "Copy foch.toml snippet",
+		hideFochToml: "Hide foch.toml snippet",
+		tomlPreviewNote:
+			"Add this [[resolutions]] block to your own foch.toml to keep the same choices in the CLI.",
+		ruleScopeFile: "file",
+		ruleScopeFolder: "folder",
+		rulePrefers: "prefers",
 		disposition: {
 			safe: "Safe merge",
 			copy: "Copy through",
@@ -484,11 +614,44 @@ const zh: Copy = {
 		languageAuto: "自动",
 		saved: "已保存",
 		customHint: "多个 HTTPS 前缀用逗号分隔。",
+		testConnectivity: "测试连通性",
+		testingConnectivity: "正在测试连通性…",
+		reachable: "可达",
+		unreachable: "不可达",
+		connectivityResults: "连通性",
+		sha256Reminder: "镜像下载在安装前仍会强制校验 SHA-256，并检查 PE 导出表。",
+		latency: "延迟",
 	},
 	merge: {
 		checkingKicker: "首次检查",
 		checkingTitle: "正在检查 EU4 环境",
 		checkingBody: "正在检测游戏、基础数据和当前启动器剧本组。",
+		startingCheck: "正在开始只读检查。",
+		stageNoCount: "这个阶段还没有条目计数。",
+		installPath: "安装路径",
+		gamePathLabel: "EU4 安装目录",
+		verifyPath: "验证路径",
+		useInstall: "使用这个 EU4 安装",
+		verifiedVersion: "已验证版本",
+		buildBase: "从这次安装构建基础数据",
+		cancelBuild: "取消基础数据构建",
+		sessionIgnore: "仅本次忽略缺失项。",
+		parsingDocuments: "正在解析游戏文档",
+		stages: {
+			game_install: "正在读取 EU4 安装",
+			launcher_input: "正在读取启动器剧本组",
+			workshop_acf: "正在读取创意工坊安装记录",
+			descriptors: "正在读取模组描述文件",
+			base_data: "正在检查已安装的基础数据",
+			detect_version: "正在检测 EU4 版本",
+			collect_inventory: "正在列出游戏文件",
+			discover_documents: "正在查找要解析的文档",
+			parse_documents: "正在解析游戏文档",
+			build_semantic_index: "正在建立语义索引",
+			materialize_snapshot: "正在建立基础快照",
+			encode_snapshot: "正在编码基础快照",
+			install: "正在安装基础数据",
+		},
 		inspectFailedKicker: "输入检查失败",
 		inspectFailedTitle: "无法检查 EU4 环境",
 		checkAgain: "重新检查",
@@ -585,6 +748,38 @@ const zh: Copy = {
 		incompleteBlocked: "不完整审查受阻",
 		detectedInput: "检测到的输入",
 		readOnlyBadge: "只读分析",
+		exportTitle: "导出合并 Mod",
+		exportHelp:
+			"请选择一个新建或空的文件夹。导出不会修改 Steam、游戏目录或源 Mod。已有文件的文件夹会被拒绝。",
+		exportAction: "导出合并 Mod",
+		confirmExport: "确认导出到此文件夹",
+		exporting: "正在导出…",
+		exported: "已导出",
+		outputFolder: "输出文件夹",
+		generatedFiles: "生成的文件",
+		readyExport: "已把安全文件写入空文件夹。源 Mod 和游戏目录没有被修改。",
+		partialExport: "已写入安全的文件和定义模块。不安全的单元已延后，没有被覆盖。",
+		committed: "这次分析已经导出。",
+		leafConflictsTitle: "叶子冲突",
+		conflictReason: "延后原因",
+		vanillaSnippet: "原版",
+		competingMods: "竞争 Mod",
+		preferForThisFile: "本文件优先此 Mod",
+		preferForFolder: "同目录优先此 Mod",
+		pendingResolutionsTitle: "待应用解决规则",
+		pendingResolutionsBody:
+			"这些明确的 foch.toml 规则将应用到一次新的会话分析。不会写入你的 Mod 或剧本组。",
+		removeRule: "移除",
+		clearRules: "全部清除",
+		reanalyzeWithResolutions: "应用规则并重新分析",
+		reanalyzing: "正在重新分析…",
+		copyFochToml: "复制 foch.toml 配置",
+		hideFochToml: "收起 foch.toml 配置",
+		tomlPreviewNote:
+			"把这段 [[resolutions]] 加入你自己的 foch.toml，即可在命令行复用相同选择。",
+		ruleScopeFile: "文件",
+		ruleScopeFolder: "目录",
+		rulePrefers: "优先",
 		disposition: {
 			safe: "安全合并",
 			copy: "原样复制",

@@ -69,15 +69,34 @@ struct ProbeReport {
 	semantic_correctness: &'static str,
 }
 
+fn default_workshop_probe_dir() -> PathBuf {
+	std::env::var_os("FOCH_WORKSHOP_PROBE_DIR")
+		.map(PathBuf::from)
+		.unwrap_or_else(|| foch::platform::artifacts::shared_artifact_root().join("workshop-probe"))
+}
+
+#[test]
+fn default_workshop_probe_dir_is_outside_this_worktree_target() {
+	if std::env::var_os("FOCH_WORKSHOP_PROBE_DIR").is_some()
+		|| std::env::var_os(foch::platform::artifacts::ARTIFACT_DIR_ENV).is_some()
+	{
+		return;
+	}
+	let root = default_workshop_probe_dir();
+	let worktree_target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target");
+	assert!(
+		!foch::platform::artifacts::is_within(&worktree_target, &root),
+		"default {} must not live under {}",
+		root.display(),
+		worktree_target.display()
+	);
+}
+
 #[test]
 #[ignore = "network, SteamCMD downloads and real merges; run cargo workshop-probe"]
 fn workshop_recent_page() {
 	crate::require_acceptance("workshop-recent-probe");
-	let root: PathBuf = std::env::var_os("FOCH_WORKSHOP_PROBE_DIR")
-		.map(PathBuf::from)
-		.unwrap_or_else(|| {
-			PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/workshop-probe")
-		});
+	let root: PathBuf = default_workshop_probe_dir();
 	fs::create_dir_all(&root).expect("create probe directory");
 	let root = root.canonicalize().unwrap();
 	// Discovery failures are durable too, before any Workshop or merge work.

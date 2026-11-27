@@ -1,0 +1,45 @@
+namespace = kind_probe
+
+#test(time=1444.11.11, tag=FRA, name="fra appanage kinds", ai=on, advance_days=62,
+#     expect={ exists = FRA },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = FRA
+#         request = 1
+#         type = subject_income
+#         kind = vassal
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 1 } after = { min = 0 } }
+#     })
+#test(time=1444.11.11, tag=ENG, name="eng vassal kind", ai=on, advance_days=62,
+#     effect={ release = WAL },
+#     expect={ exists = WAL },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = ENG
+#         request = 1
+#         type = subject_income
+#         kind = vassal
+#         tag = WAL
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 1 } after = { min = 0 } }
+#     })
+#test(time=1444.11.11, tag=MNG, name="mng tributary kind", ai=on, advance_days=62,
+#     expect={ exists = MNG },
+#     expect_receipt={
+#         plugin = "dev.foch.eu4-tribute-adjust"
+#         case = KOR
+#         request = 1
+#         type = tribute
+#         kind = tributary
+#         tag = KOR
+#         numeric = { scale = { min = 0 max = 2 } before = { min = 0 } after = { min = 0 } }
+#     })
+country_event = {
+	id = kind_probe.1
+	title = none
+	desc = none
+	picture = none
+	hidden = yes
+	is_triggered_only = yes
+	immediate = { }
+	option = { name = OK }
+}

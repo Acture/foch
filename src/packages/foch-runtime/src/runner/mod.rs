@@ -22,6 +22,7 @@ use runtime::RuntimeLayer;
 
 use foch::game::eu4::Eu4;
 use foch::game::eu4::base::snapshot::resolve_game_root;
+use foch::game::eu4::text::decode_paradox_bytes;
 use foch::input::Config;
 use foch_test::RunnerExit;
 use foch_test::compile::Bundle;
@@ -250,6 +251,17 @@ impl ProfileGuard {
 	}
 }
 
+/// Read `game.log` or `error.log` from the isolated user directory.
+///
+/// `None` only when the file is absent or otherwise unreadable (`NotFound`
+/// and other I/O failures). A present file is decoded with
+/// [`decode_paradox_bytes`]: valid UTF-8 stays UTF-8, and Windows-1252
+/// color or accent bytes become text instead of a missing-log failure.
+fn read_engine_log(path: &Path) -> Option<String> {
+	let bytes = fs::read(path).ok()?;
+	Some(decode_paradox_bytes(&bytes).into_owned())
+}
+
 /// Build the runtime layer, launch the game, wait for every case to finish (or
 /// time out), collect the logs, and tear the layer down. `session_dir` is where
 /// the throwaway profile and logs live. `ordered_mods` is the complete list to
@@ -354,8 +366,8 @@ pub fn run_session(
 		.as_ref()
 		.map(|source| keep_host_events(source, session_dir));
 	let outcome = SessionOutcome {
-		game_log: fs::read_to_string(&log).ok(),
-		error_log: fs::read_to_string(&error_log).ok(),
+		game_log: read_engine_log(&log),
+		error_log: read_engine_log(&error_log),
 		exit,
 		timing,
 		profile_untouched,
@@ -423,7 +435,7 @@ fn watch(
 				},
 			);
 		}
-		if let Ok(text) = fs::read_to_string(log)
+		if let Some(text) = read_engine_log(log)
 			&& layout::all_cases_ended(&text, bundle)
 		{
 			process.stop();
@@ -784,6 +796,114 @@ mod tests {
 		assert!(!is_stale(now - Duration::from_secs(60), now, max_age));
 		// A modification time in the future (clock skew) is never stale.
 		assert!(!is_stale(now + Duration::from_secs(60), now, max_age));
+	}
+
+	fn probe_session() -> (foch_test::Bundle, foch_test::Plan) {
+		let sources = vec![foch_test::SourceFile {
+			mod_name: "Diag".into(),
+			path: foch_test::RelPath::new("tests/a.txt").unwrap(),
+			kind: foch_test::SourceKind::TestsDir,
+			text: "test = { name = probe time = 1444.11.11 tag = SWE effect = { set_country_flag = ready } expect = { has_country_flag = ready } }"
+				.into(),
+		}];
+		let collection = foch_test::collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded =
+			foch_test::expand(&collection, &foch_test::ExpandOptions::default()).unwrap();
+		let linted = foch_test::lint(&expanded, &foch_test::ProjectFacts::default());
+		let plan = foch_test::group(expanded, &linted, &foch_test::GroupOptions::default());
+		let context = foch_test::RunContext {
+			run_id: foch_test::model::RunId::parse("run-1").unwrap(),
+			mod_name: "Diag".into(),
+		};
+		let bundle = foch_test::compile(&plan, plan.sessions[0].id, &context).unwrap();
+		(bundle, plan)
+	}
+
+	fn judge_error_log(
+		bundle: &foch_test::Bundle,
+		plan: &foch_test::Plan,
+		error_log: Option<&str>,
+	) -> Vec<foch_test::CaseResult> {
+		foch_test::judge(
+			bundle,
+			plan,
+			&foch_test::RunArtifacts {
+				game_log: Some(""),
+				error_log,
+				exit: foch_test::RunnerExit::Success,
+				timing: foch_test::Timing::default(),
+				profile_untouched: true,
+				host_events: None,
+				host_launch_id: None,
+			},
+		)
+	}
+
+	/// EU4 writes color marks as Windows-1252 (`§` is 0xA7). Reading the log
+	/// as UTF-8 fails on that byte, and the judge then reports a missing log.
+	#[test]
+	fn windows_1252_error_log_is_decoded_and_not_reported_missing() {
+		let scratch = tempfile::tempdir().unwrap();
+		let path = scratch.path().join("error.log");
+		// § (0xA7) is the engine color mark; 0xE9 is é. Neither is valid UTF-8.
+		let mut bytes = b"[gfx.cpp:1]: missing ".to_vec();
+		bytes.push(0xA7);
+		bytes.extend_from_slice(b"Ycaf");
+		bytes.push(0xE9);
+		bytes.extend_from_slice(b".dds\n");
+		assert!(
+			std::str::from_utf8(&bytes).is_err(),
+			"fixture must be the non-UTF-8 case a UTF-8 read misclassifies"
+		);
+		fs::write(&path, &bytes).unwrap();
+
+		let decoded = read_engine_log(&path);
+		let (bundle, plan) = probe_session();
+		let results = judge_error_log(&bundle, &plan, decoded.as_deref());
+		assert!(
+			results[0]
+				.notes
+				.iter()
+				.all(|note| { note != "runner must produce an isolated error.log" }),
+			"windows-1252 error.log was judged missing: {decoded:?} {:#?}",
+			results[0].notes
+		);
+		assert_ne!(results[0].status, foch_test::Status::RuntimeError);
+		let decoded = decoded.expect("present log is not missing");
+		assert_eq!(decoded, "[gfx.cpp:1]: missing §Ycafé.dds\n");
+		assert!(
+			results[0].notes.iter().any(|note| note.contains("§Ycafé")),
+			"decoded color mark never reached the judge: {:#?}",
+			results[0].notes
+		);
+	}
+
+	#[test]
+	fn missing_error_log_is_still_reported() {
+		let scratch = tempfile::tempdir().unwrap();
+		let path = scratch.path().join("absent").join("error.log");
+		let decoded = read_engine_log(&path);
+		assert!(
+			decoded.is_none(),
+			"a missing log stays missing: {decoded:?}"
+		);
+
+		let (bundle, plan) = probe_session();
+		let results = judge_error_log(&bundle, &plan, decoded.as_deref());
+		assert_eq!(results[0].status, foch_test::Status::RuntimeError);
+		assert!(
+			results[0]
+				.notes
+				.iter()
+				.any(|note| { note == "runner must produce an isolated error.log" }),
+			"{:#?}",
+			results[0].notes
+		);
 	}
 }
 

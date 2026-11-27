@@ -1,13 +1,14 @@
 use crate::backend::{
 	AnalysisReview, AnalysisRunError, AnalysisRunner, FochAnalysisRunner, InspectedAnalysisInput,
-	PreparedDesktopInput, bounded_text,
+	PreparedDesktopInput, ReviewCommit, bounded_text, desktop_resolution_entries,
 };
 use crate::dto::{
-	AnalysisInputMode, AnalysisInputScope, DesktopError, InputInspection, MergeAnalysisStage,
-	MergeAnalysisState, MergeDisposition, MergeUnitCounts, MergeUnitDetail, MergeUnitListItem,
-	MergeUnitPage, StartMergeAnalysisResult,
+	AnalysisInputMode, AnalysisInputScope, DesktopError, DesktopResolutionRule, InputInspection,
+	MergeAnalysisStage, MergeAnalysisState, MergeCommitResult, MergeDisposition, MergeUnitCounts,
+	MergeUnitDetail, MergeUnitListItem, MergeUnitPage, StartMergeAnalysisResult,
 };
-use foch::input::InputRequest;
+use crate::setup::SetupController;
+use foch::input::{InputCheckObserver, InputRequest, NoopInputCheckObserver};
 use foch::merge::{
 	CancellationToken, MergeAnalysisStage as FochMergeAnalysisStage, MergeProgress,
 	ProgressObserver,
@@ -15,6 +16,7 @@ use foch::merge::{
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -27,6 +29,7 @@ const MAX_MESSAGE_CHARS: usize = 8_192;
 #[derive(Clone)]
 pub(crate) struct DesktopState {
 	core: Arc<DesktopStateCore>,
+	setup: SetupController,
 }
 
 struct DesktopStateCore {
@@ -62,7 +65,11 @@ struct AnalysisRecord {
 	message: Option<String>,
 	cancellation: CancellationToken,
 	request: Option<InputRequest>,
+	/// Explicit user-chosen resolution rules this run applies through a
+	/// session-scoped config; empty keeps the previous behavior.
+	resolutions: Vec<DesktopResolutionRule>,
 	review: Option<Arc<dyn AnalysisReview>>,
+	committed: bool,
 }
 
 impl DesktopState {
@@ -71,15 +78,30 @@ impl DesktopState {
 	}
 
 	pub(crate) fn new(runner: Arc<dyn AnalysisRunner>) -> Self {
+		Self::with_setup(runner, crate::setup::foch_setup_work())
+	}
+
+	pub(crate) fn with_setup(
+		runner: Arc<dyn AnalysisRunner>,
+		work: Arc<dyn crate::setup::SetupWork>,
+	) -> Self {
 		Self {
 			core: Arc::new(DesktopStateCore {
 				runner,
 				records: Mutex::new(RecordBook::default()),
 			}),
+			setup: SetupController::new(work),
 		}
 	}
 
 	pub(crate) fn inspect_input(&self) -> Result<InputInspection, DesktopError> {
+		self.inspect_input_observing(&mut NoopInputCheckObserver)
+	}
+
+	pub(crate) fn inspect_input_observing(
+		&self,
+		observer: &mut dyn InputCheckObserver,
+	) -> Result<InputInspection, DesktopError> {
 		let inspection_id = Uuid::new_v4().to_string();
 		{
 			let mut records = self.records()?;
@@ -90,7 +112,7 @@ impl DesktopState {
 		let InspectedAnalysisInput {
 			mut inspection,
 			prepared,
-		} = self.core.runner.inspect_input();
+		} = self.core.runner.inspect_input_observing(observer);
 		inspection.inspection_id = inspection_id.clone();
 		let mut records = self.records()?;
 		if records.latest_inspection_id.as_deref() != Some(&inspection_id) {
@@ -115,10 +137,30 @@ impl DesktopState {
 		Ok(inspection)
 	}
 
+	pub(crate) fn start_setup_check(&self) -> Result<crate::dto::SetupStatus, DesktopError> {
+		self.setup.start_check(self)
+	}
+
+	pub(crate) fn setup_status(&self) -> crate::dto::SetupStatus {
+		self.setup.status()
+	}
+
+	pub(crate) fn start_base_data_build(&self) -> Result<crate::dto::SetupStatus, DesktopError> {
+		self.setup.start_build(self)
+	}
+
+	pub(crate) fn cancel_base_data_build(
+		&self,
+		build_id: &str,
+	) -> Result<crate::dto::SetupStatus, DesktopError> {
+		self.setup.cancel_build(build_id)
+	}
+
 	pub(crate) fn queue_analysis(
 		&self,
 		inspection_id: &str,
 		input_mode: AnalysisInputMode,
+		resolutions: Vec<DesktopResolutionRule>,
 	) -> Result<StartMergeAnalysisResult, DesktopError> {
 		let mut records = self.records()?;
 		if records.active.is_some() {
@@ -127,6 +169,8 @@ impl DesktopState {
 				"another merge analysis is queued or running",
 			));
 		}
+		// Fail closed on invalid rules before any analysis state exists.
+		desktop_resolution_entries(&resolutions)?;
 		let Some(latest_inspection_id) = records.latest_inspection_id.as_deref() else {
 			return Err(DesktopError::new(
 				"input_not_inspected",
@@ -183,7 +227,9 @@ impl DesktopState {
 				message: None,
 				cancellation: CancellationToken::new(),
 				request: Some(pending.request),
+				resolutions,
 				review: None,
+				committed: false,
 			},
 		);
 		Ok(StartMergeAnalysisResult {
@@ -193,7 +239,7 @@ impl DesktopState {
 	}
 
 	pub(crate) fn run_analysis(&self, analysis_id: &str) {
-		let (cancellation, request) = match self.begin_run(analysis_id) {
+		let (cancellation, request, resolutions) = match self.begin_run(analysis_id) {
 			Ok(Some(run)) => run,
 			Ok(None) => return,
 			Err(error) => {
@@ -206,9 +252,13 @@ impl DesktopState {
 			analysis_id: analysis_id.to_string(),
 		};
 		let result = catch_unwind(AssertUnwindSafe(|| {
-			self.core
-				.runner
-				.run_analysis(analysis_id, request, &observer, &cancellation)
+			self.core.runner.run_analysis(
+				analysis_id,
+				request,
+				&resolutions,
+				&observer,
+				&cancellation,
+			)
 		}));
 		match result {
 			Ok(Ok(review)) if cancellation.is_cancelled() => {
@@ -283,6 +333,60 @@ impl DesktopState {
 		})
 	}
 
+	pub(crate) fn commit_analysis(
+		&self,
+		analysis_id: &str,
+		output_dir: &str,
+	) -> Result<MergeCommitResult, DesktopError> {
+		validate_analysis_id(analysis_id)?;
+		let output_dir = validate_output_dir_text(output_dir)?;
+		let review = {
+			let records = self.records()?;
+			let Some(record) = records.by_id.get(analysis_id) else {
+				return Err(DesktopError::new(
+					"analysis_not_found",
+					"merge analysis was not found",
+				));
+			};
+			if record.committed {
+				return Err(already_exported());
+			}
+			if !matches!(
+				record.state,
+				MergeAnalysisState::Ready | MergeAnalysisState::ReadyWithDeferrals
+			) {
+				return Err(DesktopError::new(
+					"analysis_not_committable",
+					format!(
+						"only a ready analysis can be exported; this analysis is {}",
+						analysis_state_name(record.state)
+					),
+				));
+			}
+			record.review.clone().ok_or_else(|| {
+				DesktopError::internal("completed merge analysis has no review ledger")
+			})?
+		};
+		let committed = match review.commit_empty_target(output_dir.clone()) {
+			Ok(committed) => committed,
+			Err(error) if error.code == "already_committed" => {
+				self.mark_committed(analysis_id);
+				return Err(error);
+			}
+			Err(error) => return Err(error),
+		};
+		self.mark_committed(analysis_id);
+		Ok(commit_result(analysis_id, &output_dir, committed))
+	}
+
+	fn mark_committed(&self, analysis_id: &str) {
+		if let Ok(mut records) = self.records()
+			&& let Some(record) = records.by_id.get_mut(analysis_id)
+		{
+			record.committed = true;
+		}
+	}
+
 	pub(crate) fn list_units(
 		&self,
 		analysis_id: &str,
@@ -353,7 +457,8 @@ impl DesktopState {
 	fn begin_run(
 		&self,
 		analysis_id: &str,
-	) -> Result<Option<(CancellationToken, InputRequest)>, DesktopError> {
+	) -> Result<Option<(CancellationToken, InputRequest, Vec<DesktopResolutionRule>)>, DesktopError>
+	{
 		let mut records = self.records()?;
 		let Some(record) = records.by_id.get_mut(analysis_id) else {
 			return Ok(None);
@@ -367,8 +472,9 @@ impl DesktopState {
 		let request = record.request.take().ok_or_else(|| {
 			DesktopError::internal("queued merge analysis has no inspected input request")
 		})?;
+		let resolutions = std::mem::take(&mut record.resolutions);
 		record.state = MergeAnalysisState::Running;
-		Ok(Some((record.cancellation.clone(), request)))
+		Ok(Some((record.cancellation.clone(), request, resolutions)))
 	}
 
 	fn update_progress(&self, analysis_id: &str, progress: MergeProgress) {
@@ -528,6 +634,59 @@ fn validate_analysis_id(analysis_id: &str) -> Result<(), DesktopError> {
 	Ok(())
 }
 
+fn validate_output_dir_text(raw: &str) -> Result<PathBuf, DesktopError> {
+	if raw.is_empty() || raw != raw.trim() {
+		return Err(DesktopError::new(
+			"invalid_output_dir",
+			"choose a non-empty trimmed absolute folder; export never edits Steam or source mods",
+		));
+	}
+	let path = PathBuf::from(raw);
+	if !path.is_absolute() {
+		return Err(DesktopError::new(
+			"invalid_output_dir",
+			"the output folder must be an absolute path",
+		));
+	}
+	Ok(path)
+}
+
+fn already_exported() -> DesktopError {
+	DesktopError::new(
+		"already_committed",
+		"this analysis was already exported; start a new analysis before exporting again",
+	)
+}
+
+fn analysis_state_name(state: MergeAnalysisState) -> &'static str {
+	match state {
+		MergeAnalysisState::Queued => "queued",
+		MergeAnalysisState::Running => "running",
+		MergeAnalysisState::Ready => "ready",
+		MergeAnalysisState::ReadyWithDeferrals => "ready_with_deferrals",
+		MergeAnalysisState::Blocked => "blocked",
+		MergeAnalysisState::Cancelled => "cancelled",
+		MergeAnalysisState::Failed => "failed",
+	}
+}
+
+fn commit_result(
+	analysis_id: &str,
+	output_dir: &Path,
+	committed: ReviewCommit,
+) -> MergeCommitResult {
+	MergeCommitResult {
+		analysis_id: analysis_id.to_string(),
+		output_dir: output_dir.display().to_string(),
+		merge_status: committed.merge_status,
+		generated_file_count: committed.generated_file_count,
+		manual_conflict_count: committed.manual_conflict_count,
+		unsupported_input_count: committed.unsupported_input_count,
+		engine_failure_count: committed.engine_failure_count,
+		committed_at_note: committed.note,
+	}
+}
+
 fn validate_page(page: usize, page_size: usize, query: &str) -> Result<(), DesktopError> {
 	if page == 0 {
 		return Err(DesktopError::new("invalid_page", "page must be at least 1"));
@@ -606,6 +765,8 @@ mod tests {
 	struct FakeReview {
 		state: MergeAnalysisState,
 		units: Vec<MergeUnitDetail>,
+		committed: AtomicBool,
+		commit_attempts: AtomicUsize,
 	}
 
 	impl AnalysisReview for FakeReview {
@@ -642,6 +803,39 @@ mod tests {
 		fn unit(&self, id: &str) -> Option<MergeUnitDetail> {
 			self.units.iter().find(|unit| unit.id == id).cloned()
 		}
+
+		fn commit_empty_target(&self, out_dir: PathBuf) -> Result<ReviewCommit, DesktopError> {
+			self.commit_attempts.fetch_add(1, Ordering::Relaxed);
+			if self.committed.load(Ordering::Relaxed) {
+				return Err(already_exported());
+			}
+			let occupied = std::fs::read_dir(&out_dir)
+				.ok()
+				.is_some_and(|mut entries| entries.next().is_some());
+			if occupied {
+				return Err(DesktopError::new(
+					"output_not_empty",
+					format!(
+						"choose a new or empty folder; {} already contains files and was left untouched",
+						out_dir.display()
+					),
+				));
+			}
+			self.committed.store(true, Ordering::Relaxed);
+			let partial = self.state == MergeAnalysisState::ReadyWithDeferrals;
+			Ok(ReviewCommit {
+				merge_status: if partial { "partial_success" } else { "ready" }.to_string(),
+				generated_file_count: 4,
+				manual_conflict_count: if partial { 1 } else { 0 },
+				unsupported_input_count: 0,
+				engine_failure_count: 0,
+				note: if partial {
+					"Safe files and definition modules were written. Unsafe units were deferred and were not overwritten.".to_string()
+				} else {
+					"Exported the merged mod into an empty folder. Source mods and the game directory were not modified.".to_string()
+				},
+			})
+		}
 	}
 
 	enum FakeOutcome {
@@ -669,6 +863,7 @@ mod tests {
 			&self,
 			_analysis_id: &str,
 			request: InputRequest,
+			_resolutions: &[DesktopResolutionRule],
 			progress: &dyn ProgressObserver,
 			cancellation: &CancellationToken,
 		) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
@@ -729,6 +924,7 @@ mod tests {
 			&self,
 			_analysis_id: &str,
 			_request: InputRequest,
+			_resolutions: &[DesktopResolutionRule],
 			_progress: &dyn ProgressObserver,
 			_cancellation: &CancellationToken,
 		) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
@@ -844,7 +1040,11 @@ mod tests {
 	fn queue_fake_analysis(state: &DesktopState) -> String {
 		let inspection = state.inspect_input().unwrap();
 		state
-			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap()
 			.analysis_id
 	}
@@ -854,7 +1054,16 @@ mod tests {
 	}
 
 	fn review(state: MergeAnalysisState, units: Vec<MergeUnitDetail>) -> Arc<dyn AnalysisReview> {
-		Arc::new(FakeReview { state, units })
+		fake_review(state, units)
+	}
+
+	fn fake_review(state: MergeAnalysisState, units: Vec<MergeUnitDetail>) -> Arc<FakeReview> {
+		Arc::new(FakeReview {
+			state,
+			units,
+			committed: AtomicBool::new(false),
+			commit_attempts: AtomicUsize::new(0),
+		})
 	}
 
 	fn unit(id: &str, path: &str, disposition: MergeDisposition) -> MergeUnitDetail {
@@ -876,6 +1085,7 @@ mod tests {
 			}],
 			contributor_count: 1,
 			notes: vec!["note".to_string()],
+			conflicts: Vec::new(),
 		}
 	}
 
@@ -884,7 +1094,7 @@ mod tests {
 		let state = fake_state(Vec::new());
 		assert_eq!(
 			state
-				.queue_analysis("not-inspected", AnalysisInputMode::Complete)
+				.queue_analysis("not-inspected", AnalysisInputMode::Complete, Vec::new())
 				.unwrap_err()
 				.code,
 			"input_not_inspected"
@@ -894,7 +1104,7 @@ mod tests {
 		assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
 		assert_eq!(
 			state
-				.queue_analysis("busy", AnalysisInputMode::Complete)
+				.queue_analysis("busy", AnalysisInputMode::Complete, Vec::new())
 				.unwrap_err()
 				.code,
 			"analysis_busy"
@@ -922,7 +1132,11 @@ mod tests {
 		*runner.inspection.lock().unwrap() = changed_environment;
 
 		let id = state
-			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap()
 			.analysis_id;
 		state.run_analysis(&id);
@@ -942,7 +1156,11 @@ mod tests {
 
 		assert_eq!(
 			state
-				.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&inspection.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"input_mode_not_available"
@@ -951,6 +1169,7 @@ mod tests {
 			.queue_analysis(
 				&inspection.inspection_id,
 				AnalysisInputMode::WithoutUnavailableMods,
+				Vec::new(),
 			)
 			.unwrap();
 		assert_eq!(
@@ -976,13 +1195,21 @@ mod tests {
 
 		assert_eq!(
 			state
-				.queue_analysis(&stale.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&stale.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"stale_input_inspection"
 		);
 		let started = state
-			.queue_analysis(&current.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&current.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap();
 		assert!(!started.analysis_id.is_empty());
 	}
@@ -1005,7 +1232,11 @@ mod tests {
 
 		assert_eq!(
 			state
-				.queue_analysis(&initial.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&initial.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"stale_input_inspection"
@@ -1023,7 +1254,11 @@ mod tests {
 			"input_inspection_superseded"
 		);
 		let started = state
-			.queue_analysis(&current.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&current.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap();
 		assert_eq!(started.input_scope.mode, AnalysisInputMode::Complete);
 		state.cancel_analysis(&started.analysis_id).unwrap();
@@ -1049,14 +1284,22 @@ mod tests {
 		assert_eq!(runner.inspection_count.load(Ordering::Relaxed), 2);
 		assert_eq!(
 			state
-				.queue_analysis(&ready.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&ready.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"stale_input_inspection"
 		);
 		assert_eq!(
 			state
-				.queue_analysis(&blocked.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&blocked.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"input_not_ready"
@@ -1076,7 +1319,11 @@ mod tests {
 		let state = DesktopState::new(runner.clone());
 		let inspection = state.inspect_input().unwrap();
 		let id = state
-			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::Complete,
+				Vec::new(),
+			)
 			.unwrap()
 			.analysis_id;
 
@@ -1254,7 +1501,11 @@ mod tests {
 		let inspection = state.inspect_input().unwrap();
 		assert_eq!(
 			state
-				.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+				.queue_analysis(
+					&inspection.inspection_id,
+					AnalysisInputMode::Complete,
+					Vec::new()
+				)
 				.unwrap_err()
 				.code,
 			"input_not_ready"
@@ -1267,5 +1518,116 @@ mod tests {
 			state.summary(&Uuid::new_v4().to_string()).unwrap_err().code,
 			"analysis_not_found"
 		);
+	}
+
+	fn absolute_dir(name: &str) -> PathBuf {
+		std::env::temp_dir().join(name)
+	}
+
+	fn finish_review(state: MergeAnalysisState) -> (DesktopState, String, Arc<FakeReview>) {
+		let review = fake_review(
+			state,
+			vec![unit("safe-unit", "events/foo.txt", MergeDisposition::Safe)],
+		);
+		let desktop = fake_state(vec![FakeOutcome::Complete(review.clone())]);
+		let id = queue_fake_analysis(&desktop);
+		run_fake_analysis(&desktop, &id);
+		(desktop, id, review)
+	}
+
+	#[test]
+	fn exports_a_ready_with_deferrals_analysis_once() {
+		let (desktop, id, review) = finish_review(MergeAnalysisState::ReadyWithDeferrals);
+		let output = absolute_dir("foch-desktop-export-partial");
+		let _ = std::fs::remove_dir_all(&output);
+		let result = desktop
+			.commit_analysis(&id, &output.display().to_string())
+			.expect("partial export");
+		assert_eq!(result.merge_status, "partial_success");
+		assert_eq!(result.generated_file_count, 4);
+		assert_eq!(result.manual_conflict_count, 1);
+		assert!(result.committed_at_note.contains("deferred"));
+		assert!(desktop.list_units(&id, "", None, 1, 10).unwrap().total > 0);
+		let again = desktop
+			.commit_analysis(
+				&id,
+				&absolute_dir("foch-desktop-export-again")
+					.display()
+					.to_string(),
+			)
+			.expect_err("second export");
+		assert_eq!(again.code, "already_committed");
+		assert_eq!(review.commit_attempts.load(Ordering::Relaxed), 1);
+	}
+
+	#[test]
+	fn refuses_blocked_running_and_invalid_output_folders() {
+		let (desktop, id, review) = finish_review(MergeAnalysisState::Blocked);
+		let refused = desktop
+			.commit_analysis(&id, &absolute_dir("unused").display().to_string())
+			.expect_err("blocked");
+		assert_eq!(refused.code, "analysis_not_committable");
+		assert_eq!(review.commit_attempts.load(Ordering::Relaxed), 0);
+		assert!(desktop.unit(&id, "safe-unit").is_ok());
+
+		let queued = fake_state(Vec::new());
+		let queued_id = queue_fake_analysis(&queued);
+		assert_eq!(
+			queued
+				.commit_analysis(&queued_id, &absolute_dir("unused").display().to_string())
+				.expect_err("queued")
+				.code,
+			"analysis_not_committable"
+		);
+
+		let (ready, ready_id, _) = finish_review(MergeAnalysisState::Ready);
+		assert_eq!(
+			ready
+				.commit_analysis(&ready_id, "relative/out")
+				.expect_err("relative")
+				.code,
+			"invalid_output_dir"
+		);
+		assert_eq!(
+			ready
+				.commit_analysis(&ready_id, "  ")
+				.expect_err("blank")
+				.code,
+			"invalid_output_dir"
+		);
+		let padded = format!(" {} ", absolute_dir("padded").display());
+		assert_eq!(
+			ready
+				.commit_analysis(&ready_id, &padded)
+				.expect_err("untrimmed")
+				.code,
+			"invalid_output_dir"
+		);
+	}
+
+	#[test]
+	fn refuses_a_non_empty_output_folder_without_marking_the_analysis_exported() {
+		let (desktop, id, review) = finish_review(MergeAnalysisState::Ready);
+		let occupied = tempfile::tempdir().expect("temp").keep();
+		std::fs::write(occupied.join("keep.txt"), b"leave me\n").expect("seed");
+		let refused = desktop
+			.commit_analysis(&id, &occupied.display().to_string())
+			.expect_err("occupied");
+		assert_eq!(refused.code, "output_not_empty");
+		assert_eq!(
+			std::fs::read(occupied.join("keep.txt")).expect("preserved"),
+			b"leave me\n"
+		);
+		assert!(!review.committed.load(Ordering::Relaxed));
+		let exported = absolute_dir("foch-desktop-export-after-refusal");
+		let _ = std::fs::remove_dir_all(&exported);
+		assert_eq!(
+			desktop
+				.commit_analysis(&id, &exported.display().to_string())
+				.expect("retry")
+				.merge_status,
+			"ready"
+		);
+		let _ = std::fs::remove_dir_all(&occupied);
 	}
 }

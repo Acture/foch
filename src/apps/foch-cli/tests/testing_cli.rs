@@ -863,6 +863,69 @@ fn offline_resolves_a_mod_subject_type() {
 }
 
 #[test]
+fn offline_province_scopes_follow_mod_history() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	fs::create_dir_all(dir.path().join("mod/history/countries")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/history/provinces")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/events")).unwrap();
+	fs::create_dir_all(dir.path().join("mod/tests")).unwrap();
+	fs::write(
+		dir.path().join("mod/history/countries/SWE - Sweden.txt"),
+		"capital = 1\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/history/provinces/1-Stockholm.txt"),
+		"owner = SWE\ncontroller = SWE\nbase_tax = 5\nbase_production = 4\nbase_manpower = 3\nadd_core = SWE\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/events/provinces.txt"),
+		"namespace = cases\nprovince_event = {\n\tid = cases.2\n\thidden = yes\n\tis_triggered_only = yes\n\timmediate = { set_province_flag = from_event }\n}\n",
+	)
+	.unwrap();
+	fs::write(
+		dir.path().join("mod/tests/case.txt"),
+		"test = {\n\
+		 \tname = stockholm\n\
+		 \ttime = 1444.11.11\n\
+		 \ttag = SWE\n\
+		 \teffect = {\n\
+		 \t\tcapital_scope = { set_province_flag = capital_seen }\n\
+		 \t\t1 = { owner = { PREV = { set_province_flag = round_trip } } province_event = { id = cases.2 } }\n\
+		 \t\tevery_owned_province = { limit = { owned_by = SWE } set_province_flag = visited }\n\
+		 \t}\n\
+		 \texpect = {\n\
+		 \t\towns = 1\n\
+		 \t\towns_core_province = 1\n\
+		 \t\t1 = { development = 12 has_province_flag = capital_seen has_province_flag = round_trip has_province_flag = from_event has_province_flag = visited }\n\
+		 \t}\n\
+		 }\n\
+		 test = {\n\
+		 \tname = refuses\n\
+		 \ttime = 1444.11.11\n\
+		 \ttag = SWE\n\
+		 \texpect = { base_tax = 1 }\n\
+		 }\n",
+	)
+	.unwrap();
+	let output = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	let report = json(&output);
+	let results = report["results"].as_array().unwrap();
+	assert_eq!(results.len(), 2, "{report}");
+	assert_eq!(results[0]["outcome"], "pass", "{report}");
+	assert_eq!(results[1]["outcome"], "unsupported", "{report}");
+	let reasons = results[1]["unsupported"].to_string();
+	assert!(
+		reasons.contains("base_tax is a province trigger"),
+		"{reasons}"
+	);
+}
+
+#[test]
 fn companion_plugins_do_not_interfere_with_offline_tests() {
 	// A mod may declare `[[plugins]]` in its own foch.toml next to descriptor.mod
 	// and annotated events. Collection, the offline interpreter, and bundle

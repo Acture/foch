@@ -1,0 +1,18 @@
+test = {
+	name = suggested_province
+	time = 1444.11.11
+	tag = SWE
+	session = alone
+	expect_receipt = {
+		plugin = dev.foch.read-decide
+		type = read_decide
+		case = suggested_province
+		request = "1"
+		status = suggested
+		numeric = {
+			candidates = { min = 1 max = 8 }
+			temperature = { min = 0 max = 8 }
+			pick_province = { min = 1 }
+		}
+	}
+}

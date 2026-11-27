@@ -1443,6 +1443,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-eu4-decide"
+version = "0.0.2"
+dependencies = [
+ "foch-eu4-gnn",
+ "foch-eu4-state",
+ "foch-runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "foch-eu4-gnn"
 version = "0.0.2"
 dependencies = [
@@ -1454,7 +1466,22 @@ dependencies = [
 name = "foch-eu4-state"
 version = "0.0.2"
 dependencies = [
+ "foch-eu4-gnn",
  "foch-runtime",
+]
+
+[[package]]
+name = "foch-eu4-tribute"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "foch-plugin-sdk",
+ "foch-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1486,6 +1513,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-plugin-peace"
+version = "0.0.2"
+dependencies = [
+ "foch-plugin-sdk",
+ "foch-runtime",
+]
+
+[[package]]
+name = "foch-plugin-read-decide"
+version = "0.0.1"
+dependencies = [
+ "foch-eu4-decide",
+ "foch-eu4-gnn",
+ "foch-eu4-state",
+ "foch-plugin-sdk",
+ "foch-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "foch-plugin-sdk"
 version = "0.0.1"
 
@@ -1494,6 +1543,7 @@ name = "foch-plugin-trade-blackhole"
 version = "0.0.1"
 dependencies = [
  "foch-plugin-sdk",
+ "foch-runtime",
  "serde",
  "serde_json",
 ]
@@ -4202,9 +4252,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -4226,9 +4276,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "e3a0760a887c14823fca5a1c970b01d47c328c696c0c64829d1df50e8f853fd5"
 dependencies = [
  "ring",
  "rustls-pki-types",

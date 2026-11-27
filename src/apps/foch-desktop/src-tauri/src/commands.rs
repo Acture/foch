@@ -1,8 +1,9 @@
 use crate::dto::{
-	AnalysisInputMode, DesktopError, DesktopLaunchResult, DesktopLaunchStatus,
-	DesktopPluginInstall, DesktopPluginOverview, DesktopPreferencesView, DesktopSettingsInput,
-	InputInspection, MergeAnalysisSummary, MergeDisposition, MergeUnitDetail, MergeUnitPage,
-	StartMergeAnalysisResult,
+	AnalysisInputMode, DesktopConnectivityReport, DesktopError, DesktopLaunchResult,
+	DesktopLaunchStatus, DesktopPluginInstall, DesktopPluginOverview, DesktopPreferencesView,
+	DesktopResolutionRule, DesktopSettingsInput, InputInspection, MergeAnalysisSummary,
+	MergeCommitResult, MergeDisposition, MergeUnitDetail, MergeUnitPage, SetupStatus,
+	StartMergeAnalysisResult, VerifiedGamePath,
 };
 use crate::plugin_backend::{self, PlaysetContext, PluginWorkspace};
 use crate::state::DesktopState;
@@ -26,6 +27,51 @@ fn open_plugin(playset: Option<String>) -> Result<(PluginWorkspace, PlaysetConte
 }
 
 #[tauri::command]
+pub(crate) fn start_setup_check(
+	state: State<'_, DesktopState>,
+) -> Result<SetupStatus, DesktopError> {
+	state.start_setup_check()
+}
+
+#[tauri::command]
+pub(crate) fn get_setup_status(state: State<'_, DesktopState>) -> SetupStatus {
+	state.setup_status()
+}
+
+#[tauri::command]
+pub(crate) async fn verify_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
+	tauri::async_runtime::spawn_blocking(move || {
+		crate::setup::verify_game_path(std::path::Path::new(&path))
+	})
+	.await
+	.map_err(|error| DesktopError::internal(format!("game path verification failed: {error}")))?
+}
+
+#[tauri::command]
+pub(crate) async fn save_game_path(path: String) -> Result<VerifiedGamePath, DesktopError> {
+	tauri::async_runtime::spawn_blocking(move || {
+		crate::setup::save_game_path(std::path::Path::new(&path))
+	})
+	.await
+	.map_err(|error| DesktopError::internal(format!("game path save failed: {error}")))?
+}
+
+#[tauri::command]
+pub(crate) fn start_base_data_build(
+	state: State<'_, DesktopState>,
+) -> Result<SetupStatus, DesktopError> {
+	state.start_base_data_build()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn cancel_base_data_build(
+	state: State<'_, DesktopState>,
+	build_id: String,
+) -> Result<SetupStatus, DesktopError> {
+	state.cancel_base_data_build(&build_id)
+}
+
+#[tauri::command]
 pub(crate) async fn inspect_input(
 	state: State<'_, DesktopState>,
 ) -> Result<InputInspection, DesktopError> {
@@ -40,13 +86,24 @@ pub(crate) async fn start_merge_analysis(
 	state: State<'_, DesktopState>,
 	inspection_id: String,
 	input_mode: AnalysisInputMode,
+	resolutions: Option<Vec<DesktopResolutionRule>>,
 ) -> Result<StartMergeAnalysisResult, DesktopError> {
 	let desktop = state.inner().clone();
-	let started = desktop.queue_analysis(&inspection_id, input_mode)?;
+	let started =
+		desktop.queue_analysis(&inspection_id, input_mode, resolutions.unwrap_or_default())?;
 	let worker_state = desktop.clone();
 	let worker_id = started.analysis_id.clone();
 	tauri::async_runtime::spawn_blocking(move || worker_state.run_analysis(&worker_id));
 	Ok(started)
+}
+
+/// The exact `[[resolutions]]` TOML the merge would load for these rules, so
+/// a player can copy the same choices into their own `foch.toml`.
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn render_resolutions_toml(
+	rules: Vec<DesktopResolutionRule>,
+) -> Result<String, DesktopError> {
+	crate::backend::render_resolution_rules_toml(&rules)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -84,6 +141,18 @@ pub(crate) fn get_merge_unit(
 	unit_id: String,
 ) -> Result<MergeUnitDetail, DesktopError> {
 	state.unit(&analysis_id, &unit_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn commit_merge_analysis(
+	state: State<'_, DesktopState>,
+	analysis_id: String,
+	output_dir: String,
+) -> Result<MergeCommitResult, DesktopError> {
+	let desktop = state.inner().clone();
+	tauri::async_runtime::spawn_blocking(move || desktop.commit_analysis(&analysis_id, &output_dir))
+		.await
+		.map_err(|error| DesktopError::internal(format!("merge commit failed: {error}")))?
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -175,4 +244,11 @@ pub(crate) async fn save_desktop_settings(
 	settings: DesktopSettingsInput,
 ) -> Result<DesktopPreferencesView, DesktopError> {
 	blocking_plugin(move || plugin_backend::save_production_settings(settings)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn test_download_connectivity(
+	settings: Option<DesktopSettingsInput>,
+) -> Result<DesktopConnectivityReport, DesktopError> {
+	blocking_plugin(move || plugin_backend::test_download_connectivity(settings)).await
 }

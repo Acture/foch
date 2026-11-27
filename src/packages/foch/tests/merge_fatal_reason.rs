@@ -21,9 +21,8 @@ fn playsets_root() -> PathBuf {
 }
 
 fn scratch_root() -> PathBuf {
-	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-fatal-reason");
+	// Same local-filesystem requirement as the merge e2e scratch root.
+	let root = foch::platform::artifacts::shared_artifact_root().join("merge-fatal-reason");
 	fs::create_dir_all(&root).expect("create scratch root");
 	root
 }

@@ -8,6 +8,9 @@ mod io;
 mod output_transaction;
 mod per_entry_noop;
 mod provenance_tooltip;
+
+#[cfg(test)]
+pub(crate) use provenance_tooltip::materialize_condition_provenance_tooltips;
 mod stale_detect;
 pub(crate) mod structural;
 
@@ -185,7 +188,7 @@ pub(crate) fn freeze_path_plan(
 
 	stage_log_with("build_merge_plan", || {
 		let plan = match input_result {
-			Ok(input) => build_merge_plan_from_input(input, include_game_base),
+			Ok(input) => build_merge_plan_from_input(input, include_game_base, resolution_map),
 			Err(err) => fatal_plan_from_input_error(err, include_game_base),
 		};
 		let summary = format!(
@@ -408,6 +411,7 @@ pub(crate) fn materialize_with_adaptations(
 	);
 	let mut materialize_progress = MaterializeProgress::new(total_paths, progress);
 	let mut outputs = UnitOutputs::default();
+	let translation = crate::merge::translation::TranslationPlan::from_mods(&input.mods);
 	// Units read the findings as detected; the evidence count a unit adds is
 	// applied to the report with the rest of that unit.
 	let dep_misuse_findings: Vec<DepMisuseFinding> = report.dep_misuse.clone();
@@ -430,6 +434,7 @@ pub(crate) fn materialize_with_adaptations(
 		load_order_default: options.load_order_default,
 		provenance: options.provenance,
 		transforms: adaptations,
+		translation: &translation,
 	};
 	let apply_env = ApplyEnv {
 		input: &input,
@@ -659,6 +664,7 @@ pub(crate) fn materialize_with_adaptations(
 	}
 	*/
 
+	report.translation_adoptions = translation.report_adoptions();
 	report.status = if report.deferred_unit_count() > 0 {
 		MergeReportStatus::PartialSuccess
 	} else {

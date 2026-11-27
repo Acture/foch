@@ -103,6 +103,63 @@ pub(crate) struct InputInspection {
 	pub(crate) recovery: Option<InputRecoveryOption>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SetupPhase {
+	Idle,
+	Checking,
+	Checked,
+	Building,
+	Failed,
+	BuildFailed,
+	BuildCancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetupStageView {
+	pub(crate) stage: String,
+	pub(crate) completed: Option<u64>,
+	pub(crate) total: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstallRecoveryNote {
+	pub(crate) version: String,
+	pub(crate) rules_version: String,
+	pub(crate) reason: String,
+	pub(crate) local_command: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetupStatus {
+	pub(crate) phase: SetupPhase,
+	pub(crate) stage: Option<String>,
+	pub(crate) completed: Option<u64>,
+	pub(crate) total: Option<u64>,
+	pub(crate) stages: Vec<SetupStageView>,
+	pub(crate) inspection: Option<InputInspection>,
+	pub(crate) message: Option<String>,
+	pub(crate) build_id: Option<String>,
+	pub(crate) build_stage: Option<String>,
+	pub(crate) build_completed: Option<u64>,
+	pub(crate) build_total: Option<u64>,
+	/// Throttled document counts from the base-data parse stage.
+	/// Playset descriptor counts stay on `stages` and are not mixed in.
+	pub(crate) document_completed: Option<u64>,
+	pub(crate) document_total: Option<u64>,
+	pub(crate) install_note: Option<InstallRecoveryNote>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VerifiedGamePath {
+	pub(crate) version: String,
+	pub(crate) install_path: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MergeAnalysisState {
@@ -163,6 +220,39 @@ pub(crate) struct AnalysisInputScope {
 	pub(crate) omitted_mods: Vec<OmittedPlaysetMod>,
 	pub(crate) omitted_mod_count: usize,
 	pub(crate) included_mod_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MergeCommitResult {
+	pub(crate) analysis_id: String,
+	pub(crate) output_dir: String,
+	pub(crate) merge_status: String,
+	pub(crate) generated_file_count: u64,
+	pub(crate) manual_conflict_count: u64,
+	pub(crate) unsupported_input_count: u64,
+	pub(crate) engine_failure_count: u64,
+	pub(crate) committed_at_note: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopRouteProbe {
+	pub(crate) label: String,
+	pub(crate) url: String,
+	pub(crate) kind: String,
+	pub(crate) reachable: bool,
+	pub(crate) http_status: Option<u16>,
+	pub(crate) latency_ms: u64,
+	pub(crate) detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopConnectivityReport {
+	pub(crate) transport: String,
+	pub(crate) mirror_policy: String,
+	pub(crate) routes: Vec<DesktopRouteProbe>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -243,6 +333,76 @@ pub(crate) struct MergeUnitDetail {
 	#[serde(skip)]
 	pub(crate) contributor_count: usize,
 	pub(crate) notes: Vec<String>,
+	/// This unit's deferred leaf conflicts, bounded per review contract.
+	pub(crate) conflicts: Vec<DesktopUnitConflicts>,
+}
+
+/// One explicit merge resolution the frontend chose, mapping one-to-one onto
+/// a `foch::project::ResolutionEntry`: exactly one selector (`matchPattern`
+/// or `file`) and exactly one action (`preferMod` or `handler`).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopResolutionRule {
+	pub(crate) match_pattern: Option<String>,
+	pub(crate) file: Option<String>,
+	pub(crate) prefer_mod: Option<String>,
+	pub(crate) handler: Option<String>,
+}
+
+/// What a decision option does, mirroring `foch::merge::DecisionAction`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+	tag = "kind",
+	rename_all = "snake_case",
+	rename_all_fields = "camelCase"
+)]
+pub(crate) enum DesktopDecisionAction {
+	PreferMod { mod_id: String },
+	Handler { name: String },
+}
+
+/// One way to resolve a leaf conflict, with the exact `foch.toml` rules that
+/// would persist the choice for the file or its directory.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopDecisionOption {
+	pub(crate) action: DesktopDecisionAction,
+	pub(crate) file_resolution: Option<DesktopResolutionRule>,
+	pub(crate) directory_resolution: Option<DesktopResolutionRule>,
+}
+
+/// One competing version of a conflicted leaf, rendered for review.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopConflictCandidate {
+	pub(crate) mod_id: String,
+	pub(crate) mod_display_name: String,
+	pub(crate) precedence: usize,
+	pub(crate) change_summary: Vec<String>,
+	pub(crate) rendered: String,
+}
+
+/// One leaf conflict: where it sits, why it deferred, and every explicit
+/// resolution the handler contract audits.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopConflictLeaf {
+	pub(crate) conflict_id: String,
+	pub(crate) address: String,
+	pub(crate) kind: Option<String>,
+	pub(crate) reason: Option<String>,
+	pub(crate) vanilla_snippet: Option<String>,
+	pub(crate) candidates: Vec<DesktopConflictCandidate>,
+	pub(crate) options: Vec<DesktopDecisionOption>,
+}
+
+/// A deferred unit's leaf conflicts, flattened from the address tree.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesktopUnitConflicts {
+	pub(crate) file_path: String,
+	pub(crate) reason: String,
+	pub(crate) leaves: Vec<DesktopConflictLeaf>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -439,6 +599,136 @@ mod tests {
 		assert_eq!(
 			serde_json::to_value(DesktopError::new("analysis_busy", "busy")).unwrap(),
 			json!({ "code": "analysis_busy", "message": "busy" })
+		);
+	}
+
+	#[test]
+	fn serializes_bounded_conflict_contract_with_resolution_rules() {
+		let conflicts = vec![DesktopUnitConflicts {
+			file_path: "history/countries/TES - Test.txt".to_string(),
+			reason: "manual conflict".to_string(),
+			leaves: vec![DesktopConflictLeaf {
+				conflict_id: "ab12cd34".to_string(),
+				address: "religion".to_string(),
+				kind: Some("deep_mergeable".to_string()),
+				reason: Some("three mods set religion".to_string()),
+				vanilla_snippet: Some("religion = catholic".to_string()),
+				candidates: vec![DesktopConflictCandidate {
+					mod_id: "ugc_300002".to_string(),
+					mod_display_name: "Conflict B".to_string(),
+					precedence: 2,
+					change_summary: vec!["set religion".to_string()],
+					rendered: "religion = protestant".to_string(),
+				}],
+				options: vec![DesktopDecisionOption {
+					action: DesktopDecisionAction::PreferMod {
+						mod_id: "ugc_300002".to_string(),
+					},
+					file_resolution: Some(DesktopResolutionRule {
+						file: Some("history/countries/TES - Test.txt".to_string()),
+						prefer_mod: Some("ugc_300002".to_string()),
+						..DesktopResolutionRule::default()
+					}),
+					directory_resolution: Some(DesktopResolutionRule {
+						match_pattern: Some("re:^history/countries/[^/]+$".to_string()),
+						prefer_mod: Some("ugc_300002".to_string()),
+						..DesktopResolutionRule::default()
+					}),
+				}],
+			}],
+		}];
+		let detail = MergeUnitDetail {
+			id: "file:history/countries/TES - Test.txt".to_string(),
+			path: "history/countries/TES - Test.txt".to_string(),
+			family: "countries".to_string(),
+			kind: MergeUnitKind::File,
+			disposition: MergeDisposition::NeedsUserChoice,
+			strategy: "structural_merge".to_string(),
+			summary: "deferred".to_string(),
+			output_path: None,
+			output_paths: Vec::new(),
+			contributors: Vec::new(),
+			contributor_count: 0,
+			notes: Vec::new(),
+			conflicts,
+		};
+		let value = serde_json::to_value(detail).unwrap();
+		assert_eq!(
+			value["conflicts"][0]["leaves"][0]["options"][0]["action"],
+			json!({ "kind": "prefer_mod", "modId": "ugc_300002" })
+		);
+		assert_eq!(
+			value["conflicts"][0]["leaves"][0]["options"][0]["fileResolution"],
+			json!({
+				"matchPattern": null,
+				"file": "history/countries/TES - Test.txt",
+				"preferMod": "ugc_300002",
+				"handler": null
+			})
+		);
+		let rule: DesktopResolutionRule = serde_json::from_value(json!({
+			"matchPattern": "history/**",
+			"file": null,
+			"preferMod": "ugc_300002",
+			"handler": null
+		}))
+		.unwrap();
+		assert_eq!(rule.match_pattern.as_deref(), Some("history/**"));
+	}
+
+	#[test]
+	fn serializes_commit_and_connectivity_contracts() {
+		let commit = MergeCommitResult {
+			analysis_id: "6c5c879b-d757-4245-aa22-f40d57fd6738".to_string(),
+			output_dir: "D:/merged".to_string(),
+			merge_status: "partial_success".to_string(),
+			generated_file_count: 4,
+			manual_conflict_count: 1,
+			unsupported_input_count: 0,
+			engine_failure_count: 0,
+			committed_at_note: "deferred".to_string(),
+		};
+		assert_eq!(
+			serde_json::to_value(commit).unwrap(),
+			json!({
+				"analysisId": "6c5c879b-d757-4245-aa22-f40d57fd6738",
+				"outputDir": "D:/merged",
+				"mergeStatus": "partial_success",
+				"generatedFileCount": 4,
+				"manualConflictCount": 1,
+				"unsupportedInputCount": 0,
+				"engineFailureCount": 0,
+				"committedAtNote": "deferred"
+			})
+		);
+		let report = DesktopConnectivityReport {
+			transport: "http".to_string(),
+			mirror_policy: "direct".to_string(),
+			routes: vec![DesktopRouteProbe {
+				label: "direct".to_string(),
+				url: "http://127.0.0.1/direct".to_string(),
+				kind: "direct".to_string(),
+				reachable: true,
+				http_status: Some(200),
+				latency_ms: 12,
+				detail: "HEAD".to_string(),
+			}],
+		};
+		assert_eq!(
+			serde_json::to_value(report).unwrap(),
+			json!({
+				"transport": "http",
+				"mirrorPolicy": "direct",
+				"routes": [{
+					"label": "direct",
+					"url": "http://127.0.0.1/direct",
+					"kind": "direct",
+					"reachable": true,
+					"httpStatus": 200,
+					"latencyMs": 12,
+					"detail": "HEAD"
+				}]
+			})
 		);
 	}
 }

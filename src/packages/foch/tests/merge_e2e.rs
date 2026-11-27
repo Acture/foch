@@ -45,6 +45,14 @@ fn fixture_dir(name: &str) -> PathBuf {
 	playsets_root().join(name)
 }
 
+fn merge_e2e_scratch_root() -> PathBuf {
+	// Commit uses renameat2 flags that some network mounts reject. The shared
+	// artifact root is outside this checkout, unless `FOCH_ARTIFACT_DIR` or an
+	// out-of-checkout `CARGO_TARGET_DIR` says otherwise, so a worktree does not
+	// keep a private copy under `target/`.
+	foch::platform::artifacts::shared_artifact_root().join("merge-e2e")
+}
+
 /// A fixture's game path, spelled in `/` syntax.
 fn game_path(rel: &str) -> &GamePath {
 	GamePath::new(rel).expect("fixture path is a game path")
@@ -112,9 +120,7 @@ fn run_merge_for_fixture_inner(
 		fixture.display()
 	);
 
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix(&format!("{name}-"))
@@ -654,7 +660,6 @@ fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 }
 
 #[test]
-#[ignore = "P-747: the report classifies a conflict by its parent path, so a root-level key binds no CWT field and `kind` stays None"]
 fn eu4_schema_cardinality_conflict_is_tagged_from_cwt() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_schema_cardinality_conflict", false);
 	assert_eq!(
@@ -782,7 +787,6 @@ fn eu4_estates_preload_merges_modifier_branches_by_inner_key() {
 }
 
 #[test]
-#[ignore = "cwt_suggested policy is not yet wired to the merge engine (see #42)"]
 fn eu4_cwt_suggested_policy_merges_estates_preload_by_key() {
 	let (result, out_dir) =
 		run_merge_for_fixture("eu4_cwt_suggested_estates_preload_resolved", false);
@@ -1760,9 +1764,7 @@ fn eu4_defer_handler_keeps_manual_conflict_with_attribution() {
 #[test]
 fn eu4_case_insensitive_explicit_defer_is_reviewed_without_a_forced_marker() {
 	let fixture = fixture_dir("eu4_handler_defer");
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix("eu4_case_insensitive_defer-")
@@ -1806,9 +1808,7 @@ fn eu4_case_insensitive_explicit_defer_is_reviewed_without_a_forced_marker() {
 #[test]
 fn eu4_mixed_explicit_defer_and_unresolved_leaf_still_needs_user_choice() {
 	let source_fixture = fixture_dir("eu4_two_mod_conflict");
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix("eu4_mixed_defer_unresolved-")
@@ -1890,9 +1890,7 @@ fn eu4_keep_existing_handler_preserves_existing_output_file() {
 		fixture.display()
 	);
 
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix("eu4_handler_keep_existing-prepopulated-")
@@ -2059,9 +2057,7 @@ religion = sentinel
 #[test]
 fn eu4_use_file_resolution_replaces_output_file_end_to_end() {
 	let fixture = fixture_dir("eu4_two_mod_conflict");
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix("eu4_use_file_resolution-")
@@ -2169,9 +2165,7 @@ use_file = {}
 #[test]
 fn eu4_semantic_interactive_use_file_is_frozen_by_analysis() {
 	let fixture = fixture_dir("eu4_two_mod_conflict");
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix("eu4_interactive_use_file-")
@@ -2253,9 +2247,7 @@ fn eu4_semantic_interactive_use_file_is_frozen_by_analysis() {
 #[test]
 fn eu4_conflict_id_use_file_does_not_mask_second_unresolved_leaf_conflict() {
 	let source_fixture = fixture_dir("eu4_two_mod_conflict");
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix("eu4_use_file_with_unresolved_leaf-")
@@ -2567,9 +2559,7 @@ fn eu4_replaced_trigger_chain_merges_branch_by_branch_through_the_dag() {
 #[test]
 fn eu4_review_exposes_rendered_candidates_without_an_interactive_handler() {
 	let fixture = fixture_dir("eu4_two_mod_conflict");
-	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.join("target")
-		.join("merge-e2e");
+	let scratch_root = merge_e2e_scratch_root();
 	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
 	let temp_dir = Builder::new()
 		.prefix("eu4_review_candidates-")

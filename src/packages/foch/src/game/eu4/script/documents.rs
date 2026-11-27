@@ -12,6 +12,9 @@ use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct DiscoveredTextDocument {
@@ -122,7 +125,10 @@ pub fn parse_discovered_text_documents(
 		root,
 		documents,
 		parse_script_file_with_input_identity,
+		None,
+		None,
 	)
+	.expect("document parsing without cancellation cannot fail")
 }
 
 pub fn parse_discovered_text_documents_without_cache(
@@ -135,6 +141,30 @@ pub fn parse_discovered_text_documents_without_cache(
 		root,
 		documents,
 		parse_script_file_without_cache_with_input_identity,
+		None,
+		None,
+	)
+	.expect("document parsing without cancellation cannot fail")
+}
+
+/// Parse documents and report a throttled `completed/total`.
+///
+/// `on_progress` is invoked for the final count and at most once per 100ms
+/// before that. Cancellation drops the parsed batch and installs nothing.
+pub fn parse_discovered_text_documents_with_progress(
+	mod_id: &str,
+	root: &Path,
+	documents: &[DiscoveredTextDocument],
+	on_progress: &(dyn Fn(u64, u64) + Sync),
+	is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ParsedDocumentBatch, String> {
+	parse_discovered_text_documents_with(
+		mod_id,
+		root,
+		documents,
+		parse_script_file_with_input_identity,
+		Some(on_progress),
+		Some(is_cancelled),
 	)
 }
 
@@ -143,10 +173,50 @@ fn parse_discovered_text_documents_with(
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
 	parse_script: fn(&str, &Path, &GamePath) -> ParsedScriptWithInputIdentity,
-) -> ParsedDocumentBatch {
-	let parsed: Vec<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)> = documents
-		.par_iter()
-		.map(|doc| parse_text_document_with(mod_id, root, doc, parse_script))
+	on_progress: Option<&(dyn Fn(u64, u64) + Sync)>,
+	is_cancelled: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<ParsedDocumentBatch, String> {
+	if is_cancelled.is_some_and(|is_cancelled| is_cancelled()) {
+		return Err("base data build cancelled".to_string());
+	}
+	let total = documents.len() as u64;
+	let completed_count = AtomicU64::new(0);
+	let last_report = Mutex::new(Instant::now() - Duration::from_millis(100));
+	let report = |completed: u64| {
+		let Some(on_progress) = on_progress else {
+			return;
+		};
+		let force = completed == total;
+		let mut last = last_report
+			.lock()
+			.unwrap_or_else(|error| error.into_inner());
+		if !force && last.elapsed() < Duration::from_millis(100) {
+			return;
+		}
+		*last = Instant::now();
+		drop(last);
+		on_progress(completed, total);
+	};
+	let parsed: Vec<Result<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>), ()>> =
+		documents
+			.par_iter()
+			.map(|doc| {
+				if is_cancelled.is_some_and(|is_cancelled| is_cancelled()) {
+					return Err(());
+				}
+				let parsed = parse_text_document_with(mod_id, root, doc, parse_script);
+				let completed = completed_count.fetch_add(1, Ordering::Relaxed) + 1;
+				report(completed);
+				Ok(parsed)
+			})
+			.collect();
+	if is_cancelled.is_some_and(|is_cancelled| is_cancelled()) || parsed.iter().any(Result::is_err)
+	{
+		return Err("base data build cancelled".to_string());
+	}
+	let parsed: Vec<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)> = parsed
+		.into_iter()
+		.map(|item| item.expect("cancellation was checked above"))
 		.collect();
 
 	let mut batch = ParsedDocumentBatch::default();
@@ -198,7 +268,7 @@ fn parse_discovered_text_documents_with(
 		batch.documents.push(doc);
 	}
 
-	batch
+	Ok(batch)
 }
 
 pub fn build_semantic_index_from_documents(documents: &[ParsedTextDocument]) -> SemanticIndex {

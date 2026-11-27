@@ -794,7 +794,12 @@ fn combined_slot_value(
 				.unwrap()
 		})
 		.collect::<Vec<_>>();
-	let output = policy.combine_slot_values(parent, &nodes)?;
+	let paired = values
+		.iter()
+		.zip(nodes.iter().copied())
+		.map(|(source, node)| (source.revision, node))
+		.collect::<Vec<_>>();
+	let output = policy.combine_slot_values(parent, &paired)?;
 	Some(NWayScalarSynthesis {
 		reducer_path: parent.policy_path.clone(),
 		inputs: values

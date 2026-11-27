@@ -1,0 +1,34 @@
+categories = {
+	plains = {
+		type = plains
+		movement_cost = 1.0
+		supply_limit = 4
+	}
+	forest = {
+		type = forest
+		movement_cost = 2.0
+		defence = 1
+	}
+	hills = {
+		type = hills
+		movement_cost = 2.0
+		defence = 2
+	}
+	mountains = {
+		type = mountains
+		movement_cost = 3.0
+		defence = 3
+		combat_width = -3
+	}
+	marsh = {
+		type = marsh
+		movement_cost = 3.0
+		defence = 1
+		attrition = 2
+	}
+	haunted_bog = {
+		movement_cost = 3.0
+		defence = 1
+		attrition = 2
+	}
+}

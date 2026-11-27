@@ -1,0 +1,101 @@
+# Signature table for Steam EU4 1.37.5.0 (x64), eu4.exe sha256 below.
+#
+# Patterns are raw leading bytes (the exe is pinned exactly, so no wildcards
+# are needed) and were machine-verified to match exactly once in .text via
+# the Ghidra project described in docs/reverse-notes-1.37.5.md.
+
+game_version = "1.37.5"
+exe_sha256 = "c9ec55a4783fc0f250bbf536dfd25c8ec190ed0ed621384ca501908c60ae9f8e"
+
+[tribute_settlement]
+# FUN_140b1c800: the tribute payment executor, invoked as
+# f(void* cmd /* cmd+0x40: {+0x18 type, +0x1c amount_milli} */, u64 partner).
+# Prologue has an instruction boundary exactly at byte 14, so the host's
+# first-jump scheme accepts it (the amount getter 140b1a180 does NOT:
+# boundary at 12/16). Detour: scale the command amount, then call through.
+pattern = "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D9 48 81 EC 00 01 00 00 48 8B F2 4C 8B F1 48 8B 05 A7 10 82 01 48 8B 90 18 01 00 00"
+offset = 0
+status = "verified"
+provenance = "static: subjecttribute.cpp decompile chain 1402f7e90 -> 1405a62b0 -> 140b1c800 -> 140b1a180; unique in .text (Ghidra eu4137)"
+
+[add_income]
+# FUN_140338540: AddIncome(CCountry*, int category, int* amount_milli, char)
+# Calls the stats adder then ChangeTreasury. Hooking this (with logging)
+# identifies the vassal/colony income category at runtime.
+pattern = "48 89 5C 24 10 48 89 74 24 20 55 57 41 54 41 56 41 57 48 8B EC 48 81 EC 80 00 00 00"
+offset = 0
+status = "verified"
+provenance = "static: country.cpp AddExpense sibling; unique in .text"
+
+[change_treasury]
+# FUN_1403383b0: ChangeTreasury(CCountry*, int* delta_milli); treasury at
+# country+0xbb0 (int, clamped to +-1e9).
+pattern = "48 89 5C 24 18 48 89 74 24 20 57 48 83 EC 30 48 8B F2 48 8B F9 E8 B6 C8 19 01 F6 40 38 01 74 47 0F B6 1D ED 8C C9 01 88 5C 24 40 C6 05 E2 8C C9 01 01"
+offset = 0
+status = "verified"
+provenance = "static: log literal 'ChangeTreasury, %s, %d' at country.cpp:0x5882; unique in .text"
+
+[monthly_apply]
+# FUN_140338bd0: ApplyMonthlyIncome(CCountry*, char flush) — the monthly
+# sink that banks country+0x68 (accumulated income delta) into the treasury
+# via ChangeTreasury and zeroes it. Probe target for real-month data.
+pattern = "48 89 5C 24 08 57 48 83 EC 50 8B 41 68 0F B6 DA 48 8D 54 24 68 89 44 24 68 48 8B F9 E8 BF F7 FF FF 84 DB 0F 84 AD 01 00 00 48 8B 05 78 72 00 02"
+offset = 0
+status = "verified"
+provenance = "static: callers = 1402f36c0 monthly fn only; body banks +0x68 via ChangeTreasury; unique in .text"
+
+# Monthly tribute scaling via the engine's define constants (RVA from the
+# image base; patch_create has no prologue constraint). The cash rate is the
+# multiplier every cash tribute payment is computed with; the power/manpower
+# rates work the same for non-cash tribute types.
+[defines]
+cash_rate = 0x33f820
+adm_rate = 0x33f81c
+dip_rate = 0x33f834
+mil_rate = 0x33f838
+manpower_rate = 0x33f830
+vassal_share = 0x1dc1574
+provenance = "tribute rates: 140b1a180 cases read DAT_14233f820/81c/834/838/830; vassal_share 0.4f at 0x141dc1574 read by the income cluster (14012e160, 140145d50, ...)"
+
+[subject_income]
+# FUN_1403f1510: per-subject income contribution, called from the monthly
+# tick (category 2 bank) and the UI. Boundary at byte 15 — hookable since
+# the host widened its steal window to 16.
+pattern = "4C 89 4C 24 20 4C 89 44 24 18 48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 E1 48 81 EC E8 00 00 00 49 8B D9 4C 8B EA 48 8B D1"
+offset = 0
+status = "verified"
+provenance = "static: called per element of country+0x24b0 in 1402f36c0 before AddComponent(2, amount); unique in .text"
+
+[subject_kind]
+# The tribute executor only serves tributaries; a subject's tribute type is
+# the byte at country+0x28a6 (0 none, 1 cash, 2 adm, 3 dip, 4 mil, 5 manpower).
+offsets = [0x28a6]
+kind = "discriminant"
+provenance = "140b1a180 switch param_3; 1402f7e90 checks *(u8*)(country+0x28a6)"
+
+[subject_tag]
+# Inline packed country identity at CCountry+0x20:
+# bytes[0..3] = 3-byte uppercase/digit ASCII tag, bytes[3] = 0, bytes[4..6] = i16 country index.
+offsets = [0x20]
+kind = "inline_tag"
+provenance = "verified: CountryView packed identity and CountryRef::from_packed"
+
+[[kind_values]]
+value = 1
+key = "tributary"
+
+[[kind_values]]
+value = 2
+key = "tributary"
+
+[[kind_values]]
+value = 3
+key = "tributary"
+
+[[kind_values]]
+value = 4
+key = "tributary"
+
+[[kind_values]]
+value = 5
+key = "tributary"

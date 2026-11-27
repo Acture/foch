@@ -16,8 +16,10 @@ pub use config::{
 pub use file_filter::FileFilter;
 pub use inspect::{
 	AvailableInputRecovery, BaseDataInspection, BaseDataState, CurrentEu4Input, DetectedPlayset,
-	DetectedPlaysetMod, InputPreparationMode, InputReadiness, InputReadinessIssue,
-	InstalledGameInspection, OmittedPlaysetMod, PreparedAnalysisInput, inspect_current_eu4_input,
+	DetectedPlaysetMod, InputCheckObserver, InputCheckProgress, InputCheckStage,
+	InputPreparationMode, InputReadiness, InputReadinessIssue, InstalledGameInspection,
+	NoopInputCheckObserver, OmittedPlaysetMod, PreparedAnalysisInput, inspect_current_eu4_input,
+	inspect_current_eu4_input_with_observer,
 };
 pub(crate) use mod_snapshot::LoadedModSnapshot;
 pub use mod_snapshot::{CacheError, default_mod_snapshot_cache_dir};

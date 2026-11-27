@@ -1,6 +1,6 @@
 # LSP 0.1 Preview
 
-Last updated: 2026-10-16
+Last updated: 2026-11-25
 
 This page defines the independently versioned VS Code/LSP preview. The editor
 can be useful before Foch's automatic merge quality is proven across arbitrary
@@ -28,6 +28,18 @@ coverage alone does not establish runtime or merge semantics.
 
 ## Acceptance surface
 
+Rename never writes files itself. It returns a workspace edit the client
+applies, and only after every occurrence is checked. It refuses, with no
+edits, when any definition or reference is in the base game or outside a mod
+root, when an open file that would change does not match the scanned
+`source_hashes` (save open files before renaming across the workspace), when
+the new name is empty or not an EU4 identifier (`[A-Za-z_][A-Za-z0-9_.-]*`),
+when that name already exists for the same kind, or when any indexed span is
+not exactly the old name. Variables, modifiers, and other symbols whose
+occurrences are not indexed that way are not renameable. A base-game symbol
+prepares as "not renameable"; `rename` reports that base-game symbols cannot
+be renamed.
+
 The `0.1.0` preview is acceptable when the repository proves:
 
 - extension version `0.1.0` with preview metadata;
@@ -54,8 +66,14 @@ The `0.1.0` preview is acceptable when the repository proves:
   under the game root and when a mod file replaces a game file;
 - schema-aware completion/hover for supported contexts;
 - navigation for scripted effects/triggers, event IDs, flag values, and
-  localisation keys; and
+  localisation keys;
 - a missing-localisation quick fix limited to the current mod root;
+- safe mod-only workspace rename (`textDocument/prepareRename` and
+  `textDocument/rename`) for mod-authored scripted effects, scripted triggers,
+  decisions, diplomatic actions, triggered modifiers, events whose every
+  indexed occurrence spells the full id, country/global/province/ruler/heir/consort
+  flags, and localisation keys whose every indexed occurrence is an exact
+  identifier span; and
 - syntax repair code actions, with preferred fixes only for unambiguous repairs
   and explicit review for uncertain repairs.
 
@@ -70,7 +88,7 @@ bun run --cwd src/apps/vscode-foch package:vsix
 
 ## Non-goals for 0.1
 
-- rename or formatting
+- formatting
 - semantic tokens
 - broad write actions beyond localisation stubs and proposed syntax repairs
 - non-EU4 game support

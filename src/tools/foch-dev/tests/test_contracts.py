@@ -195,6 +195,44 @@ class DesktopContractTests(unittest.TestCase):
 			)
 			self.assertEqual(source_violations(desktop_root), [])
 
+	def test_source_scan_allows_runtime_child_handle(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			desktop_root = Path(directory)
+			rust_root = desktop_root / "src-tauri" / "src"
+			rust_root.mkdir(parents=True)
+			(rust_root / "plugin_backend.rs").write_text(
+				"struct LivePlayer { child: std::process::Child }\n"
+				"fn launch(runtime: &Path, user_dir: &Path) {\n"
+				"    let child = foch_runtime::runner::runtime::spawn_player(runtime, user_dir, &[]);\n"
+				"}\n",
+				encoding="utf-8",
+			)
+
+			self.assertEqual(source_violations(desktop_root), [])
+
+	def test_source_scan_still_rejects_process_imports_and_commands(self) -> None:
+		with tempfile.TemporaryDirectory() as directory:
+			desktop_root = Path(directory)
+			rust_root = desktop_root / "src-tauri" / "src"
+			rust_root.mkdir(parents=True)
+			for source in (
+				"use std::process;",
+				"use std::{process};",
+				"use std::process as child_process;",
+				"use std::process::Command as Process;",
+				"use std::process::{Child, Command};",
+				"use std::{process::Command};",
+				"use std::process::*;",
+				'fn launch() { std::process::Command::new("foch"); }',
+			):
+				with self.subTest(source=source):
+					(rust_root / "lib.rs").write_text(source, encoding="utf-8")
+
+					self.assertIn(
+						"src-tauri/src/lib.rs:1: standard-library process API",
+						source_violations(desktop_root),
+					)
+
 
 class PublishableClosureTests(unittest.TestCase):
 	def test_published_crates_are_what_foch_cli_builds_from(self) -> None:

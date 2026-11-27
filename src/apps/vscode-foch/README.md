@@ -21,13 +21,13 @@ The release boundary and CWTools comparison are tracked in [`docs/lsp-0.1-previe
 | Completion | CWT schema-aware keys/aliases, builtin trigger/effect names, and workspace symbols: event ids, scripted effects, decisions, and flag values |
 | Hover | CWT schema hover for supported EU4 script contexts, including type, description, scope, and cardinality when available |
 | Navigation | goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys |
+| Rename | mod-only workspace rename for scripted effects and triggers, decisions, diplomatic actions, triggered modifiers, full event ids, flags, and localisation keys when every occurrence is an exact mod span; base-game symbols, unsaved buffers, invalid names, and collisions are refused |
 | Symbols | document symbols and workspace symbol search from the semantic index |
 | Quick fixes | create or append an English localisation stub for `missing-localisation` diagnostics |
 | Workspace loading | multi-root scanning across the configured game directory and detected/configured mod directories, with mod-root auto-detection via `descriptor.mod` |
 
 ## Not yet shipped
 
-- `rename`
 - broad code actions beyond missing-localisation stubs
 - formatting / pretty print
 - semantic tokens

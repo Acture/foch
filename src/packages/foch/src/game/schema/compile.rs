@@ -156,8 +156,8 @@ pub struct SchemaRootDefinition {
 	pub rules: Vec<CwtRuleField>,
 	/// The attributes the type's body writes above a `subtype[...]` group of
 	/// its rules (EU4 on_actions: `## replace_scope = { ... }` above each
-	/// callback's group), by subtype.
-	pub subtype_group_attributes: Vec<(String, CwtFieldAttributes)>,
+	/// callback's group), by subtype, with the rule files that wrote them.
+	pub subtype_group_attributes: Vec<(String, CwtFieldAttributes, CwtRuleOrigin)>,
 	/// The rule files that first defined this type; later ones may extend it.
 	pub origin: CwtRuleOrigin,
 }
@@ -665,6 +665,7 @@ fn merge_type_items(
 							entry.subtype_group_attributes.push((
 								subtype,
 								parse_field_attributes(std::mem::take(&mut pending_doc_comments)),
+								origin,
 							));
 						}
 					} else if !is_subtype_group(item)

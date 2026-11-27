@@ -174,15 +174,36 @@ pub(super) struct MinimizedRecord {
 	pub reproduced_with: Vec<ModRef>,
 }
 
+fn default_combination_probe_dir() -> PathBuf {
+	std::env::var_os("FOCH_COMBO_PROBE_DIR")
+		.map(PathBuf::from)
+		.unwrap_or_else(|| {
+			foch::platform::artifacts::shared_artifact_root().join("combination-probe")
+		})
+}
+
+#[test]
+fn default_combination_probe_dir_is_outside_this_worktree_target() {
+	if std::env::var_os("FOCH_COMBO_PROBE_DIR").is_some()
+		|| std::env::var_os(foch::platform::artifacts::ARTIFACT_DIR_ENV).is_some()
+	{
+		return;
+	}
+	let root = default_combination_probe_dir();
+	let worktree_target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target");
+	assert!(
+		!foch::platform::artifacts::is_within(&worktree_target, &root),
+		"default {} must not live under {}",
+		root.display(),
+		worktree_target.display()
+	);
+}
+
 #[test]
 #[ignore = "real installed Workshop merges; run cargo combination-probe"]
 fn installed_combinations() {
 	crate::require_acceptance("workshop-combination-probe");
-	let root: PathBuf = std::env::var_os("FOCH_COMBO_PROBE_DIR")
-		.map(PathBuf::from)
-		.unwrap_or_else(|| {
-			PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/combination-probe")
-		});
+	let root: PathBuf = default_combination_probe_dir();
 	fs::create_dir_all(&root).expect("create probe directory");
 	let root = root.canonicalize().unwrap();
 	let (config, libraries) = live_config(root).unwrap_or_else(|error| panic!("{error}"));
@@ -904,6 +925,19 @@ impl<R: CombinationRunner> Probe<'_, R> {
 	}
 }
 
+/// `flock(2)` drops a lock only once every duplicate of that open file
+/// description is closed, and that release is not ordered before `close`
+/// returns. A parallel test can `fork` while `probe.lock` is open, so the
+/// next invocation in this process observes `WouldBlock`. `unlock` publishes
+/// the release before the descriptor is closed.
+struct ProbeDirectoryLock(fs::File);
+
+impl Drop for ProbeDirectoryLock {
+	fn drop(&mut self) {
+		let _ = self.0.unlock();
+	}
+}
+
 pub(super) fn execute(
 	config: &CombinationConfig,
 	runner: &mut impl CombinationRunner,
@@ -918,6 +952,7 @@ pub(super) fn execute(
 	lock.try_lock().map_err(|error| {
 		format!("probe directory is already in use or cannot be locked: {error}")
 	})?;
+	let _lock = ProbeDirectoryLock(lock);
 	let run: PathBuf = tempfile::Builder::new()
 		.prefix("run-")
 		.tempdir_in(config.root.join("runs"))?

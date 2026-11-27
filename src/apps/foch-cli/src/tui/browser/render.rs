@@ -1,8 +1,9 @@
 use foch::input::{BaseDataState, CurrentEu4Input, DetectedPlaysetMod};
 use foch::merge::{
-	MergeAnalysisStage, MergeAnalysisStatus, MergeDisposition, MergeProgress, MergeUnitKind,
-	MergeUnitOutcome,
+	ConflictLeaf, DecisionPoint, MergeAnalysisStage, MergeAnalysisStatus, MergeDisposition,
+	MergeProgress, MergeUnitKind, MergeUnitOutcome, UnitConflicts,
 };
+use foch::plugin::UiLanguage;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style};
@@ -251,7 +252,7 @@ fn draw_building(
 	);
 }
 
-fn draw_help(frame: &mut Frame<'_>, _app: &App) {
+fn draw_help(frame: &mut Frame<'_>, app: &App) {
 	let mut lines = vec![
 		Line::from(Span::styled(
 			"Every browser action is also a foch command:",
@@ -260,6 +261,13 @@ fn draw_help(frame: &mut Frame<'_>, _app: &App) {
 		Line::from(""),
 	];
 	for (name, action, command) in KEY_HELP {
+		// Merge Review and Network Settings both bind `t`. Localize only the
+		// resolution-template row; the connectivity row keeps its own label.
+		let action = if *name == "t" && *command == "paste [[resolutions]] into foch.toml" {
+			text::resolution_help_action(app.ui_language)
+		} else {
+			action
+		};
 		lines.push(Line::from(vec![
 			Span::raw(format!("{:>6} ", "")),
 			key(name),
@@ -941,7 +949,7 @@ fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
 				Style::new().fg(DIM),
 			))
 		},
-		unit_detail,
+		|unit| detail_for(app, unit),
 	);
 	frame.render_widget(
 		Paragraph::new(detail)
@@ -952,10 +960,42 @@ fn draw_review(frame: &mut Frame<'_>, app: &App, area: Rect) {
 	);
 }
 
+/// How many leaf conflicts the detail pane lists before the overflow footer.
+pub(super) const MAX_LEAF_CONFLICTS: usize = 8;
+/// Lines of a vanilla or candidate snippet kept before `+N more lines`.
+pub(super) const MAX_SNIPPET_LINES: usize = 6;
+const MAX_SNIPPET_CHARS: usize = 100;
+const MAX_SUMMARY_LINES: usize = 4;
+
+pub(super) fn detail_for(app: &App, unit: &MergeUnitOutcome) -> Text<'static> {
+	match app.analysis() {
+		Some(view) => detail_from_analysis(unit, view, app.ui_language),
+		None => unit_detail(unit, None, &[], app.ui_language),
+	}
+}
+
+fn detail_from_analysis(
+	unit: &MergeUnitOutcome,
+	view: &super::app::AnalysisView,
+	language: UiLanguage,
+) -> Text<'static> {
+	unit_detail(
+		unit,
+		view.conflicts.get(&unit.id),
+		&view.decisions,
+		language,
+	)
+}
+
 /// Everything the analysis knows about one unit: the vanilla ancestor, every
-/// contributor in precedence order with its source files, and the outputs
-/// the analysis would commit.
-pub fn unit_detail(unit: &MergeUnitOutcome) -> Text<'static> {
+/// contributor in precedence order with its source files, the outputs the
+/// analysis would commit, and that unit's leaf conflicts when it has them.
+pub fn unit_detail(
+	unit: &MergeUnitOutcome,
+	conflicts: Option<&UnitConflicts>,
+	decisions: &[DecisionPoint],
+	language: UiLanguage,
+) -> Text<'static> {
 	let mut lines = vec![
 		Line::from(Span::styled(
 			unit.path.as_str().to_owned(),
@@ -1045,7 +1085,126 @@ pub fn unit_detail(unit: &MergeUnitOutcome) -> Text<'static> {
 			lines.push(Line::from(format!("  {note}")));
 		}
 	}
+	if let Some(conflicts) = conflicts {
+		let before = lines.len();
+		push_leaf_conflicts(&mut lines, conflicts, language);
+		if lines.len() > before && super::app::offers_resolution_template(decisions, &unit.id) {
+			lines.push(Line::from(""));
+			lines.push(Line::from(Span::styled(
+				text::resolution_detail_hint(language).to_string(),
+				Style::new().fg(DIM),
+			)));
+		}
+	}
 	Text::from(lines)
+}
+
+fn push_leaf_conflicts(
+	lines: &mut Vec<Line<'static>>,
+	conflicts: &UnitConflicts,
+	language: UiLanguage,
+) {
+	let rows = conflict_rows(conflicts);
+	let total = rows.len();
+	if total == 0 {
+		return;
+	}
+	push_section_owned(lines, text::leaf_conflicts_heading(language, total));
+	let shown = total.min(MAX_LEAF_CONFLICTS);
+	for (address, leaf) in rows.iter().take(shown) {
+		push_one_conflict(lines, address, leaf, language);
+	}
+	let hidden = total - shown;
+	if hidden > 0 {
+		lines.push(Line::from(Span::styled(
+			text::more_conflicts(language, hidden),
+			Style::new().fg(WARN),
+		)));
+	}
+}
+
+fn conflict_rows(conflicts: &UnitConflicts) -> Vec<(&str, &ConflictLeaf)> {
+	let mut rows = Vec::new();
+	for node in &conflicts.nodes {
+		for leaf in &node.conflicts {
+			rows.push((node.address.as_str(), leaf));
+		}
+	}
+	rows
+}
+
+fn push_one_conflict(
+	lines: &mut Vec<Line<'static>>,
+	address: &str,
+	leaf: &ConflictLeaf,
+	language: UiLanguage,
+) {
+	lines.push(Line::from(Span::styled(
+		format!("  {address}"),
+		Style::new().bold(),
+	)));
+	lines.push(Line::from(text::conflict_kind_line(
+		language,
+		leaf.kind.map(|kind| kind.as_str()),
+		leaf.reason.as_deref(),
+	)));
+	if let Some(vanilla) = &leaf.vanilla_snippet {
+		lines.push(Line::from(Span::styled(
+			format!("  {}", text::vanilla_heading()),
+			Style::new().fg(OK).bold(),
+		)));
+		push_bounded_block(lines, vanilla, language);
+	}
+	for candidate in &leaf.candidates {
+		lines.push(Line::from(vec![
+			Span::styled("  ▸ ", Style::new().fg(ACCENT)),
+			Span::raw(candidate.mod_display_name.clone()),
+			Span::styled(
+				text::candidate_meta(language, &candidate.mod_id, candidate.precedence),
+				Style::new().fg(DIM),
+			),
+		]));
+		for summary in candidate.change_summary.iter().take(MAX_SUMMARY_LINES) {
+			lines.push(Line::from(format!("    {}", clip_line(summary))));
+		}
+		push_bounded_block(lines, &candidate.rendered, language);
+	}
+}
+
+fn push_bounded_block(lines: &mut Vec<Line<'static>>, text: &str, language: UiLanguage) {
+	if text.is_empty() {
+		return;
+	}
+	let raw = text.lines().collect::<Vec<_>>();
+	let shown = raw.len().min(MAX_SNIPPET_LINES);
+	for line in raw.iter().take(shown) {
+		lines.push(Line::from(format!("    {}", clip_line(line))));
+	}
+	let hidden = raw.len() - shown;
+	if hidden > 0 {
+		lines.push(Line::from(Span::styled(
+			text::more_lines(language, hidden),
+			Style::new().fg(DIM),
+		)));
+	}
+}
+
+fn clip_line(line: &str) -> String {
+	let mut chars = line.chars();
+	let clipped = chars.by_ref().take(MAX_SNIPPET_CHARS).collect::<String>();
+	if chars.next().is_some() {
+		format!("{clipped}…")
+	} else {
+		clipped
+	}
+}
+
+fn push_section_owned(lines: &mut Vec<Line<'static>>, text: String) {
+	lines.push(Line::from(""));
+	lines.push(Line::from(Span::styled(
+		format!("── {text} "),
+		Style::new().fg(ACCENT).bold(),
+	)));
 }
 
 fn draw_exclusion_prompt(frame: &mut Frame<'_>, app: &App) {
@@ -1364,7 +1523,7 @@ fn draw_settings(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			text::language_value(app.ui_language, app.preferences.language),
 		),
 	];
-	let lines: Vec<Line> = rows
+	let mut lines: Vec<Line> = rows
 		.iter()
 		.enumerate()
 		.map(|(index, (label, value))| {
@@ -1376,6 +1535,28 @@ fn draw_settings(frame: &mut Frame<'_>, app: &App, area: Rect) {
 			Line::from(Span::styled(format!("  {label:<22} {value}"), style))
 		})
 		.collect();
+	if let Some(report) = &app.connectivity {
+		lines.push(Line::from(""));
+		lines.push(Line::from(text::sha256_reminder(app.ui_language)));
+		for route in &report.routes {
+			let style = if route.reachable {
+				Style::new().fg(OK)
+			} else {
+				Style::new().fg(BAD)
+			};
+			lines.push(Line::from(Span::styled(
+				text::route_line(
+					app.ui_language,
+					&route.label,
+					route.reachable,
+					route.http_status,
+					route.latency_ms,
+					&route.detail,
+				),
+				style,
+			)));
+		}
+	}
 	frame.render_widget(
 		Paragraph::new(lines).block(panel(
 			match app.ui_language {
@@ -1466,13 +1647,37 @@ fn footer_keys(app: &App) -> Line<'static> {
 		});
 	}
 	if app.top_tab == TopTab::NetworkSettings {
-		return footer_pairs(&[
-			("↑↓", "setting"),
-			("←→", "change"),
-			("1-3", "tab"),
-			("q", "quit"),
-		]);
+		let test = text::connectivity_action(app.ui_language);
+		return match app.ui_language {
+			foch::plugin::UiLanguage::ZhCn => footer_pairs(&[
+				("↑↓", "设置"),
+				("←→", "更改"),
+				("t", test),
+				("1-3", "页"),
+				("q", "退出"),
+			]),
+			foch::plugin::UiLanguage::En => footer_pairs(&[
+				("↑↓", "setting"),
+				("←→", "change"),
+				("t", test),
+				("1-3", "tab"),
+				("q", "quit"),
+			]),
+		};
 	}
+	let resolution_action = text::resolution_footer_action(app.ui_language);
+	let review_pairs = [
+		("↑↓", "move"),
+		("Tab", "panel"),
+		("0-6", "filter"),
+		("/", "search"),
+		("c", "copy"),
+		("t", resolution_action),
+		("i", "playset"),
+		("r", "refresh"),
+		("?", "keys"),
+		("q", "quit"),
+	];
 	let pairs: &[(&str, &str)] = match (&app.phase, app.screen, app.focus) {
 		_ if app.help => &[("any key", "close")],
 		_ if app.confirming_exclusions => &[("y", "analyze without them"), ("Esc", "cancel")],
@@ -1486,17 +1691,7 @@ fn footer_keys(app: &App) -> Line<'static> {
 			("Enter", "keep"),
 			("Esc", "clear"),
 		],
-		(Phase::Reviewed(_), Screen::Review, _) => &[
-			("↑↓", "move"),
-			("Tab", "panel"),
-			("0-6", "filter"),
-			("/", "search"),
-			("c", "copy"),
-			("i", "playset"),
-			("r", "refresh"),
-			("?", "keys"),
-			("q", "quit"),
-		],
+		(Phase::Reviewed(_), Screen::Review, _) => &review_pairs,
 		_ if app.can_analyze() => &[
 			("a", "analyze"),
 			("x", "exclude"),

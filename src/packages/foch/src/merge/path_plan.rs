@@ -17,6 +17,7 @@ use crate::model::{
 	MergeUnitId,
 };
 use crate::playset::descriptor::slash_path_text;
+use crate::project::{ResolutionMap, ResolutionPolicy};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,6 +42,7 @@ pub(crate) fn fatal_plan_from_input_error(
 pub(crate) fn build_merge_plan_from_input(
 	input: &ResolvedInput,
 	include_game_base: bool,
+	resolution_map: &ResolutionMap,
 ) -> MergePlanResult {
 	let mut result = MergePlanResult {
 		generated_at: current_generated_at(),
@@ -52,7 +54,7 @@ pub(crate) fn build_merge_plan_from_input(
 	result.playset_name = input.playlist.name.clone();
 
 	let profile = eu4();
-	match build_merge_units(input, profile) {
+	match build_merge_units(input, profile, resolution_map) {
 		Ok(paths) => match validate_structural_snapshot(input, profile, &paths) {
 			Ok(()) => result.paths = paths,
 			Err(error) => result.push_fatal_error(error),
@@ -65,7 +67,11 @@ pub(crate) fn build_merge_plan_from_input(
 
 type ModuleInputs<'a> = Vec<(&'a GamePath, &'a [ResolvedInputContributor])>;
 
-fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePlanEntry>, String> {
+fn build_merge_units(
+	input: &ResolvedInput,
+	profile: &Eu4,
+	resolution_map: &ResolutionMap,
+) -> Result<Vec<MergePlanEntry>, String> {
 	let rules: Option<&DatabaseLoadRules> = input
 		.game_version
 		.as_deref()
@@ -76,6 +82,19 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		BTreeMap::new();
 
 	for (path, contributors) in &input.file_inventory {
+		// A file the user opted into `policy = "cwt_suggested"` merges per
+		// path, under the schema's own rule for it: the policy names that
+		// exact file, so it must not be folded into a cross-file module or
+		// database unit whose output would hide its name.
+		if resolution_map.policy_for(path) == Some(ResolutionPolicy::CwtSuggested) {
+			regular.push(classify_entry(
+				path,
+				contributors,
+				profile.classify_content_family(path),
+				&input.script_cache,
+			));
+			continue;
+		}
 		if let Some(database) = rules
 			.map(|rules| rules.database_for(path))
 			.transpose()?
@@ -636,6 +655,7 @@ mod tests {
 	};
 	use crate::playset::descriptor::ModDescriptor;
 	use crate::playset::{Playset, PlaysetEntry};
+	use crate::project::ResolutionMap;
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::PathBuf;
 
@@ -747,7 +767,7 @@ mod tests {
 			vec![mod_contributor("mod-a", static_path, 2)],
 		);
 
-		let result = build_merge_plan_from_input(&input, false);
+		let result = build_merge_plan_from_input(&input, false, &ResolutionMap::default());
 		assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
 		assert_eq!(result.paths.len(), 1);
 		let entry: &crate::model::MergePlanEntry = &result.paths[0];
@@ -809,7 +829,8 @@ mod tests {
 		);
 
 		input.game_version = Some("1.37.4".to_string());
-		let unsupported_version = build_merge_plan_from_input(&input, false);
+		let unsupported_version =
+			build_merge_plan_from_input(&input, false, &ResolutionMap::default());
 		assert_eq!(unsupported_version.paths.len(), 2);
 	}
 
@@ -826,7 +847,7 @@ mod tests {
 				.file_inventory
 				.insert(game_path(path), vec![mod_contributor("mod-a", path, 1)]);
 		}
-		let result = build_merge_plan_from_input(&input, true);
+		let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 		assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
 		assert_eq!(result.paths.len(), 2);
 		let unit = result
@@ -865,7 +886,7 @@ mod tests {
 			.get_mut(GamePath::new(base_path).expect("valid game path"))
 			.unwrap()[0]
 			.parse_ok_hint = None;
-		let invalid = build_merge_plan_from_input(&input, true);
+		let invalid = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 		assert!(invalid.has_fatal_errors());
 		assert!(invalid.paths.is_empty());
 		assert!(invalid.fatal_errors[0].contains(base_path));
@@ -886,7 +907,7 @@ mod tests {
 				.insert(game_path(path), vec![mod_contributor("mod-b", path, 2)]);
 		}
 
-		let result = build_merge_plan_from_input(&input, false);
+		let result = build_merge_plan_from_input(&input, false, &ResolutionMap::default());
 		assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
 		assert_eq!(result.paths.len(), 2);
 		let module = result
@@ -928,12 +949,12 @@ mod tests {
 			Some(true),
 		);
 		input.game_version = Some("1.37.5".to_string());
-		let base_only = build_merge_plan_from_input(&input, true);
+		let base_only = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 		assert_eq!(base_only.paths[0].strategy, MergePlanStrategy::CopyThrough);
 		input
 			.mods
 			.push(reset_only_mod("reset-mod", "common/static_modifiers"));
-		let reset = build_merge_plan_from_input(&input, true);
+		let reset = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 		assert!(!reset.has_fatal_errors(), "{:?}", reset.fatal_errors);
 		assert_eq!(reset.paths[0].strategy, MergePlanStrategy::StructuralMerge);
 		assert_eq!(
@@ -946,7 +967,7 @@ mod tests {
 	fn missing_mod_parse_status_is_a_fatal_snapshot_invariant() {
 		let input = input_with_snapshot_gap("mod-a", false, None);
 
-		let result = build_merge_plan_from_input(&input, false);
+		let result = build_merge_plan_from_input(&input, false, &ResolutionMap::default());
 
 		assert!(result.has_fatal_errors());
 		assert!(result.paths.is_empty());
@@ -962,7 +983,7 @@ mod tests {
 	fn missing_cached_ast_is_not_a_snapshot_invariant() {
 		let input = input_with_snapshot_gap("__game__", true, Some(true));
 
-		let result = build_merge_plan_from_input(&input, true);
+		let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 
 		assert!(!result.has_fatal_errors());
 		assert_eq!(result.paths.len(), 1);
@@ -972,7 +993,7 @@ mod tests {
 	fn singleton_structural_contributor_does_not_load_an_ast_during_pruning() {
 		let input = input_with_snapshot_gap("mod-a", false, Some(true));
 
-		let result = build_merge_plan_from_input(&input, false);
+		let result = build_merge_plan_from_input(&input, false, &ResolutionMap::default());
 
 		assert!(!result.has_fatal_errors());
 		assert_eq!(result.paths.len(), 1);
@@ -991,7 +1012,7 @@ mod tests {
 			None,
 		);
 
-		let result = build_merge_plan_from_input(&input, true);
+		let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 
 		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
 		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
@@ -1019,7 +1040,7 @@ mod tests {
 			vec![mod_contributor("mod-a", mod_path, 1)],
 		);
 
-		let result = build_merge_plan_from_input(&input, true);
+		let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 
 		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
 		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
@@ -1052,7 +1073,7 @@ mod tests {
 		input.mods.push(reset_only_mod("reset-mod", "common"));
 		input.mod_snapshots.push(None);
 
-		let result = build_merge_plan_from_input(&input, true);
+		let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 
 		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
 		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
@@ -1061,6 +1082,57 @@ mod tests {
 			MergePlanTarget::Module { outputs, .. }
 				if outputs[0].replace_prefix().map(GamePath::as_str) == Some("common/powerprojection")
 		));
+	}
+
+	/// A file the user opted into `policy = "cwt_suggested"` keeps its own
+	/// per-path merge unit instead of joining the family's definition module:
+	/// the policy names that exact file, so its output keeps the file's name.
+	#[test]
+	fn cwt_suggested_policy_merges_its_file_per_path_outside_the_definition_module() {
+		const PATH: &str = "common/estates_preload/test_modifiers.txt";
+		let mut input = input_with_snapshot_gap_at_path(PATH, "__game__eu4", true, Some(true));
+		input
+			.file_inventory
+			.get_mut(&game_path(PATH))
+			.expect("file inventory")
+			.push(mod_contributor("mod-a", PATH, 1));
+
+		let default_plan = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
+		assert!(
+			!default_plan.has_fatal_errors(),
+			"{:#?}",
+			default_plan.fatal_errors
+		);
+		assert!(
+			default_plan
+				.paths
+				.iter()
+				.any(|entry| entry.target.module_id().is_some()),
+			"without the policy the family's definition module groups the file: {:#?}",
+			default_plan.paths
+		);
+
+		let config = crate::project::Project::from_toml_str(
+			r#"
+[[resolutions]]
+file = "common/estates_preload/test_modifiers.txt"
+policy = "cwt_suggested"
+"#,
+		)
+		.expect("parse policy config");
+		let map = ResolutionMap::from_entries(&config.resolutions).expect("build resolution map");
+		let plan = build_merge_plan_from_input(&input, true, &map);
+
+		assert!(!plan.has_fatal_errors(), "{:#?}", plan.fatal_errors);
+		assert_eq!(plan.paths.len(), 1, "{:#?}", plan.paths);
+		let MergePlanTarget::File { path } = &plan.paths[0].target else {
+			panic!(
+				"the policy must keep the file out of the module: {:#?}",
+				plan.paths[0].target
+			);
+		};
+		assert_eq!(path.as_str(), PATH);
+		assert_eq!(plan.paths[0].strategy, MergePlanStrategy::StructuralMerge);
 	}
 
 	#[test]
@@ -1082,7 +1154,7 @@ mod tests {
 				mod_hash: Some("hash-mod-a".to_string()),
 			});
 
-		let result = build_merge_plan_from_input(&input, true);
+		let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 
 		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
 		assert_eq!(result.strategies.last_writer_overlay, 1);
@@ -1104,7 +1176,7 @@ mod tests {
 		] {
 			let input = input_with_snapshot_gap_at_path(path, "__game__eu4", true, None);
 
-			let result = build_merge_plan_from_input(&input, true);
+			let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 
 			assert!(result.has_fatal_errors(), "{path}");
 			assert!(result.paths.is_empty(), "{path}");
@@ -1134,7 +1206,7 @@ mod tests {
 				mod_hash: Some("hash-mod-a".to_string()),
 			});
 
-		let result = build_merge_plan_from_input(&input, true);
+		let result = build_merge_plan_from_input(&input, true, &ResolutionMap::default());
 
 		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
 		assert_eq!(result.strategies.last_writer_overlay, 1);
@@ -1166,7 +1238,7 @@ mod tests {
 			input
 				.file_inventory
 				.insert(game_path("common/governments/b.txt"), vec![beta]);
-			let result = build_merge_plan_from_input(&input, false);
+			let result = build_merge_plan_from_input(&input, false, &ResolutionMap::default());
 			assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
 			assert!(result.paths[0].target.module_id().is_some());
 			result.paths[0]
@@ -1289,7 +1361,7 @@ mod tests {
 					contributor("3000", shared_late, 3),
 				],
 			);
-			let result = build_merge_plan_from_input(&input, false);
+			let result = build_merge_plan_from_input(&input, false, &ResolutionMap::default());
 			assert!(!result.has_fatal_errors(), "{:?}", result.fatal_errors);
 			assert_eq!(result.paths.len(), 1);
 			assert!(result.paths[0].target.module_id().is_some());

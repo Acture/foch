@@ -146,3 +146,60 @@ fn ordinary_comments_and_lookalikes_are_not_annotations() {
 		"bare #test is reported"
 	);
 }
+
+#[test]
+fn a_translation_declaration_names_a_mod_without_a_following_definition() {
+	for text in [
+		"# foch: translation-of = 2164202838\n",
+		"# foch: translation-of = \"Europa Expanded\"\n",
+		"# foch: translation-of = Europa Expanded\n",
+	] {
+		let extraction = extract(&path(), text, &REGISTRY);
+		assert!(
+			extraction.diagnostics.is_empty(),
+			"{text}: {:#?}",
+			extraction.diagnostics
+		);
+		assert!(extraction.attachments.is_empty(), "{text}");
+		assert_eq!(extraction.translation_of.len(), 1, "{text}");
+		assert!(
+			extraction.translation_of[0] == "2164202838"
+				|| extraction.translation_of[0] == "Europa Expanded",
+			"{text}: {:?}",
+			extraction.translation_of
+		);
+	}
+	let nested = extract(
+		&path(),
+		"custom_button = {\n\t# foch: translation-of = 2164202838\n\ttooltip = zh\n}\n",
+		&REGISTRY,
+	);
+	assert!(nested.diagnostics.is_empty(), "{:#?}", nested.diagnostics);
+	assert_eq!(nested.translation_of, ["2164202838".to_string()]);
+
+	let empty = extract(&path(), "# foch: translation-of =\n", &REGISTRY);
+	assert_eq!(
+		empty
+			.diagnostics
+			.iter()
+			.map(|diagnostic| diagnostic.code)
+			.collect::<Vec<_>>(),
+		vec![Code::Malformed]
+	);
+	assert!(empty.translation_of.is_empty());
+
+	let provenance = extract(
+		&path(),
+		"# foch: some_key from Europa Expanded\nx = 1\n",
+		&REGISTRY,
+	);
+	assert!(provenance.translation_of.is_empty());
+	assert!(
+		provenance
+			.diagnostics
+			.iter()
+			.all(|diagnostic| diagnostic.code != Code::UnknownAnnotation),
+		"{:#?}",
+		provenance.diagnostics
+	);
+}

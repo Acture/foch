@@ -1,0 +1,3 @@
+# Built artifacts; copy the release DLL here to make the directory an
+# importable plugin package (`cargo build -p foch-eu4-tribute --release`).
+*.dll

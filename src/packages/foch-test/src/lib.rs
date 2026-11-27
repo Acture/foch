@@ -40,10 +40,11 @@ pub use collect::{Collection, collect};
 pub use compile::{Bundle, RunContext, RunnerCapabilities, check_capabilities, compile};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity, blocks_run};
 pub use interpret::{
-	ContentLayer, CountrySlice, EvidenceStatus, HistoryTimeline, InterpretOptions, Interpretation,
-	InterpretedCase, LayerFile, Observation, Observed, Outcome, ProvinceSeed, ProvinceSlice,
-	SeedFacts, SeededCountry, SemanticsCatalog, SubjectTypeSet, SubjectWarPolicy, definition_facts,
-	fold_history, interpret, overlay_decisions, overlay_history, overlay_subject_types,
+	ContentLayer, CoreEdit, CountrySlice, EvidenceStatus, HistoryTimeline, InterpretOptions,
+	Interpretation, InterpretedCase, LayerFile, Observation, Observed, Outcome, ProvinceSeed,
+	ProvinceSlice, SeedFacts, SeededCountry, SemanticsCatalog, SubjectTypeSet, SubjectWarPolicy,
+	definition_facts, fold_history, interpret, overlay_decisions, overlay_history,
+	overlay_subject_types,
 };
 pub use judge::{CaseResult, RunArtifacts, RunnerExit, Status, Timing, judge, reconcile};
 pub use lint::{Footprint, LintResult, ProjectFacts, lint};

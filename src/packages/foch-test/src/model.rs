@@ -490,13 +490,24 @@ pub struct DecisionInfo {
 	pub body: String,
 }
 
-/// A top-level `country_event` seen while collecting, used to validate `fire`
-/// targets and to estimate what a case touches.
+/// Whether a collected event is a `country_event` or a `province_event`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+	Country,
+	Province,
+}
+
+/// A top-level `country_event` or `province_event` seen while collecting,
+/// used to validate `fire` targets and to estimate what a case touches.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventInfo {
 	pub id: EventId,
 	pub origin: SourceSpan,
-	/// Only hidden, triggered-only country events can be invoked directly.
+	/// `country_event` runs in a country scope; `province_event` runs in a
+	/// province scope. The offline model refuses the other firing effect.
+	pub kind: EventKind,
+	/// Only hidden, triggered-only events can be invoked directly.
 	pub invocable: bool,
 	/// The event block without its outer braces.
 	pub body: String,
