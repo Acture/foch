@@ -965,3 +965,407 @@ fn companion_plugins_do_not_interfere_with_offline_tests() {
 		manifest
 	);
 }
+
+const SCOPE_MISSING: &str = "Country tags and event definitions were not checked because no matching base was loaded. A vanilla tag or event is not reported as unknown.";
+const SCOPE_MATCHING: &str = "Country tags and event definitions were checked from the ordered playset and the matching base. A tag or event in neither is unknown. An event that is defined there but was not collected from the mod under test cannot be checked as hidden and triggered-only.";
+
+fn write_text(path: &std::path::Path, text: &str) {
+	if let Some(parent) = path.parent() {
+		fs::create_dir_all(parent).unwrap();
+	}
+	fs::write(path, text).unwrap();
+}
+
+fn write_named_mod(root: &std::path::Path, name: &str, dependencies: &str) {
+	let deps = if dependencies.is_empty() {
+		String::new()
+	} else {
+		format!("dependencies={{\n{dependencies}\n}}\n")
+	};
+	write_text(
+		&root.join("descriptor.mod"),
+		&format!("name=\"{name}\"\n{deps}"),
+	);
+	write_text(
+		&root.join("events/cases.txt"),
+		&format!(
+			"namespace = {name}\n#test(time=1444.11.11, tag=SWE, name=\"smoke\")\ncountry_event = {{ id = {name}.1 hidden = yes is_triggered_only = yes immediate = {{}} }}\n"
+		),
+	);
+}
+
+fn forward_path(path: &std::path::Path) -> String {
+	path.display().to_string().replace('\\', "/")
+}
+
+fn messages(report: &Value) -> Vec<&str> {
+	report["diagnostics"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|diagnostic| diagnostic["message"].as_str().unwrap())
+		.collect()
+}
+
+fn codes(report: &Value) -> Vec<&str> {
+	report["diagnostics"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|diagnostic| diagnostic["code"].as_str().unwrap())
+		.collect()
+}
+
+#[test]
+fn a_missing_base_does_not_call_a_vanilla_tag_unknown() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	write_named_mod(&dir.path().join("mod"), "fixture", "");
+	write_text(
+		&dir.path().join("mod/common/country_tags/00.txt"),
+		"ZZZ = \"countries/Custom.txt\"\n",
+	);
+	let collected = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	assert!(
+		collected.status.success(),
+		"{}",
+		String::from_utf8_lossy(&collected.stderr)
+	);
+	let report = json(&collected);
+	assert_eq!(report["check_scope"]["base"], "missing");
+	assert_eq!(report["check_scope"]["tags"], "not_checked");
+	assert_eq!(report["check_scope"]["events"], "not_checked");
+	assert_eq!(report["check_scope"]["detail"], SCOPE_MISSING);
+	assert!(!codes(&report).contains(&"unknown_tag"), "{report}");
+	assert!(!dir.path().join("global-data").exists());
+
+	let offline = run(
+		dir.path(),
+		&["test", "mod", "--offline", "--format", "json"],
+	);
+	assert!(
+		offline.status.success(),
+		"{}",
+		String::from_utf8_lossy(&offline.stderr)
+	);
+	let report = json(&offline);
+	assert_eq!(report["check_scope"]["detail"], SCOPE_MISSING);
+	assert_eq!(report["results"][0]["outcome"], "smoke");
+	assert!(!dir.path().join("global-data").exists());
+}
+
+#[test]
+fn a_matching_base_checks_tags_from_the_same_ordered_input() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	let base = dir.path().join("base");
+	write_text(
+		&base.join("common/country_tags/00_countries.txt"),
+		"SWE = \"countries/Sweden.txt\"\n",
+	);
+	write_text(
+		&dir.path().join("mod/common/country_tags/01.txt"),
+		"ZZZ = \"countries/Custom.txt\"\n",
+	);
+	write_text(
+		&dir.path().join("mod/events/cases.txt"),
+		"namespace = fixture\n#test(time=1444.11.11, tag=SWE, name=\"sweden\")\ncountry_event = { id = fixture.1 hidden = yes is_triggered_only = yes immediate = {} }\n#test(time=1444.11.11, tag=ZZZ, name=\"mod\")\ncountry_event = { id = fixture.2 hidden = yes is_triggered_only = yes immediate = {} }\n#test(time=1444.11.11, tag=QQQ, name=\"missing\")\ncountry_event = { id = fixture.3 hidden = yes is_triggered_only = yes immediate = {} }\n",
+	);
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--collect-only",
+			"--format",
+			"json",
+			"--game-path",
+			base.to_str().unwrap(),
+		],
+	);
+	let report = json(&output);
+	assert_eq!(report["check_scope"]["base"], "matching");
+	assert_eq!(report["check_scope"]["tags"], "checked");
+	assert_eq!(report["check_scope"]["events"], "checked");
+	assert_eq!(report["check_scope"]["detail"], SCOPE_MATCHING);
+	let text = messages(&report).join("\n");
+	assert!(text.contains("QQQ"), "{report}");
+	assert!(!text.contains("SWE"), "{report}");
+	assert!(!text.contains("ZZZ"), "{report}");
+	assert!(codes(&report).contains(&"unknown_tag"), "{report}");
+	assert!(!dir.path().join("global-data").exists());
+}
+
+#[test]
+fn an_empty_matching_base_makes_an_undefined_tag_unknown() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	let base = dir.path().join("base");
+	fs::create_dir_all(&base).unwrap();
+	write_named_mod(&dir.path().join("mod"), "fixture", "");
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--collect-only",
+			"--format",
+			"json",
+			"--game-path",
+			base.to_str().unwrap(),
+		],
+	);
+	let report = json(&output);
+	assert_eq!(report["check_scope"]["base"], "matching");
+	let text = messages(&report).join("\n");
+	assert!(text.contains("SWE"), "{report}");
+	assert!(codes(&report).contains(&"unknown_tag"), "{report}");
+}
+
+#[test]
+fn event_categories_follow_the_loaded_base() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	write_text(
+		&dir.path().join("mod/events/own.txt"),
+		"namespace = fixture\ncountry_event = { id = fixture.1 hidden = yes is_triggered_only = yes immediate = {} }\n",
+	);
+	write_text(
+		&dir.path().join("mod/tests/fires.txt"),
+		"test = { name = own time = 1444.11.11 tag = SWE fire = fixture.1 }\ntest = { name = vanilla time = 1444.11.11 tag = SWE fire = vanilla.1 }\ntest = { name = missing time = 1444.11.11 tag = SWE fire = missing.1 }\n",
+	);
+	let without_base = run(
+		dir.path(),
+		&["test", "mod", "--collect-only", "--format", "json"],
+	);
+	let report = json(&without_base);
+	assert!(!codes(&report).contains(&"unknown_event"), "{report}");
+	assert!(!codes(&report).contains(&"unknown_tag"), "{report}");
+	let text = messages(&report).join("\n");
+	assert!(
+		text.contains("vanilla.1") && text.contains("not collected"),
+		"{report}"
+	);
+	assert!(
+		text.contains("missing.1") && text.contains("cannot verify"),
+		"{report}"
+	);
+	assert!(!text.contains("fixture.1"), "{report}");
+
+	let base = dir.path().join("base");
+	write_text(
+		&base.join("common/country_tags/00_countries.txt"),
+		"SWE = \"countries/Sweden.txt\"\n",
+	);
+	write_text(
+		&base.join("events/vanilla.txt"),
+		"namespace = vanilla\ncountry_event = { id = vanilla.1 hidden = yes is_triggered_only = yes }\n",
+	);
+	let with_base = run(
+		dir.path(),
+		&[
+			"test",
+			"mod",
+			"--collect-only",
+			"--format",
+			"json",
+			"--game-path",
+			base.to_str().unwrap(),
+		],
+	);
+	let report = json(&with_base);
+	assert_eq!(report["check_scope"]["events"], "checked");
+	let text = messages(&report).join("\n");
+	assert!(
+		codes(&report).contains(&"unknown_event") && text.contains("missing.1"),
+		"{report}"
+	);
+	assert!(
+		codes(&report).contains(&"unsupported_target")
+			&& text.contains("vanilla.1")
+			&& text.contains("not collected"),
+		"{report}"
+	);
+	assert!(!text.contains("fixture.1"), "{report}");
+	assert!(!text.contains("SWE"), "{report}");
+}
+
+#[test]
+fn an_explicit_playset_keeps_author_order_and_inserts_missing_dependencies() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	write_named_mod(&dir.path().join("mods/zed"), "Zed", "");
+	write_named_mod(&dir.path().join("mods/amy"), "Amy", "");
+	write_text(
+		&dir.path().join("foch.toml"),
+		"[project]\n\n[[project.mods]]\npath = \"mods/zed\"\n\n[[project.mods]]\npath = \"mods/amy\"\n",
+	);
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mods/zed",
+			"--playset",
+			"foch.toml",
+			"--collect-only",
+			"--format",
+			"json",
+		],
+	);
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let report = json(&output);
+	let names: Vec<_> = report["playset"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|name| name.as_str().unwrap())
+		.collect();
+	assert_eq!(names, ["Zed", "Amy"]);
+
+	write_text(
+		&dir.path().join("positions.toml"),
+		"[project]\n\n[[project.mods]]\npath = \"mods/amy\"\nposition = 1\n\n[[project.mods]]\npath = \"mods/zed\"\nposition = 0\n",
+	);
+	let positioned = run(
+		dir.path(),
+		&[
+			"test",
+			"mods/amy",
+			"--playset",
+			"positions.toml",
+			"--collect-only",
+			"--format",
+			"json",
+		],
+	);
+	assert!(
+		positioned.status.success(),
+		"{}",
+		String::from_utf8_lossy(&positioned.stderr)
+	);
+	let report = json(&positioned);
+	let names: Vec<_> = report["playset"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|name| name.as_str().unwrap())
+		.collect();
+	assert_eq!(names, ["Zed", "Amy"]);
+
+	write_named_mod(&dir.path().join("mods/other"), "Other", "");
+	write_named_mod(&dir.path().join("mods/leaf"), "Leaf", "\"Base\"");
+	write_named_mod(&dir.path().join("mods/base"), "Base", "");
+	write_text(
+		&dir.path().join("mod/base.mod"),
+		&format!(
+			"name=\"Base\"\npath=\"{}\"\n",
+			forward_path(&dir.path().join("mods/base"))
+		),
+	);
+	write_text(
+		&dir.path().join("deps.toml"),
+		"[project]\n\n[[project.mods]]\npath = \"mods/other\"\n\n[[project.mods]]\npath = \"mods/leaf\"\n",
+	);
+	let inserted = run(
+		dir.path(),
+		&[
+			"test",
+			"mods/leaf",
+			"--playset",
+			"deps.toml",
+			"--collect-only",
+			"--format",
+			"json",
+		],
+	);
+	assert!(
+		inserted.status.success(),
+		"{}",
+		String::from_utf8_lossy(&inserted.stderr)
+	);
+	let report = json(&inserted);
+	let names: Vec<_> = report["playset"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|name| name.as_str().unwrap())
+		.collect();
+	assert_eq!(names, ["Other", "Base", "Leaf"]);
+
+	write_named_mod(&dir.path().join("mods/mid"), "Mid", "\"Base\"");
+	write_named_mod(&dir.path().join("mods/chain"), "Leaf", "\"Mid\"");
+	write_text(
+		&dir.path().join("mod/mid.mod"),
+		&format!(
+			"name=\"Mid\"\npath=\"{}\"\n",
+			forward_path(&dir.path().join("mods/mid"))
+		),
+	);
+	write_text(
+		&dir.path().join("chain.toml"),
+		"[project]\n\n[[project.mods]]\npath = \"mods/chain\"\n",
+	);
+	let chain = run(
+		dir.path(),
+		&[
+			"test",
+			"mods/chain",
+			"--playset",
+			"chain.toml",
+			"--collect-only",
+			"--format",
+			"json",
+		],
+	);
+	assert!(
+		chain.status.success(),
+		"{}",
+		String::from_utf8_lossy(&chain.stderr)
+	);
+	let report = json(&chain);
+	let names: Vec<_> = report["playset"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|name| name.as_str().unwrap())
+		.collect();
+	assert_eq!(names, ["Base", "Mid", "Leaf"]);
+}
+
+#[test]
+fn a_playset_base_must_match_game_path() {
+	let dir = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+	let base_a = dir.path().join("base-a");
+	let base_b = dir.path().join("base-b");
+	fs::create_dir_all(&base_a).unwrap();
+	fs::create_dir_all(&base_b).unwrap();
+	write_named_mod(&dir.path().join("mods/src"), "Src", "");
+	write_text(
+		&dir.path().join("foch.toml"),
+		"[project]\ngame_path = \"base-a\"\n\n[[project.mods]]\npath = \"mods/src\"\n",
+	);
+	let output = run(
+		dir.path(),
+		&[
+			"test",
+			"mods/src",
+			"--playset",
+			"foch.toml",
+			"--game-path",
+			base_b.to_str().unwrap(),
+			"--collect-only",
+		],
+	);
+	assert!(!output.status.success());
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(
+		text.contains("the --game-path base does not match the playset's game_path"),
+		"{text}"
+	);
+}

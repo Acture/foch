@@ -318,4 +318,147 @@ mod tests {
 				.is_some()
 		);
 	}
+
+	fn facts(tags: Option<&[&str]>, events: Option<&[&str]>) -> ProjectFacts {
+		ProjectFacts {
+			tags: tags.map(|tags| tags.iter().map(|tag| Tag::parse(tag).unwrap()).collect()),
+			events: events.map(|events| {
+				events
+					.iter()
+					.map(|event| EventId::parse(event).unwrap())
+					.collect()
+			}),
+			..ProjectFacts::default()
+		}
+	}
+
+	fn diagnostics_for(events: &str, tests: Option<&str>, facts: ProjectFacts) -> Vec<Diagnostic> {
+		use crate::plan::{ExpandOptions, expand};
+		use crate::source::{RelPath, SourceFile, SourceKind};
+		let mut sources = vec![SourceFile {
+			mod_name: "mod".into(),
+			path: RelPath::new("events/cases.txt").unwrap(),
+			kind: SourceKind::Inline,
+			text: events.into(),
+		}];
+		if let Some(text) = tests {
+			sources.push(SourceFile {
+				mod_name: "mod".into(),
+				path: RelPath::new("tests/case.txt").unwrap(),
+				kind: SourceKind::TestsDir,
+				text: text.into(),
+			});
+		}
+		let collection = crate::collect::collect(&sources);
+		assert!(
+			collection.diagnostics.is_empty(),
+			"{:#?}",
+			collection.diagnostics
+		);
+		let expanded = expand(&collection, &ExpandOptions::default()).unwrap();
+		lint(&expanded, &facts).diagnostics
+	}
+
+	fn has_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> bool {
+		diagnostics.iter().any(|diagnostic| diagnostic.code == code)
+	}
+
+	#[test]
+	fn an_unknown_tag_is_reported_only_when_the_tag_set_is_known() {
+		let events = "namespace = t\n#test(time=1444.11.11, tag=ZZZ, name=missing)\ncountry_event = { id = t.1 hidden = yes is_triggered_only = yes immediate = {} }\n";
+		let unknown = diagnostics_for(events, None, facts(Some(&["SWE"]), None));
+		assert!(
+			unknown.iter().any(|diagnostic| {
+				diagnostic.code == DiagnosticCode::UnknownTag && diagnostic.message.contains("ZZZ")
+			}),
+			"{unknown:?}"
+		);
+
+		let known = diagnostics_for(
+			"namespace = t\n#test(time=1444.11.11, tag=SWE, name=known)\ncountry_event = { id = t.1 hidden = yes is_triggered_only = yes immediate = {} }\n",
+			None,
+			facts(Some(&["SWE"]), Some(&["t.1"])),
+		);
+		assert!(!has_code(&known, DiagnosticCode::UnknownTag), "{known:?}");
+		assert!(!has_code(&known, DiagnosticCode::UnknownEvent), "{known:?}");
+		assert!(
+			!has_code(&known, DiagnosticCode::UnsupportedTarget),
+			"{known:?}"
+		);
+
+		let skipped = diagnostics_for(events, None, facts(None, None));
+		assert!(
+			!has_code(&skipped, DiagnosticCode::UnknownTag),
+			"{skipped:?}"
+		);
+	}
+
+	#[test]
+	fn an_uncollected_event_is_unknown_only_when_the_event_set_excludes_it() {
+		let events =
+			"namespace = t\ncountry_event = { id = t.1 hidden = yes is_triggered_only = yes }\n";
+		let fire = "test = { name = fire_vanilla time = 1444.11.11 tag = SWE fire = vanilla.1 }\n";
+		let unknown = diagnostics_for(events, Some(fire), facts(None, Some(&[])));
+		assert!(
+			unknown.iter().any(|diagnostic| {
+				diagnostic.code == DiagnosticCode::UnknownEvent
+					&& diagnostic.message.contains("vanilla.1")
+			}),
+			"{unknown:?}"
+		);
+
+		let known = diagnostics_for(events, Some(fire), facts(None, Some(&["vanilla.1"])));
+		assert!(
+			known.iter().any(|diagnostic| {
+				diagnostic.code == DiagnosticCode::UnsupportedTarget
+					&& diagnostic.message.contains("not collected")
+					&& diagnostic.message.contains("vanilla.1")
+			}),
+			"{known:?}"
+		);
+		assert!(!has_code(&known, DiagnosticCode::UnknownEvent), "{known:?}");
+
+		let skipped = diagnostics_for(events, Some(fire), facts(None, None));
+		assert!(
+			skipped.iter().any(|diagnostic| {
+				diagnostic.code == DiagnosticCode::UnsupportedTarget
+					&& diagnostic.message.contains("cannot verify")
+					&& diagnostic.message.contains("vanilla.1")
+			}),
+			"{skipped:?}"
+		);
+		assert!(
+			!has_code(&skipped, DiagnosticCode::UnknownEvent),
+			"{skipped:?}"
+		);
+	}
+
+	#[test]
+	fn a_collected_event_must_be_hidden_and_triggered_only_to_be_fired() {
+		let visible = "namespace = t\ncountry_event = { id = t.1 immediate = {} }\n";
+		let fire = "test = { name = visible time = 1444.11.11 tag = SWE fire = t.1 }\n";
+		let refused = diagnostics_for(visible, Some(fire), facts(Some(&["SWE"]), Some(&["t.1"])));
+		assert!(
+			refused.iter().any(|diagnostic| {
+				diagnostic.code == DiagnosticCode::UnsupportedTarget
+					&& diagnostic.message.contains("hidden = yes")
+			}),
+			"{refused:?}"
+		);
+
+		let valid = "namespace = t\n#test(time=1444.11.11, tag=SWE, name=valid)\ncountry_event = { id = t.1 hidden = yes is_triggered_only = yes immediate = {} }\n";
+		let accepted = diagnostics_for(valid, None, facts(Some(&["SWE"]), Some(&["t.1"])));
+		assert!(
+			!has_code(&accepted, DiagnosticCode::UnknownTag),
+			"{accepted:?}"
+		);
+		assert!(
+			!has_code(&accepted, DiagnosticCode::UnknownEvent),
+			"{accepted:?}"
+		);
+		assert!(
+			!has_code(&accepted, DiagnosticCode::UnsupportedTarget),
+			"{accepted:?}"
+		);
+	}
 }
