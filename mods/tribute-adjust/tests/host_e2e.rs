@@ -39,6 +39,24 @@ fn workspace() -> PathBuf {
 		.to_path_buf()
 }
 
+/// The cargo target directory the host and plugin DLLs are built into.
+///
+/// Cargo writes artifacts to `CARGO_TARGET_DIR` when it is set, so the
+/// artifacts are not necessarily under `<workspace>/target`.
+fn cargo_target_dir() -> PathBuf {
+	match std::env::var_os("CARGO_TARGET_DIR") {
+		Some(dir) => {
+			let dir = PathBuf::from(dir);
+			if dir.is_absolute() {
+				dir
+			} else {
+				workspace().join(dir)
+			}
+		}
+		None => workspace().join("target"),
+	}
+}
+
 fn payload_c_source() -> String {
 	let mut payload = String::new();
 	for bytes in [TRIBUTE_EXECUTOR, ADD_INCOME, CHANGE_TREASURY] {
@@ -68,7 +86,7 @@ fn artifacts() -> &'static Artifacts {
 			.status()
 			.expect("cargo build");
 		assert!(status.success());
-		let target = workspace().join("target/debug");
+		let target = cargo_target_dir().join("debug");
 		let host = target.join("foch_runtime_host.dll");
 		let plugin = target.join("foch_eu4_tribute.dll");
 		assert!(host.is_file(), "missing {}", host.display());

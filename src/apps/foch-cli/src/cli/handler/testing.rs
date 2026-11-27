@@ -8,23 +8,26 @@ use super::HandlerResult;
 use crate::cli::arg::{CheckOutputFormat, TestArgs};
 use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
 use foch::input::load_config_read_only;
+use foch::playset::Playset;
+use foch::playset::descriptor::{load_descriptor, load_launcher_descriptor};
+use foch::project::{Project, ProjectImportKind, ProjectMod};
 use foch_annotation::builtin::SCHEMAS;
 use foch_annotation::value::scalar;
 use foch_runtime::runner::{DependencyMod, Installation, RunOptions};
 use foch_test::judge::CaseResult;
-use foch_test::model::RunId;
+use foch_test::model::{EventId, RunId, Tag};
 use foch_test::plan::{IgnoredMode, Isolation, Plan, SessionId};
 use foch_test::report::EnvironmentRecord;
 use foch_test::select::{Expr, NodeIdPattern};
 use foch_test::{
 	Bundle, ContentLayer, Diagnostic, ExpandOptions, GroupOptions, InterpretOptions,
-	Interpretation, LayerFile, Outcome, ProjectFacts, RelPath, Report, RunArtifacts, RunContext,
-	Selector, SemanticsCatalog, SourceFile, SourceKind, Status, blocks_run, check_capabilities,
-	collect, compile, expand, group, interpret, judge, lint, overlay_decisions, overlay_history,
-	overlay_subject_types, reconcile,
+	Interpretation, LayerFile, LoadMod, Outcome, ProjectFacts, RelPath, Report, RunArtifacts,
+	RunContext, Selector, SemanticsCatalog, SourceFile, SourceKind, Status, blocks_run,
+	check_capabilities, collect, compile, complete_load_order, definition_facts, expand, group,
+	interpret, judge, lint, overlay_decisions, overlay_history, overlay_subject_types, reconcile,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -55,12 +58,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 		},
 	};
 	let capabilities = foch_runtime::runner::capabilities();
-	let planned = plan(
-		&args.path,
-		&selection,
-		args.isolate,
-		capabilities.shared_sessions,
-	)?;
+	let planned = plan(args, &selection, capabilities.shared_sessions)?;
 	if args.collect_only || blocks_run(&planned.diagnostics, args.run_anyway) {
 		print_collection(&planned, args.format)?;
 		let failed =
@@ -91,14 +89,12 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	}
 
 	let config = load_config_read_only()?;
-	let game_root = foch_runtime::runner::locate_game(&config, args.game_path.as_deref())?;
+	let explicit_game = args
+		.game_path
+		.as_deref()
+		.or(planned.manifest_game_path.as_deref());
+	let game_root = foch_runtime::runner::locate_game(&config, explicit_game)?;
 	let real_user_dir = args.eu4_user_dir.clone().or_else(default_eu4_user_dir);
-	// Load the mod's declared dependencies (resolved against installed mods)
-	// so content that relies on them works; unresolved ones are reported.
-	let dependencies = resolve_dependencies(&planned.root, real_user_dir.as_deref());
-	for warning in &dependencies.unresolved {
-		eprintln!("warning: dependency {warning:?} is not installed; testing without it");
-	}
 	// Ctrl-C stops the current launch gracefully: the flag is observed by the
 	// runner's watch loop, which stops the game and lets the layer tear down.
 	let cancel = Arc::new(AtomicBool::new(false));
@@ -156,7 +152,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 			&planned.plan,
 			bundle,
 			&planned.root,
-			&dependencies.mods,
+			&planned.ordered_mods,
 			&directory,
 			&installation,
 			&options,
@@ -183,7 +179,7 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 				&rerun,
 				&bundle,
 				&planned.root,
-				&dependencies.mods,
+				&planned.ordered_mods,
 				&directory,
 				&installation,
 				&options,
@@ -215,6 +211,9 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 		success: report.exit_code() == 0,
 		summary: report.summary(),
 		sessions: &sessions,
+		playset: &planned.load_order,
+		unresolved_dependencies: &planned.unresolved,
+		check_scope: &planned.check_scope,
 		report: &report,
 	};
 	write_new(
@@ -230,41 +229,6 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	Ok(report.exit_code())
 }
 
-/// Vanilla, then declared dependencies, then the mod under test.
-///
-/// That is the ordered playset `foch test` can see. Layers are not sorted.
-/// `--game-path` is the only way vanilla is included; a missing install adds
-/// no vanilla layer. `replace_path` is read from each mod's own descriptor.
-fn playset_layers(args: &TestArgs, root: &Path) -> Result<Vec<ContentLayer>> {
-	let mut layers = Vec::new();
-	if let Some(game_root) = vanilla_root(args)? {
-		layers.push(read_content_layer(&game_root, Vec::new())?);
-	}
-	let dependencies = resolve_dependencies(root, default_eu4_user_dir().as_deref());
-	for warning in &dependencies.unresolved {
-		eprintln!("warning: dependency {warning:?} is not installed; overlaying without it");
-	}
-	for dependency in &dependencies.mods {
-		let replace = replace_paths_of(&dependency.path)?;
-		layers.push(read_content_layer(&dependency.path, replace)?);
-	}
-	layers.push(read_content_layer(root, replace_paths_of(root)?)?);
-	Ok(layers)
-}
-
-/// The named install, when `--game-path` was passed and the install exists.
-/// Seeding never searches for a game on its own.
-fn vanilla_root(args: &TestArgs) -> Result<Option<PathBuf>> {
-	let Some(game_path) = args.game_path.as_deref() else {
-		return Ok(None);
-	};
-	let config = load_config_read_only()?;
-	match foch_runtime::runner::locate_game(&config, Some(game_path)) {
-		Ok(root) => Ok(Some(root)),
-		Err(_) => Ok(None),
-	}
-}
-
 fn replace_paths_of(root: &Path) -> Result<Vec<String>> {
 	let path = root.join("descriptor.mod");
 	if !path.is_file() {
@@ -278,8 +242,9 @@ fn replace_paths_of(root: &Path) -> Result<Vec<String>> {
 		.collect())
 }
 
-/// Decisions and history this root ships. Files inside the layer stay in
-/// path order; the caller orders the layers.
+/// Decisions, history, country tags and events this root ships. Files inside
+/// the layer stay in path order; the caller orders the layers. Tag and event
+/// facts are parsed from these same texts.
 fn read_content_layer(root: &Path, replace_paths: Vec<String>) -> Result<ContentLayer> {
 	let mut files = Vec::new();
 	for directory in [
@@ -287,6 +252,8 @@ fn read_content_layer(root: &Path, replace_paths: Vec<String>) -> Result<Content
 		"history/countries",
 		"history/provinces",
 		"common/subject_types",
+		"common/country_tags",
+		"events",
 	] {
 		for path in directory_files(root, directory)? {
 			let relative = path
@@ -309,16 +276,16 @@ fn read_content_layer(root: &Path, replace_paths: Vec<String>) -> Result<Content
 
 /// `--offline`: interpret the planned cases against the embedded semantics
 /// catalog. No game launch, no Steam login. Decisions and history come from
-/// the ordered playset: vanilla only when `--game-path` names an install,
-/// then dependencies, then this mod. Each case folds history at its own date.
+/// the same ordered layers `plan` linted: the matching base when one was
+/// loaded, then each mod in load order. Each case folds history at its own date.
 fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 	let run_id = new_run_id()?;
-	let layers = playset_layers(args, &planned.root)?;
+	let layers = &planned.layers;
 	let mut plan = planned.plan.clone();
 	plan.decisions =
-		overlay_decisions(&layers).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+		overlay_decisions(layers).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 	let timeline =
-		overlay_history(&layers).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+		overlay_history(layers).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 	if !timeline.countries.is_empty() || !timeline.provinces.is_empty() {
 		eprintln!(
 			"loaded {} country histories and {} province histories from the ordered playset",
@@ -328,7 +295,7 @@ fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 	}
 	let interpretation = interpret(
 		&plan,
-		&project_facts(),
+		&planned.facts,
 		&SemanticsCatalog::embedded(),
 		&InterpretOptions {
 			run_id: run_id.clone(),
@@ -337,7 +304,7 @@ fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 			seed: None,
 			history: Some(timeline),
 			subject_types: Some(
-				overlay_subject_types(&layers)
+				overlay_subject_types(layers)
 					.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?,
 			),
 		},
@@ -354,6 +321,9 @@ fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 		source_root: &'a Path,
 		output: &'a Path,
 		success: bool,
+		playset: &'a [String],
+		unresolved_dependencies: &'a [String],
+		check_scope: &'a CheckScope,
 		#[serde(flatten)]
 		interpretation: &'a Interpretation,
 	}
@@ -361,6 +331,9 @@ fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 		source_root: &planned.root,
 		output: &output,
 		success: interpretation.exit_code() == 0,
+		playset: &planned.load_order,
+		unresolved_dependencies: &planned.unresolved,
+		check_scope: &planned.check_scope,
 		interpretation: &interpretation,
 	};
 	write_new(
@@ -374,6 +347,7 @@ fn interpret_report(args: &TestArgs, planned: &Planned) -> HandlerResult {
 	if args.format == CheckOutputFormat::Json {
 		print_json(&view)?;
 	} else {
+		print_scope(planned);
 		print_interpreted(&interpretation, &output);
 	}
 	Ok(interpretation.exit_code())
@@ -559,11 +533,23 @@ struct Planned {
 	mod_name: String,
 	plan: Plan,
 	diagnostics: Vec<Diagnostic>,
+	load_order: Vec<String>,
+	unresolved: Vec<String>,
+	check_scope: CheckScope,
+	ordered_mods: Vec<DependencyMod>,
+	layers: Vec<ContentLayer>,
+	facts: ProjectFacts,
+	/// When the playset manifest or `--game-path` resolved to a game
+	/// directory, this is that path so `locate_game` can launch that
+	/// same installation (not whatever Steam resolves).
+	manifest_game_path: Option<PathBuf>,
 }
 
 /// Discover, collect, expand, lint and group. Diagnostics are returned for
 /// the caller to print; a plan is always produced so collection can be shown.
-fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Result<Planned> {
+/// Tag and event facts come from the same layers the offline interpreter uses.
+fn plan(args: &TestArgs, selection: &Selection, shared: bool) -> Result<Planned> {
+	let input = &args.path;
 	// `PATH::node` selects inside a file, as in pytest.
 	let text = input.to_string_lossy();
 	let (path, node) = match text.split_once("::") {
@@ -571,6 +557,7 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 		None => (input.to_path_buf(), None),
 	};
 	let (root, files) = discover(&path)?;
+	let ordered = resolve_ordered_input(args, &root)?;
 	let mod_name = mod_name(&root);
 	let mut sources = Vec::new();
 	for file in files {
@@ -630,13 +617,13 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 	};
 	let plan = match expand(&collection, &options) {
 		Ok(expanded) => {
-			let linted = lint(&expanded, &project_facts());
+			let linted = lint(&expanded, &ordered.facts);
 			diagnostics.extend(linted.diagnostics.iter().cloned());
 			group(
 				expanded,
 				&linted,
 				&GroupOptions {
-					force_isolate: isolate,
+					force_isolate: args.isolate,
 					runner_shared_sessions: shared,
 					..GroupOptions::default()
 				},
@@ -661,6 +648,13 @@ fn plan(input: &Path, selection: &Selection, isolate: bool, shared: bool) -> Res
 		mod_name,
 		plan,
 		diagnostics,
+		load_order: ordered.mods.iter().map(|item| item.name.clone()).collect(),
+		unresolved: ordered.unresolved,
+		check_scope: ordered.check_scope,
+		ordered_mods: ordered.mods,
+		layers: ordered.layers,
+		facts: ordered.facts,
+		manifest_game_path: ordered.base_game_path,
 	})
 }
 
@@ -676,7 +670,6 @@ struct ResolvedDependencies {
 /// so each appears before the mod that declares it. Resolution needs the user
 /// directory's `mod/*.mod` registry; without it, nothing is resolved.
 fn resolve_dependencies(source_root: &Path, user_dir: Option<&Path>) -> ResolvedDependencies {
-	use foch::playset::descriptor::{load_descriptor, load_launcher_descriptor};
 	let mut result = ResolvedDependencies {
 		mods: Vec::new(),
 		unresolved: Vec::new(),
@@ -766,25 +759,519 @@ fn install_cancel_handler(cancel: &Arc<AtomicBool>) {
 	});
 }
 
+/// What the output says about tag and event checks.
+#[derive(Clone, Debug, Serialize)]
+struct CheckScope {
+	base: &'static str,
+	tags: &'static str,
+	events: &'static str,
+	detail: &'static str,
+}
+
+const SCOPE_MISSING: &str = "Country tags and event definitions were not checked because no matching base was loaded. A vanilla tag or event is not reported as unknown.";
+const SCOPE_MATCHING: &str = "Country tags and event definitions were checked from the ordered playset and the matching base. A tag or event in neither is unknown. An event that is defined there but was not collected from the mod under test cannot be checked as hidden and triggered-only.";
+
+impl CheckScope {
+	fn missing() -> Self {
+		Self {
+			base: "missing",
+			tags: "not_checked",
+			events: "not_checked",
+			detail: SCOPE_MISSING,
+		}
+	}
+
+	fn matching() -> Self {
+		Self {
+			base: "matching",
+			tags: "checked",
+			events: "checked",
+			detail: SCOPE_MATCHING,
+		}
+	}
+}
+
 /// Static facts for the pre-launch lint, drawn from the active EU4 schema.
 /// Effect and trigger names let the linter catch an effect used in a condition
 /// block or a trigger used in an effect block before any game runs.
 ///
 /// Scope links are valid in both kinds of block, so they go in both sets and
-/// are never flagged. Country tags and the full event set are left unknown:
-/// they would need the base snapshot, and a mod-only tag set would wrongly
-/// flag vanilla countries. See the static-layer follow-up for wiring those
-/// from the analyzed snapshot.
-fn project_facts() -> ProjectFacts {
+/// are never flagged. Country tags and event ids are filled only from
+/// `definitions`, which the caller parses from the same ordered layers as the
+/// offline model and only when a matching base was loaded. Without that base
+/// both sets stay unknown, so a vanilla tag is not reported as missing.
+fn project_facts(definitions: Option<(BTreeSet<Tag>, BTreeSet<EventId>)>) -> ProjectFacts {
 	use foch::game::eu4::{schema_effect_names, schema_link_names, schema_trigger_names};
-	let with_links = |names: &[String]| -> std::collections::BTreeSet<String> {
+	let with_links = |names: &[String]| -> BTreeSet<String> {
 		names.iter().chain(schema_link_names()).cloned().collect()
 	};
+	let (tags, events) = match definitions {
+		Some((tags, events)) => (Some(tags), Some(events)),
+		None => (None, None),
+	};
 	ProjectFacts {
-		tags: None,
-		events: None,
+		tags,
+		events,
 		effects: Some(with_links(schema_effect_names())),
 		triggers: Some(with_links(schema_trigger_names())),
+	}
+}
+
+struct OrderedInput {
+	mods: Vec<DependencyMod>,
+	unresolved: Vec<String>,
+	layers: Vec<ContentLayer>,
+	facts: ProjectFacts,
+	check_scope: CheckScope,
+	/// The resolved game directory used as the base for content layers.
+	/// When this is `Some`, the same path must be passed to `locate_game`
+	/// so the game actually launched matches the content the test plan
+	/// was built against.
+	base_game_path: Option<PathBuf>,
+}
+
+struct ModRecord {
+	load: LoadMod,
+	path: PathBuf,
+}
+
+/// The ordered mods, layers and facts for this test run.
+///
+/// `--playset` keeps the author's order and does not open the default EU4
+/// user directory. Without it, declared dependencies still resolve through
+/// that directory, then the source mod is appended under the runner's
+/// existing name.
+fn resolve_ordered_input(args: &TestArgs, root: &Path) -> Result<OrderedInput> {
+	match &args.playset {
+		Some(playset) => resolve_with_playset(args, root, playset),
+		None => resolve_without_playset(args, root),
+	}
+}
+
+fn resolve_without_playset(args: &TestArgs, root: &Path) -> Result<OrderedInput> {
+	let user_dir = args.eu4_user_dir.clone().or_else(default_eu4_user_dir);
+	let resolved = resolve_dependencies(root, user_dir.as_deref());
+	let mut mods = resolved.mods;
+	mods.push(DependencyMod {
+		name: "Foch source mod".into(),
+		path: root.to_path_buf(),
+	});
+	let base = matching_base(args.game_path.as_deref(), None)?;
+	finish_input(mods, resolved.unresolved, base.clone(), base)
+}
+
+fn resolve_with_playset(args: &TestArgs, root: &Path, playset: &Path) -> Result<OrderedInput> {
+	let (mut author, manifest_game) = load_author_playset(playset)?;
+	append_source_if_absent(&mut author, root)?;
+	let mut registry = registry_mods(&playset_dir(playset))?;
+	if let Some(user_dir) = &args.eu4_user_dir {
+		registry.extend(registry_mods(user_dir)?);
+	}
+	let author_loads: Vec<LoadMod> = author.iter().map(|record| record.load.clone()).collect();
+	let registry_loads: Vec<LoadMod> = registry.iter().map(|record| record.load.clone()).collect();
+	let (completed, unresolved) = complete_load_order(author_loads, &registry_loads);
+	let by_name = index_records(&author, &registry);
+	let mut mods = Vec::new();
+	for item in &completed {
+		let record = by_name
+			.get(item.name.as_str())
+			.copied()
+			.ok_or_else(|| format!("resolved mod {} has no directory", item.name))?;
+		mods.push(DependencyMod {
+			name: item.name.clone(),
+			path: record.path.clone(),
+		});
+	}
+	let base = matching_base(args.game_path.as_deref(), manifest_game.as_deref())?;
+	finish_input(mods, unresolved, base.clone(), base)
+}
+
+fn finish_input(
+	mods: Vec<DependencyMod>,
+	unresolved: Vec<String>,
+	base: Option<PathBuf>,
+	base_game_path: Option<PathBuf>,
+) -> Result<OrderedInput> {
+	for warning in &unresolved {
+		eprintln!("warning: dependency {warning:?} is not installed; testing without it");
+	}
+	let layers = layers_for(base.as_deref(), &mods)?;
+	let (definitions, check_scope) = if base.is_some() {
+		let parsed = definition_facts(&layers)
+			.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+		(Some(parsed), CheckScope::matching())
+	} else {
+		(None, CheckScope::missing())
+	};
+	Ok(OrderedInput {
+		mods,
+		unresolved,
+		layers,
+		facts: project_facts(definitions),
+		check_scope,
+		base_game_path,
+	})
+}
+
+fn layers_for(base: Option<&Path>, mods: &[DependencyMod]) -> Result<Vec<ContentLayer>> {
+	let mut layers = Vec::new();
+	if let Some(base) = base {
+		layers.push(read_content_layer(base, Vec::new())?);
+	}
+	for item in mods {
+		layers.push(read_content_layer(
+			&item.path,
+			replace_paths_of(&item.path)?,
+		)?);
+	}
+	Ok(layers)
+}
+
+/// A directory named by `--game-path` or the playset's `game_path`. Both
+/// directories must be the same path. A path that is not a directory is a
+/// missing base, not a Steam lookup.
+fn matching_base(
+	game_path: Option<&Path>,
+	manifest_game_path: Option<&Path>,
+) -> Result<Option<PathBuf>> {
+	let directory = |path: &Path| path.is_dir().then(|| path.to_path_buf());
+	match (
+		game_path.and_then(directory),
+		manifest_game_path.and_then(directory),
+	) {
+		(Some(left), Some(right)) => {
+			let left = fs::canonicalize(&left)?;
+			let right = fs::canonicalize(&right)?;
+			if left != right {
+				return Err("the --game-path base does not match the playset's game_path".into());
+			}
+			Ok(Some(left))
+		}
+		(Some(path), None) | (None, Some(path)) => Ok(Some(fs::canonicalize(&path)?)),
+		(None, None) => Ok(None),
+	}
+}
+
+fn load_author_playset(playset: &Path) -> Result<(Vec<ModRecord>, Option<PathBuf>)> {
+	if playset.extension().and_then(|ext| ext.to_str()) == Some("json") {
+		return Ok((load_dlc_records(playset)?, None));
+	}
+	load_manifest_records(playset)
+}
+
+fn load_manifest_records(playset: &Path) -> Result<(Vec<ModRecord>, Option<PathBuf>)> {
+	let project = Project::load_from_path(playset)?;
+	let config = project
+		.project
+		.ok_or_else(|| format!("{} has no [project] table", playset.display()))?;
+	let dir = playset_dir(playset);
+	let game_path = config
+		.game_path
+		.as_ref()
+		.map(|path| resolve_path(&dir, path));
+	let mut records = Vec::new();
+	let mut next_position = 0usize;
+	for import in &config.imports {
+		match import.kind {
+			ProjectImportKind::DlcLoad => {
+				let imported = load_dlc_records(&resolve_path(&dir, &import.path))?;
+				for mut record in imported {
+					record.load.position = next_position;
+					next_position += 1;
+					records.push(record);
+				}
+			}
+		}
+	}
+	for manifest_mod in &config.mods {
+		if !manifest_mod.enabled {
+			continue;
+		}
+		let position = manifest_mod.position.unwrap_or(next_position);
+		next_position += 1;
+		let record = record_from_manifest_mod(&dir, manifest_mod, position, playset)?;
+		push_replacing(&mut records, record);
+	}
+	Ok((records, game_path))
+}
+
+fn record_from_manifest_mod(
+	dir: &Path,
+	manifest_mod: &ProjectMod,
+	position: usize,
+	playset: &Path,
+) -> Result<ModRecord> {
+	let mut aliases = Vec::new();
+	if let Some(id) = manifest_mod
+		.id
+		.as_deref()
+		.map(str::trim)
+		.filter(|id| !id.is_empty())
+	{
+		aliases.push(id.to_string());
+	}
+	let steam_id = manifest_mod
+		.steam_id
+		.as_deref()
+		.map(str::trim)
+		.filter(|id| !id.is_empty());
+	if let Some(steam_id) = steam_id {
+		aliases.push(steam_id.to_string());
+	}
+	let root = if let Some(path) = &manifest_mod.path {
+		resolve_path(dir, path)
+	} else if let Some(steam_id) = steam_id {
+		steam_root(dir, steam_id)?
+	} else {
+		return Err(format!(
+			"{}: [[project.mods]] entries require a path or a steam_id",
+			playset.display()
+		)
+		.into());
+	};
+	record_at(&root, position, aliases)
+}
+
+fn steam_root(dir: &Path, steam_id: &str) -> Result<PathBuf> {
+	let launcher = dir.join("mod").join(format!("ugc_{steam_id}.mod"));
+	if !launcher.is_file() {
+		return Err(format!(
+			"mod steam_id {steam_id} has no local path; foch test does not look up Steam"
+		)
+		.into());
+	}
+	let descriptor = load_launcher_descriptor(&launcher)?;
+	let Some(path) = descriptor.path else {
+		return Err(format!(
+			"mod steam_id {steam_id} has no local path; foch test does not look up Steam"
+		)
+		.into());
+	};
+	let path = if path.is_absolute() {
+		path
+	} else {
+		dir.join(path)
+	};
+	if !path.is_dir() {
+		return Err(format!(
+			"mod steam_id {steam_id} has no local path; foch test does not look up Steam"
+		)
+		.into());
+	}
+	Ok(path)
+}
+
+#[derive(serde::Deserialize)]
+struct EnabledModsFile {
+	#[serde(default)]
+	enabled_mods: Vec<String>,
+}
+
+fn load_dlc_records(path: &Path) -> Result<Vec<ModRecord>> {
+	Playset::from_dlc_load(path)?;
+	let bytes = fs::read(path)?;
+	let file: EnabledModsFile = serde_json::from_slice(&bytes)?;
+	let parent = playset_dir(path);
+	let mut records = Vec::new();
+	for (position, rel) in file.enabled_mods.iter().enumerate() {
+		let descriptor_path = rel
+			.split('/')
+			.filter(|part| !part.is_empty())
+			.fold(parent.to_path_buf(), |path, part| path.join(part));
+		if !descriptor_path.is_file() {
+			eprintln!("warning: skipping playset entry {rel}: launcher descriptor is missing");
+			continue;
+		}
+		let launcher = load_launcher_descriptor(&descriptor_path)?;
+		let Some(mod_path) = launcher.path else {
+			return Err(format!("playset entry {rel} has no local mod directory").into());
+		};
+		let mod_path = if mod_path.is_absolute() {
+			mod_path
+		} else {
+			parent.join(mod_path)
+		};
+		let mut aliases = Vec::new();
+		if let Some(id) = launcher.remote_file_id.filter(|id| !id.trim().is_empty()) {
+			aliases.push(id);
+		}
+		if !launcher.name.trim().is_empty() {
+			aliases.push(launcher.name);
+		}
+		records.push(record_at(&mod_path, position, aliases)?);
+	}
+	Ok(records)
+}
+
+fn registry_mods(dir: &Path) -> Result<Vec<ModRecord>> {
+	let mut records = Vec::new();
+	let entries = match fs::read_dir(dir.join("mod")) {
+		Ok(entries) => entries,
+		Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(records),
+		Err(err) => return Err(err.into()),
+	};
+	for entry in entries.flatten() {
+		if entry.path().extension().and_then(|ext| ext.to_str()) != Some("mod") {
+			continue;
+		}
+		let Ok(launcher) = load_launcher_descriptor(&entry.path()) else {
+			continue;
+		};
+		let Some(path) = launcher.path else {
+			continue;
+		};
+		let mut aliases = Vec::new();
+		if let Some(id) = launcher.remote_file_id.filter(|id| !id.trim().is_empty()) {
+			aliases.push(id);
+		}
+		let Some(mut record) = try_record(&path, 0, aliases)? else {
+			continue;
+		};
+		if !launcher.name.trim().is_empty() && launcher.name != record.load.name {
+			record.load.aliases.push(launcher.name);
+		}
+		records.push(record);
+	}
+	Ok(records)
+}
+
+fn try_record(path: &Path, position: usize, aliases: Vec<String>) -> Result<Option<ModRecord>> {
+	if !path.is_dir() {
+		return Ok(None);
+	}
+	match record_at(path, position, aliases) {
+		Ok(record) => Ok(Some(record)),
+		Err(err) => {
+			eprintln!("warning: skipping mod at {}: {err}", path.display());
+			Ok(None)
+		}
+	}
+}
+
+fn record_at(path: &Path, position: usize, mut aliases: Vec<String>) -> Result<ModRecord> {
+	if !path.is_dir() {
+		return Err(format!("mod directory does not exist: {}", path.display()).into());
+	}
+	let descriptor = if path.join("descriptor.mod").is_file() {
+		Some(load_descriptor(&path.join("descriptor.mod"))?)
+	} else {
+		None
+	};
+	let name = descriptor
+		.as_ref()
+		.map(|descriptor| descriptor.name.trim())
+		.filter(|name| !name.is_empty() && !name.contains("::"))
+		.map(str::to_string)
+		.or_else(|| {
+			path.file_name()
+				.map(|name| name.to_string_lossy().into_owned())
+		})
+		.unwrap_or_else(|| "mod".into());
+	if let Some(id) = descriptor
+		.as_ref()
+		.and_then(|descriptor| descriptor.remote_file_id.clone())
+		.filter(|id| !id.trim().is_empty() && id != &name && !aliases.contains(id))
+	{
+		aliases.push(id);
+	}
+	aliases.retain(|alias| alias != &name);
+	let dependencies = descriptor
+		.map(|descriptor| descriptor.dependencies)
+		.unwrap_or_default();
+	Ok(ModRecord {
+		load: LoadMod {
+			name,
+			aliases,
+			dependencies,
+			position,
+		},
+		path: path.to_path_buf(),
+	})
+}
+
+fn append_source_if_absent(author: &mut Vec<ModRecord>, root: &Path) -> Result<()> {
+	if author.iter().any(|record| same_dir(&record.path, root)) {
+		return Ok(());
+	}
+	let position = author
+		.iter()
+		.map(|record| record.load.position)
+		.max()
+		.map(|position| position + 1)
+		.unwrap_or(0);
+	author.push(record_at(root, position, Vec::new())?);
+	Ok(())
+}
+
+fn same_dir(left: &Path, right: &Path) -> bool {
+	match (fs::canonicalize(left), fs::canonicalize(right)) {
+		(Ok(left), Ok(right)) => left == right,
+		_ => left == right,
+	}
+}
+
+fn index_records<'a>(
+	author: &'a [ModRecord],
+	registry: &'a [ModRecord],
+) -> BTreeMap<&'a str, &'a ModRecord> {
+	let mut map = BTreeMap::new();
+	for record in registry {
+		map.entry(record.load.name.as_str()).or_insert(record);
+	}
+	for record in author {
+		map.insert(record.load.name.as_str(), record);
+	}
+	map
+}
+
+fn push_replacing(records: &mut Vec<ModRecord>, record: ModRecord) {
+	let path = fs::canonicalize(&record.path).unwrap_or_else(|_| record.path.clone());
+	let mut tokens = BTreeSet::new();
+	tokens.insert(record.load.name.clone());
+	tokens.extend(record.load.aliases.iter().cloned());
+	records.retain(|existing| {
+		let existing_path =
+			fs::canonicalize(&existing.path).unwrap_or_else(|_| existing.path.clone());
+		if existing_path == path || tokens.contains(&existing.load.name) {
+			return false;
+		}
+		!existing
+			.load
+			.aliases
+			.iter()
+			.any(|alias| tokens.contains(alias))
+	});
+	records.push(record);
+}
+
+fn playset_dir(playset: &Path) -> PathBuf {
+	fs::canonicalize(playset)
+		.ok()
+		.and_then(|path| path.parent().map(Path::to_path_buf))
+		.filter(|path| !path.as_os_str().is_empty())
+		.unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_path(dir: &Path, path: &Path) -> PathBuf {
+	if path.is_absolute() {
+		path.to_path_buf()
+	} else {
+		dir.join(path)
+	}
+}
+
+fn print_scope(planned: &Planned) {
+	let scope = &planned.check_scope;
+	println!(
+		"check scope: base {}, tags {}, events {}",
+		scope.base, scope.tags, scope.events
+	);
+	println!("{}", scope.detail);
+	if !planned.load_order.is_empty() {
+		println!("playset: {}", planned.load_order.join(", "));
+	}
+	if !planned.unresolved.is_empty() {
+		println!("unresolved dependencies: {}", planned.unresolved.join(", "));
 	}
 }
 
@@ -1001,8 +1488,12 @@ fn print_collection(planned: &Planned, format: CheckOutputFormat) -> Result<()> 
 			"cases": views,
 			"not_run": plan.not_run,
 			"diagnostics": planned.diagnostics,
+			"playset": planned.load_order,
+			"unresolved_dependencies": planned.unresolved,
+			"check_scope": planned.check_scope,
 		}))?;
 	} else {
+		print_scope(planned);
 		for view in &views {
 			let session = match (view.session, view.isolation, view.alone_reason) {
 				(Some(id), Some(Isolation::Shared), _) => format!("session {} shared", id.0 + 1),
@@ -1098,6 +1589,9 @@ struct RunView<'a> {
 	success: bool,
 	summary: foch_test::report::Summary,
 	sessions: &'a [SessionRecord],
+	playset: &'a [String],
+	unresolved_dependencies: &'a [String],
+	check_scope: &'a CheckScope,
 	#[serde(flatten)]
 	report: &'a Report,
 }
@@ -1124,7 +1618,7 @@ fn run_one_session(
 	plan: &Plan,
 	bundle: &Bundle,
 	source_root: &Path,
-	dependencies: &[DependencyMod],
+	ordered_mods: &[DependencyMod],
 	directory: &Path,
 	installation: &Installation,
 	options: &RunOptions,
@@ -1132,14 +1626,8 @@ fn run_one_session(
 	// Write the full bundle (test layer, commands, manifest) for inspection;
 	// the runner reuses the test layer it leaves in `directory`.
 	materialize(bundle, source_root, directory)?;
-	let outcome = foch_runtime::runner::run_session(
-		bundle,
-		source_root,
-		dependencies,
-		directory,
-		installation,
-		options,
-	)?;
+	let outcome =
+		foch_runtime::runner::run_session(bundle, ordered_mods, directory, installation, options)?;
 	// The runner preserves the plugin host's event stream beside the
 	// session's logs; receipts are judged from that copy, against the
 	// launch identity the runner actually stamped into the host plan.
@@ -1366,5 +1854,39 @@ mod tests {
 		write(&source.join("descriptor.mod"), "name=\"Src\"\n");
 		let resolved = resolve_dependencies(&source, None);
 		assert!(resolved.mods.is_empty() && resolved.unresolved.is_empty());
+	}
+
+	#[test]
+	fn load_dlc_records_rejects_parent_directory_escape_entry() {
+		let temp = tempfile::tempdir().unwrap();
+		let dlc_load = temp.path().join("dlc_load.json");
+		fs::write(&dlc_load, r#"{"enabled_mods": ["../../x.mod"]}"#).unwrap();
+		match load_dlc_records(&dlc_load) {
+			Err(e) => {
+				let msg = e.to_string().to_lowercase();
+				assert!(
+					msg.contains("normalized") || msg.contains("relative"),
+					"expected path validation error, got: {e}"
+				);
+			}
+			Ok(_) => panic!("expected error for parent-directory escape entry"),
+		}
+	}
+
+	#[test]
+	fn load_dlc_records_rejects_absolute_path_entry() {
+		let temp = tempfile::tempdir().unwrap();
+		let dlc_load = temp.path().join("dlc_load.json");
+		fs::write(&dlc_load, r#"{"enabled_mods": ["/etc/passwd"]}"#).unwrap();
+		match load_dlc_records(&dlc_load) {
+			Err(e) => {
+				let msg = e.to_string().to_lowercase();
+				assert!(
+					msg.contains("normalized") || msg.contains("relative"),
+					"expected path validation error, got: {e}"
+				);
+			}
+			Ok(_) => panic!("expected error for absolute-path entry"),
+		}
 	}
 }

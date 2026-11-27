@@ -36,9 +36,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-/// A mod the mod under test declares a dependency on, resolved to its
-/// installed directory. Loaded read-only before the source mod so the mod's
-/// content that relies on it resolves.
+/// One mod in the ordered list the caller already completed, including the
+/// source mod when it belongs in that list. Loaded read-only, in this order.
+/// The generated test layer is still appended after every entry here.
 #[derive(Clone, Debug)]
 pub struct DependencyMod {
 	pub name: String,
@@ -264,11 +264,11 @@ fn read_engine_log(path: &Path) -> Option<String> {
 
 /// Build the runtime layer, launch the game, wait for every case to finish (or
 /// time out), collect the logs, and tear the layer down. `session_dir` is where
-/// the throwaway profile and logs live; `source_mod` is the mod under test.
+/// the throwaway profile and logs live. `ordered_mods` is the complete list to
+/// enable before the generated test layer, source mod included.
 pub fn run_session(
 	bundle: &Bundle,
-	source_mod: &Path,
-	dependencies: &[DependencyMod],
+	ordered_mods: &[DependencyMod],
 	session_dir: &Path,
 	installation: &Installation,
 	options: &RunOptions,
@@ -299,13 +299,7 @@ pub fn run_session(
 		.real_user_dir
 		.as_ref()
 		.map(|dir| dir.join("settings.txt"));
-	assemble_profile(
-		bundle,
-		source_mod,
-		dependencies,
-		&user_dir,
-		real_settings.as_deref(),
-	)?;
+	assemble_profile(bundle, ordered_mods, &user_dir, real_settings.as_deref())?;
 
 	let guard = installation
 		.real_user_dir
@@ -554,12 +548,11 @@ fn keep_host_events(source: &Path, session_dir: &Path) -> PathBuf {
 }
 
 /// Write the throwaway profile inside `user_dir`: the generated test layer
-/// (written from the bundle's own files), descriptors enabling the source mod
-/// and that layer, a `dlc_load.json`, and a windowed/muted settings file.
+/// (written from the bundle's own files), descriptors enabling `ordered_mods`
+/// and then that layer, a `dlc_load.json`, and a windowed/muted settings file.
 fn assemble_profile(
 	bundle: &Bundle,
-	source_mod: &Path,
-	dependencies: &[DependencyMod],
+	ordered_mods: &[DependencyMod],
 	user_dir: &Path,
 	real_settings: Option<&Path>,
 ) -> io::Result<()> {
@@ -579,20 +572,15 @@ fn assemble_profile(
 		fs::write(destination, content)?;
 	}
 
-	// Enable declared dependencies first, then the source mod, then the test
-	// layer last so its events win any tie.
+	// Enable the caller's completed order, then the test layer last so its
+	// events win any tie. The caller names the source mod; this function does
+	// not append it a second time.
 	let mut enabled = Vec::new();
-	for (index, dependency) in dependencies.iter().enumerate() {
-		let file = format!("dep_{index:03}.mod");
-		write_descriptor(&mod_dir.join(&file), &dependency.name, &dependency.path)?;
+	for (index, item) in ordered_mods.iter().enumerate() {
+		let file = format!("mod_{index:03}.mod");
+		write_descriptor(&mod_dir.join(&file), &item.name, &item.path)?;
 		enabled.push(file);
 	}
-	write_descriptor(
-		&mod_dir.join("source_mod.mod"),
-		"Foch source mod",
-		source_mod,
-	)?;
-	enabled.push("source_mod.mod".to_string());
 	write_descriptor(
 		&mod_dir.join("test_mod.mod"),
 		&bundle.test_mod_name,

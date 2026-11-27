@@ -251,8 +251,16 @@ pub struct TestArgs {
 	pub api: Option<String>,
 	/// EU4 install to launch, or — with --offline — to seed starting state
 	/// from its history files; defaults to the configured or Steam install.
+	/// When this path is a directory it is the matching base for tag and event
+	/// checks. A missing path skips those checks; it does not search Steam.
 	#[arg(long, value_name = "PATH")]
 	pub game_path: Option<PathBuf>,
+	/// Ordered playset (`foch.toml` or `dlc_load.json`). Mods stay in the
+	/// author's order and position; a declared dependency that is missing from
+	/// that list is inserted, before the mod that needs it, in the verified
+	/// dependency order. The order is not sorted by name.
+	#[arg(long, value_name = "PATH")]
+	pub playset: Option<PathBuf>,
 	/// Real EU4 user directory to guard; defaults to
 	/// Documents/Paradox Interactive/Europa Universalis IV.
 	#[arg(long, value_name = "PATH")]

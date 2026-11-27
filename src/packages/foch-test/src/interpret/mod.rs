@@ -41,8 +41,8 @@ use std::fmt::{self, Write as _};
 
 pub use overlay::{
 	ContentLayer, CoreEdit, CountrySlice, HistoryTimeline, LayerFile, ProvinceSlice,
-	SubjectTypeSet, SubjectWarPolicy, fold_history, overlay_decisions, overlay_history,
-	overlay_subject_types,
+	SubjectTypeSet, SubjectWarPolicy, definition_facts, fold_history, overlay_decisions,
+	overlay_history, overlay_subject_types,
 };
 pub use pins::{EvidenceStatus, HandlerPin, SemanticsCatalog};
 

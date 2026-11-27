@@ -29,6 +29,7 @@ pub mod diagnostic;
 pub mod interpret;
 pub mod judge;
 pub mod lint;
+pub mod load_order;
 pub mod model;
 pub mod plan;
 pub mod report;
@@ -42,10 +43,12 @@ pub use interpret::{
 	ContentLayer, CoreEdit, CountrySlice, EvidenceStatus, HistoryTimeline, InterpretOptions,
 	Interpretation, InterpretedCase, LayerFile, Observation, Observed, Outcome, ProvinceSeed,
 	ProvinceSlice, SeedFacts, SeededCountry, SemanticsCatalog, SubjectTypeSet, SubjectWarPolicy,
-	fold_history, interpret, overlay_decisions, overlay_history, overlay_subject_types,
+	definition_facts, fold_history, interpret, overlay_decisions, overlay_history,
+	overlay_subject_types,
 };
 pub use judge::{CaseResult, RunArtifacts, RunnerExit, Status, Timing, judge, reconcile};
 pub use lint::{Footprint, LintResult, ProjectFacts, lint};
+pub use load_order::{LoadMod, complete_load_order};
 pub use model::Tag;
 pub use plan::{ExpandOptions, Expanded, GroupOptions, Plan, expand, group};
 pub use report::Report;

@@ -10,7 +10,7 @@
 
 use super::{ProvinceSeed, SeedFacts, SeededCountry};
 use crate::collect::country_decisions;
-use crate::model::{DecisionInfo, GameDate, Tag};
+use crate::model::{DecisionInfo, EventId, GameDate, Tag};
 use crate::source::RelPath;
 use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
 use foch_annotation::value::{boolean, scalar};
@@ -295,6 +295,62 @@ fn apply_cores(state: &mut Option<BTreeSet<Tag>>, edits: &[CoreEdit]) {
 			}
 		}
 	}
+}
+
+/// Country tags and event ids that survive the ordered overlay.
+///
+/// Tags are the assignment keys of `common/country_tags` plus the filename
+/// token of `history/countries`. Event ids are the `id` of a top-level
+/// `event` or `*_event` block under `events/`. A file that does not parse, a
+/// country-tag key that is not a tag, or an event id that is not an event id
+/// is an error: dropping it would let a defined tag or event look unknown.
+pub fn definition_facts(
+	layers: &[ContentLayer],
+) -> Result<(BTreeSet<Tag>, BTreeSet<EventId>), String> {
+	let mut tags = BTreeSet::new();
+	let mut events = BTreeSet::new();
+	for file in visible_files(layers) {
+		if is_under(&file.path, "history/countries") {
+			if let Some(tag) = tag_from_country_path(&file.path) {
+				tags.insert(tag);
+			}
+			continue;
+		}
+		if is_under(&file.path, "common/country_tags") {
+			for statement in parse_file(&file.path, &file.text)? {
+				let AstStatement::Assignment { key, .. } = statement else {
+					continue;
+				};
+				let tag =
+					Tag::parse(&key).map_err(|error| format!("{}: {key}: {error}", file.path))?;
+				tags.insert(tag);
+			}
+			continue;
+		}
+		if is_under(&file.path, "events") {
+			for statement in parse_file(&file.path, &file.text)? {
+				let AstStatement::Assignment { key, value, .. } = statement else {
+					continue;
+				};
+				if key != "event" && !key.ends_with("_event") {
+					continue;
+				}
+				let AstValue::Block { items, .. } = value else {
+					continue;
+				};
+				let Some(id) = items.iter().find_map(|item| match item {
+					AstStatement::Assignment { key, value, .. } if key == "id" => Some(value),
+					_ => None,
+				}) else {
+					continue;
+				};
+				let id = scalar(id).map_err(|error| format!("{}: {error}", file.path))?;
+				let id = EventId::parse(&id).map_err(|error| format!("{}: {error}", file.path))?;
+				events.insert(id);
+			}
+		}
+	}
+	Ok((tags, events))
 }
 
 /// Files that survive through the last layer, in application order.
@@ -1157,5 +1213,105 @@ mod tests {
 		assert!(set.resolved.is_empty());
 		assert!(set.unresolved.contains_key("left"));
 		assert!(set.unresolved.contains_key("right"));
+	}
+
+	fn tag_names(tags: &BTreeSet<Tag>) -> Vec<&str> {
+		tags.iter().map(Tag::as_str).collect()
+	}
+
+	fn event_names(events: &BTreeSet<crate::model::EventId>) -> Vec<&str> {
+		events.iter().map(|event| event.as_str()).collect()
+	}
+
+	#[test]
+	fn definition_facts_union_surviving_tags_and_events() {
+		let vanilla = layer(
+			&[],
+			&[
+				(
+					"common/country_tags/00_countries.txt",
+					"SWE = \"countries/Sweden.txt\"\nFRA = \"countries/France.txt\"\n",
+				),
+				(
+					"history/countries/DAN - Denmark.txt",
+					"government = monarchy\n",
+				),
+				(
+					"events/vanilla.txt",
+					"namespace = vanilla\ncountry_event = { id = vanilla.1 }\nprovince_event = { id = vanilla.2 }\n",
+				),
+				("decisions/ignore.txt", "country_decisions = {}\n"),
+			],
+		);
+		let extra = layer(
+			&[],
+			&[(
+				"common/country_tags/01_mod.txt",
+				"ZZZ = \"countries/Custom.txt\"\n",
+			)],
+		);
+		let (tags, events) = definition_facts(&[vanilla, extra]).unwrap();
+		assert_eq!(tag_names(&tags), ["DAN", "FRA", "SWE", "ZZZ"]);
+		assert_eq!(event_names(&events), ["vanilla.1", "vanilla.2"]);
+	}
+
+	#[test]
+	fn a_later_country_tag_file_replaces_the_same_path() {
+		let vanilla = layer(
+			&[],
+			&[(
+				"common/country_tags/00_countries.txt",
+				"SWE = \"countries/Sweden.txt\"\n",
+			)],
+		);
+		let later = layer(
+			&[],
+			&[(
+				"common/country_tags/00_countries.txt",
+				"FRA = \"countries/France.txt\"\n",
+			)],
+		);
+		let (tags, _) = definition_facts(&[vanilla, later]).unwrap();
+		assert_eq!(tag_names(&tags), ["FRA"]);
+	}
+
+	#[test]
+	fn replace_path_drops_country_tags_that_the_layer_does_not_ship() {
+		let vanilla = layer(
+			&[],
+			&[(
+				"common/country_tags/00_countries.txt",
+				"SWE = \"countries/Sweden.txt\"\nFRA = \"countries/France.txt\"\n",
+			)],
+		);
+		let resetting = layer(
+			&["common/country_tags"],
+			&[(
+				"common/country_tags/mod.txt",
+				"FRA = \"countries/France.txt\"\n",
+			)],
+		);
+		let (tags, _) = definition_facts(&[vanilla, resetting]).unwrap();
+		assert_eq!(tag_names(&tags), ["FRA"]);
+	}
+
+	#[test]
+	fn a_country_tag_key_or_event_id_that_does_not_parse_is_an_error() {
+		let tags = layer(
+			&[],
+			&[(
+				"common/country_tags/00_countries.txt",
+				"SWE = \"countries/Sweden.txt\"\nnope = \"countries/Nope.txt\"\n",
+			)],
+		);
+		let error = definition_facts(&[tags]).unwrap_err();
+		assert!(error.contains("nope"), "{error}");
+
+		let events = layer(
+			&[],
+			&[("events/broken.txt", "country_event = { id = not-an-id }\n")],
+		);
+		let error = definition_facts(&[events]).unwrap_err();
+		assert!(error.contains("not-an-id"), "{error}");
 	}
 }

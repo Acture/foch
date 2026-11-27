@@ -70,6 +70,8 @@ foch test --api advance_days
 foch test ./my-mod --no-run --out ./compiled-tests
 foch test ./my-mod --out ./test-results --timeout 300
 foch test ./my-mod --game-path "D:/Games/EU4"
+foch test ./my-mod --playset ./foch.toml --collect-only
+foch test ./my-mod --playset ./dlc_load.json --game-path "D:/Games/EU4" --offline
 ```
 
 `PATH` 可以是 mod 根目录、其 `events` 目录、一个事件 `.txt` 文件，或 `文件::事件[::名字]`。目录收集 `events/**/*.txt` 中的注解，以及 `tests/**/*.txt` 中的多步骤声明。用例地址形如 `mod名::events/reforms.txt::reforms.1::名字`，mod 名取 `descriptor.mod` 的 `name`，否则取目录名。
@@ -173,7 +175,11 @@ Foch 按"一局"运行，每局在 `--out` 下有独立目录 `session_NNNN`（�
 
 EU4 每次启动都会往 `error.log` 写入与测试无关的环境条目（缺本地化、其他 mod、原版告警），因此"非空"本身不算失败。判定按条目归因：引用了生成测试层（唯一命名空间或测试 mod 名）的条目才让该局 `runtime_error`，其余条目仅作为提示列出、不改变判定。
 
-被测 mod 在其 `descriptor.mod` 里声明的依赖会按安装注册表（用户目录下的 `mod/*.mod`）解析并一并加载：依赖先于被测 mod、测试层最后，`dlc_load.json` 据此排序。传递依赖按"被依赖者在前"的顺序展开；未安装的依赖会告警并在没有它的情况下继续。
+未指定 `--playset` 时，被测 mod 在其 `descriptor.mod` 里声明的依赖会按安装注册表（用户目录下的 `mod/*.mod`）解析并一并加载：依赖先于被测 mod、测试层最后。传递依赖按“被依赖者在前”的顺序展开；未安装的依赖会告警并在没有它的情况下继续。
+
+`--playset` 接受 `foch.toml` 或启动器的 `dlc_load.json`。作者写下的顺序和 `position` 保持不变，不会按名字重排。作者列表里没有、但某个已列 mod 声明了的依赖，会插到需要它的那个 mod 之前，仍按上述“被依赖者在前”的顺序展开，包括传递依赖。被测 mod 若已在 playset 中，就留在作者指定的位置；否则补在最后，它缺失的依赖紧挨在它前面。测试层仍然最后。显式 playset 只从 playset 自己、旁边的 `mod/*.mod`，以及显式传入的 `--eu4-user-dir` 补缺失依赖，不读取默认的用户目录。
+
+国家 tag 和事件定义只在加载了匹配的 base（`--game-path`，或 playset 的 `game_path`；两者都是目录时必须是同一路径）时检查。它们来自这份有序 playset 叠加上该 base 之后仍然可见的 `common/country_tags`、`history/countries` 和 `events`。没有这份 base 时，这两项检查跳过，输出里的 `check_scope` 会写明范围；原版 tag 或事件不会被报成未知。base 在、但 tag 或事件两边都没有，才是未知。事件在这份输入里有定义、却没有从被测 mod 收集到正文时，不能核验它是否 `hidden` 且仅由触发调用。
 
 启动时若上一次运行被强杀而没能清理，残留的运行层会在超过宽限期后被清扫；`Ctrl-C` 会在当前这一局拆解后停止，不留下游戏进程或运行层。
 
@@ -187,7 +193,7 @@ EU4 每次启动都会往 `error.log` 写入与测试无关的环境条目（缺
 
 `foch lsp` 使用同一份注解定义为 `#test`、`#skip`、`#ignore`、`#xfail`、`#mark` 和 `#parametrize` 提供参数补全、悬停和注解诊断。跨注解的规则（同名用例、`xfail` 缺少 `expect`）只在 `foch test --collect-only` 时报告。当前没有注解内部原生 effects/triggers 补全、测试运行按钮或失败跳转操作。
 
-已实现：CLI 收集 `tests/` 中的多步骤测试和 fixture（依赖 EU4 不加载顶层 `tests/` 的目录模型，真实游戏实测待补，合并侧的识别另行处理）、`#parametrize` 参数化、基于内置目录的 effect/trigger 静态检查、被测 mod 声明依赖的加载。尚未实现：从基础快照补全静态检查的国家与事件集合、fuzz、`--last-failed`、独立 `foch lint`、书签以外任意日期的内置开局准备，以及平台托管 CI 的真实验收。已有本地运行环境只验证真实 `1444.11.11` 开局。
+已实现：CLI 收集 `tests/` 中的多步骤测试和 fixture（依赖 EU4 不加载顶层 `tests/` 的目录模型，真实游戏实测待补，合并侧的识别另行处理）、`#parametrize` 参数化、基于内置目录的 effect/trigger 静态检查、被测 mod 声明依赖的加载、`--playset` 按作者顺序加载。有匹配 base 时，静态检查用该 base 与有序 playset 里的国家 tag 和事件定义；缺 base 时跳过这两项，并在输出里写明范围。尚未实现：fuzz、`--last-failed`、独立 `foch lint`、书签以外任意日期的内置开局准备，以及平台托管 CI 的真实验收。已有本地运行环境只验证真实 `1444.11.11` 开局。
 
 ## 已记录的真实游戏验证（协议 v1）
 
