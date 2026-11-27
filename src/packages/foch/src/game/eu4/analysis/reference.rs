@@ -601,7 +601,7 @@ impl ReferenceContext<'_> {
 		if self.files.contains(texture) {
 			return None;
 		}
-		if !self.inventory_complete {
+		if !(self.base_loaded && self.inventory_complete) {
 			return Some(ReferenceDiagnosis {
 				kind: ReferenceKind::Sprite,
 				name: name.to_string(),

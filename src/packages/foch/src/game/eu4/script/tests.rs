@@ -7894,6 +7894,41 @@ spriteTypes = {
 }
 
 #[test]
+fn a_gui_block_of_a_sprite_declaring_type_records_the_sprite_and_its_texture() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("interface")).expect("create interface");
+	fs::write(
+		mod_root.join("interface").join("main.gui"),
+		r#"
+guiTypes = {
+	corneredTileSpriteType = {
+		name = "GFX_cornered_tile"
+		texturefile = "gfx/interface/cornered_tile.dds"
+	}
+}
+"#,
+	)
+	.expect("write gui");
+
+	let parsed = parse_script_file(
+		"1019",
+		&mod_root,
+		&mod_root.join("interface").join("main.gui"),
+	)
+	.expect("parsed gui");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.key == "sprite_definition:GFX_cornered_tile"
+				&& reference.value == "gfx/interface/cornered_tile.dds"
+				&& reference.path.as_str() == "interface/main.gui"
+		}),
+		"should record the GUI sprite and the texture it loads"
+	);
+}
+
+#[test]
 fn a_gui_records_the_sprite_it_uses() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
