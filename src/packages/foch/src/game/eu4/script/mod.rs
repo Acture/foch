@@ -984,6 +984,17 @@ pub(crate) const TYPED_REFERENCE_KEY: &str = "type_reference:";
 /// after the colon (`sprite_definition:GFX_foo`).
 pub(crate) const SPRITE_DEFINITION_KEY: &str = "sprite_definition:";
 
+/// The GUI block types whose child blocks declare a sprite by their
+/// `name` and load its texture from their `texturefile`.
+const SPRITE_DECLARING_GUI_TYPES: &[&str] = &[
+	"spriteType",
+	"textSpriteType",
+	"corneredTileSpriteType",
+	"frameAnimatedSpriteType",
+	"maskedShieldType",
+	"objectType",
+];
+
 /// Key name a GUI's reference to a sprite is recorded under.
 pub(crate) const SPRITE_REFERENCE_KEY: &str = "sprite";
 
@@ -1472,7 +1483,7 @@ fn record_ui_block_semantics(
 		line: key_span.start.line,
 		column: key_span.start.column,
 	});
-	if key == "spriteType" {
+	if SPRITE_DECLARING_GUI_TYPES.contains(&key) {
 		// A sprite is declared by the block that names it and the texture it
 		// loads. The engine reads the two together, so the declaration is
 		// recorded under the sprite's name with the texture as its value.

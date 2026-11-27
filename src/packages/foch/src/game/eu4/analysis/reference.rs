@@ -287,8 +287,6 @@ pub struct SpriteDeclaration {
 /// The declarations the index holds, by kind and name.
 #[derive(Default)]
 pub struct DeclarationIndex {
-	/// The declarations of a scripted definition, by kind and name.
-	symbols: HashMap<(SymbolKind, String), Vec<DeclarationSite>>,
 	/// The declarations of an event, by its full id and by its bare id.
 	events: HashMap<String, Vec<DeclarationSite>>,
 	/// The declarations of an event, by the id the event file writes.
@@ -317,26 +315,19 @@ impl DeclarationIndex {
 				line: definition.line,
 				column: definition.column,
 			};
-			match definition.kind {
-				SymbolKind::Event => {
-					declarations
-						.event_ids
-						.entry(definition.name.clone())
-						.or_default()
-						.push(site.clone());
-					declarations.push_event(&definition.name, site.clone());
-					// The engine resolves a bare id against the tail of a
-					// qualified one, so the tail is a name the event answers
-					// to as well.
-					if let Some((_, tail)) = definition.name.rsplit_once('.') {
-						declarations.push_event(tail, site);
-					}
-				}
-				kind => declarations
-					.symbols
-					.entry((kind, definition.local_name.clone()))
+			if definition.kind == SymbolKind::Event {
+				declarations
+					.event_ids
+					.entry(definition.name.clone())
 					.or_default()
-					.push(site),
+					.push(site.clone());
+				declarations.push_event(&definition.name, site.clone());
+				// The engine resolves a bare id against the tail of a
+				// qualified one, so the tail is a name the event answers
+				// to as well.
+				if let Some((_, tail)) = definition.name.rsplit_once('.') {
+					declarations.push_event(tail, site);
+				}
 			}
 		}
 		for resource in &index.resource_references {
@@ -406,13 +397,6 @@ impl DeclarationIndex {
 
 	fn push_event(&mut self, name: &str, site: DeclarationSite) {
 		self.events.entry(name.to_string()).or_default().push(site);
-	}
-
-	/// The declarations of a scripted definition.
-	pub fn symbol_declarations(&self, kind: SymbolKind, name: &str) -> &[DeclarationSite] {
-		self.symbols
-			.get(&(kind, name.to_string()))
-			.map_or(&[], Vec::as_slice)
 	}
 
 	/// The declarations of an event, by its full id or by its bare id.
@@ -531,7 +515,7 @@ impl ReferenceContext<'_> {
 					name,
 					providers.iter(),
 					self.declarations.broken_files(EVENT_FAMILY).iter(),
-					self.base_loaded,
+					self.base_loaded && self.inventory_complete,
 					referring_mod,
 				)
 			}
@@ -546,7 +530,7 @@ impl ReferenceContext<'_> {
 					name,
 					providers.iter(),
 					broken.iter(),
-					self.base_loaded,
+					self.base_loaded && self.inventory_complete,
 					referring_mod,
 				)
 			}
@@ -583,7 +567,7 @@ impl ReferenceContext<'_> {
 			name,
 			self.declarations.event_declarations_for(name),
 			self.declarations.broken_files(EVENT_FAMILY).iter(),
-			self.base_loaded,
+			self.base_loaded && self.inventory_complete,
 			referring_mod,
 		)
 	}
@@ -594,7 +578,7 @@ impl ReferenceContext<'_> {
 		let effective = declarations
 			.iter()
 			.filter(|declaration| self.facts.is_effective(&declaration.site));
-		let Some(declaration) = effective.clone().next() else {
+		let Some(declaration) = effective.clone().next_back() else {
 			return self.classify(
 				&ReferenceKind::Sprite,
 				name,
@@ -602,7 +586,7 @@ impl ReferenceContext<'_> {
 				SPRITE_FAMILIES
 					.iter()
 					.flat_map(|family| self.declarations.broken_files(family).iter()),
-				self.base_loaded,
+				self.base_loaded && self.inventory_complete,
 				referring_mod,
 			);
 		};
@@ -837,7 +821,14 @@ pub fn unresolved_references(
 			}
 			continue;
 		}
-		if resource.key != SPRITE_REFERENCE_KEY || !is_static_name(&resource.value) {
+		// GUI files spell a sprite reference `sprite`, `spriteType`,
+		// `buttonSprite` or `quadTextureSprite`, and the extractor records
+		// the spelling it found as the key.
+		let is_sprite_reference = resource.key == SPRITE_REFERENCE_KEY
+			|| resource.key == "spriteType"
+			|| resource.key == "buttonSprite"
+			|| resource.key == "quadTextureSprite";
+		if !is_sprite_reference || !is_static_name(&resource.value) {
 			continue;
 		}
 		if let Some(diagnosis) =
