@@ -8,6 +8,7 @@ use super::HandlerResult;
 use crate::cli::arg::{CheckOutputFormat, TestArgs};
 use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
 use foch::input::load_config_read_only;
+use foch::playset::Playset;
 use foch::playset::descriptor::{load_descriptor, load_launcher_descriptor};
 use foch::project::{Project, ProjectImportKind, ProjectMod};
 use foch_annotation::builtin::SCHEMAS;
@@ -1067,6 +1068,7 @@ struct EnabledModsFile {
 }
 
 fn load_dlc_records(path: &Path) -> Result<Vec<ModRecord>> {
+	Playset::from_dlc_load(path)?;
 	let bytes = fs::read(path)?;
 	let file: EnabledModsFile = serde_json::from_slice(&bytes)?;
 	let parent = playset_dir(path);
@@ -1852,5 +1854,39 @@ mod tests {
 		write(&source.join("descriptor.mod"), "name=\"Src\"\n");
 		let resolved = resolve_dependencies(&source, None);
 		assert!(resolved.mods.is_empty() && resolved.unresolved.is_empty());
+	}
+
+	#[test]
+	fn load_dlc_records_rejects_parent_directory_escape_entry() {
+		let temp = tempfile::tempdir().unwrap();
+		let dlc_load = temp.path().join("dlc_load.json");
+		fs::write(&dlc_load, r#"{"enabled_mods": ["../../x.mod"]}"#).unwrap();
+		match load_dlc_records(&dlc_load) {
+			Err(e) => {
+				let msg = e.to_string().to_lowercase();
+				assert!(
+					msg.contains("normalized") || msg.contains("relative"),
+					"expected path validation error, got: {e}"
+				);
+			}
+			Ok(_) => panic!("expected error for parent-directory escape entry"),
+		}
+	}
+
+	#[test]
+	fn load_dlc_records_rejects_absolute_path_entry() {
+		let temp = tempfile::tempdir().unwrap();
+		let dlc_load = temp.path().join("dlc_load.json");
+		fs::write(&dlc_load, r#"{"enabled_mods": ["/etc/passwd"]}"#).unwrap();
+		match load_dlc_records(&dlc_load) {
+			Err(e) => {
+				let msg = e.to_string().to_lowercase();
+				assert!(
+					msg.contains("normalized") || msg.contains("relative"),
+					"expected path validation error, got: {e}"
+				);
+			}
+			Ok(_) => panic!("expected error for absolute-path entry"),
+		}
 	}
 }
