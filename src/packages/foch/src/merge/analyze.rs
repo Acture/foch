@@ -800,7 +800,12 @@ fn compute_merge_status(report: &MergeReport) -> MergeStatusView {
 		MergeReportStatus::Fatal
 	} else if report.status == MergeReportStatus::Blocked {
 		MergeReportStatus::Blocked
-	} else if report.deferred_unit_count() > 0 || !report.handler_resolutions.is_empty() {
+	} else if report.deferred_unit_count() > 0
+		|| report
+			.handler_resolutions
+			.iter()
+			.any(|record| !record.is_equivalent_omission())
+	{
 		MergeReportStatus::PartialSuccess
 	} else {
 		MergeReportStatus::Ready
@@ -1786,6 +1791,110 @@ mod tests {
 				generated_file_count: 0,
 			}
 		);
+	}
+
+	/// An omission that only drops output equivalent to vanilla or to another
+	/// kept file is not a fallback: the merge stays `ready` and the records
+	/// remain in the report.
+	#[test]
+	fn compute_merge_status_ready_on_equivalent_omission_records() {
+		let report = report_with(|report| {
+			for (path, action) in [
+				(
+					"common/vanilla_equal.txt",
+					crate::model::NOOP_SKIPPED_VS_VANILLA_ACTION,
+				),
+				(
+					"common/covered_elsewhere.txt",
+					crate::model::CROSS_FILE_NOOP_SKIPPED_ACTION,
+				),
+			] {
+				report.handler_resolutions.push(HandlerResolutionRecord {
+					path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
+					action: action.to_string(),
+					source: None,
+					rationale: None,
+				});
+			}
+		});
+
+		assert_eq!(
+			compute_merge_status(&report),
+			MergeStatusView {
+				status: MergeReportStatus::Ready,
+				manual_conflict_count: 0,
+				unsupported_input_count: 0,
+				engine_failure_count: 0,
+				handler_resolution_count: 2,
+				generated_file_count: 0,
+			}
+		);
+		let execution = merge_execution_result(report);
+		assert_eq!(
+			merge_analysis_status(&execution),
+			MergeAnalysisStatus::ReadyToCommit
+		);
+		assert_eq!(execution.report.handler_resolutions.len(), 2);
+	}
+
+	/// A real fallback still downgrades the merge even when equivalent
+	/// omissions are recorded next to it.
+	#[test]
+	fn compute_merge_status_partial_on_fallback_beside_equivalent_omission() {
+		let report = report_with(|report| {
+			for (path, action) in [
+				(
+					"common/vanilla_equal.txt",
+					crate::model::NOOP_SKIPPED_VS_VANILLA_ACTION,
+				),
+				("common/resolved.txt", "last_writer"),
+			] {
+				report.handler_resolutions.push(HandlerResolutionRecord {
+					path: crate::model::GamePathBuf::parse(path).expect("valid game path"),
+					action: action.to_string(),
+					source: None,
+					rationale: None,
+				});
+			}
+		});
+
+		assert_eq!(
+			compute_merge_status(&report).status,
+			MergeReportStatus::PartialSuccess
+		);
+	}
+
+	/// A real deferral still downgrades the merge, and is still reported,
+	/// when the only handler record is an equivalent omission.
+	#[test]
+	fn compute_merge_status_partial_on_real_deferrals_beside_equivalent_omission() {
+		for (manual, unsupported, engine_failure) in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+			let report = report_with(|report| {
+				report.manual_conflict_count = manual;
+				report.unsupported_input_count = unsupported;
+				report.engine_failure_count = engine_failure;
+				report.handler_resolutions.push(HandlerResolutionRecord {
+					path: crate::model::GamePathBuf::parse("common/vanilla_equal.txt")
+						.expect("valid game path"),
+					action: crate::model::NOOP_SKIPPED_VS_VANILLA_ACTION.to_string(),
+					source: None,
+					rationale: None,
+				});
+			});
+
+			assert_eq!(
+				compute_merge_status(&report),
+				MergeStatusView {
+					status: MergeReportStatus::PartialSuccess,
+					manual_conflict_count: manual,
+					unsupported_input_count: unsupported,
+					engine_failure_count: engine_failure,
+					handler_resolution_count: 1,
+					generated_file_count: 0,
+				}
+			);
+			assert_eq!(report.handler_resolutions.len(), 1);
+		}
 	}
 
 	#[test]

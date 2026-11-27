@@ -5,6 +5,7 @@ use crate::merge::model::ExternalFileResolution;
 use crate::model::{
 	GamePath, GamePathBuf, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
 	MERGE_REPORT_ARTIFACT_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult, MergeReport,
+	NOOP_SKIPPED_VS_VANILLA_ACTION,
 };
 use crate::playset::descriptor::{
 	descriptor_comment_text, descriptor_path_text, escape_descriptor_value, replace_path_text,
@@ -160,7 +161,7 @@ pub(super) fn write_structural_merge_output(
 		// Shipping content equivalent to vanilla would only shadow the game file.
 		report.handler_resolutions.push(HandlerResolutionRecord {
 			path: target_path.to_owned(),
-			action: "noop_skipped_vs_vanilla".to_string(),
+			action: NOOP_SKIPPED_VS_VANILLA_ACTION.to_string(),
 			source: None,
 			rationale: Some(
 				"merged content is AST-equal to vanilla; not shipping a redundant copy".to_string(),

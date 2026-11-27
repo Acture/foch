@@ -22,7 +22,6 @@ use foch::playset::descriptor::{
 use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 
-use crate::tui::conflict_handler::InteractiveTuiHandler;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -485,22 +484,15 @@ fn build_interactive_conflict_handler(
 		return (None, None);
 	}
 
+	// The only in-analysis prompt is the explicit one: `foch merge` always
+	// completes the full analysis before review instead of stopping at each
+	// conflict because a terminal was detected.
 	if merge_args.cli_prompt {
 		eprintln!(
 			"[foch] interactive mode: simple prompt will appear for unresolved conflicts. Press q to abort, d to defer."
 		);
 		return (
 			Some(Box::new(InteractiveCliHandler::new())),
-			Some(resolve_resolution_config_path(merge_args, source)),
-		);
-	}
-
-	if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-		eprintln!(
-			"[foch] interactive mode: ratatui UI will appear for unresolved conflicts. Press q to abort, d to defer."
-		);
-		return (
-			Some(Box::new(InteractiveTuiHandler::new())),
 			Some(resolve_resolution_config_path(merge_args, source)),
 		);
 	}
@@ -835,6 +827,58 @@ mod tests {
 	use super::*;
 	use foch::model::ProductInputMod;
 	use foch::playset::steam::{SteamId, WorkshopInstallIdentity};
+
+	fn merge_args_for_handler_selection() -> MergeArgs {
+		MergeArgs {
+			playset_path: None,
+			out: PathBuf::from("out"),
+			force: false,
+			no_game_base: false,
+			include_base: false,
+			exclude: Vec::new(),
+			gui_scroll_merge: false,
+			strict: false,
+			ignore_replace_path: false,
+			ignore_dep: Vec::new(),
+			config: None,
+			provenance: false,
+			confirm: false,
+			non_interactive: false,
+			review_all: false,
+			cli_prompt: false,
+			jobs: None,
+			review_json: None,
+		}
+	}
+
+	/// `foch merge` installs an in-analysis conflict prompt only when
+	/// `--cli-prompt` asks for one; by default the full analysis completes
+	/// before review, with no prompt selected by terminal detection.
+	#[test]
+	fn merge_installs_a_conflict_handler_only_for_the_explicit_prompt() {
+		let source = InputSource::DlcLoad(PathBuf::from("dlc_load.json"));
+
+		let (handler, config_path) =
+			build_interactive_conflict_handler(&merge_args_for_handler_selection(), &source);
+		assert!(handler.is_none());
+		assert!(config_path.is_none());
+
+		let prompting = MergeArgs {
+			cli_prompt: true,
+			..merge_args_for_handler_selection()
+		};
+		let (handler, config_path) = build_interactive_conflict_handler(&prompting, &source);
+		assert!(handler.is_some());
+		assert!(config_path.is_some());
+
+		let non_interactive = MergeArgs {
+			cli_prompt: true,
+			non_interactive: true,
+			..merge_args_for_handler_selection()
+		};
+		let (handler, _) = build_interactive_conflict_handler(&non_interactive, &source);
+		assert!(handler.is_none());
+	}
 
 	fn workshop_manifest(manifest_id: u64) -> ProductInputManifest {
 		ProductInputManifest::new(vec![ProductInputMod {

@@ -6,7 +6,10 @@ use crate::game::eu4::content::MergeKeySource;
 use crate::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use crate::game::eu4::script::{ParsedScriptFile, is_decision_container_key, parse_script_file};
 use crate::input::{ResolvedInput, ResolvedInputContributor};
-use crate::model::{GamePath, GamePathBuf, HandlerResolutionRecord, MergeReport, reads_completely};
+use crate::model::{
+	CROSS_FILE_NOOP_SKIPPED_ACTION, GamePath, GamePathBuf, HandlerResolutionRecord, MergeReport,
+	reads_completely,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
@@ -272,7 +275,7 @@ fn drop_cross_file_noop_path(
 	}
 	report.handler_resolutions.push(HandlerResolutionRecord {
 		path: path.to_owned(),
-		action: "cross_file_noop_skipped".to_string(),
+		action: CROSS_FILE_NOOP_SKIPPED_ACTION.to_string(),
 		source: None,
 		rationale: Some(format!(
 			"all merge keys are already defined identically in another kept file in the {family_id} namespace"

@@ -186,22 +186,24 @@ declaration order.
 
 ## Terminal review
 
-With `--strict`, when static policy, priority, and dependency implication all
-defer, `foch merge` may install the ratatui handler only when stdin/stdout are TTYs and
-`--non-interactive` is absent. `--cli-prompt` selects the simple prompt.
-Without a suitable TTY, the conflict remains a `needs_user_choice` review unit.
+`foch merge` always completes the full analysis before review; terminal
+detection alone never starts an in-analysis prompt. With `--strict`, when
+static policy, priority, and dependency implication all defer, the conflict
+remains a `needs_user_choice` review unit. `--cli-prompt` explicitly selects
+the simple stdin/stderr prompt during analysis — the migration path for the
+removed TTY-detected conflict TUI — and `--non-interactive` disables even
+that. Without the explicit prompt, review the completed analysis (or
+`--review-json`) and persist decisions as `[[resolutions]]`.
 
-The TUI adapter is `src/apps/foch-cli/src/tui/conflict_handler.rs`.
+The simple prompt asks once per unresolved conflict, in plan order:
 
-| Key | Action |
+| Input | Action |
 | --- | --- |
-| `↑` / `↓`, `Home` / `End` | Move selection |
-| `Enter` | Confirm selected candidate |
-| `Esc`, `d`, `D` | Defer |
-| `q`, `Q` | Abort analysis |
-| `s`, `S` | Select an external file |
-| `k`, `K` | Keep existing output file |
-| `1` … `9` | Pick visible candidate number |
+| `1` … `9` | Pick the candidate with that number |
+| `d`, `defer` | Defer |
+| `s`, `file`, `use-file` | Use an external file (asks for its path) |
+| `k`, `keep` | Keep the existing output file |
+| `q`, `quit`, `abort` | Abort analysis |
 
 Persisted terminal decisions use the same `[[resolutions]]` schema.
 
