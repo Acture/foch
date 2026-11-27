@@ -88,7 +88,11 @@ pub fn handle_test(args: &TestArgs) -> HandlerResult {
 	}
 
 	let config = load_config_read_only()?;
-	let game_root = foch_runtime::runner::locate_game(&config, args.game_path.as_deref())?;
+	let explicit_game = args
+		.game_path
+		.as_deref()
+		.or(planned.manifest_game_path.as_deref());
+	let game_root = foch_runtime::runner::locate_game(&config, explicit_game)?;
 	let real_user_dir = args.eu4_user_dir.clone().or_else(default_eu4_user_dir);
 	// Ctrl-C stops the current launch gracefully: the flag is observed by the
 	// runner's watch loop, which stops the game and lets the layer tear down.
@@ -534,6 +538,10 @@ struct Planned {
 	ordered_mods: Vec<DependencyMod>,
 	layers: Vec<ContentLayer>,
 	facts: ProjectFacts,
+	/// When the playset manifest or `--game-path` resolved to a game
+	/// directory, this is that path so `locate_game` can launch that
+	/// same installation (not whatever Steam resolves).
+	manifest_game_path: Option<PathBuf>,
 }
 
 /// Discover, collect, expand, lint and group. Diagnostics are returned for
@@ -645,6 +653,7 @@ fn plan(args: &TestArgs, selection: &Selection, shared: bool) -> Result<Planned>
 		ordered_mods: ordered.mods,
 		layers: ordered.layers,
 		facts: ordered.facts,
+		manifest_game_path: ordered.base_game_path,
 	})
 }
 
@@ -813,6 +822,11 @@ struct OrderedInput {
 	layers: Vec<ContentLayer>,
 	facts: ProjectFacts,
 	check_scope: CheckScope,
+	/// The resolved game directory used as the base for content layers.
+	/// When this is `Some`, the same path must be passed to `locate_game`
+	/// so the game actually launched matches the content the test plan
+	/// was built against.
+	base_game_path: Option<PathBuf>,
 }
 
 struct ModRecord {
@@ -842,7 +856,7 @@ fn resolve_without_playset(args: &TestArgs, root: &Path) -> Result<OrderedInput>
 		path: root.to_path_buf(),
 	});
 	let base = matching_base(args.game_path.as_deref(), None)?;
-	finish_input(mods, resolved.unresolved, base)
+	finish_input(mods, resolved.unresolved, base.clone(), base)
 }
 
 fn resolve_with_playset(args: &TestArgs, root: &Path, playset: &Path) -> Result<OrderedInput> {
@@ -868,13 +882,14 @@ fn resolve_with_playset(args: &TestArgs, root: &Path, playset: &Path) -> Result<
 		});
 	}
 	let base = matching_base(args.game_path.as_deref(), manifest_game.as_deref())?;
-	finish_input(mods, unresolved, base)
+	finish_input(mods, unresolved, base.clone(), base)
 }
 
 fn finish_input(
 	mods: Vec<DependencyMod>,
 	unresolved: Vec<String>,
 	base: Option<PathBuf>,
+	base_game_path: Option<PathBuf>,
 ) -> Result<OrderedInput> {
 	for warning in &unresolved {
 		eprintln!("warning: dependency {warning:?} is not installed; testing without it");
@@ -893,6 +908,7 @@ fn finish_input(
 		layers,
 		facts: project_facts(definitions),
 		check_scope,
+		base_game_path,
 	})
 }
 
@@ -1051,7 +1067,6 @@ struct EnabledModsFile {
 }
 
 fn load_dlc_records(path: &Path) -> Result<Vec<ModRecord>> {
-	foch::playset::Playset::from_dlc_load(path)?;
 	let bytes = fs::read(path)?;
 	let file: EnabledModsFile = serde_json::from_slice(&bytes)?;
 	let parent = playset_dir(path);
@@ -1061,6 +1076,10 @@ fn load_dlc_records(path: &Path) -> Result<Vec<ModRecord>> {
 			.split('/')
 			.filter(|part| !part.is_empty())
 			.fold(parent.to_path_buf(), |path, part| path.join(part));
+		if !descriptor_path.is_file() {
+			eprintln!("warning: skipping playset entry {rel}: launcher descriptor is missing");
+			continue;
+		}
 		let launcher = load_launcher_descriptor(&descriptor_path)?;
 		let Some(mod_path) = launcher.path else {
 			return Err(format!("playset entry {rel} has no local mod directory").into());
@@ -1118,7 +1137,13 @@ fn try_record(path: &Path, position: usize, aliases: Vec<String>) -> Result<Opti
 	if !path.is_dir() {
 		return Ok(None);
 	}
-	Ok(Some(record_at(path, position, aliases)?))
+	match record_at(path, position, aliases) {
+		Ok(record) => Ok(Some(record)),
+		Err(err) => {
+			eprintln!("warning: skipping mod at {}: {err}", path.display());
+			Ok(None)
+		}
+	}
 }
 
 fn record_at(path: &Path, position: usize, mut aliases: Vec<String>) -> Result<ModRecord> {

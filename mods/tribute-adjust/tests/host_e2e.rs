@@ -45,7 +45,14 @@ fn workspace() -> PathBuf {
 /// artifacts are not necessarily under `<workspace>/target`.
 fn cargo_target_dir() -> PathBuf {
 	match std::env::var_os("CARGO_TARGET_DIR") {
-		Some(dir) => PathBuf::from(dir),
+		Some(dir) => {
+			let dir = PathBuf::from(dir);
+			if dir.is_absolute() {
+				dir
+			} else {
+				workspace().join(dir)
+			}
+		}
 		None => workspace().join("target"),
 	}
 }
