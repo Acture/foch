@@ -156,16 +156,38 @@ fn failure_severity(failure: &ReferenceFailure) -> (Severity, FindingChannel) {
 pub struct PlaysetFacts {
 	/// A mod's precedence. A larger precedence loads later.
 	precedence: HashMap<String, usize>,
-	/// The directories a mod replaces.
-	replace_paths: HashMap<String, Vec<GamePathBuf>>,
-	/// The dependencies a mod declares, by the mod.
-	dependencies: HashMap<String, Vec<String>>,
+	/// The directories the loaded mods replace, by the precedence of the
+	/// mod that replaces them.
+	///
+	/// Only a mod that loads later can replace a declaration away, so the
+	/// directory's precedence answers whether a declaration survives
+	/// without a scan over every mod.
+	replaced: HashMap<GamePathBuf, usize>,
+	/// The dependencies of a mod the playset does not load, by the mod.
+	missing_dependencies: HashMap<String, Vec<String>>,
 	/// The mods the playset loads.
 	loaded: HashSet<String>,
-	/// The mods the playset contains but does not load.
-	disabled: HashSet<String>,
-	/// The dependency tokens no mod of the playset answers to.
-	unmatched_dependencies: HashMap<String, Vec<String>>,
+}
+
+/// The dependencies of a mod the playset does not load.
+///
+/// A dependency names a mod the way the launcher reads it: by its display
+/// name or its workshop id. The token is resolved against the playset's
+/// identities first, so a dependency on a mod that sits in the playset
+/// disabled is missing rather than satisfied.
+fn unloaded_dependencies(
+	identity: &crate::playset::dependency::ModIdentityIndex,
+	mods: &[crate::model::ModCandidate],
+	dependencies: &[String],
+) -> Vec<String> {
+	dependencies
+		.iter()
+		.filter(|dependency| match identity.lookup(dependency) {
+			None => true,
+			Some(index) => !mods[index].entry.enabled,
+		})
+		.cloned()
+		.collect()
 }
 
 impl PlaysetFacts {
@@ -176,29 +198,27 @@ impl PlaysetFacts {
 		let mut facts = Self::default();
 		for (index, mod_item) in mods.iter().enumerate() {
 			if !mod_item.entry.enabled {
-				facts.disabled.insert(mod_item.mod_id.clone());
 				continue;
 			}
-			facts.precedence.insert(mod_item.mod_id.clone(), index + 1);
+			let precedence = index + 1;
+			facts.precedence.insert(mod_item.mod_id.clone(), precedence);
 			facts.loaded.insert(mod_item.mod_id.clone());
-			if let Some(descriptor) = mod_item.descriptor.as_ref() {
+			let Some(descriptor) = mod_item.descriptor.as_ref() else {
+				continue;
+			};
+			for directory in &descriptor.replace_path {
 				facts
-					.replace_paths
-					.insert(mod_item.mod_id.clone(), descriptor.replace_path.clone());
-				facts
-					.dependencies
-					.insert(mod_item.mod_id.clone(), descriptor.dependencies.clone());
+					.replaced
+					.entry(directory.clone())
+					.and_modify(|later| *later = (*later).max(precedence))
+					.or_insert(precedence);
 			}
-		}
-		for (mod_id, dependencies) in &facts.dependencies {
-			let unmatched = dependencies
-				.iter()
-				.filter(|dependency| identity.lookup(dependency).is_none())
-				.cloned()
-				.collect();
-			facts
-				.unmatched_dependencies
-				.insert(mod_id.clone(), unmatched);
+			let missing = unloaded_dependencies(&identity, mods, &descriptor.dependencies);
+			if !missing.is_empty() {
+				facts
+					.missing_dependencies
+					.insert(mod_item.mod_id.clone(), missing);
+			}
 		}
 		facts
 	}
@@ -219,13 +239,21 @@ impl PlaysetFacts {
 			return false;
 		}
 		let precedence = self.precedence.get(&site.mod_id).copied().unwrap_or(0);
-		!self.replace_paths.iter().any(|(mod_id, prefixes)| {
-			self.mod_is_loaded(mod_id)
-				&& self.precedence.get(mod_id).copied().unwrap_or(0) > precedence
-				&& prefixes
-					.iter()
-					.any(|prefix| site.path.as_game_path().starts_with(prefix))
-		})
+		// The directories that can hold the declaration: the file's own
+		// path and every directory above it. A directory the playset
+		// replaces takes what an earlier mod declared there away.
+		let mut directory = Some(site.path.as_game_path());
+		while let Some(current) = directory {
+			if self
+				.replaced
+				.get(current)
+				.is_some_and(|later| *later > precedence)
+			{
+				return false;
+			}
+			directory = current.parent();
+		}
+		true
 	}
 
 	/// Whether the mod's declarations are part of the effective playset.
@@ -240,23 +268,10 @@ impl PlaysetFacts {
 	/// The dependencies of `mod_id` the playset does not load: the ones no
 	/// mod answers to, and the ones only a mod the playset does not load
 	/// answers to.
-	pub fn missing_dependencies(&self, mod_id: &str) -> Vec<String> {
-		let mut missing = self
-			.unmatched_dependencies
+	pub fn missing_dependencies(&self, mod_id: &str) -> &[String] {
+		self.missing_dependencies
 			.get(mod_id)
-			.cloned()
-			.unwrap_or_default();
-		if let Some(dependencies) = self.dependencies.get(mod_id) {
-			for dependency in dependencies {
-				if missing.contains(dependency) {
-					continue;
-				}
-				if self.disabled.contains(dependency) {
-					missing.push(dependency.clone());
-				}
-			}
-		}
-		missing
+			.map_or(&[], Vec::as_slice)
 	}
 }
 
@@ -410,12 +425,19 @@ impl DeclarationIndex {
 	/// The engine resolves a qualified id against the event that declares
 	/// it, and a bare id against the tail of a qualified one. A qualified
 	/// reference also resolves against the bare event of the same tail.
-	pub fn event_declarations_for(&self, name: &str) -> Vec<&DeclarationSite> {
-		let mut sites = self.event_declarations(name).iter().collect::<Vec<_>>();
-		if let Some((_, tail)) = name.rsplit_once('.') {
-			sites.extend(self.event_declarations(tail).iter());
-		}
-		sites
+	///
+	/// The declarations are borrowed and read as they are: a reference
+	/// that resolves costs no allocation.
+	pub fn event_declarations_for(
+		&self,
+		name: &str,
+	) -> impl Iterator<Item = &DeclarationSite> + Clone {
+		let qualified = self.event_declarations(name);
+		let tail = name
+			.rsplit_once('.')
+			.map(|(_, tail)| self.event_declarations(tail))
+			.unwrap_or_default();
+		qualified.iter().chain(tail.iter())
 	}
 
 	/// Whether an event file declares the event under the id `name`.
@@ -500,20 +522,20 @@ impl ReferenceContext<'_> {
 		name: &str,
 		referring_mod: &str,
 	) -> Option<ReferenceDiagnosis> {
-		match kind {
+		match &kind {
 			ReferenceKind::Event => self.diagnose_event(name, referring_mod),
 			ReferenceKind::Namespace => {
 				let providers = self.declarations.namespace_declarations(name);
 				self.classify(
 					&kind,
 					name,
-					providers,
-					self.declarations.broken_files(EVENT_FAMILY),
+					providers.iter(),
+					self.declarations.broken_files(EVENT_FAMILY).iter(),
 					self.base_loaded,
 					referring_mod,
 				)
 			}
-			ReferenceKind::Family(ref key) => {
+			ReferenceKind::Family(key) => {
 				let providers = self.declarations.family_declarations(key, name);
 				let family = self.declarations.family_directory(key);
 				let broken = family
@@ -522,8 +544,8 @@ impl ReferenceContext<'_> {
 				self.classify(
 					&kind,
 					name,
-					providers,
-					broken,
+					providers.iter(),
+					broken.iter(),
 					self.base_loaded,
 					referring_mod,
 				)
@@ -549,12 +571,6 @@ impl ReferenceContext<'_> {
 	/// namespace is not declared, it is the root cause, so it is what the
 	/// diagnostic reports.
 	fn diagnose_event(&self, name: &str, referring_mod: &str) -> Option<ReferenceDiagnosis> {
-		let providers = self
-			.declarations
-			.event_declarations_for(name)
-			.into_iter()
-			.cloned()
-			.collect::<Vec<_>>();
 		if let Some((namespace, _)) = name.rsplit_once('.')
 			&& !self.declarations.event_declared_under(name)
 			&& let Some(diagnosis) =
@@ -565,8 +581,8 @@ impl ReferenceContext<'_> {
 		self.classify(
 			&ReferenceKind::Event,
 			name,
-			&providers,
-			self.declarations.broken_files(EVENT_FAMILY),
+			self.declarations.event_declarations_for(name),
+			self.declarations.broken_files(EVENT_FAMILY).iter(),
 			self.base_loaded,
 			referring_mod,
 		)
@@ -577,33 +593,25 @@ impl ReferenceContext<'_> {
 		let declarations = self.declarations.sprite_declarations(name);
 		let effective = declarations
 			.iter()
-			.filter(|declaration| self.facts.is_effective(&declaration.site))
-			.collect::<Vec<_>>();
-		if effective.is_empty() {
-			let providers = declarations
-				.iter()
-				.map(|declaration| declaration.site.clone())
-				.collect::<Vec<_>>();
+			.filter(|declaration| self.facts.is_effective(&declaration.site));
+		let Some(declaration) = effective.clone().next() else {
 			return self.classify(
 				&ReferenceKind::Sprite,
 				name,
-				&providers,
-				&self.broken_sprite_files(),
+				declarations.iter().map(|declaration| &declaration.site),
+				SPRITE_FAMILIES
+					.iter()
+					.flat_map(|family| self.declarations.broken_files(family).iter()),
 				self.base_loaded,
 				referring_mod,
 			);
-		}
-		let providers = effective
-			.iter()
-			.map(|declaration| declaration.site.clone())
-			.collect::<Vec<_>>();
-		let declaration = effective[0];
+		};
 		let Some(texture) = declaration.texture.as_ref() else {
 			return Some(ReferenceDiagnosis {
 				kind: ReferenceKind::Sprite,
 				name: name.to_string(),
 				failure: ReferenceFailure::UnloadableSprite,
-				providers,
+				providers: sprite_sites(effective.clone()),
 			});
 		};
 		if self.files.contains(texture) {
@@ -616,7 +624,7 @@ impl ReferenceContext<'_> {
 				failure: ReferenceFailure::Unknown {
 					reason: UnknownReason::IncompleteScope,
 				},
-				providers,
+				providers: sprite_sites(effective.clone()),
 			});
 		}
 		Some(ReferenceDiagnosis {
@@ -625,17 +633,8 @@ impl ReferenceContext<'_> {
 			failure: ReferenceFailure::MissingTexture {
 				texture: texture.clone(),
 			},
-			providers,
+			providers: sprite_sites(effective.clone()),
 		})
-	}
-
-	/// The files of the families a sprite can be declared in that did not
-	/// parse.
-	fn broken_sprite_files(&self) -> Vec<DeclarationSite> {
-		SPRITE_FAMILIES
-			.iter()
-			.flat_map(|family| self.declarations.broken_files(family).iter().cloned())
-			.collect()
 	}
 
 	/// Why a name that `providers` declares does not resolve.
@@ -645,40 +644,58 @@ impl ReferenceContext<'_> {
 	/// a dependency the playset does not load is the likeliest home of the
 	/// name, and only a scope that covers every file that could declare the
 	/// name may call it missing.
-	fn classify(
+	///
+	/// The providers are borrowed, and the declaration sites are copied
+	/// only into the diagnosis the analysis reports: a reference that
+	/// resolves costs nothing.
+	fn classify<'p, P, B>(
 		&self,
 		kind: &ReferenceKind,
 		name: &str,
-		providers: &[DeclarationSite],
-		broken: &[DeclarationSite],
+		providers: P,
+		broken: B,
 		scope_complete: bool,
 		referring_mod: &str,
-	) -> Option<ReferenceDiagnosis> {
-		let loaded = providers
-			.iter()
-			.filter(|site| self.facts.mod_is_loaded(&site.mod_id))
-			.collect::<Vec<_>>();
-		if loaded.iter().any(|site| self.facts.is_effective(site)) {
-			return None;
+	) -> Option<ReferenceDiagnosis>
+	where
+		P: IntoIterator<Item = &'p DeclarationSite> + Clone,
+		B: IntoIterator<Item = &'p DeclarationSite>,
+	{
+		// A declaration the playset loads decides the answer: one the
+		// playset keeps resolves the reference, and one a later mod
+		// replaces away is a sure failure.
+		let mut loaded = false;
+		for site in providers.clone() {
+			if !self.facts.mod_is_loaded(&site.mod_id) {
+				continue;
+			}
+			loaded = true;
+			if self.facts.is_effective(site) {
+				return None;
+			}
 		}
-		if !loaded.is_empty() {
+		if loaded {
 			// The playset loads the mod that declares the name, but a later
 			// mod replaces the directory the declaration lives in.
+			let providers = owned_sites(providers);
+			let shadowed = providers
+				.iter()
+				.filter(|site| self.facts.mod_is_loaded(&site.mod_id))
+				.cloned()
+				.collect::<Vec<_>>();
 			return Some(ReferenceDiagnosis {
 				kind: kind.clone(),
 				name: name.to_string(),
-				failure: ReferenceFailure::Replaced {
-					shadowed: loaded.into_iter().cloned().collect(),
-				},
-				providers: providers.to_vec(),
+				failure: ReferenceFailure::Replaced { shadowed },
+				providers,
 			});
 		}
-		if let Some(file) = broken.first() {
+		if let Some(file) = broken.into_iter().next() {
 			return Some(ReferenceDiagnosis {
 				kind: kind.clone(),
 				name: name.to_string(),
 				failure: ReferenceFailure::BrokenSource { file: file.clone() },
-				providers: Vec::new(),
+				providers: owned_sites(providers),
 			});
 		}
 		if let Some(dependency) = self.facts.missing_dependencies(referring_mod).first() {
@@ -688,7 +705,7 @@ impl ReferenceContext<'_> {
 				failure: ReferenceFailure::MissingDependency {
 					dependency: dependency.clone(),
 				},
-				providers: Vec::new(),
+				providers: owned_sites(providers),
 			});
 		}
 		if !scope_complete {
@@ -698,16 +715,32 @@ impl ReferenceContext<'_> {
 				failure: ReferenceFailure::Unknown {
 					reason: UnknownReason::IncompleteScope,
 				},
-				providers: Vec::new(),
+				providers: owned_sites(providers),
 			});
 		}
 		Some(ReferenceDiagnosis {
 			kind: kind.clone(),
 			name: name.to_string(),
 			failure: ReferenceFailure::NotDeclared,
-			providers: Vec::new(),
+			providers: owned_sites(providers),
 		})
 	}
+}
+
+/// The declaration sites a provider list names, owned.
+fn owned_sites<'p>(
+	providers: impl IntoIterator<Item = &'p DeclarationSite>,
+) -> Vec<DeclarationSite> {
+	providers.into_iter().cloned().collect()
+}
+
+/// The declaration sites a sprite's declarations live at.
+fn sprite_sites<'p>(
+	declarations: impl Iterator<Item = &'p SpriteDeclaration>,
+) -> Vec<DeclarationSite> {
+	declarations
+		.map(|declaration| declaration.site.clone())
+		.collect()
 }
 
 /// The content family the event files live in.
@@ -992,10 +1025,22 @@ mod tests {
 		dependencies: &[&str],
 		replace_paths: &[&str],
 	) -> ModCandidate {
+		candidate_named(mod_id, mod_id, enabled, dependencies, replace_paths)
+	}
+
+	/// A mod of the playset under a display name of its own, as a workshop
+	/// mod has: the launcher knows it by that name, not by its id.
+	fn candidate_named(
+		mod_id: &str,
+		name: &str,
+		enabled: bool,
+		dependencies: &[&str],
+		replace_paths: &[&str],
+	) -> ModCandidate {
 		ModCandidate {
 			entry: PlaysetEntry {
 				id: Some(mod_id.to_string()),
-				display_name: Some(mod_id.to_string()),
+				display_name: Some(name.to_string()),
 				enabled,
 				position: None,
 				steam_id: None,
@@ -1006,7 +1051,7 @@ mod tests {
 			root_path: None,
 			descriptor_path: None,
 			descriptor: Some(ModDescriptor {
-				name: mod_id.to_string(),
+				name: name.to_string(),
 				dependencies: dependencies
 					.iter()
 					.map(|item| (*item).to_string())
@@ -1044,6 +1089,13 @@ mod tests {
 			self.mods
 				.push(candidate_with(mod_id, true, dependencies, replace_paths));
 			self
+		}
+
+		/// A mod the playset contains but does not load, under a display
+		/// name of its own.
+		fn disabled_mod(&mut self, mod_id: &str, name: &str) {
+			self.mods
+				.push(candidate_named(mod_id, name, false, &[], &[]));
 		}
 
 		fn declare_building(&mut self, name: &str, mod_id: &str, file: &str) {
@@ -1298,6 +1350,168 @@ mod tests {
 				.unwrap_or_default()
 				.contains("Needed Mod")
 		);
+	}
+
+	#[test]
+	fn a_dependency_on_a_mod_the_playset_disables_is_the_likely_home_of_the_name() {
+		let mut fixture = Fixture::new().mod_with("mod-a", &["Needed Mod"], &[]);
+		fixture.disabled_mod("mod-dep", "Needed Mod");
+		fixture.declare_building("my_building", "mod-dep", "common/buildings/dep.txt");
+		fixture.reference_building(
+			"my_building",
+			"mod-a",
+			"common/buildings/01_buildings.txt",
+			7,
+		);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(
+			findings[0].rule_id,
+			"unresolved-reference-missing-dependency"
+		);
+		let evidence = findings[0].evidence.as_deref().unwrap_or_default();
+		assert!(evidence.contains("dependency=Needed Mod"), "{evidence}");
+		assert!(
+			evidence.contains("providers=[mod-dep:common/buildings/dep.txt:1:1]"),
+			"{evidence}"
+		);
+	}
+
+	#[test]
+	fn a_declaration_the_playset_does_not_load_is_named_as_a_provider() {
+		let mut fixture = Fixture::new().mod_with("mod-a", &[], &[]);
+		fixture.disabled_mod("mod-dep", "Needed Mod");
+		fixture.declare_building("my_building", "mod-dep", "common/buildings/dep.txt");
+		fixture.reference_building(
+			"my_building",
+			"mod-a",
+			"common/buildings/01_buildings.txt",
+			7,
+		);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "unresolved-reference-not-declared");
+		let evidence = findings[0].evidence.as_deref().unwrap_or_default();
+		assert!(
+			evidence.contains("providers=[mod-dep:common/buildings/dep.txt:1:1]"),
+			"{evidence}"
+		);
+	}
+
+	#[test]
+	fn a_broken_file_still_names_the_declarations_the_analysis_found() {
+		let mut fixture = Fixture::new().mod_with("mod-a", &[], &[]);
+		fixture.disabled_mod("mod-dep", "Needed Mod");
+		fixture.broken_file("mod-b", "common/buildings/00_buildings.txt");
+		fixture.declare_building("my_building", "mod-dep", "common/buildings/dep.txt");
+		fixture.reference_building(
+			"my_building",
+			"mod-a",
+			"common/buildings/01_buildings.txt",
+			7,
+		);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "unresolved-reference-broken-source");
+		let evidence = findings[0].evidence.as_deref().unwrap_or_default();
+		assert!(
+			evidence.contains("providers=[mod-dep:common/buildings/dep.txt:1:1]"),
+			"{evidence}"
+		);
+	}
+
+	#[test]
+	fn a_name_the_analysis_cannot_judge_still_names_the_declarations_it_found() {
+		let mut fixture = Fixture::new().mod_with("mod-a", &[], &[]);
+		fixture.base_loaded = false;
+		fixture.disabled_mod("mod-dep", "Needed Mod");
+		fixture.declare_building("my_building", "mod-dep", "common/buildings/dep.txt");
+		fixture.reference_building(
+			"my_building",
+			"mod-a",
+			"common/buildings/01_buildings.txt",
+			7,
+		);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "unresolved-reference-unknown");
+		let evidence = findings[0].evidence.as_deref().unwrap_or_default();
+		assert!(
+			evidence.contains("providers=[mod-dep:common/buildings/dep.txt:1:1]"),
+			"{evidence}"
+		);
+	}
+
+	#[test]
+	fn only_a_mod_that_loads_later_replaces_a_declaration_away() {
+		let mut fixture = Fixture::new()
+			.mod_with("mod-a", &[], &["common/buildings"])
+			.mod_with("mod-b", &[], &[]);
+		fixture.declare_building("my_building", "mod-b", "common/buildings/b.txt");
+		fixture.reference_building("my_building", "mod-a", "common/buildings/a.txt", 7);
+		assert!(fixture.findings().is_empty());
+	}
+
+	#[test]
+	fn a_mod_that_replaces_another_directory_leaves_the_declaration_alone() {
+		let mut fixture = Fixture::new()
+			.mod_with("mod-a", &[], &[])
+			.mod_with("mod-b", &[], &["common/ideas"])
+			.mod_with("mod-c", &[], &["common/buildings"]);
+		fixture.declare_building("my_building", "mod-a", "common/buildings/a.txt");
+		fixture.reference_building("my_building", "mod-a", "common/buildings/a.txt", 7);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "unresolved-reference-replaced");
+	}
+
+	#[test]
+	fn a_mod_that_replaces_a_parent_directory_replaces_the_declaration_away() {
+		let mut fixture =
+			Fixture::new()
+				.mod_with("mod-a", &[], &[])
+				.mod_with("mod-b", &[], &["common"]);
+		fixture.declare_building("my_building", "mod-a", "common/buildings/a.txt");
+		fixture.reference_building("my_building", "mod-a", "common/buildings/a.txt", 7);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "unresolved-reference-replaced");
+	}
+
+	#[test]
+	fn a_dependency_naming_a_disabled_mod_by_its_id_is_missing() {
+		let mut fixture = Fixture::new().mod_with("mod-a", &["mod-dep"], &[]);
+		fixture.disabled_mod("mod-dep", "Needed Mod");
+		fixture.reference_building(
+			"my_building",
+			"mod-a",
+			"common/buildings/01_buildings.txt",
+			7,
+		);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(
+			findings[0].rule_id,
+			"unresolved-reference-missing-dependency"
+		);
+		let evidence = findings[0].evidence.as_deref().unwrap_or_default();
+		assert!(evidence.contains("dependency=mod-dep"), "{evidence}");
+	}
+
+	#[test]
+	fn a_dependency_the_playset_loads_is_not_missing() {
+		let mut fixture = Fixture::new()
+			.mod_with("mod-a", &["mod-dep"], &[])
+			.mod_with("mod-dep", &[], &[]);
+		fixture.reference_building(
+			"my_building",
+			"mod-a",
+			"common/buildings/01_buildings.txt",
+			7,
+		);
+		let findings = fixture.findings();
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].rule_id, "unresolved-reference-not-declared");
 	}
 
 	#[test]

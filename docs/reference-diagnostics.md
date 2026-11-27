@@ -29,6 +29,11 @@ Only the failures the analysis is sure of are strict. A broken source, a
 missing dependency and an unusable sprite are leads worth reading rather than
 verdicts, so they stay advisory and leave the check's exit code alone.
 
+A dependency names another mod the way the launcher reads it: by its display
+name or its workshop id. The token is resolved against the playset before it
+is judged, so a dependency on a mod the playset contains but does not load is
+as missing as one no mod answers to.
+
 The generic `unresolved-call-target` finding reports an event reference that
 does not resolve. When the reference analysis explains the same site, it
 replaces that finding: the explanation says whether the reference is broken
@@ -42,7 +47,9 @@ Every reference finding names:
 - the **file**, relative to that mod's root, in `path`;
 - the **position** in the file, in `line` and `column`;
 - the **related providers** — every declaration of the name the analysis
-  found, effective or not, so an override chain is visible;
+  found, effective or not, so an override chain is visible; a declaration in
+  a mod the playset does not load is one of them, and names the mod that
+  holds it;
 - the **base and input identity** the analysis read them from, so a finding
   can be tied to the analysis that produced it.
 
